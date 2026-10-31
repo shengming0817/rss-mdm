@@ -34,6 +34,7 @@ pub(crate) struct Assembly {
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
@@ -152,6 +153,8 @@ pub(crate) async fn from_compiled(
     } = dependencies;
     let crate::assembly::execution::Assembly {
         materials: _,
+        signing: _,
+        task_trust,
         channels,
         providers,
         bootstrap,
@@ -418,6 +421,7 @@ pub(crate) async fn from_compiled(
         .map(|runtime| runtime.qualification_configuration())
         .transpose()?;
     let state = Arc::new(Assembly {
+        task_trust,
         events,
         resources,
         channels,

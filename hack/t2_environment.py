@@ -59,6 +59,13 @@ def prepared(root, modules, binary, command, resources):
                 path.write_bytes(bytes([value]) * 32)
                 path.chmod(0o600)
 
+        if 'task_trust' in modules:
+            from task_trust_materials import prepare
+            material = directory / 'task-trust-ca'
+            existed = material.exists()
+            prepare(directory)
+            resources.append(dict(kind='task-trust-ca', identity=str(material), action='reused' if existed else 'created'))
+
         def database(name, role):
             return dict(host='localhost', port=environment.port(), name=name, user=role,
                         ca_file=str(environment.root / 'ca.crt'),

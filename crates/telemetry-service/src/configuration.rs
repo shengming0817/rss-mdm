@@ -58,7 +58,7 @@ impl Service {
                                     configuration_on(&service, c, &principal, policy, version)
                                         .await?;
                                 service
-                                    .execution
+                                    .signing
                                     .sign_telemetry_on(c, &principal, configuration)
                                     .await
                                     .map_err(signing_error)?;
@@ -119,7 +119,7 @@ impl Service {
                                     configuration_on(&service, c, &principal, policy, version)
                                         .await?;
                                 service
-                                    .execution
+                                    .signing
                                     .sign_telemetry_on(c, &principal, configuration)
                                     .await
                                     .map_err(signing_error)
@@ -387,8 +387,8 @@ async fn directory_on(
     Ok(TelemetryDirectory { assignments })
 }
 
-fn signing_error(error: rss_mdm_execution_service::Error) -> Error {
-    use rss_mdm_execution_service::Error as E;
+fn signing_error(error: rss_mdm_task_trust::Error) -> Error {
+    use rss_mdm_task_trust::Error as E;
     match error {
         E::Forbidden | E::Unauthorized => Error::Denied,
         E::Conflict => Error::Conflict,

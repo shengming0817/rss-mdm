@@ -375,7 +375,7 @@ async fn rewrap_native(
         rss_mdm_registration_service::agent::connections::rewrap(&mut *c, tenant, protector)
             .await
             .map_err(|_| Error::Corrupt)?;
-    rewritten += rss_mdm_execution_service::task_signing::trust::rewrap(&mut *c, tenant, protector)
+    rewritten += rss_mdm_task_trust::trust::rewrap(&mut *c, tenant, protector)
         .await
         .map_err(|_| Error::Corrupt)?;
     rewritten += rss_mdm_apple_channel::rewrap::run(&mut *c, &tenant.to_string(), protector)

@@ -1,45 +1,5 @@
 {
-  "tables": [
-    {
-      "schema": "mdm_task_signing",
-      "table": "heads",
-      "read_write": true,
-      "updates": [
-        "revision"
-      ],
-      "delete_policy": null
-    },
-    {
-      "schema": "mdm_task_signing",
-      "table": "keys",
-      "read_write": true,
-      "updates": [
-        "private_key"
-      ],
-      "delete_policy": null
-    },
-    {
-      "schema": "mdm_task_signing",
-      "table": "versions",
-      "read_write": true,
-      "updates": [],
-      "delete_policy": null
-    },
-    {
-      "schema": "mdm_task_signing",
-      "table": "acknowledgements",
-      "read_write": true,
-      "updates": [],
-      "delete_policy": null
-    },
-    {
-      "schema": "mdm_task_signing",
-      "table": "trust_observations",
-      "read_write": true,
-      "updates": [],
-      "delete_policy": null
-    }
-  ],
+  "tables": [],
   "functions": [
     {
       "name": "mdm_commands.windows_wake_candidates",
@@ -71,6 +31,10 @@
     },
     {
       "name": "mdm_commands.channel_admission",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_commands.pending_task_signatures",
       "search_path": "search_path=pg_catalog"
     }
   ],

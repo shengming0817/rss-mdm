@@ -109,7 +109,14 @@ pub(crate) async fn open(
             &channels,
         )
         .await?;
-        let signer = loaded_signing.map(|loaded| Arc::new(loaded.task));
+        let signing = Arc::new(rss_mdm_task_trust::Signing::new(tenant, loaded_signing)?);
+        let task_trust = Arc::new(rss_mdm_task_trust::Service::new(
+            tenant,
+            signing.clone(),
+            protection.clone(),
+            task_signing_audit.clone(),
+            Arc::new(rss_mdm_execution_service::signature_retirement::PendingSignatures),
+        )?);
         let bootstrap = channels
             .material(
                 crate::channel_status::ChannelName::AgentBootstrap,
@@ -140,7 +147,7 @@ pub(crate) async fn open(
             exports,
             runtime.clone(),
             channels.clone(),
-            signer,
+            signing.clone(),
             bootstrap_urls,
             sessions,
             config
@@ -153,6 +160,8 @@ pub(crate) async fn open(
         )
         .await?;
         Ok(Assembly {
+            signing,
+            task_trust,
             materials,
             channels,
             providers,
@@ -187,7 +196,7 @@ pub(crate) async fn assemble(
     >,
     runtime: Arc<PgRuntime>,
     channels: Arc<crate::channel_status::Channels>,
-    signer: Option<Arc<rss_mdm_execution_service::task_signing::Signer>>,
+    signing: Arc<rss_mdm_task_trust::Signing>,
     bootstrap: Option<std::collections::BTreeMap<String, String>>,
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
@@ -258,7 +267,7 @@ pub(crate) async fn assemble(
         bootstrap,
         enrollment_entries: config.enrollment_entries.clone(),
         content: content.clone(),
-        signing_enabled: signer.is_some(),
+        signing_enabled: signing.loaded_key().is_some(),
         agent_installation: channels.clone(),
     });
     let inputs = Arc::new(rss_mdm_execution_service::Inputs::bind(
@@ -278,7 +287,7 @@ pub(crate) async fn assemble(
             runtime: runtime.clone(),
             tenant,
             inputs: inputs.clone(),
-            signed: signer.is_some(),
+            signed: signing.loaded_key().is_some(),
             content_available: content.is_some(),
         },
     ));
@@ -291,7 +300,7 @@ pub(crate) async fn assemble(
         apple_profiles: apple_store.clone(),
         apple_collections: apple_store.clone(),
         apple_results: apple_store.clone(),
-        signer: signer.clone(),
+        signing: signing.clone(),
         instance: config.identity.instance_id.clone(),
         content: content.clone(),
         command_clock: participant_clock,
@@ -312,7 +321,6 @@ pub(crate) async fn assemble(
             apple_results: apple_store.clone(),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             audit_store,
-            task_signing_audit,
             runtime: runtime.clone(),
             outbox,
             store,
@@ -327,7 +335,7 @@ pub(crate) async fn assemble(
             tenant,
             instance: config.identity.instance_id.clone(),
             content: content.clone(),
-            signer,
+            signing,
         },
     ));
     service.validate_recovery_credentials().await?;
@@ -417,6 +425,8 @@ pub(crate) async fn open_storage(
 
 #[derive(Clone)]
 pub(crate) struct Assembly {
+    pub(crate) signing: Arc<rss_mdm_task_trust::Signing>,
+    pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
     pub(crate) materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,
     pub(crate) channels: Arc<crate::channel_status::Channels>,
     pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,

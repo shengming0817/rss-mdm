@@ -6,7 +6,9 @@ pub mod production;
 pub mod recovery;
 pub(crate) mod scheduled;
 
-pub mod state;
+#[cfg(test)]
+#[path = "../../tests/actions/state_schedule_unit.rs"]
+mod state_schedule_tests;
 pub mod storage;
 
 mod agent_collection;

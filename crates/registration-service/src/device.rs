@@ -309,7 +309,7 @@ impl DeviceService {
 }
 
 /// Resolve an Agent only from the certificate owner's sealed TLS verification result.
-pub(crate) async fn agent_in(
+pub async fn authenticate_agent_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     peer: &rss_mdm_device_trust::agent::VerifiedAgentPeer,

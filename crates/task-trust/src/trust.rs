@@ -114,7 +114,7 @@ async fn save(
 }
 /// First key requires no enrolled Agents; successors are distributed as Prepared, never active.
 #[allow(clippy::too_many_arguments)]
-pub async fn prepare(
+pub(crate) async fn prepare(
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
@@ -192,7 +192,7 @@ pub async fn prepare(
 }
 /// Activation proves every currently enrolled Agent has durably acknowledged the prepared key set.
 #[allow(clippy::too_many_arguments)]
-pub async fn activate(
+pub(crate) async fn activate(
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
@@ -239,9 +239,9 @@ pub async fn activate(
 }
 
 /// The caller authenticates mTLS and settles this acknowledgement in its audited transaction.
-pub async fn acknowledge(
+pub(crate) async fn acknowledge(
     c: &mut PgConnection,
-    p: &crate::device::DevicePrincipal,
+    p: &rss_mdm_registration_service::device::DevicePrincipal,
     input: &Acknowledgement,
 ) -> Result<(), Error> {
     input.validate().map_err(|_| Error::Malformed)?;
@@ -275,9 +275,9 @@ pub async fn acknowledge(
     Ok(())
 }
 /// An Agent that enrolled during rotation also needs the exact key in a durable acknowledgement.
-pub async fn require_issue(
+pub(crate) async fn require_issue(
     c: &mut PgConnection,
-    p: &crate::device::DevicePrincipal,
+    p: &rss_mdm_registration_service::device::DevicePrincipal,
     key_id: &str,
 ) -> Result<(), Error> {
     let trust = current(c, p.tenant()).await?;
@@ -296,7 +296,8 @@ pub async fn require_issue(
     Ok(())
 }
 pub struct Loaded {
-    pub task: super::Signer,
+    pub(crate) tenant: TenantId,
+    pub(crate) task: crate::signing::Signer,
 }
 /// Load an exact published revision only while its signer remains active in the current authority.
 /// Preparing a successor does not invalidate a still-active signer on restart.
@@ -329,7 +330,8 @@ pub async fn load(
         .map(|key| (key.id.clone(), key.public_key.clone()))
         .collect();
     Ok(Loaded {
-        task: super::Signer::from_bytes(private.expose(), &active.id, &keys)
+        tenant,
+        task: crate::signing::Signer::from_bytes(private.expose(), &active.id, &keys)
             .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?,
     })
 }
@@ -402,7 +404,7 @@ pub async fn require_active_key(
 /// Retain immutable public history and protected private material for backup recovery.
 /// Exit the current set only after pending signatures expire and peers know the key is verify-only.
 #[allow(clippy::too_many_arguments)]
-pub async fn retire(
+pub(crate) async fn retire(
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
@@ -410,6 +412,7 @@ pub async fn retire(
     key_id: &str,
     protection: &Protector,
     actor: &str,
+    guard: &dyn crate::RetirementGuard,
 ) -> Result<Trust, Error> {
     if expected < 1 || expected == i64::MAX || operation.is_nil() {
         return Err(Error::Malformed);
@@ -433,8 +436,7 @@ pub async fn retire(
         return Err(Error::Conflict);
     }
     if key.state == KeyState::VerifyOnly {
-        let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_attempts a JOIN mdm_commands.action_runs r ON (r.tenant_id,r.id)=(a.tenant_id,a.run) WHERE a.tenant_id=$1::uuid AND r.deadline>extract(epoch FROM clock_timestamp()) AND (a.offer->>'keyId'=$2 OR a.permit->>'keyId'=$2))")
-            .bind(tenant.to_string()).bind(key_id).fetch_one(&mut *c).await.map_err(db)?;
+        let pending = guard.pending(c, tenant, key_id).await?;
         if pending {
             return Err(Error::Conflict);
         }

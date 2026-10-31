@@ -1,4 +1,4 @@
-//! Only the foundation consumers' legal tenant, subject and connection inputs.
+//! Legal tenant, subject and connection inputs shared by real product consumer proofs.
 use crate::{config, identity, migration};
 use anyhow::Result;
 use rss_identity_core::{

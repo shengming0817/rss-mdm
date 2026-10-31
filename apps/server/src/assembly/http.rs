@@ -190,7 +190,10 @@ pub(crate) fn from_state(
             .as_ref()
             .map(|apple| apple.config.materials.clone()),
         content: state.content_writer.clone(),
-        signing_key: state.execution.loaded_task_signing_key().map(str::to_owned),
+        signing_key: state
+            .task_trust
+            .loaded_task_signing_key()
+            .map(str::to_owned),
         recovery: state.execution.recovery_credentials(),
         apple_store: apple_state.access.clone(),
         apple: apple_state.apple.clone(),
@@ -310,6 +313,7 @@ pub(crate) fn from_state(
             groups: state.groups.clone(),
             compliance: state.compliance.clone(),
             execution: state.execution.clone(),
+            task_trust: state.task_trust.clone(),
             queries: state.queries.clone(),
             policies: state.policies.clone(),
             assets: state.assets.clone(),
@@ -373,6 +377,7 @@ pub(crate) fn from_state(
         // This outer gateway dispatcher validates the actual published Agent origin.
         envelope.host.clear();
         let task_state = Arc::new(crate::agent::TaskState {
+            task_trust: state.task_trust.clone(),
             identity: Arc::new(
                 rss_mdm_authorization_service::session::SessionAuthority::new(
                     state.identity.authority.clone(),

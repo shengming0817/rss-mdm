@@ -1,5 +1,5 @@
 //! Typed read facts. Summary results cannot expose full output or diagnostic streams.
-use crate::actions::state::RunState;
+use rss_mdm_task_state::RunState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;

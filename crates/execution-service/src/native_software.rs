@@ -348,10 +348,10 @@ pub async fn dispatch_authority_on(
     }
     let now: i64 = row.try_get("now").map_err(crate::database::db)?;
     if !crate::agent_install::dispatched_on(c, tenant, *operation).await? {
-        let state: crate::actions::state::RunState =
+        let state: rss_mdm_task_state::RunState =
             serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
                 .map_err(|_| Error::Malformed)?;
-        if state.cancellation != crate::actions::state::Cancellation::None {
+        if state.cancellation != rss_mdm_task_state::Cancellation::None {
             return Ok(false);
         }
         if !row

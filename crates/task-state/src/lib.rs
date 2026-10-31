@@ -1,4 +1,11 @@
-use crate::Error;
+//! Pure task attempt transitions; persistence and business results belong to consumers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum Error {
+    #[error("invalid task state input")]
+    Malformed,
+    #[error("task state transition conflict")]
+    Conflict,
+}
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -226,9 +233,5 @@ impl RunState {
 }
 
 #[cfg(test)]
-#[path = "../../tests/actions/state_unit.rs"]
+#[path = "../tests/state_unit.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "../../tests/actions/state_schedule_unit.rs"]
-mod schedule_tests;

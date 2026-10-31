@@ -1,10 +1,11 @@
 //! Task signing authority, independently configured from artifact storage.
 use crate::{ConfigIssue, Error};
+use crate::{Signing, trust};
 use base64::Engine;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use rss_mdm_agent_wire::runtime::{SignedTask, TaskPayload};
 use std::collections::BTreeMap;
-pub struct Signer {
+pub(crate) struct Signer {
     key_id: String,
     key: Ed25519KeyPair,
 }
@@ -72,10 +73,6 @@ impl Signer {
         })
     }
     pub fn sign(&self, payload: TaskPayload) -> Result<SignedTask, Error> {
-        if let TaskPayload::Software(task) = &payload {
-            rss_mdm_software_service::preparation::execution::validate_task_admission(task)
-                .map_err(|_| Error::Forbidden)?;
-        }
         let bytes = payload
             .signing_bytes(&self.key_id)
             .map_err(|_| Error::Malformed)?;
@@ -88,22 +85,17 @@ impl Signer {
     }
 }
 
-pub mod service;
-pub mod trust;
-
-pub mod observations;
-
-impl crate::ExecutionService {
+impl Signing {
     /// Reuse the active task authority and durable device ACK for periodic collection.
     pub async fn sign_telemetry_on(
         &self,
         c: &mut sqlx::PgConnection,
-        p: &crate::device::DevicePrincipal,
+        p: &rss_mdm_registration_service::device::DevicePrincipal,
         configuration: rss_mdm_agent_wire::runtime::TelemetryConfiguration,
     ) -> Result<rss_mdm_agent_wire::runtime::SignedTelemetryConfiguration, Error> {
-        if p.tenant() != self.transactions.tenant
+        if p.tenant() != self.tenant
             || p.channel() != rss_mdm_inventory::Channel::Agent
-            || p.purpose() != crate::device::Purpose::Primary
+            || p.purpose() != rss_mdm_registration_service::device::Purpose::Primary
             || configuration.tenant_id.to_string() != p.tenant().to_string()
             || configuration.device_id != p.device()
             || configuration.registration_id != p.registration()
@@ -111,27 +103,24 @@ impl crate::ExecutionService {
         {
             return Err(Error::Forbidden);
         }
-        let signer = self
-            .transactions
-            .signer
-            .as_ref()
-            .ok_or(Error::Unsupported)?;
+        let signer = self.signer.as_ref().ok_or(Error::Unsupported)?;
+        self.revalidate(c, p).await?;
         trust::require_issue(c, p, signer.key_id()).await?;
         signer.sign_telemetry(configuration)
     }
 }
 
-impl crate::ExecutionService {
+impl Signing {
     /// Authenticate original periodic material using the existing active/verify-only trust set.
     pub async fn verify_telemetry_on(
         &self,
         c: &mut sqlx::PgConnection,
-        p: &crate::device::DevicePrincipal,
+        p: &rss_mdm_registration_service::device::DevicePrincipal,
         signed: &rss_mdm_agent_wire::runtime::SignedTelemetryConfiguration,
     ) -> Result<(), Error> {
         use rss_mdm_agent_wire::task_trust::KeyState;
         let configuration = &signed.configuration;
-        if p.tenant() != self.transactions.tenant
+        if p.tenant() != self.tenant
             || configuration.tenant_id.to_string() != p.tenant().to_string()
             || configuration.device_id != p.device()
             || configuration.registration_id != p.registration()
@@ -139,7 +128,8 @@ impl crate::ExecutionService {
         {
             return Err(Error::Forbidden);
         }
-        let trust = trust::current(c, self.transactions.tenant).await?;
+        self.revalidate(c, p).await?;
+        let trust = trust::current(c, self.tenant).await?;
         let key = trust
             .keys
             .iter()

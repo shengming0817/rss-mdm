@@ -12,7 +12,9 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 `policy` 持有定义、状态、CAS 与执行语义版本；`policy-service` 持有管理、发布、重跑、分配、事件批次和所属 worker，`policy-postgres` 持有对应存储、锁及权限准入。Inventory 编排 Group，`scope-service` 独立拥有 Scope，资源目录由 `resource-service` 持有。Execution 独立拥有设备来源变化扫描和推进。
 
-独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布消费 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入、绑定 Policy runtime 的 `PolicyEvents` 定向受理并查询原操作事实；它与绑定 Command runtime 的 `ExecutionService` 共享不可变材料，各自持有事务资源。普通 Policy 管理及分配使用 Policy runtime。Policy 发起并结算事务，Execution 借入事务参与；成员决定、执行意图、业务审计和工作进度在同一个 claim 保护事务内提交。批次通过 Execution 查询执行状态，普通查询消费独立 `Queries`。
+独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作和交付恢复。Policy 发布消费 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入、绑定 Policy runtime 的 `PolicyEvents` 定向受理并查询原操作事实；它与绑定 Command runtime 的 `ExecutionService` 共享不可变材料，各自持有事务资源。普通 Policy 管理及分配使用 Policy runtime。Policy 发起并结算事务，Execution 借入事务参与；成员决定、执行意图、业务审计和工作进度在同一个 claim 保护事务内提交。批次通过 Execution 查询执行状态，普通查询消费独立 `Queries`。
+
+`task-state` 单源持有 Run/Attempt 的纯转换，业务 owner 持有实例与结果。`task-trust` 持有受保护签名密钥、信任版本、ACK、观察和操作回执；签发在消费者原事务复验 Registration 与安装资格。Execution 持有未过期签名引用查询，通过退役窄接口参与同一事务，不拥有信任状态。Telemetry 与信任 HTTP 入口直接消费 task-trust。
 
 Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签和目录解析；完整 `Action` 根据显式 channel 决定 AssignmentBehavior，软件候选 SQL 同时限定 action kind 和 channel。显式重跑只支持已有消费者的脚本和 Enrollment。
 

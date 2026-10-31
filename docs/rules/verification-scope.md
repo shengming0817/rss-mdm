@@ -17,7 +17,7 @@ T1 提供模型与边界证据；T2 使用真实依赖提供持久化、权限�
 
 ## 执行与证据
 
-旧 T2 业务测试及专属准备已整体退出。当前基础 owner 的真实消费证明由 `hack/t2_registry.py` 随实际消费者登记，函数名通过 nextest 发现；不恢复旧数量名册、准备测试或兼容入口。`make t2 MODULE=affected/all/<模块>` 执行直接受影响、全部活跃登记或指定模块；`make ci-full` 在现有租约内组合快速检查及活跃 T2。`all` 不表示其它领域已重建；具体范围和缺口见[本地开发](../guides/local-development.md)。显式选择零发现、漏跑、缺依赖、准备/业务/清理失败不能通过；合法 affected 空选择单独记录 skipped，不作为业务成功证明。
+旧 T2 业务测试及专属准备已整体退出。当前 owner 的真实消费证明由 `hack/t2_registry.py` 随实际消费者登记，函数名通过 nextest 发现；不恢复旧数量名册、准备测试或兼容入口。`make t2 MODULE=affected/all/<模块>` 执行直接受影响、全部活跃登记或指定模块；`make ci-full` 在现有租约内组合快速检查及活跃 T2。`all` 不表示其它领域已重建；具体范围和缺口见[本地开发](../guides/local-development.md)。显式选择零发现、漏跑、缺依赖、准备/业务/清理失败不能通过；合法 affected 空选择单独记录 skipped，不作为业务成功证明。
 
 `make ci CI_BASE=origin/develop` 只执行受影响的快速检查，不启动 PostgreSQL、网关或 IdP。快速检查结果、T2 建议选择与实际执行分别记录；`make ci-plan` 只预览，不覆盖正式结果。产品仓证据不由父仓 CI 代替，不新增远端 CI。
 

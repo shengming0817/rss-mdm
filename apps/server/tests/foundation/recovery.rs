@@ -1,6 +1,6 @@
 //! Recovery reservation/asset incarnation only; no full backup/restore claim.
 use super::{advance_asset_history, reserve_restore};
-use crate::foundation_t2::support::Inputs;
+use crate::authority_t2_support::Inputs;
 use anyhow::Result;
 use sqlx::Connection;
 use uuid::Uuid;

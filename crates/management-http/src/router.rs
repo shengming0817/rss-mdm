@@ -40,6 +40,7 @@ pub struct Services {
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub policies: Arc<rss_mdm_policy_service::management::Policies>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
@@ -238,6 +239,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             )
             .bind_with(context, |(s, _)| {
                 Arc::new(crate::execution::http::HttpState {
+                    task_trust: s.task_trust.clone(),
                     execution: s.execution.clone(),
                     windows: s.windows,
                     apple: s.apple,

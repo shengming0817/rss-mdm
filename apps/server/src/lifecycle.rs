@@ -314,7 +314,7 @@ let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
  audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),inventory_tenant,Arc::new(rss_mdm_device_service::planning::PlanningObjects))),objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects),
 };
                                 let service = config
-                                    .open(inventory_tenant, telemetry_owner.runtime, dependencies, execution.service.clone())
+                                    .open(inventory_tenant, telemetry_owner.runtime, dependencies, execution.signing.clone())
                                     .await
                                     .map_err(|e| ProcessError::at("startup.telemetry", e))?;
                                 startup.stage_resource(DynManagedResource::new_box(

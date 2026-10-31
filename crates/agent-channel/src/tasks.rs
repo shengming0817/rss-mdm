@@ -309,6 +309,7 @@ pub struct TaskState {
     pub access: Arc<crate::Store>,
     pub enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub identity: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
 }
@@ -502,7 +503,7 @@ async fn task_trust(
     crate::bounded(async {
         let p =
             authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
-        app.execution
+        app.task_trust
             .agent_task_trust(&p, &audit)
             .await
             .map(Json)
@@ -521,7 +522,7 @@ async fn acknowledge_task_trust(
         let input = body(input)?;
         let p =
             authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
-        app.execution
+        app.task_trust
             .acknowledge_task_trust(&p, &audit, &input)
             .await
             .map_err(task_error)?;
@@ -541,7 +542,7 @@ async fn observe_task_trust(
         let input = body(input)?;
         let p =
             authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
-        app.execution
+        app.task_trust
             .observe_task_trust(&p, &audit, &input)
             .await
             .map_err(task_error)?;

@@ -113,7 +113,7 @@ pub async fn retire_in(
         for row in rows {
             let id: Uuid = row.try_get("id").map_err(db)?;
             after = id;
-            let mut state: crate::actions::state::RunState =
+            let mut state: rss_mdm_task_state::RunState =
                 serde_json::from_value(row.try_get("state").map_err(db)?)
                     .map_err(|_| Error::Conflict)?;
             let previous = state.clone();

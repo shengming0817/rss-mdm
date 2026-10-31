@@ -12,7 +12,7 @@ pub(crate) async fn open(
     database: &crate::config::Database,
     tenant: rss_request_context::TenantId,
     protection: &rss_mdm_native_protection::Protector,
-) -> Result<rss_mdm_execution_service::task_signing::trust::Loaded, Error> {
+) -> Result<rss_mdm_task_trust::trust::Loaded, Error> {
     let mut c = sqlx::PgConnection::connect_with(&database.options()?)
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
@@ -31,13 +31,8 @@ pub(crate) async fn open(
     .execute(&mut *tx)
     .await
     .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-    let loaded = rss_mdm_execution_service::task_signing::trust::load(
-        &mut tx,
-        tenant,
-        config.revision,
-        protection,
-    )
-    .await;
+    let loaded =
+        rss_mdm_task_trust::trust::load(&mut tx, tenant, config.revision, protection).await;
     tx.rollback()
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
@@ -54,7 +49,7 @@ pub(crate) async fn prepare(
     tenant: rss_request_context::TenantId,
     protection: &rss_mdm_native_protection::Protector,
     channels: &crate::channel_status::Channels,
-) -> Result<Option<rss_mdm_execution_service::task_signing::trust::Loaded>, Error> {
+) -> Result<Option<rss_mdm_task_trust::trust::Loaded>, Error> {
     use crate::channel_status::{ChannelName, ChannelState, Reason};
     let Some(config) = config else {
         return Ok(None);
@@ -71,9 +66,7 @@ pub(crate) async fn prepare(
             )?;
             Ok(Some(value))
         }
-        Err(Error::Execution(
-            rss_mdm_execution_service::Error::Conflict | rss_mdm_execution_service::Error::NotFound,
-        )) => {
+        Err(Error::Conflict | Error::NotFound) => {
             channels.set(
                 ChannelName::Signing,
                 ChannelState::Waiting,

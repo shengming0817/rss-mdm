@@ -1,5 +1,5 @@
 //! Real host composition and owned resource shutdown, with no enrollment journey.
-use super::support::*;
+use crate::authority_t2_support::*;
 use anyhow::{Result, bail};
 use rss_request_context::TenantId;
 use serde_json::{Value, json};

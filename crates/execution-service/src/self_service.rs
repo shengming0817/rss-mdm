@@ -834,8 +834,8 @@ fn parameter_sources(
         })
         .collect()
 }
-fn public_state(state: &crate::actions::state::RunState) -> wire::TaskRunState {
-    use crate::actions::state::{Cancellation, Delivery, Execution};
+fn public_state(state: &rss_mdm_task_state::RunState) -> wire::TaskRunState {
+    use rss_mdm_task_state::{Cancellation, Delivery, Execution};
     wire::TaskRunState {
         delivery: match state.delivery {
             Delivery::Queued => wire::TaskDelivery::Queued,

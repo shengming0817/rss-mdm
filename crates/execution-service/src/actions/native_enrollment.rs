@@ -1,9 +1,5 @@
 //! Native handoff is available only to the authenticated holder of a started enrollment task.
-use super::{
-    agent,
-    state::{Cancellation, Execution},
-    storage as db,
-};
+use super::{agent, storage as db};
 use crate::{device::DevicePrincipal, *};
 use rss_mdm_agent_wire::enroll::{NativeEnrollmentReceipt, NativeEnrollmentRequest};
 use rss_mdm_inventory::ReportSource;
@@ -11,6 +7,7 @@ use rss_mdm_registration_service::enrollment::{
     self,
     native::{AgentPolicyAuthority, Coordinates},
 };
+use rss_mdm_task_state::{Cancellation, Execution};
 use sqlx::{PgConnection, Row};
 impl ExecutionService {
     pub async fn native_enrollment(

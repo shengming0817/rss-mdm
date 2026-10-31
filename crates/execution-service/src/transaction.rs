@@ -363,3 +363,9 @@ pub(crate) fn input_prefix(
     }
     Ok(count)
 }
+
+impl From<rss_mdm_task_state::Error> for Fault {
+    fn from(error: rss_mdm_task_state::Error) -> Self {
+        Self::Request(error.into())
+    }
+}
