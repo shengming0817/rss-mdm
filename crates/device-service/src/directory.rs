@@ -244,8 +244,7 @@ impl Associations {
         {
             return Err(Error::CursorInvalidated);
         }
-        #[cfg(feature = "integration")]
-        self.read_checkpoint().await?;
+
         let subject = personnel.revalidate(proof).await?;
         self.confirm_scope(proof, &access.binding, subject.as_ref(), &budget)
             .await?;

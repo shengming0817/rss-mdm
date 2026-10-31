@@ -59,8 +59,7 @@ pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub mod authorization_decision;
 mod protocol;
 pub mod recovery;
-#[cfg(feature = "integration")]
-pub mod recovery_gate;
+
 mod service;
 pub mod storage;
 pub use lifecycle::Resource;
@@ -83,10 +82,6 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
     rss_reconcile::Scope::new(tenant, DOMAIN).expect("fixed scope")
 }
 
-#[cfg(feature = "integration")]
-type ManagedAdmissionGate = (tokio::sync::oneshot::Sender<i32>, Arc<tokio::sync::Notify>);
-#[cfg(feature = "integration")]
-type DiagnosticAssociationGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 pub struct ExecutionService {
     pub(crate) worker_concurrency: usize,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
@@ -96,17 +91,7 @@ pub struct ExecutionService {
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
     pub(crate) readiness: health::Readiness,
-    #[cfg(feature = "integration")]
-    pub(crate) diagnostic_commit_fault:
-        Mutex<Option<rss_transactional_messaging_postgres::PgTransactionFault>>,
-    #[cfg(feature = "integration")]
-    pub(crate) diagnostic_association_gate: Mutex<Option<DiagnosticAssociationGate>>,
-    #[cfg(feature = "integration")]
-    pub(crate) managed_admission_gate: Mutex<Option<ManagedAdmissionGate>>,
-    #[cfg(feature = "integration")]
-    pub(crate) recovery_gate: Mutex<Option<recovery_gate::Gate>>,
-    #[cfg(feature = "integration")]
-    windows_commit_gate: Mutex<Option<protocol::CommitGate>>,
+
     pub(crate) transactions: transactions::ExecutionTransactions,
 }
 pub struct Dependencies {
@@ -147,8 +132,7 @@ impl ExecutionService {
         Self {
             transactions: transactions::ExecutionTransactions {
                 recovery_credentials: dependencies.recovery_credentials,
-                #[cfg(feature = "integration")]
-                installation_authorization_floor: Default::default(),
+
                 inputs: dependencies.inputs,
                 source: dependencies.source,
                 protection: dependencies.protection,
@@ -172,16 +156,7 @@ impl ExecutionService {
                 &dependencies.cursor_key,
             )),
             readiness: Default::default(),
-            #[cfg(feature = "integration")]
-            diagnostic_commit_fault: Mutex::new(None),
-            #[cfg(feature = "integration")]
-            windows_commit_gate: Mutex::new(None),
-            #[cfg(feature = "integration")]
-            diagnostic_association_gate: Mutex::new(None),
-            #[cfg(feature = "integration")]
-            managed_admission_gate: Mutex::new(None),
-            #[cfg(feature = "integration")]
-            recovery_gate: Mutex::new(None),
+
             sessions: dependencies.sessions,
             apple_push: dependencies.apple_push,
             task_signing_audit: dependencies.task_signing_audit,
@@ -198,59 +173,6 @@ impl ExecutionService {
 }
 
 pub use transaction::*;
-#[cfg(feature = "integration")]
-impl ExecutionService {
-    /// Pause native admission after Registration has verified and fenced its source.
-    pub fn pause_managed_admission(
-        &self,
-        ready: tokio::sync::oneshot::Sender<i32>,
-        resume: Arc<tokio::sync::Notify>,
-    ) {
-        *self
-            .managed_admission_gate
-            .lock()
-            .expect("managed admission gate") = Some((ready, resume));
-    }
-    /// Advance this service's installation authorization reads without editing frozen inputs.
-    pub fn advance_installation_authorization_to(
-        &self,
-        seconds: i64,
-    ) -> std::result::Result<(), Error> {
-        if seconds <= 0 {
-            return Err(Error::Malformed);
-        }
-        self.transactions
-            .installation_authorization_floor
-            .fetch_max(seconds, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
-    }
-    /// Pause after real file work and before the fenced association transaction.
-    pub fn pause_diagnostic_association_after_file_work(
-        &self,
-        ready: Arc<tokio::sync::Notify>,
-        resume: Arc<tokio::sync::Notify>,
-    ) {
-        *self
-            .diagnostic_association_gate
-            .lock()
-            .expect("diagnostic association gate") = Some((ready, resume));
-    }
-    /// Inject only the association transaction after real diagnostic content publication.
-    pub fn inject_diagnostic_association_fault(
-        &self,
-        fault: rss_transactional_messaging_postgres::PgTransactionFault,
-    ) {
-        *self
-            .diagnostic_commit_fault
-            .lock()
-            .expect("diagnostic fault") = Some(fault);
-    }
-    pub fn inject_fault(&self, fault: rss_transactional_messaging_postgres::PgTransactionFault) {
-        self.transactions
-            .runtime
-            .inject_next_transaction_fault(fault);
-    }
-}
 
 use rss_mdm_audit_integration::RequestAudit;
 
@@ -437,14 +359,6 @@ impl crate::transactions::ExecutionTransactions {
             .ok_or_else(|| Error::Unavailable(Failure::CommandInvariant).into())
     }
     pub(crate) fn installation_authorization_time(&self, database_now: i64) -> i64 {
-        #[cfg(feature = "integration")]
-        {
-            database_now.max(
-                self.installation_authorization_floor
-                    .load(std::sync::atomic::Ordering::SeqCst),
-            )
-        }
-        #[cfg(not(feature = "integration"))]
         database_now
     }
 }

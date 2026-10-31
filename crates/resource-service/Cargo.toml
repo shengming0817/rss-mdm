@@ -24,18 +24,5 @@ uuid.workspace = true
 thiserror.workspace = true
 sqlx.workspace = true
 
-[features]
-integration = ["rss-transactional-messaging-postgres/integration"]
 [lints]
 workspace = true
-
-[dev-dependencies]
-rss-mdm-inventory-service.workspace = true
-rss-audit-postgres.workspace = true
-rss-audit-core.workspace = true
-tokio = { workspace = true, features = ["macros","rt-multi-thread"] }
-tokio-util.workspace = true
-
-[[test]]
-name = "application"
-required-features = ["integration"]

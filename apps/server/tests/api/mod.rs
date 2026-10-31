@@ -1,6 +1,3 @@
-pub(crate) mod identity_context;
-pub(crate) mod runtime_diagnostics;
-
 #[test]
 fn http_contract_authentication_survives_final_listener_assembly() {
     let document = crate::assembly::http::http_contract_document().unwrap();

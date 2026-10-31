@@ -411,8 +411,7 @@ let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
                         let mut app = crate::assembly::from_compiled(
                             compiled,
                             crate::assembly::AssemblyDependencies {
-                                #[cfg(test)]
-                                mount_channels: true,
+
                                 telemetry: telemetry.clone(),
                                 certificate_archive: archive.clone(),
                                 timeline: timeline.clone(),

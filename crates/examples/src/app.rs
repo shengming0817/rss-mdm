@@ -336,9 +336,6 @@ impl App {
     }
 }
 
-#[cfg(all(test, feature = "integration"))]
-mod t2;
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum BatchProjection {

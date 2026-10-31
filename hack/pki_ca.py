@@ -1,31 +1,26 @@
 """Case-owned Compose device CA provider; only real owners select listening addresses.
 
 ref: smallstep/certificates v0.30.2 examples/docker/docker-compose.yml;
-smallstep/cli v0.30.2 command/ca/provisioner/webhook/update.go.
+smallstep/certificates v0.30.2 authority/config/config.go.
 """
-from contextlib import contextmanager
-import ipaddress
 import json
 from pathlib import Path
 import re
-import secrets
 import ssl
 import time
 import urllib.request
 from urllib.error import URLError
 from urllib.parse import urlsplit
 
-from fixture_tools import binary
-from t2_environment import PKI_CA, Environment, ROOT, private, run
-from t2_processes import check_cancelled, cleanup, private_value, record_output, subprocess
-
+from dev_environment import PKI_CA, Environment, ROOT, private, run
+import subprocess
 
 class Provider:
     def __init__(self, root, case, *, compose_file=None, providers=None, internal_host=None, owner_root=None):
         if not re.fullmatch(r'[0-9a-f]{20}', case):
             raise ValueError('invalid PKI fixture case identity')
         self.root = Path(root).resolve()
-        self.owner = Environment(owner_root or ROOT, group='t2-pki-'+case, compose_file=compose_file, providers=providers)
+        self.owner = Environment(owner_root or ROOT, group='candidate-pki-'+case, compose_file=compose_file, providers=providers)
         self.internal_host = internal_host or 'ca-'+case
         self.owner.extra = {'MDM_PKI_ROOT':str(self.root), 'MDM_PKI_INTERNAL_HOST':self.internal_host, 'MDM_NETWORK_NAME':self.owner.project+'_default'}
         self.container = None
@@ -60,38 +55,6 @@ class Provider:
         if self.compose('ps','--all','--quiet','step-ca',timeout=10):
             raise RuntimeError('CA writer isolation was not confirmed')
         self.container=None
-
-    def promote_from(self, previous, origin):
-        """Cold standby preserves both the database path and the externally frozen CA origin."""
-        if self.root != previous.root or self.owner.project == previous.owner.project:
-            raise RuntimeError('cold standby must have a distinct owner and the same CA storage identity')
-        parsed=urlsplit(origin)
-        if parsed.scheme!='https' or parsed.hostname!='localhost' or not parsed.port:
-            raise RuntimeError('invalid stable CA fixture origin')
-        if self.owner.compose_file != previous.owner.compose_file or self.owner.providers != previous.owner.providers:
-            raise RuntimeError('CA failover changed fixed deployment inputs')
-        self.internal_host = previous.internal_host
-        self.owner.extra['MDM_PKI_INTERNAL_HOST'] = self.internal_host
-        previous.fence()
-        self.owner.prepare_inputs(certificates=False)
-        self.owner.extra['MDM_PKI_PUBLISH']=f'127.0.0.1:{parsed.port}:{PKI_CA["port"]}'
-        try:
-            actual=self.start()
-            if actual!=origin:raise RuntimeError('CA failover changed frozen origin')
-            config=json.loads((self.root/'step/config/ca.json').read_text())
-            self.wait(actual,'/health',Path(config['root'][0]))
-            return actual
-        except BaseException as primary:
-            with cleanup():
-                try:
-                    self.logs()
-                except BaseException as diagnostic:
-                    primary.add_note('standby diagnostics failed: '+type(diagnostic).__name__)
-                try:
-                    self.reset()
-                except BaseException as recovery:
-                    primary.add_note('standby cleanup failed: '+type(recovery).__name__)
-            raise
 
     def backup(self, destination):
         """A stopped, isolated CA snapshot; MDM/Audit backup coordination stays with deployment."""
@@ -147,7 +110,7 @@ class Provider:
         return origin
 
     def check(self):
-        check_cancelled()
+
         info = json.loads(run(['docker','inspect',self.container], capture_output=True, timeout=10).stdout)[0]
         if not info['State']['Running']:
             raise RuntimeError('fixed step-ca exited')
@@ -173,42 +136,5 @@ class Provider:
                 raise RuntimeError('fixed step-ca TLS readiness deadline')
             time.sleep(.1)
 
-    def webhook_listen(self):
-        system = run(['docker','info','--format','{{.OperatingSystem}}'],capture_output=True,timeout=15).stdout.strip()
-        if 'Docker Desktop' in system:
-            return '127.0.0.1:0'
-        # A native engine's private bridge gateway is a host interface, not container loopback.
-        network = self.owner.project+'_default'
-        info = json.loads(run(['docker','network','inspect',network],capture_output=True,timeout=15).stdout)[0]
-        gateways = [entry['Gateway'] for entry in info['IPAM']['Config'] if entry.get('Gateway') and ipaddress.ip_address(entry['Gateway']).version == 4]
-        if len(gateways) != 1:
-            raise RuntimeError('PKI fixture requires one private IPv4 bridge gateway')
-        gateway = gateways[0]
-        self.owner.extra['MDM_PKI_HOST_ADDRESS'] = gateway
-        return gateway+':0'
-
     def logs(self):
-        webhook_log = self.root/'step-webhooks.log'
-        if webhook_log.exists():
-            record_output('step webhook CLI', webhook_log.read_text(errors='replace'))
-        record_output('step-ca', self.compose('logs','--no-color','step-ca',timeout=15))
-
-
-def recover():
-    """Recover only this leased worktree's registered device CA projects, even without local files."""
-    prefix = Environment().identity+'-t2-pki-'
-    projects = set()
-    for listing in (['ps','-a'], ['network','ls']):
-        values = run(['docker',*listing,'--filter','label=rss.mdm.worktree='+Environment().identity,
-                      '--format','{{.Label "com.docker.compose.project"}}'],capture_output=True,timeout=30).stdout.splitlines()
-        projects.update(value for value in values if value.startswith(prefix))
-    base = ROOT/'artifacts/dev-environment'
-    if base.exists():
-        projects.update(Environment(group=p.name).project for p in base.glob('t2-pki-*'))
-    for project in sorted(projects):
-        case = project.removeprefix(prefix)
-        if not re.fullmatch(r'[0-9a-f]{20}', case):
-            raise RuntimeError('invalid PKI recovery owner')
-        Environment(group='t2-pki-'+case).reset()
-
-
+        return self.compose('logs', '--no-color', 'step-ca', timeout=15)

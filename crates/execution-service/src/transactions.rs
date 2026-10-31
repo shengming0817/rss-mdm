@@ -35,8 +35,6 @@ pub(crate) struct ExecutionTransactions {
     pub(crate) tenant: TenantId,
     pub(crate) instance: String,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
-    #[cfg(feature = "integration")]
-    pub(crate) installation_authorization_floor: std::sync::atomic::AtomicI64,
 }
 impl ExecutionTransactions {
     pub(crate) async fn bind(
@@ -54,10 +52,7 @@ impl ExecutionTransactions {
             rss_device_command_postgres::CommandClock::Postgres => {
                 rss_device_command_postgres::CommandClock::Postgres
             }
-            #[cfg(feature = "integration")]
-            rss_device_command_postgres::CommandClock::Controlled(clock) => {
-                rss_device_command_postgres::CommandClock::Controlled(clock.clone())
-            }
+
             _ => return Err(Error::Unavailable(Failure::CommandInvariant)),
         };
         let audit = audit_store.clone();
@@ -106,8 +101,6 @@ impl ExecutionTransactions {
             signer: materials.signer.clone(),
             instance: materials.instance.clone(),
             content: materials.content.clone(),
-            #[cfg(feature = "integration")]
-            installation_authorization_floor: Default::default(),
         })
     }
 }

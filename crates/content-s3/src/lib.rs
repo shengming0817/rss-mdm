@@ -15,6 +15,3 @@ pub use body::{ByteStreamInput, ByteStreamOutput};
 mod store;
 pub use store::Store;
 mod multipart;
-#[cfg(test)]
-#[path = "../tests/s3.rs"]
-mod s3_tests;

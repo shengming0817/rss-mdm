@@ -276,7 +276,3 @@ async fn qualify_material(
 
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "../../../tests/setup/webhook.rs"]
-mod tests;

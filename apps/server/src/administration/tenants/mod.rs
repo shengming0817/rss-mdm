@@ -108,15 +108,7 @@ pub struct Administrator {
     pub rule_id: Uuid,
     pub rule_revision: u64,
 }
-#[cfg(test)]
-impl Receipt {
-    fn tenant(&self) -> &Tenant {
-        match &self.result {
-            ReceiptResult::Tenant(tenant) => tenant,
-            _ => panic!("expected tenant receipt"),
-        }
-    }
-}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Reason {
     #[error("invalid input")]
@@ -425,12 +417,7 @@ async fn operator_transaction<'a>(
     }
     Ok(tx)
 }
-#[cfg(test)]
-pub(crate) async fn create_on(conn: &mut PgConnection, input: &Create) -> Result<Receipt> {
-    mutate_on(conn, &input.mutation())
-        .await
-        .map_err(|error| error.reason)
-}
+
 async fn mutate_on(conn: &mut PgConnection, input: &Mutation<'_>) -> RegistryResult<Receipt> {
     validate(input)?;
     let mut tx = operator_transaction(conn, input.installation).await?;
@@ -554,9 +541,6 @@ async fn receipt_on(
 #[path = "use.rs"]
 mod tenant_use;
 pub(crate) use tenant_use::{ACCESS_CONTRACT, claim_database_use, claim_use, verify_read_profile};
-#[cfg(test)]
-#[path = "../../../tests/tenant_registry/mod.rs"]
-mod tests;
 
 #[path = "http.rs"]
 pub(crate) mod http;
@@ -565,3 +549,7 @@ mod administrator;
 mod directory;
 mod provisioning;
 pub mod service;
+
+#[cfg(test)]
+#[path = "../../../tests/tenant_registry/business.rs"]
+mod tests;

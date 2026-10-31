@@ -185,7 +185,6 @@ impl ExecutionService {
                 }
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
 
-
                 return Ok(response);}
             let requires_start_authority = matches!(input.event(), wire::TaskEvent::Start | wire::TaskEvent::Received) || run.state.started_at.is_none();
             let allowed = if requires_start_authority { plan.authorized_run_in(&service.transactions,tx,&run,now).await? } else { plan.completion_authorized_in(&service.transactions,tx,&run.target,now).await? };

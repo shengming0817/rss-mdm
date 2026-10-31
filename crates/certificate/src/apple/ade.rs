@@ -147,10 +147,7 @@ impl MachineVerifier {
             include_bytes!("../../fixtures/AppleRootCA-G3.cer"),
         ])
     }
-    #[cfg(feature = "integration")]
-    pub fn fixture(root: &[u8]) -> Result<Self, Error> {
-        Self::from_roots(&[root])
-    }
+
     fn from_roots(roots: &[&[u8]]) -> Result<Self, Error> {
         if roots.is_empty() || roots.len() > 4 {
             return Err(Error::Malformed);

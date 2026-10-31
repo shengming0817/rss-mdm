@@ -281,26 +281,6 @@ fn bounded_delay(delay: std::time::Duration) -> std::time::Duration {
     )
 }
 
-#[cfg(feature = "integration")]
-impl ExecutionService {
-    pub async fn recover_scheduled_fixture(
-        &self,
-        version: Uuid,
-        registration: Uuid,
-        generation: i64,
-    ) -> std::result::Result<(), Error> {
-        self.recover_entity_fixture(
-            Work {
-                version,
-                registration,
-                generation,
-            }
-            .entity(),
-        )
-        .await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

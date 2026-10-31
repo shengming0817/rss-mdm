@@ -34,8 +34,6 @@ impl Store {
     }
 }
 pub(crate) fn db(error: sqlx::Error) -> Error {
-    #[cfg(feature = "integration")]
-    eprintln!("inventory database: {error:?}");
     let _ = error;
     Error::Unavailable(Failure::Database)
 }

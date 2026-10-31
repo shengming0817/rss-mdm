@@ -10,9 +10,9 @@ make t2
 make ci-plan CI_BASE=origin/develop
 ```
 
-`make ci` 只执行快速检查并报告建议 T2。`make t2` 默认按影响范围选择，显式 `MODULE=planning.http` 运行专项，`MODULE=all` 运行全部；非法模块名及旧 SUITE 参数立即失败。选中的模块按需启动真实依赖，缺少 Docker 或必要工具必须失败。入口直接检查当前工作区，无需预先提交源码。
+`make ci` 运行当前影响范围内的快速检查；T2 尚未重建。`make t2`（含 `MODULE=affected/all`）仅记录 `skipped / not-built` 并非零退出，不启动依赖；`make ci-full` 因 T2 缺口不能通过组合验证。入口直接检查当前工作区，无需预先提交源码。
 
-构建需要 libxml2 开发头文件、pkg-config 和 libclang；Linux 使用 `libxml2-dev clang pkg-config`，macOS 使用 `brew install libxml2 pkg-config llvm`。WinDC 的独立 XMLDSIG 集成测试还需要 `xmlsec1` 命令（macOS：`brew install libxmlsec1`；Linux：`apt-get install xmlsec1`）。WSTEP 证书签名验证使用 libxml2 的原始 DOM 规范化，运行镜像需提供 libxml2；[Dockerfile](../../deployment/Dockerfile) 持有镜像依赖。
+构建需要 libxml2 开发头文件、pkg-config 和 libclang；Linux 使用 `libxml2-dev clang pkg-config`，macOS 使用 `brew install libxml2 pkg-config llvm`。WSTEP 证书签名验证使用 libxml2 的原始 DOM 规范化，运行镜像需提供 libxml2；[Dockerfile](../../deployment/Dockerfile) 持有镜像依赖。
 
 ## 后台运行预算
 
@@ -26,7 +26,7 @@ make ci-plan CI_BASE=origin/develop
 
 ## 构建槽位与缓存
 
-Make 的 build/check/test、CI 和定向 T2 入口由 [启动器](../../hack/build_run.py) 管理：默认四个槽，
+Make 的 build/check/test、CI 和 T2 状态入口由 [启动器](../../hack/build_run.py) 管理：默认四个槽，
 每次完整命令独占 worktree 和 target，子进程继承租约。worktree 身份由系统 Git 解析，
 从子目录启动仍锁定同一 checkout；子命令保留原启动目录。同 worktree 优先复用空闲槽；槽换属时清理旧产物。
 槽满、分配器忙、worktree 或目标目录已占用时立即失败，待原运行退出后重试。槽数不限制每个 Cargo 的编译线程数。
@@ -102,7 +102,7 @@ cargo run --locked -p rss-mdm-examples -- inspect snapshot-1
 
 产品运行和初始化使用 [安装指南](../deployment/installation.md)，不以示例 CLI 代替生产入口。
 
-正式部署、完整初始化和开始产品 T3 使用[正式 Compose 入口](../deployment/installation.md#全新实例安装)。以下 worktree 环境含开发 fixture，仅用于开发/T2，不替代真实安装和租户开通。
+正式部署、完整初始化和开始产品 T3 使用[正式 Compose 入口](../deployment/installation.md#全新实例安装)。以下 worktree 环境含开发 fixture，仅用于开发，不替代真实安装和租户开通。
 
 ## Worktree 开发环境
 
@@ -114,14 +114,9 @@ make dev ACTION=init
 make dev ACTION=status
 make dev ACTION=stop
 make dev ACTION=reset
-make t2 MODULE=planning.http
-make t2 MODULE=affected CI_BASE=origin/develop
-make t2 MODULE=all
-make t2 MODULE=content.http LIST=1
-make t2 MODULE=content.http CASE='<LIST 输出的完整测试 ID>'
 ```
 
-默认管理 `development` 环境；T2 的普通 PG 使用同一 worktree 的 `t2` 环境，实例故障使用独立的 `t2-fault` 环境，两者可并行，退出时销毁。新一轮开始前会核验归属并清理确定性环境，即使本地目录已丢失。手动恢复时依次运行 `make dev ACTION=reset DEV_ARGS="--group t2"`、`make dev ACTION=reset DEV_ARGS="--group t2-fault"`；网关专项遗留使用 `--group t2-gateway`。stop 保留数据，reset 核验归属后只删除指定环境，不清理共享 target 池。不要直接依赖 Docker Compose 自动推导的项目名。环境数据可丢弃，角色输入不兼容时 reset 后重新 init，没有旧环境升级或兼容解析。
+默认管理 `development` 环境。stop 保留数据，reset 核验 worktree 归属后只删除指定环境，不清理共享 target 池。不要依赖 Compose 自动推导项目名。环境数据可丢弃，角色输入不兼容时 reset 后重新 init。
 
 init 使用正式角色 SQL、产品 migrate、initialize 和 initialize-authorization。输出本机 Rust 的配置路径、HTTPS origin 和 nginx 配置路径，账号密码仅写入权限 0600 的 operator/account-password 文件。通过已有构建启动器运行 `rss-mdm serve --config <输出路径>`；`serve` 在绑定管理 listener 后向 stdout 写一行 `{"event":"listener-bound","address":"127.0.0.1:实际端口"}`；`listen` 端口为 0 时由操作系统分配，回执不代表 readiness，仍须探测 `/readyz`。本机 HTTPS 调试使用输出的 nginx 配置，设置 `MDM_WEB_ROOT` 指向已构建 UI，必要时设置 `MDM_NGINX_MIME_TYPES`。私有 CA 仅为该环境使用，不跳过 TLS 校验。
 
@@ -167,9 +162,7 @@ make dev ACTION=up MODE=container
 修改域名、路径或端口则重新 `init`。外部证书健康检查连接宿主机回环地址，保持真实主机名的 TLS SNI 与 HTTP Host，
 验证系统信任、证书链和主机名，不依赖公网 DNS 回流。自签名模式使用该环境的开发 CA。
 
-每个阶段报告耗时与环境标识。`reuse` 用例在兼容 profile 内共享可写库，并以对象、主体或专用观察租户隔离；每次调用有独立命名空间。`fresh` 为 DDL、库内权限及损坏材料分配一次性库，安装使用空库。`instance` 在故障 PG 内串行，恢复核查成功后复用，失败或不确定则隔离并为后续用例替换环境。原失败不重试；实例角色或停库故障不作用于普通 PG。生命周期与复用资格见[测试模块](test-modules.md)。Windows、Apple 和 IdP 按专项准备。
-
-SCEP T2 需要 Docker Compose，每个 case 使用独立 step-ca 容器与网络，step CLI 制品、CA 版本和容器端口由 [PKI 工具锁](../../fixtures/pki-tools.lock.json) 固定，镜像摘要由 [provider 锁](../../deployment/providers.lock.json) 固定。宿主测试程序连接 Docker 实际分配的回环端口；重建后重新读取地址。webhook listener 直接绑定并持有系统分配的端口，再通过 step CLI 更新回调。Docker Desktop 使用回环 listener，原生 Linux 使用该 case 的私有 bridge gateway。两侧显式信任本次 fixture 的根证书并校验域名；容器重建保留 CA 密钥、数据库和 provisioner 身份。异常或取消回收 case 容器、卷和网络，下次运行也会清理本 worktree 遗留的 Apple 环境。
+每个阶段报告耗时与环境标识。
 
 ## 浏览器正常与故障验证
 
@@ -193,8 +186,6 @@ make t3-auth T3_ARGS="--mode faults --candidate <候选目录> --tools-image <�
 
 多个 localhost 端口的浏览器调试使用独立浏览器 profile 或自动化 context；Cookie 按主机而非端口隔离。
 
-T2 的模块职责、选择边界、并发与结果格式见[测试模块](test-modules.md)。`JOBS=1` 可顺序诊断；默认 `JOBS=2`。LIST 只构建和发现测试，不启动服务，不覆盖正式执行结果。
-
 ## Windows 原生操作与效果证据
 
 原生输入使用 Windows 的类型化 Node/Atomic/Sequence 或通用 MSI 合同；旧 Firewall、AgentInstall、StateVerify 输入和旧原生派发格式不再解码或转换。产品软件准入仍只允许已有固定 Agent，原生 MSI 编码不持有品牌限制。
@@ -203,7 +194,7 @@ T2 的模块职责、选择边界、并发与结果格式见[测试模块](test-
 
 ADMX 更新先运行 `python3 hack/native_sources.py prepare` 还原现有机器来源，再导入到新的 `artifacts/` 暂存目录；核对暂存清单、字节和许可证后替换展开的 ADMX 来源目录，运行 `python3 hack/native_sources.py pack` 更新确定性 ZIP/lock，最后运行生成器 `--write`。生成和检查会用固定 ZIP 重建缓存，不能把未经打包的缓存改动当成新来源。来源更新提交包含 ZIP、lock 和实际生成结果。
 
-选择范围与故障诊断见[测试模块](test-modules.md#选择失败与结果)。affected 的未登记输入、坏基线或分析失败会非零退出；先修复登记或分析问题，不以隐式全量或专项 MODULE 绕过。显式全量入口用于正式全量需求。
+选择范围与证据边界见[验证规则](../rules/verification-scope.md#执行与证据)。未知现存输入、坏基线或分析失败必须修复，不以隐式全量绕过。
 
 ## S3 内容适配
 

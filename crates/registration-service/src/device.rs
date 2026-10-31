@@ -10,15 +10,13 @@ pub mod read;
 pub mod registration_user;
 pub mod store;
 use crate::{Error, Store, device::coordinates::Coordinates};
-#[cfg(any(test, feature = "integration"))]
-use rss_mdm_audit_integration::{FailureReason, WriteOutcome};
+
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_observation::{Epoch, Id, Registration, Scope};
 use rss_request_context::TenantId;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-#[cfg(any(test, feature = "integration"))]
-use std::time::Duration;
+
 use uuid::Uuid;
 
 use rss_mdm_inventory::{Channel, ReportSource};
@@ -172,8 +170,6 @@ pub struct DeviceService {
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     access: Arc<Store>,
     tenant: String,
-    #[cfg(any(test, feature = "integration"))]
-    retirement_test_budget: Option<Duration>,
 }
 impl DeviceService {
     pub fn retirement(&self) -> &dyn crate::Retirement {
@@ -188,23 +184,12 @@ impl DeviceService {
             access,
             tenant,
             audit_store,
-            #[cfg(any(test, feature = "integration"))]
-            retirement_test_budget: None,
         }
     }
     pub fn retirement_budget(&self) -> rss_mdm_audit_integration::budget::AuditBudget {
-        #[cfg(any(test, feature = "integration"))]
-        if let Some(total) = self.retirement_test_budget {
-            return rss_mdm_audit_integration::budget::AuditBudget::retirement_test(total, None);
-        }
         rss_mdm_audit_integration::budget::AuditBudget::retirement(None)
     }
-    /// Only real-protocol correctness fixtures may choose a larger budget. No production knob.
-    #[cfg(any(test, feature = "integration"))]
-    pub fn with_retirement_test_budget(mut self, total: Duration) -> Self {
-        self.retirement_test_budget = Some(total);
-        self
-    }
+
     /// Resolve one committed identity snapshot without waiting for channel writers.
     /// Consumers recheck this principal under their existing mutation locks.
     pub async fn management_principal(
@@ -218,107 +203,6 @@ impl DeviceService {
         let principal = management::read(&mut tx, credential).await?;
         tx.commit().await.map_err(crate::database::db)?;
         Ok(principal)
-    }
-    #[cfg(any(test, feature = "integration"))]
-    pub async fn bind(
-        &self,
-        admin: &AuthorizedPrincipal,
-        credential: &VerifiedChannelCredential,
-        command: BindRegistration,
-    ) -> Result<RegistrationReceipt, Error> {
-        let audit = RequestAudit::new(
-            admin.tenant_id().into(),
-            "registration_bind",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        admin.bind_audit(&audit)?;
-        audit.operation(
-            command.operation_id,
-            "registration_bind",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        self.audited(&audit, self.bind_inner(admin, credential, &command, &audit))
-            .await
-    }
-    #[cfg(any(test, feature = "integration"))]
-    pub async fn revoke(
-        &self,
-        admin: &AuthorizedPrincipal,
-        device: &str,
-        registration: Uuid,
-        operation_id: Uuid,
-    ) -> Result<RevocationReceipt, Error> {
-        let audit = RequestAudit::new(
-            admin.tenant_id().into(),
-            "credential_revoke",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        admin.bind_audit(&audit)?;
-        audit.operation(
-            operation_id,
-            "credential_revoke",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        audit.target_device(device);
-        self.audited(
-            &audit,
-            self.revoke_inner(admin, device, registration, operation_id, &audit),
-        )
-        .await
-    }
-    #[cfg(any(test, feature = "integration"))]
-    async fn audited<T>(
-        &self,
-        audit: &RequestAudit,
-        work: impl std::future::Future<Output = Result<T, Error>>,
-    ) -> Result<T, Error> {
-        let result = tokio::time::timeout(Duration::from_secs(8), work)
-            .await
-            .unwrap_or_else(|_| {
-                Err(crate::device::audit_deadline(
-                    audit.snapshot().write_outcome,
-                ))
-            });
-        if audit.snapshot().write_outcome == WriteOutcome::Committed
-            && !matches!(
-                audit.snapshot().management_result,
-                Some(rss_mdm_audit_integration::ManagementResult::Replayed)
-            )
-        {
-            audit.finalize(None);
-            return result;
-        }
-        // New writes already recorded success atomically. A remaining Ok is a stored receipt.
-        self.record_result(audit, result, "replay").await
-    }
-    #[cfg(any(test, feature = "integration"))]
-    async fn record_result<T>(
-        &self,
-        audit: &RequestAudit,
-        result: Result<T, Error>,
-        success: &'static str,
-    ) -> Result<T, Error> {
-        let (status, outcome) = match &result {
-            Ok(_) => (200, success),
-            Err(_) if audit.snapshot().write_outcome == WriteOutcome::Unknown => (503, "unknown"),
-            Err(Error::CommitUnknown) => (503, "unknown"),
-            Err(Error::Unauthorized) => (401, "denied"),
-            Err(Error::Forbidden) => (403, "denied"),
-            Err(Error::Conflict) => (409, "denied"),
-            Err(Error::Malformed) => (400, "denied"),
-            Err(_) => (503, "failed"),
-        };
-        let store = &self.audit_store;
-        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
-        if let Err(error) = store
-            .settle_request(audit, status, outcome, &budget.source_control())
-            .await
-        {
-            audit.finalize(Some(FailureReason::Persistent));
-            return Err(error.into());
-        }
-        audit.finalize(None);
-        result
     }
 }
 pub fn scope(
@@ -366,16 +250,6 @@ pub enum DeviceError {
 }
 
 use rss_mdm_audit_integration::RequestAudit;
-
-#[cfg(any(test, feature = "integration"))]
-fn audit_deadline(outcome: rss_mdm_audit_integration::WriteOutcome) -> Error {
-    use rss_mdm_audit_integration::WriteOutcome;
-    match outcome {
-        WriteOutcome::Unknown | WriteOutcome::Committed => Error::CommitUnknown,
-        WriteOutcome::RollbackFailed => Error::RollbackFailed,
-        WriteOutcome::RolledBack | WriteOutcome::CommitNotStarted => Error::Deadline,
-    }
-}
 
 impl VerifiedChannelCredential {
     pub fn channel(&self) -> Channel {
@@ -432,41 +306,6 @@ impl DeviceService {
         )
         .await
     }
-    #[cfg(feature = "integration")]
-    pub fn fixture_audit_store(&self) -> &rss_mdm_audit_integration::AuditStore {
-        &self.audit_store
-    }
-    #[cfg(feature = "integration")]
-    pub async fn fixture_request(
-        &self,
-        proof: &AuthorizedPrincipal,
-        device: &str,
-        channel: Channel,
-    ) -> Result<Uuid, Error> {
-        use crate::database::db;
-        proof.enrollment(device)?;
-        if proof.tenant_id() != self.tenant {
-            return Err(Error::Forbidden);
-        }
-        let source = match channel {
-            Channel::Agent => ReportSource::AgentBuiltin,
-            Channel::Mdm => ReportSource::MdmWindows,
-        };
-        let password = crate::enrollment::Password::new(crate::enrollment::random())?;
-        let digest = password.digest(proof.tenant_id(), device)?;
-        let mut tx = self.access.begin(proof.tenant_id()).await?;
-        let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND purpose='primary'")
-            .bind(proof.tenant_id()).bind(device).bind(channel.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
-        let request = Uuid::new_v4();
-        let grant = Uuid::new_v4();
-        sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
-            .bind(proof.tenant_id()).bind(grant).bind(proof.principal_id()).bind(proof.instance_id()).bind(device).execute(&mut *tx).await.map_err(db)?;
-        sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,source,expected_generation,password_digest,password_version,credential_ref,expires_at,issuance_operation,windows_profile) VALUES($1::uuid,$2,$3,'pending',$4,$5,$6,1,$7,clock_timestamp()+interval '300 seconds',$8,$9)")
-            .bind(proof.tenant_id()).bind(request).bind(grant).bind(source.as_str()).bind(generation).bind(digest).bind(Uuid::new_v4()).bind(Uuid::new_v4())
-            .bind((channel == Channel::Mdm).then_some(crate::enrollment::WindowsProfile::Device.as_str())).execute(&mut *tx).await.map_err(db)?;
-        tx.commit().await.map_err(db)?;
-        Ok(request)
-    }
 }
 
 /// Resolve an Agent only from the certificate owner's sealed TLS verification result.
@@ -514,6 +353,3 @@ pub(crate) async fn agent_in(
     management::revalidate(c, &p).await?;
     Ok(p)
 }
-
-#[cfg(feature = "integration")]
-pub mod fixture;

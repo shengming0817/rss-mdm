@@ -1,4 +1,4 @@
-# One resource definition for worktree development and T2.
+# One resource definition for worktree development and candidate verification.
 # Deployment-specific values are supplied by an ignored .env or explicit --env-file.
 x-gateway:
   origin: ${MDM_PRODUCT_ORIGIN:-}
@@ -30,18 +30,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 6
-  gateway-probe:
-    profiles: [probe]
-    image: ${MDM_NGINX_IMAGE:?}
-    user: "${MDM_GATEWAY_PROBE_USER:-0:0}"
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    sysctls: {net.ipv4.ip_unprivileged_port_start: 0}
-    labels: *owner
-    # The probe consumes the production renderer's target ports.
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    volumes: ["${MDM_GATEWAY_PROBE_DIRECTORY:-${MDM_ENV_ROOT:?}/probe}/nginx.conf:/tmp/input.conf:ro", "${MDM_GATEWAY_PROBE_DIRECTORY:-${MDM_ENV_ROOT:?}/probe}:/run/probe:ro"]
-    entrypoint: [nginx, -e, stderr, -c, /tmp/input.conf, -g, 'daemon off;']
   step-ca:
     networks:
       default:
@@ -71,31 +59,6 @@ services:
           create_host_path: false
     healthcheck:
       disable: true
-  idp-netns:
-    profiles: [idp]
-    image: ${MDM_RUNTIME_IMAGE:?}
-    labels: *owner
-    command: [sh, -c, 'exec sleep infinity']
-    ports: ["127.0.0.1::8443"]
-  idp-inputs:
-    profiles: [idp]
-    image: ${MDM_RUNTIME_IMAGE:?}
-    labels: *owner
-    user: "0:0"
-    network_mode: none
-    volumes: ["${MDM_ENV_ROOT:?}/idp:/inputs:ro", "idp:/private"]
-    command: [sh, -ec, 'cp /inputs/* /private/; chown -R 1000:1000 /private; chmod 700 /private; chmod 600 /private/*']
-  idp:
-    profiles: [idp]
-    image: ${MDM_KEYCLOAK_IMAGE:?}
-    labels: *owner
-    network_mode: service:idp-netns
-    environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: fixture-operator
-      KC_BOOTSTRAP_ADMIN_PASSWORD: fixture-operator-password
-    volumes: ["idp:/opt/keycloak/data/import:ro"]
-    command: [start-dev, --import-realm, --http-enabled=false, "--hostname=${MDM_IDP_ORIGIN:-https://localhost:8443}", --https-certificate-file=/opt/keycloak/data/import/server.crt, --https-certificate-key-file=/opt/keycloak/data/import/server.key]
-    depends_on: [idp-netns]
   inputs:
     profiles: [product]
     image: ${MDM_RUNTIME_IMAGE:?}
@@ -170,8 +133,6 @@ services:
     networks: [frontend]
 
 volumes:
-  idp:
-    labels: *owner
   pg:
     labels: *owner
   runtime:

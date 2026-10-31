@@ -724,22 +724,6 @@ use rss_mdm_audit_integration::RequestAudit;
 #[path = "../tests/unit.rs"]
 mod tests;
 
-#[cfg(feature = "integration")]
-pub mod test_support {
-    pub use crate::protection::{Secrets, digest};
-}
-#[cfg(feature = "integration")]
-impl Windows {
-    pub fn open_secrets_fixture(
-        &self,
-        tenant: &str,
-        request: Uuid,
-        sealed: &[u8],
-    ) -> Result<test_support::Secrets, Error> {
-        self.protection.open(tenant, request, sealed)
-    }
-}
-
 /// Fresh product schema owned by this capability.
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.

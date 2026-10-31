@@ -2,7 +2,7 @@ use super::*;
 #[tokio::test]
 async fn gateway_source_budgets_are_isolated_and_release_on_drop() {
     let owner = Admission::new(
-        crate::test_support::runtime::monotonic(),
+        Arc::new(crate::Monotonic(monotonic)),
         Arc::new(Semaphore::new(8)),
         "device-http",
     );
@@ -17,4 +17,12 @@ async fn gateway_source_budgets_are_isolated_and_release_on_drop() {
     drop(a);
     assert!(owner.peer_request(first).is_some());
     drop(b);
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "explicit T1 clock adapter in the Tokio time domain"
+)]
+fn monotonic() -> std::time::Instant {
+    tokio::time::Instant::now().into_std()
 }

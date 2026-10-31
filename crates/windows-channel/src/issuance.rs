@@ -846,9 +846,6 @@ pub(crate) async fn sign_profile(
 }
 use sha2::Digest;
 
-#[cfg(feature = "integration")]
-pub mod fixture;
-
 /// Prepare on the existing Audit transaction owner. Only replacement creates a fact.
 pub(crate) async fn prepare_transaction<C: Send, R: Send>(
     store: &rss_mdm_audit_integration::AuditStore,

@@ -340,8 +340,6 @@ pub async fn read_on(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Resu
 pub struct Delivery {
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     database: std::sync::Arc<crate::Store>,
-    #[cfg(feature = "integration")]
-    lose_next_ack: std::sync::atomic::AtomicBool,
 }
 /// Only acknowledged transient failures and uncertain commits may defer this exact delivery.
 #[derive(Debug, thiserror::Error)]
@@ -382,15 +380,9 @@ impl Delivery {
         Self {
             database,
             audit_store,
-            #[cfg(feature = "integration")]
-            lose_next_ack: std::sync::atomic::AtomicBool::new(false),
         }
     }
-    #[cfg(feature = "integration")]
-    pub fn inject_ack_loss(&self) {
-        self.lose_next_ack
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
+
     /// Bounded count of real pending delivery rows; 1001 is the overflow sentinel.
     pub async fn pending_count(&self, tenant: &str) -> Result<u64, Error> {
         let mut tx = self.database.begin_read(tenant).await?;
@@ -515,13 +507,7 @@ impl Delivery {
         tx.commit()
             .await
             .map_err(|e| acknowledgement_error(e, true))?;
-        #[cfg(feature = "integration")]
-        if self
-            .lose_next_ack
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(DeliveryError::CommitUnknown);
-        }
+
         Ok(())
     }
 }

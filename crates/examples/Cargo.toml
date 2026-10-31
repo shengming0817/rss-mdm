@@ -21,16 +21,11 @@ rss-observation-postgres.workspace = true
 rss-projection.workspace = true
 rss-projection-postgres.workspace = true
 
-[dev-dependencies]
-uuid.workspace = true
-rss-contract.workspace = true
-
 [lints]
 workspace = true
 
 [features]
 default = []
-integration = ["rss-observation-postgres/integration", "rss-projection-postgres/integration"]
 
 [[bin]]
 name = "rss-mdm-fixture"

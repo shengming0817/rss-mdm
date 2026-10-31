@@ -14,8 +14,7 @@ use axum::{
 };
 use rss_identity_core::{InstanceId, account::PasswordKdf, session::SessionPolicy};
 use rss_identity_postgres::{Authority, AuthorityConfig, AuthorityError};
-#[cfg(test)]
-use rss_mdm_authorization_service::context::Principal;
+
 use rss_request_context::TenantId;
 use rss_transactional_messaging::{
     fence::{Epoch, ExecutionBinding, StorageIdentity},
@@ -332,28 +331,7 @@ impl Identity {
             http,
         })
     }
-    #[cfg(all(test, feature = "integration"))]
-    pub(crate) async fn for_oidc_fixture(
-        config: &Config,
-        policy: Arc<IdentityManagementPolicy>,
-        fact_time: rss_identity_postgres::ControlledFactTime,
-        acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
-    ) -> Result<Self, Error> {
-        Self::connect_using(
-            config,
-            policy,
-            None,
-            acquire,
-            |authority| authority.with_fact_time(fact_time),
-            |config, authority, origin, instance, _tenant| {
-                let oidc = rss_identity_oidc::HttpOidc::for_loopback_test(config.profiles()?)
-                    .map_err(|_| invalid())?;
-                config.federation_using(authority, origin, instance, Arc::new(oidc))
-            },
-            enterprise::Backend::for_loopback_test,
-        )
-        .await
-    }
+
     pub(crate) fn http_routes(
         &self,
         admission: Arc<rss_mdm_management_http::api_access::BearerAdmission>,
@@ -370,33 +348,6 @@ impl Identity {
             self.routes.clone().merge(bearer),
             envelope,
         ))
-    }
-    #[cfg(test)]
-    pub(crate) fn routes(&self) -> Router {
-        self.routes.clone()
-    }
-    #[cfg(test)]
-    pub(crate) fn bearer_routes(&self) -> Router {
-        self.bearer_routes.clone()
-    }
-
-    /// Device enrollment continuations revalidate the credential without renewing idle expiry.
-    #[cfg(test)]
-    pub(crate) async fn authenticate(
-        &self,
-        credential: rss_mdm_authorization_service::credential::RequestCredential,
-    ) -> Result<Principal, Error> {
-        let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) =
-            credential
-        else {
-            return Err(Error::Forbidden);
-        };
-        let session = self
-            .authority
-            .inspect_session(self.tenant, secret, deadline())
-            .await
-            .map_err(failure)?;
-        Principal::new(session).map_err(Error::from)
     }
 }
 pub(crate) fn authority_config(
@@ -695,10 +646,6 @@ pub(crate) fn key(path: &std::path::Path) -> Result<zeroize::Zeroizing<[u8; 32]>
 #[cfg(test)]
 #[path = "../tests/identity/unit.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "../tests/identity/mod.rs"]
-pub(crate) mod t2;
 
 /// Installed assertion identities and signer. RP policy/callbacks remain product-owned.
 #[derive(serde::Deserialize)]

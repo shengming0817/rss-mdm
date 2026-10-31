@@ -370,25 +370,6 @@ pub async fn cycle(
     Ok((progress, wake, nearest))
 }
 
-#[cfg(feature = "integration")]
-impl Push {
-    pub fn fixture(
-        topic: String,
-        certificate: &[u8],
-        private_key: &[u8],
-        clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
-        client: reqwest::ClientBuilder,
-        origin: String,
-    ) -> Result<Self, Error> {
-        let mut push = Self::with_client(topic, certificate, private_key, clock, client)?;
-        push.origin = origin;
-        Ok(push)
-    }
-    pub fn origin(&self) -> &str {
-        &self.origin
-    }
-}
-
 #[cfg(test)]
 #[path = "../tests/apns.rs"]
 mod tests;

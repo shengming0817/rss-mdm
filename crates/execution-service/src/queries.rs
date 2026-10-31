@@ -10,21 +10,7 @@ pub struct Admission {
 mod snapshot;
 pub use snapshot::Basis;
 
-#[cfg(feature = "integration")]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ReadPhase {
-    Facts,
-    Authority,
-}
-#[cfg(feature = "integration")]
-type ReadGate = (
-    ReadPhase,
-    tokio::sync::oneshot::Sender<()>,
-    Arc<tokio::sync::Notify>,
-);
 pub struct Queries {
-    #[cfg(feature = "integration")]
-    read_gate: std::sync::Mutex<Option<ReadGate>>,
     pub(crate) read_pool: sqlx::PgPool,
     clock: Arc<dyn rss_request_context::Clock>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
@@ -61,8 +47,6 @@ impl Queries {
             agent_store: dependencies.agent_store.clone(),
         };
         Self {
-            #[cfg(feature = "integration")]
-            read_gate: Default::default(),
             read_pool: dependencies.read_pool,
             clock,
             admission,
@@ -114,8 +98,7 @@ impl Queries {
                 if op.device != device {
                     return Err(Error::Forbidden.into());
                 }
-                #[cfg(feature = "integration")]
-                service.read_checkpoint(ReadPhase::Facts).await?;
+
                 let command = service.command_status_on(c, &op).await?;
                 let now = basis.now;
                 let grant = &basis.grant;
@@ -241,39 +224,3 @@ impl Queries {
 pub mod ddm;
 
 mod lifecycle;
-
-#[cfg(feature = "integration")]
-impl Queries {
-    pub fn pause_read(
-        &self,
-        phase: ReadPhase,
-    ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
-        let (send, receive) = tokio::sync::oneshot::channel();
-        let resume = Arc::new(tokio::sync::Notify::new());
-        assert!(
-            self.read_gate
-                .lock()
-                .expect("read gate")
-                .replace((phase, send, resume.clone()))
-                .is_none()
-        );
-        (receive, resume)
-    }
-    pub(crate) async fn read_checkpoint(&self, phase: ReadPhase) -> std::result::Result<(), Error> {
-        let gate = {
-            let mut slot = self.read_gate.lock().expect("read gate");
-            if slot.as_ref().is_some_and(|g| g.0 == phase) {
-                slot.take()
-            } else {
-                None
-            }
-        };
-        if let Some((_, send, resume)) = gate {
-            let _ = send.send(());
-            tokio::time::timeout(std::time::Duration::from_secs(5), resume.notified())
-                .await
-                .map_err(|_| Error::Unavailable(Failure::RequestDeadline))?;
-        }
-        Ok(())
-    }
-}

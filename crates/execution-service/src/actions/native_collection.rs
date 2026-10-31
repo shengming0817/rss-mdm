@@ -109,8 +109,6 @@ pub async fn advance_run(
                     )
                     .await
                     .map_err(|error| {
-                        #[cfg(feature = "integration")]
-                        eprintln!("native collection rejected: {error:?}");
                         let _ = error;
                         sqlx::Error::Protocol("native collection admission".into())
                     })

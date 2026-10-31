@@ -218,10 +218,7 @@ pub(crate) async fn assemble(
         rss_device_command_postgres::CommandClock::Postgres => {
             rss_device_command_postgres::CommandClock::Postgres
         }
-        #[cfg(feature = "integration")]
-        rss_device_command_postgres::CommandClock::Controlled(clock) => {
-            rss_device_command_postgres::CommandClock::Controlled(clock.clone())
-        }
+
         _ => return Err(Error::Unavailable(Failure::CommandInvariant)),
     };
     let (outbox, store, reconcile, read_pool) = open_storage(

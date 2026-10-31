@@ -378,10 +378,7 @@ pub(super) fn remote_client(
     token: client::Token,
 ) -> Result<client::Client, Error> {
     let client = client::Client::new(token)?;
-    #[cfg(feature = "integration")]
-    if let Some(f) = &app.apple()?.ade_fixture {
-        return Ok(client.fixture(f.client.clone(), f.origin.clone()));
-    }
+
     let _ = app;
     Ok(client)
 }

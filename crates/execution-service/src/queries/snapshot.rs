@@ -62,8 +62,7 @@ impl Queries {
             let binding = grant.query_binding(proof)?;
             let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint").fetch_one(&mut *tx).await?;
             let mut basis = Basis { grant, now, registration: None };
-            #[cfg(feature = "integration")]
-            self.read_checkpoint(super::ReadPhase::Facts).await?;
+
             let value = operation(&mut context, &mut tx, &mut basis).await?;
             tx.rollback().await?;
             Ok::<_, crate::transaction::Fault>((value, binding, basis.registration))
@@ -81,8 +80,7 @@ impl Queries {
         };
         // Never wait for the runtime pool while retaining a snapshot connection.
         drop(connection);
-        #[cfg(feature = "integration")]
-        self.read_checkpoint(super::ReadPhase::Authority).await?;
+
         if remaining().is_zero() {
             return Err(deadline());
         }

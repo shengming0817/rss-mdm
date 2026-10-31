@@ -2,9 +2,7 @@
 pub(crate) mod config;
 use crate::{ConfigIssue, Error};
 use std::sync::Arc;
-#[cfg(test)]
-#[path = "../../../tests/apple/certificate_support.rs"]
-mod certificate;
+
 pub(crate) struct Apple {
     pub(crate) platform_sso: Option<Arc<rss_mdm_apple_channel::platform_sso::Runtime>>,
     pub(crate) channel: Arc<rss_mdm_apple_channel::Apple>,
@@ -80,21 +78,7 @@ fn load_push(
     let certificate = &materials.apns_certificate;
     let key = &materials.apns_private_key;
     let _ = config;
-    #[cfg(test)]
-    if let Some((origin, root)) = &config.test_push_transport {
-        let client = reqwest::Client::builder().no_proxy().add_root_certificate(
-            reqwest::Certificate::from_pem(&crate::config::read(root, 128 * 1024, false)?)
-                .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?,
-        );
-        return Ok(rss_mdm_apple_channel::push::Push::fixture(
-            materials.apns_topic.clone(),
-            certificate,
-            key,
-            Arc::new(crate::clock::SystemClock),
-            client,
-            origin.clone(),
-        )?);
-    }
+
     Ok(rss_mdm_apple_channel::push::Push::from_bytes(
         materials.apns_topic.clone(),
         certificate,
@@ -134,12 +118,6 @@ pub(crate) fn router(
         router: router.into_checked_axum(rss_mdm_http_contract::module::Listener::Apple),
     })
 }
-#[cfg(test)]
-#[path = "../../../tests/apple/push_support.rs"]
-pub(crate) mod push;
-#[cfg(test)]
-#[path = "../../../tests/apple/mod.rs"]
-mod tests;
 
 /// Product composition retains platform-session rechecks even when enrollment is disabled.
 pub(crate) async fn identity_platform(

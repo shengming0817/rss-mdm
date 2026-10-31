@@ -69,25 +69,4 @@ impl ClientCertificateEvidence {
     pub fn chain(&self) -> &[CertificateDer<'static>] {
         &self.chain
     }
-
-    /// Device/provider fixtures may capture real TLS possession without running a product gateway.
-    #[cfg(any(test, feature = "integration"))]
-    pub fn from_completed_tls(
-        connection: &tokio_rustls::rustls::ServerConnection,
-    ) -> Result<Self, Error> {
-        if connection.is_handshaking() {
-            return Err(Error::Unauthorized);
-        }
-        let chain = connection
-            .peer_certificates()
-            .filter(|v| !v.is_empty())
-            .ok_or(Error::Unauthorized)?;
-        Ok(Self {
-            chain: Arc::from(chain),
-        })
-    }
 }
-
-#[cfg(test)]
-#[path = "../tests/peer.rs"]
-mod tests;

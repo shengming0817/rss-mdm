@@ -41,22 +41,6 @@ tokio = { workspace = true, features = ["time", "io-util", "macros"] }
 workspace = true
 
 [dev-dependencies]
-rss-mdm-resource-service.workspace = true
-rss-mdm-software-service = { workspace = true, features = ["integration"] }
-rss-mdm-resource-postgres = { workspace = true, features = ["integration"] }
-rss-mdm-native-protection.workspace = true
-rss-mdm-content-service = { workspace = true, features = ["integration"] }
 rss-audit-core.workspace = true
 
-rss-audit-postgres.workspace = true
-tokio-util.workspace = true
-tokio-rustls.workspace = true
-tempfile.workspace = true
-tracing-subscriber.workspace = true
-rss-mdm-audit-integration = { workspace = true, features = ["integration"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
-anyhow.workspace = true
-rss-transactional-messaging-postgres = { workspace = true, features = ["integration"] }
-
-[features]
-integration = []

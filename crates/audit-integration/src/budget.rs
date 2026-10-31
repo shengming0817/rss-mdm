@@ -31,10 +31,7 @@ impl AuditBudget {
     pub fn retirement(caller: Option<Deadline>) -> Self {
         Self::retirement_with_total(Duration::from_secs(6), caller)
     }
-    #[cfg(any(test, feature = "integration"))]
-    pub fn retirement_test(total: Duration, caller: Option<Deadline>) -> Self {
-        Self::retirement_with_total(total, caller)
-    }
+
     fn retirement_with_total(total: Duration, caller: Option<Deadline>) -> Self {
         use rss_request_context::Clock;
         let mut budget = Self::new(total);

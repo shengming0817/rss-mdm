@@ -88,7 +88,6 @@ relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 
 
 安装失败保持服务停止并保留证据。回退指停止新部署后恢复原有独立部署及其一致数据库/密钥备份；新代码没有中央认证回退路径。仅在新候选和 smoke 通过后，按精确镜像身份、归档目录和专属缓存记录清理本任务废弃产物，不进行全局 prune。
 
-
 ## 请求与后台执行
 
 配套网关对实际 TCP peer 的通用 `/api/` 请求执行每秒 10 次、burst 20 的 admission，登录仍使用
@@ -143,7 +142,7 @@ S3 凭据由内容连接领域加密持久化；按[安装指南](installation.m
 
 管理员从原 CA 持久记录找回原证书链，通过 `POST /api/v1/agent-issuances/{id}/recover` 提交稳定 operationId 与 certificateChain；服务端核对原 CSR/SPKI/SAN/签发窗口，以及签发前冻结的 issuer、provisioner/kid 和公钥摘要。恢复根据冻结的原 issuer 路由，须保留该代次的 CA/provisioner 配置；不能自动换 jti、重签或把另一 CA 的结果当作原结果。激活 ACK 丢失后使用原 activation operation 重试或查询状态，同一注册的恢复只替换凭据。日志及支持导出仅含分类和摘要，不含秘密、CSR 私钥或 JWT；step-ca 原生日志可能含 ott，必须作为受限秘密日志保存，禁止直接纳入通用日志聚合。
 
-备份前停止 MDM 的签发调用及全部 CA 写入实例。作为同一恢复集备份 CA 数据库、root/intermediate 证书及加密私钥、CA 配置与模板、受控 CA 解密秘密、Agent provisioner 私钥/kid、MDM 配置及 Audit/Ledger 数据库；CA 配置中的绝对路径和数据库路径须按原位置恢复。秘密进入受控秘密备份，定期验证可取回。恢复时先恢复原 CA 身份与数据库，再用原 provisioner 私钥和匹配的 MDM 审计数据启动；核对 issuer/SPKI/kid 摘要、已有 serial 和 token 使用记录，并在隔离环境签发新授权、校验证书链及双阶段审计。不得删除 CA token 表、重置 Audit head、重新生成 CA 或用新密钥覆盖原文件来处理结果未知。可再生 T2 `agent.pki` 会停止 CA、备份并恢复原目录与数据库，再执行真实受控签发；生产恢复还须执行上述一致性核对。
+备份前停止 MDM 的签发调用及全部 CA 写入实例。作为同一恢复集备份 CA 数据库、root/intermediate 证书及加密私钥、CA 配置与模板、受控 CA 解密秘密、Agent provisioner 私钥/kid、MDM 配置及 Audit/Ledger 数据库；CA 配置中的绝对路径和数据库路径须按原位置恢复。秘密进入受控秘密备份，定期验证可取回。恢复时先恢复原 CA 身份与数据库，再用原 provisioner 私钥和匹配的 MDM 审计数据启动；核对 issuer/SPKI/kid 摘要、已有 serial 和 token 使用记录，并在隔离环境签发新授权、校验证书链及双阶段审计。不得删除 CA token 表、重置 Audit head、重新生成 CA 或用新密钥覆盖原文件来处理结果未知。当前设备 CA T2 尚未重建，生产恢复须独立执行上述一致性核对。
 
 ## 设备 PKI 轮换与撤销
 
@@ -161,7 +160,7 @@ Windows 未知签发通过 `POST /api/v1/pki/signing/recover` 提交原 attempt 
 
 离线根或 legacy issuer 的 CRL 使用 `POST /api/v1/pki/crls` 发布单一 operation、purpose 和 publications 数组（1–16 项，每项 issuer、crl、root_crl，base64 DER）。同 root 的所有代次共同采用同一 root CRL，集合内冲突拒绝；不把根私钥带入在线宿主。刷新按同 purpose 完整集合校验、原子发布；停机造成多个 issuer CRL 过期后可整组恢复。备份/恢复必须保留 CA 数据库、原密钥身份、serial/token 使用记录、MDM 数据库和 Audit/Ledger；成功签发与撤销发布的未知结果仍沿原记录恢复。
 
-设备 CA 在正式 SIT 使用 `deployment/sit.compose.yaml` 的 `step-ca`；开发/T2 使用 `deployment/compose.yaml` 的 `pki` profile。SIT 使用一个 CA 实例及数据库，各 purpose 保留独立 provisioner 和产品记录；在线 `MDM_PKI_ROOT` 只含中间 CA 加密密钥、公开根、配置、模板及 CA 数据库，根私钥和独立解密秘密放在未挂载的离线目录。step-ca 原生 `kms` 配置选择加密文件 SoftKMS 基线，`key` 可替换为受支持 KMS/HSM URI，由 CA 部署 owner 提供对应访问凭据与验收；MDM 不读取 KMS 或根私钥。非 step-ca 企业 CA 路线登记为 #2680。
+设备 CA 在正式 SIT 使用 `deployment/sit.compose.yaml` 的 `step-ca`；开发及候选使用 `deployment/compose.yaml` 的 `pki` profile。SIT 使用一个 CA 实例及数据库，各 purpose 保留独立 provisioner 和产品记录；在线 `MDM_PKI_ROOT` 只含中间 CA 加密密钥、公开根、配置、模板及 CA 数据库，根私钥和独立解密秘密放在未挂载的离线目录。step-ca 原生 `kms` 配置选择加密文件 SoftKMS 基线，`key` 可替换为受支持 KMS/HSM URI，由 CA 部署 owner 提供对应访问凭据与验收；MDM 不读取 KMS 或根私钥。非 step-ca 企业 CA 路线登记为 #2680。
 
 每份 CA 数据库同一时间只允许一个写入者。冷备接管先停止并移除旧 `step-ca` 容器，核对 `compose ps --all --quiet step-ca` 为空并确认旧主机被隔离，再以同一绝对存储路径和 `MDM_PKI_PUBLISH` 原端口启动独立 standby project。持久 provider origin、issuer、kid、数据库和 token 记录保持原身份；无法证明旧主隔离时不能启动新写入者。候选验证复用这份 Compose，产品 profile 仅公开 Nginx 网关端口，网关终止控制台与 enrollment/management/Agent 的 TLS/mTLS，并代理精确配置的 SCEP 路径；其它 CA API 和 Rust 内部 HTTP 端口不公开。
 
@@ -363,7 +362,6 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 入口退役同时检查仍可使用的注册配置和未完成的原生 Agent 安装。新任务在接受时冻结当前发布的首选地址；策略和软件身份不绑定地址。已下发任务保留原下载 URL，完成、撤销或失效前保留其入口。撤销注册配置不会取消已接受的注册授权，已有授权须完成、显式取消或到期。连接状态的 `retirementBlockers` 分别报告注册材料和原生安装的阻断数量。Windows/Apple 原生注册与 SCEP 地址仍须按各原生配置的生命周期维护。
 
 #
-
 
 ### 配置状态与完整历史
 

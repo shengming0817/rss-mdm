@@ -147,8 +147,7 @@ impl Scopes {
         } else {
             None
         };
-        #[cfg(feature = "integration")]
-        self.page_boundary().await;
+
         let mut items = Vec::new();
         let mut decisions = Vec::new();
         for device in devices {

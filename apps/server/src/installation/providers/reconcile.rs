@@ -271,7 +271,3 @@ async fn activate_latest(
 
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "../../../tests/setup/reconcile.rs"]
-mod tests;

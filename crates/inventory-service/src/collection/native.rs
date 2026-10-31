@@ -32,11 +32,7 @@ pub async fn start(
     let target =
         crate::device::store::allocate_collection_in(c, &p.tenant.to_string(), &p.device, source)
             .await
-            .map_err(|error| {
-                #[cfg(feature = "integration")]
-                eprintln!("native source allocation: {error:?}");
-                Error::from(error)
-            })?;
+            .map_err(Error::from)?;
     if target.registration != p.registration || target.generation != p.generation {
         return Err(Error::Conflict);
     }

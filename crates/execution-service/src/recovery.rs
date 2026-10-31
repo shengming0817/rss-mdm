@@ -747,10 +747,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                                         Ok(prepared) => prepared,
                                         Err(error) => return Err(rejection(error, context.3)),
                                     };
-                                #[cfg(feature = "integration")]
-                                if prepared.is_some() {
-                                    service.recovery_checkpoint(context.1).await;
-                                }
+
                                 service
                                     .transactions
                                     .reconcile_messaging

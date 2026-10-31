@@ -197,25 +197,3 @@ impl Verifier {
         Err(Error::Forbidden)
     }
 }
-
-#[cfg(feature = "integration")]
-impl Verifier {
-    /// Signing helper for authenticated in-process provider fixtures, never exposed over HTTP.
-    pub fn signature_fixture(
-        &self,
-        issuer: &str,
-        stage: Stage,
-        bytes: &[u8],
-    ) -> Result<(&str, ring::hmac::Tag), Error> {
-        let c = self
-            .credentials
-            .iter()
-            .find(|c| c.issuer == issuer)
-            .ok_or(Error::Configuration)?;
-        let (id, key) = match stage {
-            Stage::Challenge => (&c.challenge_id, &c.challenge_key),
-            Stage::Notify => (&c.notify_id, &c.notify_key),
-        };
-        Ok((id, ring::hmac::sign(key, bytes)))
-    }
-}

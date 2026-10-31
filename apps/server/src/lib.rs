@@ -1,69 +1,29 @@
 #![deny(clippy::cognitive_complexity)]
 //! Embedded authentication assembly and product-owned device/resource authorization.
-#[cfg(test)]
-extern crate self as rss_mdm_app;
-#[cfg(test)]
-#[path = "../tests/fixtures/assets.rs"]
-mod assets;
-#[cfg(test)]
-#[path = "../tests/audit/mod.rs"]
-mod audit_integration_tests;
-#[cfg(not(test))]
+
 use rss_mdm_authorization_service as authorization;
-#[cfg(test)]
-#[path = "../tests/fixtures/authorization.rs"]
-mod authorization;
-#[cfg(not(test))]
+
 use rss_mdm_inventory_service::collection;
 use rss_mdm_policy_service::worker as automation;
-#[cfg(test)]
-#[path = "../tests/fixtures/collection.rs"]
-mod collection;
-#[cfg(test)]
-#[path = "../tests/fixtures/compliance.rs"]
-mod compliance;
+
 mod database;
-#[cfg(not(test))]
 use rss_mdm_registration_service::device;
-#[cfg(test)]
-#[path = "../tests/fixtures/device.rs"]
-mod device;
-#[cfg(not(test))]
+
 use rss_mdm_registration_service::enrollment;
-#[cfg(test)]
-#[path = "../tests/fixtures/enrollment.rs"]
-mod enrollment;
-#[cfg(test)]
-#[path = "../tests/fixtures/execution.rs"]
-mod execution;
 
 mod background;
-#[cfg(test)]
-#[path = "../tests/fixtures/content.rs"]
-mod content;
+
 mod cursor_keys;
 mod enrollment_progress;
 mod owner_storage;
 mod resource_usage;
 mod scheduler;
-#[cfg(not(test))]
 use rss_mdm_inventory_service::inventory_runtime;
-#[cfg(test)]
-#[path = "../tests/fixtures/inventory_runtime.rs"]
-mod inventory_runtime;
-#[cfg(test)]
-#[path = "../tests/fixtures/planning.rs"]
-mod planning;
-#[cfg(test)]
-#[path = "../../../tests/support/software/mod.rs"]
-mod publication_support;
+
 mod registration_lifecycle;
-#[cfg(test)]
-use rss_mdm_resource_service as resource_catalog;
+
 mod publication_config;
-#[cfg(test)]
-#[path = "../tests/fixtures/software_catalog.rs"]
-mod software_catalog;
+
 mod task_signing;
 use database::Database;
 
@@ -73,12 +33,9 @@ mod error_projection;
 mod registration_channels;
 mod runtime_diagnostics;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
-#[cfg(not(test))]
 use rss_mdm_agent_channel as agent;
 mod adapters;
-#[cfg(test)]
-#[path = "../tests/fixtures/agent.rs"]
-mod agent;
+
 mod assembly;
 pub use assembly::http::http_contract_document;
 pub mod administration;
@@ -93,9 +50,7 @@ mod lifecycle;
 pub mod maintenance;
 pub mod migration;
 mod native;
-#[cfg(test)]
-#[path = "../tests/support/mod.rs"]
-mod test_support;
+
 #[path = "assembly/windows/mod.rs"]
 mod windows;
 pub use lifecycle::{serve, signal};
@@ -158,14 +113,6 @@ pub enum Error {
     Http(#[from] rss_mdm_management_http::Error),
 }
 
-#[cfg(test)]
-#[path = "../tests/fixtures/error.rs"]
-mod fixture_error;
-
-#[cfg(test)]
-#[path = "../tests/support/audit.rs"]
-mod audit_test_support;
-
 mod worker_wake;
 
 impl From<rss_mdm_certificate::Error> for Error {
@@ -198,29 +145,10 @@ pub use authorization_bootstrap::{
     Initialize as AuthorizationInitialization, initialize as initialize_authorization,
 };
 
-#[cfg(test)]
-#[path = "../tests/timeline/mod.rs"]
-mod timeline_tests;
-
 mod certificate_archive;
-
-#[cfg(test)]
-#[path = "../tests/certificate_archive/mod.rs"]
-mod certificate_archive_tests;
 
 pub mod agent_pki;
 mod ca_webhooks;
-
-#[cfg(all(test, feature = "integration"))]
-#[path = "../tests/agent_pki/recovery.rs"]
-mod agent_pki_recovery_tests;
-#[cfg(all(test, feature = "integration"))]
-#[path = "../tests/agent_pki/mod.rs"]
-mod agent_pki_tests;
-
-#[cfg(all(test, feature = "integration"))]
-#[path = "../tests/agent_listener.rs"]
-mod agent_listener_tests;
 
 mod device_pki;
 
@@ -228,27 +156,7 @@ mod agent_configurations;
 
 mod recovery_credentials;
 
-#[cfg(test)]
-#[path = "../tests/recovery_credentials/mod.rs"]
-mod recovery_credentials_tests;
-
-#[cfg(all(test, feature = "integration"))]
-#[path = "../tests/webhooks/mod.rs"]
-mod webhook_tests;
-
 pub mod telemetry;
 
 mod scope_group_changes;
 mod scopes;
-
-#[cfg(test)]
-#[path = "../tests/groups/mod.rs"]
-mod group_tests;
-
-#[cfg(test)]
-#[path = "../tests/scopes/mod.rs"]
-mod scope_tests;
-
-#[cfg(test)]
-#[path = "../tests/policy/mod.rs"]
-mod policy_tests;
