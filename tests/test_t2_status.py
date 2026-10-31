@@ -118,3 +118,18 @@ class T2Status(unittest.TestCase):
             evidence = json.loads((output / 'result.json').read_text())
             self.assertEqual(evidence['status'], 'failed')
             self.assertFalse((output / 'junit.xml').exists())
+
+    def test_real_shutdown_inputs_select_the_existing_lifecycle_proof(self):
+        from ci_registry import ROOT
+        for path, expected in (
+            ('apps/server/src/owner_storage.rs', ['foundation.lifecycle']),
+            ('apps/server/src/worker_wake.rs', ['foundation.lifecycle']),
+            ('apps/server/src/clock.rs', []),
+        ):
+            with self.subTest(path=path), \
+                 patch.object(ci_impact, 'changed_paths', return_value=[ci_impact.Change('M', path, path)]), \
+                 patch.object(ci_impact, 'baseline_tree', return_value=contextlib.nullcontext(ROOT)):
+                # Keep real registry, Cargo ownership and public selection. Only the
+                # Git input list is supplied, so missing input mappings fail this test.
+                decision = ci_impact.select(ROOT, 'current-working-input')
+                self.assertEqual(decision['t2']['modules'], expected)

@@ -27,7 +27,8 @@ MODULES = {
     'foundation.lifecycle': dict(
         prefix='foundation_t2::lifecycle::', profiles=('lifecycle',),
         inputs=('apps/server/src/lifecycle.rs', 'apps/server/src/identity.rs',
-                'apps/server/src/database.rs', 'apps/server/src/assembly/*',
+                'apps/server/src/database.rs', 'apps/server/src/owner_storage.rs',
+                'apps/server/src/worker_wake.rs', 'apps/server/src/assembly/*',
                 'apps/server/tests/foundation/lifecycle.rs')),
 }
 SUPPORT = ('apps/server/tests/foundation/support.rs',)
