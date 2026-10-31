@@ -37,13 +37,7 @@ pub const INSTALL_SQL: &str = concat!(
 );
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
-/// App-owned service, borrowing the existing Audit transaction owner.
-#[cfg(feature = "integration")]
-type ReadGate = (tokio::sync::oneshot::Sender<()>, Arc<tokio::sync::Notify>);
-
 pub struct Associations {
-    #[cfg(feature = "integration")]
-    read_gate: std::sync::Mutex<Option<ReadGate>>,
     worker_observed: std::sync::atomic::AtomicBool,
     worker_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     worker_failures: std::sync::Mutex<std::collections::BTreeMap<String, rss_reconcile::ErrorKind>>,
@@ -70,8 +64,6 @@ impl Associations {
             b"device-associations-v1",
         );
         Ok(Self {
-            #[cfg(feature = "integration")]
-            read_gate: Default::default(),
             worker_observed: Default::default(),
             worker_status: Default::default(),
             worker_failures: Default::default(),
@@ -91,31 +83,3 @@ pub const DIRECTORY_SQL: &str = concat!(
 
 mod storage_authority;
 pub use storage_authority::verify_authority;
-
-#[cfg(feature = "integration")]
-impl Associations {
-    pub fn pause_read_before_authority(
-        &self,
-    ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
-        let (send, receive) = tokio::sync::oneshot::channel();
-        let resume = Arc::new(tokio::sync::Notify::new());
-        assert!(
-            self.read_gate
-                .lock()
-                .expect("read gate")
-                .replace((send, resume.clone()))
-                .is_none()
-        );
-        (receive, resume)
-    }
-    pub(crate) async fn read_checkpoint(&self) -> Result<()> {
-        let gate = self.read_gate.lock().expect("read gate").take();
-        if let Some((send, resume)) = gate {
-            let _ = send.send(());
-            tokio::time::timeout(std::time::Duration::from_secs(5), resume.notified())
-                .await
-                .map_err(|_| Error::Deadline)?;
-        }
-        Ok(())
-    }
-}

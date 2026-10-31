@@ -18,12 +18,7 @@ pub async fn enroll(
 ) -> Result<Response, Error> {
     let now = super::now(&app)?;
     let verifier = rss_mdm_certificate::apple::ade::MachineVerifier::apple()?;
-    #[cfg(feature = "integration")]
-    let verifier = if let Some(f) = &app.apple()?.ade_fixture {
-        rss_mdm_certificate::apple::ade::MachineVerifier::fixture(&f.manufacturer_root)?
-    } else {
-        verifier
-    };
+
     let machine = tokio::task::spawn_blocking(move || verifier.verify(&bytes, now))
         .await
         .map_err(|_| Error::Conflict)??;

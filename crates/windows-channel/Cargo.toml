@@ -53,6 +53,3 @@ tokio = { workspace = true, features = ["test-util"] }
 anyhow.workspace=true
 [lints]
 workspace=true
-
-[features]
-integration=["rss-mdm-registration-service/integration","rss-mdm-pki-service/integration"]

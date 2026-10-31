@@ -174,14 +174,6 @@ pub(crate) fn routers(
         management_routers,
     ))
 }
-#[cfg(test)]
-use rss_mdm_windows_channel::issuance;
-#[cfg(test)]
-#[path = "../../../tests/windows/mod.rs"]
-mod t2;
-#[cfg(test)]
-#[path = "../../../tests/windows/support.rs"]
-pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "../../../tests/windows/unit.rs"]

@@ -399,10 +399,7 @@ impl crate::queries::Queries {
                         .grant
                         .require(proof, Permission::InventoryRead, Some(device))?;
                     let value = load.take().expect("one device projection")(c).await?;
-                    #[cfg(feature = "integration")]
-                    service
-                        .read_checkpoint(crate::queries::ReadPhase::Facts)
-                        .await?;
+
                     let capabilities = service
                         .directory_capabilities_on(c, proof, &basis.grant, device, *windows, *apple)
                         .await?;

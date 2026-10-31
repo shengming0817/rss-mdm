@@ -80,7 +80,6 @@ ROLE_NAMES = ("business", "software-publication", "identity", "commands", "audit
 DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/tenant.compose.yaml', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/render_gateway.py", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
-
 def source_inputs(root, header=None):
     """Git index admits paths; bytes always come from the current working tree."""
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
@@ -117,7 +116,6 @@ def source_inputs(root, header=None):
         inputs[name] = (digest, after.st_mode, after.st_mtime_ns, after.st_ctime_ns, after.st_ino)
     return inputs
 
-
 def copy_source(root, destination, header=None):
     inputs = source_inputs(root, header)
     destination.mkdir(parents=True)
@@ -132,7 +130,6 @@ def copy_source(root, destination, header=None):
     # Record exactly the copied content and modes, independent of Git commit state.
     content = {name: state[:2] for name, state in inputs.items()}
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
-
 
 def build_staged(out, header, web_image=None, target_platform=None):
     if target_platform is not None and target_platform not in ("linux/arm64", "linux/amd64"):
@@ -154,7 +151,7 @@ def build_staged(out, header, web_image=None, target_platform=None):
         shutil.copy(source / "deployment/Dockerfile", context / "Dockerfile")
         image = "rss-mdm/server:build-" + uuid.uuid4().hex
         output = out / "server.oci.tar"
-        from t2_environment import project_name
+        from dev_environment import project_name
         jobs = os.environ.get('CARGO_BUILD_JOBS','4')
         if not jobs.isdecimal() or int(jobs)<1:raise ValueError('CARGO_BUILD_JOBS must be positive')
         subprocess.run(["docker", "buildx", "build", *platform_args,

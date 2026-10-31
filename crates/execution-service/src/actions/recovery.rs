@@ -165,14 +165,6 @@ impl ExecutionService {
     }
 }
 
-#[cfg(feature = "integration")]
-impl ExecutionService {
-    /// Advance one Policy discovery/statistics page through the owner transaction.
-    pub async fn discover_policy_fixture(&self, id: Uuid) -> std::result::Result<(), crate::Error> {
-        self.recover_entity_fixture(format!("policy.{id}")).await
-    }
-}
-
 pub(super) async fn stale_registration(
     tx: &mut PgTransaction<'_>,
     target: &crate::Target,

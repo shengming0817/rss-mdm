@@ -178,7 +178,6 @@ impl From<rss_mdm_execution_service::Error> for Error {
                 rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
                 rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
 
-
                 other => Failure::Execution(other),
             }),
         }

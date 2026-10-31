@@ -14,13 +14,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'hack/build_run.py'
 
-
 def clean_env():
     return {k: v for k, v in os.environ.items()
             if not k.startswith(('MDM_', '_MDM_', 'SCCACHE_', 'RUSTC_', 'CARGO_BUILD_', 'GIT_'))
             and k not in ('CARGO_TARGET_DIR', 'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS',
                           'MAKEFLAGS', 'MFLAGS', 'MAKELEVEL')}
-
 
 class BuildRunTests(unittest.TestCase):
     def setUp(self):
@@ -299,7 +297,7 @@ print(json.dumps({'name':Path(sys.argv[0]).name,'target':os.environ.get('CARGO_T
                   'lease':os.environ.get('_MDM_BUILD_LEASE'),'plan':os.environ.get('CI_PLAN'),
                   'full':os.environ.get('CI_FULL')}))
 '''
-        for script in ['ci.py', 't2.py', 't2_environment.py']:
+        for script in ['ci.py', 't2.py', 'dev_environment.py']:
             (hack / script).write_text(fake)
         cargo = self.work / 'cargo'
         cargo.write_text('#!' + sys.executable + '\n' + fake)
@@ -471,7 +469,6 @@ subprocess.run(['cargo','test','--offline'],check=True,pass_fds=lease_fds())
             self.assertIn(label + '\n', result.stdout)
             self.assertIn(f'test {label}_api ... ok', result.stdout)
             self.assertIn('1 passed; 0 failed', result.stdout)
-
 
 if __name__ == '__main__':
     unittest.main()

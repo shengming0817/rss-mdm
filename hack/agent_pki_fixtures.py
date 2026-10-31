@@ -1,63 +1,27 @@
-"""Disposable Agent-only provisioner on the pinned step-ca used by native T2."""
+"""Disposable Agent-only provisioner on the pinned step-ca used by candidate verification."""
 import json
 from pathlib import Path
-import secrets
 import shutil
-from t2_processes import subprocess
-
+import subprocess
 
 def openssl(*args):
     subprocess.run(['openssl', *map(str, args)], check=True, stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL, timeout=30)
 
-
-def prepare(root, configuration, password, *, configuration_devices=0, materials=()):
-    # Test the full development limit. The default five-year intermediate cannot
-    # cover ten-year leaves; regenerate only disposable certificates, with the
-    # same encrypted keys/subjects and an explicitly longer test root.
-    config = json.loads(configuration.read_text())
-    ca_root, intermediate, key = Path(config['root'][0]), Path(config['crt']), Path(config['key'])
-    root_key = configuration.parent.parent/'secrets/root_ca_key'
-    if 'agent-long-lived' in materials:
-        for certificate, signing_key, name in [(ca_root, root_key, 'root'), (intermediate, key, 'issuer')]:
-            openssl('x509', '-x509toreq', '-in', certificate, '-signkey', signing_key,
-                    '-passin', 'file:'+str(password), '-out', root/(name+'.csr'))
-        extensions = root/'agent-ca.ext'
-        extensions.write_text('basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n')
-        openssl('req', '-x509', '-in', root/'root.csr', '-key', root_key,
-                '-passin', 'file:'+str(password), '-days', '7300', '-out', ca_root,
-                '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign')
-        openssl('x509', '-req', '-in', root/'issuer.csr', '-CA', ca_root, '-CAkey', root_key,
-                '-passin', 'file:'+str(password), '-days', '3652', '-set_serial', str(secrets.randbits(120)),
-                '-extfile', extensions, '-out', intermediate)
+def prepare(root):
     provisioner = root/'agent-provisioner.pem'
     openssl('genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:2048', '-out', provisioner)
     provisioner.chmod(0o600)
     openssl('pkcs8', '-topk8', '-nocrypt', '-in', provisioner, '-outform', 'DER', '-out', root/'agent-provisioner.pk8')
     (root/'agent-provisioner.pk8').chmod(0o600)
-    # Real consumers need only normal registration keys and explicitly counted grants.
-    names = ['agent'] + (['other'] if 'other' in materials else []) + [f'configuration-{i}' for i in range(configuration_devices)]
-    for name in names:
-        openssl('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=rss-mdm-agent',
-                '-keyout', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.der'))
-        (root/('agent-csr-'+name+'.key')).chmod(0o600)
-    if 'agent-large-csr' in materials:
-        openssl('req', '-new', '-newkey', 'rsa:8192', '-nodes', '-subj', '/CN=rss-mdm-agent',
-                '-keyout', root/'recovery-long.key', '-outform', 'DER', '-out', root/'recovery-long.der')
-        (root/'recovery-long.key').chmod(0o600)
-    openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'agent-csr-agent.key', '-outform', 'DER', '-out', root/'agent.pk8')
-    (root/'agent.pk8').chmod(0o600)
-
-    for name in (['other'] if 'other' in materials else []) + [f'configuration-{i}' for i in range(configuration_devices)]:
-        openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.pk8'))
-        (root/(name+'.pk8')).chmod(0o600)
-
-
+    openssl('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=rss-mdm-agent',
+            '-keyout', root/'agent-csr-agent.key', '-outform', 'DER', '-out', root/'agent.der')
+    (root/'agent-csr-agent.key').chmod(0o600)
 
 def install(root, cli, admin, origin, *, template_source=None):
     cli('crypto', 'jwk', 'create', root/'agent.pub.json', root/'agent.private.json',
         '--from-pem', root/'agent-provisioner.pem', '--alg', 'RS256', '--use', 'sig',
-        '--kid', 'agent-t2-key', '--no-password', '--insecure')
+        '--kid', 'agent-candidate-key', '--no-password', '--insecure')
     (root/'agent.private.json').unlink()
     template = root/'step/templates/agent-leaf.tpl'
     template.parent.mkdir(mode=0o700,exist_ok=True)

@@ -22,7 +22,6 @@ sqlparser = { version = "=0.63.0", default-features = false, features = ["std", 
 [dev-dependencies]
 ring.workspace = true
 jsonschema.workspace = true
-sha2.workspace = true
 
 [lints]
 workspace = true

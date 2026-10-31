@@ -11,7 +11,6 @@ from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
-
 def origin(value):
     parsed = urlsplit(value)
     if (parsed.scheme != 'https' or parsed.username or parsed.password or parsed.path
@@ -22,14 +21,12 @@ def origin(value):
         raise ValueError('canonical HTTPS DNS origin required')
     return parsed.hostname, parsed.port or 443, parsed.netloc
 
-
 def ports_document(ports, service='gateway'):
     """Compose's target is the actual TLS listener; callers may isolate host publication."""
-    if service not in ('gateway', 'gateway-probe'):
+    if service != 'gateway':
         raise ValueError('unknown gateway service')
     return ('services:\n  ' + service + ':\n    ports: !override\n'
             + ''.join('      - ' + json.dumps(value) + '\n' for value in ports))
-
 
 def write(path, content):
     if path.is_symlink():
@@ -43,7 +40,6 @@ def write(path, content):
         os.fsync(output.fileno())
     temporary.replace(path)
 
-
 def proxy_headers(authority, public_origin, device=False, agent=False):
     fields = {'X-Request-ID': '$request_id', 'Host': '"'+authority+'"', 'X-RSS-Public-Origin': '"'+public_origin+'"',
               'X-RSS-Client-Cert': '$ssl_client_escaped_cert', 'X-Forwarded-For': '$remote_addr'}
@@ -56,7 +52,6 @@ def proxy_headers(authority, public_origin, device=False, agent=False):
         fields['Authorization'] = '""'
     return ''.join(f'        proxy_set_header {name} {value};\n' for name, value in fields.items())
 
-
 def location(match, backend, *, budget=None, streaming=False, headers='', windows_management=False):
     body = '        location ' + match + ' {\n'
     body += ('            limit_conn mdm_server_connections 128;\n' if windows_management
@@ -66,7 +61,6 @@ def location(match, backend, *, budget=None, streaming=False, headers='', window
     if streaming:
         body += '            proxy_request_buffering off;\n            proxy_buffering off;\n'
     return body + headers + f'            proxy_pass http://{backend};\n        }}\n'
-
 
 def management(backend):
     # These exact ceilings mirror management-http/body_policy.rs; Rust checks methods too.
@@ -90,7 +84,6 @@ def management(backend):
             entry = entry.replace('zone=mdm_api burst=20', 'zone=mdm_login burst=10')
         result += entry
     return result + location('/api/', backend)
-
 
 def scep_locations(host):
     result = ''
@@ -118,7 +111,6 @@ def scep_locations(host):
         }}
 '''
     return result
-
 
 def render(root, bind_ip='0.0.0.0'):
     root = Path(root)
@@ -268,14 +260,12 @@ http {
     write(root / 'gateway-ports.compose.yaml', ports_document(mappings))
     return mappings
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', required=True)
     parser.add_argument('--bind-ip', default=os.environ.get('MDM_GATEWAY_BIND_IP', '0.0.0.0'))
     args = parser.parse_args()
     render(args.root, args.bind_ip)
-
 
 if __name__ == '__main__':
     main()

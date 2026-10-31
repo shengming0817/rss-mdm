@@ -29,8 +29,6 @@ pub fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6))
 }
 pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>, owner: TransactionOwner) -> PgError {
-    #[cfg(test)]
-    eprintln!("transaction rejected: {error:?}");
     let (reason, db) = match error {
         Fault::Request(e) => {
             let e = match e {

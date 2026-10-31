@@ -191,13 +191,7 @@ impl Binding {
     pub fn valid_at(&self, now: i64) -> bool {
         now > 0 && now < self.expires
     }
-    #[cfg(feature = "integration")]
-    pub fn fixture(expires: i64) -> Self {
-        Self {
-            records: Vec::new(),
-            expires,
-        }
-    }
+
     pub async fn check(&self, store: &crate::Store, tenant: &str, now: i64) -> Result<(), Error> {
         if !self.valid_at(now) {
             return Err(Error::Conflict);

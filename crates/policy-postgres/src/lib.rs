@@ -67,10 +67,6 @@ const ADMISSION: Admission = Admission {
     ],
 };
 
-/// Validated persisted prerequisites for integration consumers.
-#[cfg(feature = "integration")]
-pub mod fixture;
-
 /// Current Policy reference metadata for a tenant-bound composable read ($1 is the tenant).
 /// The projection exposes only Scope and rollout references, never action payloads.
 pub const GROUP_REFERENCE_FACTS_SQL: &str = r#"

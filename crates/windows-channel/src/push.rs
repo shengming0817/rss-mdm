@@ -1,7 +1,6 @@
 //! WNS carries an empty native wake signal; acceptance is never command delivery evidence.
 //! ref: Microsoft push-notification-windows-mdm and WNS request/response headers.
-#[cfg(feature = "integration")]
-pub use crate::push_worker::cycle as wake_once;
+
 pub use crate::push_worker::{WakeScan, registration};
 use crate::{Error, Failure};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -32,8 +31,7 @@ pub struct Push {
     clock: std::sync::Arc<dyn rss_observation::Clock>,
     client: reqwest::Client,
     token_url: String,
-    #[cfg(feature = "integration")]
-    transport_origin: Option<reqwest::Url>,
+
     sid: String,
     secret: Zeroizing<String>,
     pub pfn: String,
@@ -143,8 +141,7 @@ impl Push {
             clock,
             client,
             token_url: "https://login.live.com/accesstoken.srf".into(),
-            #[cfg(feature = "integration")]
-            transport_origin: None,
+
             pfn,
             sid,
             secret: Zeroizing::new(secret),
@@ -213,12 +210,7 @@ impl Push {
     }
     pub async fn send(&self, channel: &str) -> Result<Receipt, Error> {
         let uri = channel_uri(channel)?;
-        #[cfg(feature = "integration")]
-        let uri = if let Some(origin) = &self.transport_origin {
-            origin.join(uri.path()).map_err(unavailable)?
-        } else {
-            uri
-        };
+
         let token = match self.bearer().await {
             Ok(token) => token,
             Err(_) => {
@@ -274,32 +266,6 @@ impl Push {
             outcome,
             retry_after,
         })
-    }
-}
-
-#[cfg(feature = "integration")]
-impl Push {
-    /// Controlled TLS transport only; native URI validation still runs before mapping.
-    pub fn fixture(
-        pfn: String,
-        sid: String,
-        secret: String,
-        client: reqwest::Client,
-        origin: &str,
-        clock: std::sync::Arc<dyn rss_observation::Clock>,
-    ) -> Result<Self, Error> {
-        let mut push = Self::new(pfn, sid, secret, clock)?;
-        let origin = reqwest::Url::parse(origin).map_err(unavailable)?;
-        if origin.scheme() != "https" || origin.host_str() != Some("localhost") {
-            return Err(Error::Malformed);
-        }
-        push.token_url = origin
-            .join("/accesstoken.srf")
-            .map_err(unavailable)?
-            .to_string();
-        push.transport_origin = Some(origin);
-        push.client = client;
-        Ok(push)
     }
 }
 

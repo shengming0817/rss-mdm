@@ -31,7 +31,6 @@ tokio = { workspace = true, features = ["test-util", "rt", "macros"] }
 
 [features]
 default = []
-integration = ["rss-audit-postgres/integration", "rss-transactional-messaging-postgres/integration"]
 
 [lints]
 workspace = true

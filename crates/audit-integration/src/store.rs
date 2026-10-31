@@ -129,13 +129,7 @@ impl AuditStore {
                 |e| Err(Error::Audit(e.into())),
             )
     }
-    #[cfg(feature = "integration")]
-    pub fn inject_next_fault(
-        &self,
-        fault: rss_transactional_messaging_postgres::PgTransactionFault,
-    ) {
-        self.runtime.inject_next_transaction_fault(fault);
-    }
+
     /// Admit the actual writer connection once at startup.
     pub async fn validate_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
         self.runtime

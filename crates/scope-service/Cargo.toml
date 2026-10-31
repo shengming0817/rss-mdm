@@ -53,8 +53,5 @@ futures.workspace = true
 sqlx = {workspace=true,features=["json","uuid"]}
 tokio = {workspace=true,features=["rt","macros","time","sync"]}
 
-[features]
-integration = ["rss-transactional-messaging-postgres/integration"]
-
 [lints]
 workspace = true

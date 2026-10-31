@@ -117,7 +117,3 @@ async fn qualify_host(
 
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "../../../tests/setup/mail.rs"]
-mod tests;

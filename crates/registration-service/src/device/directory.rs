@@ -205,24 +205,7 @@ impl DeviceService {
         self.access.confirm_query(p, &grant).await?;
         Ok(rss_mdm_query::Page { items, next_cursor })
     }
-    /// Real provider plan for the exact production candidate selector, with live tenant authorization.
-    #[cfg(feature = "integration")]
-    pub async fn directory_plan(&self, p: &AuthorizedPrincipal, q: &Query) -> Result<Value, Error> {
-        q.require_schema(&SCHEMA).map_err(error)?;
-        if p.tenant_id() != self.tenant || q.cursor().is_some() {
-            return Err(Error::Malformed);
-        }
-        let mut tx = self.access.begin(&self.tenant).await?;
-        let current = authority(&mut tx, p).await?;
-        let allowed = current
-            .inventory_devices(p)
-            .map_err(rss_mdm_authorization_service::Error::from)?;
-        let mut sql = selection(&self.tenant, allowed, q, None, true)?;
-        sql.build_query_scalar()
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)
-    }
+
     pub async fn directory_statistics(
         &self,
         p: &AuthorizedPrincipal,

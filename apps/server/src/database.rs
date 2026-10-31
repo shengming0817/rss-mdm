@@ -6,17 +6,13 @@ use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-#[cfg(test)]
-use sqlx::{Postgres, Transaction};
+
 use std::time::Duration;
 pub(crate) struct Database {
     inventory: std::sync::Arc<rss_mdm_inventory_service::Store>,
     registration: std::sync::Arc<rss_mdm_registration_service::Store>,
     authorization: std::sync::Arc<rss_mdm_authorization_service::Store>,
     pool: PgPool,
-    #[cfg(test)]
-    pub(crate) fixture_source_runtime:
-        tokio::sync::OnceCell<std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>>,
 }
 impl Database {
     pub(crate) fn archive_pool(&self) -> PgPool {
@@ -75,8 +71,6 @@ impl Database {
                 std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
             )),
             pool,
-            #[cfg(test)]
-            fixture_source_runtime: tokio::sync::OnceCell::new(),
         })
     }
     /// Host assembly shares this pool with Audit; Database remains its shutdown owner.
@@ -137,29 +131,11 @@ impl Database {
         .await
     }
     pub async fn close(&self) {
-        #[cfg(test)]
-        if let Some(runtime) = self.fixture_source_runtime.get() {
-            runtime.close().await;
-        }
         self.pool.close().await;
-    }
-    #[cfg(test)]
-    pub(crate) async fn configure_transaction(
-        tx: &mut Transaction<'_, Postgres>,
-        tenant: &str,
-    ) -> Result<(), Error> {
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true),set_config('lock_timeout','1000',true)")
-            .bind(tenant).execute(&mut **tx).await.map_err(db)?;
-        Ok(())
     }
 }
 
 pub(crate) fn db(error: sqlx::Error) -> Error {
-    #[cfg(test)]
-    eprintln!(
-        "test PG error category: {:?}",
-        error.as_database_error().and_then(|e| e.code())
-    );
     let _ = error;
     Error::Unavailable(Failure::Database)
 }
@@ -275,8 +251,6 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
     rss_mdm_inventory_postgres::verify_collections(&mut tx)
         .await
         .map_err(|error| {
-            #[cfg(feature = "integration")]
-            eprintln!("collection admission: {error}");
             let _ = error;
             Error::Unavailable(Failure::Database)
         })?;
@@ -306,8 +280,6 @@ async fn verify_reader_access(tx: &mut sqlx::PgConnection) -> Result<(), Error> 
             .await
             .map_err(db)?;
         if !valid {
-            #[cfg(feature = "integration")]
-            eprintln!("access reader admission rejected: {owner}");
             let _ = owner;
             return Err(Error::Unavailable(Failure::AccessAdmission));
         }

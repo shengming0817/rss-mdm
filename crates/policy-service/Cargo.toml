@@ -39,8 +39,5 @@ thiserror.workspace = true
 tokio-util.workspace = true
 tokio = {workspace=true,features=["rt","macros","time","sync"]}
 
-[features]
-integration = ["rss-transactional-messaging-postgres/integration"]
-
 [lints]
 workspace = true

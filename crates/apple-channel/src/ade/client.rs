@@ -76,12 +76,7 @@ impl Client {
             session: Zeroizing::new(String::new()),
         })
     }
-    #[cfg(feature = "integration")]
-    pub fn fixture(mut self, http: reqwest::Client, origin: String) -> Self {
-        self.http = http;
-        self.origin = origin;
-        self
-    }
+
     async fn session(&mut self) -> Result<(), RemoteError> {
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         if self.token.expires().map_err(|_| RemoteError::Invalid)? <= now {

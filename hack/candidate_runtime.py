@@ -338,7 +338,7 @@ class Candidate:
         return self.compose("run","--rm","--no-deps","operator",verb,"--config","/run/mdm/"+config,stage=stage)
     def prepare_telemetry(self):
         """Prepare the required baseline through the production telemetry installer."""
-        from t2_environment import private
+        from dev_environment import private
         name='telemetry_'+uuid.UUID(self.tenant).hex
         self.sql('CREATE DATABASE "'+name+'"')
         password=os.urandom(24).hex();cursor=os.urandom(32)
@@ -372,8 +372,8 @@ class Candidate:
     def prepare_pki(self):
         from windows_fixtures import generate
         from pki_fixtures import running
-        from t2_environment import private
-        windows=generate(self.root,self.root/'server.crt',self.root/'server.key')
+        from dev_environment import private
+        windows=generate(self.root)
         for channel in ('enrollment','management'):
             windows[channel]['origin']=f'https://windows-{channel}.{self.host}'
         private(self.root/'windows.json',windows)
@@ -400,7 +400,7 @@ class Candidate:
         self.compose('create','server',stage=Stage.SERVER)
         for config, provider in zip(providers, [windows_provider, self.agent_provider], strict=True):
             from urllib.parse import urlsplit
-            from t2_environment import PKI_CA
+            from dev_environment import PKI_CA
             external=urlsplit(config['origin'])
             require(external.scheme=='https' and external.hostname=='localhost' and external.port,'invalid fixture CA origin')
             provider.owner.extra['MDM_PKI_PUBLISH']=f'127.0.0.1:{external.port}:{PKI_CA["port"]}'
@@ -411,7 +411,7 @@ class Candidate:
         self.agent_port=self.port
     def __enter__(self):
         try:
-            from t2_environment import ROOT, project_name, private
+            from dev_environment import ROOT, project_name, private
             self.temporary=tempfile.TemporaryDirectory(prefix=self.name+"-")
             self.root=Path(self.temporary.name)
             self.worktree_identity=project_name(self.root)

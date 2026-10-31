@@ -405,15 +405,3 @@ impl Service {
         Ok(value)
     }
 }
-
-#[cfg(feature = "integration")]
-impl Service {
-    pub fn pause_query_before_authority(
-        &self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        std::sync::Arc<tokio::sync::Notify>,
-    ) {
-        self.store.pause_query_before_authority()
-    }
-}

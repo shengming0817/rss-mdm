@@ -193,8 +193,7 @@ pub(super) async fn page(
             &mut source_rows,
         )
         .await?;
-        #[cfg(feature = "integration")]
-        s.read_checkpoint(crate::queries::ReadPhase::Facts).await?;
+
         if rows.is_empty() {
             break;
         }
@@ -286,8 +285,7 @@ pub(super) async fn statistics(
             &mut source_rows,
         )
         .await?;
-        #[cfg(feature = "integration")]
-        s.read_checkpoint(crate::queries::ReadPhase::Facts).await?;
+
         if rows.is_empty() {
             break;
         }

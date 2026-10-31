@@ -64,7 +64,7 @@ ADE 面向企业所有、分配到指定 Apple MDM server 的 Mac，产品 MDM �
 
 Setup Assistant 下载 URL 由服务端生成，接收 Apple 制造商证书链验证后的 CMS MachineInfo，并核对序列号、UDID、macOS 版本、组织目录与当前 profile 分配。已签字典不提供一次性 nonce，因此签名不等于新鲜性；它只启动五分钟、绑定固定 challenge/CSR/设备身份的现有注册。目录陈旧、取消分配、配置变更、禁用或 token 失效会拒绝未完成注册的后续证书准入。成功绑定之后沿用同一设备/注册/世代、SCEP、mTLS、TokenUpdate 与续期，不消费个人 quota，也不把管理员会话冒充设备主体。
 
-T2 使用受控 Apple HTTPS 和制造商根证书，仅证明本地协议、持久化与恢复行为。T3 必须另行记录真实 Apple 组织/server、公钥和 token、可重置 Mac 的采购/Configurator 加入来源、macOS/机型、完整 Setup Assistant、SCEP/mTLS/TokenUpdate、后台同步与轮换、mandatory/removal/skip 实际行为。无现成 ADE 资格的 Mac 可以在 Apple 支持条件下用 iPhone Apple Configurator 加入组织：Mac 需 Apple silicon 或 T2、macOS 12.0.1+，iPhone iOS 16+，抹除后停在地区选择阶段；还须核对三十天 provisional release 例外。此次未取得真实组织/token/Mac，T3 尚未验收，不能据 T2 宣称真实 ADE 注册成功。
+当前 Apple T2 尚未重建，本地协议、持久化与恢复缺少现行 T2 证明。T3 必须另行记录真实 Apple 组织/server、公钥和 token、可重置 Mac 的采购/Configurator 加入来源、macOS/机型、完整 Setup Assistant、SCEP/mTLS/TokenUpdate、后台同步与轮换、mandatory/removal/skip 实际行为。无现成 ADE 资格的 Mac 可以在 Apple 支持条件下用 iPhone Apple Configurator 加入组织：Mac 需 Apple silicon 或 T2、macOS 12.0.1+，iPhone iOS 16+，抹除后停在地区选择阶段；还须核对三十天 provisional release 例外。此次未取得真实组织/token/Mac，T3 尚未验收，不能据 T2 宣称真实 ADE 注册成功。
 
 协议来源：[Apple ADE 认证](https://developer.apple.com/documentation/devicemanagement/authenticating-for-automated-device-enrollment)、[MachineInfo](https://developer.apple.com/documentation/devicemanagement/machineinfo)、[Setup Assistant keys](https://developer.apple.com/documentation/devicemanagement/skipkeys)，以及 NanoDEP `tokenpki/parse.go`、`client/auth.go`、`sync/syncer.go` 固定提交 `f3eedc15d92933b1e793f60001141299e1791f23`。制造商根直接来自 Apple 证书发布站点，溯源见证书 fixtures。
 
@@ -76,7 +76,7 @@ Apple 的签名 CMS 请求只证明载荷完整性，不作为设备认证或组
 
 浏览器流程和未完成注册各有 300 秒期限。进行中的流程不配置续命入口，过期后重新从系统发起。bearer 的持续授权由原 Identity 会话的当前有效性决定，不单独延长会话。账户注册的用户通道每次请求都同时验证当前设备证书、bearer、组织/账户版本和原 Identity 会话；设备通道使用设备证书。登出、停用或会话失效后，用户通道返回新的认证地址，登录后在同一 enrollment/registration 上轮换授权，不增加额度。撤销组织映射或注册后旧授权不能继续使用。密码式 Profile 下载或 resume 不接受账户注册。进度仅报告服务端观察到的证书、首次 check-in、TokenUpdate 和重新认证需求；不声明已观察到系统确认。
 
-原生 `GetToken` 只接受 `TokenServiceType=com.apple.maid`，返回由组织密钥签名的 RS256 JWT，issuer 使用 Apple 指定的服务器 UUID。其有效性还依赖真实 Apple 组织的公钥登记与配置；本地 API 成功不证明 Apple 接受。`make t2 MODULE=apple.account_enrollment` 覆盖真实 HTTP/Identity/PostgreSQL、CMS、外部 SCEP、mTLS、同一注册重新认证与撤权；真实组织和 Mac 验收由独立后续任务持有。
+原生 `GetToken` 只接受 `TokenServiceType=com.apple.maid`，返回由组织密钥签名的 RS256 JWT，issuer 使用 Apple 指定的服务器 UUID。其有效性还依赖真实 Apple 组织的公钥登记与配置；本地 API 成功不证明 Apple 接受。账户驱动注册的相关 T2 当前尚未重建；真实组织和 Mac 验收由独立后续任务持有。
 
 ## 用户通道与 Bootstrap Token
 
@@ -133,7 +133,7 @@ Resource 的 NativeConfiguration `apply` / `remove` 中，Apple 请求为 `{"kin
 
 operation observation 分别返回 expected、synchronization、nativeStatus、effect 和 compliance。原生状态区分 valid/invalid/unknown、active 与 reasons；共同 applied 仅表示精确版本的声明核验完成。空集合撤回的 ACK 和无版本缺席报告不会证明终端移除。乱序的同版本冲突、未关联版本的增量状态保持 Unknown；receivedAt 只表示服务器收到证据的时间。详细值仍需要 operation_read 及原操作全部权限；Profile 原始清单还需要 inventory_collect，缺少权限时仍可读取核验摘要。每作用域最多 16 个有效 publication，累计状态预算为每个 512 KiB，预算耗尽后明确 Unknown；这些报告不自动成为 Inventory Snapshot 或合规成功。
 
-`make t2 MODULE=apple.ddm` 验证 Policy 共享声明、保留与撤回，以及受保护 Legacy Profile 资产的接管和独立移除证据；`MODULE=apple.status` 验证冲突、作用域和撤权。真实 Mac 的同步、状态与 Profile 交接属于独立 T3，缺口登记为 [#2647](https://dev.azure.com/shengming0923/rss/_workitems/edit/2647)。
+DDM 及状态接缝的 T2 当前尚未重建。真实 Mac 的同步、状态与 Profile 交接属于独立 T3，缺口登记为 [#2647](https://dev.azure.com/shengming0923/rss/_workitems/edit/2647)。
 
 ## 产品配置
 
@@ -162,7 +162,7 @@ operation observation 分别返回 expected、synchronization、nativeStatus、e
 稳定注册配置身份只包含管理 origin、APNs topic 与两个 webhook ID。SCEP URL/provisioner 与 issuer 指纹由签发代次持有，轮换不会改变稳定注册配置。改变稳定配置会拒绝旧注册继续准入，须安排重新注册；仅更换同 ID 的 HMAC secret 不改变配置身份，但两端必须同步更新。不得把配置漂移当作证书恢复。
 ## 外部 CA 配置
 
-部署专用 Apple issuer 与独立 CA 数据库，保护 CA signer/decrypter、管理员和 webhook 秘密。使用固定版本 step CLI 的管理员 API 创建 SCEP provisioner 与 webhook；静态 JSON 的 `secret` 不会建立有效 webhook 密钥。固定 step CLI 与 CA 摘要由 [PKI tools lock](../../fixtures/pki-tools.lock.json) 持有，测试安装代码可参考 [apple_ca.py](../../hack/apple_ca.py)。
+部署专用 Apple issuer 与独立 CA 数据库，保护 CA signer/decrypter、管理员和 webhook 秘密。使用固定版本 step CLI 的管理员 API 创建 SCEP provisioner 与 webhook；静态 JSON 的 `secret` 不会建立有效 webhook 密钥。固定 step CLI 与 CA 摘要由 [PKI tools lock](../../fixtures/pki-tools.lock.json) 持有，Apple CA 的真实签发和恢复 T2 当前尚未重建。
 
 SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认签发 24h，最大时长应小于 90 日以包含 backdate。配置 SCEP RSA decrypter 证书与密钥。签名模板只使用经 HMAC 回调授权返回的主题：
 
@@ -236,7 +236,6 @@ Password 用户注册的 signingKey 为 null，proof 由当前共享设备 signi
 Password 原生请求仍使用相同外层 form，但 assertion 是设备签署的 login-request，内部 grant_type 为 password 并携带必要生命周期内的密码，不带 SE 用户内层 assertion。服务端先原子保留 nonce 和无秘密的 attempt，再在 SQL 锁外调用 Keycloak 密码验证，最后复核注册、绑定、配置及主体代际后签发加密响应。密码不进入数据库、事件或审计。状态 passwordExchange 只表示服务端交换结果；中断超时显示 unknown，客户端查询后使用新 nonce 重新认证，不盲目重放原请求。IdP 持有密码权威，正式改密后由 Mac 验证和同步；离线本地修改不会自动回写 IdP。
 
 首个浏览器消费者是当前租户 RSS MDM `/login`。同源 POST `/browser/begin` 携带 `bindingId`，取得 Identity challenge 并设置 Secure/HttpOnly/SameSite=Strict 的浏览器绑定 cookie；POST `/browser/complete` 携带 `challengeId/nonce/proof`。proof 在 Secure Enclave 模式使用用户 signing key，Password 模式使用当前共享设备 signing key，typ 为 `rss-mdm-platform-sso-browser+jwt`，绑定 `iss`（source ID）、`aud`（challenge audience）、`nonce`、`sourceVersion`、尚有效的原生 `accessToken` 与 `iat/exp`。服务端通过 P2 再核验当前人员/绑定/设备/策略状态后创建普通 Identity 会话，不接收任意 ID token，不转换为平台管理员或自助门户会话。密钥、nonce、原始 proof/token 和本地密码不进入审计详情。
-
 
 ### 管理目录与材料历史
 

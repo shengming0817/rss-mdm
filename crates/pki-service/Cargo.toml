@@ -35,7 +35,6 @@ tokio = { workspace = true, features = ["time"] }
 
 [features]
 default = []
-integration = []
 
 [lints]
 workspace = true

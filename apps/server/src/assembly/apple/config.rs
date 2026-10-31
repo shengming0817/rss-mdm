@@ -7,9 +7,7 @@ use std::{net::SocketAddr, path::PathBuf};
 pub struct Config {
     #[serde(default)]
     pub platform_sso: Option<PlatformSso>,
-    #[cfg(test)]
-    #[serde(skip)]
-    pub test_push_transport: Option<(String, PathBuf)>,
+
     pub management: PublicEndpoint,
     #[serde(default)]
     pub trust_file: PathBuf,

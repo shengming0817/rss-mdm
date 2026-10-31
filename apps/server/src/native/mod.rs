@@ -16,16 +16,12 @@ pub(crate) enum ChannelKind {
     WindowsEnrollment,
     WindowsManagement,
     AppleManagement,
-    #[cfg(test)]
-    AppleWebhookFixture,
 }
 impl ChannelKind {
     pub(crate) const fn windows_retention(self) -> bool {
         match self {
             Self::WindowsManagement => true,
             Self::Agent | Self::WindowsEnrollment | Self::AppleManagement => false,
-            #[cfg(test)]
-            Self::AppleWebhookFixture => false,
         }
     }
 }

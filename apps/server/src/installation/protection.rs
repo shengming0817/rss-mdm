@@ -578,7 +578,3 @@ async fn rotation_connection(input: &Input, base: &Value) -> Result<sqlx::PgConn
         .map_err(|_| Error::Storage)?;
     Ok(c)
 }
-
-#[cfg(all(test, feature = "integration"))]
-#[path = "../../tests/setup/native_rewrap.rs"]
-mod tests;

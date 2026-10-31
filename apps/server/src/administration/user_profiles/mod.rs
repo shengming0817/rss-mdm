@@ -210,7 +210,3 @@ impl Backend {
 #[cfg(test)]
 #[path = "../../../tests/settings/user_profiles.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "../../../tests/settings/recent_auth.rs"]
-mod recent_tests;

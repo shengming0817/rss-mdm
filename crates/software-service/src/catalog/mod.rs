@@ -689,8 +689,5 @@ pub async fn reference_count_in(
     u64::try_from(count).map_err(|_| Error::Integrity)
 }
 
-#[cfg(feature = "integration")]
-pub mod fixture;
-
 /// Current installation permissions and objects of this owner.
 pub const RELATIONS_SQL: &str = include_str!("relations.sql");

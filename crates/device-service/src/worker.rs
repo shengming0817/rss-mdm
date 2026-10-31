@@ -16,13 +16,6 @@ pub struct DeviceWork {
     messaging: PgMessagingStore,
     retirement: Arc<dyn rss_mdm_registration_service::Retirement>,
     concurrency: usize,
-    #[cfg(feature = "integration")]
-    compute_gate: std::sync::Mutex<
-        Option<(
-            tokio::sync::mpsc::UnboundedSender<Computed>,
-            std::collections::BTreeSet<String>,
-        )>,
-    >,
 }
 impl DeviceWork {
     pub async fn new(
@@ -63,8 +56,6 @@ impl DeviceWork {
             messaging,
             retirement,
             concurrency,
-            #[cfg(feature = "integration")]
-            compute_gate: Default::default(),
         })
     }
     fn scope(&self) -> Scope {
@@ -142,8 +133,7 @@ impl DeviceWork {
                             })
                         })
                         .await?;
-                    #[cfg(feature = "integration")]
-                    self.compute_checkpoint(&device).await;
+
                     let facts = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
@@ -440,52 +430,6 @@ impl Timer for DeviceTimer {
         match self.0.checked_add(at) {
             Some(at) => tokio::time::sleep_until(at).await,
             None => std::future::pending().await,
-        }
-    }
-}
-
-/// A finite integration-test synchronization point after real identity computation.
-#[cfg(feature = "integration")]
-pub struct Computed {
-    pub device: String,
-    pub resume: Arc<tokio::sync::Notify>,
-}
-#[cfg(feature = "integration")]
-impl Drop for Computed {
-    fn drop(&mut self) {
-        // Dropping the receiver or a failed test must release paused transactions.
-        self.resume.notify_one();
-    }
-}
-#[cfg(feature = "integration")]
-impl DeviceWork {
-    /// Pause each named device once, retaining its real transaction and device fences.
-    pub fn pause_after_compute(
-        &self,
-        devices: Vec<String>,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<Computed> {
-        let (send, receive) = tokio::sync::mpsc::unbounded_channel();
-        *self.compute_gate.lock().expect("integration gate") =
-            Some((send, devices.into_iter().collect()));
-        receive
-    }
-    async fn compute_checkpoint(&self, device: &str) {
-        let send = {
-            let mut gate = self.compute_gate.lock().expect("integration gate");
-            gate.as_mut()
-                .and_then(|(send, devices)| devices.remove(device).then(|| send.clone()))
-        };
-        if let Some(send) = send {
-            let resume = Arc::new(tokio::sync::Notify::new());
-            if send
-                .send(Computed {
-                    device: device.to_owned(),
-                    resume: resume.clone(),
-                })
-                .is_ok()
-            {
-                resume.notified().await;
-            }
         }
     }
 }

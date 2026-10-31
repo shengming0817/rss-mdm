@@ -171,8 +171,7 @@ impl Associations {
         value["fields"] = serde_json::to_value(fields).map_err(|_| Error::Storage)?;
         value["lists"] = serde_json::to_value(lists).map_err(|_| Error::Storage)?;
         value["inventorySources"] = json!(provenance);
-        #[cfg(feature = "integration")]
-        self.read_checkpoint().await?;
+
         let subject = personnel.revalidate(proof).await?;
         self.confirm_scope(proof, &access.binding, subject.as_ref(), &budget)
             .await?;

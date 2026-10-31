@@ -410,41 +410,7 @@ async fn created(
     Ok(response)
 }
 
-impl ExecutionService {
-    /// Reconcile the accepted command under the same audited execution owner.
-    #[cfg(feature = "integration")]
-    pub async fn recover_operation(
-        &self,
-        id: Uuid,
-        audit: &RequestAudit,
-    ) -> std::result::Result<(), Error> {
-        crate::transaction::run(
-            &self.transactions.audit_store,
-            &self.transactions.runtime,
-            self.transactions.tenant,
-            audit,
-            (self, id),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (service, id) = *ctx;
-                    let operation = storage::load(tx, &service.transactions.protection, id).await?;
-                    let _page = service
-                        .transactions
-                        .store
-                        .recover(
-                            tx,
-                            operation.scope,
-                            dc::BatchLimit::new(64).expect("fixed bounded page"),
-                            None,
-                        )
-                        .await?;
-                    Ok(())
-                })
-            },
-        )
-        .await
-    }
-}
+impl ExecutionService {}
 
 /// A request receipt is actor-bound; a different actor cannot probe another operation's secret input.
 pub(crate) async fn reject_existing_operation(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
@@ -456,9 +422,6 @@ pub(crate) async fn reject_existing_operation(tx: &mut PgTransaction<'_>, id: Uu
         Ok(())
     }
 }
-
-#[cfg(feature = "integration")]
-mod fixture;
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -2,8 +2,7 @@
 //! ref: PostgreSQL LISTEN/NOTIFY commit and initial-snapshot rules;
 //! sqlx 0.9 sqlx-postgres/src/listener.rs (try_recv reports a completed reconnect).
 use rss_runtime::{ManagedResource, ManagedTask, ManagedTaskRegistration, ShutdownError};
-#[cfg(test)]
-use sqlx::PgConnection;
+
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgListener, PgPoolOptions},
@@ -98,16 +97,6 @@ impl Signals {
             self.get(work).notify_one();
         }
     }
-}
-
-/// Called inside the transaction that persists work; PostgreSQL sends only at COMMIT.
-#[cfg(test)]
-pub(crate) async fn notify(connection: &mut PgConnection, work: Work) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),$1)")
-        .bind(work.payload())
-        .execute(connection)
-        .await?;
-    Ok(())
 }
 
 /// One pending permit survives a notification received between the scan and this wait.

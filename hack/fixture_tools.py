@@ -15,11 +15,10 @@ import time
 import urllib.request
 
 from build_run import lock_file, require_lease
-from t2_processes import check_cancelled
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = json.loads((ROOT/'fixtures/pki-tools.lock.json').read_text())
-
 
 @contextmanager
 def publication(directory):
@@ -28,18 +27,17 @@ def publication(directory):
     held = None
     try:
         while held is None:
-            check_cancelled()
+
             held = lock_file(directory/'.publish.lock')
             if held is None:
                 if time.monotonic() >= deadline:
                     raise RuntimeError('fixture tool publication lock deadline')
                 time.sleep(.05)
-        check_cancelled()
+
         yield
     finally:
         if held is not None:
             os.close(held)
-
 
 def publish(path, content, mode=0o600):
     """Replace only verified bytes; cleanup never touches another caller's stage."""
@@ -53,7 +51,6 @@ def publish(path, content, mode=0o600):
     finally:
         staged.unlink(missing_ok=True)
 
-
 def verified_archive(path, url, expected, *, timeout, limit):
     try:
         data = path.read_bytes()
@@ -65,10 +62,9 @@ def verified_archive(path, url, expected, *, timeout, limit):
         data = response.read(limit)
     if hashlib.sha256(data).hexdigest() != expected:
         raise RuntimeError('fixed fixture source/artifact checksum mismatch')
-    check_cancelled()
+
     publish(path, data)
     return data
-
 
 def binary(name):
     item = LOCK[name]
@@ -89,7 +85,6 @@ def binary(name):
         if not destination.exists() or destination.read_bytes() != content or not os.access(destination, os.X_OK):
             publish(destination, content, 0o700)
         return destination
-
 
 if __name__ == '__main__':
     require_lease(ROOT)

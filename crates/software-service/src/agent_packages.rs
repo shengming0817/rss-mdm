@@ -228,29 +228,6 @@ fn package_material(
     Ok((package, binding))
 }
 
-/// Prepare a current release from an already enabled, content-backed software version.
-/// Publication endpoints retain ownership of receipts, audit and installer admission proofs.
-#[cfg(feature = "integration")]
-pub async fn fixture_release_in(
-    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    version: &r::Version,
-    target: w::Target,
-    variant: &str,
-) -> transaction::Result<w::Package> {
-    let selection = Selection {
-        resource: version.resource().as_str().to_owned(),
-        version: version.label().as_str().to_owned(),
-        variant: variant.into(),
-        target,
-    };
-    let (package, binding) = package_material(tx.tenant_id(), version, &selection)?;
-    if let Some(existing) = existing_in(tx, &package, &binding).await? {
-        return Ok(existing);
-    }
-    insert_in(tx, &package, &binding).await?;
-    Ok(package)
-}
-
 // Catalog/upload identities and content locations do not change executable material.
 // Preserve every execution field, including secondary artifacts and signature evidence.
 fn material(spec: &r::SoftwareSpec) -> Result<serde_json::Value, Error> {

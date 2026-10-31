@@ -8,14 +8,8 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
-#[cfg(feature = "integration")]
-type PageGate = (
-    tokio::sync::oneshot::Sender<()>,
-    tokio::sync::oneshot::Receiver<()>,
-);
+
 pub struct Scopes {
-    #[cfg(feature = "integration")]
-    pub(crate) page_gate: std::sync::Mutex<Option<PageGate>>,
     pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
     pub(crate) read_pool: sqlx::PgPool,
@@ -51,8 +45,6 @@ impl Scopes {
     ) -> std::result::Result<Self, Error> {
         let store = rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant);
         let s = Self {
-            #[cfg(feature = "integration")]
-            page_gate: Default::default(),
             runtime,
             tenant,
             clock,

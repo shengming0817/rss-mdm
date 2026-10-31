@@ -368,7 +368,6 @@ impl crate::agent::Service {
                     .bind(actor.tenant_id()).bind(*operation).bind(serde_json::to_value(&value).map_err(|_|Error::Corrupt)?)
                     .execute(c).await.map_err(crate::database::db)?;
 
-
                 Ok(crate::agent::Change{value:(value,claimed), replay:false})
             })).await
     }

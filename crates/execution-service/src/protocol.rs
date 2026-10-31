@@ -113,8 +113,7 @@ impl ExecutionService {
                             .await
                             .map_err(Error::from)?;
                     }
-                    #[cfg(feature = "integration")]
-                    s.wait_windows_commit(p.device()).await?;
+
                     Ok(channels::ManagementReply::Response(bytes))
                 })
             },
@@ -850,49 +849,3 @@ async fn read_evidence_rows_on(
 const WINDOWS_RECEIPTS: &str = "SELECT a.operation,a.id AS attempt,a.phase,a.ordinal,a.session,a.message,i.command,i.parent_command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.value IS NOT NULL AS has_value,i.receipt_accepted,i.received_at,i.result_accepted,i.result_received_at,coalesce((SELECT jsonb_agg(jsonb_build_object('message',f.message,'command',f.command,'startByte',f.start_byte,'endByte',f.end_byte,'totalBytes',f.total_bytes,'status',f.status,'accepted',f.accepted,'receivedAt',f.received_at) ORDER BY f.message,f.command) FROM mdm_commands.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.command=i.command),'[]'::jsonb) AS frames FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=ANY($2) ORDER BY a.operation,a.ordinal,i.command,i.item_ordinal";
 const WINDOWS_PLATFORMS: &str = "SELECT DISTINCT ON(operation) operation,platform FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2) AND phase='execute' ORDER BY operation,ordinal DESC";
 const WINDOWS_ENDPOINTS: &str = "SELECT DISTINCT ON(a.operation) a.operation,m.response,a.credential,a.session,a.message FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN mdm_access.management_messages m ON(m.tenant_id,m.registration,m.session_id,m.message_id)=(a.tenant_id,o.registration,a.session::text,a.message) JOIN mdm_access.management_sessions s ON(s.tenant_id,s.registration,s.session_id)=(m.tenant_id,m.registration,m.session_id) WHERE a.tenant_id=$1::uuid AND a.operation=ANY($2) AND a.phase='observe' AND s.generation=o.registration_generation AND a.session<>(SELECT session FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=a.operation AND phase='execute' ORDER BY ordinal DESC LIMIT 1) ORDER BY a.operation,a.ordinal DESC";
-
-#[cfg(feature = "integration")]
-pub(crate) struct CommitGate {
-    device: String,
-    ready: tokio::sync::oneshot::Sender<()>,
-    resume: Arc<tokio::sync::Notify>,
-}
-#[cfg(feature = "integration")]
-impl ExecutionService {
-    /// Hold an already-written Windows business transaction immediately before settlement.
-    pub fn pause_windows_commit(
-        &self,
-        device: String,
-        ready: tokio::sync::oneshot::Sender<()>,
-        resume: Arc<tokio::sync::Notify>,
-    ) {
-        *self
-            .windows_commit_gate
-            .lock()
-            .expect("Windows commit gate") = Some(CommitGate {
-            device,
-            ready,
-            resume,
-        });
-    }
-    async fn wait_windows_commit(&self, device: &str) -> crate::Result<()> {
-        let gate = {
-            let mut slot = self
-                .windows_commit_gate
-                .lock()
-                .expect("Windows commit gate");
-            if slot.as_ref().is_some_and(|gate| gate.device == device) {
-                slot.take()
-            } else {
-                None
-            }
-        };
-        if let Some(gate) = gate {
-            let _ = gate.ready.send(());
-            tokio::time::timeout(std::time::Duration::from_secs(5), gate.resume.notified())
-                .await
-                .map_err(|_| Error::Conflict)?;
-        }
-        Ok(())
-    }
-}

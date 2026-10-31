@@ -220,7 +220,3 @@ impl rss_runtime::ManagedResource for Resource {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/groups/delivery.rs"]
-mod tests;

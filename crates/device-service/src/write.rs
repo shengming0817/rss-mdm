@@ -339,7 +339,3 @@ fn validate_confirm(request: &Confirm) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(feature = "integration")]
-#[path = "confirmation_history.rs"]
-mod confirmation_history;

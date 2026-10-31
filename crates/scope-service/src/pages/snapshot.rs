@@ -4,32 +4,6 @@ use super::*;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 impl Scopes {
-    #[cfg(feature = "integration")]
-    pub fn pause_page(
-        &self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        tokio::sync::oneshot::Sender<()>,
-    ) {
-        let (reached, wait) = tokio::sync::oneshot::channel();
-        let (resume, release) = tokio::sync::oneshot::channel();
-        assert!(
-            self.page_gate
-                .lock()
-                .expect("page gate")
-                .replace((reached, release))
-                .is_none()
-        );
-        (wait, resume)
-    }
-    #[cfg(feature = "integration")]
-    pub(super) async fn page_boundary(&self) {
-        let gate = self.page_gate.lock().expect("page gate").take();
-        if let Some((reached, release)) = gate {
-            let _ = reached.send(());
-            let _ = release.await;
-        }
-    }
     pub async fn page(
         &self,
         proof: &AuthorizedPrincipal,

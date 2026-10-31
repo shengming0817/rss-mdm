@@ -57,10 +57,5 @@ tokio-util.workspace=true
 axum.workspace=true
 tokio={workspace=true,features=["rt","macros","time"]}
 time={workspace=true,features=["formatting"]}
-[dev-dependencies]
-anyhow.workspace=true
 [lints]
 workspace=true
-
-[features]
-integration=["rss-mdm-pki-service/integration","rss-mdm-registration-service/integration","rss-mdm-certificate/integration"]

@@ -55,8 +55,7 @@ pub struct IdentitySeed {
 }
 pub struct Apple {
     pub(crate) platform_sso: Option<Arc<platform_sso::Runtime>>,
-    #[cfg(feature = "integration")]
-    pub(crate) ade_fixture: Option<ade::Fixture>,
+
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) config: Config,
     pub(crate) authority: rss_mdm_device_trust::apple::AppleDeviceTrust,
@@ -162,8 +161,7 @@ impl Apple {
         let configuration = protocol_identity(&config);
         Self {
             platform_sso: None,
-            #[cfg(feature = "integration")]
-            ade_fixture: None,
+
             protection,
             config,
             authority,
@@ -178,11 +176,7 @@ impl Apple {
             account_keys: Default::default(),
         }
     }
-    #[cfg(feature = "integration")]
-    pub fn with_ade_fixture(mut self, fixture: ade::Fixture) -> Self {
-        self.ade_fixture = Some(fixture);
-        self
-    }
+
     pub fn with_platform_sso(mut self, runtime: Option<Arc<platform_sso::Runtime>>) -> Self {
         self.platform_sso = runtime;
         self
@@ -514,42 +508,6 @@ pub mod boundary;
 
 /// Exact read/write privileges required from the host access role.
 pub const ACCESS_ADMISSION_SQL: &str = include_str!("access-admission.sql");
-
-#[cfg(feature = "integration")]
-impl Apple {
-    pub fn scep_fixture(&self) -> Result<(String, String), Error> {
-        let generation = self.authority.trust.active().map_err(|_| Error::Conflict)?;
-        let url = self
-            .providers
-            .scep(&generation.digest)
-            .map_err(|_| Error::Conflict)?;
-        Ok((url.to_owned(), generation.provisioner))
-    }
-    pub fn trust_fixture(&self) -> &rss_mdm_device_trust::apple::AppleDeviceTrust {
-        &self.authority
-    }
-    pub fn signer_expiration_fixture(&self) -> u64 {
-        self.signer.expires()
-    }
-    pub fn push_fixture(&self) -> &push::Push {
-        &self.push
-    }
-    pub fn challenge_signature_fixture(&self, body: &[u8]) -> ring::hmac::Tag {
-        self.webhooks
-            .signature_fixture(
-                &self
-                    .authority
-                    .trust
-                    .active()
-                    .expect("fixture issuer")
-                    .digest,
-                webhook::Stage::Challenge,
-                body,
-            )
-            .expect("fixture webhook")
-            .1
-    }
-}
 
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

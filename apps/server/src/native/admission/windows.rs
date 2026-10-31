@@ -128,35 +128,6 @@ pub(crate) async fn admit_windows(
     next.run(request).await
 }
 
-#[cfg(all(test, feature = "integration"))]
-#[derive(Debug)]
-pub(crate) struct BudgetProbe {
-    pub ip_tokens: f64,
-    pub ip_in_flight: usize,
-    pub device_in_flight: usize,
-    pub request_available: usize,
-}
-#[cfg(all(test, feature = "integration"))]
-impl Admission {
-    /// Read counters without retaining a request lease or changing refill time.
-    pub(crate) fn windows_budget(&self, tenant: uuid::Uuid, device: &str) -> BudgetProbe {
-        let state = self.state.lock().unwrap();
-        BudgetProbe {
-            ip_tokens: state.peers.values().map(|p| p.request_rate.tokens).sum(),
-            ip_in_flight: state
-                .peers
-                .values()
-                .map(|p| 2 - p.requests.available_permits())
-                .sum(),
-            device_in_flight: state
-                .devices
-                .get(&(tenant, device.into()))
-                .map_or(0, |p| 2 - p.requests.available_permits()),
-            request_available: self.requests.available_permits(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

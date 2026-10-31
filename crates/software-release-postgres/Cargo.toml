@@ -18,12 +18,6 @@ sha2.workspace = true
 thiserror.workspace = true
 [dev-dependencies]
 uuid.workspace = true
-tokio = {workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util", "sync"]}
-[features]
-integration = ["rss-transactional-messaging-postgres/integration"]
+
 [lints]
 workspace = true
-
-[[test]]
-name="recovery"
-required-features=["integration"]

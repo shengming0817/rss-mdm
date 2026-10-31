@@ -654,52 +654,6 @@ fn stream_correlation(scope: &Scope) -> String {
         .collect()
 }
 
-#[cfg(feature = "test-support")]
-impl InventoryRuntime {
-    pub async fn fixture(
-        options: PgConnectOptions,
-        access: Arc<Store>,
-        tenant: TenantId,
-        monotonic: Arc<dyn rss_observation::Clock>,
-        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    ) -> Result<Arc<Self>, Error> {
-        let clock = Clock::new(monotonic);
-        let observation = ObservationResource::open(options.clone(), clock.clone()).await?;
-        let cancel = CancellationToken::new();
-        let control = Control::new(&clock, clock.cutoff(), &cancel);
-        let projection = match ProjectionResource::open(options, clock.clone(), &control).await {
-            Ok(p) => p,
-            Err(error) => {
-                observation.shutdown().await.map_err(|_| unavailable())?;
-                return Err(error);
-            }
-        };
-        Ok(Arc::new(Self::new(
-            observation.store,
-            projection.store,
-            access.clone(),
-            audit_store,
-            tenant,
-            clock,
-            Arc::new(Readiness::default()),
-        )))
-    }
-    pub async fn close_fixture(&self) -> Result<(), ShutdownError> {
-        ProjectionResource {
-            store: self.projection.clone(),
-            clock: self.clock.clone(),
-        }
-        .shutdown()
-        .await?;
-        ObservationResource {
-            store: self.observation.clone(),
-            clock: self.clock.clone(),
-        }
-        .shutdown()
-        .await
-    }
-}
-
 fn observation_deferred(error: &rss_observation::Error, phase: &str) -> bool {
     use rss_observation::ErrorKind;
     let retry = matches!(
@@ -721,54 +675,6 @@ fn observation_deferred(error: &rss_observation::Error, phase: &str) -> bool {
 #[cfg(test)]
 #[path = "../tests/runtime.rs"]
 mod unit;
-#[cfg(feature = "test-support")]
-impl InventoryRuntime {
-    pub async fn fixture_activate(
-        &self,
-        report: &DurableReport,
-    ) -> Result<VerifiedBatch, rss_observation::Error> {
-        let authority = ReportAuthority(report);
-        self.observation
-            .activate(
-                &LifecycleGrant::verify(&authority, report.scope().clone())?,
-                None,
-                &rss_observation::Policy::new(86400, 3600, 3600)?,
-                self.clock.deadline(),
-            )
-            .await?;
-        VerifiedBatch::verify(&authority, report.scope().clone(), report.batch().clone())
-    }
-    #[cfg(feature = "integration")]
-    pub async fn fixture_receive(
-        &self,
-        batch: &VerifiedBatch,
-        fault: rss_observation_postgres::Fault,
-    ) -> Result<rss_observation::ReceiveOutcome, rss_observation::Error> {
-        self.observation.inject_next_fault(fault);
-        self.observation.receive(batch, self.clock.deadline()).await
-    }
-    #[cfg(feature = "integration")]
-    pub fn fixture_lose_next_delivery_ack(&self) {
-        self.delivery.inject_ack_loss();
-    }
-    pub async fn fixture_deliver(&self, report: &DurableReport) -> Result<(), WorkerFailure> {
-        self.deliver(report, self.clock.deadline())
-            .await
-            .map(|_| ())
-    }
-    pub async fn fixture_wait_stopped(&self) -> rss_runtime::TaskExit {
-        self.readiness
-            .task
-            .get()
-            .expect("fixture worker")
-            .wait_stopped()
-            .await
-    }
-    #[cfg(feature = "integration")]
-    pub fn fixture_projection_fault(&self, fault: rss_projection_postgres::PgFault) {
-        self.projection.inject_next_fault(fault);
-    }
-}
 
 // Narrow schema adapter for the actual RSS serializer, not an alternate observation DTO.
 // ref: rss@3de9b9eb7c43fad5ed39a02e41a035464224d3fb crates/observation/src/state.rs.

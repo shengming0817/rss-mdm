@@ -30,8 +30,6 @@ pub fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(TRANSACTION_BUDGET)
 }
 pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>) -> PgError {
-    #[cfg(any(test, feature = "integration"))]
-    eprintln!("transaction rejected: {error:?}");
     let (reason, db) = match error {
         Fault::Request(e) => (e, sqlx::Error::Protocol("request rejected".into()).into()),
         Fault::Storage(e) => {

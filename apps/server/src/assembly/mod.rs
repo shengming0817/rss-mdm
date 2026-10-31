@@ -67,391 +67,7 @@ pub(crate) struct Assembly {
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
 }
 
-#[cfg(test)]
-pub(crate) async fn application_fixture(
-    config: crate::config::Config,
-    clock: Arc<dyn Clock>,
-    monotonic: Arc<dyn rss_observation::Clock>,
-    access: Arc<Database>,
-    identity: Option<Identity>,
-    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-) -> Result<
-    (
-        crate::native::Routers,
-        crate::assembly::execution::Assembly,
-        Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        Arc<crate::planning::test_support::OwnerFixture>,
-        crate::test_support::runtime::Resources,
-    ),
-    Error,
-> {
-    let mut resources = crate::test_support::runtime::Resources::default();
-    resources.resource(crate::lifecycle::AccessResource(access.clone()));
-    let result = async {
-        access.claim_tenant_use(&config).await?;
-        let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
-            config.runtime_database.options()?,
-            access.inventory(),
-            rss_request_context::TenantId::parse(&config.identity.tenant_id)
-                .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?,
-            monotonic.clone(),
-            access
-                .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                .await?,
-        )
-        .await?;
-        resources.resource(crate::test_support::runtime::InventoryFixtureResource(
-            runtime.clone(),
-        ));
-        let protection = config.native_protector()?;
-        let content = crate::assembly::execution::open_content(&config, protection.clone()).await?;
-        if let Some(content) = &content {
-            resources.resource(crate::assembly::execution::ContentResource(content.clone()));
-        }
-        let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
-            .map_err(|_| Error::Malformed)?;
-        let cursor_key = crate::cursor_keys::load(
-            access
-                .fixture_source_runtime
-                .get()
-                .ok_or(Error::Unavailable(crate::Failure::Database))?,
-            tenant,
-        )
-        .await?;
-        let inventory_owner = crate::owner_storage::OwnerRuntime::open(
-            &config.business_databases.inventory,
-            &config.storage_binding,
-            tenant,
-            config.background.inventory_connections(),
-            audit_store.clone(),
-            "inventory-runtime-postgres",
-            |resource| {
-                resources.resource(resource);
-            },
-        )
-        .await?;
-        let scope_owner = crate::owner_storage::OwnerRuntime::open(
-            &config.business_databases.scope,
-            &config.storage_binding,
-            tenant,
-            config.background.scope_connections(),
-            audit_store.clone(),
-            "scope-runtime-postgres",
-            |resource| {
-                resources.resource(resource);
-            },
-        )
-        .await?;
-        let policy_owner = crate::owner_storage::OwnerRuntime::open(
-            &config.business_databases.policy,
-            &config.storage_binding,
-            tenant,
-            config.background.policy_connections(),
-            audit_store.clone(),
-            "policy-runtime-postgres",
-            |resource| {
-                resources.resource(resource);
-            },
-        )
-        .await?;
-        let resource_owner = crate::owner_storage::OwnerRuntime::open(
-            &config.business_databases.resource,
-            &config.storage_binding,
-            tenant,
-            2,
-            audit_store.clone(),
-            "resource-runtime-postgres",
-            |resource| {
-                resources.resource(resource);
-            },
-        )
-        .await?;
-        let software_owner = crate::owner_storage::OwnerRuntime::open(
-            &config.business_databases.software,
-            &config.storage_binding,
-            tenant,
-            2,
-            audit_store.clone(),
-            "software-runtime-postgres",
-            |resource| {
-                resources.resource(resource);
-            },
-        )
-        .await?;
-        let inventory_services = crate::assembly::inventory::Services::new(
-            runtime.clone(),
-            access.archive_pool(),
-            inventory_owner.runtime.clone(),
-            inventory_owner.audit.clone(),
-            tenant,
-            &cursor_key,
-            clock.clone(),
-        )
-        .await?;
-        let policy_application =
-            crate::assembly::policy::application(&policy_owner, tenant, &cursor_key, clock.clone())
-                .await?;
-        let publications = crate::assembly::publication::open(
-            &config.publication,
-            &config.storage_binding,
-            &software_owner,
-            tenant,
-            &cursor_key,
-            clock.clone(),
-            content.clone(),
-            |resource| {
-                resources.resource(resource);
-            },
-        )
-        .await?;
-        let resource_catalog = crate::assembly::resource::catalog(
-            resource_owner.audit.clone(),
-            resource_owner.runtime.clone(),
-            tenant,
-            clock.clone(),
-            cursor_key.clone(),
-        )
-        .await?;
-        let software_catalog = crate::assembly::software::catalog(
-            &software_owner,
-            tenant,
-            &cursor_key,
-            clock.clone(),
-            content.clone(),
-        )
-        .await?;
-        let scope_group_health = Arc::new(crate::scope_group_changes::Health::default());
-        let compiled = config.compile()?;
-        access
-            .authorization_store()
-            .require_management_initializer()
-            .await?;
-        let identity = match identity {
-            Some(identity) => identity,
-            None => {
-                Identity::connect(
-                    &compiled.config,
-                    compiled.identity_management.clone(),
-                    Some(crate::apple::identity_platform(&compiled.config).await?),
-                    |resource| resources.acquire(resource),
-                )
-                .await?
-            }
-        };
-        let content_access = if let Some(content) = &content {
-            let content_owner = crate::owner_storage::OwnerRuntime::open(
-                &compiled.config.business_databases.content,
-                &compiled.config.storage_binding,
-                tenant,
-                2,
-                audit_store.clone(),
-                "content-runtime-postgres",
-                |resource| {
-                    resources.resource(resource);
-                },
-            )
-            .await?;
-            Some(
-                crate::assembly::content::access(
-                    &content_owner,
-                    &identity,
-                    access.authorization_store(),
-                    content.clone(),
-                    clock.clone(),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-        let execution = crate::assembly::execution::open(
-            &compiled.config,
-            protection,
-            audit_store.clone(),
-            content.clone(),
-            publications.services.clone(),
-            rss_device_command_postgres::CommandClock::Postgres,
-            Arc::new(
-                rss_mdm_authorization_service::session::SessionAuthority::new(
-                    identity.authority.clone(),
-                    identity.tenant,
-                ),
-            ),
-            cursor_key.clone(),
-        )
-        .await?;
-        resources.resource(rss_mdm_execution_service::Resource(
-            execution.service.clone(),
-        ));
-        let policy_inputs = Arc::new(rss_mdm_execution_service::Inputs::bind(
-            policy_owner.runtime.clone(),
-            policy_application.tenant,
-            execution.materials.inputs.clone(),
-        ));
-        let policies =
-            crate::assembly::policy::management(&policy_application, policy_inputs, &cursor_key)
-                .await?;
-        let events = crate::assembly::policy::events(
-            policy_application.clone(),
-            execution.materials.clone(),
-        )
-        .await?;
-        let associations = Arc::new(
-            rss_mdm_device_service::Associations::new(
-                audit_store.clone(),
-                identity.tenant,
-                &cursor_key,
-            )
-            .map_err(|_| Error::Unavailable(crate::Failure::Database))?,
-        );
-        let timeline = access.timeline(audit_store.clone(), identity.tenant, &cursor_key)?;
-        let telemetry = match &compiled.config.telemetry {
-            Some(config) => {
-                let telemetry_owner = crate::owner_storage::OwnerRuntime::open(
-                    &compiled.config.business_databases.telemetry,
-                    &compiled.config.storage_binding,
-                    tenant,
-                    compiled.config.background.telemetry_control_connections(),
-                    audit_store.clone(),
-                    "telemetry-runtime-postgres",
-                    |resource| {
-                        resources.resource(resource);
-                    },
-                )
-                .await?;
-                let dependencies = rss_mdm_telemetry_service::PolicyDependencies {
-                    query_reads: execution.queries.clone(),
-                    audit_store: telemetry_owner.audit.clone(),
-                    policies: Arc::new(rss_mdm_policy_service::telemetry::Reader::new(
-                        telemetry_owner.runtime.clone(),
-                        tenant,
-                        Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-                    )),
-                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-                };
-                let service = config
-                    .open(
-                        tenant,
-                        telemetry_owner.runtime,
-                        dependencies,
-                        execution.service.clone(),
-                    )
-                    .await?;
-                resources.resource(crate::telemetry::Resource(service.clone()));
-                resources.resource(crate::telemetry::fixture_task(
-                    service.clone(),
-                    execution.runtime.clone(),
-                    runtime.clone(),
-                    compiled.config.access_options()?,
-                    policy_application.tenant,
-                )?);
-                Some(service)
-            }
-            None => None,
-        };
-        let scopes = crate::scopes::open(
-            scope_owner.runtime.clone(),
-            identity.tenant,
-            clock.clone(),
-            scope_owner.audit.clone(),
-            cursor_key.clone(),
-            access.archive_pool(),
-        )
-        .await?;
-        let plan_runtime = policy_owner.runtime.clone();
-        let fixture_planning = Arc::new(crate::planning::test_support::OwnerFixture::from_owners(
-            policy_application.clone(),
-            inventory_owner,
-            scope_owner,
-            resource_owner,
-            software_owner,
-            cursor_key.clone(),
-        ));
-        let execution_service = execution.clone();
-        let mut fixture_routers = from_compiled(
-            compiled,
-            AssemblyDependencies {
-                mount_channels: false,
-                telemetry,
-                certificate_archive: crate::certificate_archive::assemble(
-                    &access,
-                    audit_store.clone(),
-                    clock.clone(),
-                ),
-                timeline,
-                associations,
-                audit_store,
-                execution,
-                clock,
-                monotonic,
-                access: access.clone(),
-                runtime,
-                groups: inventory_services.groups.clone(),
-                policy_application: policy_application.clone(),
-                policies: policies.clone(),
-                publications: publications.clone(),
-                software_catalog: software_catalog.clone(),
-                content_access: content_access.clone(),
-                cursor_key: cursor_key.clone(),
-                scope_group_health: scope_group_health.clone(),
-                resources: resource_catalog.clone(),
-                events: events.clone(),
-                scopes,
-                assets: inventory_services.assets,
-                compliance: inventory_services.compliance,
-                identity,
-            },
-        )
-        .await?;
-        resources.resource(crate::assembly::webhooks::Resource(
-            fixture_routers.webhooks.clone(),
-        ));
-        crate::test_support::pki::seed_trust(
-            &access.archive_pool(),
-            fixture_routers.pki.bindings(),
-        )
-        .await
-        .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-        // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
-        for (kind, tls) in fixture_routers.listeners.drain(..) {
-            if kind == crate::native::ChannelKind::Agent {
-                fixture_routers.browser = crate::test_support::gateway::browser_agent(
-                    fixture_routers.browser,
-                    tls.router,
-                    "mdm.example.test",
-                )
-            }
-        }
-        let requests = crate::test_support::runtime::NativeRequests::new();
-        resources.resource(requests.clone());
-        fixture_routers.browser = requests.wrap(fixture_routers.browser);
-        for (_, channel) in &mut fixture_routers.listeners {
-            channel.router = requests.wrap(std::mem::take(&mut channel.router));
-        }
-        Ok((
-            fixture_routers,
-            execution_service,
-            plan_runtime,
-            fixture_planning,
-        ))
-    }
-    .await;
-    match result {
-        Ok((router, execution, runtime, planning)) => {
-            Ok((router, execution, runtime, planning, resources))
-        }
-        Err(error) => {
-            let cleanup = resources.finish(async { Ok(()) }).await;
-            if let Err(cleanup_error) = cleanup {
-                eprintln!("application fixture cleanup also failed: {cleanup_error:#}");
-            }
-            Err(error)
-        }
-    }
-}
 pub(crate) struct AssemblyDependencies {
-    #[cfg(test)]
-    pub(crate) mount_channels: bool,
     pub(crate) telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
@@ -509,8 +125,6 @@ pub(crate) async fn from_compiled(
         identity_management,
     } = compiled;
     let AssemblyDependencies {
-        #[cfg(test)]
-        mount_channels,
         telemetry,
         certificate_archive,
         timeline,
@@ -711,20 +325,16 @@ pub(crate) async fn from_compiled(
         trusts,
         providers.clone(),
     );
-    #[cfg(not(test))]
-    let mount_channels = true;
-    if mount_channels {
-        admit_native(
-            &mut windows,
-            &mut apple,
-            &mut agent_pki,
-            &channels,
-            &admission,
-            identity.tenant,
-            clock.unix_seconds()?,
-        )
-        .await?;
-    }
+    admit_native(
+        &mut windows,
+        &mut apple,
+        &mut agent_pki,
+        &channels,
+        &admission,
+        identity.tenant,
+        clock.unix_seconds()?,
+    )
+    .await?;
     loaded_native_materials(&windows, &apple, &channels)?;
     let trusts = native_trusts(&windows, &apple, &agent_pki);
     let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
@@ -734,11 +344,7 @@ pub(crate) async fn from_compiled(
         providers,
     ));
     observe_native_trust(&pki, &agent_pki, &channels)?;
-    // Handler fixtures own their transport outside this assembly.
-    #[cfg(test)]
-    if !mount_channels {
-        fixture_native_mounted(&windows, &apple, &agent_pki, &channels)?;
-    }
+
     for (_, name) in [
         (
             windows.is_some(),
@@ -941,25 +547,7 @@ fn observe_native_trust(
     }
     Ok(())
 }
-#[cfg(test)]
-fn fixture_native_mounted(
-    windows: &Option<Arc<crate::windows::Windows>>,
-    apple: &Option<Arc<crate::apple::Apple>>,
-    agent_pki: &Option<Arc<crate::agent_pki::AgentPki>>,
-    channels: &crate::channel_status::Channels,
-) -> Result<(), Error> {
-    use crate::channel_status::ChannelName;
-    for (name, present) in [
-        (ChannelName::Windows, windows.is_some()),
-        (ChannelName::Apple, apple.is_some()),
-        (ChannelName::Agent, agent_pki.is_some()),
-    ] {
-        if present {
-            channels.mounted(name)?;
-        }
-    }
-    Ok(())
-}
+
 fn native_trusts(
     windows: &Option<Arc<crate::windows::Windows>>,
     apple: &Option<Arc<crate::apple::Apple>>,

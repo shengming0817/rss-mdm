@@ -52,10 +52,10 @@ class AuditIntegrationBoundary(unittest.TestCase):
             with self.subTest(owner=owner,target=target), self.assertRaises(RuntimeError):
                 ci.verify_audit_integration(data)
 
-    def test_only_explicit_integration_feature_is_accepted(self):
+    def test_audit_has_no_test_feature_surface(self):
         data = self.graph()
         node = next(n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-audit-integration')
-        node['features'] = ['default', 'integration']
+        node['features'] = ['default']
         ci.verify_audit_integration(data)
         node['features'].append('legacy-audit')
         with self.assertRaises(RuntimeError):

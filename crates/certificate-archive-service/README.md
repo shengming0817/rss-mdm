@@ -93,4 +93,4 @@ CSR 是申请材料，SCEP 是申请协议，PKI 是体系，均不列成一张�
 
 管理接口位于 `/api/v1/certificate-archive`。写入使用 `Idempotency-Key`，并通过 `operations/{id}` 查询原结果。接口类型、格式、参数和闭合错误以[源码](src/lib.rs)及 [HTTP owner](../management-http/src/certificate_archive/mod.rs)为准；不另维护第二份 wire schema。
 
-T1 验证加密坐标、换密码后旧材料解密、真实签名/CSR/PFX 与匹配检查；`make t2 MODULE=certificate-archive.http` 使用真实 Identity、PostgreSQL、HTTP 验证权限、RLS、历史、重启锁定、会话隔离和到期提醒。实际验证记录留在 PR。
+T1 验证加密坐标、换密码后旧材料解密、真实签名/CSR/PFX 与匹配检查。真实 Identity、PostgreSQL、HTTP 的权限、RLS、历史、重启锁定、会话隔离及到期提醒 T2 当前尚未重建；验证边界见[验证规则](../../docs/rules/verification-scope.md#执行与证据)，实际结果留在 PR。

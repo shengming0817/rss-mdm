@@ -133,14 +133,7 @@ impl Backend {
         })
     }
 }
-#[cfg(all(test, feature = "integration"))]
-impl Backend {
-    pub fn for_loopback_test(input: &Configuration, tenant: TenantId) -> Result<Self, Error> {
-        Self::load_using(input, tenant, |_| {
-            rss_identity_oidc::HttpOidc::for_loopback_test(vec![]).map_err(|_| invalid())
-        })
-    }
-}
+
 impl Client for Backend {
     fn target(&self) -> &EnterpriseTarget {
         &self.target

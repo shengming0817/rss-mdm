@@ -693,38 +693,6 @@ async fn authorize_write(c: &mut PgConnection, p: &AuthorizedPrincipal) -> Resul
     Ok(())
 }
 
-/// Ordinary consumer fixtures start from one valid current signed configuration.
-/// This does not fabricate deployment observations or stand in for publication acceptance.
-#[cfg(feature = "integration")]
-pub async fn fixture_configuration_on(
-    c: &mut PgConnection,
-    tenant: Uuid,
-    protection: &Protector,
-    origin: &str,
-) -> Result<(), Error> {
-    let tenant = tenant.to_string();
-    lock(c, &tenant).await?;
-    if published_on(c, &tenant, None).await?.is_some() {
-        return Ok(());
-    }
-    let signer = ensure_signer_on(c, &tenant, protection).await?;
-    let draft = Draft {
-        configuration: w::Configuration {
-            wire_version: 1,
-            service_id: service_id_on(c).await?,
-            tenant_id: Uuid::parse_str(&tenant).map_err(|_| Error::Configuration)?,
-            revision: 1,
-            preferred_origin: origin.into(),
-            origins: vec![origin.into()],
-            key_id: signer.key_id.clone(),
-        },
-    };
-    let published = signer.sign_connections(draft.configuration.clone())?;
-    sqlx::query("INSERT INTO mdm_access.agent_connection_drafts(tenant_id,revision,document) VALUES($1::uuid,1,$2)").bind(&tenant).bind(serde_json::to_value(draft).map_err(|_|Error::Corrupt)?).execute(&mut *c).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_access.agent_connection_versions(tenant_id,revision,document) VALUES($1::uuid,1,$2)").bind(tenant).bind(serde_json::to_value(published).map_err(|_|Error::Corrupt)?).execute(c).await.map_err(db)?;
-    Ok(())
-}
-
 /// Re-encrypt only the configuration private key under the existing Native protection rotation.
 /// Signed public history, key identity and every connection revision remain unchanged.
 pub async fn rewrap(

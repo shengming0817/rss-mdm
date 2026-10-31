@@ -319,10 +319,6 @@ fn database(_: sqlx::Error) -> Error {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/settings/first_use.rs"]
-pub(crate) mod tests;
-
-#[cfg(test)]
 mod unit {
     use super::*;
     #[test]

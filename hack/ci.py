@@ -16,8 +16,8 @@ import tomllib
 from urllib.parse import urlsplit
 
 from build_run import lease_fds, require_lease
-from t2_registry import MODULES
-from t2_model import all_tools
+from ci_registry import all_tools
+from t2 import coverage
 from ci_impact import SelectionError, strict_json, validate_selection, explicit_selection, failure
 from verification_result import result as stage_result, publish
 
@@ -209,7 +209,7 @@ def verify_audit_integration(data):
     identity = ids[0]
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
     require(parents == {'rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',  'rss-mdm-execution-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
-    require(set(nodes[identity]['features']) <= {'default', 'integration'}, 'audit integration exposes an unsupported feature')
+    require(set(nodes[identity]['features']) <= {'default'}, 'audit integration exposes an unsupported feature')
     pending, visited = [identity], set()
     while pending:
         key = pending.pop()
@@ -251,7 +251,6 @@ def verify_agent_wire(data):
                     require(packages[edge['pkg']]['name'] in direct,
                             'Agent wire production closure has an unsupported direct dependency')
                 pending.append(edge['pkg'])
-
 
 def verify_capability_boundaries(data):
     """Cargo owns package identities and target/optional/build dependency declarations."""
@@ -310,7 +309,6 @@ def verify_capability_boundaries(data):
             invalid |= {name for name in dependencies if name.startswith(('rss-mdm-', 'rss-identity-')) and not (owner == 'http-contract' and name == 'rss-mdm-query')}
         require(not invalid, f'{owner}: forbidden production dependencies: {sorted(invalid)}')
 
-
 def verify_metadata(data, root, mode, pin):
     url, rev = pin
     expected = f"git+{url}?rev={rev}#{rev}"
@@ -331,10 +329,10 @@ def verify_metadata(data, root, mode, pin):
     packages = {p["id"]: p["name"] for p in data["packages"]}
     features = {packages[n["id"]]: n["features"] for n in data["resolve"]["nodes"]}
     for name in ("rss-observation-postgres", "rss-projection-postgres"):
-        require(("integration" in features[name]) == (mode == "integration"), f"unexpected {mode} features for {name}")
+        require("integration" not in features[name], f"unexpected {mode} features for {name}")
     require({p['name'] for p in data['packages']} >= IDENTITY_PACKAGES | AUDIT_PACKAGES, 'Identity/Audit components missing')
-    require(("test-support" in features["rss-identity-oidc"]) == (mode == "integration"), "OIDC fixture transport feature drift")
-    require(("test-support" in features["rss-identity-postgres"]) == (mode == "integration"), "Identity fact-time feature drift")
+    require("test-support" not in features["rss-identity-oidc"], "OIDC fixture transport feature drift")
+    require("test-support" not in features["rss-identity-postgres"], "Identity fact-time feature drift")
     nodes = {n['id']: n for n in data['resolve']['nodes']}
     verify_backend_support(data)
     verify_audit_integration(data)
@@ -356,11 +354,10 @@ def verify_metadata(data, root, mode, pin):
     return sorted(p["name"] for p in data["packages"] if p["name"].startswith("rss-") and p["name"] not in LOCAL_PACKAGES and p["name"] not in IDENTITY_PACKAGES)
 
 def dependency_graphs(pin):
-    for mode, extra in [("normal", []), ("integration", ["--all-features"])]:
+    for mode, extra in [("normal", []), ("all-features", ["--all-features"])]:
         result = command(["cargo", "metadata", "--locked", "--format-version", "1", *extra], separate_stderr=True)
         require(result.returncode == 0, result.stderr)
         verify_metadata(json.loads(result.stdout), ROOT, mode, pin)
-
 
 GATE_PACKAGES = {
     'agent-wire-artifact': {'rss-mdm-agent-wire'},
@@ -368,7 +365,6 @@ GATE_PACKAGES = {
     'native-schema': {'rss-mdm-apple-mdm', 'rss-mdm-windows-mdm', 'rss-mdm-native-schema'},
 }
 CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
-
 
 def select_impact(head, base=None):
     base = base or os.environ.get('CI_BASE', 'origin/develop')
@@ -382,14 +378,13 @@ def select_impact(head, base=None):
         decision = strict_json(result.stdout)
     except (ValueError, TypeError) as error:
         raise SelectionError('selection-invalid') from error
-    validate_selection(decision, LOCAL_PACKAGES, MODULES, all_tools())
+    validate_selection(decision, LOCAL_PACKAGES, all_tools())
     if result.returncode:
         raise SelectionError('selector-failed')
     decision.update(base=base, head=head, mergeBase=merge.stdout.strip())
     if result.stderr.strip():
         decision['diagnostic'] = result.stderr.strip()
     return decision
-
 
 def selected_gate(name, selection):
     if name=="agent-wire-artifact" and "test_agent_wire_artifact" in selection["toolTests"]:return True
@@ -408,7 +403,6 @@ def selected_gate(name, selection):
         return False
     return bool(packages & GATE_PACKAGES.get(name, packages))
 
-
 def gate_command(name, args, selection):
     if name == "script-tests":return [sys.executable,"-O","-m","unittest", *selection["toolTests"]]
     if name in CARGO_GATES and selection["cargo"]["packages"] and not (selection["cargo"]["mode"] == "all"):
@@ -417,10 +411,8 @@ def gate_command(name, args, selection):
         return args[:index] + flags + args[index + 1:]
     return args
 
-
 # Gate-owned, regenerable evidence only; retain unrelated archives and T3 results.
 EXTRA_EVIDENCE = {"pin": ("pin.log",)}
-
 
 def clear_execution_evidence(gate_names):
     paths = {OUT / f"{name}.log" for name in gate_names}
@@ -431,7 +423,6 @@ def clear_execution_evidence(gate_names):
             shutil.rmtree(path)
         else:
             path.unlink(missing_ok=True)
-
 
 def working_source_state():
     """Detect edits during CI without requiring a clean or committed tree."""
@@ -453,7 +444,6 @@ def working_source_state():
         state[name] = (hashlib.sha256(data).hexdigest(), after.st_mode, after.st_mtime_ns, after.st_ctime_ns, after.st_ino)
     return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
 
-
 def fast_gates():
     return [
         ("script-tests",[sys.executable,"-O","-m","unittest","discover","-s","tests","-p","test_*.py"]),
@@ -468,19 +458,9 @@ def fast_gates():
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
 
-def t2_options():
-    mode = os.environ.get('CI_T2', 'none')
-    require(mode in {'none', 'all'}, 'CI_T2 must be none or all')
-    try:
-        jobs = int(os.environ.get('JOBS', '2'))
-    except ValueError as error:
-        raise RuntimeError('JOBS must be a positive integer') from error
-    require(jobs > 0, 'JOBS must be a positive integer')
-    return mode, jobs
-
-
 def execute_ci():
-    t2_mode, t2_jobs = t2_options()
+    t2_mode = os.environ.get('CI_T2', 'none')
+    require(t2_mode in {'none', 'all'}, 'CI_T2 must be none or all')
     if os.environ.get("CI_PLAN", "0") != "1":
         require_lease(ROOT)
     OUT.mkdir(parents=True, exist_ok=True)
@@ -490,15 +470,13 @@ def execute_ci():
     gates=fast_gates()
     source_state = working_source_state()
     if os.environ.get('CI_FULL', '0') != '0' and t2_mode == 'all':
-        selection = {**explicit_selection(LOCAL_PACKAGES, MODULES, all_tools()), 'head': start_head}
+        selection = {**explicit_selection(LOCAL_PACKAGES, all_tools()), 'head': start_head}
     else:
         selection = select_impact(start_head)
     if os.environ.get('CI_FULL', '0') != '0':
         selection['cargo'] = {'mode': 'all', 'packages': sorted(LOCAL_PACKAGES)}
-        selection['reasons'].append({'kind': 'explicit-full', 'input': 'CI_FULL', 'packages': sorted(LOCAL_PACKAGES), 'modules': []})
-    if os.environ.get('CI_T2', 'none') == 'all':
-        selection['t2'] = {'mode': 'all', 'modules': sorted(MODULES)}
-        selection['reasons'].append({'kind': 'explicit-full', 'input': 'CI_T2', 'packages': [], 'modules': sorted(MODULES)})
+        selection['ownershipPackages'] = sorted(LOCAL_PACKAGES)
+        selection['reasons'].append({'kind': 'explicit-full', 'input': 'CI_FULL', 'packages': sorted(LOCAL_PACKAGES)})
     plan = {"selection": selection, "gates": {
         name: {"selected": selected_gate(name, selection), "command": gate_command(name, args, selection)}
         for name, args in gates
@@ -509,8 +487,9 @@ def execute_ci():
     }.items():
         plan["gates"][name] = {"selected": True,
                                "check": description}
-    plan['gates']['ownership'] = {'selected': bool(selection['ownershipChecks']),
-                                  'builds': selection['ownershipChecks']}
+    plan['gates']['ownership'] = {'selected': bool(selection['ownershipPackages']),
+                                  'packages': selection['ownershipPackages']}
+    plan['t2'] = coverage()
     print(json.dumps(plan, indent=2), flush=True)
     if os.environ.get("CI_PLAN", "0") == "1":
         (OUT / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
@@ -547,20 +526,17 @@ def execute_ci():
             results[name] = stage_result("failed",started,command=args)
         print(f"{name}: {results[name]}", flush=True)
     started = time.monotonic()
-    if selection['ownershipChecks']:
+    if selection['ownershipPackages']:
         try:
-            from t2_execution import check_ownership
-            check_ownership(selection['ownershipChecks'], OUT / 'ownership')
+            from test_ownership import check_ownership
+            check_ownership(selection['ownershipPackages'], OUT / 'ownership')
             results['ownership'] = stage_result('passed', started)
         except Exception as error:
             (OUT / 'ownership.log').write_text(str(error))
             results['ownership'] = stage_result('failed', started, reason=type(error).__name__)
     else:
         results['ownership'] = stage_result('skipped', reason='not-selected')
-    integration = {name:stage_result('skipped',reason='not-run') for name in MODULES}
-    if t2_mode == 'all':
-        from t2 import run_modules
-        integration = run_modules(sorted(MODULES), OUT/'t2', jobs=t2_jobs)
+    integration = coverage()
     started=time.monotonic()
     try:
         require(working_source_state() == source_state, "source changed during CI; rerun against stable working inputs")
@@ -570,13 +546,13 @@ def execute_ci():
         results["source-stability"] = stage_result("failed",started)
     evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head, "startStateSha256":source_state}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
     evidence['toolVerification'] = {name:results.get('script-tests', {}).get('status', 'not-run') for name in selection['toolTests']}
-    evidence['recommendedT2'] = {'modules':selection['t2']['modules'],'status':('executed' if t2_mode == 'all' else 'not-run') if selection['t2']['modules'] else 'not-selected'}
+    evidence['verificationComplete'] = False
     evidence['t2'] = integration
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
     publish(OUT/"result.json",evidence)
     print(json.dumps(evidence, indent=2))
-    return int(any(value["status"] == "failed" for value in results.values()) or any(value["status"] == "failed" for value in integration.values()))
+    return int(any(value["status"] == "failed" for value in results.values()) or t2_mode == 'all')
 
 def main():
     if os.environ.get('CI_PLAN','0')=='1':

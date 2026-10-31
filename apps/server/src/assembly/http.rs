@@ -8,8 +8,7 @@ use axum::{
 };
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
-#[cfg(test)]
-use serde_json::Value;
+
 use std::sync::Arc;
 pub(crate) fn from_state(
     state: Arc<Assembly>,

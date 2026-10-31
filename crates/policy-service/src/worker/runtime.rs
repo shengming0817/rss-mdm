@@ -38,17 +38,7 @@ impl PolicyWork {
             store,
         })
     }
-    #[cfg(feature = "integration")]
-    pub fn management_only(
-        service: Arc<Application>,
-        store: rss_reconcile_postgres::PgStore,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            service,
-            events: None,
-            store,
-        })
-    }
+
     fn execution(&self) -> Option<&Arc<rss_mdm_execution_service::policy_events::PolicyEvents>> {
         self.events.as_ref().map(|events| &events.execution)
     }
