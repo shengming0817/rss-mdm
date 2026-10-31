@@ -106,7 +106,7 @@ Windows 标准蓝图版本为 `2`，通过普通 Resource 实例化并绑定 `na
 
 以下均为 Device 范围、Primary 注册、CSP Get。表中 build 是模板准入下限，执行同时核对固定 schema 的每个节点和 edition；缺少可信 build/edition 时不派发。下表是声明支持面，不是真机测试矩阵：受控样本以 Windows 11 Pro 22621 为上下文；真实 OS、SKU、注册方式验收由产品 T3 单独提供。Win32 文档仅声明 Windows 10/11，10240 是 OS 家族下限，不承诺该早期构建的真机支持。Win32 当前准入 Pro/Pro N、Enterprise/Enterprise N、Education/Education N、IoT Enterprise；Update 还允许 Home/Core N 和 SE。其它 CSP 使用固定 DDF 的 edition 集合。
 
-每行链接提供原始受控 SyncML Results 样本；同目录同名 `.json` 是独立预期归一化值。样本不是设备抓包，完整会话、状态关联与重试由协议测试和 `windows.management` T2 验证。字段列也给出资产/Group 消费示例：标量可按字段等值比较，数组可按其 `.id` 使用 `contains_any`；具体期望值见 JSON，不能用跨数组属性 AND 冒充同条目关联。
+每行链接提供原始受控 SyncML Results 样本；同目录同名 `.json` 是独立预期归一化值。样本不是设备抓包；完整会话、状态关联与重试的真实依赖 T2 当前尚未重建，样本和 T1 不补齐该证明。字段列也给出资产/Group 消费示例：标量可按字段等值比较，数组可按其 `.id` 使用 `contains_any`；具体期望值见 JSON，不能用跨数组属性 AND 冒充同条目关联。
 
 | 蓝图（省略 windows.） | 最低 build | 官方来源 | 样本 | 查询字段示例 |
 |---|---:|---|---|---|
