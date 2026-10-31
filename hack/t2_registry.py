@@ -73,6 +73,9 @@ MODULES = {
         inputs=('apps/server/src/lifecycle.rs', 'apps/server/src/identity.rs',
                 'apps/server/src/database.rs', 'apps/server/src/owner_storage.rs',
                 'apps/server/src/worker_wake.rs', 'apps/server/src/scheduler.rs',
+                'apps/server/src/runtime_diagnostics.rs', 'crates/policy-service/src/worker/health.rs',
+                'crates/policy-service/src/worker/completion.rs', 'crates/policy-service/src/configuration/source_changes.rs',
+                'crates/policy-service/schema/configuration-source-changes.sql',
                 'apps/server/src/scope_group_changes.rs', 'apps/server/src/assembly/*',
                 'apps/server/tests/foundation/lifecycle.rs')),
 }
