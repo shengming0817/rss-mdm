@@ -10,6 +10,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
+#[path = "query.rs"]
+mod query;
 async fn seed(
     c: &Context,
     scope: Uuid,
@@ -350,6 +352,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         1
     );
     assert_eq!(downstream(&c, device).await?, observed);
+    query::prove_batch(&c, &app, &command, &key, identity.0).await?;
     drop(worker);
     drop(app);
     drop(owner);

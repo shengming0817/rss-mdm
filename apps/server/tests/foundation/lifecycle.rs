@@ -114,6 +114,37 @@ async fn host_reports_its_binding_then_releases_listener_and_database_resources(
         observation["observation"]["instanceId"],
         inputs.installation.instance_id
     );
+    // A retained configuration-input failure must revoke the real public probe,
+    // even though every managed task is still running. Use the legal persisted
+    // suspended state, fencing any in-flight checkpoint attempt in the same transaction.
+    let mut tx = operator.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let changed=sqlx::query("UPDATE rss_reconcile.targets SET token=NULL,lease_until=NULL,next_run=NULL,result='suspended',epoch=epoch+1 WHERE tenant_id=$1::uuid AND reconciler='mdm.policy' AND entity='configuration-inputs'").bind(tenant.to_string()).execute(&mut *tx).await?;
+    assert_eq!(changed.rows_affected(), 1);
+    sqlx::query("INSERT INTO mdm_planning.configuration_source_dispatch(tenant_id,failure,failure_generation) VALUES($1::uuid,'automation_suspended',1) ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure,failure_generation=configuration_source_dispatch.failure_generation+1").bind(tenant.to_string()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let paused = tokio::select! {
+        result=&mut server=>bail!("host exited during input suspension: {result:?}"),
+        response=client.get(&readiness_url).header("host","mdm.example.test").header("x-rss-public-origin","https://mdm.example.test").header("x-forwarded-for","127.0.0.1").send()=>response?,
+    };
+    assert_eq!(paused.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(paused.json::<Value>().await?["ready"], false);
+    let mut tx = operator.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE mdm_planning.configuration_source_dispatch SET failure=NULL WHERE tenant_id=$1::uuid").bind(tenant.to_string()).execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_reconcile.targets SET wake_version=wake_version+1,next_run=clock_timestamp(),result='pending',failures=0 WHERE tenant_id=$1::uuid AND reconciler='mdm.policy' AND entity='configuration-inputs'").bind(tenant.to_string()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let recovered = tokio::select! {
+        result=&mut server=>bail!("host exited during input recovery: {result:?}"),
+        response=tokio::time::timeout(Duration::from_secs(30),ready(&client,&readiness_url))=>response??,
+    };
+    assert_eq!(recovered["ready"], true);
     let count = || {
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND usename<>'postgres' AND backend_type='client backend'").fetch_one(&operator)
     };

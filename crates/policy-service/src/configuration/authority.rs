@@ -3,6 +3,8 @@ use super::{definition::Owner, frozen::Frozen, *};
 use crate::authorization::Permission;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
+mod read;
+pub(crate) use read::many;
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Authority {
@@ -132,31 +134,6 @@ impl Authority {
         permissions: &[Permission],
         _now: i64,
     ) -> std::result::Result<bool, Error> {
-        self.valid_with(source, c, key, permissions, _now, true)
-            .await
-    }
-
-    pub async fn read_valid(
-        &self,
-        source: &rss_mdm_scope_service::channels::ChannelTargets,
-        c: &mut PgConnection,
-        key: &rss_mdm_native_protection::Protector,
-        permissions: &[Permission],
-        _now: i64,
-    ) -> std::result::Result<bool, Error> {
-        self.valid_with(source, c, key, permissions, _now, false)
-            .await
-    }
-
-    async fn valid_with(
-        &self,
-        source: &rss_mdm_scope_service::channels::ChannelTargets,
-        c: &mut PgConnection,
-        key: &rss_mdm_native_protection::Protector,
-        permissions: &[Permission],
-        _now: i64,
-        lock: bool,
-    ) -> std::result::Result<bool, Error> {
         if !self.receipt_valid(c, key, permissions).await? {
             return Ok(false);
         }
@@ -186,13 +163,11 @@ impl Authority {
                 unit,
                 ..
             } => {
-                if lock {
-                    sqlx::query("SELECT mdm_policy.lock_policy($1)")
-                        .bind(policy)
-                        .execute(&mut *c)
-                        .await
-                        .map_err(db)?;
-                }
+                sqlx::query("SELECT mdm_policy.lock_policy($1)")
+                    .bind(policy)
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
                 let row=sqlx::query("SELECT v.frozen,p.state='enabled' AS live FROM mdm_policy.versions v LEFT JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE v.tenant_id=$1::uuid AND v.id=$2 AND v.policy=$3 AND octet_length(v.frozen::text)<=16777216").bind(tenant).bind(version).bind(policy).fetch_optional(&mut *c).await.map_err(db)?;
                 let Some(row) = row else { return Ok(false) };
                 let tenant_id = TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
@@ -236,32 +211,15 @@ impl Authority {
                     objects: source.objects.clone(),
                 };
                 loop {
-                    let page = if lock {
-                        candidates
-                            .candidates_on(
-                                c,
-                                tenant_id,
-                                device,
-                                candidates::CandidateKind::Configuration,
-                                after,
-                            )
-                            .await?
-                    } else {
-                        let cursor = (after, device.to_owned());
-                        let page = candidates
-                            .configuration_candidates_batch_on(
-                                c,
-                                tenant_id,
-                                &[device.to_owned()],
-                                Some(&cursor),
-                            )
-                            .await?;
-                        candidates::CandidatePage {
-                            items: page.items.into_iter().map(|(_, v)| v).collect(),
-                            has_more: page.has_more,
-                            scanned_after: page.scanned_after.map_or(after, |v| v.0),
-                        }
-                    };
+                    let page = candidates
+                        .candidates_on(
+                            c,
+                            tenant_id,
+                            device,
+                            candidates::CandidateKind::Configuration,
+                            after,
+                        )
+                        .await?;
                     for candidate in page.items {
                         let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3 AND octet_length(frozen::text)<=16777216").bind(tenant).bind(candidate.version).bind(candidate.policy).fetch_optional(&mut *c).await.map_err(db)?;
                         let value =

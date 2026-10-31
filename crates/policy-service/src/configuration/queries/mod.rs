@@ -14,7 +14,7 @@ impl Transactions {
         proof: &AuthorizedPrincipal,
         grant: &Snapshot,
         ids: Vec<Uuid>,
-        now: i64,
+        _now: i64,
     ) -> Result<BTreeMap<Uuid, Authorization>> {
         let operations = storage::load_many_on(c, self.tenant, &self.protection, ids).await?;
         let targets = operations
@@ -60,6 +60,8 @@ impl Transactions {
             }
         }
         let mut results = BTreeMap::new();
+        let mut pending = Vec::new();
+        let mut authorities = Vec::new();
         for op in operations.values() {
             grant.require(proof, Permission::OperationRead, Some(&op.device))?;
             let current = registrations
@@ -70,26 +72,29 @@ impl Transactions {
                 Some(BlockReason::LifecycleBlocked)
             } else if current != Some((op.registration, op.registration_generation)) {
                 Some(BlockReason::RegistrationChanged)
-            } else if !op
-                .authority
-                .read_valid(
-                    &self.source,
-                    c,
-                    &self.protection,
-                    &op.request.task.permissions()?,
-                    now,
-                )
-                .await?
-            {
-                Some(BlockReason::SourceInvalid)
             } else {
-                None
+                pending.push(op.id);
+                authorities.push((op.authority.clone(), op.request.task.permissions()?));
+                continue;
             };
             results.insert(
                 op.id,
                 reason.map_or(Authorization::Authorized, |reason| Authorization::Blocked {
                     reason,
                 }),
+            );
+        }
+        let valid = authority::many(&self.source, c, &self.protection, &authorities).await?;
+        for (id, valid) in pending.into_iter().zip(valid) {
+            results.insert(
+                id,
+                if valid {
+                    Authorization::Authorized
+                } else {
+                    Authorization::Blocked {
+                        reason: BlockReason::SourceInvalid,
+                    }
+                },
             );
         }
         Ok(results)

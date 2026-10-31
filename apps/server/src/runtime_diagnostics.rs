@@ -154,6 +154,21 @@ impl RuntimeDiagnostics {
                 ));
             }
         }
+        // Configuration has its own durable input checkpoint. It participates in
+        // lightweight readiness independently of detailed job queue counts.
+        match self.planning.configuration_input_suspended(cutoff).await {
+            Ok(false) => {}
+            Ok(true) => {
+                automation.readiness = Readiness::NotReady;
+                automation.health = Health::Degraded;
+                automation.reasons.push(Reason::AutomationSuspended);
+            }
+            Err(failure) => {
+                automation.readiness = Readiness::NotReady;
+                automation.health = Health::Degraded;
+                automation.reasons.push(health_failure(failure));
+            }
+        }
         automation
     }
     fn automation_health(&self) -> rss_mdm_policy_service::worker::AutomationHealth {
