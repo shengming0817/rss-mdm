@@ -220,6 +220,27 @@ impl ExecutionService {
             mut cleanup,
             ..
         } = prepared;
+        // Aggregate every related registration before any primary channel can leave cleanup.
+        let tasks = if original.channels.iter().any(|c| c.stage == Stage::Cleanup) {
+            let registrations = original
+                .channels
+                .iter()
+                .map(|c| c.registration)
+                .collect::<Vec<_>>();
+            let progress = self
+                .transactions
+                .task_cleanup
+                .advance_in(tx, &registrations)
+                .await?;
+            self.transactions
+                .audit_store
+                .append_batch_in(tx, &progress.facts)
+                .await
+                .map_err(Error::from)?;
+            progress
+        } else {
+            crate::task_cleanup::Progress::default()
+        };
         for channel in &original.channels {
             if matches!(channel.stage, Stage::Complete | Stage::Revoke) {
                 continue;
@@ -275,7 +296,7 @@ impl ExecutionService {
                     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2) AND state->>'execution' IN('running','waiting_reboot','unknown')) OR EXISTS(SELECT 1 FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2) AND (d.terminal_at IS NULL OR (d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))))")
                         .bind(t).bind(id).fetch_one(c).await
                 })).await?;
-                if remaining || configuration.pending {
+                if remaining || configuration.pending || tasks.pending {
                     let t = tenant.to_string();
                     let blocker:Option<(i32,Option<Uuid>)>=tx.with_connection(move|c|Box::pin(async move{
                         sqlx::query_as("SELECT priority,execution FROM (SELECT 0 AS priority,r.id AS execution FROM mdm_commands.action_runs r WHERE r.tenant_id=$1::uuid AND r.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2) AND r.state->>'execution'='unknown' UNION ALL SELECT 0,o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2) AND d.terminal_at IS NOT NULL AND d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) blockers ORDER BY priority,execution LIMIT 1")
@@ -284,6 +305,7 @@ impl ExecutionService {
                     let blocker = blocker
                         .into_iter()
                         .chain(configuration.blocker)
+                        .chain(tasks.unknown.map(|id| (0, Some(id))))
                         .min_by_key(|v| (v.0, v.1));
                     let observation = match blocker {
                         Some((0, execution)) => owner::Observation::CleanupBlocked {

@@ -5,6 +5,7 @@ use crate::*;
 /// Immutable configuration and channel ports shared without sharing a transaction identity.
 pub struct ExecutionMaterials {
     pub capacity: Arc<dyn crate::capacity::DeviceCapacity>,
+    pub task_cleanup: Arc<dyn crate::task_cleanup::TaskCleanup>,
     pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub inputs: Arc<InputMaterials>,
@@ -20,6 +21,7 @@ pub struct ExecutionMaterials {
 }
 pub(crate) struct ExecutionTransactions {
     pub(crate) capacity: Arc<dyn crate::capacity::DeviceCapacity>,
+    pub(crate) task_cleanup: Arc<dyn crate::task_cleanup::TaskCleanup>,
     pub(crate) configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub(crate) recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub(crate) inputs: Arc<Inputs>,
@@ -99,6 +101,7 @@ impl ExecutionTransactions {
             protection: materials.protection.clone(),
             agent_store: materials.agent_store.clone(),
             apple_profiles: materials.apple_profiles.clone(),
+            task_cleanup: materials.task_cleanup.clone(),
             configuration_cleanup: materials.configuration_cleanup.clone(),
             windows_results: materials.windows_results.clone(),
             apple_results: materials.apple_results.clone(),

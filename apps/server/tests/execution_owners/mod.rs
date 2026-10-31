@@ -1,6 +1,9 @@
 //! Real owner composition seams; state reduction and protocol matrices remain in their owners.
 mod composition;
 mod inventory;
+mod mixed;
+mod retirement;
+mod workers;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     device_material_support as material, planning_t2_support as planning,
@@ -81,6 +84,8 @@ impl Harness {
         let caps = vec![
             w::Capability::InventoryCollectionV1,
             w::Capability::TaskExecuteV1,
+            w::Capability::MdmEnrollmentV1,
+            w::Capability::InventoryNativeV1,
         ];
         let p =
             material::authenticated_agent(&c, registration, grant, &device, caps.clone()).await?;
@@ -112,6 +117,9 @@ impl Harness {
         Ok(())
     }
     async fn policy(&self, resource: &str) -> Result<(Uuid, Uuid)> {
+        self.policy_as(resource, "system").await
+    }
+    async fn policy_as(&self, resource: &str, run_as: &str) -> Result<(Uuid, Uuid)> {
         use sha2::{Digest, Sha256};
         let policy = Uuid::new_v4();
         let version = Uuid::new_v4();
@@ -141,7 +149,7 @@ impl Harness {
                 variant: "default".into(),
             },
             definition: serde_json::from_value(
-                json!({"profile":"power_shell7","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":1,"outputBytes":4096,"maxRows":1}),
+                json!({"profile":"power_shell7","runAs":run_as,"encoding":"utf8","parameters":{"type":"object","properties":{},"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":1,"outputBytes":4096,"maxRows":1}),
             )?,
             collection: None,
             resource_digest: [1; 32],

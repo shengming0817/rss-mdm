@@ -16,7 +16,7 @@ CREATE FUNCTION mdm_inventory.save_retired_collection_agent(p_registration uuid,
  ) SELECT EXISTS(SELECT 1 FROM changed);
 $$;
 REVOKE ALL ON FUNCTION mdm_inventory.save_retired_collection_agent(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_inventory.save_retired_collection_agent(uuid,uuid,jsonb,jsonb) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_inventory.save_retired_collection_agent(uuid,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
 CREATE FUNCTION mdm_inventory.cancel_retired_collection(p_registration uuid,p_run uuid,p_previous text) RETURNS boolean
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
@@ -30,5 +30,5 @@ CREATE FUNCTION mdm_inventory.cancel_retired_collection(p_registration uuid,p_ru
  ) SELECT EXISTS(SELECT 1 FROM changed);
 $$;
 REVOKE ALL ON FUNCTION mdm_inventory.cancel_retired_collection(uuid,uuid,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_inventory.cancel_retired_collection(uuid,uuid,text) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_inventory.cancel_retired_collection(uuid,uuid,text) TO mdm_access,mdm_command_runtime;
 COMMIT;

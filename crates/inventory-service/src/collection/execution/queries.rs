@@ -93,11 +93,13 @@ pub async fn detail_on(
     proof: &AuthorizedPrincipal,
     grant: &Snapshot,
 ) -> Result<Detail> {
-    let device:Option<String>=sqlx::query_scalar("SELECT r.device FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(tenant).bind(policy).bind(id).fetch_optional(&mut *c).await?;
-    let device = device.ok_or(Error::NotFound)?;
+    let target:Option<(String,bool)>=sqlx::query_as("SELECT r.device,r.channel='agent' FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(tenant).bind(policy).bind(id).fetch_optional(&mut *c).await?;
+    let (device, raw_evidence) = target.ok_or(Error::NotFound)?;
     grant.require(proof, Permission::OperationRead, Some(&device))?;
     grant.require(proof, Permission::InventoryRead, Some(&device))?;
-    grant.require(proof, Permission::InventorySensitiveRead, None)?;
+    if raw_evidence {
+        grant.require(proof, Permission::InventorySensitiveRead, None)?;
+    }
     let mut record: Detail = crate::transaction::stored(serde_json::from_value(
         select(false)
             .push(" AND r.id=$3")

@@ -134,7 +134,7 @@ impl Policies {
                         .prepare_resource(resource, rss_mdm_inventory::Channel::Mdm)
                         .await?,
                 ),
-                action => self.inputs.prepare_resource(action).await?,
+                _ => None,
             }
         } else {
             None
@@ -207,7 +207,7 @@ impl Policies {
                                 binding:resource,schedule,frequency:*frequency,lifetime:*run_lifetime_seconds,
                             },verified.ok_or(Error::Conflict)?,p,&authorization).await?))?
                         } else {
-                            s.inputs.publish_in(tx,&policy,verified,p,&authorization).await?
+                            s.inputs.publish_in(tx,&policy,p,&authorization).await?
                         }
                         };
                         storage::write_in(

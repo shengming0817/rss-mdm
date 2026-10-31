@@ -35,15 +35,10 @@ pub async fn preview(
         proof.manage(Permission::ResourceRead)?;
     }
     authorize_preview(proof.authorization()?, proof, &input.definition)?;
-    let request = PublicationInput::try_from(&input.definition.action)?;
-    let verified = s.inputs.prepare_resource(request.resource()).await?;
-    let prepared = crate::transaction::inspect(
-        &s.runtime,
-        s.tenant,
-        (s, proof, input, verified.as_ref()),
-        |ctx, tx| {
+    let prepared =
+        crate::transaction::inspect(&s.runtime, s.tenant, (s, proof, input), |ctx, tx| {
             Box::pin(async move {
-                let (s, proof, input, verified) = *ctx;
+                let (s, proof, input) = *ctx;
                 let authorization = crate::action_admission::current(tx, proof).await?;
                 authorization.require(proof, Permission::PolicyRead, None)?;
                 if input.definition.action.resource().is_some() {
@@ -54,15 +49,13 @@ pub async fn preview(
                     .prepare_preview_in(
                         tx,
                         &PublicationInput::try_from(&input.definition.action)?,
-                        verified,
                         proof,
                         &authorization,
                     )
                     .await
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
     s.snapshot(proof,(s,proof,input,&prepared,query,codec),|ctx,c,basis|Box::pin(async move {
         let (s,proof,input,prepared,query,codec)=*ctx;
         let authorization=&basis.grant;

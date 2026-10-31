@@ -5,21 +5,6 @@ use rss_mdm_policy::{
 };
 use uuid::Uuid;
 
-/// Resource-only preflight input, usable by persistent and immediate callers.
-#[derive(Clone, Copy)]
-pub enum ResourcePreparation<'a> {
-    Software {
-        binding: &'a SoftwareResourceBinding,
-    },
-}
-impl ResourcePreparation<'_> {
-    pub(super) fn identity(&self) -> rss_mdm_policy::ResourceIdentity<'_> {
-        match self {
-            Self::Software { binding } => binding.identity(),
-        }
-    }
-}
-
 /// Material to freeze inside the caller's original transaction.
 pub enum PublicationInput<'a> {
     DeviceAccess {
@@ -60,10 +45,10 @@ pub enum PublicationInput<'a> {
     },
 }
 impl<'a> PublicationInput<'a> {
-    /// Resource preflight input; enrollment has no resource.
-    pub fn resource(&self) -> Option<ResourcePreparation<'a>> {
+    /// The remaining resource-bound action is software.
+    pub(super) fn resource(&self) -> Option<rss_mdm_policy::ResourceIdentity<'a>> {
         Some(match self {
-            Self::Software { binding, .. } => ResourcePreparation::Software { binding },
+            Self::Software { binding, .. } => binding.identity(),
             Self::DeviceAccess { .. }
             | Self::Unmanage { .. }
             | Self::Credential { .. }

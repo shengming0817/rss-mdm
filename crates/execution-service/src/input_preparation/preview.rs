@@ -20,15 +20,11 @@ impl Inputs {
         &self,
         tx: &mut PgTransaction<'_>,
         input: &PublicationInput<'_>,
-        verified: Option<&Verified>,
         proof: &AuthorizedPrincipal,
         snapshot: &crate::authorization::Snapshot,
     ) -> Result<PreparedPreview> {
-        let inputs = self
-            .preview_in(tx, input, verified, proof, snapshot)
-            .await?;
-        let resource = if let Some(resource) = input.resource() {
-            let binding = resource.identity();
+        let inputs = self.preview_in(tx, input, proof, snapshot).await?;
+        let resource = if let Some(binding) = input.resource() {
             Some(
                 self.active_version_in(tx, binding.id(), binding.version())
                     .await?,
@@ -111,7 +107,6 @@ impl Inputs {
         &self,
         tx: &mut PgTransaction<'_>,
         input: &PublicationInput<'_>,
-        _verified: Option<&Verified>,
         proof: &AuthorizedPrincipal,
         snapshot: &crate::authorization::Snapshot,
     ) -> Result<PreviewInputs> {
@@ -164,8 +159,7 @@ impl Inputs {
             }
             _ => (),
         }
-        let resource = input.resource().ok_or(Error::Unsupported)?;
-        let binding = resource.identity();
+        let binding = input.resource().ok_or(Error::Unsupported)?;
         let version = self
             .active_version_in(tx, binding.id(), binding.version())
             .await?;

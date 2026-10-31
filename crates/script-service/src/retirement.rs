@@ -57,3 +57,14 @@ pub async fn retire_in(
     audit.finalize(None);
     Ok(())
 }
+
+/// Pending execution and the first unconfirmed task across every retirement registration.
+pub async fn progress_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    registrations: &[Uuid],
+) -> Result<(bool, Option<Uuid>)> {
+    let row: (bool, Option<Uuid>) = sqlx::query_as("SELECT count(*)>0,(array_agg(t.id ORDER BY t.id) FILTER(WHERE t.state->>'execution'='unknown'))[1] FROM mdm_script.runs t WHERE t.tenant_id=$1::uuid AND t.registration=ANY($2) AND (t.state->>'execution' IN('running','waiting_reboot','unknown'))")
+        .bind(tenant).bind(registrations).fetch_one(c).await?;
+    Ok(row)
+}

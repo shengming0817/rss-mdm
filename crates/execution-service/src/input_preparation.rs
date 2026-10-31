@@ -5,43 +5,17 @@ mod request;
 mod software;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use crate::{Error, Inputs, action_contract::*, frozen::Frozen, transaction::*};
-pub use request::{PublicationAuthority, PublicationInput, ResourcePreparation};
-use rss_mdm_content_service::{StorageClass, Verified};
+pub use request::{PublicationAuthority, PublicationInput};
 use rss_mdm_policy::{Action, Platform, SoftwareIntent};
 use rss_mdm_resource::{self as resource, self as r};
 use rss_transactional_messaging_postgres::PgTransaction;
 
 impl Inputs {
-    /// Validate the closed resource family and verify its content outside a write transaction.
-    pub async fn prepare_resource(
-        &self,
-        input: Option<ResourcePreparation<'_>>,
-    ) -> std::result::Result<Option<Verified>, Error> {
-        let Some(input) = input else {
-            return Ok(None);
-        };
-        let artifact = inspect(&self.runtime, self.tenant, (self, input), |ctx, tx| {
-            Box::pin(async move {
-                let (service, input) = *ctx;
-                let binding = input.identity();
-                let version = service
-                    .active_version_in(tx, binding.id(), binding.version())
-                    .await?;
-                resource_artifact(&version, input)
-            })
-        })
-        .await?;
-        match artifact {
-            Some((artifact, class)) => Ok(Some(self.verify_artifact(&artifact, class).await?)),
-            None => Ok(None),
-        }
-    }
     /// Freeze and authorize immutable execution material, without committing or creating assignments.
     pub async fn publish_in(
         &self,
         tx: &mut PgTransaction<'_>,
         input: &PublicationInput<'_>,
-        verified: Option<&Verified>,
         authority: &PublicationAuthority<'_>,
     ) -> Result<Frozen> {
         self.validate_in(tx)?;
@@ -142,7 +116,7 @@ impl Inputs {
                     *lifetime,
                 )?),
             },
-            _ => self.freeze_resource_in(tx, input, verified).await?,
+            _ => self.freeze_resource_in(tx, input).await?,
         };
         frozen.authorize_native(authority.proof, authority.snapshot, authority.devices)?;
         Ok(frozen)
@@ -174,15 +148,6 @@ impl Inputs {
     }
 }
 
-fn resource_artifact(
-    version: &r::Version,
-    _input: ResourcePreparation<'_>,
-) -> Result<Option<(r::Artifact, StorageClass)>> {
-    if version.kind() != r::Kind::Software {
-        return Err(Error::Malformed.into());
-    }
-    Ok(None)
-}
 /// Check the execution capabilities required by a prepared action.
 pub fn authorize_action(
     snapshot: &crate::authorization::Snapshot,

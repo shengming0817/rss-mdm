@@ -356,6 +356,7 @@ pub(crate) async fn assemble(
         Arc::new(super::configuration_cleanup::Cleanup(configuration.clone()));
     let materials = Arc::new(rss_mdm_execution_service::ExecutionMaterials {
         capacity: Arc::new(super::capacity::Capacity),
+        task_cleanup: Arc::new(super::task_cleanup::Cleanup),
         configuration_cleanup: configuration_cleanup.clone(),
         recovery_credentials: recovery_credentials.clone(),
         inputs: input_materials,
@@ -436,6 +437,7 @@ pub(crate) async fn assemble(
         rss_mdm_execution_service::Dependencies {
             worker_budget,
             capacity: Arc::new(super::capacity::Capacity),
+            task_cleanup: Arc::new(super::task_cleanup::Cleanup),
             configuration_cleanup,
             worker_concurrency: config.background.device_concurrency,
             recovery_credentials,

@@ -24,15 +24,11 @@ pub trait ProfileValidator: Send + Sync {
     ) -> Pending<'a, Vec<rss_mdm_inventory::FieldDefinition>, ProfileValidationError>;
 }
 
-use crate::{Error, transaction::Fault};
+use crate::transaction::Fault;
 use rss_mdm_authorization_service::{Snapshot, context::AuthorizedPrincipal};
 use rss_mdm_policy::{Action, Policy};
 /// Publication of actions still owned by Execution. Configuration never enters this port.
 pub trait ExecutionPublication: Send + Sync {
-    fn prepare_resource<'a>(
-        &'a self,
-        action: &'a Action,
-    ) -> Pending<'a, Option<rss_mdm_content_service::Verified>, Error>;
     fn software_binding_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
@@ -42,7 +38,6 @@ pub trait ExecutionPublication: Send + Sync {
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         policy: &'a Policy,
-        verified: Option<&'a rss_mdm_content_service::Verified>,
         proof: &'a AuthorizedPrincipal,
         snapshot: &'a Snapshot,
     ) -> Pending<'a, serde_json::Value, Fault>;

@@ -10,6 +10,8 @@ MODULES = {
         inputs=('crates/script-service/*', 'crates/inventory-service/src/collection/*',
                 'crates/inventory-service/schema/*', 'crates/agent-channel/*',
                 'crates/execution-service/src/capacity.rs', 'crates/task-state/*',
+                'crates/execution-service/src/queries/history.rs', 'crates/execution-service/src/unmanage.rs',
+                'crates/execution-service/src/task_cleanup.rs', 'crates/execution-service/src/actions/poll.rs',
                 'apps/server/src/assembly/*', 'apps/server/src/registration_lifecycle.rs',
                 'apps/server/tests/execution_owners/*', 'apps/server/tests/support/planning.rs',
                 'apps/server/tests/support/command_runtime.rs', 'apps/server/tests/task_trust/support.rs',

@@ -66,3 +66,14 @@ pub async fn retire_in(
     audit.finalize(None);
     Ok(())
 }
+
+/// Pending execution and the first unconfirmed task across every retirement registration.
+pub async fn progress_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    registrations: &[Uuid],
+) -> Result<(bool, Option<Uuid>)> {
+    let row: (bool, Option<Uuid>) = sqlx::query_as("SELECT count(*)>0,(array_agg(t.id ORDER BY t.id) FILTER(WHERE t.agent_state->>'execution'='unknown' OR (t.native_delivery='sent' AND ((report.sealed_at IS NOT NULL AND report.reason<>'complete') OR (report.sealed_at IS NULL AND t.deadline<=floor(extract(epoch FROM clock_timestamp()))::bigint)))))[1] FROM mdm_inventory.collection_tasks t LEFT JOIN mdm_access.collection_runs report ON(report.tenant_id,report.id)=(t.tenant_id,t.collection_run) WHERE t.tenant_id=$1::uuid AND t.registration=ANY($2) AND (t.agent_state->>'execution' IN('running','waiting_reboot','unknown') OR (t.native_delivery='sent' AND (report.sealed_at IS NULL OR report.reason<>'complete')))")
+        .bind(tenant).bind(registrations).fetch_one(c).await?;
+    Ok(row)
+}

@@ -16,5 +16,5 @@ CREATE FUNCTION mdm_script.save_retired_run(p_registration uuid,p_run uuid,p_pre
  ) SELECT EXISTS(SELECT 1 FROM changed);
 $$;
 REVOKE ALL ON FUNCTION mdm_script.save_retired_run(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_script.save_retired_run(uuid,uuid,jsonb,jsonb) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_script.save_retired_run(uuid,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
 COMMIT;

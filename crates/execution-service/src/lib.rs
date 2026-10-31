@@ -84,6 +84,7 @@ pub mod capacity;
 pub struct Dependencies {
     pub worker_budget: Arc<tokio::sync::Semaphore>,
     pub capacity: Arc<dyn capacity::DeviceCapacity>,
+    pub task_cleanup: Arc<dyn crate::task_cleanup::TaskCleanup>,
     pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub worker_concurrency: usize,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
@@ -125,6 +126,7 @@ impl ExecutionService {
                 protection: dependencies.protection,
                 agent_store: dependencies.agent_store,
                 apple_profiles: dependencies.apple_profiles,
+                task_cleanup: dependencies.task_cleanup,
                 configuration_cleanup: dependencies.configuration_cleanup,
                 windows_results: dependencies.windows_results,
                 apple_results: dependencies.apple_results,
@@ -226,28 +228,6 @@ impl Inputs {
         }
         Ok(())
     }
-    pub async fn verify_artifact(
-        &self,
-        artifact: &rss_mdm_resource::Artifact,
-        class: rss_mdm_content_service::StorageClass,
-    ) -> std::result::Result<rss_mdm_content_service::Verified, Error> {
-        Ok(self
-            .materials
-            .content
-            .as_ref()
-            .ok_or(Error::Unsupported)?
-            .verify_class(
-                artifact,
-                class,
-                self.materials
-                    .content
-                    .as_ref()
-                    .ok_or(Error::Unsupported)?
-                    .upload_budget()?
-                    .operation_deadline(),
-            )
-            .await?)
-    }
 }
 
 mod agent_preparation;
@@ -339,3 +319,5 @@ pub const NATIVE_SOURCE_ACCESS_CONTRACT: &str = include_str!("native-source-acce
 pub const NATIVE_SOURCE_ADMISSION_SQL: &str = include_str!("native-source-admission.sql");
 
 pub mod configuration_cleanup;
+
+pub mod task_cleanup;

@@ -132,9 +132,23 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         if claim.target().scope() != &super::wake::scope(self.service.transactions.tenant) {
             return Err(failure(Error::Unavailable(crate::Failure::PlanningStorage)));
         }
+        let service = &self.service;
+        let pending = crate::transaction::inspect_budget(
+            &service.transactions.runtime,
+            service.transactions.tenant,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                control.remaining(),
+            ),
+            (service.as_ref(), claim.target().entity()),
+            |ctx, tx| Box::pin(async move { pending_in(ctx.0, tx, ctx.1).await }),
+            crate::transaction::TransactionOwner::Collections,
+        )
+        .await
+        .map_err(failure)?;
+        control.check()?;
         Ok(ReconcileStep::Ready(ReconcileDiff::between(
             DesiredState::present(false),
-            ActualState::present(true),
+            ActualState::present(pending),
         )))
     }
     async fn apply<T: rss_reconcile::Timer>(
@@ -255,14 +269,53 @@ async fn advance_in(
         .and_then(|s| Uuid::parse_str(s).ok())
     {
         super::recovery::recover_one(service, tx, id).await?;
-        let tenant = tx.tenant_id().to_string();
-        let active:bool=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks t WHERE tenant_id=$1::uuid AND id=$2 AND ((channel='agent' AND agent_state->>'execution' IN('not_started','running') AND agent_state->>'cancellation'<>'confirmed') OR (channel='mdm' AND native_delivery<>'cancelled' AND NOT EXISTS(SELECT 1 FROM mdm_access.collection_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.collection_run) AND r.sealed_at IS NOT NULL))))").bind(tenant).bind(id).fetch_one(c).await
-        })).await?;
-        return Ok(active.then_some(Duration::from_secs(5)));
+        return Ok(pending_in(service, tx, entity)
+            .await?
+            .then_some(Duration::from_secs(5)));
     }
     Err(Error::Unavailable(crate::Failure::PlanningStorage).into())
 }
+// Read durable owner facts so RSS can finish the current epoch as converged.
+// A concurrent wake increments the epoch and cannot be consumed by this observation.
+async fn pending_in(
+    service: &CollectionService,
+    tx: &mut PgTransaction<'_>,
+    entity: &str,
+) -> crate::transaction::Result<bool> {
+    service.transactions.validate_in(tx)?;
+    let tenant = tx.tenant_id().to_string();
+    if let Some(id) = entity
+        .strip_prefix("policy:")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
+        return Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND input_revision>input_consumed)")
+                .bind(tenant).bind(id).fetch_one(c).await
+        })).await?);
+    }
+    if let Some(id) = entity
+        .strip_prefix("run:")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
+        return Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks t WHERE tenant_id=$1::uuid AND id=$2 AND (((channel='agent' AND agent_state->>'execution' IN('not_started','running') AND agent_state->>'cancellation'<>'confirmed') OR (channel='mdm' AND native_delivery<>'cancelled' AND NOT EXISTS(SELECT 1 FROM mdm_access.collection_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.collection_run) AND r.sealed_at IS NOT NULL)))))")
+                .bind(tenant).bind(id).fetch_one(c).await
+        })).await?);
+    }
+    if let Some(work) = super::scheduled::Work::parse(entity) {
+        return Ok(super::scheduled::delay_in(service, tx, work)
+            .await?
+            .is_some());
+    }
+    if let Some((registration, generation)) = checkin(entity) {
+        return Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_native_checkins WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND (active_event IS NOT NULL OR pending_event IS NOT NULL))")
+                .bind(tenant).bind(registration).bind(generation).fetch_one(c).await
+        })).await?);
+    }
+    Err(Error::Unavailable(crate::Failure::PlanningStorage).into())
+}
+
 struct Timer(tokio::time::Instant);
 impl Timer {
     #[allow(

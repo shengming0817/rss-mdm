@@ -1,0 +1,190 @@
+use super::*;
+use rss_mdm_inventory_service::collection::execution as collection;
+use rss_reconcile::DurableStore;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+fn policy() -> Result<rss_reconcile::Policy> {
+    Ok(rss_reconcile::Policy::try_from(
+        rss_reconcile::PolicyConfig {
+            concurrency: 1,
+            lease_ttl: Duration::from_secs(30),
+            attempt_timeout: Duration::from_secs(6),
+            scan_interval: Duration::from_millis(20),
+            idle_scan_interval: Duration::from_secs(5),
+            initial_backoff: Duration::from_secs(5),
+            max_backoff: Duration::from_secs(60),
+            max_attempts: 1000,
+        },
+    )?)
+}
+async fn wake(h: &Harness, collection: bool, policy: Uuid) -> Result<()> {
+    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        h.a.runtime.clone(),
+        h.c.tenant,
+        script::transaction::deadline(),
+    )
+    .await?;
+    script::transaction::inspect(
+        &h.a.runtime,
+        h.c.tenant,
+        (messaging, collection, policy),
+        |ctx, tx| {
+            Box::pin(async move {
+                if ctx.1 {
+                    collection::wake::policy_in(&ctx.0, tx, ctx.2).await?;
+                } else {
+                    script::wake::policy_in(&ctx.0, tx, ctx.2).await?;
+                }
+                Ok(())
+            })
+        },
+    )
+    .await?;
+    Ok(())
+}
+async fn converged(h: &Harness, domain: &str, count: i64) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(20),async {
+        loop {
+            let state:(i64,i64)=sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE result='converged' AND next_run IS NULL AND token IS NULL) FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2").bind(h.c.tenant.to_string()).bind(domain).fetch_one(&h.c.operator).await?;
+            if state==(count,count) {break;}
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<_,anyhow::Error>(())
+    }).await??;
+    Ok(())
+}
+async fn checkpoint_restart(collection: bool) -> Result<()> {
+    let mut h = Harness::open().await?;
+    let (policy, version) = if collection {
+        let (d, f, _) = super::mixed::agent(&h)?;
+        let p = Uuid::new_v4();
+        (p, super::mixed::publish(&h, p, 1, d, f).await?)
+    } else {
+        h.policy("checkpoint").await?
+    };
+    let first = if collection {
+        super::mixed::run(&h, version, true, now()).await?
+    } else {
+        h.run(version, "checkpoint", now() + 300).await?
+    };
+    let mut cancelled = rss_mdm_task_state::RunState::new(now() + 300, now())?;
+    cancelled.cancel();
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query(if collection {"UPDATE mdm_inventory.collection_tasks SET agent_state=$3 WHERE tenant_id=$1::uuid AND id=$2"} else {"UPDATE mdm_script.runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2"}).bind(h.c.tenant.to_string()).bind(first).bind(serde_json::to_value(cancelled)?).execute(&mut *tx).await?;
+    sqlx::query(if collection {"INSERT INTO mdm_inventory.collection_tasks(tenant_id,id,occurrence,policy_version,channel,origin,source_objects,device,registration,generation,created_at,available_at,deadline,agent_state,dispatch_fingerprint) SELECT tenant_id,gen_random_uuid(),'page:'||n,policy_version,channel,origin,source_objects,device,registration,generation,created_at,available_at,deadline,agent_state,dispatch_fingerprint FROM mdm_inventory.collection_tasks CROSS JOIN generate_series(1,32) n WHERE tenant_id=$1::uuid AND id=$2"} else {"INSERT INTO mdm_script.runs(tenant_id,id,occurrence,policy_version,resource_id,origin,source_objects,device,registration,generation,created_at,available_at,deadline,state,dispatch_fingerprint) SELECT tenant_id,gen_random_uuid(),'page:'||n,policy_version,resource_id,origin,source_objects,device,registration,generation,created_at,available_at,deadline,state,dispatch_fingerprint FROM mdm_script.runs CROSS JOIN generate_series(1,32) n WHERE tenant_id=$1::uuid AND id=$2"}).bind(h.c.tenant.to_string()).bind(first).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let ids: Vec<Uuid> = sqlx::query_scalar(if collection {
+        "SELECT id FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid ORDER BY id"
+    } else {
+        "SELECT id FROM mdm_script.runs WHERE tenant_id=$1::uuid ORDER BY id"
+    })
+    .bind(h.c.tenant.to_string())
+    .fetch_all(&h.c.operator)
+    .await?;
+    assert_eq!(ids.len(), 33);
+    wake(&h, collection, policy).await?;
+    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let force = CancellationToken::new();
+    let stop = CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
+    let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), &control).await?;
+    let scope = if collection {
+        collection::wake::scope(h.c.tenant)
+    } else {
+        script::wake::scope(h.c.tenant)
+    };
+    let entity = format!("policy:{policy}");
+    let notify = tokio::sync::Notify::new();
+    let observe = |event| {
+        if let rss_reconcile::Observation::Deferred { target } = event {
+            if target.entity() == entity {
+                stop.cancel();
+            }
+        }
+    };
+    let report = if collection {
+        rss_reconcile::run_with_notify(
+            &store,
+            h.a.collection_work.as_ref(),
+            &scope,
+            self::policy()?,
+            &control,
+            &stop,
+            &notify,
+            observe,
+        )
+        .await?
+    } else {
+        rss_reconcile::run_with_notify(
+            &store,
+            h.a.script_work.as_ref(),
+            &scope,
+            self::policy()?,
+            &control,
+            &stop,
+            &notify,
+            observe,
+        )
+        .await?
+    };
+    assert!(report.deferred > 0);
+    assert_eq!(report.execution_failed, 0);
+    let row:(Uuid,bool,bool)=sqlx::query_as(if collection {"SELECT recovery_after,runs_done,input_window>input_consumed FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid AND policy=$2"} else {"SELECT recovery_after,runs_done,input_window>input_consumed FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2"}).bind(h.c.tenant.to_string()).bind(policy).fetch_one(&h.c.operator).await?;
+    assert_eq!(row, (ids[31], false, true));
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity LIKE 'run:%'").bind(h.c.tenant.to_string()).bind(scope.reconciler()).fetch_one(&h.c.operator).await?;
+    assert_eq!(count, 32);
+    drop(store);
+    let a = command::open(&h.c, true).await?;
+    let (audit, delivery) = super::delivery(&h.c, &a).await?;
+    drop(std::mem::replace(&mut h.delivery, delivery));
+    drop(std::mem::replace(&mut h.audit, audit));
+    command::close(std::mem::replace(&mut h.a, a)).await?;
+    for pass in 0..2 {
+        if pass == 1 {
+            wake(&h, collection, policy).await?;
+        }
+        let mut stack = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(25))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = stack.startup()?.commit();
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let registration = if collection {
+            h.a.collection_work.clone().registration(notify)
+        } else {
+            h.a.script_work.clone().registration(notify)
+        };
+        let status = launch.stage_deferred_task_with_token(registration.critical());
+        launch.finish();
+        converged(&h, scope.reconciler(), 34).await?;
+        assert!(stack.shutdown().join().await?.is_clean());
+        assert_eq!(
+            status.wait_stopped().await,
+            rss_runtime::TaskExit::Cancelled
+        );
+        let settled:bool=sqlx::query_scalar(if collection {"SELECT input_consumed=input_revision AND runs_done FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid AND policy=$2"} else {"SELECT input_consumed=input_revision AND runs_done FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2"}).bind(h.c.tenant.to_string()).bind(policy).fetch_one(&h.c.operator).await?;
+        assert!(settled);
+        let timer = rss_mdm_execution_service::recovery::Timer::new();
+        let cancel = CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), &control).await?;
+        assert!(
+            store
+                .claim_due(&scope, 64, Duration::from_secs(30), &control)
+                .await?
+                .claims
+                .is_empty()
+        );
+    }
+    h.close().await
+}
+#[tokio::test]
+#[ignore = "T2: real Script worker persists one page, resumes after reconstruction, converges and accepts a new wake"]
+async fn script_checkpoint_restart_and_convergence() -> Result<()> {
+    checkpoint_restart(false).await
+}
+#[tokio::test]
+#[ignore = "T2: real Collection worker persists one page, resumes after reconstruction, converges and accepts a new wake"]
+async fn collection_checkpoint_restart_and_convergence() -> Result<()> {
+    checkpoint_restart(true).await
+}

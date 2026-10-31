@@ -1,6 +1,6 @@
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
-('mdm_inventory.save_retired_collection_agent(uuid,uuid,jsonb,jsonb)','sql','boolean',true,false,'v',ARRAY['p_registration','p_run','p_previous','p_state']::text[],ARRAY['search_path=pg_catalog']::text[],$1::text,ARRAY['mdm_access','mdm_owner']::text[]),
-('mdm_inventory.cancel_retired_collection(uuid,uuid,text)','sql','boolean',true,false,'v',ARRAY['p_registration','p_run','p_previous']::text[],ARRAY['search_path=pg_catalog']::text[],$2::text,ARRAY['mdm_access','mdm_owner']::text[])
+('mdm_inventory.save_retired_collection_agent(uuid,uuid,jsonb,jsonb)','sql','boolean',true,false,'v',ARRAY['p_registration','p_run','p_previous','p_state']::text[],ARRAY['search_path=pg_catalog']::text[],$1::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner']::text[]),
+('mdm_inventory.cancel_retired_collection(uuid,uuid,text)','sql','boolean',true,false,'v',ARRAY['p_registration','p_run','p_previous']::text[],ARRAY['search_path=pg_catalog']::text[],$2::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

@@ -107,24 +107,6 @@ fn execution_action(action: &Action) -> Result<(), Error> {
     }
 }
 impl ExecutionPublication for Publication {
-    fn prepare_resource<'a>(
-        &'a self,
-        action: &'a Action,
-    ) -> Pending<'a, Option<rss_mdm_content_service::Verified>, Error> {
-        Box::pin(async move {
-            execution_action(action)?;
-            self.0
-                .prepare_resource(
-                    rss_mdm_execution_service::input_preparation::PublicationInput::try_from(
-                        action,
-                    )
-                    .map_err(error)?
-                    .resource(),
-                )
-                .await
-                .map_err(error)
-        })
-    }
     fn software_binding_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
@@ -136,7 +118,6 @@ impl ExecutionPublication for Publication {
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         policy: &'a Policy,
-        verified: Option<&'a rss_mdm_content_service::Verified>,
         proof: &'a AuthorizedPrincipal,
         snapshot: &'a Snapshot,
     ) -> Pending<'a, serde_json::Value, Fault> {
@@ -151,7 +132,6 @@ impl ExecutionPublication for Publication {
                 .publish_in(
                     tx,
                     &input,
-                    verified,
                     &rss_mdm_execution_service::input_preparation::PublicationAuthority {
                         proof,
                         snapshot,
