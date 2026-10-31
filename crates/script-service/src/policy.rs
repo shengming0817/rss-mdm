@@ -10,10 +10,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename = "execution", deny_unknown_fields)]
-pub struct Published {
-    pub action: Box<FrozenScript>,
-    pub frequency: Frequency,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Published {
+    Execution {
+        action: Box<FrozenScript>,
+        frequency: Frequency,
+    },
 }
 pub struct ScriptPolicy {
     pub id: Uuid,
@@ -33,12 +35,13 @@ pub async fn read_in(
         checked(service.policy_reader.version_in(tx, id).await?)?.ok_or(Error::NotFound)?;
     let policy = checked(service.policy_reader.locked_in(tx, version.policy).await?)?
         .ok_or(Error::NotFound)?;
-    let published: Published = stored(serde_json::from_value(version.frozen))?;
+    let Published::Execution { action, frequency } =
+        stored(serde_json::from_value(version.frozen))?;
     Ok(ScriptPolicy {
         id,
         owner: policy.id,
-        frozen: *published.action,
-        frequency: published.frequency,
+        frozen: *action,
+        frequency,
         active: policy.state.is_enabled(),
         policy,
     })
@@ -287,4 +290,30 @@ pub async fn admission_in(
             })
         })
         .await??)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn published_script_round_trips_and_rejects_other_owner_or_extra_fields() {
+        let value = json!({"kind":"execution","frequency":"every_trigger","action":{
+            "input":{"platform":"windows","architecture":"x86_64","run_lifetime_seconds":300,"schedule":{"trigger":{"kind":"manual"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}},
+            "parameters":{},"resource":{"id":"test.script","version":"1","variant":"default"},
+            "definition":{"profile":"power_shell7","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{},"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":1,"outputBytes":4096,"maxRows":1},
+            "collection":null,"resource_digest":vec![1u8;32],"artifact_reference":"artifact","content":{"length":3,"sha256":vec![2u8;32]}
+        }});
+        let frozen: Published = serde_json::from_value(value).unwrap();
+        let stored = serde_json::to_value(frozen).unwrap();
+        assert_eq!(stored["kind"], "execution");
+        let restored: Published = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), stored);
+        let mut invalid = stored.clone();
+        invalid["kind"] = json!("agent_collection");
+        assert!(serde_json::from_value::<Published>(invalid).is_err());
+        let mut invalid = stored;
+        invalid["legacy"] = json!(true);
+        assert!(serde_json::from_value::<Published>(invalid).is_err());
+    }
 }

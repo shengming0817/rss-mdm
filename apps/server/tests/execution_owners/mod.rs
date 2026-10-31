@@ -159,16 +159,17 @@ impl Harness {
                 sha256: [2; 32],
             },
         };
-        let frozen = serde_json::to_value(script::policy::Published {
+        let frozen = serde_json::to_value(script::policy::Published::Execution {
             action: Box::new(action),
             frequency: rss_mdm_policy::Frequency::EveryTrigger,
         })?;
+        let _: script::policy::Published = serde_json::from_value(frozen.clone())?;
         let author = rss_mdm_authorization_service::Actor::Account {
             user: self.c.user(Uuid::new_v4()),
         };
         let mut tx = command::seed_transaction(&self.c).await?;
         sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(self.c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(author)?).bind(now()).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'execution',$4,$5)").bind(self.c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint,resource,resource_version) VALUES($1::uuid,$2,$3,1,'execution',$4,$5,$6,'1')").bind(self.c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).bind(resource).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok((policy, version))
     }
@@ -188,7 +189,8 @@ impl Harness {
         Ok(self
             .delivery
             .claim(&self.p, &input, &request(&self.c))
-            .await?
+            .await
+            .map_err(|e| anyhow::anyhow!("claim: {e:?}"))?
             .task()
             .expect("eligible Script offer")
             .clone())

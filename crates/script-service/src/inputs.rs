@@ -111,7 +111,7 @@ impl Inputs {
         if !verified.matches(selected.artifact()) {
             return Err(Error::Conflict.into());
         }
-        Ok(crate::policy::Published {
+        Ok(crate::policy::Published::Execution {
             action: Box::new(
                 crate::preparation::freeze_in(
                     tx,

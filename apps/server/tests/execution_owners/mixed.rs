@@ -104,7 +104,7 @@ pub(super) async fn publish(
         user: h.c.user(Uuid::new_v4()),
     };
     sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,$3,$4,$3,'enabled',$5,$6,$7) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,definition=excluded.definition").bind(h.c.tenant.to_string()).bind(policy).bind(number).bind(version).bind(serde_json::to_value(&definition)?).bind(serde_json::to_value(author)?).bind(now()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(h.c.tenant.to_string()).bind(version).bind(policy).bind(number).bind(definition.action.kind().as_str()).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint,resource,resource_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(h.c.tenant.to_string()).bind(version).bind(policy).bind(number).bind(definition.action.kind().as_str()).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).bind(definition.action.resource().map(|r|r.id())).bind(definition.action.resource().map(|r|r.version())).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(version)
 }
