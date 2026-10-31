@@ -142,7 +142,7 @@ pub async fn require_in(
     tx: &mut PgTransaction<'_>,
     store: Arc<dyn agent_facts::Store>,
     target: &Target,
-    frozen: &crate::action_contract::FrozenAction,
+    frozen: &rss_mdm_script_service::FrozenScript,
 ) -> Result<bool> {
     if let rss_mdm_resource::ScriptPurpose::Collection { applicability, .. } =
         &frozen.definition.spec().purpose

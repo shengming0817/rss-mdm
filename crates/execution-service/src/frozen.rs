@@ -26,7 +26,7 @@ pub enum Frozen {
         frequency: Frequency,
     },
     Execution {
-        action: Box<FrozenAction>,
+        action: Box<rss_mdm_script_service::FrozenScript>,
         frequency: Frequency,
     },
 

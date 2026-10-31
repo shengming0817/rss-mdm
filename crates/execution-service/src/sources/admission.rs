@@ -1,7 +1,7 @@
 //! Read-only bridge from a published Policy version to Agent execution.
 use super::*;
 use crate::action_contract::ScheduledInput;
-pub struct ExecutionPolicy<T = FrozenAction> {
+pub struct ExecutionPolicy<T = rss_mdm_script_service::FrozenScript> {
     pub id: Uuid,
     pub owner: Uuid,
     pub frozen: T,
@@ -42,8 +42,8 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
         now: i64,
     ) -> Result<Option<i64>> {
         if !self.active
-            || now < self.frozen.execution_input().schedule.not_before
-            || now >= self.frozen.execution_input().schedule.ends_at()
+            || now < self.frozen.schedule().not_before
+            || now >= self.frozen.schedule().ends_at()
         {
             return Ok(None);
         }

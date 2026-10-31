@@ -1,71 +1,9 @@
-//! Publication prepares Execution-owned immutable inputs in the existing transaction.
-use crate::action_contract::*;
+//! Collection publication uses the initiating owner's transaction and Inventory catalog.
 use rss_mdm_agent_wire::runtime as wire;
-use rss_mdm_policy::schedule::Schedule;
 use rss_mdm_resource as r;
 use rss_transactional_messaging_postgres::PgTransaction;
-/// Freeze checked resources under the caller's existing execution transaction.
-pub(crate) async fn freeze_script_in(
-    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    tenant: rss_request_context::TenantId,
-    prepared: &r::SelectedScript<'_>,
-    parameters: rss_mdm_policy::ParameterSources,
-    schedule: Schedule,
-    run_lifetime_seconds: u32,
-) -> crate::transaction::Result<FrozenAction> {
-    let script = prepared.definition();
-    let collection = if let r::ScriptPurpose::Collection { mappings, .. } = &script.spec().purpose {
-        let source = if script.spec().profile == r::ScriptProfile::Osquery {
-            rss_mdm_inventory::Source::AgentOsquery
-        } else {
-            rss_mdm_inventory::Source::AgentScript
-        };
-        Some(
-            freeze_collection(
-                tx,
-                tenant,
-                prepared.version(),
-                prepared.variant(),
-                source,
-                mappings.keys(),
-            )
-            .await?,
-        )
-    } else {
-        None
-    };
-    let artifact = prepared.artifact();
-    Ok(FrozenAction {
-        collection,
-        resource: wire::TaskResource {
-            id: prepared.version().resource().as_str().into(),
-            version: prepared.version().label().as_str().into(),
-            variant: prepared.variant().key().as_str().into(),
-        },
-        parameters,
-        input: ExecutionInput {
-            platform: match prepared.variant().platform() {
-                r::Platform::Windows => Platform::Windows,
-                r::Platform::MacOS => Platform::Macos,
-            },
-            architecture: match prepared.variant().architecture() {
-                r::Architecture::X86_64 => Architecture::X86_64,
-                r::Architecture::Aarch64 => Architecture::Aarch64,
-            },
-            schedule,
-            run_lifetime_seconds,
-        },
-        definition: script.clone(),
-        resource_digest: prepared.version().digest().bytes(),
-        artifact_reference: artifact.reference().as_str().into(),
-        content: wire::TaskContent {
-            length: artifact.length(),
-            sha256: artifact.digest().bytes(),
-        },
-    })
-}
 
-pub(crate) async fn prepare_collection_in<'a>(
+pub async fn prepare_collection_in<'a>(
     tx: &mut PgTransaction<'_>,
     tenant: rss_request_context::TenantId,
     version: &r::Version,
@@ -148,7 +86,7 @@ pub(crate) async fn prepare_collection_in<'a>(
     Ok((definition, false))
 }
 
-pub(crate) async fn freeze_collection<'a>(
+pub async fn freeze_collection<'a>(
     tx: &mut PgTransaction<'_>,
     tenant: rss_request_context::TenantId,
     version: &r::Version,
@@ -174,7 +112,7 @@ pub(crate) async fn freeze_collection<'a>(
 }
 
 /// Validate publication fields without inventing an execution user's asset namespace.
-pub(crate) async fn prepare_agent_fields(
+pub async fn prepare_agent_fields(
     tx: &mut PgTransaction<'_>,
     tenant: rss_request_context::TenantId,
     variant: &r::Variant,
@@ -200,17 +138,15 @@ pub(crate) async fn prepare_agent_fields(
             {
                 return Err(crate::Error::Malformed.into());
             }
-            checked_input(
-                rss_mdm_inventory_service::collection::native::validate_agent_mapping(
-                    field, definition, binding,
-                ),
-            )?;
+            checked_input(crate::collection::native::validate_agent_mapping(
+                field, definition, binding,
+            ))?;
             Ok(field.clone())
         })
         .collect::<crate::transaction::Result<Vec<_>>>()?;
     let wire_fields = fields
         .iter()
-        .map(rss_mdm_inventory_service::collection::wire::to_wire_field)
+        .map(crate::collection::wire::to_wire_field)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|_| crate::Error::Malformed)?;
     checked_input(wire::validate_native_projection(

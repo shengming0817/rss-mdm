@@ -304,7 +304,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             rss_mdm_execution_service::Resource(execution.service.clone()),
                         ));
 let policy_inputs=Arc::new(rss_mdm_execution_service::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.materials.inputs.clone()));
-let policies=crate::assembly::policy::management(&policy_application,policy_inputs,&cursor_key,content.clone(),protection.clone(),compiled.config.software_distribution.mdm_enabled).await.map_err(assembly_error)?;
+let policies=crate::assembly::policy::management(&policy_application,policy_inputs,&cursor_key,content.clone(),protection.clone(),compiled.config.software_distribution.mdm_enabled,execution.materials.inputs.signing_enabled).await.map_err(assembly_error)?;
 let events=crate::assembly::policy::events(policy_application.clone(),execution.materials.clone()).await.map_err(assembly_error)?;
                         let telemetry = match &compiled.config.telemetry {
                             Some(config) => {

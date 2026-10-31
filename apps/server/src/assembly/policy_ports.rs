@@ -94,7 +94,10 @@ pub(super) struct Publication(pub Arc<rss_mdm_execution_service::Inputs>);
 fn execution_action(action: &Action) -> Result<(), Error> {
     if matches!(
         action,
-        Action::Configuration { .. }
+        Action::Execution { .. }
+            | Action::AgentCollection { .. }
+            | Action::NativeCollection { .. }
+            | Action::Configuration { .. }
             | Action::TelemetryProfile { .. }
             | Action::UnmanageDevice { .. }
     ) {

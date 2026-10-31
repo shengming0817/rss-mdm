@@ -262,7 +262,7 @@ impl Inputs {
                     return Err(Error::Conflict.into());
                 }
                 let definition = agent_collection(&version, binding, verified)?;
-                crate::freeze_inputs::prepare_agent_fields(
+                rss_mdm_inventory_service::collection::preparation::prepare_agent_fields(
                     tx,
                     self.tenant,
                     variant(&version, binding)?,

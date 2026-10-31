@@ -37,7 +37,7 @@ impl Inputs {
             )?;
             return Ok(Frozen::Execution {
                 action: Box::new(
-                    freeze_script_in(
+                    freeze_in(
                         tx,
                         self.tenant,
                         &prepared,
@@ -60,9 +60,13 @@ impl Inputs {
             // Persist definitions before channel setup; preview and task issuance require signing.
             let definition = agent_collection(&version, binding, verified)?.clone();
             let selected = variant(&version, binding)?;
-            let fields =
-                crate::freeze_inputs::prepare_agent_fields(tx, self.tenant, selected, &definition)
-                    .await?;
+            let fields = rss_mdm_inventory_service::collection::preparation::prepare_agent_fields(
+                tx,
+                self.tenant,
+                selected,
+                &definition,
+            )
+            .await?;
             return Ok(Frozen::AgentCollection {
                 frequency: *frequency,
                 action: Box::new(FrozenAgentCollection {

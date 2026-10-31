@@ -5,13 +5,17 @@ mod publication;
 mod request;
 mod software;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
-use crate::{Error, Inputs, action_contract::*, freeze_inputs::*, frozen::Frozen, transaction::*};
+use crate::{Error, Inputs, action_contract::*, frozen::Frozen, transaction::*};
 use native::native_collection;
 pub(crate) use native::windows_collection_plan;
-pub use request::{PublicationAuthority, PublicationInput, ResourcePreparation, ScriptParameters};
+pub use request::{PublicationAuthority, PublicationInput, ResourcePreparation};
 use rss_mdm_content_service::{StorageClass, Verified};
+use rss_mdm_inventory_service::collection::preparation::{
+    freeze_collection, prepare_collection_in,
+};
 use rss_mdm_policy::{Action, Architecture, ExactResourceBinding, Platform, SoftwareIntent};
 use rss_mdm_resource::{self as resource, self as r, SelectedScript};
+use rss_mdm_script_service::preparation::freeze_in;
 use rss_transactional_messaging_postgres::PgTransaction;
 
 impl Inputs {
@@ -182,7 +186,7 @@ impl Inputs {
 fn select<'a>(
     version: &'a r::Version,
     binding: &ExactResourceBinding,
-    parameters: ScriptParameters<'_>,
+    parameters: rss_mdm_script_service::Parameters<'_>,
 ) -> Result<SelectedScript<'a>> {
     let exact = binding;
     let selected = checked_input(version.select_script(
@@ -204,7 +208,7 @@ fn select<'a>(
 fn script<'a>(
     version: &'a r::Version,
     binding: &ExactResourceBinding,
-    parameters: ScriptParameters<'_>,
+    parameters: rss_mdm_script_service::Parameters<'_>,
     verified: &Verified,
 ) -> Result<SelectedScript<'a>> {
     let prepared = select(version, binding, parameters)?;

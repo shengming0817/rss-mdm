@@ -14,27 +14,6 @@ pub struct ExecutionInput {
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct FrozenAction {
-    pub input: ExecutionInput,
-    pub parameters: rss_mdm_policy::ParameterSources,
-    pub resource: wire::TaskResource,
-    pub definition: r::ScriptDefinition,
-    pub collection: Option<rss_mdm_inventory::CollectionDefinition>,
-    pub resource_digest: [u8; 32],
-    pub artifact_reference: String,
-    pub content: wire::TaskContent,
-}
-impl FrozenAction {
-    pub fn artifact(&self) -> Result<r::Artifact, Error> {
-        r::Artifact::new(
-            r::Id::new(&self.artifact_reference).map_err(|_| Error::Malformed)?,
-            self.content.length,
-            r::Digest::from_bytes(self.content.sha256),
-        )
-        .map_err(|_| Error::Malformed)
-    }
-}
 /// Enterprise software input frozen at Policy publication, before per-device admission.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FrozenSoftwareAction {
@@ -59,16 +38,16 @@ pub struct FrozenNativeCollection {
     pub resource_digest: [u8; 32],
 }
 pub trait ScheduledInput {
-    fn execution_input(&self) -> &ExecutionInput;
+    fn schedule(&self) -> &Schedule;
 }
-impl ScheduledInput for FrozenAction {
-    fn execution_input(&self) -> &ExecutionInput {
-        &self.input
+impl ScheduledInput for rss_mdm_script_service::FrozenScript {
+    fn schedule(&self) -> &Schedule {
+        &self.input.schedule
     }
 }
 impl ScheduledInput for FrozenNativeCollection {
-    fn execution_input(&self) -> &ExecutionInput {
-        &self.input
+    fn schedule(&self) -> &Schedule {
+        &self.input.schedule
     }
 }
 
@@ -105,8 +84,8 @@ pub struct FrozenAgentCollection {
     pub resource_digest: [u8; 32],
 }
 impl ScheduledInput for FrozenAgentCollection {
-    fn execution_input(&self) -> &ExecutionInput {
-        &self.input
+    fn schedule(&self) -> &Schedule {
+        &self.input.schedule
     }
 }
 

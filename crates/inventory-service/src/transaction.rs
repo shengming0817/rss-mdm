@@ -301,3 +301,21 @@ pub async fn query_authority(
         .await??;
     Ok(snapshot)
 }
+
+impl From<rss_mdm_task_state::Error> for Fault {
+    fn from(e: rss_mdm_task_state::Error) -> Self {
+        match e {
+            rss_mdm_task_state::Error::Malformed => Error::Malformed.into(),
+            rss_mdm_task_state::Error::Conflict => Error::Conflict.into(),
+        }
+    }
+}
+impl From<rss_mdm_policy::Error> for Fault {
+    fn from(e: rss_mdm_policy::Error) -> Self {
+        match e {
+            rss_mdm_policy::Error::Malformed => Error::Malformed.into(),
+            rss_mdm_policy::Error::Conflict => Error::Conflict.into(),
+            rss_mdm_policy::Error::NotFound => Error::NotFound.into(),
+        }
+    }
+}

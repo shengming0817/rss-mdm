@@ -1,12 +1,13 @@
 use crate::Error;
 use crate::Target;
-use crate::action_contract::*;
+use crate::frozen::*;
 use rss_mdm_agent_wire::runtime as wire;
+use rss_mdm_policy::{Architecture, Platform};
 use rss_mdm_resource as r;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
-impl FrozenAction {
+impl FrozenScript {
     pub fn executor_profile(&self) -> wire::ExecutorProfile {
         match self.definition.spec().profile {
             r::ScriptProfile::PowerShell7 => wire::ExecutorProfile::PowerShell7,

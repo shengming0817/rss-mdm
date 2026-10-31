@@ -64,6 +64,7 @@ pub(crate) async fn management(
     content: Option<Arc<rss_mdm_content_service::Store>>,
     protection: Arc<rss_mdm_native_protection::Protector>,
     mdm_software_enabled: bool,
+    signing_enabled: bool,
 ) -> Result<Arc<rss_mdm_policy_service::management::Policies>, crate::Error> {
     let store = Arc::new(
         rss_mdm_policy_postgres::PolicyStore::new(
@@ -85,6 +86,22 @@ pub(crate) async fn management(
             tenant: application.tenant,
             policy_store: store,
             inputs: Arc::new(super::policy_ports::Publication(inputs)),
+            script: Arc::new(rss_mdm_script_service::inputs::Inputs::bind(
+                application.runtime.clone(),
+                application.tenant,
+                content.clone(),
+                signing_enabled,
+            )),
+            collections: Arc::new(
+                rss_mdm_inventory_service::collection::execution::inputs::Inputs::bind(
+                    application.runtime.clone(),
+                    application.tenant,
+                    content.clone(),
+                    Arc::new(super::collection_ports::Delivery {
+                        protection: protection.clone(),
+                    }),
+                ),
+            ),
             configuration: Arc::new(
                 rss_mdm_policy_service::configuration::publication::Publications {
                     runtime: application.runtime.clone(),

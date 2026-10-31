@@ -32,6 +32,7 @@ use rss_mdm_registration_service::{device, enrollment};
 mod agent_collection;
 mod agent_enrollment;
 mod collection;
+pub mod collection_plan;
 mod large_object;
 mod notifications;
 mod transcript;

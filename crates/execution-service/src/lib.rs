@@ -24,7 +24,6 @@ use rss_mdm_authorization_service as authorization;
 
 mod agent_collection_eligibility;
 pub use agent_collection_eligibility::matches as native_collection_supported;
-mod payload;
 pub mod script_eligibility;
 pub mod self_service;
 mod target;
@@ -183,7 +182,6 @@ mod error_projection;
 
 pub mod wake;
 
-mod freeze_inputs;
 pub mod input_preparation;
 pub use input_preparation::{action_permission, authorize_action};
 pub mod policy_events;

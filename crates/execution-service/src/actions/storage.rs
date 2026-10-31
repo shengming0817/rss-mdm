@@ -718,7 +718,11 @@ impl ScheduledPolicy {
                 };
                 Ok(v.frozen.task(
                     checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                    target,
+                    &rss_mdm_script_service::Target {
+                        device: target.device.clone(),
+                        registration: target.registration,
+                        generation: target.generation,
+                    },
                     issue.run,
                     issue.attempt,
                     issue.permit,
