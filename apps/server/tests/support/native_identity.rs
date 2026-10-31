@@ -72,7 +72,7 @@ pub async fn seed(c: &Context, purpose: &str) -> Result<Native> {
     let trust = serde_json::from_value(
         json!({"version":1,"service_id":c.inputs.installation.instance_id,"origin":"https://localhost","tenant":c.tenant.to_string(),"purpose":purpose,"revision":1,"issuers":[{"digest":format!("{:x}",Sha256::digest(&root)),"mode":"active","certificate":STANDARD.encode(&root),"root":STANDARD.encode(&root),"crl":STANDARD.encode(&crl),"root_crl":STANDARD.encode(&crl),"provisioner":"rss-agent","kid":"task-trust"}]}),
     )?;
-    let mut tx = c.operator.begin().await?;
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)")
         .bind(c.tenant.to_string())
         .bind(&device)

@@ -10,16 +10,14 @@ def leaf(directory, purpose, registration, request, attempt):
     root = directory / 'task-trust-ca'
     destination = directory / ('native-' + registration)
     destination.mkdir(mode=0o700)
-    marker = bytes.fromhex('020101') + bytes([4, 9]) + b'rss-agent' + bytes([4, 10]) + b'task-trust'
-    marker = bytes([0x30, len(marker)]) + marker
     subject = registration if purpose == 'windows' else request.replace('-', '') + attempt.replace('-', '')
     def certificate(name, subject, usage, extra=''):
         ext = destination / (name + '.conf')
-        ext.write_text('basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=' + usage + '\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n' + extra)
+        ext.write_text('basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=' + usage + '\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n' + extra)
         run('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', subject, '-keyout', destination/(name+'.key'), '-out', destination/(name+'.csr'))
         (destination/(name+'.key')).chmod(0o600)
         run('x509', '-req', '-in', destination/(name+'.csr'), '-CA', root/'ca.pem', '-CAkey', root/'ca.key', '-set_serial', str(uuid.uuid4().int), '-days', '1', '-sha256', '-extfile', ext, '-out', destination/(name+'.pem'))
-    certificate('client', '/CN='+subject, 'clientAuth', '1.3.6.1.4.1.37476.9000.64.1=DER:'+marker.hex(':')+'\n')
+    certificate('client', '/CN='+subject, 'clientAuth')
     certificate('server', '/CN=localhost', 'serverAuth', 'subjectAltName=DNS:localhost,IP:127.0.0.1\n')
     if purpose == 'apple':
         certificate('runtime', '/CN=Native T2/UID=com.apple.mgmt.rss-t2', 'clientAuth')

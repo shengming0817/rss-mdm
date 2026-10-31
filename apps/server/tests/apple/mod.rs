@@ -65,7 +65,9 @@ async fn manage(
     let dictionary = rss_mdm_apple_mdm::protocol::decode(&bytes)?;
     let exchange =
         rss_mdm_apple_channel::exchange::prepare(apple.clone(), dictionary, bytes, None)?;
-    Ok(d.management(apple.clone(), p, exchange, &audit(c)).await?)
+    d.management(apple.clone(), p, exchange, &audit(c))
+        .await
+        .map_err(|e| anyhow::anyhow!("Apple management: {e:?}"))
 }
 #[tokio::test]
 #[ignore = "T2: verified native certificate, real CommandUUID receipt and wrong-user rollback"]
@@ -155,7 +157,7 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
     Ok(())
 }
 fn ddm(udid: &str, user: &str, token: &str) -> Result<plist::Dictionary> {
-    let report = serde_json::json!({"FullReport":true,"Errors":[],"StatusItems":{"management":{"declarations":{"activations":[],"configurations":[{"identifier":"subscriptions","server-token":token,"active":true,"valid":"valid"}],"assets":[],"management":[]}},"device":{"operating-system":{"version":"26.0"}}}});
+    let report = serde_json::json!({"FullReport":true,"Errors":[],"StatusItems":{"management":{"declarations":{"activations":[],"configurations":[{"identifier":"subscriptions","server-token":token,"active":true,"valid":"valid"}],"assets":[],"management":[]}}}});
     let mut d = plist::Dictionary::new();
     d.insert("MessageType".into(), "DeclarativeManagement".into());
     d.insert("UDID".into(), udid.into());
@@ -171,6 +173,12 @@ fn ddm(udid: &str, user: &str, token: &str) -> Result<plist::Dictionary> {
 #[ignore = "T2: true DDM status exchange, committed synchronization and exact user/version"]
 async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
+    let mut seed = command::seed_transaction(&c).await?;
+    sqlx::query("SELECT mdm.seed_tenant_catalog($1::uuid)")
+        .bind(c.tenant.to_string())
+        .execute(&mut *seed)
+        .await?;
+    seed.commit().await?;
     let n = identity::seed(&c, "apple").await?;
     let key = crate::device_material_support::protection(&c)?;
     let user = Uuid::new_v4().to_string();
@@ -185,11 +193,17 @@ async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Resul
         &ddm(&n.device, &user, &old_token)?,
         None,
     )?;
-    let reply = d.ddm(&p, stale, &audit(&c)).await?;
+    let reply = d
+        .ddm(&p, stale, &audit(&c))
+        .await
+        .map_err(|e| anyhow::anyhow!("Apple stale DDM: {e:?}"))?;
     assert!(reply.synchronized.is_empty());
     let exchange =
         rss_mdm_apple_channel::ddm::prepare(apple.clone(), &ddm(&n.device, &user, &token)?, None)?;
-    let reply = d.ddm(&p, exchange, &audit(&c)).await?;
+    let reply = d
+        .ddm(&p, exchange, &audit(&c))
+        .await
+        .map_err(|e| anyhow::anyhow!("Apple DDM: {e:?}"))?;
     assert_eq!(reply.status, 200);
     assert_eq!(reply.synchronized.len(), 1);
     let fact = &reply.synchronized[0];

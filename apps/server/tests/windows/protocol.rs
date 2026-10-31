@@ -102,9 +102,17 @@ struct Host {
     stop: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
     assembly: crate::assembly::execution::Assembly,
+    lifecycle: rss_runtime::ShutdownStack,
+    control: rss_runtime::AdmissionControl,
 }
 impl Host {
     async fn close(self) -> Result<()> {
+        self.control.close();
+        let mut drain = self.lifecycle.shutdown();
+        anyhow::ensure!(
+            drain.wait().await.as_ref().is_ok_and(|r| r.is_clean()),
+            "lifecycle drain"
+        );
         self.stop
             .send(())
             .map_err(|_| anyhow::anyhow!("listener stopped early"))?;
@@ -186,12 +194,22 @@ async fn host(
     };
     let (_, router) = rss_mdm_windows_channel::routers(state, boundary(), boundary());
     let admission = crate::native::admission::Admission::new(monotonic, requests, "windows-t2");
+    let mut lifecycle = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let (control, gate) = lifecycle
+        .startup()?
+        .commit()
+        .finish_with_admission("windows-t2", Duration::from_secs(10));
+    control.open()?;
     let router = router
         .layer(axum::middleware::from_fn(
             crate::native::admission::admit_windows,
         ))
         .into_checked_axum(rss_mdm_http_contract::module::Listener::WindowsManagement)
-        .layer(axum::middleware::from_fn_with_state(admission, attest));
+        .layer(axum::middleware::from_fn_with_state(admission, attest))
+        .layer(axum::Extension(gate));
     let cert = CertificateDer::from_pem_file(n.directory.join("server.pem"))?;
     let key = PrivateKeyDer::from_pem_file(n.directory.join("server.key"))?;
     let tls = rustls::ServerConfig::builder()
@@ -218,6 +236,8 @@ async fn host(
         stop,
         task,
         assembly: a,
+        lifecycle,
+        control,
     })
 }
 fn client(n: &identity::Native) -> Result<reqwest::Client> {
@@ -315,8 +335,10 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     )?
     .derive();
     let secrets=protection.seal_bytes(&serde_json::to_vec(&serde_json::json!({"client_password":"client-secret","server_password":"server-secret","server_nonce":vec![7u8;32]}))?,&aad)?;
-    sqlx::query("INSERT INTO mdm_access.enrollment_intents(tenant_id,request_id,csr,profile,issuer,configuration,registration,credential,epoch,secrets,signing_attempt,protocol_device) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)").bind(c.tenant.to_string()).bind(n.request).bind(&n.csr).bind(profile).bind(&n.root).bind(configuration).bind(n.registration).bind(n.credential).bind(n.epoch).bind(secrets).bind(n.attempt).bind(&n.device).execute(&c.operator).await?;
-    sqlx::query("INSERT INTO mdm_access.enrollment_certificates(tenant_id,request_id,certificate,server_nonce) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(n.request).bind(&n.certificate).bind(vec![7u8;32]).execute(&c.operator).await?;
+    let mut tx = command::seed_transaction(&c).await?;
+    sqlx::query("INSERT INTO mdm_access.enrollment_intents(tenant_id,request_id,csr,profile,issuer,configuration,registration,credential,epoch,secrets,signing_attempt,protocol_device) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)").bind(c.tenant.to_string()).bind(n.request).bind(&n.csr).bind(profile).bind(&n.root).bind(configuration).bind(n.registration).bind(n.credential).bind(n.epoch).bind(secrets).bind(n.attempt).bind(&n.device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.enrollment_certificates(tenant_id,request_id,certificate,server_nonce) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(n.request).bind(&n.certificate).bind(vec![7u8;32]).execute(&mut *tx).await?;
+    tx.commit().await?;
     let w = Arc::new(rss_mdm_windows_channel::Windows::new(
         "https://localhost".into(),
         "https://localhost".into(),
@@ -336,7 +358,7 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     first.header.target = "https://localhost/ManagementServer/MDM.svc".into();
     first.header.source = n.device.clone();
     for command in &mut first.commands {
-        if let s::Command::Replace { items, .. } = command {
+        if let s::Command::DevInfo { items, .. } = command {
             for item in items {
                 if item.source.as_deref() == Some("./DevInfo/DevId") {
                     item.data = Some(Secret(n.device.clone()));

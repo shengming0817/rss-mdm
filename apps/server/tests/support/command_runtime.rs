@@ -51,3 +51,13 @@ pub async fn close(a: crate::assembly::execution::Assembly) -> Result<()> {
     drop(a);
     Ok(())
 }
+
+/// Triggers and security-definer functions require the same tenant coordinate as production.
+pub async fn seed_transaction(c: &Context) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+    let mut tx = c.operator.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(c.tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}

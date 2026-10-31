@@ -17,7 +17,7 @@ ALTER TABLE ONLY mdm_access.management_sessions
 ALTER TABLE ONLY mdm_access.management_sessions
     ADD CONSTRAINT management_sessions_tenant_id_registration_fkey FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id);
 
-GRANT USAGE ON SCHEMA mdm_windows TO mdm_access;
+GRANT USAGE ON SCHEMA mdm_windows TO mdm_access,mdm_policy_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.enrollment_certificates TO mdm_access;
 GRANT SELECT ON TABLE mdm_access.enrollment_certificates TO mdm_command_runtime;
@@ -132,6 +132,6 @@ GRANT UPDATE(status,accepted,received_at) ON TABLE mdm_windows.attempt_frames TO
 GRANT SELECT ON mdm_windows.attempts,mdm_windows.attempt_items,mdm_windows.attempt_frames,mdm_windows.capabilities TO mdm_policy_runtime;
 ALTER TABLE mdm_windows.attempts ADD FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 
-COMMIT;
-
 GRANT SELECT ON TABLE mdm_windows.attempts, mdm_windows.attempt_items TO mdm_access;
+
+COMMIT;

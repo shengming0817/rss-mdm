@@ -34,7 +34,7 @@ async fn accepted(c: &Context, registration: Uuid, device: &str) -> Result<Uuid>
     let fingerprint = Sha256::digest(serde_json::to_vec(&frozen)?).to_vec();
     let target = json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent","registrationId":registration,"generation":2}]});
     let object = rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device.into()).key();
-    let mut tx = c.operator.begin().await?;
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(&actor)?).bind(now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'unmanage_device',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(frozen).bind(fingerprint).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES($1::uuid,$2,$3,$4,$5,'once',$6,$7,300,$8,'\"policy\"')").bind(c.tenant.to_string()).bind(retirement).bind(policy).bind(version).bind(object).bind(target).bind(serde_json::to_value(actor)?).bind(now).execute(&mut *tx).await?;
@@ -79,7 +79,9 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         interactive_user: None,
         source_credentials: vec![],
     };
-    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2,1,$3,'windows','x86_64',$4)").bind(c.tenant.to_string()).bind(registration).bind(serde_json::to_string(&capabilities)?).bind(serde_json::to_value(&context)?).execute(&c.operator).await?;
+    let mut tx = command::seed_transaction(&c).await?;
+    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2,1,$3,'windows','x86_64',$4)").bind(c.tenant.to_string()).bind(registration).bind(serde_json::to_string(&capabilities)?).bind(serde_json::to_value(&context)?).execute(&mut *tx).await?;
+    tx.commit().await?;
     let target = accepted(&c, registration, &device).await?;
     let (other, _, other_device) = material::seed_registration(&c).await?;
     let sentinel = accepted(&c, other, &other_device).await?;
