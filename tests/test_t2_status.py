@@ -124,6 +124,8 @@ class T2Status(unittest.TestCase):
         for path, expected in (
             ('apps/server/src/owner_storage.rs', ['foundation.lifecycle']),
             ('apps/server/src/worker_wake.rs', ['foundation.lifecycle']),
+            ('apps/server/src/scheduler.rs', ['foundation.lifecycle']),
+            ('apps/server/src/scope_group_changes.rs', ['foundation.lifecycle']),
             ('apps/server/src/clock.rs', []),
         ):
             with self.subTest(path=path), \
