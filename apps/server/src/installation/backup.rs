@@ -889,3 +889,7 @@ async fn advance_asset_history(c: &mut sqlx::PgConnection, operation: Uuid) -> R
     tx.commit().await.map_err(|_| Error::Storage)?;
     Ok(epoch)
 }
+
+#[cfg(test)]
+#[path = "../../tests/foundation/recovery.rs"]
+mod t2;

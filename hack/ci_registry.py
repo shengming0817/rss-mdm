@@ -57,7 +57,8 @@ TOOL_INPUTS = {'.env.example': ('test_dev_environment',),
                                  'test_ci'),
  'hack/windows_fixtures.py': ('test_candidate_smoke',)}
 
-T1_INPUTS = ('apps/server/examples/http_contract.rs',
+T1_INPUTS = ('apps/server/tests/foundation/mod.rs',
+ 'apps/server/examples/http_contract.rs',
  'apps/server/examples/management_capabilities.rs',
  'apps/server/src/installation/local.rs',
  'apps/server/src/installation/mod.rs',

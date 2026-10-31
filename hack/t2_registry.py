@@ -8,7 +8,7 @@ PACKAGE = 'rss-mdm-app'
 MODULES = {
     'foundation.authorization': dict(
         prefix='foundation_t2::authorization::', profiles=('shared', 'transaction'),
-        inputs=('crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
+        inputs=('crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
                 'apps/server/tests/foundation/authorization.rs')),
     'foundation.audit': dict(
         prefix='foundation_t2::audit::', profiles=('audit',),
@@ -21,8 +21,8 @@ MODULES = {
     'foundation.recovery': dict(
         prefix='installation::backup::t2::', profiles=('recovery',),
         inputs=('apps/server/src/installation/backup.rs',
-                'crates/inventory-postgres/src/asset_history*',
-                'crates/inventory-postgres/schema/asset*',
+                'crates/inventory-postgres/migrations/asset-cuts.sql',
+                'crates/inventory-postgres/migrations/install.sql',
                 'apps/server/tests/foundation/recovery.rs')),
     'foundation.lifecycle': dict(
         prefix='foundation_t2::lifecycle::', profiles=('lifecycle',),

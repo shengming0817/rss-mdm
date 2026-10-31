@@ -17,6 +17,7 @@ async fn content(State(proof): State<Arc<AuthorizedPrincipal>>, Extension(audit)
     Ok(Json(CONTENT.into()))
 }
 
+#[allow(clippy::disallowed_methods, reason = "test composition supplies the production monotonic clock")]
 #[tokio::test]
 #[ignore = "T2: real HTTP projection and durable SQL audit"]
 async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()> {

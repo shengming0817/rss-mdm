@@ -84,7 +84,7 @@ def prepared(root, modules, binary, command, resources):
                     'mdm_identity_provisioning', 'mdm_inventory_runtime', 'mdm_scope_runtime',
                     'mdm_policy_runtime', 'mdm_resource_runtime', 'mdm_software_runtime',
                     'mdm_content_runtime', 'mdm_telemetry_runtime', 'mdm_scheduler_runtime',
-                    'mdm_scope_group_consumer', 'mdm_webhook_operator')}
+                    'mdm_scope_group_consumer', 'mdm_webhook_operator', 'mdm_software_driver')}
                 if profile != 'recovery':
                     config = directory / (name + '-migrate.json')
                     private(config, dict(database=database(name, 'mdm_owner'), installation=installation))

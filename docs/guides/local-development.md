@@ -10,7 +10,13 @@ make t2
 make ci-plan CI_BASE=origin/develop
 ```
 
-`make ci` 运行当前影响范围内的快速检查；T2 尚未重建。`make t2`（含 `MODULE=affected/all`）仅记录 `skipped / not-built` 并非零退出，不启动依赖；`make ci-full` 因 T2 缺口不能通过组合验证。入口直接检查当前工作区，无需预先提交源码。
+`make ci` 运行当前影响范围的快速检查并编译/发现测试，不启动真实依赖。`make t2 MODULE=affected` 按直接输入执行已登记的基础 owner 证明，`MODULE=all` 执行全部活跃登记，`MODULE=foundation.tenants` 等选择专项。`make ci-full` 在同一构建租约中组合快速检查与活跃 T2。入口直接检查当前工作区，无需预先提交源码。
+
+当前基础证明由 `hack/t2_registry.py` 登记载体、直接输入和资源需求，Rust 函数由 nextest 实际发现。每例在 owner 内建立最小合法前态，测试之间没有运行顺序或输出依赖。普通授权/租户案例共享兼容的可写库，以独立主体和租户隔离；权限故障、空库恢复和宿主连接观察使用专属库。执行复用现有 Compose PG/TLS、生产角色及迁移，不调用完整产品初始化。环境位于 `artifacts/dev-environment/foundation-t2`，`make dev ACTION=reset DEV_ARGS='--group foundation-t2'` 显式清理不兼容或不再需要的环境；准备失败不会自动换库重跑。
+
+发现、执行日志、JUnit、资源动作和当前源码状态写入 `artifacts/local-t2`，CI 组合执行写入其自有 `t2` 子目录。显式模块零发现、漏跑、业务失败和清理失败均阻断；合法 affected 空选择记录 `skipped/no-modules-selected`。共享环境按数据库实际代际、schema 清单、角色输入和有效 TLS 材料核对后复用，专属库在 finally 中清理。
+
+当前 `all` 仅表示全部活跃登记的基础证明：当前授权、授权/Audit 原事务、敏感 HTTP 响应审计门、租户使用屏障、恢复 reservation/资产 epoch 幂等及宿主启停。恢复例不验证 pg_dump/pg_restore、文件/密钥恢复或恢复后启用。完整安装、整包备份恢复、API key 轮换、网络策略、first-use、用户资料和 baseline 恢复尚未重建；其它领域和 T3 独立，不能由该集合宣称产品全覆盖。纯模型沿用 owner T1；settings 聚合与纯 HTTP 错误适配没有独立持久动作，不新增重复 T2。
 
 构建需要 libxml2 开发头文件、pkg-config 和 libclang；Linux 使用 `libxml2-dev clang pkg-config`，macOS 使用 `brew install libxml2 pkg-config llvm`。WSTEP 证书签名验证使用 libxml2 的原始 DOM 规范化，运行镜像需提供 libxml2；[Dockerfile](../../deployment/Dockerfile) 持有镜像依赖。
 
