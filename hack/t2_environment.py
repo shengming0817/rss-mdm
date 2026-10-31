@@ -27,9 +27,14 @@ def prepared(root, modules, binary, command, resources):
     require(held is not None, 'foundation environment is already in use')
     with os.fdopen(held, 'r'):
         with environment.phase('foundation-pg'):
+            before = environment.compose('ps', '--all', '-q', 'postgres')
             environment.up()
-            resources.append(dict(kind='postgres', identity=environment.project, action='ready'))
+            resources.append(dict(kind='postgres', identity=environment.container(),
+                                  action='reused' if before == environment.container() else 'created'))
+            had_roles = environment.sql("SELECT count(*) FROM pg_roles WHERE rolname='mdm_owner'") == '1'
             environment.roles()
+            resources.append(dict(kind='roles', identity=environment.project,
+                                  action='reused' if had_roles else 'created'))
         system = environment.sql('SELECT system_identifier FROM pg_control_system()')
         installation = dict(audit_mode='plain', instance_id='33333333-3333-4333-8333-333333333333',
                             target=[1] * 16, lineage=[2] * 16)
@@ -98,6 +103,7 @@ def prepared(root, modules, binary, command, resources):
             private(manifest, dict(installation=installation, databases=values, directory=str(directory)))
             yield {'RSS_MDM_T2_ENV': str(manifest)}
         finally:
+            cleanup_errors = []
             for name in created:
                 # A successfully published shared environment remains reusable; private/fault
                 # observations are disposable. Failed preparation is never silently retried.
@@ -106,6 +112,7 @@ def prepared(root, modules, binary, command, resources):
                 try:
                     environment.sql('DROP DATABASE ' + name + ' WITH (FORCE);')
                     resources.append(dict(kind='database', identity=name, action='dropped'))
-                except Exception:
+                except Exception as error:
                     resources.append(dict(kind='database', identity=name, action='cleanup-failed'))
-                    raise
+                    cleanup_errors.append(str(error))
+            require(not cleanup_errors, 'foundation database cleanup failed: ' + '; '.join(cleanup_errors))

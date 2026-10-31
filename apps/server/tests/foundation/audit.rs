@@ -4,20 +4,24 @@ use anyhow::Result;
 use axum::{Extension, Json, extract::State};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_http_contract::{catalog, module::Route, routing::get, Operation};
+use rss_mdm_http_contract::{Operation, catalog, module::Route, routing::get};
 use std::sync::Arc;
 use tower::ServiceExt;
 
 const CONTENT: &str = "foundation-sensitive-content";
-async fn content(State(proof): State<Arc<AuthorizedPrincipal>>, Extension(audit): Extension<RequestAudit>)
-    -> std::result::Result<Json<String>, rss_mdm_management_http::Error>
-{
+async fn content(
+    State(proof): State<Arc<AuthorizedPrincipal>>,
+    Extension(audit): Extension<RequestAudit>,
+) -> std::result::Result<Json<String>, rss_mdm_management_http::Error> {
     proof.bind_audit(&audit)?;
     proof.require(Permission::AuditRead, None)?;
     Ok(Json(CONTENT.into()))
 }
 
-#[allow(clippy::disallowed_methods, reason = "test composition supplies the production monotonic clock")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test composition supplies the production monotonic clock"
+)]
 #[tokio::test]
 #[ignore = "T2: real HTTP projection and durable SQL audit"]
 async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()> {
@@ -26,16 +30,32 @@ async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()
     let proof = Arc::new(context.authenticate(&account).await?);
     rss_mdm_http_contract::route_module! { struct AuditBoundaryProof for [Browser] { read } }
     let routes = AuditBoundaryProof {
-        read: Route::new("/api/v1/audit-events", get(content, &catalog::AUDIT, &[Operation::List])),
-    }.assemble().with_state(proof);
-    let router = rss_mdm_management_http::boundary::wrap(routes,
+        read: Route::new(
+            "/api/v1/audit-events",
+            get(content, &catalog::AUDIT, &[Operation::List]),
+        ),
+    }
+    .assemble()
+    .with_state(proof);
+    let router = rss_mdm_management_http::boundary::wrap(
+        routes,
         rss_mdm_management_http::boundary::Envelope {
-            admission: Arc::new(tokio::sync::Semaphore::new(2)), host: "mdm.example.test".into(),
-            clock: Arc::new(crate::Monotonic(std::time::Instant::now)), audit_store: context.audit.clone(),
-            requests: Arc::new(tokio::sync::Semaphore::new(2)), tenant: context.tenant.to_string(),
-        }).into_axum();
-    let request = || axum::http::Request::builder().uri("/api/v1/audit-events")
-        .header("host", "mdm.example.test").body(axum::body::Body::empty()).unwrap();
+            admission: Arc::new(tokio::sync::Semaphore::new(2)),
+            host: "mdm.example.test".into(),
+            clock: Arc::new(crate::Monotonic(std::time::Instant::now)),
+            audit_store: context.audit.clone(),
+            requests: Arc::new(tokio::sync::Semaphore::new(2)),
+            tenant: context.tenant.to_string(),
+        },
+    )
+    .into_axum();
+    let request = || {
+        axum::http::Request::builder()
+            .uri("/api/v1/audit-events")
+            .header("host", "mdm.example.test")
+            .body(axum::body::Body::empty())
+            .unwrap()
+    };
     let response = router.clone().oneshot(request()).await?;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     let request_id = response.headers()["x-request-id"].to_str()?.to_owned();

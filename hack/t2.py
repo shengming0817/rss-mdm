@@ -84,6 +84,12 @@ def run_modules(modules, output=None):
                                 'execution.log', env={**os.environ, **inputs}, check=False)
             if report.is_file():
                 (output / 'junit.xml').write_bytes(report.read_bytes())
+                cases = ET.parse(output / 'junit.xml').getroot().findall('.//testcase')
+                evidence['executedCases'] = sum(case.find('skipped') is None for case in cases)
+                evidence['cases'] = [dict(name=case.attrib['name'],
+                    status='skipped' if case.find('skipped') is not None else
+                           'failed' if any(case.find(tag) is not None for tag in ('failure', 'error')) else 'passed')
+                    for case in cases]
             require(execution.returncode == 0, 'T2 execution failed; see execution.log')
             evidence['executedCases'] = verify_report(output / 'junit.xml', expected)
             evidence['reason'] = 'cleanup'

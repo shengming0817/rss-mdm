@@ -1,7 +1,10 @@
 //! Only the foundation consumers' legal tenant, subject and connection inputs.
-use crate::{config, identity, lifecycle::RuntimeTimer, migration};
+use crate::{config, identity, migration};
 use anyhow::Result;
-use rss_identity_core::{InstanceId, account::{LoginKey, Password, PasswordKdf}};
+use rss_identity_core::{
+    InstanceId,
+    account::{LoginKey, Password, PasswordKdf},
+};
 use rss_identity_postgres::{AttemptSource, Authority};
 use rss_mdm_audit_integration::{AuditIntent, AuditStore, RequestAudit};
 use rss_mdm_authorization_service::{self as access, Permission, User};
@@ -40,8 +43,10 @@ impl Inputs {
         }
     }
     pub async fn pool(&self, profile: &str, role: &str) -> Result<PgPool> {
-        Ok(PgPoolOptions::new().max_connections(2)
-            .connect_with(self.database(profile, role).options()?).await?)
+        Ok(PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(self.database(profile, role).options()?)
+            .await?)
     }
 }
 
@@ -62,52 +67,126 @@ impl Context {
         let operator = inputs.pool(profile, "postgres").await?;
         let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
         seed_tenant(&operator, tenant).await?;
-        let database = crate::Database::connect(inputs.database(profile, "mdm_access").options()?,
-                                                &config::AuditConfig::Plain {}).await?;
-        let runtime = identity::open_runtime(&inputs.database(profile, "mdm_access"),
-            &inputs.installation.target, &inputs.installation.lineage, &[(tenant, 1)], 4).await?;
-        let audit = database.audit_store(&config::AuditConfig::Plain {}, runtime.clone(), tenant).await?;
-        let identity_runtime = identity::open_runtime(&inputs.database(profile, "mdm_identity_runtime"),
-            &inputs.installation.target, &inputs.installation.lineage, &[(tenant, 1)], 4).await?;
+        let database = crate::Database::connect(
+            inputs.database(profile, "mdm_access").options()?,
+            &config::AuditConfig::Plain {},
+        )
+        .await?;
+        let runtime = identity::open_runtime(
+            &inputs.database(profile, "mdm_access"),
+            &inputs.installation.target,
+            &inputs.installation.lineage,
+            &[(tenant, 1)],
+            4,
+        )
+        .await?;
+        let audit = database
+            .audit_store(&config::AuditConfig::Plain {}, runtime.clone(), tenant)
+            .await?;
+        let identity_runtime = identity::open_runtime(
+            &inputs.database(profile, "mdm_identity_runtime"),
+            &inputs.installation.target,
+            &inputs.installation.lineage,
+            &[(tenant, 1)],
+            4,
+        )
+        .await?;
         let kdf = Arc::new(PasswordKdf::new());
-        let authority = Authority::connect_runtime(identity_runtime.clone(), kdf.clone(),
-            identity::authority_config(InstanceId::parse(&inputs.installation.instance_id)?,
-                vec![tenant], rss_audit_postgres::Integrity::Plain)?,
-            Arc::new(access::identity_management::IdentityManagementPolicy::new(&inputs.installation.instance_id)?),
-            deadline()).await?;
-        Ok(Self { inputs, tenant, operator, database, runtime, identity_runtime, authority, kdf, audit })
+        let authority = Authority::connect_runtime(
+            identity_runtime.clone(),
+            kdf.clone(),
+            identity::authority_config(
+                InstanceId::parse(&inputs.installation.instance_id)?,
+                vec![tenant],
+                rss_audit_postgres::Integrity::Plain,
+            )?,
+            Arc::new(access::identity_management::IdentityManagementPolicy::new(
+                &inputs.installation.instance_id,
+            )?),
+            deadline(),
+        )
+        .await?;
+        Ok(Self {
+            inputs,
+            tenant,
+            operator,
+            database,
+            runtime,
+            identity_runtime,
+            authority,
+            kdf,
+            audit,
+        })
     }
     pub fn access(&self) -> Arc<access::Store> {
         self.database.authorization_store()
     }
     pub fn user(&self, principal: Uuid) -> User {
-        User { instance_id: self.inputs.installation.instance_id.clone(),
-               tenant_id: self.tenant.to_string(), principal_id: principal.to_string() }
+        User {
+            instance_id: self.inputs.installation.instance_id.clone(),
+            tenant_id: self.tenant.to_string(),
+            principal_id: principal.to_string(),
+        }
     }
     pub async fn account(&self, permissions: &[Permission]) -> Result<Account> {
         let principal = Uuid::new_v4();
         let login = format!("foundation-{principal}");
         let password = "foundation-only-valid-password";
         let hash = self.kdf.hash(Password::new(password.into())?).await?;
-        seed_account(&self.operator, self.tenant, principal, &login, hash.as_str()).await?;
+        seed_account(
+            &self.operator,
+            self.tenant,
+            principal,
+            &login,
+            hash.as_str(),
+        )
+        .await?;
         let rule = Uuid::new_v4();
         seed_rule(&self.operator, &self.user(principal), rule, permissions).await?;
-        let issued = self.authority.login_local(self.tenant, LoginKey::parse(&login)?,
-            Password::new(password.into())?, AttemptSource::parse("foundation-t2")?, None, deadline()).await?;
-        Ok(Account { user: self.user(principal), rule, secret: issued.secret().expose().to_owned() })
+        let issued = self
+            .authority
+            .login_local(
+                self.tenant,
+                LoginKey::parse(&login)?,
+                Password::new(password.into())?,
+                AttemptSource::parse("foundation-t2")?,
+                None,
+                deadline(),
+            )
+            .await?;
+        Ok(Account {
+            user: self.user(principal),
+            rule,
+            secret: issued.secret().expose().to_owned(),
+        })
     }
-    pub async fn authenticate(&self, account: &Account) -> Result<access::context::AuthorizedPrincipal> {
-        Ok(access::session::SessionAuthority::new(self.authority.clone(), self.tenant)
-            .authenticate(&self.access(), account.credential()?).await?)
+    pub async fn authenticate(
+        &self,
+        account: &Account,
+    ) -> Result<access::context::AuthorizedPrincipal> {
+        Ok(
+            access::session::SessionAuthority::new(self.authority.clone(), self.tenant)
+                .authenticate(&self.access(), account.credential()?)
+                .await?,
+        )
     }
     pub fn request(&self, proof: &access::context::AuthorizedPrincipal) -> Result<RequestAudit> {
-        let audit = RequestAudit::new(self.tenant.to_string(), "foundation", AuditIntent::Management);
+        let audit = RequestAudit::new(
+            self.tenant.to_string(),
+            "foundation",
+            AuditIntent::Management,
+        );
         proof.bind_audit(&audit)?;
         Ok(audit)
     }
     pub async fn audit_count(&self, event: &str) -> Result<i64> {
-        Ok(sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND event_id=$2")
-            .bind(self.tenant.to_string()).bind(event).fetch_one(&self.operator).await?)
+        Ok(sqlx::query_scalar(
+            "SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND event_id=$2",
+        )
+        .bind(self.tenant.to_string())
+        .bind(event)
+        .fetch_one(&self.operator)
+        .await?)
     }
     pub async fn disable_audit(&self) -> Result<()> {
         sqlx::raw_sql("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access")
@@ -132,7 +211,8 @@ pub struct Account {
 impl Account {
     pub fn credential(&self) -> Result<access::credential::RequestCredential> {
         Ok(access::credential::RequestCredential::Cookie(
-            rss_identity_core::session::SessionSecret::parse(self.secret.clone())?))
+            rss_identity_core::session::SessionSecret::parse(self.secret.clone())?,
+        ))
     }
 }
 
@@ -141,32 +221,74 @@ pub async fn seed_tenant(pool: &PgPool, tenant: TenantId) -> Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name) VALUES($1::uuid,1,'Foundation isolated tenant')")
         .bind(tenant.to_string()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,1)")
-        .bind(tenant.to_string()).execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,1)",
+    )
+    .bind(tenant.to_string())
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid)")
-        .bind(tenant.to_string()).execute(&mut *tx).await?;
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(())
 }
 
-pub async fn seed_account(pool: &PgPool, tenant: TenantId, principal: Uuid, login: &str, hash: &str) -> Result<()> {
+pub async fn seed_account(
+    pool: &PgPool,
+    tenant: TenantId,
+    principal: Uuid,
+    login: &str,
+    hash: &str,
+) -> Result<()> {
     let mut tx = pool.begin().await?;
-    sqlx::query("INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
-        .bind(tenant.to_string()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO identity_authority.accounts(tenant_id,principal_id) VALUES($1::uuid,$2)")
-        .bind(tenant.to_string()).bind(principal).execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
+    )
+    .bind(tenant.to_string())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO identity_authority.accounts(tenant_id,principal_id) VALUES($1::uuid,$2)",
+    )
+    .bind(tenant.to_string())
+    .bind(principal)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("INSERT INTO identity_authority.local_credentials(tenant_id,principal_id,login_key,password_hash) VALUES($1::uuid,$2,$3,$4)")
         .bind(tenant.to_string()).bind(principal).bind(login).bind(hash).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO identity_authority.memberships(tenant_id,principal_id) VALUES($1::uuid,$2)")
-        .bind(tenant.to_string()).bind(principal).execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT INTO identity_authority.memberships(tenant_id,principal_id) VALUES($1::uuid,$2)",
+    )
+    .bind(tenant.to_string())
+    .bind(principal)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(())
 }
 
-pub async fn seed_rule(pool: &PgPool, user: &User, id: Uuid, permissions: &[Permission]) -> Result<()> {
-    let rule = access::Rule { subject: access::Subject::User { user: user.clone() },
-        grants: permissions.iter().map(|operation| access::Grant { operation: *operation,
-            scope: if operation.device() { access::Scope::AllDevices } else { access::Scope::Tenant } }).collect() };
+pub async fn seed_rule(
+    pool: &PgPool,
+    user: &User,
+    id: Uuid,
+    permissions: &[Permission],
+) -> Result<()> {
+    let rule = access::Rule {
+        subject: access::Subject::User { user: user.clone() },
+        grants: permissions
+            .iter()
+            .map(|operation| access::Grant {
+                operation: *operation,
+                scope: if operation.device() {
+                    access::Scope::AllDevices
+                } else {
+                    access::Scope::Tenant
+                },
+            })
+            .collect(),
+    };
     rule.validate(&user.tenant_id, &user.instance_id)?;
     sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
         .bind(&user.tenant_id).bind(&user.instance_id).bind(id).bind(serde_json::to_value(rule)?)
