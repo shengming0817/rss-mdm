@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Check the product HTTP projection, or extract its exact committed bytes without Cargo."""
+"""Export the current source's HTTP contract, or maintain its Collection projection."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,7 +9,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = 'contracts/http-v1.json'
+COLLECTION = 'crates/management-http/schema/Collection.json'
 
 
 def strict_json(data):
@@ -186,7 +185,6 @@ def collection_projection(document):
 
 
 def generated():
-    # Keep extraction usable with Python and Git alone. Build support belongs only to regeneration.
     from build_run import LEASE_ENV, lease_fds, require_lease
     cargo = ['cargo', 'run', '--quiet', '--locked', '-p', 'rss-mdm-app', '--example', 'http_contract']
     if LEASE_ENV in os.environ:
@@ -200,82 +198,34 @@ def generated():
 
 
 def check(write=False):
-    expected = generated()
-    document = validate_document(expected)
-    projections = {ARTIFACT: expected,
-        'crates/management-http/schema/Collection.json':
-            (json.dumps(collection_projection(document), indent=2, ensure_ascii=False, sort_keys=True) + '\n').encode()}
-    for relative, content in projections.items():
-        path = ROOT / relative
-        if write:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
-        if path.read_bytes() != content:
-            raise ValueError(relative + ': differs from actual registered handlers; regenerate it')
+    document = validate_document(generated())
+    content = (json.dumps(collection_projection(document), indent=2,
+                          ensure_ascii=False, sort_keys=True) + '\n').encode()
+    path = ROOT / COLLECTION
+    if write:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    elif path.read_bytes() != content:
+        raise ValueError(COLLECTION + ': differs from actual registered handlers; regenerate it')
 
 
-def git(repository, *arguments):
-    return subprocess.run(['/usr/bin/git', '-C', str(repository), *arguments], check=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
-
-
-def committed(repository, revision):
-    if not re.fullmatch(r'[0-9a-f]{40}', revision):
-        raise ValueError('an exact lowercase 40-character commit is required')
-    actual = git(repository, 'rev-parse', '--verify', revision + '^{commit}').decode().strip()
-    if actual != revision:
-        raise ValueError('revision is not the requested commit object')
-    blob = git(repository, 'rev-parse', '--verify', revision + ':' + ARTIFACT).decode().strip()
-    if git(repository, 'cat-file', '-t', blob).strip() != b'blob':
-        raise ValueError('HTTP artifact is not a Git blob')
-    data = git(repository, 'cat-file', 'blob', blob)
-    validate_document(data)
-    return data, {'sourceRevision': actual, 'path': ARTIFACT, 'blob': blob,
-                  'sha256': hashlib.sha256(data).hexdigest()}
-
-
-def source_file(path):
-    return path.with_name(path.name + '.source.json')
-
-
-def extract(repository, revision, output):
-    data, source = committed(repository, revision)
+def export(output):
+    data = generated()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(data)
-    source_file(output).write_text(json.dumps(source, indent=2) + '\n')
-
-
-def verify_source(repository, revision, path):
-    expected, source = committed(repository, revision)
-    if path.read_bytes() != expected:
-        raise ValueError('HTTP artifact differs from the selected Git object')
-    if strict_json(source_file(path).read_bytes()) != source:
-        raise ValueError('HTTP source receipt differs from the selected Git objects')
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    action = parser.add_mutually_exclusive_group()
-    action.add_argument('--write', action='store_true')
-    action.add_argument('--check', action='store_true')
-    action.add_argument('--extract', metavar='COMMIT')
-    action.add_argument('--verify-source', metavar='COMMIT')
-    parser.add_argument('--repository', type=Path)
-    parser.add_argument('--output', type=Path)
-    parser.add_argument('--input', type=Path)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument('--write', action='store_true', help='regenerate only Collection.json')
+    action.add_argument('--check', action='store_true', help='check only Collection.json drift')
+    action.add_argument('--output', type=Path, help='export the full HTTP contract to this file')
     args = parser.parse_args(argv)
     try:
-        if args.extract:
-            if args.output is None or args.input is not None:
-                parser.error('--extract requires --output and rejects --input')
-            extract(args.repository or ROOT, args.extract, args.output)
-        elif args.verify_source:
-            if args.input is None or args.output is not None:
-                parser.error('--verify-source requires --input and rejects --output')
-            verify_source(args.repository or ROOT, args.verify_source, args.input)
+        if args.output is not None:
+            export(args.output)
         else:
-            if any(v is not None for v in (args.repository, args.input, args.output)):
-                parser.error('source/output options apply only to fixed-commit operations')
             check(args.write)
     except (ValueError, TypeError, AttributeError, KeyError, OSError, subprocess.CalledProcessError) as error:
         print(f'HTTP contract: {error}', file=sys.stderr)
