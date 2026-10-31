@@ -8,7 +8,7 @@
 Copyright (c) Microsoft Corporation. Licensed under the MIT License；许可证见 LICENSE-Microsoft.txt。
 
 `msi.json` 为 RSS 自有受控 MSI 样本，按同一官方结构构造，不是端侧安装证明。
-`provenance.json` 记录各样本字节摘要；行为断言在 protocol.rs，真实 HTTP 边界在 t2_http.rs。
+`provenance.json` 记录各样本字节摘要；行为断言在 protocol.rs，真实 HTTP 边界 T2 已退出且尚未重建。
 
 `publish-schema.json` 抽取 Microsoft winget-cli-restsource
 `21cd5dda3dab39aa059f4d34914959736af7ee70` 的
