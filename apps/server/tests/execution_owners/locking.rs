@@ -83,7 +83,7 @@ async fn recover_while_change_locked<T: rss_reconcile::Timer>(
             h.a.script_work.apply(claim, diff, control).await
         }
     };
-    let (applied, unblocked) = tokio::join!(apply, wait_until_blocked(h, gate));
+    let (applied, unblocked) = futures::future::join(apply, wait_until_blocked(h, gate)).await;
     unblocked?;
     anyhow::ensure!(
         matches!(applied, Ok(ReconcileStep::Ready(()))),
@@ -127,12 +127,13 @@ async fn policy_change_race(collection: bool) -> Result<()> {
     };
     let gate = Gate::default();
     let worker = recover_while_change_locked(&h, collection, claim, diff, &control, &gate);
-    let (changed, applied) = tokio::time::timeout(Duration::from_secs(15), async {
-        tokio::join!(
+    let (changed, applied) = tokio::time::timeout(
+        Duration::from_secs(15),
+        futures::future::join(
             change(&runtime, h.c.tenant, policy, collection, &gate),
-            worker
-        )
-    })
+            worker,
+        ),
+    )
     .await?;
     changed?;
     applied?;
