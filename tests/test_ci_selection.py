@@ -30,10 +30,10 @@ class Selection(unittest.TestCase):
         self.assertEqual(ci.gate_command('t1', ['cargo','test','--workspace','--lib'], selection),
                          ['cargo','test','-p','rss-mdm-winget-source','--lib'])
         self.assertFalse(ci.selected_gate('native-schema', selection))
-        self.assertFalse(ci.selected_gate('http-contract-artifact', selection))
+        self.assertFalse(ci.selected_gate('collection-schema', selection))
         self.assertFalse(ci.selected_gate('script-tests', selection))
         selection['toolTests'] = ['test_http_contract_artifact']
-        self.assertTrue(ci.selected_gate('http-contract-artifact', selection))
+        self.assertTrue(ci.selected_gate('collection-schema', selection))
         for package in ('rss-mdm-native-schema','rss-mdm-apple-mdm','rss-mdm-windows-mdm'):
             self.assertTrue(ci.selected_gate('native-schema', selected([package])))
 

@@ -1,8 +1,6 @@
-"""Fixed-revision extraction uses actual Git objects, never a source file's self-assertion."""
-import hashlib
+"""Current-source export and the independently tracked Collection projection."""
 import json
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,28 +17,13 @@ class HttpArtifactTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.repository = self.root / 'producer'
         self.repository.mkdir()
-        self.run_git('init', '-q')
         self.document = {'formatVersion': 1, 'schemaDialect': 'https://json-schema.org/draft/2020-12/schema',
                          'schemas': {'sha256-' + 'a' * 64: {'type': 'null'}}, 'endpoints': [
             {'operationId': 'agent.receipt', 'listener': 'agent', 'method': 'GET',
              'path': '/operations/{id}', 'request': {'body': None, 'headers': {}},
              'responses': [{'status': 200, 'body': {'content_type': 'application/json',
                  'schema': {'direction': 'response', 'schemaId': 'sha256-' + 'a' * 64}}, 'headers': {}}]}]}
-        self.artifact = self.repository / artifact.ARTIFACT
-        self.artifact.parent.mkdir()
-        self.artifact.write_text(json.dumps(self.document) + '\n')
-        self.revision = self.commit()
         self.output = self.root / 'consumer' / 'http-v1.json'
-
-    def run_git(self, *arguments):
-        return subprocess.run(['/usr/bin/git', '-C', str(self.repository), *arguments],
-                              check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
-
-    def commit(self):
-        self.run_git('add', artifact.ARTIFACT)
-        self.run_git('-c', 'user.name=Contract test', '-c', 'user.email=contract-test@example.invalid',
-                     'commit', '-qm', 'fixture')
-        return self.run_git('rev-parse', 'HEAD').decode().strip()
 
     def test_authentication_schema_references_are_validated(self):
         self.document['endpoints'][0]['authentication'] = {
@@ -53,62 +36,6 @@ class HttpArtifactTests(unittest.TestCase):
         credential['headers']['cookie']['schemaId'] = 'sha256-' + 'b' * 64
         with self.assertRaisesRegex(ValueError, 'unbound'):
             artifact.validate_document(json.dumps(self.document))
-
-    def test_old_commit_survives_new_head_and_dirty_worktree_without_cargo(self):
-        expected = self.artifact.read_bytes()
-        self.document['endpoints'][0]['path'] = '/new-path/{id}'
-        self.artifact.write_text(json.dumps(self.document))
-        self.commit()
-        self.artifact.write_text('dirty and invalid')
-        with patch.object(artifact, 'generated', side_effect=AssertionError('must not build')):
-            artifact.extract(self.repository, self.revision, self.output)
-            artifact.verify_source(self.repository, self.revision, self.output)
-        self.assertEqual(self.output.read_bytes(), expected)
-        source = json.loads(artifact.source_file(self.output).read_bytes())
-        self.assertEqual(source['sourceRevision'], self.revision)
-        self.assertEqual(source['blob'], self.run_git('rev-parse', self.revision + ':' + artifact.ARTIFACT).decode().strip())
-
-    def test_copied_extractor_needs_only_python_and_absolute_git(self):
-        import os
-        import shutil
-        script = self.root / 'http_contract_artifact.py'
-        shutil.copyfile(artifact.__file__, script)
-        result = subprocess.run([sys.executable, str(script), '--repository', str(self.repository),
-                                 '--extract', self.revision, '--output', str(self.output)],
-                                cwd=self.root, env={**os.environ, 'PATH': '/nonexistent'},
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.output.read_bytes(), self.artifact.read_bytes())
-
-    def test_rehashing_tampered_artifact_does_not_change_selected_git_object(self):
-        artifact.extract(self.repository, self.revision, self.output)
-        self.output.write_text(json.dumps({'formatVersion': 1, 'endpoints': []}))
-        source_path = artifact.source_file(self.output)
-        source = json.loads(source_path.read_bytes())
-        source['sha256'] = hashlib.sha256(self.output.read_bytes()).hexdigest()
-        source['blob'] = self.run_git('hash-object', str(self.output)).decode().strip()
-        source_path.write_text(json.dumps(source))
-        with self.assertRaisesRegex(ValueError, 'selected Git object'):
-            artifact.verify_source(self.repository, self.revision, self.output)
-
-    def test_receipt_cannot_substitute_a_different_revision(self):
-        artifact.extract(self.repository, self.revision, self.output)
-        source_path = artifact.source_file(self.output)
-        source = json.loads(source_path.read_bytes())
-        source['sourceRevision'] = 'a' * 40
-        source_path.write_text(json.dumps(source))
-        with self.assertRaisesRegex(ValueError, 'receipt'):
-            artifact.verify_source(self.repository, self.revision, self.output)
-
-    def test_only_full_existing_commit_objects_are_accepted(self):
-        for revision in ('HEAD', self.revision[:12], '../other', 'a' * 40):
-            with self.subTest(revision=revision), self.assertRaises((ValueError, subprocess.CalledProcessError)):
-                artifact.committed(self.repository, revision)
-        self.run_git('rm', artifact.ARTIFACT)
-        self.run_git('-c', 'user.name=Contract test', '-c', 'user.email=contract-test@example.invalid', 'commit', '-qm', 'remove fixture')
-        missing = self.run_git('rev-parse', 'HEAD').decode().strip()
-        with self.assertRaises(subprocess.CalledProcessError):
-            artifact.committed(self.repository, missing)
 
     def test_unknown_format_duplicate_keys_and_duplicate_routes_fail(self):
         for value in (True, 2, '1'):
@@ -164,18 +91,25 @@ class HttpArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'mounted owner'):
             artifact.collection_projection(document)
 
-    def test_worktree_check_compares_generated_bytes_not_digest(self):
-        expected = self.artifact.read_bytes()
-        projection = self.repository / 'crates/management-http/schema/Collection.json'
+    def test_collection_check_detects_drift_and_write_repairs_it(self):
+        expected = json.dumps(self.document).encode()
+        projection = self.repository / artifact.COLLECTION
         projection.parent.mkdir(parents=True)
         projection.write_bytes(b'{}\n')
         with patch.object(artifact, 'ROOT', self.repository), patch.object(artifact, 'generated', return_value=expected), patch.object(artifact, 'collection_projection', return_value={}):
             artifact.check()
-            self.artifact.write_bytes(expected + b' ')
+            projection.write_bytes(b'{"stale": true}\n')
             with self.assertRaisesRegex(ValueError, 'actual registered handlers'):
                 artifact.check()
             artifact.check(write=True)
-            self.assertEqual(self.artifact.read_bytes(), expected)
+            self.assertEqual(projection.read_bytes(), b'{}\n')
+
+    def test_export_writes_full_contract_without_updating_collection(self):
+        expected = json.dumps(self.document).encode()
+        with patch.object(artifact, 'ROOT', self.repository), patch.object(artifact, 'generated', return_value=expected):
+            self.assertEqual(artifact.main(['--output', str(self.output)]), 0)
+        self.assertEqual(self.output.read_bytes(), expected)
+        self.assertFalse((self.repository / artifact.COLLECTION).exists())
 
 
 if __name__ == '__main__':
