@@ -437,6 +437,7 @@ impl crate::transactions::ExecutionTransactions {
                     Some(
                         crate::native_installation::installation_observation(
                             tx,
+                            self.windows_results.clone(),
                             self.apple_results.clone(),
                             self.agent_store.clone(),
                             &operation,

@@ -111,24 +111,24 @@ impl ExecutionService {
 }
 pub async fn installation_observation(
     tx: &mut PgTransaction<'_>,
+    windows: Arc<dyn crate::windows_results::Store>,
     apple: Arc<dyn apple_facts::AppleResults>,
     agent: Arc<dyn agent_facts::Store>,
     op: &storage::Operation,
 ) -> Result<serde_json::Value> {
     let tenant = tx.tenant_id();
-    tx.with_connection_context(&mut (apple, agent, op), move |args, c| {
+    tx.with_connection_context(&mut (windows, apple, agent, op), move |args, c| {
         Box::pin(async move {
-            Ok(
-                installation_observation_on(
-                    c,
-                    tenant,
-                    args.0.clone(),
-                    args.1.clone(),
-                    args.2,
-                    true,
-                )
-                .await,
+            Ok(installation_observation_on(
+                c,
+                tenant,
+                args.0.clone(),
+                args.1.clone(),
+                args.2.clone(),
+                args.3,
+                true,
             )
+            .await)
         })
     })
     .await?
@@ -137,12 +137,13 @@ pub async fn installation_observation(
 pub async fn installation_observation_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
+    windows: Arc<dyn crate::windows_results::Store>,
     apple: Arc<dyn apple_facts::AppleResults>,
     agent: Arc<dyn agent_facts::Store>,
     op: &storage::Operation,
     lock: bool,
 ) -> Result<serde_json::Value> {
-    installation_observations_on(c, tenant, apple, agent, &[op], lock)
+    installation_observations_on(c, tenant, windows, apple, agent, &[op], lock)
         .await?
         .remove(&op.id)
         .ok_or(Error::Conflict.into())
@@ -150,6 +151,7 @@ pub async fn installation_observation_on(
 pub(crate) async fn installation_observations_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
+    windows: Arc<dyn crate::windows_results::Store>,
     apple: Arc<dyn apple_facts::AppleResults>,
     agent: Arc<dyn agent_facts::Store>,
     ops: &[&storage::Operation],
@@ -177,12 +179,31 @@ pub(crate) async fn installation_observations_on(
     } else {
         crate::assets::channel::snapshot_details_in(c, tenant, &targets).await
     }?;
-    let inputs=ops.iter().map(|op|serde_json::json!({"operation":op.id,"snapshot":current.get(&(op.registration,op.registration_generation,op.request.task.source().as_str().to_owned())).and_then(|f| match f { crate::assets::channel::Observation::Ready(f) => Some(f.snapshot), crate::assets::channel::Observation::ProjectionPending { .. } | crate::assets::channel::Observation::Unavailable => None })})).collect::<Vec<_>>();
+    let requests = ops
+        .iter()
+        .filter(|op| matches!(op.request.task, Task::Windows { .. }))
+        .map(|op| crate::windows_results::InstallationRead {
+            id: op.id,
+            registration: op.registration,
+            generation: op.registration_generation,
+            snapshot: current
+                .get(&(
+                    op.registration,
+                    op.registration_generation,
+                    op.request.task.source().as_str().to_owned(),
+                ))
+                .and_then(|f| match f {
+                    crate::assets::channel::Observation::Ready(f) => Some(f.snapshot),
+                    _ => None,
+                }),
+        })
+        .collect();
+    let mut windows = windows.installations(c, tenant, requests).await?;
     let rows = {
         let c = &mut *c;
         sqlx::query(INSTALLATION_PAGE)
             .bind(tenant.to_string())
-            .bind(serde_json::json!(inputs))
+            .bind(ops.iter().map(|op| op.id).collect::<Vec<_>>())
             .fetch_all(c)
             .await
     }?;
@@ -234,6 +255,7 @@ pub(crate) async fn installation_observations_on(
             None => Vec::new(),
             _ => return Err(Error::Malformed.into()),
         };
+        let windows = windows.remove(&op.id).unwrap_or_default();
         let facts = InstallationFacts {
             current: current
                 .get(&(
@@ -247,8 +269,8 @@ pub(crate) async fn installation_observations_on(
                     | crate::assets::channel::Observation::Unavailable => None,
                 }),
             sent: row.try_get("sent")?,
-            query: row.try_get("channel_state")?,
-            status: row.try_get("delivery_status")?,
+            query: windows.channel_state,
+            delivery: windows.delivery,
             bound,
             bootstrap: row.try_get("bootstrap")?,
             profile,
@@ -262,7 +284,7 @@ struct InstallationFacts {
     current: Option<crate::assets::channel::Current>,
     sent: bool,
     query: Option<serde_json::Value>,
-    status: Option<i32>,
+    delivery: crate::windows_results::InstallationDelivery,
     bound: Option<(Uuid, String, String)>,
     bootstrap: Option<serde_json::Value>,
     profile: Option<Vec<rss_mdm_agent_wire::runtime::Capability>>,
@@ -276,7 +298,7 @@ fn installation_from_facts(
         current,
         sent,
         query,
-        status,
+        delivery: windows_delivery,
         bound,
         bootstrap,
         profile,
@@ -391,10 +413,10 @@ fn installation_from_facts(
             }
         }
     } else {
-        delivery = match status {
-            Some(200 | 202) => "acknowledged",
-            Some(n) if n >= 400 => "rejected",
-            _ => "unknown",
+        delivery = match windows_delivery {
+            crate::windows_results::InstallationDelivery::Acknowledged => "acknowledged",
+            crate::windows_results::InstallationDelivery::Rejected => "rejected",
+            crate::windows_results::InstallationDelivery::Unknown => "unknown",
         };
     }
     let registered = if let Some((id, device, state)) = bound {
@@ -411,12 +433,11 @@ const INSTALLATION_PAGE: &str = r#"
 WITH selected AS MATERIALIZED (
  SELECT o.id AS operation,
  EXISTS(SELECT FROM mdm_windows.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute') OR EXISTS(SELECT FROM mdm_apple.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.state<>'pending') AS sent,
- (SELECT q.channel_state FROM mdm_windows.collections q JOIN mdm_windows.attempts a ON a.tenant_id=q.tenant_id AND a.operation=o.id AND a.phase='execute' JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE q.tenant_id=o.tenant_id AND q.id=x.snapshot AND q.registration=o.registration AND q.first_command>i.command ORDER BY q.first_command DESC LIMIT 1) AS channel_state,
- (SELECT i.status FROM mdm_windows.attempts a JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND (a.phase='execute' OR(a.phase='prepare' AND i.status>=400)) AND i.receipt_accepted ORDER BY a.ordinal DESC,i.command DESC LIMIT 1) AS delivery_status,
  r.id AS agent_registration,r.device AS agent_device,r.state AS agent_state,
  (SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=o.tenant_id AND installation=o.id AND active) AS bootstrap
- FROM jsonb_to_recordset($2::jsonb) x(operation uuid,snapshot uuid) JOIN mdm_commands.operations o ON o.tenant_id=$1::uuid AND o.id=x.operation
+ FROM mdm_commands.operations o
  LEFT JOIN LATERAL(SELECT r.id,r.device,r.state FROM mdm_access.agent_grants e JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(e.tenant_id,e.id) WHERE e.tenant_id=o.tenant_id AND e.source='native' AND e.native_authority->>'installation'=o.id::text ORDER BY r.id LIMIT 1) r ON true
+ WHERE o.tenant_id=$1::uuid AND o.id=ANY($2)
 ), budget AS (SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
 SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok
 "#;
@@ -741,6 +762,7 @@ impl crate::transactions::ExecutionTransactions {
             }
             let observation = installation_observation(
                 tx,
+                self.windows_results.clone(),
                 self.apple_results.clone(),
                 self.agent_store.clone(),
                 &op,

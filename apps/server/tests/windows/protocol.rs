@@ -416,3 +416,108 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     c.close().await;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "T2: installation facts use the channel adapter and original SQL transaction"]
+async fn installation_facts_correlate_receipts_and_post_dispatch_collection() -> Result<()> {
+    use rss_mdm_execution_service::windows_results::{
+        InstallationDelivery as Delivery, InstallationRead,
+    };
+    use uuid::Uuid;
+    let c = Context::open("shared", &[]).await?;
+    let n = identity::seed(&c, "windows").await?;
+    let a = command::open(&c, false).await?;
+    let operation = Uuid::new_v4();
+    let before = Uuid::new_v4();
+    let after = Uuid::new_v4();
+    let mut tx = command::seed_transaction(&c).await?;
+    // Opaque input bytes are never decoded by this read port; only durable delivery facts are consumed.
+    sqlx::query("INSERT INTO mdm_commands.devices(tenant_id,device,command_device,generation,epoch,registration,registration_generation) VALUES($1::uuid,$2,$3,1,1,$4,1)")
+        .bind(c.tenant.to_string()).bind(&n.device).bind(Uuid::new_v4()).bind(n.registration).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint) VALUES($1::uuid,$2,$3,$4,'{}',$5,$6,1,1,1,'{\"kind\":\"device_control\"}',$5)")
+        .bind(c.tenant.to_string()).bind(operation).bind(&n.device).bind(vec![0u8;68]).bind(vec![0u8;32]).bind(n.registration).execute(&mut *tx).await?;
+    for (ordinal, phase, status, accepted, generation) in [
+        (1i64, "prepare", 500i32, true, 1i64),
+        (2, "execute", 202, true, 1),
+        (3, "execute", 500, false, 1),
+        (4, "observe", 500, true, 1),
+        (5, "execute", 500, true, 2),
+    ] {
+        let attempt = Uuid::new_v4();
+        sqlx::query("INSERT INTO mdm_windows.attempts(tenant_id,id,operation,registration,generation,ordinal,credential,session,message,phase,request) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,17,1,$8,$9)")
+            .bind(c.tenant.to_string()).bind(attempt).bind(operation).bind(n.registration).bind(generation).bind(ordinal).bind(n.credential).bind(phase).bind(vec![0u8;68]).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_windows.attempt_items(tenant_id,attempt,command,item_ordinal,kind,uri,status,receipt_accepted) VALUES($1::uuid,$2,2048,0,'exec','./Vendor/MSFT/EnterpriseDesktopAppManagement',$3,$4)")
+            .bind(c.tenant.to_string()).bind(attempt).bind(status).bind(accepted).execute(&mut *tx).await?;
+    }
+    let state = serde_json::json!({"probes":[],"statuses":[200],"values":["1"]});
+    for (snapshot, first_command) in [(before, 2048i64), (after, 2049)] {
+        sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,evidence) VALUES($1::uuid,$2,$3,'mdm.windows',$4,'device',0,1,'{\"fields\":{}}','pending','{}')")
+            .bind(c.tenant.to_string()).bind(snapshot).bind(n.registration).bind(n.epoch).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,kind,template_state,channel_state) VALUES($1::uuid,$2,$3,'17',1,$4,'agent',$5,$6)")
+            .bind(c.tenant.to_string()).bind(snapshot).bind(n.registration).bind(first_command).bind(vec![0u8;68]).bind(&state).execute(&mut *tx).await?;
+    }
+    sqlx::query("SET LOCAL ROLE mdm_command_runtime")
+        .execute(&mut *tx)
+        .await?;
+    for (registration, generation, snapshot, expected_delivery, correlated) in [
+        (n.registration, 1, before, Delivery::Acknowledged, false),
+        (n.registration, 1, after, Delivery::Acknowledged, true),
+        (n.registration, 2, after, Delivery::Rejected, true),
+        (n.registration, 3, after, Delivery::Unknown, false),
+        (Uuid::new_v4(), 1, after, Delivery::Unknown, false),
+    ] {
+        let facts = a
+            .materials
+            .windows_results
+            .installations(
+                &mut tx,
+                c.tenant,
+                vec![InstallationRead {
+                    id: operation,
+                    registration,
+                    generation,
+                    snapshot: Some(snapshot),
+                }],
+            )
+            .await?;
+        assert_eq!(facts[&operation].delivery, expected_delivery);
+        assert_eq!(
+            facts[&operation].channel_state.as_ref(),
+            correlated.then_some(&state)
+        );
+    }
+    // Same borrowed transaction sees uncommitted receipt progress; no second checkout can substitute.
+    sqlx::query("UPDATE mdm_windows.attempt_items i SET receipt_accepted=false FROM mdm_windows.attempts a WHERE (i.tenant_id,i.attempt)=(a.tenant_id,a.id) AND a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='execute'")
+        .bind(c.tenant.to_string()).bind(operation).execute(&mut *tx).await?;
+    let facts = a
+        .materials
+        .windows_results
+        .installations(
+            &mut tx,
+            c.tenant,
+            vec![InstallationRead {
+                id: operation,
+                registration: n.registration,
+                generation: 1,
+                snapshot: None,
+            }],
+        )
+        .await?;
+    assert_eq!(
+        facts[&operation].delivery,
+        Delivery::Rejected,
+        "accepted prepare failure is authoritative without an accepted execute receipt"
+    );
+    tx.rollback().await?;
+    let persisted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND operation=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(operation)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(persisted, 0);
+    command::close(a).await?;
+    c.close().await;
+    Ok(())
+}

@@ -306,11 +306,11 @@ pub(crate) async fn supported_on(
             } => {
                 let supported = capabilities.get(&(*registration, *generation)).is_some_and(
                     |(version, edition)| {
-                        crate::windows_business::context(
+                        rss_mdm_windows_mdm::native::Context::from_capabilities(
                             version,
                             *edition as u32,
                             rss_mdm_windows_mdm::native::Scope::Device,
-                            rss_mdm_registration_service::Purpose::Primary,
+                            rss_mdm_windows_mdm::native::Enrollment::Primary,
                         )
                         .is_ok_and(|context| request.compile(context, 1).is_ok())
                     },

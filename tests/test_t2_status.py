@@ -45,6 +45,15 @@ class T2Status(unittest.TestCase):
         with self.assertRaises(ci_impact.SelectionError):
             ci_impact.validate_selection(decision, [], [])
 
+    def test_channel_sql_and_signature_retirement_select_real_consumers(self):
+        for schema in ('install.sql', 'relations.sql'):
+            with self.subTest(schema=schema):
+                self.assertEqual(affected(['crates/execution-service/schema/' + schema]),
+                                 ['agent.delivery', 'apple.protocol', 'windows.protocol'])
+                self.assertEqual(affected(['crates/agent-channel/schema/' + schema]),
+                                 ['agent.delivery', 'task_trust'])
+        self.assertEqual(affected(['crates/execution-service/README.md']), [])
+
     def test_report_rejects_zero_missing_duplicate_failed_and_skipped(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = Path(temporary) / 'junit.xml'

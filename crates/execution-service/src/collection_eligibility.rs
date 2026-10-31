@@ -27,20 +27,21 @@ pub async fn native_on(
         return Ok(false);
     };
     if adapter == NativeAdapter::WindowsRead {
-        let purpose = match enrollment.as_str() {
-            "primary" => rss_mdm_registration_service::Purpose::Primary,
-            "windows_declared" => rss_mdm_registration_service::Purpose::WindowsDeclared,
+        let enrollment = match enrollment.as_str() {
+            "primary" => rss_mdm_windows_mdm::native::Enrollment::Primary,
+            "windows_declared" => rss_mdm_windows_mdm::native::Enrollment::LinkedCertificate,
             _ => return Ok(false),
         };
         let (Some(version), Some(edition)) = (&environment.os_version, &environment.edition) else {
             return Ok(false);
         };
-        let context = crate::windows_business::context(
+        let context = rss_mdm_windows_mdm::native::Context::from_capabilities(
             version,
             edition.parse().map_err(|_| Error::Malformed)?,
             rss_mdm_windows_mdm::native::Scope::Device,
-            purpose,
-        )?;
+            enrollment,
+        )
+        .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?;
         let plan = crate::input_preparation::windows_collection_plan(template)
             .map_err(|_| Error::Unsupported)?;
         if plan.applicable(context).is_err() {

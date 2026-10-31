@@ -134,6 +134,7 @@ impl Queries {
                         super::native_installation::installation_observation_on(
                             c,
                             service.tenant,
+                            service.windows_results.clone(),
                             service.apple_results.clone(),
                             service.agent_store.clone(),
                             &op,

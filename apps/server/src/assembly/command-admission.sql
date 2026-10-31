@@ -3,7 +3,7 @@ WITH tables AS (
 ), update_columns(relation, col) AS (VALUES
  ('mdm_access.devices','retirement'),
  ('mdm_policy.event_members','decision'),('mdm_policy.work','completed'),('mdm_policy.work','failure'),
- 
+
  ('mdm_access.device_access_bindings','instance'),('mdm_access.device_access_bindings','principal'),('mdm_access.device_access_bindings','generation'),('mdm_access.device_access_bindings','revision'),('mdm_access.device_access_bindings','state'),('mdm_access.device_access_bindings','account'),('mdm_access.device_access_bindings','document'),('mdm_commands.action_runs','access_binding'),
  ('mdm_webhook.key_heads','revision'),('mdm_webhook.key_heads','active_revision'),('mdm_webhook.key_heads','retiring_revision'),('mdm_webhook.key_materials','revoked'),
  ('mdm_webhook.subscriptions','revision'),('mdm_webhook.subscriptions','target_version'),('mdm_webhook.subscriptions','enabled'),('mdm_webhook.subscriptions','deleted'),('mdm_webhook.subscriptions','settings'),('mdm_webhook.versions','retired'),('mdm_webhook.compliance_sources','cursor'),('mdm_webhook.compliance_sources','complete'),('mdm_webhook.fanout','cursor'),('mdm_webhook.fanout','complete'),('mdm_webhook.deliveries','attempts'),('mdm_webhook.deliveries','last_outcome'),('mdm_webhook.deliveries','last_stage'),('mdm_webhook.deliveries','last_reason'),
@@ -15,36 +15,36 @@ WITH tables AS (
  ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),
  ('mdm_pki.installations','revision'),('mdm_pki.installations','digest'),('mdm_pki.installations','body'),('mdm_pki.installations','confirmed_at'),
  ('mdm_pki.acknowledgements','revision'),('mdm_pki.acknowledgements','digest'),('mdm_pki.acknowledgements','confirmed_at'),
- 
- 
- 
- 
- 
+
+
+
+
+
 
  ('mdm_commands.software_stage_stats','gate_open'),('mdm_commands.software_stage_stats','generation'),('mdm_commands.software_stage_stats','membership_complete'),('mdm_commands.software_stats_members','generation'),('mdm_commands.software_stats_members','target'),('mdm_commands.software_stats_members','counts'),('mdm_commands.software_stats_members','waiting_until'),('mdm_commands.software_stage_stats','input'),('mdm_commands.software_stage_stats','cursor'),('mdm_commands.software_stage_stats','ready'),('mdm_commands.software_stage_stats','counts'),('mdm_commands.policy_recovery','target_after'),('mdm_commands.policy_recovery','input_revision'),('mdm_commands.policy_recovery','input_consumed'),('mdm_commands.policy_recovery','input_window'),('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.agent_admission','policy_after'),
  ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
  ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),('mdm_planning.configuration_objects','operation'),('mdm_planning.configuration_objects','digest'),('mdm_planning.configuration_objects','diagnosis'),
  ('mdm_commands.native_checkins','active_event'),('mdm_commands.native_checkins','active_at'),('mdm_commands.native_checkins','policy_after'),('mdm_commands.native_checkins','pending_event'),('mdm_commands.native_checkins','pending_at'),('mdm_commands.agent_admission','offer_after_at'),('mdm_commands.agent_admission','offer_after_id'),('mdm_commands.action_runs','invocation'),('mdm_commands.action_runs','source_objects'),('mdm_commands.action_runs','software_effect'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
+
+
+
+
+
+
+
+
+
+
+
+
+
  ('mdm_commands.devices','generation'),('mdm_commands.devices','epoch'),('mdm_commands.devices','registration'),('mdm_commands.devices','registration_generation'),('mdm_commands.devices','recovery_after'),
  ('mdm_commands.operations','dispatch_failure'),('mdm_commands.operations','authority'),('mdm_commands.operations','revision'),('mdm_commands.operations','gateway_accepted'),
  ('mdm_access.report_sources','next_sequence'),('mdm_access.registrations','next_command'),('mdm_access.registrations','ready'),('mdm_access.registrations','first_authenticated_at'),('mdm_access.registrations','last_communication_received_at'),('mdm_access.enrollment_certificates','server_nonce'),
  ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
  ('mdm_access.collection_runs','evidence'),('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
- 
- 
+
+
 ,('mdm_commands.device_source_dispatch','from_cut'),('mdm_commands.device_source_dispatch','to_cut'),('mdm_commands.device_source_dispatch','event_after'),('mdm_commands.device_source_dispatch','page_through'),('mdm_commands.device_source_dispatch','cursor'),('mdm_commands.device_source_dispatch','relation_consumed'),('mdm_commands.device_source_dispatch','relation_watermark'),('mdm_commands.device_source_dispatch','relation_cursor'),('mdm_commands.device_source_dispatch','failure'),('mdm_commands.device_source_dispatch','failure_generation')
 , {agent_update_columns}
 , {windows_update_columns}
@@ -57,7 +57,7 @@ WITH tables AS (
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm_access.directory_endpoints',true,false,false),
  ('mdm_policy.event_batches',true,true,false),('mdm_policy.event_members',true,true,false),('mdm_policy.work',true,true,false),
- 
+
  ('mdm.asset_changes',true,false,false),('mdm_access.asset_authority_history',true,false,false),('mdm_commands.device_source_dispatch',true,true,false),
  ('mdm_access.device_access_bindings',true,false,false),('mdm_access.device_access_results',true,true,false),('mdm_recovery.rss_login_uses',true,true,false),
  ('mdm_webhook.key_heads',true,true,false),('mdm_webhook.key_materials',true,true,false),
@@ -67,7 +67,7 @@ WITH tables AS (
  ('mdm_recovery.filevault_custodies',true,true,false),('mdm_recovery.filevault_sources',true,true,false),('mdm_recovery.filevault_receipts',true,true,false),
  ('mdm_recovery.agent_guards',true,true,true),('mdm_recovery.agent_materials',true,true,false),('mdm_recovery.entries',true,true,false),('mdm_recovery.versions',true,true,false),('mdm_recovery.native_actions',true,true,false),
  ('mdm_pki.certificates',true,false,false),('mdm_pki.revocations',true,false,false),('mdm_agent_packages.releases',true,false,false),('mdm_access.agent_bootstraps',true,true,false),('mdm_access.agent_native_enrollments',true,true,false),('mdm_access.grants',true,true,false),('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
- 
+
  ('mdm_content.manifests',true,false,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),('mdm_access.agent_enrollment_settings',true,false,false),('mdm_access.agent_connection_versions',true,false,false),
  ('mdm.inventory',true,false,false),('mdm.array_versions',true,false,false),('mdm.array_items',true,false,false),('mdm_access.collection_versions',true,false,false),('mdm_access.collection_items',true,false,false),
  ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),

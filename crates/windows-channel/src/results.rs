@@ -22,10 +22,77 @@ pub struct Evidence {
     pub receipts: Vec<WindowsReceipt>,
     pub assessment: rss_mdm_windows_mdm::native::verification::EffectAssessment,
 }
+pub struct InstallationRead {
+    pub id: Uuid,
+    pub registration: Uuid,
+    pub generation: i64,
+    pub snapshot: Option<Uuid>,
+}
+#[derive(Debug, Default, PartialEq, Eq)]
+pub enum InstallationDelivery {
+    #[default]
+    Unknown,
+    Acknowledged,
+    Rejected,
+}
+#[derive(Default)]
+pub struct Installation {
+    pub channel_state: Option<serde_json::Value>,
+    pub delivery: InstallationDelivery,
+}
 pub struct Results {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
 }
 impl Results {
+    pub async fn installations(
+        &self,
+        c: &mut PgConnection,
+        tenant: TenantId,
+        reads: &[InstallationRead],
+    ) -> Result<BTreeMap<Uuid, Installation>> {
+        if reads.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        if reads.len() > 1000 {
+            return Err(Error::Malformed);
+        }
+        let inputs = reads
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "operation": r.id, "registration": r.registration,
+                    "generation": r.generation, "snapshot": r.snapshot,
+                })
+            })
+            .collect::<Vec<_>>();
+        let rows = sqlx::query(INSTALLATIONS)
+            .bind(tenant.to_string())
+            .bind(serde_json::json!(inputs))
+            .fetch_all(c)
+            .await?;
+        rss_mdm_query_postgres::observe_rows("windows.installations", &rows)?;
+        let mut output = BTreeMap::new();
+        for row in rows {
+            if !row.try_get::<bool, _>("within_budget")? {
+                return Err(Error::Conflict);
+            }
+            if let Some(id) = row.try_get::<Option<Uuid>, _>("operation")? {
+                output.insert(
+                    id,
+                    Installation {
+                        channel_state: row.try_get("channel_state")?,
+                        delivery: match row.try_get::<Option<i32>, _>("delivery_status")? {
+                            Some(200 | 202) => InstallationDelivery::Acknowledged,
+                            Some(n) if n >= 400 => InstallationDelivery::Rejected,
+                            _ => InstallationDelivery::Unknown,
+                        },
+                    },
+                );
+            }
+        }
+        Ok(output)
+    }
+
     pub async fn observations(
         &self,
         c: &mut PgConnection,
@@ -325,3 +392,24 @@ async fn read_evidence_rows_on(
 const WINDOWS_RECEIPTS: &str = "SELECT a.operation,a.id AS attempt,a.phase,a.ordinal,a.session,a.message,i.command,i.parent_command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.value IS NOT NULL AS has_value,i.receipt_accepted,i.received_at,i.result_accepted,i.result_received_at,coalesce((SELECT jsonb_agg(jsonb_build_object('message',f.message,'command',f.command,'startByte',f.start_byte,'endByte',f.end_byte,'totalBytes',f.total_bytes,'status',f.status,'accepted',f.accepted,'receivedAt',f.received_at) ORDER BY f.message,f.command) FROM mdm_windows.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.command=i.command),'[]'::jsonb) AS frames FROM mdm_windows.attempts a JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=ANY($2) ORDER BY a.operation,a.ordinal,i.command,i.item_ordinal";
 const WINDOWS_PLATFORMS: &str = "SELECT DISTINCT ON(operation) operation,platform FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2) AND phase='execute' ORDER BY operation,ordinal DESC";
 const WINDOWS_ENDPOINTS: &str = "SELECT DISTINCT ON(a.operation) a.operation,m.response,a.credential,a.session,a.message FROM mdm_windows.attempts a JOIN mdm_access.management_messages m ON(m.tenant_id,m.registration,m.session_id,m.message_id)=(a.tenant_id,a.registration,a.session::text,a.message) JOIN mdm_access.management_sessions s ON(s.tenant_id,s.registration,s.session_id)=(m.tenant_id,m.registration,m.session_id) WHERE a.tenant_id=$1::uuid AND a.operation=ANY($2) AND a.phase='observe' AND s.generation=a.generation AND a.session<>(SELECT session FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND operation=a.operation AND phase='execute' ORDER BY ordinal DESC LIMIT 1) ORDER BY a.operation,a.ordinal DESC";
+
+// The channel owns receipt precedence and post-dispatch collection correlation.
+const INSTALLATIONS: &str = r#"
+WITH selected AS MATERIALIZED (
+ SELECT x.operation,
+ (SELECT q.channel_state FROM mdm_windows.collections q
+  JOIN mdm_windows.attempts a ON a.tenant_id=q.tenant_id AND a.operation=x.operation AND a.phase='execute'
+  JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id)
+  WHERE q.tenant_id=$1::uuid AND q.id=x.snapshot AND q.registration=x.registration
+   AND a.registration=x.registration AND a.generation=x.generation AND q.first_command>i.command
+  ORDER BY q.first_command DESC LIMIT 1) AS channel_state,
+ (SELECT i.status FROM mdm_windows.attempts a
+  JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id)
+  WHERE a.tenant_id=$1::uuid AND a.operation=x.operation
+   AND a.registration=x.registration AND a.generation=x.generation
+   AND (a.phase='execute' OR(a.phase='prepare' AND i.status>=400)) AND i.receipt_accepted
+  ORDER BY a.ordinal DESC,i.command DESC LIMIT 1) AS delivery_status
+ FROM jsonb_to_recordset($2::jsonb) x(operation uuid,registration uuid,generation bigint,snapshot uuid)
+), budget AS (SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
+SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok
+"#;

@@ -274,6 +274,7 @@ impl crate::queries::Queries {
                 let mut installations = super::native_installation::installation_observations_on(
                     c,
                     s.tenant,
+                    s.windows_results.clone(),
                     s.apple_results.clone(),
                     s.agent_store.clone(),
                     &install_ops,

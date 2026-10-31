@@ -156,35 +156,3 @@ impl ExecutionService {
         }
     }
 }
-
-use rss_mdm_windows_mdm::native::{Context, Scope};
-pub(crate) fn context(
-    version: &str,
-    edition: u32,
-    scope: Scope,
-    purpose: rss_mdm_registration_service::Purpose,
-) -> std::result::Result<Context, Error> {
-    let parts = version.split('.').collect::<Vec<_>>();
-    if parts.len() != 4 {
-        return Err(Error::Unavailable(Failure::Protocol));
-    }
-    let mut build = [0; 4];
-    for (i, part) in parts.iter().enumerate() {
-        build[i] = part
-            .parse()
-            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-    }
-    Ok(Context {
-        enrollment: match purpose {
-            rss_mdm_registration_service::Purpose::Primary => {
-                rss_mdm_windows_mdm::native::Enrollment::Primary
-            }
-            rss_mdm_registration_service::Purpose::WindowsDeclared => {
-                rss_mdm_windows_mdm::native::Enrollment::LinkedCertificate
-            }
-        },
-        build: Some(build),
-        edition: Some(edition),
-        scope,
-    })
-}

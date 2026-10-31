@@ -238,3 +238,28 @@ fn correlation_preserves_remote_failure_source() {
         Err(C::Mismatch)
     );
 }
+
+#[test]
+fn observed_capabilities_require_exact_version_and_preserve_authenticated_context() {
+    use rss_mdm_windows_mdm::native::{Context, Enrollment, Scope};
+    for enrollment in [Enrollment::Primary, Enrollment::LinkedCertificate] {
+        for scope in [Scope::Device, Scope::User] {
+            let context =
+                Context::from_capabilities("10.0.26100.4294967295", 48, scope, enrollment).unwrap();
+            assert_eq!(context.build, Some([10, 0, 26100, u32::MAX]));
+            assert_eq!(context.edition, Some(48));
+            assert_eq!(context.scope, scope);
+            assert_eq!(context.enrollment, enrollment);
+            for version in [
+                "",
+                "10.0.26100",
+                "10.0.26100.1.2",
+                "10..26100.1",
+                "10.0.26100.-1",
+                "10.0.26100.4294967296",
+            ] {
+                assert!(Context::from_capabilities(version, 48, scope, enrollment).is_err());
+            }
+        }
+    }
+}

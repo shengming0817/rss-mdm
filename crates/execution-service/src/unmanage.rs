@@ -665,6 +665,7 @@ impl ExecutionService {
                 crate::storage::load(tx, &self.transactions.protection, execution).await?;
             let observation = crate::native_installation::installation_observation(
                 tx,
+                self.transactions.windows_results.clone(),
                 self.transactions.apple_results.clone(),
                 self.transactions.agent_store.clone(),
                 &operation,

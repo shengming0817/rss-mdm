@@ -376,7 +376,13 @@ async fn receive_capabilities(
                 .all(|status| matches!(status, Some(200 | 214)))
                 && let [Some(version), Some(edition)] = &values
                 && let Some(edition) = edition_id(edition)
-                && context(version, edition, Scope::Device, p.purpose()).is_ok()
+                && Context::from_capabilities(
+                    version,
+                    edition,
+                    Scope::Device,
+                    enrollment(p.purpose()),
+                )
+                .is_ok()
             {
                 let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND os_version=$4 AND edition=$5)").bind(&tenant).bind(&reg).bind(p.generation()).bind(version).bind(edition as i32).fetch_one(&mut *c).await.map_err(db)?;
                 sqlx::query("INSERT INTO mdm_windows.capabilities VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint) ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,os_version=excluded.os_version,edition=excluded.edition,session=excluded.session,observed_at=excluded.observed_at")
@@ -390,6 +396,17 @@ async fn receive_capabilities(
     Ok(())
 }
 
+fn enrollment(
+    purpose: rss_mdm_registration_service::Purpose,
+) -> rss_mdm_windows_mdm::native::Enrollment {
+    use rss_mdm_registration_service::Purpose;
+    use rss_mdm_windows_mdm::native::Enrollment;
+    match purpose {
+        Purpose::Primary => Enrollment::Primary,
+        Purpose::WindowsDeclared => Enrollment::LinkedCertificate,
+    }
+}
+
 fn edition_id(value: &str) -> Option<u32> {
     match value {
         "Professional" | "Pro" => Some(48),
@@ -401,34 +418,6 @@ fn edition_id(value: &str) -> Option<u32> {
     }
 }
 
-pub(crate) fn context(
-    version: &str,
-    edition: u32,
-    scope: Scope,
-    purpose: rss_mdm_registration_service::Purpose,
-) -> std::result::Result<Context, Error> {
-    let parts = version.split('.').collect::<Vec<_>>();
-    if parts.len() != 4 {
-        return Err(protocol());
-    }
-    let mut build = [0; 4];
-    for (i, part) in parts.iter().enumerate() {
-        build[i] = part.parse().map_err(|_| protocol())?;
-    }
-    Ok(Context {
-        enrollment: match purpose {
-            rss_mdm_registration_service::Purpose::Primary => {
-                rss_mdm_windows_mdm::native::Enrollment::Primary
-            }
-            rss_mdm_registration_service::Purpose::WindowsDeclared => {
-                rss_mdm_windows_mdm::native::Enrollment::LinkedCertificate
-            }
-        },
-        build: Some(build),
-        edition: Some(edition),
-        scope,
-    })
-}
 /// Persist the exact native request and expected item set before exposing outbound bytes.
 /// Admission uses the complete response; a valid tree must not poison every check-in.
 fn admit_response(
@@ -548,12 +537,13 @@ pub(crate) async fn send_on(
         let fresh = cap
             .as_ref()
             .map(|(v, e)| {
-                context(
+                Context::from_capabilities(
                     v,
                     *e as u32,
                     if op.user { Scope::User } else { Scope::Device },
-                    p.purpose(),
+                    enrollment(p.purpose()),
                 )
+                .map_err(|_| protocol())
             })
             .transpose()?;
         if let Some(minimum_os) = op.agent_minimum_os

@@ -15,7 +15,32 @@ pub struct Evidence {
     pub receipts: Vec<crate::queries::records::WindowsReceipt>,
     pub assessment: rss_mdm_windows_mdm::native::verification::EffectAssessment,
 }
+pub struct InstallationRead {
+    pub id: Uuid,
+    pub registration: Uuid,
+    pub generation: i64,
+    pub snapshot: Option<Uuid>,
+}
+#[derive(Debug, Default, PartialEq, Eq)]
+pub enum InstallationDelivery {
+    #[default]
+    Unknown,
+    Acknowledged,
+    Rejected,
+}
+#[derive(Default)]
+pub struct Installation {
+    pub channel_state: Option<serde_json::Value>,
+    pub delivery: InstallationDelivery,
+}
 pub trait Store: Send + Sync {
+    fn installations<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        reads: Vec<InstallationRead>,
+    ) -> Pending<'a, BTreeMap<Uuid, Installation>>;
+
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,

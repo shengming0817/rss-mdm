@@ -20,6 +20,52 @@ fn error(e: rss_mdm_windows_channel::Error) -> rss_mdm_execution_service::Error 
     }
 }
 impl Store for WindowsResults {
+    fn installations<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        reads: Vec<InstallationRead>,
+    ) -> Pending<'a, BTreeMap<Uuid, Installation>> {
+        Box::pin(async move {
+            use rss_mdm_windows_channel::results as channel;
+            let reads = reads
+                .into_iter()
+                .map(|r| channel::InstallationRead {
+                    id: r.id,
+                    registration: r.registration,
+                    generation: r.generation,
+                    snapshot: r.snapshot,
+                })
+                .collect::<Vec<_>>();
+            Ok(self
+                .0
+                .installations(c, tenant, &reads)
+                .await
+                .map_err(error)?
+                .into_iter()
+                .map(|(id, v)| {
+                    (
+                        id,
+                        Installation {
+                            channel_state: v.channel_state,
+                            delivery: match v.delivery {
+                                channel::InstallationDelivery::Unknown => {
+                                    InstallationDelivery::Unknown
+                                }
+                                channel::InstallationDelivery::Acknowledged => {
+                                    InstallationDelivery::Acknowledged
+                                }
+                                channel::InstallationDelivery::Rejected => {
+                                    InstallationDelivery::Rejected
+                                }
+                            },
+                        },
+                    )
+                })
+                .collect())
+        })
+    }
+
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,
