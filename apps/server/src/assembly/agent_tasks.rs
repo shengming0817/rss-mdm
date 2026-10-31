@@ -10,7 +10,13 @@ use rss_mdm_registration_service::DevicePrincipal;
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::sync::Arc;
 use uuid::Uuid;
-pub(crate) struct AgentTasks(pub Arc<rss_mdm_execution_service::ExecutionService>);
+#[derive(Clone)]
+pub(crate) struct AgentTasks {
+    pub requests: Arc<super::self_service::Requests>,
+    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub scripts: Arc<rss_mdm_script_service::ScriptService>,
+    pub collections: Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
+}
 pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_agent_channel::Error {
     use rss_mdm_agent_channel::Missing;
     use rss_mdm_agent_channel::{Error as A, Failure};
@@ -34,12 +40,61 @@ pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_agent_channe
             }),
         }
 }
-fn fault(e: rss_mdm_execution_service::transaction::Fault) -> rss_mdm_agent_channel::Error {
+pub(super) fn fault(
+    e: rss_mdm_execution_service::transaction::Fault,
+) -> rss_mdm_agent_channel::Error {
     use rss_mdm_execution_service::transaction::Fault;
     match e {
         Fault::Request(e) => error(e),
         Fault::Storage(e) => e.into(),
         Fault::Sql(e) => e.into(),
+    }
+}
+use super::task_ownership::Owner;
+pub(crate) async fn owner_in(
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Owner, rss_mdm_agent_channel::Error> {
+    let tenant = tx.tenant_id();
+    Ok(tx
+        .with_connection(move |c| Box::pin(super::task_ownership::on(c, tenant, id)))
+        .await?)
+}
+pub(super) fn script_error(e: rss_mdm_script_service::Error) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_agent_channel::{Error as A, Failure};
+    use rss_mdm_script_service::Error as S;
+    match e {
+        S::Malformed => A::Malformed,
+        S::Conflict => A::Conflict,
+        S::Forbidden => A::Forbidden,
+        S::Unauthorized => A::Unauthorized,
+        S::NotFound => A::NotFound,
+        S::CommitUnknown => A::CommitUnknown,
+        S::RollbackFailed => A::RollbackFailed,
+        S::Invariant | S::Unavailable => A::Unavailable(Failure::Business),
+        S::Audit(e) => e.as_ref().into(),
+        S::Inventory(e) => e.into(),
+        S::Content(e) => e.into(),
+    }
+}
+pub(super) fn script_fault(
+    e: rss_mdm_script_service::transaction::Fault,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_script_service::transaction::Fault as F;
+    match e {
+        F::Request(e) => script_error(e),
+        F::Storage(e) => e.into(),
+        F::Sql(e) => e.into(),
+    }
+}
+pub(super) fn collection_fault(
+    e: rss_mdm_inventory_service::transaction::Fault,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_inventory_service::transaction::Fault as F;
+    match e {
+        F::Request(e) => e.into(),
+        F::Storage(e) => e.into(),
+        F::Sql(e) => e.into(),
     }
 }
 impl Tasks for AgentTasks {
@@ -48,7 +103,7 @@ impl Tasks for AgentTasks {
         tx: &'a mut PgTransaction<'_>,
         p: &'a DevicePrincipal,
     ) -> Pending<'a, ()> {
-        Box::pin(async move { self.0.agent_prepare_in(tx, p).await.map_err(fault) })
+        Box::pin(async move { self.execution.agent_prepare_in(tx, p).await.map_err(fault) })
     }
     fn offer<'a>(
         &'a self,
@@ -57,12 +112,93 @@ impl Tasks for AgentTasks {
         input: &'a wire::TaskClaimRequest,
         attempt: Uuid,
         audit: &'a RequestAudit,
-    ) -> Pending<'a, Option<(wire::TaskPayload, rss_mdm_audit_integration::Fact)>> {
+    ) -> Pending<'a, Option<(wire::TaskPayload, rss_mdm_audit_integration::Fact, i64)>> {
         Box::pin(async move {
-            self.0
-                .agent_offer_in(tx, p, input, attempt, audit)
+            let now = rss_mdm_script_service::storage::now(tx)
                 .await
-                .map_err(fault)
+                .map_err(script_fault)?;
+            let after =
+                rss_mdm_agent_channel::delivery::offer_after_in(tx, p.registration()).await?;
+            let mut candidates: Vec<_> =
+                rss_mdm_execution_service::actions::poll::offer_candidates(
+                    tx,
+                    p.registration(),
+                    now,
+                    after,
+                )
+                .await
+                .map_err(fault)?
+                .into_iter()
+                .map(|v| (v, Owner::Execution))
+                .collect();
+            candidates.extend(
+                rss_mdm_script_service::poll::offer_candidates(tx, p.registration(), now, after)
+                    .await
+                    .map_err(script_fault)?
+                    .into_iter()
+                    .map(|v| (v, Owner::Script)),
+            );
+            candidates.extend(
+                rss_mdm_inventory_service::collection::execution::poll::offer_candidates(
+                    tx,
+                    p.registration(),
+                    now,
+                    after,
+                )
+                .await
+                .map_err(collection_fault)?
+                .into_iter()
+                .map(|v| (v, Owner::Collection)),
+            );
+            candidates.sort_by_key(|(coordinate, _)| *coordinate);
+            if candidates.windows(2).any(|v| v[0].0.1 == v[1].0.1) {
+                return Err(rss_mdm_agent_channel::Error::Conflict);
+            }
+            candidates.truncate(128);
+            // Capture the globally bounded page before admission/relay can expose additional work.
+            self.execution
+                .agent_admit_in(tx, p, input, audit)
+                .await
+                .map_err(fault)?;
+            self.scripts
+                .agent_admit_in(tx, p, input)
+                .await
+                .map_err(script_fault)?;
+            self.collections
+                .agent_admit_in(tx, p, input)
+                .await
+                .map_err(collection_fault)?;
+            let mut inspected = None;
+            let mut offer = None;
+            for (coordinate, owner) in candidates {
+                if owner_in(tx, coordinate.1).await? != owner {
+                    return Err(rss_mdm_agent_channel::Error::Conflict);
+                }
+                offer = match owner {
+                    Owner::Execution => self
+                        .execution
+                        .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
+                        .await
+                        .map_err(fault)?,
+                    Owner::Script => self
+                        .scripts
+                        .agent_offer_one_in(tx, p, coordinate.1, attempt, audit)
+                        .await
+                        .map_err(script_fault)?,
+                    Owner::Collection => self
+                        .collections
+                        .agent_offer_one_in(tx, p, coordinate.1, attempt, audit)
+                        .await
+                        .map_err(collection_fault)?,
+                };
+                inspected = Some(coordinate);
+                if offer.is_some() {
+                    break;
+                }
+            }
+            rss_mdm_agent_channel::delivery::offer_through_in(tx, p.registration(), inspected)
+                .await?;
+            Ok(offer)
         })
     }
     fn replay_offer<'a>(
@@ -73,10 +209,23 @@ impl Tasks for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            self.0
-                .agent_replay_offer_in(tx, p, signed, audit)
-                .await
-                .map_err(fault)
+            match owner_in(tx, signed.payload.task_id()).await? {
+                Owner::Execution => self
+                    .execution
+                    .agent_replay_offer_in(tx, p, signed, audit)
+                    .await
+                    .map_err(fault),
+                Owner::Script => self
+                    .scripts
+                    .agent_replay_offer_in(tx, p, signed, audit)
+                    .await
+                    .map_err(script_fault),
+                Owner::Collection => self
+                    .collections
+                    .agent_replay_offer_in(tx, p, signed, audit)
+                    .await
+                    .map_err(collection_fault),
+            }
         })
     }
     fn replay_event<'a>(
@@ -88,10 +237,23 @@ impl Tasks for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            self.0
-                .agent_replay_event_in(tx, p, task, input, audit)
-                .await
-                .map_err(fault)
+            match owner_in(tx, task).await? {
+                Owner::Execution => self
+                    .execution
+                    .agent_replay_event_in(tx, p, task, input, audit)
+                    .await
+                    .map_err(fault),
+                Owner::Script => self
+                    .scripts
+                    .agent_replay_event_in(tx, p, task, input, audit)
+                    .await
+                    .map_err(script_fault),
+                Owner::Collection => self
+                    .collections
+                    .agent_replay_event_in(tx, p, task, input, audit)
+                    .await
+                    .map_err(collection_fault),
+            }
         })
     }
     fn event<'a>(
@@ -103,16 +265,46 @@ impl Tasks for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, EventEffects> {
         Box::pin(async move {
-            let e = self
-                .0
-                .agent_event_in(tx, p, task, input, audit)
-                .await
-                .map_err(fault)?;
-            Ok(EventEffects {
-                start: e.start,
-                cancelled: e.cancelled,
-                credentials: e.credentials,
-                fact: e.fact,
+            Ok(match owner_in(tx, task).await? {
+                Owner::Execution => {
+                    let e = self
+                        .execution
+                        .agent_event_in(tx, p, task, input, audit)
+                        .await
+                        .map_err(fault)?;
+                    EventEffects {
+                        start: e.start,
+                        cancelled: e.cancelled,
+                        credentials: e.credentials,
+                        fact: e.fact,
+                    }
+                }
+                Owner::Script => {
+                    let e = self
+                        .scripts
+                        .agent_event_in(tx, p, task, input, audit)
+                        .await
+                        .map_err(script_fault)?;
+                    EventEffects {
+                        start: e.start,
+                        cancelled: e.cancelled,
+                        credentials: vec![],
+                        fact: e.fact,
+                    }
+                }
+                Owner::Collection => {
+                    let e = self
+                        .collections
+                        .agent_event_in(tx, p, task, input, audit)
+                        .await
+                        .map_err(collection_fault)?;
+                    EventEffects {
+                        start: e.start,
+                        cancelled: e.cancelled,
+                        credentials: vec![],
+                        fact: e.fact,
+                    }
+                }
             })
         })
     }
@@ -123,10 +315,30 @@ impl Tasks for AgentTasks {
         after: Option<Uuid>,
     ) -> Pending<'a, Vec<wire::TaskCancellation>> {
         Box::pin(async move {
-            self.0
-                .agent_cancellations_in(tx, registration, after)
+            let mut page =
+                rss_mdm_execution_service::actions::poll::cancellations(tx, registration, after)
+                    .await
+                    .map_err(fault)?;
+            page.extend(
+                rss_mdm_script_service::poll::cancellations(tx, registration, after)
+                    .await
+                    .map_err(script_fault)?,
+            );
+            page.extend(
+                rss_mdm_inventory_service::collection::execution::poll::cancellations(
+                    tx,
+                    registration,
+                    after,
+                )
                 .await
-                .map_err(fault)
+                .map_err(collection_fault)?,
+            );
+            page.sort_by_key(|v| v.task_id());
+            if page.windows(2).any(|v| v[0].task_id() == v[1].task_id()) {
+                return Err(rss_mdm_agent_channel::Error::Conflict);
+            }
+            page.truncate(wire::MAX_TASK_CANCELLATIONS);
+            Ok(page)
         })
     }
     fn content<'a>(
@@ -139,10 +351,19 @@ impl Tasks for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, rss_mdm_resource::Artifact> {
         Box::pin(async move {
-            self.0
-                .agent_content_in(tx, p, task, attempt, key, audit)
-                .await
-                .map_err(fault)
+            match owner_in(tx, task).await? {
+                Owner::Execution => self
+                    .execution
+                    .agent_content_in(tx, p, task, attempt, key, audit)
+                    .await
+                    .map_err(fault),
+                Owner::Script => self
+                    .scripts
+                    .agent_content_in(tx, p, task, attempt, key, audit)
+                    .await
+                    .map_err(script_fault),
+                Owner::Collection => Err(rss_mdm_agent_channel::Error::Malformed),
+            }
         })
     }
 }
@@ -154,12 +375,7 @@ impl SelfService for AgentTasks {
         input: &'a wire::SelfServiceResolve,
         audit: &'a RequestAudit,
     ) -> Pending<'a, wire::SelfServiceDirectoryItem> {
-        Box::pin(async move {
-            self.0
-                .resolve_self_service(p, proof, input, audit)
-                .await
-                .map_err(error)
-        })
+        Box::pin(async move { self.resolve_self_service(p, proof, input, audit).await })
     }
     fn directory<'a>(
         &'a self,
@@ -169,15 +385,8 @@ impl SelfService for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, wire::SelfServiceDirectoryResponse> {
         Box::pin(async move {
-            self.0
-                .self_service_directory(
-                    p,
-                    proof,
-                    &rss_mdm_execution_service::self_service::directory::Input::new(query),
-                    audit,
-                )
+            self.self_service_directory(p, proof, &super::self_service::Input::new(query), audit)
                 .await
-                .map_err(error)
         })
     }
     fn invoke<'a>(
@@ -187,12 +396,7 @@ impl SelfService for AgentTasks {
         input: &'a wire::SelfServiceInvoke,
         audit: &'a RequestAudit,
     ) -> Pending<'a, wire::SelfServiceAccepted> {
-        Box::pin(async move {
-            self.0
-                .invoke_self_service(p, proof, input, audit)
-                .await
-                .map_err(error)
-        })
+        Box::pin(async move { self.invoke_self_service(p, proof, input, audit).await })
     }
     fn status<'a>(
         &'a self,
@@ -201,12 +405,7 @@ impl SelfService for AgentTasks {
         id: Uuid,
         audit: &'a RequestAudit,
     ) -> Pending<'a, wire::SelfServiceStatus> {
-        Box::pin(async move {
-            self.0
-                .self_service_status(p, proof, id, audit)
-                .await
-                .map_err(error)
-        })
+        Box::pin(async move { self.self_service_status(p, proof, id, audit).await })
     }
 }
 impl Installation for AgentTasks {
@@ -218,7 +417,7 @@ impl Installation for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, rss_mdm_agent_wire::enroll::NativeEnrollmentReceipt> {
         Box::pin(async move {
-            self.0
+            self.execution
                 .native_enrollment(p, task, input, audit)
                 .await
                 .map_err(error)
@@ -229,7 +428,12 @@ impl Installation for AgentTasks {
         id: Uuid,
         audit: &'a RequestAudit,
     ) -> Pending<'a, rss_mdm_content_service::Verified> {
-        Box::pin(async move { self.0.installation_content(id, audit).await.map_err(error) })
+        Box::pin(async move {
+            self.execution
+                .installation_content(id, audit)
+                .await
+                .map_err(error)
+        })
     }
 }
 impl RecoveryUse for AgentTasks {
@@ -240,7 +444,7 @@ impl RecoveryUse for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            self.0
+            self.execution
                 .record_access_recovery_use(p, input, audit)
                 .await
                 .map_err(error)
@@ -254,7 +458,7 @@ impl rss_mdm_http_contract::query::QueryOwner for SelfServiceQuery {
     type Error = std::convert::Infallible;
     fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
         Some(rss_mdm_http_contract::QueryDeclaration::Directory(
-            rss_mdm_execution_service::self_service::directory::Input::schema(),
+            super::self_service::Input::schema(),
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {
@@ -262,13 +466,9 @@ impl rss_mdm_http_contract::query::QueryOwner for SelfServiceQuery {
             rss_mdm_http_contract::signature::Schema::request::<wire::SelfServiceDirectory>();
         schema.value["properties"]["limit"]["minimum"] = 1.into();
         schema.value["properties"]["limit"]["maximum"] =
-            rss_mdm_execution_service::self_service::directory::Input::schema()
-                .max_limit
-                .into();
+            super::self_service::Input::schema().max_limit.into();
         schema.value["properties"]["limit"]["default"] =
-            rss_mdm_execution_service::self_service::directory::Input::schema()
-                .default_limit
-                .into();
+            super::self_service::Input::schema().default_limit.into();
         schema
     }
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {

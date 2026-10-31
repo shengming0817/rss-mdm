@@ -50,30 +50,18 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
-        actions::native_recovery::lock_device(tx, p.device()).await?;
+        actions::run_recovery::lock_device(tx, p.device()).await?;
         crate::transaction::prepare_audit_in(&self.transactions.audit_store, tx, audit, &[])
             .await
             .map_err(Into::into)
-    }
-    pub async fn apple_authenticated_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        p: &DevicePrincipal,
-    ) -> Result<()> {
-        self.transactions.runtime.validate_transaction(tx)?;
-        actions::native_recovery::record(&self.transactions.reconcile_messaging, tx, p).await
     }
     pub async fn apple_finish_in(
         &self,
         tx: &mut PgTransaction<'_>,
         p: &DevicePrincipal,
-        collection: Option<Uuid>,
         audit: &RequestAudit,
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
-        if let Some(id) = collection {
-            actions::recovery::recover_one(self, tx, id).await?;
-        }
         self.transactions
             .reconcile_agent_install_in(tx, p.device(), audit)
             .await?;
@@ -292,26 +280,6 @@ impl ExecutionService {
         }
         Ok(output)
     }
-    pub async fn apple_collection_eligible_on(
-        &self,
-        c: &mut sqlx::PgConnection,
-        p: &DevicePrincipal,
-        id: Uuid,
-        delivery: bool,
-    ) -> std::result::Result<bool, Error> {
-        if delivery {
-            actions::native_collection::delivery_eligible_on(
-                self.transactions.source.as_ref(),
-                c,
-                p,
-                id,
-            )
-            .await
-        } else {
-            actions::native_collection::eligible_on(self.transactions.source.as_ref(), c, p, id)
-                .await
-        }
-    }
 }
 fn admission(
     s: &ExecutionService,
@@ -418,7 +386,7 @@ impl ExecutionService {
         devices.sort();
         devices.dedup();
         for device in devices {
-            actions::native_recovery::lock_device(tx, &device).await?;
+            actions::run_recovery::lock_device(tx, &device).await?;
         }
         crate::transaction::prepare_audit_in(&self.transactions.audit_store, tx, audit, &[])
             .await

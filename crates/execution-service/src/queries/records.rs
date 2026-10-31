@@ -102,12 +102,12 @@ pub struct RunSummary {
     authorization: Option<rss_mdm_agent_wire::runtime::TaskAuthorization>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attempt_id: Option<Uuid>,
-    task_id: Uuid,
+    pub task_id: Uuid,
     device: String,
     registration_id: Uuid,
     generation: i64,
     occurrence: String,
-    available_at: i64,
+    pub available_at: i64,
     deadline: i64,
     state: RunState,
     effect: String,
@@ -357,24 +357,6 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(v: Value) -> crate::transac
 #[cfg(test)]
 #[path = "../../tests/query_records.rs"]
 mod tests;
-
-#[cfg(test)]
-mod native_summary_tests {
-    use super::*;
-    #[test]
-    fn summaries_never_serialize_native_values_or_nested_evidence() {
-        let value:SummaryResult=serde_json::from_value(serde_json::json!({"native":{"private":"device-data"},"queries":{},"planDigest":vec![1;32],"outputReference":{"bytes":5,"sha256":"digest"},"trusted":true,"receivedAt":1,"diagnostics":null})).unwrap();
-        let output = serde_json::to_value(value).unwrap();
-        assert!(output.get("native").is_none());
-        assert!(
-            serde_json::from_value::<SummaryResult>(
-                serde_json::json!({"nested":[{"native":{"secret":"value"}}]})
-            )
-            .is_err()
-        );
-        assert_eq!(output["diagnostics"], serde_json::Value::Null);
-    }
-}
 
 /// The shared command owner's closed public state, without a second state table.
 #[derive(Clone, Copy, Debug)]

@@ -1,11 +1,11 @@
 -- Only immutable association reads are granted to the application role.
 WITH expected(name) AS (VALUES
- ('mdm_commands.action_runs'),('mdm_planning.configuration_operations'),
+ ('mdm_commands.action_runs'),('mdm_script.runs'),('mdm_inventory.collection_tasks'),('mdm_planning.configuration_operations'),
  ('mdm_assets.operations'),('mdm_commands.requests'),('mdm_commands.operations'),('mdm_policy.versions')
 ), relations AS (
  SELECT c.* FROM expected e JOIN pg_class c ON c.oid=to_regclass(e.name)
 )
-SELECT (SELECT count(*) FROM relations)=6
+SELECT (SELECT count(*) FROM relations)=8
  AND NOT EXISTS(SELECT 1 FROM relations c WHERE c.relkind<>'r' OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity
   OR c.relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR NOT has_table_privilege(current_user,c.oid,'SELECT')

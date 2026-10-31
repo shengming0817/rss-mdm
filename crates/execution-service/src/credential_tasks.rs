@@ -17,8 +17,8 @@ pub struct FrozenCredential {
     pub operation: Operation,
 }
 impl ScheduledInput for FrozenCredential {
-    fn execution_input(&self) -> &ExecutionInput {
-        &self.input
+    fn schedule(&self) -> &rss_mdm_policy::schedule::Schedule {
+        &self.input.schedule
     }
 }
 pub fn permission(operation: &Operation) -> Permission {

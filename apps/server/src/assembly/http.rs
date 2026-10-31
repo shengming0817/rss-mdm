@@ -44,10 +44,12 @@ pub(crate) fn from_state(
         platform_access: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
             state.configuration.clone(),
+            state.agent_tasks.collections.clone(),
         )),
         departure: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
             state.configuration.clone(),
+            state.agent_tasks.collections.clone(),
         )),
         protection: state.protection.clone(),
         credentials: state.credentials.clone(),
@@ -89,6 +91,7 @@ pub(crate) fn from_state(
         departure: Arc::new(super::windows_business::WindowsBusiness(
             state.execution.clone(),
             state.configuration.clone(),
+            state.agent_tasks.collections.clone(),
         )),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
@@ -331,6 +334,7 @@ pub(crate) fn from_state(
             execution: state.execution.clone(),
             task_trust: state.task_trust.clone(),
             queries: state.queries.clone(),
+            task_reads: state.task_reads.clone(),
             policies: state.policies.clone(),
             assets: state.assets.clone(),
             catalog: state.resources.clone(),
@@ -392,7 +396,7 @@ pub(crate) fn from_state(
         let mut envelope = agent_boundary;
         // This outer gateway dispatcher validates the actual published Agent origin.
         envelope.host.clear();
-        let participant = Arc::new(super::agent_tasks::AgentTasks(state.execution.clone()));
+        let participant = state.agent_tasks.clone();
         let task_state = Arc::new(crate::agent::TaskState {
             task_trust: state.task_trust.clone(),
             identity: Arc::new(

@@ -31,7 +31,9 @@
     "mdm_commands.requests",
     "mdm_commands.operations",
     "mdm_policy.versions",
-    "mdm_planning.configuration_operations"
+    "mdm_planning.configuration_operations",
+    "mdm_script.runs",
+    "mdm_inventory.collection_tasks"
   ],
   "verified_schemas": []
 }

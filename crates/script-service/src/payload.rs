@@ -1,0 +1,128 @@
+use crate::Error;
+use crate::Target;
+use crate::frozen::*;
+use rss_mdm_agent_wire::runtime as wire;
+use rss_mdm_policy::{Architecture, Platform};
+use rss_mdm_resource as r;
+use serde_json::Value;
+use std::collections::BTreeMap;
+use uuid::Uuid;
+impl FrozenScript {
+    pub fn executor_profile(&self) -> wire::ExecutorProfile {
+        match self.definition.spec().profile {
+            r::ScriptProfile::PowerShell7 => wire::ExecutorProfile::PowerShell7,
+            r::ScriptProfile::PosixSh => wire::ExecutorProfile::PosixSh,
+            r::ScriptProfile::Bash => wire::ExecutorProfile::Bash,
+            r::ScriptProfile::Osquery => wire::ExecutorProfile::Osquery,
+        }
+    }
+    pub fn execution_identity(&self) -> wire::ExecutionIdentity {
+        match self.definition.spec().run_as {
+            r::RunAs::System => wire::ExecutionIdentity::System,
+            r::RunAs::LoggedInUser => wire::ExecutionIdentity::LoggedInUser,
+        }
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all signed execution coordinates are explicit"
+    )]
+    pub fn task(
+        &self,
+        tenant: Uuid,
+        target: &Target,
+        run: Uuid,
+        attempt: Uuid,
+        permit: wire::TaskPermit,
+        expiry: i64,
+        authorization: wire::TaskAuthorization,
+        parameters: BTreeMap<String, Value>,
+        deadline: i64,
+        context: &wire::SoftwareExecutionContext,
+    ) -> Result<wire::TaskPayload, Error> {
+        let spec = self.definition.spec();
+        let (arguments, environment) = self
+            .definition
+            .prepare_parameters(&parameters)
+            .map_err(|_| Error::Malformed)?;
+        let projection = match (&spec.purpose, &self.collection) {
+            (r::ScriptPurpose::Collection { mappings, .. }, Some(collection)) => {
+                wire::ScriptProjection::Collection {
+                    fields: collection
+                        .bindings()
+                        .iter()
+                        .map(|f| {
+                            rss_mdm_inventory_service::collection::wire::to_wire_field(
+                                &f.definition,
+                            )
+                        })
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| Error::Malformed)?,
+                    mappings: mappings.clone(),
+                    output_schema: spec.output.clone(),
+                    scope: rss_mdm_agent_wire::CollectionScope::Device,
+                }
+            }
+            (r::ScriptPurpose::Collection { .. }, None) | (_, Some(_)) => {
+                return Err(Error::Malformed);
+            }
+            (_, None) => wire::ScriptProjection::None,
+        };
+        wire::TaskSpec {
+            projection,
+            wire_version: wire::WIRE_VERSION,
+            tenant_id: tenant,
+            device_id: target.device.clone(),
+            platform: match self.input.platform {
+                Platform::Windows => wire::TaskPlatform::Windows,
+                Platform::Macos => wire::TaskPlatform::Macos,
+            },
+            architecture: match self.input.architecture {
+                Architecture::X86_64 => wire::TaskArchitecture::X86_64,
+                Architecture::Aarch64 => wire::TaskArchitecture::Aarch64,
+            },
+            registration_id: target.registration,
+            generation: target.generation.try_into().map_err(|_| Error::Malformed)?,
+            task_id: run,
+            attempt_id: attempt,
+            permit,
+            expires_at: expiry,
+            resource_digest: self.resource_digest,
+            resource: self.resource.clone(),
+            authorization,
+            parameters: parameters.clone(),
+            deadline,
+            content: self.content.clone(),
+            profile: self.executor_profile(),
+            sql_parameters: if spec.sql.is_some() {
+                Some(
+                    parameters
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                )
+            } else {
+                None
+            },
+            run_as: match spec.run_as {
+                r::RunAs::System => wire::ExecutionIdentity::System,
+                r::RunAs::LoggedInUser => wire::ExecutionIdentity::LoggedInUser,
+            },
+            execution_target: rss_mdm_software_service::preparation::execution::identity_target(
+                self.execution_identity(),
+                match self.input.platform {
+                    Platform::Windows => wire::TaskPlatform::Windows,
+                    Platform::Macos => wire::TaskPlatform::Macos,
+                },
+                context,
+            )
+            .map_err(|_| Error::Forbidden)?,
+            arguments,
+            environment,
+            timeout_seconds: spec.timeout_seconds,
+            output_bytes: spec.output_bytes,
+            max_rows: spec.max_rows,
+        }
+        .try_into()
+        .map_err(|_| Error::Malformed)
+    }
+}

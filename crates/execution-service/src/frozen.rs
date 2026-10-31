@@ -17,18 +17,6 @@ pub enum Frozen {
         action: Box<crate::credential_tasks::FrozenCredential>,
         frequency: Frequency,
     },
-    AgentCollection {
-        action: Box<FrozenAgentCollection>,
-        frequency: Frequency,
-    },
-    NativeCollection {
-        action: Box<FrozenNativeCollection>,
-        frequency: Frequency,
-    },
-    Execution {
-        action: Box<FrozenAction>,
-        frequency: Frequency,
-    },
 
     Software {
         action: Box<FrozenSoftwareAction>,
@@ -53,8 +41,6 @@ impl Frozen {
             Self::Software { .. } => vec![crate::authorization::Permission::SoftwareDeploy],
             Self::Credential { action, .. } => vec![action.permission()],
 
-            Self::NativeCollection { action, .. } => action.permissions()?,
-            Self::AgentCollection { action, .. } => action.permissions(),
             _ => return Ok(()),
         };
         permissions.sort();

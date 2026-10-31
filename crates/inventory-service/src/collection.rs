@@ -3,9 +3,11 @@ pub mod agent;
 pub mod channel;
 pub mod declarative;
 pub mod enterprise;
+pub mod execution;
 pub mod native;
 /// Producer-side assembly of the immutable Agent package baselines.
 pub mod packaged;
+pub mod preparation;
 pub mod read;
 pub(crate) mod summary;
 pub mod telemetry;

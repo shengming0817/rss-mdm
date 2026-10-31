@@ -13,12 +13,12 @@ use std::sync::Arc;
 
 pub fn previews(
     configuration: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
-    queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    tasks: Arc<dyn crate::execution::task_reads::Reads>,
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register_previews(Some(cursor)).with_state(Arc::new(super::http_preview::StateServices {
-        queries,
+        tasks,
         configuration,
         telemetry,
     }))
@@ -50,13 +50,13 @@ pub(crate) fn register_previews(
 }
 
 pub fn routes(
-    queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    queries: Arc<dyn crate::execution::task_reads::Reads>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router<Arc<Policies>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     register(Some(queries), Some(cursor))
 }
 pub(crate) fn register(
-    queries: Option<Arc<rss_mdm_execution_service::queries::Queries>>,
+    queries: Option<Arc<dyn crate::execution::task_reads::Reads>>,
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
 ) -> Router<Arc<Policies>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     let router = {
@@ -170,7 +170,7 @@ async fn rerun(
 }
 
 async fn assignments(
-    State(service): State<Arc<rss_mdm_execution_service::queries::Queries>>,
+    State(service): State<Arc<dyn crate::execution::task_reads::Reads>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
@@ -186,17 +186,10 @@ async fn assignments(
 > {
     (async {
         let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
-        rss_mdm_execution_service::queries::assignments::assignments(
-            &service,
-            &auth.proof,
-            &audit,
-            id,
-            &page,
-            &codec,
-        )
-        .await
-        .map(Json)
-        .map_err(Error::from)
+        service
+            .assignments(&auth.proof, &audit, id, &page, &codec)
+            .await
+            .map(Json)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)

@@ -1,7 +1,7 @@
 //! Read-only bridge from a published Policy version to Agent execution.
 use super::*;
 use crate::action_contract::ScheduledInput;
-pub struct ExecutionPolicy<T = FrozenAction> {
+pub struct ExecutionPolicy<T> {
     pub id: Uuid,
     pub owner: Uuid,
     pub frozen: T,
@@ -9,25 +9,6 @@ pub struct ExecutionPolicy<T = FrozenAction> {
     pub active: bool,
     policy: Policy,
     channel: rss_mdm_inventory::Channel,
-}
-pub async fn read_in(
-    reader: &rss_mdm_policy_postgres::PolicyReader,
-    tx: &mut PgTransaction<'_>,
-    id: Uuid,
-) -> Result<ExecutionPolicy> {
-    let (policy, frozen) = storage::version_in(reader, tx, id).await?;
-    let Frozen::Execution { action, frequency } = frozen else {
-        return Err(Error::Unsupported.into());
-    };
-    Ok(ExecutionPolicy {
-        id,
-        owner: policy.id,
-        active: policy.state.is_enabled(),
-        frozen: *action,
-        frequency,
-        policy,
-        channel: rss_mdm_inventory::Channel::Agent,
-    })
 }
 impl<T: ScheduledInput> ExecutionPolicy<T> {
     pub fn entry_source(&self) -> String {
@@ -42,8 +23,8 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
         now: i64,
     ) -> Result<Option<i64>> {
         if !self.active
-            || now < self.frozen.execution_input().schedule.not_before
-            || now >= self.frozen.execution_input().schedule.ends_at()
+            || now < self.frozen.schedule().not_before
+            || now >= self.frozen.schedule().ends_at()
         {
             return Ok(None);
         }
@@ -75,7 +56,7 @@ pub async fn agent_versions_in(
     registration: Uuid,
 ) -> Result<Vec<Uuid>> {
     let tenant = tx.tenant_id().to_string();
-    let kinds = rss_mdm_policy::AssignmentBehavior::AgentCheckIn.kinds();
+    let kinds = vec!["credential", "mdm_enrollment"];
     let ids=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.agent_admission(tenant_id,registration) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(registration.to_string()).execute(&mut *c).await?;
         let after=sqlx::query_scalar::<_,Option<Uuid>>("SELECT policy_after FROM mdm_commands.agent_admission WHERE tenant_id=$1::uuid AND registration=$2::uuid FOR UPDATE").bind(&tenant).bind(registration.to_string()).fetch_one(&mut *c).await?;
@@ -85,45 +66,6 @@ pub async fn agent_versions_in(
         rows.into_iter().map(|r|r.try_get::<Uuid,_>("current_version")).collect::<std::result::Result<Vec<_>,sqlx::Error>>()
     })).await?;
     Ok(ids)
-}
-
-pub async fn native_in(
-    reader: &rss_mdm_policy_postgres::PolicyReader,
-    tx: &mut PgTransaction<'_>,
-    id: Uuid,
-) -> Result<ExecutionPolicy<FrozenNativeCollection>> {
-    let (policy, frozen) = storage::version_in(reader, tx, id).await?;
-    let Frozen::NativeCollection { action, frequency } = frozen else {
-        return Err(Error::Unsupported.into());
-    };
-    Ok(ExecutionPolicy {
-        id,
-        owner: policy.id,
-        frozen: *action,
-        frequency,
-        active: policy.state.is_enabled(),
-        policy,
-        channel: rss_mdm_inventory::Channel::Mdm,
-    })
-}
-pub async fn agent_collection_in(
-    reader: &rss_mdm_policy_postgres::PolicyReader,
-    tx: &mut PgTransaction<'_>,
-    id: Uuid,
-) -> Result<ExecutionPolicy<crate::action_contract::FrozenAgentCollection>> {
-    let (policy, frozen) = storage::version_in(reader, tx, id).await?;
-    let Frozen::AgentCollection { action, frequency } = frozen else {
-        return Err(Error::Unsupported.into());
-    };
-    Ok(ExecutionPolicy {
-        id,
-        owner: policy.id,
-        frozen: *action,
-        frequency,
-        active: policy.state.is_enabled(),
-        policy,
-        channel: rss_mdm_inventory::Channel::Agent,
-    })
 }
 
 pub async fn credential_in(

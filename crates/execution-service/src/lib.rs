@@ -22,10 +22,6 @@ pub use model::{
 };
 use rss_mdm_authorization_service as authorization;
 
-mod agent_collection_eligibility;
-pub use agent_collection_eligibility::matches as native_collection_supported;
-mod payload;
-pub mod script_eligibility;
 pub mod self_service;
 mod target;
 pub use target::Target;
@@ -75,8 +71,8 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub struct ExecutionService {
+    pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) worker_concurrency: usize,
-    pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
@@ -84,10 +80,13 @@ pub struct ExecutionService {
 
     pub(crate) transactions: transactions::ExecutionTransactions,
 }
+pub mod capacity;
 pub struct Dependencies {
+    pub worker_budget: Arc<tokio::sync::Semaphore>,
+    pub capacity: Arc<dyn capacity::DeviceCapacity>,
+    pub task_cleanup: Arc<dyn crate::task_cleanup::TaskCleanup>,
     pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub worker_concurrency: usize,
-    pub cursor_key: Vec<u8>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub sessions: Arc<authorization::session::SessionAuthority>,
     pub inputs: Arc<Inputs>,
@@ -95,7 +94,6 @@ pub struct Dependencies {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub apple_profiles: Arc<dyn apple_facts::AppleProfiles>,
-    pub apple_collections: Arc<dyn apple_facts::AppleCollections>,
     pub windows_results: Arc<dyn crate::windows_results::Store>,
     pub apple_results: Arc<dyn apple_facts::AppleResults>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
@@ -120,6 +118,7 @@ impl ExecutionService {
     pub fn new(dependencies: Dependencies) -> Self {
         Self {
             transactions: transactions::ExecutionTransactions {
+                capacity: dependencies.capacity,
                 recovery_credentials: dependencies.recovery_credentials,
 
                 inputs: dependencies.inputs,
@@ -127,7 +126,7 @@ impl ExecutionService {
                 protection: dependencies.protection,
                 agent_store: dependencies.agent_store,
                 apple_profiles: dependencies.apple_profiles,
-                apple_collections: dependencies.apple_collections,
+                task_cleanup: dependencies.task_cleanup,
                 configuration_cleanup: dependencies.configuration_cleanup,
                 windows_results: dependencies.windows_results,
                 apple_results: dependencies.apple_results,
@@ -141,10 +140,7 @@ impl ExecutionService {
                 content: dependencies.content,
             },
             worker_concurrency: dependencies.worker_concurrency,
-            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
-                ring::hmac::HMAC_SHA256,
-                &dependencies.cursor_key,
-            )),
+            worker_budget: dependencies.worker_budget,
             readiness: Default::default(),
 
             sessions: dependencies.sessions,
@@ -183,7 +179,6 @@ mod error_projection;
 
 pub mod wake;
 
-mod freeze_inputs;
 pub mod input_preparation;
 pub use input_preparation::{action_permission, authorize_action};
 pub mod policy_events;
@@ -233,28 +228,6 @@ impl Inputs {
         }
         Ok(())
     }
-    pub async fn verify_artifact(
-        &self,
-        artifact: &rss_mdm_resource::Artifact,
-        class: rss_mdm_content_service::StorageClass,
-    ) -> std::result::Result<rss_mdm_content_service::Verified, Error> {
-        Ok(self
-            .materials
-            .content
-            .as_ref()
-            .ok_or(Error::Unsupported)?
-            .verify_class(
-                artifact,
-                class,
-                self.materials
-                    .content
-                    .as_ref()
-                    .ok_or(Error::Unsupported)?
-                    .upload_budget()?
-                    .operation_deadline(),
-            )
-            .await?)
-    }
 }
 
 mod agent_preparation;
@@ -270,12 +243,6 @@ pub const RELATIONS_SQL: &str = concat!(
     "\n",
     include_str!("../schema/command-runtime.sql")
 );
-
-mod collection_eligibility;
-
-#[cfg(test)]
-#[path = "../tests/native_collection_unit.rs"]
-mod native_collection_unit;
 
 pub mod recovery_credentials;
 
@@ -352,3 +319,5 @@ pub const NATIVE_SOURCE_ACCESS_CONTRACT: &str = include_str!("native-source-acce
 pub const NATIVE_SOURCE_ADMISSION_SQL: &str = include_str!("native-source-admission.sql");
 
 pub mod configuration_cleanup;
+
+pub mod task_cleanup;

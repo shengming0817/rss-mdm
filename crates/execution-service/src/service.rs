@@ -55,7 +55,7 @@ impl ExecutionService {
         let action = input.action.kind();
         let auth = storage::authorized_native(tx, proof, device, &[action.permission()]).await?;
         storage::lock_request(tx, input.operation_id).await?;
-        actions::native_recovery::lock_device(tx, device).await?;
+        actions::run_recovery::lock_device(tx, device).await?;
         crate::transaction::prepare_audit_in(&self.transactions.audit_store, tx, audit, &[])
             .await?;
         let fingerprint = create_fingerprint(self, proof, device, input)?;
@@ -211,7 +211,7 @@ impl ExecutionService {
             }
             let permissions=if reauthorize {op.authority.required().to_vec()}else{vec![Permission::OperationCancel]};
             let auth=storage::authorized_native(tx,proof,device,&permissions).await?;
-            storage::lock_request(tx, change.request_id).await?;actions::native_recovery::lock_device(tx,device).await?;
+            storage::lock_request(tx, change.request_id).await?;actions::run_recovery::lock_device(tx,device).await?;
             crate::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v1",proof.actor(),device,id,change,reauthorization)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);

@@ -7,3 +7,5 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub(crate) mod projection;
+
+pub mod task_reads;

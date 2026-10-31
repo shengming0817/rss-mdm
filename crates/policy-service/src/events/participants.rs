@@ -50,6 +50,11 @@ pub trait ExecutionProgress: Send + Sync {
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(untagged, rename_all_fields = "camelCase")]
 pub enum EventOperationProgress {
+    Collection {
+        reference: wire::PolicyEventOperation,
+        state: rss_mdm_inventory_service::collection::execution::model::NativeProgress,
+        allowed_actions: [String; 0],
+    },
     Run {
         reference: wire::PolicyEventOperation,
         state: rss_mdm_task_state::RunState,

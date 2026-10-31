@@ -199,8 +199,8 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             } else {
                 completion
             }
-        } else if let Some(work @ crate::actions::native_recovery::Work::Run(_)) =
-            crate::actions::native_recovery::Work::parse(claim.target().entity())
+        } else if let Some(work @ crate::actions::run_recovery::Work::Run(_)) =
+            crate::actions::run_recovery::Work::parse(claim.target().entity())
             && completion == Completion::Converged
         {
             let waiting = crate::transaction::inspect(
@@ -208,9 +208,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 self.0.transactions.tenant,
                 work,
                 |work, tx| {
-                    Box::pin(
-                        async move { crate::actions::native_recovery::active(tx, *work).await },
-                    )
+                    Box::pin(async move { crate::actions::run_recovery::active(tx, *work).await })
                 },
             )
             .await

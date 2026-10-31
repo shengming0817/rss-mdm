@@ -29,6 +29,8 @@ pub struct Policies {
     tenant: rss_request_context::TenantId,
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
+    script: std::sync::Arc<rss_mdm_script_service::inputs::Inputs>,
+    collections: std::sync::Arc<rss_mdm_inventory_service::collection::execution::inputs::Inputs>,
     configuration: std::sync::Arc<crate::configuration::publication::Publications>,
     changes: std::sync::Arc<dyn crate::inputs::ExecutionChanges>,
     mdm_software_enabled: bool,
@@ -42,6 +44,9 @@ pub struct Dependencies {
     pub tenant: rss_request_context::TenantId,
     pub policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     pub inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
+    pub script: std::sync::Arc<rss_mdm_script_service::inputs::Inputs>,
+    pub collections:
+        std::sync::Arc<rss_mdm_inventory_service::collection::execution::inputs::Inputs>,
     pub configuration: std::sync::Arc<crate::configuration::publication::Publications>,
     pub changes: std::sync::Arc<dyn crate::inputs::ExecutionChanges>,
     pub mdm_software_enabled: bool,
@@ -56,6 +61,8 @@ impl Policies {
             tenant,
             policy_store,
             inputs,
+            script,
+            collections,
             configuration,
             changes,
             mdm_software_enabled,
@@ -69,6 +76,8 @@ impl Policies {
             tenant,
             policy_store,
             inputs,
+            script,
+            collections,
             configuration,
             changes,
             mdm_software_enabled,
@@ -103,7 +112,29 @@ impl Policies {
                 Action::Configuration { resource, .. } => {
                     Some(self.configuration.prepare(resource).await?)
                 }
-                action => self.inputs.prepare_resource(action).await?,
+                Action::Execution {
+                    resource,
+                    parameters,
+                    ..
+                } => Some(
+                    self.script
+                        .prepare_resource(
+                            resource,
+                            rss_mdm_script_service::Parameters::Sources(parameters),
+                        )
+                        .await?,
+                ),
+                Action::AgentCollection { resource, .. } => Some(
+                    self.collections
+                        .prepare_resource(resource, rss_mdm_inventory::Channel::Agent)
+                        .await?,
+                ),
+                Action::NativeCollection { resource, .. } => Some(
+                    self.collections
+                        .prepare_resource(resource, rss_mdm_inventory::Channel::Mdm)
+                        .await?,
+                ),
+                _ => None,
             }
         } else {
             None
@@ -166,8 +197,17 @@ impl Policies {
                             s.configuration.freeze_in(tx,&policy,verified,p,&authorization).await?
                         } else if let Action::UnmanageDevice{schedule,run_lifetime_seconds}=&policy.definition.action {
                             checked_input(serde_json::to_value(lifecycle::Frozen::UnmanageDevice{schedule:schedule.clone(),run_lifetime_seconds:*run_lifetime_seconds,actor:p.actor()}))?
+                        } else if let Action::Execution {resource,parameters,schedule,frequency,run_lifetime_seconds}=&policy.definition.action {
+                            checked_input(serde_json::to_value(s.script.publish_in(tx,&rss_mdm_script_service::inputs::Publication {
+                                binding:resource,parameters:rss_mdm_script_service::Parameters::Sources(parameters),schedule,frequency:*frequency,lifetime:*run_lifetime_seconds,
+                            },verified.ok_or(Error::Conflict)?,p,&authorization).await?))?
+                        } else if let Action::AgentCollection{resource,schedule,frequency,run_lifetime_seconds}|Action::NativeCollection{resource,schedule,frequency,run_lifetime_seconds}=&policy.definition.action {
+                            checked_input(serde_json::to_value(s.collections.publish_in(tx,&rss_mdm_inventory_service::collection::execution::inputs::Publication {
+                                channel:if matches!(policy.definition.action,Action::AgentCollection{..}){rss_mdm_inventory::Channel::Agent}else{rss_mdm_inventory::Channel::Mdm},
+                                binding:resource,schedule,frequency:*frequency,lifetime:*run_lifetime_seconds,
+                            },verified.ok_or(Error::Conflict)?,p,&authorization).await?))?
                         } else {
-                            s.inputs.publish_in(tx,&policy,verified,p,&authorization).await?
+                            s.inputs.publish_in(tx,&policy,p,&authorization).await?
                         }
                         };
                         storage::write_in(

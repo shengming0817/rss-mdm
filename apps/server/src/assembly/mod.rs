@@ -1,8 +1,12 @@
 //! Product route and service assembly.
-mod agent_facts;
+pub(crate) mod agent_facts;
 pub(crate) mod agent_tasks;
 pub(crate) mod apple_business;
 mod apple_facts;
+mod capacity;
+pub(crate) mod self_service;
+mod task_ownership;
+pub(crate) mod task_relay;
 pub(crate) mod windows_business;
 mod windows_results;
 use crate::clock::Clock;
@@ -45,10 +49,12 @@ pub(crate) struct Assembly {
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) agent_tasks: Arc<agent_tasks::AgentTasks>,
     pub(crate) windows_delivery: Arc<rss_mdm_windows_channel::management::exchange::Delivery>,
     pub(crate) apple_delivery: Arc<rss_mdm_apple_channel::delivery::Delivery>,
     pub(crate) agent_delivery: Arc<rss_mdm_agent_channel::delivery::Delivery>,
     pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
+    pub(crate) task_reads: Arc<task_reads::Reads>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
@@ -175,7 +181,13 @@ pub(crate) async fn from_compiled(
         providers,
         bootstrap,
         service: execution,
+        scripts,
+        collections,
+        self_service,
+        script_work: _,
+        collection_work: _,
         queries,
+        task_reads,
         protection,
         content: content_writer,
         runtime: protocol_runtime,
@@ -472,6 +484,7 @@ pub(crate) async fn from_compiled(
         business: Arc::new(windows_business::WindowsBusiness(
             execution.clone(),
             configuration.clone(),
+            collections.clone(),
         )),
     });
     let apple_delivery = Arc::new(rss_mdm_apple_channel::delivery::Delivery {
@@ -481,20 +494,28 @@ pub(crate) async fn from_compiled(
         business: Arc::new(apple_business::AppleBusiness(
             execution.clone(),
             configuration.clone(),
+            collections.clone(),
         )),
         facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: protection.clone(),
         }),
+    });
+    let agent_tasks = Arc::new(agent_tasks::AgentTasks {
+        requests: self_service,
+        execution: execution.clone(),
+        scripts,
+        collections,
     });
     let agent_delivery = Arc::new(rss_mdm_agent_channel::delivery::Delivery {
         runtime: protocol_runtime,
         tenant: identity.tenant,
         audit: protocol_audit,
         signing,
-        tasks: Arc::new(agent_tasks::AgentTasks(execution.clone())),
+        tasks: agent_tasks.clone(),
         content: content_writer.clone(),
     });
     let state = Arc::new(Assembly {
+        agent_tasks,
         agent_delivery,
         apple_delivery,
         windows_delivery,
@@ -521,6 +542,7 @@ pub(crate) async fn from_compiled(
         configuration_preview,
         configuration,
         queries,
+        task_reads,
         protection,
         audit_store,
         apple,
@@ -738,3 +760,13 @@ mod configuration_cleanup;
 mod configuration_queries;
 
 pub(crate) mod timeline_associations;
+
+mod collection_ports;
+
+mod task_reads;
+
+#[cfg(test)]
+#[path = "../../tests/execution_owners/mod.rs"]
+mod execution_owners_t2;
+
+mod task_cleanup;

@@ -117,6 +117,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_native_protection::INSTALL_SQL,
         ),
         (
+            "script-service-schema-v1",
+            rss_mdm_script_service::INSTALL_SQL,
+        ),
+        (
             "execution-service-schema-v1",
             rss_mdm_execution_service::INSTALL_SQL,
         ),
@@ -183,6 +187,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "content-service-relations-v1",
             rss_mdm_content_service::RELATIONS_SQL,
+        ),
+        (
+            "script-service-relations-v1",
+            rss_mdm_script_service::RELATIONS_SQL,
         ),
         (
             "execution-service-relations-v1",

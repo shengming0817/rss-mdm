@@ -340,35 +340,8 @@ async fn retirement_retains_key_until_original_signature_expires() -> Result<()>
         signature,
     };
     let mut tx = c.operator.begin().await?;
-    let definition: rss_mdm_policy::Definition = serde_json::from_value(serde_json::json!({
-        "scope":Uuid::new_v4(), "action":{"kind":"unmanage_device","runLifetimeSeconds":300,
-        "schedule":{"trigger":{"kind":"manual"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}}
-    }))?;
-    definition.validate()?;
-    let rss_mdm_policy::Action::UnmanageDevice {
-        schedule,
-        run_lifetime_seconds,
-    } = &definition.action
-    else {
-        unreachable!()
-    };
-    let frozen = serde_json::to_value(rss_mdm_execution_service::frozen::Frozen::UnmanageDevice {
-        schedule: schedule.clone(),
-        run_lifetime_seconds: *run_lifetime_seconds,
-        actor: proof.actor(),
-    })?;
-    use sha2::{Digest, Sha256};
-    let fingerprint = Sha256::digest(serde_json::to_vec(&frozen)?).to_vec();
-    sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)")
-        .bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(&definition)?)
-        .bind(serde_json::to_value(proof.actor())?).bind(now).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'unmanage_device',$4,$5)")
-        .bind(c.tenant.to_string()).bind(version).bind(policy).bind(frozen).bind(fingerprint).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,origin,source_objects,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint) VALUES($1::uuid,$2,'\"policy\"','[]',$3,$9,$4,2,'once',$5,$5,$6,$7,$8)")
-        .bind(c.tenant.to_string()).bind(run).bind(version).bind(registration).bind(now-2).bind(now+5)
-        .bind(serde_json::json!({"delivery":{"kind":"claimed","attempt":attempt,"leaseUntil":now+5},"execution":"not_started","cancellation":"none","deadline":now+5,"startedAt":null})).bind(vec![0u8;32]).bind(&device).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_agent.task_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2,$3,$4,$5,$6)")
-        .bind(c.tenant.to_string()).bind(attempt).bind(run).bind(registration).bind(now).bind(serde_json::to_value(&offer)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_agent.task_attempts(tenant_id,id,run,registration,claimed_at,deadline,offer) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
+        .bind(c.tenant.to_string()).bind(attempt).bind(run).bind(registration).bind(now).bind(now+5).bind(serde_json::to_value(&offer)?).execute(&mut *tx).await?;
     tx.commit().await?;
     let operation = Uuid::new_v4();
     let change = Change::Retire {

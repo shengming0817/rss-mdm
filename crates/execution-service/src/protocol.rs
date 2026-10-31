@@ -17,7 +17,7 @@ impl ExecutionService {
             })
         })
         .await??;
-        actions::native_recovery::lock_device(tx, p.device()).await?;
+        actions::run_recovery::lock_device(tx, p.device()).await?;
         crate::transaction::prepare_audit_in(&self.transactions.audit_store, tx, audit, &[])
             .await
             .map_err(Into::into)
@@ -36,7 +36,6 @@ impl ExecutionService {
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
         if authenticated {
-            actions::native_recovery::record(&self.transactions.reconcile_messaging, tx, p).await?;
             self.queue_windows_retirement_in(tx, p, retirement, audit)
                 .await?;
         }
@@ -47,13 +46,9 @@ impl ExecutionService {
         &self,
         tx: &mut PgTransaction<'_>,
         p: &DevicePrincipal,
-        runs: Vec<Uuid>,
         audit: &RequestAudit,
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
-        for id in runs {
-            actions::recovery::recover_one(self, tx, id).await?;
-        }
         self.transactions
             .reconcile_agent_install_in(tx, p.device(), audit)
             .await?;

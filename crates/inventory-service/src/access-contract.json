@@ -46,6 +46,42 @@
       "read_only": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_inventory",
+      "table": "collection_tasks",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null,
+      "read_only": true
+    },
+    {
+      "schema": "mdm_inventory",
+      "table": "collection_admission",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_inventory",
+      "table": "collection_output_chunks",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_inventory",
+      "table": "collection_policy_recovery",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_inventory",
+      "table": "collection_native_checkins",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [
@@ -68,6 +104,14 @@
     {
       "name": "mdm.asset_visible",
       "search_path": "search_path=pg_catalog, mdm"
+    },
+    {
+      "name": "mdm_inventory.save_retired_collection_agent",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_inventory.cancel_retired_collection",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [

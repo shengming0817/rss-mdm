@@ -1,5 +1,4 @@
 //! Apple facts required by business use cases; protocol transactions belong to the channel.
-use rss_mdm_audit_integration::Fact;
 use rss_mdm_registration_service::DevicePrincipal;
 use sqlx::PgConnection;
 use std::{future::Future, pin::Pin};
@@ -56,22 +55,6 @@ pub trait AppleProfiles: Send + Sync {
         user_key: String,
         identifier: String,
     ) -> Pending<'a, Vec<Uuid>>;
-}
-pub trait AppleCollections: Send + Sync {
-    fn prepare_native_collection<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        id: Uuid,
-    ) -> Pending<'a, Vec<Fact>>;
-    fn pending_collections<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        registration: Uuid,
-        user_key: String,
-        limit: usize,
-    ) -> Pending<'a, Vec<PendingCollection>>;
 }
 pub enum AppleEvidence {
     Declarations(Option<Box<rss_mdm_apple_mdm::native::evidence::DeclarationEvidence>>),
@@ -156,9 +139,6 @@ pub struct AppleCommand {
     pub input_version: String,
     pub target: super::NativeTarget,
     pub request: rss_mdm_apple_mdm::native::request::Request,
-}
-pub struct PendingCollection {
-    pub id: Uuid,
 }
 /// Capability facts are read once for the requested current registration generations.
 #[derive(Clone)]

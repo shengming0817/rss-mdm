@@ -290,7 +290,7 @@ impl ExecutionService {
                 Box::pin(async move {
                     let (service, device, input, audit) = *ctx;
 
-                    crate::actions::native_recovery::lock_device(tx, device.device()).await?;
+                    crate::actions::run_recovery::lock_device(tx, device.device()).await?;
                     crate::transaction::prepare_audit_in(
                         &service.transactions.audit_store,
                         tx,
@@ -822,6 +822,7 @@ pub(crate) async fn reconcile_in(
             binding.id, binding.revision
         );
         if !crate::actions::production::occurrence_available_in(
+            service,
             tx,
             binding.policy_version,
             &target,
@@ -848,7 +849,6 @@ pub(crate) async fn reconcile_in(
                 available: now,
                 deadline: now + 604800,
                 now,
-                triggered_at: None,
             },
         )
         .await?;

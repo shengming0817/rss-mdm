@@ -27,7 +27,7 @@ impl ExecutionService {
                 Box::pin(async move {
                     let (s, p, task, input, audit) = *ctx;
 
-                    super::native_recovery::lock_device(tx, p.device()).await?;
+                    super::run_recovery::lock_device(tx, p.device()).await?;
                     agent::principal(&s.transactions, tx, p).await?;
                     let run = db::load_run(tx, task).await?;
                     agent::belongs(&run, p)?;

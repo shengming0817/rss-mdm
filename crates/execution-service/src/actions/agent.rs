@@ -66,20 +66,18 @@ impl ExecutionService {
         p: &DevicePrincipal,
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
-        super::native_recovery::lock_device(tx, p.device()).await?;
+        super::run_recovery::lock_device(tx, p.device()).await?;
         principal(&self.transactions, tx, p).await
     }
-    pub async fn agent_offer_in(
+    pub async fn agent_admit_in(
         &self,
         tx: &mut PgTransaction<'_>,
         p: &DevicePrincipal,
         input: &wire::TaskClaimRequest,
-        attempt: Uuid,
         audit: &RequestAudit,
-    ) -> Result<Option<(wire::TaskPayload, Fact)>> {
+    ) -> Result<()> {
         let service = self;
         let now = storage::now(tx).await?;
-        let event_key = format!("agent:{}:offer:{}", p.registration(), input.operation_id());
         let binding = crate::agent_facts::agent_binding_in(
             tx,
             service.transactions.agent_store.clone(),
@@ -93,7 +91,6 @@ impl ExecutionService {
             .into_iter()
             .map(|version| (version, Uuid::new_v4()))
             .collect::<Vec<_>>();
-        let existing = super::poll::offer_candidates(tx, p.registration(), now).await?;
         let partitions = [];
 
         let access = if binding
@@ -137,47 +134,7 @@ impl ExecutionService {
                     )
                     .await?
                 }
-                db::ScheduledPolicy::AgentCollection(v)
-                    if crate::agent_collection_eligibility::matches(
-                        &binding,
-                        v.frozen.input.platform,
-                        v.frozen.input.architecture,
-                        &v.frozen.definition,
-                        input.environment(),
-                    ) =>
-                {
-                    super::production::accept_for_device(
-                        &service.transactions,
-                        tx,
-                        &policy,
-                        &target,
-                        super::production::AdmissionTrigger::Agent(input.operation_id()),
-                        now,
-                        run_id,
-                    )
-                    .await?
-                }
                 db::ScheduledPolicy::Enrollment(_) if enrollment_capable => {
-                    super::production::accept_for_device(
-                        &service.transactions,
-                        tx,
-                        &policy,
-                        &target,
-                        super::production::AdmissionTrigger::Agent(input.operation_id()),
-                        now,
-                        run_id,
-                    )
-                    .await?
-                }
-                db::ScheduledPolicy::Script(script)
-                    if crate::script_eligibility::matches(
-                        &binding,
-                        script.frozen.input.platform,
-                        script.frozen.input.architecture,
-                        script.frozen.executor_profile(),
-                        input.profiles(),
-                    ) =>
-                {
                     super::production::accept_for_device(
                         &service.transactions,
                         tx,
@@ -214,133 +171,115 @@ impl ExecutionService {
             )
             .await?;
         }
-        // A relay may accept another run while this Read Committed transaction is open.
-        // Offer only the captured candidates for this poll.
-        let ids = existing;
+        Ok(())
+    }
+    pub async fn agent_offer_one_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        input: &wire::TaskClaimRequest,
+        id: Uuid,
+        attempt: Uuid,
+        audit: &RequestAudit,
+    ) -> Result<Option<(wire::TaskPayload, Fact, i64)>> {
+        self.agent_prepare_in(tx, p).await?;
+        let service = self;
+        let now = storage::now(tx).await?;
+        let event_key = format!("agent:{}:offer:{}", p.registration(), input.operation_id());
+        let binding = crate::agent_facts::agent_binding_in(
+            tx,
+            self.transactions.agent_store.clone(),
+            p.registration(),
+        )
+        .await?
+        .ok_or(Error::Forbidden)?;
+        let enrollment_capable = binding.enrollment();
         let mut offer = None;
         let mut offer_activity = None;
-        let mut inspected = None;
-        for (available_at, id) in ids {
-            let mut run = db::load_run(tx, id).await?;
-            belongs(&run, p)?;
-            let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
-            let previous = run.state.clone();
-            run.state.expire(now);
-            let capable = match &plan {
-                db::ScheduledPolicy::DeviceAccess(v) => {
-                    crate::device_access::capable(&binding, &v.binding.configuration.windows)
-                }
-                db::ScheduledPolicy::Retirement(_) => binding
-                    .capabilities
-                    .contains(&wire::Capability::DeviceUnmanageV1),
-                db::ScheduledPolicy::Credential(v) => {
-                    crate::credential_tasks::capable(&binding, v.frozen.input.architecture)
-                }
-                db::ScheduledPolicy::Native(_) => false,
-                db::ScheduledPolicy::AgentCollection(v) => {
-                    crate::agent_collection_eligibility::matches(
-                        &binding,
-                        v.frozen.input.platform,
-                        v.frozen.input.architecture,
-                        &v.frozen.definition,
-                        input.environment(),
-                    )
-                }
-                db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(
-                    &binding,
-                    script.frozen.input.platform,
-                    script.frozen.input.architecture,
-                    script.frozen.executor_profile(),
-                    input.profiles(),
-                ),
-                db::ScheduledPolicy::Software(software) => {
-                    software
-                        .assignment
-                        .supported_in(&service.transactions.admission(), tx, &binding)
-                        .await?
-                }
-                db::ScheduledPolicy::Enrollment(_) => enrollment_capable,
-            };
-            let waiting_ready = if run.state.execution == Execution::NotStarted
-                && run.state.cancellation == Cancellation::None
-                && now < run.deadline
-            {
-                crate::self_service::advance_waiting_in(service, tx, &mut run, &plan, now).await?
-            } else {
-                true
-            };
-            let allowed = capable
-                && waiting_ready
-                && plan
-                    .authorized_run_in(&service.transactions, tx, &run, now)
-                    .await?;
-            if plan
-                .withdrawn_in(&service.transactions, tx, &run.target, now)
-                .await?
-            {
-                run.state.cancel();
+        let mut run = db::load_run(tx, id).await?;
+        belongs(&run, p)?;
+        let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
+        let previous = run.state.clone();
+        run.state.expire(now);
+        let capable = match &plan {
+            db::ScheduledPolicy::DeviceAccess(v) => {
+                crate::device_access::capable(&binding, &v.binding.configuration.windows)
             }
-            super::recovery::audit_recovery(service, tx, &run, &previous).await?;
-            if run.state.cancellation == Cancellation::None && run.available_at <= now && allowed {
-                let previous_attempt = run.state.attempt();
-                if run.state.claim(attempt, now).is_ok() {
-                    if let Some(old) = previous_attempt {
-                        super::collection::abandon(service, tx, old, "superseded").await?;
-                    }
-                    if let db::ScheduledPolicy::Script(script) = &plan {
-                        super::collection::reserve(tx, &script.frozen, &run, now).await?;
-                    }
-                    let payload = plan
-                        .task(
-                            &service.transactions,
-                            tx,
-                            &run.target,
-                            db::TaskIssue {
-                                run: run.id,
-                                attempt,
-                                permit: wire::TaskPermit::Offer,
-                                expiry: (now + 60).min(run.deadline),
-                            },
-                        )
-                        .await?;
-                    if let (
-                        db::ScheduledPolicy::AgentCollection(v),
-                        wire::TaskPayload::Collection(spec),
-                    ) = (&plan, &payload)
-                    {
-                        super::agent_collection::reserve(tx, &v.frozen, &run, spec, now).await?;
-                    }
-                    run.source.audit(audit);
-                    audit.target(&run.id.to_string());
-                    let mut activity = super::activity::run(
-                        &run,
-                        rss_mdm_audit_integration::activity::ActivityPhase::Offered,
-                    );
-                    if let wire::TaskPayload::Software(spec) = &payload {
-                        activity.links.steps = spec
-                            .steps
-                            .iter()
-                            .map(|s| super::activity::step_id(&s.step_id))
-                            .collect();
-                    }
-                    offer_activity = Some(activity);
-                    offer = Some(payload);
-                }
+            db::ScheduledPolicy::Retirement(_) => binding
+                .capabilities
+                .contains(&wire::Capability::DeviceUnmanageV1),
+            db::ScheduledPolicy::Credential(v) => {
+                crate::credential_tasks::capable(&binding, v.frozen.input.architecture)
             }
-            db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
-            crate::unmanage::wake_device_in(
-                &service.transactions.reconcile_messaging,
-                tx,
-                &run.target.device,
-            )
-            .await?;
-            inspected = Some((available_at, id));
-            if offer.is_some() {
-                break;
+            db::ScheduledPolicy::Software(software) => {
+                software
+                    .assignment
+                    .supported_in(&service.transactions.admission(), tx, &binding)
+                    .await?
             }
+            db::ScheduledPolicy::Enrollment(_) => enrollment_capable,
+        };
+        let waiting_ready = if run.state.execution == Execution::NotStarted
+            && run.state.cancellation == Cancellation::None
+            && now < run.deadline
+        {
+            crate::self_service::advance_waiting_in(service, tx, &mut run, &plan, now).await?
+        } else {
+            true
+        };
+        let allowed = capable
+            && waiting_ready
+            && plan
+                .authorized_run_in(&service.transactions, tx, &run, now)
+                .await?;
+        if plan
+            .withdrawn_in(&service.transactions, tx, &run.target, now)
+            .await?
+        {
+            run.state.cancel();
         }
-        super::poll::offered_through(tx, p.registration(), inspected).await?;
-
+        super::recovery::audit_recovery(service, tx, &run, &previous).await?;
+        if run.state.cancellation == Cancellation::None
+            && run.available_at <= now
+            && allowed
+            && run.state.claim(attempt, now).is_ok()
+        {
+            let payload = plan
+                .task(
+                    &service.transactions,
+                    tx,
+                    &run.target,
+                    db::TaskIssue {
+                        run: run.id,
+                        attempt,
+                        permit: wire::TaskPermit::Offer,
+                        expiry: (now + 60).min(run.deadline),
+                    },
+                )
+                .await?;
+            run.source.audit(audit);
+            audit.target(&run.id.to_string());
+            let mut activity = super::activity::run(
+                &run,
+                rss_mdm_audit_integration::activity::ActivityPhase::Offered,
+            );
+            if let wire::TaskPayload::Software(spec) = &payload {
+                activity.links.steps = spec
+                    .steps
+                    .iter()
+                    .map(|s| super::activity::step_id(&s.step_id))
+                    .collect();
+            }
+            offer_activity = Some(activity);
+            offer = Some(payload);
+        }
+        db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
+        crate::unmanage::wake_device_in(
+            &service.transactions.reconcile_messaging,
+            tx,
+            &run.target.device,
+        )
+        .await?;
         offer
             .map(|payload| {
                 if let wire::TaskPayload::Software(task) = &payload {
@@ -349,7 +288,7 @@ impl ExecutionService {
                 }
                 let fact = Fact::business(audit, &event_key, 200, "success", None)?
                     .with_activity(offer_activity.as_ref().ok_or(Error::Conflict)?)?;
-                Ok((payload, fact))
+                Ok((payload, fact, run.deadline))
             })
             .transpose()
     }
@@ -395,11 +334,7 @@ impl ExecutionService {
         let plan = db::load_source(&self.transactions.policy_reader, tx, run.source).await?;
         crate::transaction::prepare_audit_in(&self.transactions.audit_store, tx, audit, &[])
             .await?;
-        if matches!(&plan, db::ScheduledPolicy::Script(_)) {
-            audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
-                rss_mdm_audit_integration::SensitiveAction::ScriptContentRead,
-            ));
-        }
+
         if matches!(input.event(), wire::TaskEvent::Start) {
             let now = storage::now(tx).await?;
             if now >= run.deadline
@@ -437,11 +372,7 @@ impl ExecutionService {
         run.source.audit(audit);
         audit.target(&id.to_string());
         let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
-        if matches!(&plan, db::ScheduledPolicy::Script(_)) {
-            audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
-                rss_mdm_audit_integration::SensitiveAction::ScriptContentRead,
-            ));
-        }
+
         let now = storage::now(tx).await?;
         let event_key = format!(
             "agent:{}:task:{id}:event:{}",
@@ -474,6 +405,11 @@ impl ExecutionService {
         let mut credentials = Vec::new();
         let mut software_audit = None;
         match input.event() {
+            wire::TaskEvent::Result(_)
+            | wire::TaskEvent::CollectionResult(_)
+            | wire::TaskEvent::ChunkedCollectionResult { .. }
+            | wire::TaskEvent::OutputChunk(_)
+            | wire::TaskEvent::ChunkedResult(_) => return Err(Error::Malformed.into()),
             wire::TaskEvent::DeviceAccessPrepared(value) => {
                 if !matches!(plan, db::ScheduledPolicy::DeviceAccess(_))
                     || !matches!(run.state.execution, Execution::Running | Execution::Unknown)
@@ -696,75 +632,6 @@ impl ExecutionService {
                 } else {
                     run.state.cancelled(input.attempt_id())?;
                 }
-                super::collection::abandon(service, tx, input.attempt_id(), "revoked").await?;
-            }
-            wire::TaskEvent::Result(result) => {
-                let db::ScheduledPolicy::Script(script) = &plan else {
-                    return Err(Error::Malformed.into());
-                };
-                super::collection::finish(
-                    tx,
-                    &script.frozen,
-                    &mut run,
-                    result,
-                    allowed,
-                    effect_allowed,
-                    now,
-                )
-                .await?;
-            }
-            wire::TaskEvent::CollectionResult(result) => {
-                let db::ScheduledPolicy::AgentCollection(v) = &plan else {
-                    return Err(Error::Malformed.into());
-                };
-                super::agent_collection::finish(
-                    service.transactions.agent_store.clone(),
-                    tx,
-                    &v.frozen,
-                    &mut run,
-                    result,
-                    effect_allowed,
-                    now,
-                )
-                .await?;
-            }
-            wire::TaskEvent::ChunkedCollectionResult { manifest } => {
-                let db::ScheduledPolicy::AgentCollection(v) = &plan else {
-                    return Err(Error::Malformed.into());
-                };
-                if v.frozen.definition.spec().plan.requires_inline() {
-                    return Err(Error::Malformed.into());
-                }
-                let result = super::output::assemble_native(tx, &plan, &run, manifest).await?;
-                super::agent_collection::finish(
-                    service.transactions.agent_store.clone(),
-                    tx,
-                    &v.frozen,
-                    &mut run,
-                    &result,
-                    effect_allowed,
-                    now,
-                )
-                .await?;
-            }
-            wire::TaskEvent::OutputChunk(chunk) => {
-                super::output::append(tx, &plan, &run, chunk).await?
-            }
-            wire::TaskEvent::ChunkedResult(reference) => {
-                let result = super::output::assemble(tx, &plan, &run, reference).await?;
-                let db::ScheduledPolicy::Script(script) = &plan else {
-                    return Err(Error::Malformed.into());
-                };
-                super::collection::finish(
-                    tx,
-                    &script.frozen,
-                    &mut run,
-                    &result,
-                    allowed,
-                    effect_allowed,
-                    now,
-                )
-                .await?;
             }
             wire::TaskEvent::SoftwareResult(result) => {
                 let db::ScheduledPolicy::Software(software) = &plan else {
@@ -925,18 +792,14 @@ impl ExecutionService {
     ) -> Result<rss_mdm_resource::Artifact> {
         self.transactions.runtime.validate_transaction(tx)?;
         let service = self;
-        super::native_recovery::lock_device(tx, p.device()).await?;
+        super::run_recovery::lock_device(tx, p.device()).await?;
         principal(&service.transactions, tx, p).await?;
         let run = db::load_run(tx, id).await?;
         belongs(&run, p)?;
         run.source.audit(audit);
         audit.target(&id.to_string());
         let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
-        if matches!(&plan, db::ScheduledPolicy::Script(_)) {
-            audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
-                rss_mdm_audit_integration::SensitiveAction::ScriptContentRead,
-            ));
-        }
+
         let now = storage::now(tx).await?;
         let allowed = if run.state.started_at.is_some() {
             plan.completion_authorized_in(&service.transactions, tx, &run.target, now)
@@ -959,15 +822,8 @@ impl ExecutionService {
         match plan {
             db::ScheduledPolicy::Retirement(_) => Err(Error::Unsupported.into()),
             db::ScheduledPolicy::Enrollment(_) => Err(Error::NotFound.into()),
-            db::ScheduledPolicy::DeviceAccess(_)
-            | db::ScheduledPolicy::Credential(_)
-            | db::ScheduledPolicy::Native(_)
-            | db::ScheduledPolicy::AgentCollection(_) => Err(Error::Forbidden.into()),
-            db::ScheduledPolicy::Script(script) => {
-                if key.is_some() {
-                    return Err(Error::Malformed.into());
-                }
-                script.frozen.artifact().map_err(Into::into)
+            db::ScheduledPolicy::DeviceAccess(_) | db::ScheduledPolicy::Credential(_) => {
+                Err(Error::Forbidden.into())
             }
             db::ScheduledPolicy::Software(software) => {
                 let key = key.ok_or(Error::Malformed)?;

@@ -203,12 +203,14 @@ use serde_json::Value;
 pub enum TransactionOwner {
     Assets,
     Compliance,
+    Collections,
 }
 impl TransactionOwner {
     fn failure(self) -> Failure {
         match self {
             Self::Assets => Failure::AssetsStorage,
             Self::Compliance => Failure::ComplianceStorage,
+            Self::Collections => Failure::CollectionQuery,
         }
     }
     fn invariant(self) -> Failure {
@@ -237,11 +239,30 @@ where
             Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
         > + Send,
 {
+    inspect_budget(runtime, tenant, deadline(), context, operation, owner).await
+}
+
+pub(crate) async fn inspect_budget<C: Send, R: Send, F>(
+    runtime: &PgRuntime,
+    tenant: TenantId,
+    budget: rss_transactional_messaging::policy::OperationDeadline,
+    context: C,
+    operation: F,
+    owner: TransactionOwner,
+) -> std::result::Result<R, Error>
+where
+    F: for<'c> FnOnce(
+            &'c mut C,
+            &'c mut PgTransaction<'_>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
+        > + Send,
+{
     let failure = Mutex::new(None);
     let attempt = runtime
         .local_tx_with_context(
             tenant,
-            deadline(),
+            budget,
             (context, Some(operation), &failure),
             |state, tx| {
                 Box::pin(async move {
@@ -300,4 +321,22 @@ pub async fn query_authority(
         })
         .await??;
     Ok(snapshot)
+}
+
+impl From<rss_mdm_task_state::Error> for Fault {
+    fn from(e: rss_mdm_task_state::Error) -> Self {
+        match e {
+            rss_mdm_task_state::Error::Malformed => Error::Malformed.into(),
+            rss_mdm_task_state::Error::Conflict => Error::Conflict.into(),
+        }
+    }
+}
+impl From<rss_mdm_policy::Error> for Fault {
+    fn from(e: rss_mdm_policy::Error) -> Self {
+        match e {
+            rss_mdm_policy::Error::Malformed => Error::Malformed.into(),
+            rss_mdm_policy::Error::Conflict => Error::Conflict.into(),
+            rss_mdm_policy::Error::NotFound => Error::NotFound.into(),
+        }
+    }
 }

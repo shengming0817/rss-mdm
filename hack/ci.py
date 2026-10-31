@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-script-service": "crates/script-service",
     "rss-mdm-scope-postgres": "crates/scope-postgres",
     "rss-mdm-scope-service": "crates/scope-service",
     "rss-mdm-policy-service": "crates/policy-service",
@@ -210,7 +211,7 @@ def verify_audit_integration(data):
     require(len(ids) == 1, 'exactly one product audit integration package is required')
     identity = ids[0]
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
-    require(parents == {'rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',  'rss-mdm-execution-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
+    require(parents == {'rss-mdm-script-service','rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',  'rss-mdm-execution-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
     require(set(nodes[identity]['features']) <= {'default'}, 'audit integration exposes an unsupported feature')
     pending, visited = [identity], set()
     while pending:
@@ -269,7 +270,7 @@ def verify_capability_boundaries(data):
         'software-service': {'rss-mdm-app',  'rss-mdm-content-service', 'rss-mdm-management-http'},
     }
     for owner in ('authorization-service', 'registration-service', 'inventory-service',
-                  'execution-service', 'content-service'):
+                  'execution-service', 'script-service', 'content-service'):
         forbidden.setdefault(owner, set()).update(ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'})
     # F01 (#3040): consumer-owned ports, no replacement Flow service.
     services = {'scope-service', 'policy-service', 'resource-service'}
@@ -289,7 +290,8 @@ def verify_capability_boundaries(data):
     forbidden['task-state'] = {'rss-mdm-execution-service', 'rss-mdm-policy', 'rss-mdm-registration-service', 'sqlx', 'tokio'}
     forbidden['task-trust'] = ingress | {'rss-mdm-app', 'rss-mdm-execution-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-software-service'}
     forbidden['webhook-service'] = ingress | {'rss-mdm-app','axum','rss-mdm-http-contract','rss-mdm-inventory-service','rss-mdm-registration-service','rss-mdm-execution-service'}
-    forbidden['inventory-service'].add('rss-mdm-policy-service')
+    forbidden['inventory-service'].update({'rss-mdm-policy-service','rss-mdm-execution-service','rss-mdm-script-service'})
+    forbidden['script-service'].update({'rss-mdm-execution-service','rss-mdm-policy-service','rss-mdm-windows-mdm','rss-mdm-apple-mdm','plist'})
     # E03: Policy consumes Scope's owned publication/target ports.
     forbidden['policy-service'].discard('rss-mdm-scope-service')
     forbidden['policy-service'].update({'rss-mdm-telemetry-service', 'rss-mdm-execution-service'})

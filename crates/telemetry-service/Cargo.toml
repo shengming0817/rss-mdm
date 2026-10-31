@@ -21,6 +21,7 @@ rss-mdm-authorization-service.workspace = true
 rss-mdm-audit-integration.workspace = true
 rss-mdm-inventory-service.workspace = true
 rss-mdm-content-service.workspace = true
+rss-mdm-script-service.workspace = true
 rss-mdm-execution-service.workspace = true
 rss-mdm-policy.workspace = true
 rss-timeseries.workspace = true

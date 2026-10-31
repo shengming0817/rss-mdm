@@ -2,7 +2,7 @@
 use rss_mdm_execution_service::agent_facts::{Binding, Pending, Store};
 use sqlx::PgConnection;
 use uuid::Uuid;
-pub(super) struct AgentFacts;
+pub(crate) struct AgentFacts;
 fn error(e: rss_mdm_agent_channel::Error) -> rss_mdm_execution_service::Error {
     use rss_mdm_agent_channel::Error as A;
     use rss_mdm_execution_service::{Error as E, Failure};
@@ -82,5 +82,163 @@ impl Store for AgentFacts {
                 .await
                 .map_err(error)
         })
+    }
+}
+
+impl rss_mdm_script_service::agent_facts::Store for AgentFacts {
+    fn bindings<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registrations: Vec<Uuid>,
+    ) -> rss_mdm_script_service::agent_facts::Pending<
+        'a,
+        std::collections::BTreeMap<Uuid, rss_mdm_script_service::agent_facts::Binding>,
+    > {
+        Box::pin(async move {
+            Ok(rss_mdm_agent_channel::Bindings
+                .bindings(c, tenant, registrations)
+                .await
+                .map_err(script_error)?
+                .into_iter()
+                .map(|(id, b)| {
+                    (
+                        id,
+                        rss_mdm_script_service::agent_facts::Binding {
+                            execution_context: b.execution_context,
+                            platform: b.platform,
+                            architecture: b.architecture,
+                            capabilities: b.capabilities,
+                        },
+                    )
+                })
+                .collect())
+        })
+    }
+    fn payload<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        run: Uuid,
+        attempt: Uuid,
+    ) -> rss_mdm_script_service::agent_facts::Pending<'a, rss_mdm_agent_wire::runtime::TaskPayload>
+    {
+        Box::pin(async move {
+            rss_mdm_agent_channel::delivery::payload(c, tenant, run, attempt)
+                .await
+                .map_err(script_error)
+        })
+    }
+    fn announcement<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+    ) -> rss_mdm_script_service::agent_facts::Pending<
+        'a,
+        Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>,
+    > {
+        Box::pin(async move {
+            rss_mdm_agent_channel::Bindings
+                .announcement(c, tenant, registration)
+                .await
+                .map_err(script_error)
+        })
+    }
+}
+
+impl rss_mdm_inventory_service::collection::execution::agent_facts::Store for AgentFacts {
+    fn bindings<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registrations: Vec<Uuid>,
+    ) -> rss_mdm_inventory_service::collection::execution::agent_facts::Pending<
+        'a,
+        std::collections::BTreeMap<
+            Uuid,
+            rss_mdm_inventory_service::collection::execution::agent_facts::Binding,
+        >,
+    > {
+        Box::pin(async move {
+            Ok(rss_mdm_agent_channel::Bindings
+                .bindings(c, tenant, registrations)
+                .await
+                .map_err(collection_error)?
+                .into_iter()
+                .map(|(id, b)| {
+                    (
+                        id,
+                        rss_mdm_inventory_service::collection::execution::agent_facts::Binding {
+                            execution_context: b.execution_context,
+                            platform: b.platform,
+                            architecture: b.architecture,
+                            capabilities: b.capabilities,
+                        },
+                    )
+                })
+                .collect())
+        })
+    }
+    fn payload<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        run: Uuid,
+        attempt: Uuid,
+    ) -> rss_mdm_inventory_service::collection::execution::agent_facts::Pending<
+        'a,
+        rss_mdm_agent_wire::runtime::TaskPayload,
+    > {
+        Box::pin(async move {
+            rss_mdm_agent_channel::delivery::payload(c, tenant, run, attempt)
+                .await
+                .map_err(collection_error)
+        })
+    }
+    fn announcement<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+    ) -> rss_mdm_inventory_service::collection::execution::agent_facts::Pending<
+        'a,
+        Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>,
+    > {
+        Box::pin(async move {
+            rss_mdm_agent_channel::Bindings
+                .announcement(c, tenant, registration)
+                .await
+                .map_err(collection_error)
+        })
+    }
+}
+
+fn script_error(e: rss_mdm_agent_channel::Error) -> rss_mdm_script_service::Error {
+    use rss_mdm_agent_channel::Error as A;
+    use rss_mdm_script_service::Error as E;
+    match e {
+        A::Malformed => E::Malformed,
+        A::Unauthorized => E::Unauthorized,
+        A::Forbidden => E::Forbidden,
+        A::Conflict => E::Conflict,
+        A::NotFound => E::NotFound,
+        A::CommitUnknown => E::CommitUnknown,
+        A::RollbackFailed => E::RollbackFailed,
+        _ => E::Unavailable,
+    }
+}
+fn collection_error(e: rss_mdm_agent_channel::Error) -> rss_mdm_inventory_service::Error {
+    use rss_mdm_agent_channel::Error as A;
+    use rss_mdm_inventory_service::{Error as E, Failure};
+    match e {
+        A::Malformed => E::Malformed,
+        A::Unauthorized => E::Unauthorized,
+        A::Forbidden => E::Forbidden,
+        A::Conflict => E::Conflict,
+        A::NotFound => E::NotFound,
+        A::CommitUnknown => E::CommitUnknown,
+        A::RollbackFailed => E::RollbackFailed,
+        _ => E::Unavailable(Failure::Protocol),
     }
 }

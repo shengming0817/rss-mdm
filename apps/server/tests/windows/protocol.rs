@@ -165,12 +165,14 @@ async fn host(
             business: Arc::new(crate::assembly::windows_business::WindowsBusiness(
                 a.service.clone(),
                 a.configuration.clone(),
+                a.collections.clone(),
             )),
         }),
         enrollment_authority: a.service.clone(),
         departure: Arc::new(crate::assembly::windows_business::WindowsBusiness(
             a.service.clone(),
             a.configuration.clone(),
+            a.collections.clone(),
         )),
         credentials: Arc::new(crate::enrollment::credentials::Credentials::new(
             monotonic.clone(),

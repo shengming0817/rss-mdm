@@ -7,6 +7,9 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+rss-mdm-content-service.workspace = true
+rss-mdm-policy.workspace = true
+rss-mdm-task-state.workspace = true
 rss-mdm-policy-postgres.workspace = true
 rss-mdm-scope-postgres.workspace = true
 rss-mdm-group.workspace = true

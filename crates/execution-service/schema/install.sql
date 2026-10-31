@@ -80,35 +80,10 @@ REVOKE ALL ON FUNCTION mdm_commands.save_retired_action(uuid,uuid,jsonb,jsonb) F
 CREATE TABLE mdm_commands.agent_admission (
     tenant_id uuid NOT NULL,
     registration uuid NOT NULL,
-    policy_after uuid,
-    offer_after_at bigint,
-    offer_after_id uuid,
-    CHECK ((offer_after_at IS NULL) = (offer_after_id IS NULL))
+    policy_after uuid
 );
 
 ALTER TABLE ONLY mdm_commands.agent_admission FORCE ROW LEVEL SECURITY;
-
-CREATE TABLE mdm_commands.native_checkins (
-    tenant_id uuid NOT NULL,
-    registration uuid NOT NULL,
-    generation bigint NOT NULL CHECK (generation > 0),
-    active_event uuid,
-    active_at bigint,
-    policy_after uuid,
-    pending_event uuid,
-    pending_at bigint,
-    PRIMARY KEY (tenant_id, registration, generation),
-    CHECK ((active_event IS NULL) = (active_at IS NULL)),
-    CHECK ((pending_event IS NULL) = (pending_at IS NULL)),
-    CHECK (active_event IS NOT NULL OR policy_after IS NULL),
-    CHECK (active_at IS NULL OR active_at >= 0),
-    CHECK (pending_at IS NULL OR pending_at >= 0)
-);
-ALTER TABLE mdm_commands.native_checkins ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_commands.native_checkins FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_commands.native_checkins
- USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
- WITH CHECK (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE mdm_commands.action_receipts (
     tenant_id uuid NOT NULL,
@@ -135,7 +110,6 @@ CREATE TABLE mdm_commands.action_runs (
  registration uuid NOT NULL,
  generation bigint NOT NULL,
  occurrence text NOT NULL,
- triggered_at bigint CHECK (triggered_at IS NULL OR triggered_at >= 0),
  created_at bigint NOT NULL,
  available_at bigint NOT NULL,
  deadline bigint NOT NULL,
@@ -361,19 +335,7 @@ CREATE POLICY tenant ON mdm_commands.requests USING ((tenant_id = (NULLIF(curren
 
 
 
-CREATE TABLE mdm_commands.output_chunks (
- tenant_id uuid NOT NULL,attempt uuid NOT NULL,chunk_index integer NOT NULL CHECK(chunk_index>=0 AND chunk_index<64),
- manifest jsonb NOT NULL CHECK(octet_length(manifest::text)<=1024),bytes bytea NOT NULL CHECK(octet_length(bytes) BETWEEN 1 AND 262144),
- PRIMARY KEY(tenant_id,attempt,chunk_index)
-);
 
-ALTER TABLE mdm_commands.output_chunks ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE mdm_commands.output_chunks FORCE ROW LEVEL SECURITY;
-
-CREATE POLICY tenant ON mdm_commands.output_chunks USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-
-REVOKE ALL ON mdm_commands.output_chunks FROM PUBLIC;
 
 
 
@@ -415,13 +377,6 @@ CREATE FUNCTION mdm_commands.windows_wake_candidates(p_after uuid) RETURNS TABLE
   AND o.gateway_accepted AND o.dispatch_failure IS NULL
   AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
   AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
- UNION
- SELECT c.registration FROM mdm_access.collection_runs c
- JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(c.tenant_id,c.registration)
- WHERE c.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND c.registration>p_after AND r.state='active'
-  AND c.source='mdm.windows' AND c.sealed_at IS NULL
-  AND (c.deadline IS NULL OR c.deadline>clock_timestamp())
  ORDER BY registration LIMIT 32;
 $$;
 REVOKE ALL ON FUNCTION mdm_commands.windows_wake_candidates(uuid) FROM PUBLIC;

@@ -1,0 +1,383 @@
+//! Collection participates in Agent requests; Agent owns signatures and protocol receipts.
+use super::{
+    CollectionService,
+    model::{AgentRun as Run, Target},
+    policy, storage,
+};
+use crate::{Error, transaction::Result};
+use rss_mdm_agent_wire::runtime as wire;
+use rss_mdm_audit_integration::{
+    Fact, RequestAudit,
+    activity::{ActivityPhase, ActivityReporting},
+};
+use rss_mdm_registration_service::DevicePrincipal;
+use rss_mdm_task_state::{Cancellation, Execution};
+use rss_transactional_messaging_postgres::PgTransaction;
+use sqlx::Row;
+use uuid::Uuid;
+
+pub struct EventEffects {
+    pub start: Option<wire::TaskPayload>,
+    pub cancelled: bool,
+    pub fact: Fact,
+}
+pub(crate) fn belongs(run: &Run, p: &DevicePrincipal) -> Result<()> {
+    if run.target.device != p.device()
+        || run.target.registration != p.registration()
+        || run.target.generation != p.generation()
+    {
+        return Err(Error::Unauthorized.into());
+    }
+    Ok(())
+}
+impl CollectionService {
+    pub async fn agent_prepare_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+    ) -> Result<()> {
+        self.transactions.validate_in(tx)?;
+        if tx.tenant_id() != p.tenant() {
+            return Err(Error::Unauthorized.into());
+        }
+        storage::lock_device(tx, p.device()).await?;
+        let checked = p.clone();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(
+                    rss_mdm_registration_service::device::store::revalidate_source(
+                        c,
+                        &checked,
+                        rss_mdm_inventory::ReportSource::AgentBuiltin,
+                    )
+                    .await,
+                )
+            })
+        })
+        .await??;
+        if !super::agent_facts::agent_binding_in(
+            tx,
+            self.transactions.agent_store.clone(),
+            p.registration(),
+        )
+        .await?
+        .is_some_and(|b| b.inventory() && b.task())
+        {
+            return Err(Error::Forbidden.into());
+        }
+        Ok(())
+    }
+
+    /// Admission is separate from candidate capture so App can retain one global poll budget.
+    pub async fn agent_admit_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        input: &wire::TaskClaimRequest,
+    ) -> Result<()> {
+        self.agent_prepare_in(tx, p).await?;
+        let tenant = tx.tenant_id().to_string();
+        let registration = p.registration();
+        let versions = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("INSERT INTO mdm_inventory.collection_admission(tenant_id,registration) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(registration).execute(&mut *c).await?;
+            let after: Option<Uuid> = sqlx::query_scalar("SELECT policy_after FROM mdm_inventory.collection_admission WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(registration).fetch_one(&mut *c).await?;
+            let rows = sqlx::query("SELECT id,current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND state='enabled' AND definition->'action'->>'kind'='agent_collection' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 64").bind(&tenant).bind(after).fetch_all(&mut *c).await?;
+            let next = if rows.len()==64 { rows.last().map(|r|r.try_get::<Uuid,_>("id")).transpose()? } else { None };
+            sqlx::query("UPDATE mdm_inventory.collection_admission SET policy_after=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(next).execute(c).await?;
+            rows.into_iter().map(|r|r.try_get::<Uuid,_>("current_version")).collect::<std::result::Result<Vec<_>,sqlx::Error>>()
+        })).await?;
+        let now = storage::now(tx).await?;
+        let target = Target {
+            device: p.device().into(),
+            registration: p.registration(),
+            generation: p.generation(),
+        };
+        for version in versions {
+            let plan = policy::read_in(&self.transactions, tx, version).await?;
+            super::admission::accept_for_device(
+                &self.transactions,
+                tx,
+                &plan,
+                &target,
+                super::admission::TriggerInput::Agent(input.operation_id()),
+                now,
+                Uuid::new_v4(),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Inspect one candidate from App's captured, globally bounded ordered page.
+    pub async fn agent_offer_one_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        id: Uuid,
+        attempt: Uuid,
+        audit: &RequestAudit,
+    ) -> Result<Option<(wire::TaskPayload, Fact, i64)>> {
+        self.agent_prepare_in(tx, p).await?;
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
+        let now = storage::now(tx).await?;
+        let mut run = storage::load_run(tx, id).await?;
+        belongs(&run, p)?;
+        let plan = policy::read_in(&self.transactions, tx, run.policy_version).await?;
+        let previous = run.state.clone();
+        run.state.expire(now);
+        if !plan.active {
+            run.state.cancel();
+        }
+        super::recovery::audit_recovery(self, tx, &run, &previous).await?;
+        let offer = if run.state.cancellation == Cancellation::None
+            && run.available_at <= now
+            && plan
+                .authorized_agent_in(&self.transactions, tx, &run)
+                .await?
+        {
+            let previous_attempt = run.state.attempt();
+            if run.state.claim(attempt, now).is_ok() {
+                if let Some(old) = previous_attempt {
+                    self.abandon_in(tx, old, "superseded").await?;
+                }
+                let payload = plan
+                    .task(
+                        &self.transactions,
+                        tx,
+                        &run,
+                        attempt,
+                        wire::TaskPermit::Offer,
+                        (now + 60).min(run.deadline),
+                    )
+                    .await?;
+                let wire::TaskPayload::Collection(spec) = &payload else {
+                    return Err(Error::Malformed.into());
+                };
+                super::agent_result::reserve(tx, plan.agent()?, &run, spec, now).await?;
+                audit.plan(run.policy_version);
+                audit.target(&run.id.to_string());
+                let fact = Fact::business(
+                    audit,
+                    &format!("collection:{id}:offer:{attempt}"),
+                    200,
+                    "success",
+                    None,
+                )?
+                .with_activity(&super::activity::run(&run, ActivityPhase::Offered))?;
+                Some((payload, fact, run.deadline))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        storage::save_run(&self.transactions, tx, &run).await?;
+        Ok(offer)
+    }
+    pub async fn agent_replay_offer_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        signed: &wire::SignedTask,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        self.agent_prepare_in(tx, p).await?;
+        let run = storage::load_run(tx, signed.payload.task_id()).await?;
+        belongs(&run, p)?;
+        audit.plan(run.policy_version);
+        audit.target(&run.id.to_string());
+        let plan = policy::read_in(&self.transactions, tx, run.policy_version).await?;
+        let now = storage::now(tx).await?;
+        if run.state.cancellation != Cancellation::None
+            || run.state.execution != Execution::NotStarted
+            || run.state.attempt() != Some(signed.payload.attempt_id())
+            || signed.payload.expires_at() <= now
+            || !plan
+                .authorized_agent_in(&self.transactions, tx, &run)
+                .await?
+        {
+            return Err(Error::Conflict.into());
+        }
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
+        Ok(())
+    }
+    pub async fn agent_replay_event_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        id: Uuid,
+        input: &wire::TaskEventRequest,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        self.agent_prepare_in(tx, p).await?;
+        let run = storage::load_run(tx, id).await?;
+        belongs(&run, p)?;
+        audit.plan(run.policy_version);
+        audit.target(&id.to_string());
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
+        if matches!(input.event(), wire::TaskEvent::Start) {
+            let now = storage::now(tx).await?;
+            if now >= run.deadline
+                || run.state.cancellation != Cancellation::None
+                || run.state.attempt() != Some(input.attempt_id())
+                || run.state.execution != Execution::Running
+            {
+                return Err(Error::Conflict.into());
+            }
+            let plan = policy::read_in(&self.transactions, tx, run.policy_version).await?;
+            if !plan
+                .authorized_agent_in(&self.transactions, tx, &run)
+                .await?
+            {
+                return Err(Error::Forbidden.into());
+            }
+        }
+        Ok(())
+    }
+    pub async fn agent_event_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        id: Uuid,
+        input: &wire::TaskEventRequest,
+        audit: &RequestAudit,
+    ) -> Result<EventEffects> {
+        self.agent_prepare_in(tx, p).await?;
+        let mut run = storage::load_run(tx, id).await?;
+        belongs(&run, p)?;
+        self.transactions
+            .audit_store
+            .prepare_in(tx, audit, &[])
+            .await?;
+        audit.plan(run.policy_version);
+        audit.target(&id.to_string());
+        let plan = policy::read_in(&self.transactions, tx, run.policy_version).await?;
+        let now = storage::now(tx).await?;
+        let requires_start_authority = matches!(
+            input.event(),
+            wire::TaskEvent::Start | wire::TaskEvent::Received
+        ) || run.state.started_at.is_none();
+        let allowed = if requires_start_authority {
+            plan.authorized_agent_in(&self.transactions, tx, &run)
+                .await?
+        } else {
+            plan.completion_agent_in(tx, &run.target).await?
+        };
+        if matches!(
+            input.event(),
+            wire::TaskEvent::Start | wire::TaskEvent::Received
+        ) && !allowed
+        {
+            return Err(Error::Forbidden.into());
+        }
+        if run.state.attempt() != Some(input.attempt_id()) {
+            return Err(Error::Conflict.into());
+        }
+        let effect_allowed = allowed && run.state.cancellation == Cancellation::None;
+        let mut permit = None;
+        match input.event() {
+            wire::TaskEvent::Received => run.state.received(input.attempt_id(), now)?,
+            wire::TaskEvent::Start => {
+                if run.state.execution != Execution::NotStarted {
+                    return Err(Error::Conflict.into());
+                }
+                run.state.start(input.attempt_id(), now)?;
+                permit = Some(
+                    plan.task(
+                        &self.transactions,
+                        tx,
+                        &run,
+                        input.attempt_id(),
+                        wire::TaskPermit::Start,
+                        run.deadline,
+                    )
+                    .await?,
+                );
+            }
+            wire::TaskEvent::Cancelled => {
+                run.state.cancel();
+                run.state.cancelled(input.attempt_id())?;
+                self.abandon_in(tx, input.attempt_id(), "revoked").await?;
+            }
+            wire::TaskEvent::CollectionResult(result) => {
+                super::agent_result::finish(
+                    self.transactions.agent_store.clone(),
+                    tx,
+                    plan.agent()?,
+                    &mut run,
+                    result,
+                    effect_allowed,
+                    now,
+                )
+                .await?;
+            }
+            wire::TaskEvent::OutputChunk(chunk) => {
+                super::output::append(tx, plan.agent()?, &run, chunk).await?
+            }
+            wire::TaskEvent::ChunkedCollectionResult { manifest } => {
+                let result =
+                    super::output::assemble_native(tx, plan.agent()?, &run, manifest).await?;
+                super::agent_result::finish(
+                    self.transactions.agent_store.clone(),
+                    tx,
+                    plan.agent()?,
+                    &mut run,
+                    &result,
+                    effect_allowed,
+                    now,
+                )
+                .await?;
+            }
+            _ => return Err(Error::Malformed.into()),
+        }
+        storage::save_run(&self.transactions, tx, &run).await?;
+        let mut activity = super::activity::run(&run, super::activity::phase(input.event()));
+        activity.links.request.get_or_insert(input.operation_id());
+        activity.reporting = match activity.phase {
+            ActivityPhase::Reporting => Some(ActivityReporting::Partial),
+            ActivityPhase::Result => Some(ActivityReporting::Acknowledged),
+            _ => None,
+        };
+        let fact = Fact::business(
+            audit,
+            &format!("collection:{id}:event:{}", input.operation_id()),
+            200,
+            "success",
+            None,
+        )?
+        .with_activity(&activity)?;
+        Ok(EventEffects {
+            start: permit,
+            cancelled: !allowed || run.state.cancellation != Cancellation::None,
+            fact,
+        })
+    }
+    pub(crate) async fn abandon_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        attempt: Uuid,
+        reason: &'static str,
+    ) -> Result<()> {
+        let tenant = tx.tenant_id();
+        let fact = tx
+            .with_connection(move |c| {
+                Box::pin(crate::collection::enterprise::abandon_in(
+                    c, tenant, attempt, reason,
+                ))
+            })
+            .await?;
+        if let Some(fact) = fact {
+            self.transactions.audit_store.append_in(tx, &fact).await?;
+        }
+        Ok(())
+    }
+}

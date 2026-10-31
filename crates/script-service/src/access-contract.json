@@ -1,0 +1,48 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_script",
+      "table": "runs",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null,
+      "read_only": true
+    },
+    {
+      "schema": "mdm_script",
+      "table": "receipts",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_script",
+      "table": "output_chunks",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_script",
+      "table": "agent_admission",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_script",
+      "table": "policy_recovery",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "mdm_script.save_retired_run",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [],
+  "verified_schemas": []
+}

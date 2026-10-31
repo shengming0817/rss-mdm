@@ -94,7 +94,10 @@ pub(super) struct Publication(pub Arc<rss_mdm_execution_service::Inputs>);
 fn execution_action(action: &Action) -> Result<(), Error> {
     if matches!(
         action,
-        Action::Configuration { .. }
+        Action::Execution { .. }
+            | Action::AgentCollection { .. }
+            | Action::NativeCollection { .. }
+            | Action::Configuration { .. }
             | Action::TelemetryProfile { .. }
             | Action::UnmanageDevice { .. }
     ) {
@@ -104,24 +107,6 @@ fn execution_action(action: &Action) -> Result<(), Error> {
     }
 }
 impl ExecutionPublication for Publication {
-    fn prepare_resource<'a>(
-        &'a self,
-        action: &'a Action,
-    ) -> Pending<'a, Option<rss_mdm_content_service::Verified>, Error> {
-        Box::pin(async move {
-            execution_action(action)?;
-            self.0
-                .prepare_resource(
-                    rss_mdm_execution_service::input_preparation::PublicationInput::try_from(
-                        action,
-                    )
-                    .map_err(error)?
-                    .resource(),
-                )
-                .await
-                .map_err(error)
-        })
-    }
     fn software_binding_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
@@ -133,7 +118,6 @@ impl ExecutionPublication for Publication {
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         policy: &'a Policy,
-        verified: Option<&'a rss_mdm_content_service::Verified>,
         proof: &'a AuthorizedPrincipal,
         snapshot: &'a Snapshot,
     ) -> Pending<'a, serde_json::Value, Fault> {
@@ -148,7 +132,6 @@ impl ExecutionPublication for Publication {
                 .publish_in(
                     tx,
                     &input,
-                    verified,
                     &rss_mdm_execution_service::input_preparation::PublicationAuthority {
                         proof,
                         snapshot,
@@ -174,6 +157,13 @@ impl ExecutionChanges for Changes {
         policy: Uuid,
     ) -> Pending<'a, (), Fault> {
         Box::pin(async move {
+            rss_mdm_script_service::wake::policy_in(&self.messaging, tx, policy).await?;
+            rss_mdm_inventory_service::collection::execution::wake::policy_in(
+                &self.messaging,
+                tx,
+                policy,
+            )
+            .await?;
             rss_mdm_execution_service::sources::storage::wake_execution_in(
                 &self.messaging,
                 tx,
@@ -190,6 +180,13 @@ impl ExecutionChanges for Changes {
         target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
     ) -> Pending<'a, (), Fault> {
         Box::pin(async move {
+            rss_mdm_inventory_service::collection::execution::scheduled::wake_assignment_in(
+                &self.messaging,
+                tx,
+                version,
+                target,
+            )
+            .await?;
             rss_mdm_execution_service::wake::wake_policy_device_in(
                 &self.messaging,
                 tx,
@@ -229,6 +226,8 @@ impl ExecutionChanges for Changes {
     }
 }
 pub(super) struct Events {
+    pub scripts: Arc<rss_mdm_script_service::Transactions>,
+    pub collections: Arc<rss_mdm_inventory_service::collection::execution::Transactions>,
     pub execution: Arc<rss_mdm_execution_service::policy_events::PolicyEvents>,
     pub configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
 }
@@ -289,6 +288,44 @@ impl ExecutionEvents for Events {
         audit: &'a RequestAudit,
     ) -> Pending<'a, wire::PolicyEventDecision, Fault> {
         Box::pin(async move {
+            match policy.definition.action.kind() {
+                rss_mdm_policy::ActionKind::Execution => {
+                    return self
+                        .scripts
+                        .accept_event_in(
+                            tx,
+                            policy.version,
+                            &rss_mdm_script_service::Target {
+                                device: value.device.clone(),
+                                registration: value.registration,
+                                generation: value.generation,
+                            },
+                            cause,
+                            deadline,
+                        )
+                        .await
+                        .map_err(Into::into);
+                }
+                rss_mdm_policy::ActionKind::AgentCollection
+                | rss_mdm_policy::ActionKind::NativeCollection => {
+                    return self
+                        .collections
+                        .accept_event_in(
+                            tx,
+                            policy.version,
+                            &rss_mdm_inventory_service::collection::execution::model::Target {
+                                device: value.device.clone(),
+                                registration: value.registration,
+                                generation: value.generation,
+                            },
+                            cause,
+                            deadline,
+                        )
+                        .await
+                        .map_err(Into::into);
+                }
+                _ => {}
+            }
             execution_action(&policy.definition.action)?;
             self.execution
                 .accept_policy_event_in(tx, policy, &target(value), cause, deadline, audit)
@@ -304,6 +341,41 @@ impl ExecutionProgress for Events {
         reference: &'a wire::PolicyEventOperation,
     ) -> Pending<'a, EventOperationProgress, Fault> {
         Box::pin(async move {
+            if let wire::PolicyEventOperation::Run { id } = reference {
+                let tenant = tx.tenant_id();
+                let id = *id;
+                match tx
+                    .with_connection(move |c| Box::pin(super::task_ownership::on(c, tenant, id)))
+                    .await?
+                {
+                    super::task_ownership::Owner::Script => {
+                        return Ok(EventOperationProgress::Run {
+                            reference: reference.clone(),
+                            state: rss_mdm_script_service::storage::read_run(tx, id)
+                                .await?
+                                .state,
+                            allowed_actions: [],
+                        });
+                    }
+                    super::task_ownership::Owner::Collection => {
+                        use rss_mdm_inventory_service::collection::execution::storage;
+                        return Ok(if storage::channel_in(tx, id).await? == "agent" {
+                            EventOperationProgress::Run {
+                                reference: reference.clone(),
+                                state: storage::read_run(tx, id).await?.state,
+                                allowed_actions: [],
+                            }
+                        } else {
+                            EventOperationProgress::Collection {
+                                reference: reference.clone(),
+                                state: storage::native_progress_in(tx, id).await?,
+                                allowed_actions: [],
+                            }
+                        });
+                    }
+                    super::task_ownership::Owner::Execution => {}
+                }
+            }
             if let wire::PolicyEventOperation::Native { id } = reference {
                 let owner = super::native_ownership::in_transaction(tx, *id).await?;
                 if owner == super::native_ownership::Owner::Configuration {

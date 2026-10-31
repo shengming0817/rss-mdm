@@ -18,7 +18,7 @@ pub fn validate_access(
 use crate::{
     Error, ExecutionService, Result, Target,
     actions::{production, storage as db},
-    authorization::{Permission, context::AuthorizedPrincipal},
+    authorization::context::AuthorizedPrincipal,
     storage,
     transaction::*,
 };
@@ -55,16 +55,6 @@ impl Invocation {
             return Ok(false);
         };
         match plan {
-            db::ScheduledPolicy::Script(script) if script.id == *policy_version => {
-                if script
-                    .frozen
-                    .definition
-                    .validate_parameters(&json!(self.parameters))
-                    .is_err()
-                {
-                    return Ok(false);
-                }
-            }
             db::ScheduledPolicy::Software(software)
                 if software.id == *policy_version
                     && software.assignment.intent()
@@ -122,46 +112,6 @@ async fn prepare_in(
         return Ok(None);
     }
     match plan {
-        db::ScheduledPolicy::Script(script) => {
-            let entry = match script
-                .entry_in(&service.transactions.source, tx, &target.device, now)
-                .await?
-            {
-                Some(entry) => entry,
-                None if input.is_some() => 0,
-                None => return Ok(None),
-            };
-            let Some(slot) = invocation_slot_in(tx, script, target, entry, request, now).await?
-            else {
-                return Ok(None);
-            };
-            let parameters = match input {
-                Some(input) => {
-                    let values = script.frozen.parameters.resolve(&json!(input))?;
-                    script
-                        .frozen
-                        .definition
-                        .validate_parameters(&values)
-                        .map_err(|_| Error::Malformed)?;
-                    checked_input(serde_json::from_value(values))?
-                }
-                None => Default::default(),
-            };
-            let task = wire::SelfServiceTask::Script {
-                resource: script.frozen.resource.clone(),
-                run_as: script.frozen.execution_identity(),
-                parameter_sources: parameter_sources(&script.frozen.parameters),
-                parameter_schema: script.frozen.definition.spec().parameters.clone(),
-            };
-            Ok(Some(Prepared {
-                task: Some(task),
-                parameters,
-                slot,
-                effect: None,
-                execution_target: execution_target_in(&service.transactions, tx, plan, target)
-                    .await?,
-            }))
-        }
         db::ScheduledPolicy::Software(software)
             if software.assignment.intent() == rss_mdm_policy::SoftwareIntent::AvailableInstall =>
         {
@@ -199,8 +149,15 @@ async fn prepare_in(
                     return Err(Error::Forbidden.into());
                 }
                 let occurrence = format!("self-service:{request}");
-                if !production::occurrence_available_in(tx, software.id, target, &occurrence, now)
-                    .await?
+                if !production::occurrence_available_in(
+                    &service.transactions,
+                    tx,
+                    software.id,
+                    target,
+                    &occurrence,
+                    now,
+                )
+                .await?
                 {
                     return Ok(None);
                 }
@@ -285,8 +242,15 @@ async fn prepare_in(
             )
             .await?;
             let occurrence = format!("self-service:{request}");
-            if !production::occurrence_available_in(tx, enrollment.id, target, &occurrence, now)
-                .await?
+            if !production::occurrence_available_in(
+                &service.transactions,
+                tx,
+                enrollment.id,
+                target,
+                &occurrence,
+                now,
+            )
+            .await?
             {
                 return Ok(None);
             }
@@ -350,17 +314,6 @@ async fn execution_target_in(
         return Ok(None);
     };
     match plan {
-        db::ScheduledPolicy::Script(script) => Ok(
-            rss_mdm_software_service::preparation::execution::identity_target(
-                script.frozen.execution_identity(),
-                match platform {
-                    rss_mdm_policy::Platform::Windows => wire::TaskPlatform::Windows,
-                    rss_mdm_policy::Platform::Macos => wire::TaskPlatform::Macos,
-                },
-                &binding.execution_context,
-            )
-            .ok(),
-        ),
         db::ScheduledPolicy::Software(software) => Ok(software
             .assignment
             .prepared_in(
@@ -382,20 +335,6 @@ fn target(p: &DevicePrincipal) -> Target {
         generation: p.generation(),
     }
 }
-fn bind(
-    p: &DevicePrincipal,
-    proof: Option<&AuthorizedPrincipal>,
-    audit: &RequestAudit,
-) -> std::result::Result<(), Error> {
-    if let Some(proof) = proof {
-        if proof.tenant_id() != p.tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
-        proof.check_live()?;
-        proof.bind_audit(audit)?;
-    }
-    Ok(())
-}
 fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
     let subject = match subject {
         wire::SelfServiceSubject::Device {} => "device".into(),
@@ -409,23 +348,6 @@ fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
         p.generation()
     )
 }
-fn request_actors(p: &DevicePrincipal, proof: Option<&AuthorizedPrincipal>) -> Result<Vec<String>> {
-    let mut actors = Vec::new();
-    if let Some(proof) = proof {
-        actors.push(actor(
-            p,
-            &wire::SelfServiceSubject::User {
-                user: wire::SelfServiceUser {
-                    tenant_id: checked_input(Uuid::parse_str(proof.tenant_id()))?,
-                    instance_id: checked_input(Uuid::parse_str(proof.instance_id()))?,
-                    principal_id: checked_input(Uuid::parse_str(proof.principal_id()))?,
-                },
-            },
-        ));
-    }
-    actors.push(actor(p, &wire::SelfServiceSubject::Device {}));
-    Ok(actors)
-}
 fn owns(subject: &wire::SelfServiceSubject, proof: Option<&AuthorizedPrincipal>) -> bool {
     match subject {
         wire::SelfServiceSubject::Device {} => true,
@@ -437,323 +359,304 @@ fn owns(subject: &wire::SelfServiceSubject, proof: Option<&AuthorizedPrincipal>)
     }
 }
 impl ExecutionService {
-    pub async fn invoke_self_service(
+    pub async fn invoke_self_service_in(
         &self,
+        tx: &mut PgTransaction<'_>,
         p: &DevicePrincipal,
         proof: Option<&AuthorizedPrincipal>,
         input: &wire::SelfServiceInvoke,
         audit: &RequestAudit,
-    ) -> std::result::Result<wire::SelfServiceAccepted, Error> {
-        bind(p, proof, audit)?;
-        if input.operation_id.is_nil()
-            || input.policy_id.is_nil()
-            || input.parameters.len() > 32
-            || serde_json::to_vec(input)
-                .map_err(|_| Error::Malformed)?
-                .len()
-                > 131072
-        {
-            return Err(Error::Malformed);
-        }
-        audit.operation(
-            input.operation_id,
-            "command_accept",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
+    ) -> Result<Value> {
+        let service = self;
         let id = Uuid::new_v4();
-        let response = run(
-            &self.transactions.audit_store,
-            &self.transactions.runtime,
-            self.transactions.tenant,
-            audit,
-            (self, p, proof, input, audit, id),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (service, p, proof, input, audit, id) = *ctx;
-
-                    storage::lock_device(tx, p.device()).await?;
-                    crate::actions::agent::principal(&service.transactions, tx, p).await?;
-                    let hash = fingerprint(input)?;
-                    let now = storage::now(tx).await?;
-                    crate::transaction::prepare_audit_in(
-                        &service.transactions.audit_store,
-                        tx,
-                        audit,
-                        &[],
-                    )
-                    .await?;
-                    // Search the same authenticated identities as status before selecting today's access basis.
-                    for actor in request_actors(p, proof)? {
-                        if let Some(response) =
-                            db::replay(tx, &actor, input.operation_id, &hash).await?
-                        {
-                            let run = db::load_run(
-                                tx,
-                                checked_input(Uuid::parse_str(
-                                    response["runId"].as_str().ok_or(Error::Malformed)?,
-                                ))?,
-                            )
-                            .await?;
-                            crate::actions::agent::belongs(&run, p)?;
-
-                            return Ok(response);
-                        }
-                    }
-                    let policy = crate::sources::storage::read_in(
-                        &service.transactions.policy_reader,
-                        tx,
-                        input.policy_id,
-                    )
-                    .await?
-                    .ok_or(Error::NotFound)?;
-                    let config = policy
-                        .definition
-                        .self_service
-                        .as_ref()
-                        .ok_or(Error::Forbidden)?;
-                    let allow_ai = config.allow_ai.ok_or(Error::Forbidden)?;
-                    let risk = effective_risk(&policy);
-                    if !policy.state.is_enabled()
-                        || !config.published
-                        || (input.source == wire::SelfServiceCaller::Ai
-                            && (!allow_ai || (risk == 2 && !input.confirmed)))
-                    {
-                        return Err(Error::Forbidden.into());
-                    }
-                    let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
-                    let subject = access::qualify_in(service, tx, config, &basis)
-                        .await?
-                        .ok_or(Error::Forbidden)?;
-                    let actor = actor(p, &subject);
-                    let event_key = format!("{actor}:{}", input.operation_id);
-                    let plan = db::load_source(
-                        &service.transactions.policy_reader,
-                        tx,
-                        db::Source::Policy {
-                            version: policy.version,
-                        },
-                    )
-                    .await?;
-                    let target = target(p);
-                    let admission = crate::sources::storage::admission_in(
-                        &service.transactions.source,
-                        tx,
-                        policy.definition.scope,
-                        rss_mdm_scope_service::channels::Channel::Agent,
-                        p.device(),
-                    )
-                    .await?;
-                    if admission == rss_mdm_scope_service::channels::ScopeAdmission::Excluded {
-                        return Err(Error::Forbidden.into());
-                    }
-                    let rollout_pending = if let db::ScheduledPolicy::Software(v) = &plan {
-                        v.assignment
-                            .entry_in(&service.transactions.source, tx, p.device(), now)
-                            .await?
-                            .is_none()
-                    } else {
-                        false
-                    };
-                    let pending_scope = (admission
-                        == rss_mdm_scope_service::channels::ScopeAdmission::Pending
-                        || rollout_pending)
-                        .then_some(policy.definition.scope);
-                    let pending_rollout = if pending_scope.is_some() {
-                        match &policy.definition.action {
-                            rss_mdm_policy::Action::Software { rollout, .. } => {
-                                Some(rollout.clone())
-                            }
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-                    let Some(prepared) = prepare_in(
-                        service,
-                        tx,
-                        &plan,
-                        &target,
-                        input.operation_id,
-                        Some(&input.parameters),
-                        now,
-                    )
-                    .await?
-                    else {
-                        return Err(Error::Conflict.into());
-                    };
-                    let decision = wire::TaskAuthorization::SelfService {
-                        request_id: input.operation_id,
-                        subject,
-                        source: input.source,
-                        policy_id: policy.id,
-                        policy_revision: policy.revision as u64,
-                        policy_version: policy.version,
-                        allow_ai,
-                        risk_level: risk,
-                        confirmed: input.confirmed,
-                    };
-                    checked_input(
-                        decision.validate(checked_input(Uuid::parse_str(&p.tenant().to_string()))?),
-                    )?;
-                    let binding = crate::agent_facts::agent_binding_in(
-                        tx,
-                        service.transactions.agent_store.clone(),
-                        p.registration(),
-                    )
-                    .await?
-                    .ok_or(Error::Forbidden)?;
-                    let activity_user = match (
-                        &decision,
-                        binding.execution_context.interactive_user.as_ref(),
-                    ) {
-                        (
-                            wire::TaskAuthorization::SelfService {
-                                subject: wire::SelfServiceSubject::User { user },
-                                ..
-                            },
-                            Some(os),
-                        ) => Some(rss_mdm_audit_integration::activity::ActivityUser {
-                            instance: user.instance_id,
-                            principal: user.principal_id,
-                            os_identity: os.identity.clone(),
-                            generated_uid: os.generated_uid.clone(),
-                            session: os.session_id,
-                        }),
-                        _ => None,
-                    };
-                    let invocation = Invocation {
-                        activity_user,
-                        authorization: decision,
-                        parameters: prepared.parameters,
-                        execution_target: prepared.execution_target,
-                        pending_scope,
-                        pending_rollout,
-                    };
-                    production::queue_run_in(
-                        &service.transactions,
-                        tx,
-                        production::RunInput {
-                            origin: match input.source {
-                                wire::SelfServiceCaller::Human => {
-                                    rss_mdm_audit_integration::activity::ActivityOrigin::Human
-                                }
-                                wire::SelfServiceCaller::Ai => {
-                                    rss_mdm_audit_integration::activity::ActivityOrigin::Ai
-                                }
-                            },
-                            invocation: Some(invocation),
-                            triggered_at: None,
-                            source: db::Source::Policy {
-                                version: policy.version,
-                            },
-                            target: &target,
-                            id,
-                            occurrence: prepared.slot.occurrence,
-                            available: prepared.slot.available,
-                            deadline: prepared.slot.deadline,
-                            now,
-                        },
-                    )
-                    .await?;
-                    if let Some(effect) = prepared.effect {
-                        crate::actions::software::persist_effect_in(tx, id, &effect).await?;
-                    }
-                    let response = json(&wire::SelfServiceAccepted {
-                        request_id: input.operation_id,
-                        run_id: id,
-                        policy_id: policy.id,
-                        policy_revision: policy.revision as u64,
-                        policy_version: policy.version,
-                    })?;
-                    db::receipt(
-                        tx,
-                        &actor,
-                        input.operation_id,
-                        hash.clone(),
-                        &response,
-                        None,
-                    )
-                    .await?;
-                    if let Some(proof) = proof {
-                        proof.check_live()?;
-                    }
-                    let fact = Fact::business(audit, &event_key, 202, "success", None)?;
-                    service
-                        .transactions
-                        .audit_store
-                        .append_in(tx, &fact)
-                        .await?;
-                    crate::sources::storage::wake_execution_in(
-                        &service.transactions.reconcile_messaging,
-                        tx,
-                        policy.id,
-                    )
-                    .await?;
-                    Ok(response)
-                })
+        storage::lock_device(tx, p.device()).await?;
+        crate::actions::agent::principal(&service.transactions, tx, p).await?;
+        let hash = fingerprint(input)?;
+        let now = storage::now(tx).await?;
+        crate::transaction::prepare_audit_in(&service.transactions.audit_store, tx, audit, &[])
+            .await?;
+        let policy = crate::sources::storage::read_in(
+            &service.transactions.policy_reader,
+            tx,
+            input.policy_id,
+        )
+        .await?
+        .ok_or(Error::NotFound)?;
+        let config = policy
+            .definition
+            .self_service
+            .as_ref()
+            .ok_or(Error::Forbidden)?;
+        let allow_ai = config.allow_ai.ok_or(Error::Forbidden)?;
+        let risk = effective_risk(&policy);
+        if !policy.state.is_enabled()
+            || !config.published
+            || (input.source == wire::SelfServiceCaller::Ai
+                && (!allow_ai || (risk == 2 && !input.confirmed)))
+        {
+            return Err(Error::Forbidden.into());
+        }
+        let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
+        let subject = access::qualify_in(service, tx, config, &basis)
+            .await?
+            .ok_or(Error::Forbidden)?;
+        let actor = actor(p, &subject);
+        let event_key = format!("{actor}:{}", input.operation_id);
+        let plan = db::load_source(
+            &service.transactions.policy_reader,
+            tx,
+            db::Source::Policy {
+                version: policy.version,
             },
         )
         .await?;
-        serde_json::from_value(response)
-            .map_err(|_| Error::Unavailable(crate::Failure::CommandStorage))
+        let target = target(p);
+        let admission = crate::sources::storage::admission_in(
+            &service.transactions.source,
+            tx,
+            policy.definition.scope,
+            rss_mdm_scope_service::channels::Channel::Agent,
+            p.device(),
+        )
+        .await?;
+        if admission == rss_mdm_scope_service::channels::ScopeAdmission::Excluded {
+            return Err(Error::Forbidden.into());
+        }
+        let rollout_pending = if let db::ScheduledPolicy::Software(v) = &plan {
+            v.assignment
+                .entry_in(&service.transactions.source, tx, p.device(), now)
+                .await?
+                .is_none()
+        } else {
+            false
+        };
+        let pending_scope = (admission == rss_mdm_scope_service::channels::ScopeAdmission::Pending
+            || rollout_pending)
+            .then_some(policy.definition.scope);
+        let pending_rollout = if pending_scope.is_some() {
+            match &policy.definition.action {
+                rss_mdm_policy::Action::Software { rollout, .. } => Some(rollout.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some(prepared) = prepare_in(
+            service,
+            tx,
+            &plan,
+            &target,
+            input.operation_id,
+            Some(&input.parameters),
+            now,
+        )
+        .await?
+        else {
+            return Err(Error::Conflict.into());
+        };
+        let decision = wire::TaskAuthorization::SelfService {
+            request_id: input.operation_id,
+            subject,
+            source: input.source,
+            policy_id: policy.id,
+            policy_revision: policy.revision as u64,
+            policy_version: policy.version,
+            allow_ai,
+            risk_level: risk,
+            confirmed: input.confirmed,
+        };
+        checked_input(decision.validate(checked_input(Uuid::parse_str(&p.tenant().to_string()))?))?;
+        let binding = crate::agent_facts::agent_binding_in(
+            tx,
+            service.transactions.agent_store.clone(),
+            p.registration(),
+        )
+        .await?
+        .ok_or(Error::Forbidden)?;
+        let activity_user = match (
+            &decision,
+            binding.execution_context.interactive_user.as_ref(),
+        ) {
+            (
+                wire::TaskAuthorization::SelfService {
+                    subject: wire::SelfServiceSubject::User { user },
+                    ..
+                },
+                Some(os),
+            ) => Some(rss_mdm_audit_integration::activity::ActivityUser {
+                instance: user.instance_id,
+                principal: user.principal_id,
+                os_identity: os.identity.clone(),
+                generated_uid: os.generated_uid.clone(),
+                session: os.session_id,
+            }),
+            _ => None,
+        };
+        let invocation = Invocation {
+            activity_user,
+            authorization: decision,
+            parameters: prepared.parameters,
+            execution_target: prepared.execution_target,
+            pending_scope,
+            pending_rollout,
+        };
+        production::queue_run_in(
+            &service.transactions,
+            tx,
+            production::RunInput {
+                origin: match input.source {
+                    wire::SelfServiceCaller::Human => {
+                        rss_mdm_audit_integration::activity::ActivityOrigin::Human
+                    }
+                    wire::SelfServiceCaller::Ai => {
+                        rss_mdm_audit_integration::activity::ActivityOrigin::Ai
+                    }
+                },
+                invocation: Some(invocation),
+                source: db::Source::Policy {
+                    version: policy.version,
+                },
+                target: &target,
+                id,
+                occurrence: prepared.slot.occurrence,
+                available: prepared.slot.available,
+                deadline: prepared.slot.deadline,
+                now,
+            },
+        )
+        .await?;
+        if let Some(effect) = prepared.effect {
+            crate::actions::software::persist_effect_in(tx, id, &effect).await?;
+        }
+        let response = json(&wire::SelfServiceAccepted {
+            request_id: input.operation_id,
+            run_id: id,
+            policy_id: policy.id,
+            policy_revision: policy.revision as u64,
+            policy_version: policy.version,
+        })?;
+        db::receipt(
+            tx,
+            &actor,
+            input.operation_id,
+            hash.clone(),
+            &response,
+            None,
+        )
+        .await?;
+        if let Some(proof) = proof {
+            proof.check_live()?;
+        }
+        let fact = Fact::business(audit, &event_key, 202, "success", None)?;
+        service
+            .transactions
+            .audit_store
+            .append_in(tx, &fact)
+            .await?;
+        crate::sources::storage::wake_execution_in(
+            &service.transactions.reconcile_messaging,
+            tx,
+            policy.id,
+        )
+        .await?;
+        Ok(response)
     }
-    pub async fn self_service_status(
+    pub async fn replay_self_service_in(
         &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        actor: &str,
+        input: &wire::SelfServiceInvoke,
+    ) -> Result<Option<Value>> {
+        let hash = fingerprint(input)?;
+        let Some(response) = db::replay(tx, actor, input.operation_id, &hash).await? else {
+            return Ok(None);
+        };
+        let id = stored(serde_json::from_value(response["runId"].clone()))?;
+        let run = db::load_run(tx, id).await?;
+        crate::actions::agent::belongs(&run, p)?;
+        Ok(Some(response))
+    }
+    pub async fn self_service_status_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
         p: &DevicePrincipal,
         proof: Option<&AuthorizedPrincipal>,
+        actor: &str,
         request: Uuid,
         audit: &RequestAudit,
-    ) -> std::result::Result<wire::SelfServiceStatus, Error> {
-        bind(p, proof, audit)?;
-        if request.is_nil() {
-            return Err(Error::Malformed);
+    ) -> Result<Option<wire::SelfServiceStatus>> {
+        let service = self;
+        storage::lock_device(tx, p.device()).await?;
+        crate::actions::agent::principal(&service.transactions, tx, p).await?;
+        let actors = vec![actor.to_owned()];
+        let tenant = tx.tenant_id().to_string();
+        let response: Option<Value> = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar("SELECT response FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=ANY($2) AND id=$3 ORDER BY array_position($2,actor) LIMIT 1").bind(tenant).bind(actors).bind(request).fetch_optional(c).await })).await?;
+        let Some(response) = response else {
+            return Ok(None);
+        };
+        let id = checked_input(Uuid::parse_str(
+            response["runId"].as_str().ok_or(Error::Malformed)?,
+        ))?;
+        let run = db::load_run(tx, id).await?;
+        crate::actions::agent::belongs(&run, p)?;
+        let invocation = run.invocation.as_ref().ok_or(Error::Forbidden)?;
+        let wire::TaskAuthorization::SelfService { subject, .. } = &invocation.authorization else {
+            return Err(Error::Forbidden.into());
+        };
+        if !owns(subject, proof) {
+            return Err(Error::Forbidden.into());
         }
-        crate::transaction::inspect(&self.transactions.runtime, self.transactions.tenant, (self, p, proof, request, audit), |ctx, tx| Box::pin(async move {
-            let (service, p, proof, request, audit) = *ctx;
-            storage::lock_device(tx, p.device()).await?; crate::actions::agent::principal(&service.transactions, tx, p).await?;
-            let actors = request_actors(p,proof)?;
-            let tenant = tx.tenant_id().to_string();
-            let response: Value = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar("SELECT response FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=ANY($2) AND id=$3 ORDER BY array_position($2,actor) LIMIT 1").bind(tenant).bind(actors).bind(request).fetch_optional(c).await })).await?.ok_or(Error::NotFound)?;
-            let id = checked_input(Uuid::parse_str(response["runId"].as_str().ok_or(Error::Malformed)?))?;
-            let run = db::load_run(tx, id).await?; crate::actions::agent::belongs(&run, p)?;
-            let invocation = run.invocation.as_ref().ok_or(Error::Forbidden)?;
-            let wire::TaskAuthorization::SelfService { subject, .. } = &invocation.authorization else { return Err(Error::Forbidden.into()); };
-            if !owns(subject, proof) { return Err(Error::Forbidden.into()); }
-            let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
-            // Current authenticated ownership and ordinary inventory permissions govern history.
-            let result = match (&plan, run.result.as_ref()) {
-                (db::ScheduledPolicy::Script(_), Some(result)) => {
-                    let can_read = match proof {
-                        Some(proof) => {
-                            let auth = crate::action_admission::current(tx, proof).await?;
-                            auth.require(proof, Permission::InventoryRead, Some(p.device())).is_ok()
-                        }
-                        None => false,
-                    };
-                    if can_read {
-                        let crate::actions::result::RunResult::Script(result) = result else {
-                            return Err(Error::Unavailable(crate::Failure::CommandStorage).into());
-                        };
-                        Some(wire::SelfServiceResult::Script { evidence: result.clone() })
-                    } else { None }
-                }
-                (db::ScheduledPolicy::Software(_), Some(crate::actions::result::RunResult::Software(result))) => Some(wire::SelfServiceResult::Software { effect:result.effect }),
-                (db::ScheduledPolicy::Software(_), Some(crate::actions::result::RunResult::NativeSoftware(result))) => {
-                    let effect = match result {
-                        crate::actions::result::NativeSoftware::Verified { .. } => wire::SelfServiceSoftwareEffect::Verified,
-                        crate::actions::result::NativeSoftware::Unknown { .. } => wire::SelfServiceSoftwareEffect::Unknown,
-                        crate::actions::result::NativeSoftware::NotStarted { .. } => return Err(Error::Unavailable(crate::Failure::CommandStorage).into()),
-                    };
-                    Some(wire::SelfServiceResult::Software { effect })
-                }
-                (db::ScheduledPolicy::Enrollment(_), Some(crate::actions::result::RunResult::Enrollment(result))) => Some(wire::SelfServiceResult::Enrollment { outcome:result.entry_outcome }),
-                (db::ScheduledPolicy::Software(_) | db::ScheduledPolicy::Enrollment(_), Some(_)) => return Err(Error::Unavailable(crate::Failure::CommandStorage).into()),
-                _ => None,
-            };
-            if let Some(proof) = proof { proof.check_live()?; }
-            audit.require_final_request();
-            Ok(wire::SelfServiceStatus { request_id: request, run_id: id, attempt_id: run.state.attempt(), state: public_state(&run.state), available_at: run.available_at, deadline: run.deadline, result })
-        })).await
+        let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
+        // Current authenticated ownership and ordinary inventory permissions govern history.
+        let result = match (&plan, run.result.as_ref()) {
+            (
+                db::ScheduledPolicy::Software(_),
+                Some(crate::actions::result::RunResult::Software(result)),
+            ) => Some(wire::SelfServiceResult::Software {
+                effect: result.effect,
+            }),
+            (
+                db::ScheduledPolicy::Software(_),
+                Some(crate::actions::result::RunResult::NativeSoftware(result)),
+            ) => {
+                let effect = match result {
+                    crate::actions::result::NativeSoftware::Verified { .. } => {
+                        wire::SelfServiceSoftwareEffect::Verified
+                    }
+                    crate::actions::result::NativeSoftware::Unknown { .. } => {
+                        wire::SelfServiceSoftwareEffect::Unknown
+                    }
+                    crate::actions::result::NativeSoftware::NotStarted { .. } => {
+                        return Err(Error::Unavailable(crate::Failure::CommandStorage).into());
+                    }
+                };
+                Some(wire::SelfServiceResult::Software { effect })
+            }
+            (
+                db::ScheduledPolicy::Enrollment(_),
+                Some(crate::actions::result::RunResult::Enrollment(result)),
+            ) => Some(wire::SelfServiceResult::Enrollment {
+                outcome: result.entry_outcome,
+            }),
+            (db::ScheduledPolicy::Software(_) | db::ScheduledPolicy::Enrollment(_), Some(_)) => {
+                return Err(Error::Unavailable(crate::Failure::CommandStorage).into());
+            }
+            _ => None,
+        };
+        if let Some(proof) = proof {
+            proof.check_live()?;
+        }
+        audit.require_final_request();
+        Ok(Some(wire::SelfServiceStatus {
+            request_id: request,
+            run_id: id,
+            attempt_id: run.state.attempt(),
+            state: public_state(&run.state),
+            available_at: run.available_at,
+            deadline: run.deadline,
+            result,
+        }))
     }
 }
 
@@ -763,45 +666,6 @@ struct InvocationSlot {
     deadline: i64,
 }
 // A directory probe only reads the same facts rechecked atomically by invocation.
-async fn invocation_slot_in(
-    tx: &mut PgTransaction<'_>,
-    script: &crate::sources::admission::ExecutionPolicy,
-    target: &Target,
-    entry: i64,
-    request: Uuid,
-    now: i64,
-) -> Result<Option<InvocationSlot>> {
-    let (pending, last) =
-        production::policy_pending_in(tx, script.owner, script.id, target, now, false).await?;
-    let schedule = &script.frozen.input.schedule;
-    if pending || !production::check_in_interval_elapsed(&schedule.trigger, last, now) {
-        return Ok(None);
-    }
-    let occurrence = production::policy_occurrence(
-        script.frequency,
-        target,
-        &script.entry_source(),
-        entry,
-        &format!("self-service:{request}"),
-    );
-    if !production::occurrence_available_in(tx, script.id, target, &occurrence, now).await? {
-        return Ok(None);
-    }
-    let Some(slot) = schedule.occurrence(now, target.device.as_bytes())? else {
-        return Ok(None);
-    };
-    let available = slot.available_at.max(now);
-    let deadline = available
-        .checked_add(i64::from(script.frozen.input.run_lifetime_seconds))
-        .ok_or(Error::Malformed)?
-        .min(schedule.ends_at())
-        .min(slot.window_end.unwrap_or(i64::MAX));
-    Ok((deadline > available).then_some(InvocationSlot {
-        occurrence,
-        available,
-        deadline,
-    }))
-}
 
 fn metadata(config: &rss_mdm_policy::SelfService) -> Result<wire::SelfServiceMetadata> {
     Ok(wire::SelfServiceMetadata {
@@ -810,29 +674,6 @@ fn metadata(config: &rss_mdm_policy::SelfService) -> Result<wire::SelfServiceMet
         allow_ai: config.allow_ai.ok_or(Error::Malformed)?,
         risk_level: config.risk_level.ok_or(Error::Malformed)?.value(),
     })
-}
-fn parameter_sources(
-    sources: &rss_mdm_policy::ParameterSources,
-) -> std::collections::BTreeMap<String, wire::ScriptParameterSource> {
-    sources
-        .0
-        .iter()
-        .map(|(name, source)| {
-            (
-                name.clone(),
-                match source {
-                    rss_mdm_policy::ParameterSource::Fixed { value } => {
-                        wire::ScriptParameterSource::Fixed {
-                            value: value.clone(),
-                        }
-                    }
-                    rss_mdm_policy::ParameterSource::Input {} => {
-                        wire::ScriptParameterSource::Input {}
-                    }
-                },
-            )
-        })
-        .collect()
 }
 fn public_state(state: &rss_mdm_task_state::RunState) -> wire::TaskRunState {
     use rss_mdm_task_state::{Cancellation, Delivery, Execution};

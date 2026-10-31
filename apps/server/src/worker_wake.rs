@@ -22,6 +22,8 @@ pub(crate) enum Work {
     PolicyEvents,
     CommandRelay,
     CommandRecovery,
+    ScriptRecovery,
+    CollectionRecovery,
     Apple,
     Windows,
     WindowsPush,
@@ -31,13 +33,15 @@ pub(crate) enum Work {
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 15] = [
         Self::Inventory,
         Self::Devices,
         Self::Policy,
         Self::PolicyEvents,
         Self::CommandRelay,
         Self::CommandRecovery,
+        Self::ScriptRecovery,
+        Self::CollectionRecovery,
         Self::Apple,
         Self::Windows,
         Self::WindowsPush,
@@ -54,6 +58,8 @@ impl Work {
             Self::PolicyEvents => "policy_events",
             Self::CommandRelay => "command_relay",
             Self::CommandRecovery => "command_recovery",
+            Self::ScriptRecovery => "script_recovery",
+            Self::CollectionRecovery => "collection_recovery",
             Self::Apple => "apple",
             Self::Windows => "windows",
             Self::WindowsPush => "windows_push",
@@ -83,6 +89,8 @@ impl Signals {
                 Work::Compliance,
                 Work::Devices,
                 Work::CommandRecovery,
+                Work::ScriptRecovery,
+                Work::CollectionRecovery,
             ] {
                 self.get(work).notify_one();
             }

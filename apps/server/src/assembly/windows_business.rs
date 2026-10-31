@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub(crate) struct WindowsBusiness(
     pub Arc<rss_mdm_execution_service::ExecutionService>,
     pub Arc<rss_mdm_policy_service::configuration::Transactions>,
+    pub Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
 );
 fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_windows_channel::Error {
     use rss_mdm_execution_service::Error as E;
@@ -134,6 +135,12 @@ impl Business for WindowsBusiness {
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
+            if authenticated {
+                self.2
+                    .authenticated_in(tx, p)
+                    .await
+                    .map_err(collection_fault)?;
+            }
             self.0
                 .windows_before_receipts_in(tx, p, authenticated, retirement, audit)
                 .await
@@ -180,8 +187,12 @@ impl Business for WindowsBusiness {
                 }
                 after = Some(last);
             }
+            self.2
+                .finished_in(tx, p, &runs)
+                .await
+                .map_err(collection_fault)?;
             self.0
-                .windows_after_receipts_in(tx, p, runs, audit)
+                .windows_after_receipts_in(tx, p, audit)
                 .await
                 .map_err(fault)
         })
@@ -325,10 +336,10 @@ impl Business for WindowsBusiness {
         delivery: bool,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
-            self.0
-                .windows_collection_eligible_on(c, p, id, delivery)
+            self.2
+                .eligible_on(c, p, id, delivery)
                 .await
-                .map_err(error)
+                .map_err(collection_fault)
         })
     }
     fn collection_plan<'a>(
@@ -338,9 +349,13 @@ impl Business for WindowsBusiness {
         id: Uuid,
     ) -> Pending<'a, rss_mdm_windows_mdm::native::collection::Plan> {
         Box::pin(async move {
-            rss_mdm_execution_service::actions::native_collection::plan_on(c, tenant, id)
+            let definition =
+                rss_mdm_inventory_service::collection::execution::native::definition_on(
+                    c, tenant, id,
+                )
                 .await
-                .map_err(error)
+                .map_err(collection_fault)?;
+            rss_mdm_windows_channel::collection_plan::compile_plan(&definition)
         })
     }
     fn collection_sent<'a>(
@@ -350,9 +365,9 @@ impl Business for WindowsBusiness {
         id: Uuid,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            rss_mdm_execution_service::actions::native_collection::sent(c, tenant, id)
+            rss_mdm_inventory_service::collection::execution::native::sent_on(c, tenant, id)
                 .await
-                .map_err(error)
+                .map_err(collection_fault)
         })
     }
 }
@@ -385,6 +400,12 @@ impl WakeDemand for WindowsBusiness {
                     .await
                     .map_err(policy_error)?,
             );
+            candidates.extend(
+                self.2
+                    .windows_wake_candidates_on(c, after)
+                    .await
+                    .map_err(collection_fault)?,
+            );
             candidates.sort();
             candidates.dedup();
             candidates.truncate(32);
@@ -409,7 +430,12 @@ impl WakeDemand for WindowsBusiness {
                 .windows_wake_pending_in(c, device, registration, generation)
                 .await
                 .map_err(policy_error)?;
-            Ok(execution || configuration)
+            let collection = self
+                .2
+                .windows_wake_pending_on(c, device, registration, generation)
+                .await
+                .map_err(collection_fault)?;
+            Ok(execution || configuration || collection)
         })
     }
 }
@@ -453,5 +479,16 @@ fn configuration_operation(
         agent_minimum_os: v.agent_minimum_os,
         minimum_os: v.minimum_os,
         observation: v.observation,
+    }
+}
+
+fn collection_fault(
+    e: rss_mdm_inventory_service::transaction::Fault,
+) -> rss_mdm_windows_channel::Error {
+    use rss_mdm_inventory_service::transaction::Fault;
+    match e {
+        Fault::Request(e) => e.into(),
+        Fault::Sql(e) => e.into(),
+        Fault::Storage(e) => e.into(),
     }
 }

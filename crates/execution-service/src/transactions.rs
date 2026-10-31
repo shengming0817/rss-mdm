@@ -4,6 +4,8 @@ use crate::*;
 
 /// Immutable configuration and channel ports shared without sharing a transaction identity.
 pub struct ExecutionMaterials {
+    pub capacity: Arc<dyn crate::capacity::DeviceCapacity>,
+    pub task_cleanup: Arc<dyn crate::task_cleanup::TaskCleanup>,
     pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub inputs: Arc<InputMaterials>,
@@ -11,7 +13,6 @@ pub struct ExecutionMaterials {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub apple_profiles: Arc<dyn apple_facts::AppleProfiles>,
-    pub apple_collections: Arc<dyn apple_facts::AppleCollections>,
     pub windows_results: Arc<dyn crate::windows_results::Store>,
     pub apple_results: Arc<dyn apple_facts::AppleResults>,
     pub instance: String,
@@ -19,6 +20,8 @@ pub struct ExecutionMaterials {
     pub command_clock: rss_device_command_postgres::CommandClock,
 }
 pub(crate) struct ExecutionTransactions {
+    pub(crate) capacity: Arc<dyn crate::capacity::DeviceCapacity>,
+    pub(crate) task_cleanup: Arc<dyn crate::task_cleanup::TaskCleanup>,
     pub(crate) configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub(crate) recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub(crate) inputs: Arc<Inputs>,
@@ -26,7 +29,6 @@ pub(crate) struct ExecutionTransactions {
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
     pub(crate) apple_profiles: Arc<dyn apple_facts::AppleProfiles>,
-    pub(crate) apple_collections: Arc<dyn apple_facts::AppleCollections>,
     pub(crate) windows_results: Arc<dyn crate::windows_results::Store>,
     pub(crate) apple_results: Arc<dyn apple_facts::AppleResults>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
@@ -82,6 +84,7 @@ impl ExecutionTransactions {
                 .await
                 .map_err(|_| invalid())?;
         Ok(Self {
+            capacity: materials.capacity.clone(),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             inputs: Arc::new(Inputs::bind(
                 runtime.clone(),
@@ -98,7 +101,7 @@ impl ExecutionTransactions {
             protection: materials.protection.clone(),
             agent_store: materials.agent_store.clone(),
             apple_profiles: materials.apple_profiles.clone(),
-            apple_collections: materials.apple_collections.clone(),
+            task_cleanup: materials.task_cleanup.clone(),
             configuration_cleanup: materials.configuration_cleanup.clone(),
             windows_results: materials.windows_results.clone(),
             apple_results: materials.apple_results.clone(),

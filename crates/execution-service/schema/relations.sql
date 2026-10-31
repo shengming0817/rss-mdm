@@ -158,7 +158,6 @@ GRANT SELECT ON TABLE mdm_commands.operations TO mdm_access;
 
 GRANT EXECUTE ON FUNCTION mdm_commands.installation_status(uuid) TO mdm_access,mdm_command_runtime;
 
-GRANT SELECT,INSERT ON mdm_commands.output_chunks TO mdm_command_runtime;
 
 
 
@@ -193,9 +192,6 @@ GRANT SELECT,INSERT ON mdm_commands.software_stats_members TO mdm_command_runtim
 GRANT UPDATE(generation,target,counts,waiting_until) ON mdm_commands.software_stats_members TO mdm_command_runtime;
 GRANT SELECT ON mdm_commands.software_result_changes,mdm_commands.software_binding_changes TO mdm_command_runtime;
 
-ALTER TABLE mdm_commands.native_checkins ADD FOREIGN KEY (tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
-GRANT SELECT,INSERT ON mdm_commands.native_checkins TO mdm_command_runtime;
-GRANT UPDATE(active_event,active_at,policy_after,pending_event,pending_at) ON mdm_commands.native_checkins TO mdm_command_runtime;
 
 
 GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_command_runtime;
@@ -244,8 +240,3 @@ GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_policy_runtime;
 
 -- Namespace access accompanies the already-declared foreign-reader capabilities.
 GRANT USAGE ON SCHEMA mdm_commands TO mdm_inventory_runtime,mdm_scope_runtime,mdm_telemetry_runtime;
-
-
-
-GRANT UPDATE(offer_after_at,offer_after_id) ON mdm_commands.agent_admission TO mdm_command_runtime;
-ALTER TABLE mdm_commands.output_chunks ADD FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_agent.task_attempts(tenant_id,id);

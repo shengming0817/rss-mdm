@@ -38,7 +38,24 @@ impl Associations for Producers {
                     }
                     execution::Identity::Operation(id)
                 }
-                Identity::ActionRun(id) => execution::Identity::ActionRun(id),
+                Identity::ActionRun(id) => {
+                    let tenant_id = rss_request_context::TenantId::parse(tenant)
+                        .map_err(|_| Error::Integrity)?;
+                    use super::task_ownership::{self, Owner as TaskOwner};
+                    let owner =
+                        task_ownership::on(c, tenant_id, id)
+                            .await
+                            .map_err(|e| match e {
+                                sqlx::Error::RowNotFound => Error::NotFound,
+                                sqlx::Error::Protocol(_) => Error::Integrity,
+                                _ => Error::Storage,
+                            })?;
+                    match owner {
+                        TaskOwner::Script => return Ok(rss_mdm_script_service::storage::association_on(c, tenant, id).await?),
+                        TaskOwner::Collection => return Ok(rss_mdm_inventory_service::collection::execution::storage::association_on(c, tenant, id).await?),
+                        TaskOwner::Execution => execution::Identity::ActionRun(id),
+                    }
+                }
                 Identity::ChangeRequest(id) => execution::Identity::ChangeRequest(id),
             };
             Ok(execution::association_in(c, tenant, actor, identity).await?)

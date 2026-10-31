@@ -1,9 +1,6 @@
 //! Field mapping between Apple protocol facts and their business consumers.
 use rss_mdm_apple_channel::protocol_types as protocol;
-use rss_mdm_apple_channel::protocol_types::{
-    AppleCollections as _, AppleProfiles as _, AppleResults as _,
-};
-use rss_mdm_audit_integration::Fact;
+use rss_mdm_apple_channel::protocol_types::{AppleProfiles as _, AppleResults as _};
 use rss_mdm_execution_service::apple_facts::*;
 use rss_mdm_registration_service::DevicePrincipal;
 use sqlx::PgConnection;
@@ -126,41 +123,6 @@ impl AppleProfiles for AppleFacts {
             self.0
                 .previous_profiles(c, tenant, device, user_key, identifier)
                 .await
-                .map_err(error)
-        })
-    }
-}
-impl AppleCollections for AppleFacts {
-    fn prepare_native_collection<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        id: Uuid,
-    ) -> Pending<'a, Vec<Fact>> {
-        Box::pin(async move {
-            self.0
-                .prepare_native_collection(c, tenant, id)
-                .await
-                .map_err(error)
-        })
-    }
-    fn pending_collections<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        registration: Uuid,
-        user_key: String,
-        limit: usize,
-    ) -> Pending<'a, Vec<PendingCollection>> {
-        Box::pin(async move {
-            self.0
-                .pending_collections(c, tenant, registration, user_key, limit)
-                .await
-                .map(|rows| {
-                    rows.into_iter()
-                        .map(|r| PendingCollection { id: r.id })
-                        .collect()
-                })
                 .map_err(error)
         })
     }

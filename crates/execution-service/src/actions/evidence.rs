@@ -17,13 +17,6 @@ pub enum Material {
     Credential {
         task: Box<wire::CredentialTaskSpec>,
     },
-    Collection {
-        plan: wire::NativeCollectionPlan,
-        resource_digest: [u8; 32],
-    },
-    Script {
-        target: wire::SoftwareExecutionTarget,
-    },
     Software {
         platform: wire::TaskPlatform,
         intent: wire::SoftwareTaskIntent,
@@ -38,13 +31,6 @@ impl Material {
                 Some(Self::DeviceAccess { task: spec.clone() })
             }
             wire::TaskPayload::Credential(spec) => Some(Self::Credential { task: spec.clone() }),
-            wire::TaskPayload::Collection(spec) => Some(Self::Collection {
-                plan: spec.plan.clone(),
-                resource_digest: spec.resource_digest,
-            }),
-            wire::TaskPayload::Script(spec) => Some(Self::Script {
-                target: spec.execution_target.clone(),
-            }),
             wire::TaskPayload::Software(spec) => Some(Self::Software {
                 platform: spec.platform,
                 intent: spec.intent,

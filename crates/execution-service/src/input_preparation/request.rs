@@ -1,85 +1,9 @@
 //! Borrowed execution requests. No Policy identity, Scope, rollout or wire DTO.
 use rss_mdm_policy::{
-    Action, ExactResourceBinding, Frequency, SoftwareDelivery, SoftwareIntent,
-    SoftwareResourceBinding, schedule::Schedule,
+    Action, Frequency, SoftwareDelivery, SoftwareIntent, SoftwareResourceBinding,
+    schedule::Schedule,
 };
-use serde_json::Value;
 use uuid::Uuid;
-
-/// Publication sources differ from already complete immediate-call values.
-#[derive(Clone, Copy)]
-pub enum ScriptParameters<'a> {
-    Sources(&'a rss_mdm_policy::ParameterSources),
-    Values(&'a Value),
-}
-impl ScriptParameters<'_> {
-    pub(super) fn checked(
-        self,
-        definition: &rss_mdm_resource::ScriptDefinition,
-    ) -> crate::transaction::Result<rss_mdm_policy::ParameterSources> {
-        use rss_mdm_policy::{ParameterSource, ParameterSources};
-        let sources = match self {
-            Self::Sources(sources) => sources.clone(),
-            Self::Values(values) => {
-                definition
-                    .validate_parameters(values)
-                    .map_err(|_| crate::Error::Malformed)?;
-                ParameterSources(
-                    values
-                        .as_object()
-                        .ok_or(crate::Error::Malformed)?
-                        .iter()
-                        .map(|(k, v)| (k.clone(), ParameterSource::Fixed { value: v.clone() }))
-                        .collect(),
-                )
-            }
-        };
-        sources.validate()?;
-        let properties = definition
-            .spec()
-            .parameters
-            .get("properties")
-            .and_then(Value::as_object)
-            .ok_or(crate::Error::Malformed)?;
-        if sources.0.len() != properties.len()
-            || sources.0.keys().any(|k| !properties.contains_key(k))
-        {
-            return Err(crate::Error::Malformed.into());
-        }
-        definition
-            .validate_fixed_parameters(&sources.fixed_values())
-            .map_err(|_| crate::Error::Malformed)?;
-        Ok(sources)
-    }
-}
-/// Resource-only preflight input, usable by persistent and immediate callers.
-#[derive(Clone, Copy)]
-pub enum ResourcePreparation<'a> {
-    Script {
-        binding: &'a ExactResourceBinding,
-        parameters: ScriptParameters<'a>,
-    },
-    AgentCollection {
-        binding: &'a ExactResourceBinding,
-    },
-    NativeCollection {
-        binding: &'a ExactResourceBinding,
-    },
-
-    Software {
-        binding: &'a SoftwareResourceBinding,
-    },
-}
-impl ResourcePreparation<'_> {
-    pub(super) fn identity(&self) -> rss_mdm_policy::ResourceIdentity<'_> {
-        match self {
-            Self::Script { binding, .. }
-            | Self::AgentCollection { binding }
-            | Self::NativeCollection { binding } => binding.identity(),
-            Self::Software { binding } => binding.identity(),
-        }
-    }
-}
 
 /// Material to freeze inside the caller's original transaction.
 pub enum PublicationInput<'a> {
@@ -96,25 +20,6 @@ pub enum PublicationInput<'a> {
     Credential {
         operation: &'a rss_mdm_policy::CredentialOperation,
         architecture: rss_mdm_policy::Architecture,
-        schedule: &'a Schedule,
-        frequency: Frequency,
-        lifetime: u32,
-    },
-    Script {
-        binding: &'a ExactResourceBinding,
-        parameters: ScriptParameters<'a>,
-        schedule: &'a Schedule,
-        frequency: Frequency,
-        lifetime: u32,
-    },
-    AgentCollection {
-        binding: &'a ExactResourceBinding,
-        schedule: &'a Schedule,
-        frequency: Frequency,
-        lifetime: u32,
-    },
-    NativeCollection {
-        binding: &'a ExactResourceBinding,
         schedule: &'a Schedule,
         frequency: Frequency,
         lifetime: u32,
@@ -140,24 +45,10 @@ pub enum PublicationInput<'a> {
     },
 }
 impl<'a> PublicationInput<'a> {
-    /// Resource preflight input; enrollment has no resource.
-    pub fn resource(&self) -> Option<ResourcePreparation<'a>> {
+    /// The remaining resource-bound action is software.
+    pub(super) fn resource(&self) -> Option<rss_mdm_policy::ResourceIdentity<'a>> {
         Some(match self {
-            Self::Script {
-                binding,
-                parameters,
-                ..
-            } => ResourcePreparation::Script {
-                binding,
-                parameters: *parameters,
-            },
-            Self::AgentCollection { binding, .. } => {
-                ResourcePreparation::AgentCollection { binding }
-            }
-            Self::NativeCollection { binding, .. } => {
-                ResourcePreparation::NativeCollection { binding }
-            }
-            Self::Software { binding, .. } => ResourcePreparation::Software { binding },
+            Self::Software { binding, .. } => binding.identity(),
             Self::DeviceAccess { .. }
             | Self::Unmanage { .. }
             | Self::Credential { .. }
@@ -206,42 +97,10 @@ impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
                 frequency: *frequency,
                 lifetime: *run_lifetime_seconds,
             },
-            Action::Execution {
-                resource,
-                parameters,
-                schedule,
-                frequency,
-                run_lifetime_seconds,
-            } => Self::Script {
-                binding: resource,
-                parameters: ScriptParameters::Sources(parameters),
-                schedule,
-                frequency: *frequency,
-                lifetime: *run_lifetime_seconds,
-            },
-            Action::AgentCollection {
-                resource,
-                schedule,
-                frequency,
-                run_lifetime_seconds,
-            } => Self::AgentCollection {
-                binding: resource,
-                schedule,
-                frequency: *frequency,
-                lifetime: *run_lifetime_seconds,
-            },
-            Action::NativeCollection {
-                resource,
-                schedule,
-                frequency,
-                run_lifetime_seconds,
-            } => Self::NativeCollection {
-                binding: resource,
-                schedule,
-                frequency: *frequency,
-                lifetime: *run_lifetime_seconds,
-            },
-            Action::Configuration { .. } => return Err(crate::Error::Unsupported),
+            Action::Execution { .. }
+            | Action::AgentCollection { .. }
+            | Action::NativeCollection { .. }
+            | Action::Configuration { .. } => return Err(crate::Error::Unsupported),
             Action::Software {
                 channel,
                 resource,

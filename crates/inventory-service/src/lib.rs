@@ -28,10 +28,18 @@ pub mod apple_collection;
 pub const INSTALL_SQL: &str = concat!(
     include_str!("../schema/install.sql"),
     "\n",
-    include_str!("../schema/collection-metadata.sql")
+    include_str!("../schema/collection-metadata.sql"),
+    "\n",
+    include_str!("../schema/collection-tasks.sql"),
+    "\n",
+    include_str!("../schema/task-retirement.sql")
 );
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
-pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
+pub const RELATIONS_SQL: &str = concat!(
+    include_str!("../schema/relations.sql"),
+    "\n",
+    include_str!("../schema/collection-task-relations.sql")
+);
 
 /// Verify the inventory and compliance storage contracts on the caller's transaction.
 pub async fn admit_storage_in(
@@ -79,3 +87,7 @@ pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
 
 mod storage_authority;
 pub use storage_authority::verify_authority;
+
+#[cfg(test)]
+#[path = "../tests/collection_templates.rs"]
+mod collection_templates_tests;

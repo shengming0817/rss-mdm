@@ -141,3 +141,52 @@ pub async fn start_in(
         .bind(serde_json::json!({"task":task,"attempt":attempt})).execute(c).await?;
     Ok(())
 }
+
+/// Interpret Script field mappings at the Inventory boundary. Process success and
+/// original-attempt trust are decided by Script; projection remains independent.
+pub fn script_progress(
+    definition: &CollectionDefinition,
+    mappings: &std::collections::BTreeMap<String, rss_mdm_agent_wire::runtime::ValueMapping>,
+    result: &rss_mdm_agent_wire::runtime::TaskResult,
+    trusted: bool,
+) -> crate::transaction::Result<CollectionProgress> {
+    use crate::transaction::stored;
+    use rss_mdm_inventory::{FieldKey, NativeValue};
+    let mut values = std::collections::BTreeMap::new();
+    for (name, pointer) in mappings {
+        let key = stored(FieldKey::parse(name))?;
+        let field = stored(definition.field(key))?;
+        let outcome = if trusted {
+            super::native::mapped_value(field, pointer, result.output())
+        } else {
+            NativeValue::Failed
+        };
+        values.insert(key, outcome);
+    }
+    stored(CollectionProgress::native(
+        definition.clone(),
+        values,
+        result.collected_at(),
+    ))
+}
+
+/// Seal only the original pending attempt without manufacturing device evidence.
+pub async fn abandon_in(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    attempt: Uuid,
+    reason: &'static str,
+) -> Result<Option<rss_mdm_audit_integration::Fact>, sqlx::Error> {
+    let tenant = tenant.to_string();
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL AND (source IN('agent.script','agent.osquery','agent.native') OR evidence ? 'nativeTemplate'))")
+        .bind(&tenant).bind(attempt).fetch_one(&mut *c).await?;
+    if !exists {
+        return Ok(None);
+    }
+    let mut run = super::store::load_on(c, &tenant, attempt)
+        .await
+        .map_err(|_| sqlx::Error::Protocol("invalid pending collection".into()))?;
+    super::store::seal(c, &mut run, reason)
+        .await
+        .map_err(|_| sqlx::Error::Protocol("collection termination failed".into()))
+}
