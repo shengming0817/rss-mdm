@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from build_run import lease_fds, require_lease
 from ci_registry import all_tools
-from t2 import coverage
+from t2 import selection_status, run_modules
 from ci_impact import SelectionError, strict_json, validate_selection, explicit_selection, failure
 from verification_result import result as stage_result, publish
 
@@ -489,7 +489,7 @@ def execute_ci():
                                "check": description}
     plan['gates']['ownership'] = {'selected': bool(selection['ownershipPackages']),
                                   'packages': selection['ownershipPackages']}
-    plan['t2'] = coverage()
+    plan['t2'] = selection_status(sorted(selection['t2']['modules']))
     print(json.dumps(plan, indent=2), flush=True)
     if os.environ.get("CI_PLAN", "0") == "1":
         (OUT / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
@@ -536,7 +536,14 @@ def execute_ci():
             results['ownership'] = stage_result('failed', started, reason=type(error).__name__)
     else:
         results['ownership'] = stage_result('skipped', reason='not-selected')
-    integration = coverage()
+    integration = selection_status(selection['t2']['modules'])
+    if t2_mode == 'all':
+        from t2_registry import MODULES
+        try:
+            integration = run_modules(sorted(MODULES), OUT / 't2')
+        except Exception:
+            receipt = OUT / 't2/result.json'
+            integration = json.loads(receipt.read_text()) if receipt.exists() else dict(status='failed', reason='execution')
     started=time.monotonic()
     try:
         require(working_source_state() == source_state, "source changed during CI; rerun against stable working inputs")
@@ -546,13 +553,14 @@ def execute_ci():
         results["source-stability"] = stage_result("failed",started)
     evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head, "startStateSha256":source_state}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
     evidence['toolVerification'] = {name:results.get('script-tests', {}).get('status', 'not-run') for name in selection['toolTests']}
-    evidence['verificationComplete'] = False
+    evidence['verificationComplete'] = (t2_mode == 'all' and integration['status'] == 'passed'
+                                        and not any(value['status'] == 'failed' for value in results.values()))
     evidence['t2'] = integration
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
     publish(OUT/"result.json",evidence)
     print(json.dumps(evidence, indent=2))
-    return int(any(value["status"] == "failed" for value in results.values()) or t2_mode == 'all')
+    return int(any(value["status"] == "failed" for value in results.values()) or t2_mode == 'all' and integration['status'] != 'passed')
 
 def main():
     if os.environ.get('CI_PLAN','0')=='1':

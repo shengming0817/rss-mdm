@@ -1,0 +1,8 @@
+[profile.t2]
+retries = 0
+fail-fast = false
+test-threads = 2
+slow-timeout = { period = "180s", terminate-after = 1 }
+
+[profile.t2.junit]
+path = "foundation.xml"

@@ -160,3 +160,7 @@ pub mod telemetry;
 
 mod scope_group_changes;
 mod scopes;
+
+#[cfg(test)]
+#[path = "../tests/foundation/mod.rs"]
+mod foundation_t2;

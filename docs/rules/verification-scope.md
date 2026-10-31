@@ -17,16 +17,16 @@ T1 提供模型与边界证据；T2 使用真实依赖提供持久化、权限�
 
 ## 执行与证据
 
-旧 T2 业务测试及专属准备已整体退出，当前 T2 尚未重建。`make t2` 与 `MODULE=affected/all` 仅报告 `skipped / not-built` 并非零退出，不启动依赖。`make ci-full` 保留全部快速门禁，但因缺少 T2 不能通过组合验证。零测试、空集合、缺依赖和未运行都不是成功证明。
+旧 T2 业务测试及专属准备已整体退出。当前基础 owner 的真实消费证明由 `hack/t2_registry.py` 随实际消费者登记，函数名通过 nextest 发现；不恢复旧数量名册、准备测试或兼容入口。`make t2 MODULE=affected/all/<模块>` 执行直接受影响、全部活跃登记或指定模块；`make ci-full` 在现有租约内组合快速检查及活跃 T2。`all` 不表示其它领域已重建；具体范围和缺口见[本地开发](../guides/local-development.md)。显式选择零发现、漏跑、缺依赖、准备/业务/清理失败不能通过；合法 affected 空选择单独记录 skipped，不作为业务成功证明。
 
-`make ci CI_BASE=origin/develop` 只执行受影响的快速检查，不启动 PostgreSQL、网关或 IdP。快速检查通过与 T2 未重建分别记录；`make ci-plan` 只预览，不覆盖正式结果。产品仓证据不由父仓 CI 代替，不新增远端 CI。
+`make ci CI_BASE=origin/develop` 只执行受影响的快速检查，不启动 PostgreSQL、网关或 IdP。快速检查结果、T2 建议选择与实际执行分别记录；`make ci-plan` 只预览，不覆盖正式结果。产品仓证据不由父仓 CI 代替，不新增远端 CI。
 
 当前输入归属由 `hack/ci_registry.py` 持有，选择由 `hack/ci_impact.py` 执行。比较 merge-base 与当前工作区，包含 staged、unstaged、未跟踪、删除和 rename/copy 输入。Cargo 沿 normal/build 生产依赖传播，dev 消费者选中后停止；独立测试只选择所属包。公共编译配置按实际影响扩大 Cargo 范围。只消费当前登记，不加载历史测试模型、业务映射或兼容名称；历史 Git 仅提供差异与 Cargo 基线。幸存输入必须有当前 owner，已删除输入不要求永久退出名册。未知现存非生产输入、坏基线、分析异常和非法结果明确失败，不隐式全量。
 
-受影响的现存 Cargo 测试目标通过 nextest 编译和发现，拒绝没有执行 owner 的 ignored 测试；该检查不运行测试函数或业务准备。构建和发现失败不能视为载体已删除。当前没有活跃 T2 owner；未来重建随实际证明一并交付执行登记。
+受影响的现存 Cargo 测试目标通过 nextest 编译和发现，拒绝没有执行 owner 的 ignored 测试；该检查不运行测试函数或业务准备。构建和发现失败不能视为载体已删除。每个 ignored T2 必须唯一归属活跃登记；普通 T1 保持不运行真实依赖。T2 只按直接输入选择一次，不沿 Cargo 闭包或准备关系展开。
 
 正式构建、测试与 CI 保留 worktree/target 独占租约、依赖来源政策、工作区前后稳定性检查和完整失败汇总。配置与恢复见[本地开发](../guides/local-development.md#构建槽位与缓存)。缓存不作通过证明，检查不要求预先提交或 clean HEAD。
 
-`artifacts/local-ci` 记录当前选择、gate 的 passed/failed/skipped，以及独立 T2 缺口；`artifacts/local-t2/result.json` 记录未重建状态、零执行及当前源码身份。正式入口撤销自身陈旧结果，计划不覆盖正式证据。退出依据、原 Git 来源和本次验证留在 issue/PR，不新增历史目录或额外源码备份。
+`artifacts/local-ci` 记录当前选择、gate 的 passed/failed/skipped，以及独立 T2 执行状态；`artifacts/local-t2/result.json` 记录当前源码、实际发现/执行集合、资源动作和失败阶段，未重建范围单独保留。正式入口撤销自身陈旧结果，计划不覆盖正式证据。退出依据、原 Git 来源和本次验证留在 issue/PR，不新增历史目录或额外源码备份。
 
 真实候选继续使用正式 OCI 与随附 Compose 输入验证安装、启动、管理员和租户开通。候选 smoke、浏览器 T3 与真机效果各自持有证据；宿主 OS/架构、容器平台、支持矩阵及未测范围须如实记录，仿真不代替原生验收。

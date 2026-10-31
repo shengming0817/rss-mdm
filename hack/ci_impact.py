@@ -131,22 +131,26 @@ class Registry:
     tools: dict
     controls: dict
     consumers: dict
+    t2: dict
 
 def current_registry(root=ROOT):
     # Only current ownership is executable. Baseline metadata describes Cargo, not old tests.
     result = run([sys.executable, '-I', '-B', '-c',
         "import sys,json;sys.path.insert(0,sys.argv[1]);import ci_registry as r;"
-        "print(json.dumps([r.T1_INPUTS,r.TOOL_INPUTS,r.CONTROL_INPUTS,r.T1_CONSUMERS]))",
+        "print(json.dumps([r.T1_INPUTS,r.TOOL_INPUTS,r.CONTROL_INPUTS,r.T1_CONSUMERS,r.T2_INPUTS]))",
         str(root / 'hack')], root)
     if result.returncode:
         raise analysis_failure('registry-unavailable', 'current', 'registry', result)
     try:
-        t1, tools, controls, consumers = strict_json(result.stdout)
+        t1, tools, controls, consumers, t2 = strict_json(result.stdout)
         if not all(valid_path(p) for p in (*t1, *tools, *controls, *consumers)):
             raise ValueError('invalid registry input')
         if any(not isinstance(t, str) or not t.startswith('test_') for tests in tools.values() for t in tests):
             raise ValueError('invalid tool owner')
-        return Registry(tuple(t1), tools, controls, consumers)
+        if not all(isinstance(name, str) and patterns and all(valid_path(p) for p in patterns)
+                   for name, patterns in t2.items()):
+            raise ValueError("invalid T2 input")
+        return Registry(tuple(t1), tools, controls, consumers, t2)
     except (ValueError, TypeError, AttributeError) as error:
         raise SelectionError('registry-invalid') from error
 
@@ -207,6 +211,8 @@ def path_inputs(path, registry, *, production=False):
         return Inputs(tuple(sorted(tools)), 'tool')
     if matches(path, registry.t1) or any(matches(path, (p,)) for p in registry.consumers):
         return Inputs((), 'unit-test')
+    if any(matches(path, patterns) for patterns in registry.t2.values()):
+        return Inputs((), 'business' if production else 'integration-test')
     if production:
         return Inputs((), 'business')
     raise SelectionError('unmapped-input', path)
@@ -223,14 +229,16 @@ def select_inputs(paths, registry=None):
         tools.update(impact.tools)
     return Inputs(tuple(sorted(tools)))
 
-def selected(cargo, tools=(), reasons=(), *, cargo_mode='affected', ownership_packages=()):
+def selected(cargo, tools=(), reasons=(), *, cargo_mode='affected', ownership_packages=(), t2=(), t2_mode='affected'):
     return dict(status='selected', cargo=dict(mode=cargo_mode, packages=sorted(set(cargo))),
                 toolTests=sorted(set(tools)), reasons=list(reasons),
-                ownershipPackages=sorted(set(ownership_packages)))
+                ownershipPackages=sorted(set(ownership_packages)),
+                t2=dict(mode=t2_mode, modules=sorted(set(t2))))
 
 def explicit_selection(packages, tools=()):
     return selected(packages, tools, [dict(kind='explicit-full', input='requested-mode')],
-                    cargo_mode='all', ownership_packages=packages)
+                    cargo_mode='all', ownership_packages=packages,
+                    t2=current_registry().t2, t2_mode='all')
 
 def failure(error, phase):
     return dict(status='failed', error=dict(code=error.code, phase=phase, inputs=error.inputs))
@@ -597,7 +605,9 @@ def select(root, base):
             packages = graph.names(graph.members)
         if not tools <= set(all_tools(root)):
             raise SelectionError('tool-test-unavailable', *sorted(tools - set(all_tools(root))))
-        return selected(packages, tools, reasons, ownership_packages=packages)
+        return selected(packages, tools, reasons, ownership_packages=packages,
+                        t2=[name for name, patterns in current.t2.items()
+                            if any(matches(path, patterns) for path in paths)])
 
 def selection_targets(values, allowed):
     if not isinstance(values, list) or values != sorted(set(values)) or not set(values) <= set(allowed):
@@ -613,10 +623,14 @@ def validate_selection(decision, packages, tools):
         chosen = selection_targets(cargo['packages'], packages)
         if cargo['mode'] not in {'affected','all'} or cargo['mode'] == 'all' and chosen != set(packages):
             raise ValueError('invalid Cargo mode')
+        integration = decision['t2']
+        modules = selection_targets(integration['modules'], current_registry().t2)
+        if integration['mode'] not in {'affected', 'all'} or integration['mode'] == 'all' and modules != set(current_registry().t2):
+            raise ValueError('invalid T2 selection')
         selection_targets(decision['toolTests'], tools)
         selection_targets(decision['ownershipPackages'], chosen)
         for reason in decision['reasons']:
-            if reason['kind'] not in {'business','tool','unit-test','documentation','explicit-full','removed-input'} or not isinstance(reason['input'],str) or not reason['input']:
+            if reason['kind'] not in {'business','tool','unit-test','integration-test','documentation','explicit-full','removed-input'} or not isinstance(reason['input'],str) or not reason['input']:
                 raise ValueError('invalid reason')
         return decision
     except SelectionError:

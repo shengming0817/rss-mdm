@@ -56,7 +56,7 @@ class Selection(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'incomplete'):validate_listing(document,'owner')
         with self.assertRaisesRegex(RuntimeError,'missing'):validate_listing({'rust-suites':{}},'owner')
 
-    def run_ci(self, out, *, full=False, failed_gate=False, failed_owner=False, plan=False):
+    def run_ci(self, out, *, full=False, failed_gate=False, failed_owner=False, plan=False, failed_t2=False):
         selection=selected(['rss-mdm-app'], ownership_packages=['rss-mdm-app'])
         with (patch.object(ci,'require_lease'),patch.object(ci,'OUT',out),
               patch.object(ci,'command',return_value=result('head')),
@@ -65,6 +65,7 @@ class Selection(unittest.TestCase):
               patch.object(ci,'select_impact',return_value=selection),patch.object(ci,'working_source_state',return_value='stable'),
               patch.object(ci,'workspace_pin',side_effect=RuntimeError('pin failure') if failed_gate else None,return_value=('url','rev')),
               patch.object(ci,'dependency_graphs'),
+              patch.object(ci,'run_modules',return_value={'status':'failed' if failed_t2 else 'passed','executedCases':1}),
               patch('test_ownership.check_ownership',side_effect=RuntimeError('unowned ignored') if failed_owner else None) as owner,
               patch.dict(ci.os.environ,{'CI_T2':'all' if full else 'none','CI_FULL':'0','CI_PLAN':'1' if plan else '0'}),
               contextlib.redirect_stdout(io.StringIO())):
@@ -78,15 +79,16 @@ class Selection(unittest.TestCase):
                 self.assertEqual(code,int(pin or ownership));owner.assert_called_once()
                 evidence=json.loads((out/'result.json').read_text())
                 self.assertEqual(evidence['gates']['check']['status'],'passed')
-                self.assertEqual(evidence['t2']['reason'],'not-built')
+                self.assertEqual(evidence['t2']['reason'],'not-requested')
 
-    def test_full_ci_cannot_pass_without_t2(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            out=Path(temporary);code,_=self.run_ci(out,full=True)
-            self.assertEqual(code,1)
-            evidence=json.loads((out/'result.json').read_text())
-            self.assertFalse(evidence['verificationComplete'])
-            self.assertEqual(evidence['t2']['status'],'skipped')
+    def test_full_ci_uses_actual_t2_verdict(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed),tempfile.TemporaryDirectory() as temporary:
+                out=Path(temporary);code,_=self.run_ci(out,full=True,failed_t2=failed)
+                self.assertEqual(code,int(failed))
+                evidence=json.loads((out/'result.json').read_text())
+                self.assertEqual(evidence['verificationComplete'],not failed)
+                self.assertEqual(evidence['t2']['status'],'failed' if failed else 'passed')
 
     def test_plan_preserves_execution_and_does_not_discover(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -94,7 +96,7 @@ class Selection(unittest.TestCase):
             code,owner=self.run_ci(out,plan=True)
             self.assertEqual(code,0);owner.assert_not_called()
             self.assertEqual((out/'result.json').read_text(),'previous execution')
-            self.assertEqual(json.loads((out/'plan.json').read_text())['t2']['reason'],'not-built')
+            self.assertEqual(json.loads((out/'plan.json').read_text())['t2']['reason'],'not-requested')
 
     def test_cleanup_keeps_other_evidence_and_does_not_follow_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
