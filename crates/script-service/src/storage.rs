@@ -91,13 +91,14 @@ pub async fn save_run(
             && !(status == "cancelled" && cancelled)
         {
             use rss_mdm_webhook_service::{events, model::*};
+            let occurred_at = now(tx).await?;
             events::emit_in(
                 tx,
                 Event {
                     event_id: events::identity(run.id, &format!("terminal:{status}")),
                     event_type: EventType::PolicyTerminal,
                     version: 1,
-                    occurred_at: now(tx).await?,
+                    occurred_at,
                     tenant_id: stored(Uuid::parse_str(&tx.tenant_id().to_string()))?,
                     device_id: run.target.device.clone(),
                     data: EventData::Policy {

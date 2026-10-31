@@ -243,7 +243,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             windows_entra_register: crate::windows_entra::register()
                 .bind_with(context, |(s, _)| Arc::new(s.windows_entra.clone())),
             http_register: crate::execution::http::register(
-                runtime.map(|(s, _)| s.task_reads.clone()),
+                runtime.map(|(s, _)| s.queries.clone()),
                 cursor(),
             )
             .bind_with(context, |(s, _)| {
@@ -255,7 +255,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                 })
             }),
             http_register_2: crate::planning::policies::http::register(
-                runtime.map(|(s, _)| s.queries.clone()),
+                runtime.map(|(s, _)| s.task_reads.clone()),
                 cursor(),
             )
             .bind_with(context, |(s, _)| s.policies.clone()),

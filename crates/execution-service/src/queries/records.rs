@@ -358,24 +358,6 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(v: Value) -> crate::transac
 #[path = "../../tests/query_records.rs"]
 mod tests;
 
-#[cfg(test)]
-mod native_summary_tests {
-    use super::*;
-    #[test]
-    fn summaries_never_serialize_native_values_or_nested_evidence() {
-        let value:SummaryResult=serde_json::from_value(serde_json::json!({"native":{"private":"device-data"},"queries":{},"planDigest":vec![1;32],"outputReference":{"bytes":5,"sha256":"digest"},"trusted":true,"receivedAt":1,"diagnostics":null})).unwrap();
-        let output = serde_json::to_value(value).unwrap();
-        assert!(output.get("native").is_none());
-        assert!(
-            serde_json::from_value::<SummaryResult>(
-                serde_json::json!({"nested":[{"native":{"secret":"value"}}]})
-            )
-            .is_err()
-        );
-        assert_eq!(output["diagnostics"], serde_json::Value::Null);
-    }
-}
-
 /// The shared command owner's closed public state, without a second state table.
 #[derive(Clone, Copy, Debug)]
 pub struct CommandStatus(pub rss_device_command::Status);

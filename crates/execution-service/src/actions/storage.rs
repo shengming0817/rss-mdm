@@ -438,8 +438,7 @@ impl ScheduledPolicy {
             return self.run_admission_in(service, tx, &run.target, now).await;
         }
         if run.state.started_at.is_none() {
-            let channel = if matches!(self, Self::Native(_))
-                || matches!(self, Self::Software(v) if v.assignment.channel()==rss_mdm_inventory::Channel::Mdm)
+            let channel = if matches!(self, Self::Software(v) if v.assignment.channel()==rss_mdm_inventory::Channel::Mdm)
             {
                 rss_mdm_inventory::Channel::Mdm
             } else {

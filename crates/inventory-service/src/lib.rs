@@ -87,3 +87,7 @@ pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
 
 mod storage_authority;
 pub use storage_authority::verify_authority;
+
+#[cfg(test)]
+#[path = "../tests/collection_templates.rs"]
+mod collection_templates_tests;

@@ -581,7 +581,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         launch.stage_task_with_token(
                             rss_mdm_windows_channel::push::registration(
                                 windows.channel.clone(),
-                                Arc::new(crate::assembly::windows_business::WindowsBusiness(execution.service.clone(),execution.configuration.clone())),
+                                Arc::new(crate::assembly::windows_business::WindowsBusiness(execution.service.clone(),execution.configuration.clone(),execution.collections.clone())),
                                 execution.protection.clone(),
                                 access.windows_store(),
                                 audit_store.clone(),

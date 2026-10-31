@@ -1,7 +1,7 @@
 //! Remaining execution capabilities contribute only their own assignment facts.
 use super::{Queries, records};
 use crate::{
-    Error, Result,
+    Result,
     sources::{onboarding, software, storage},
 };
 use uuid::Uuid;

@@ -73,7 +73,6 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 pub struct ExecutionService {
     pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) worker_concurrency: usize,
-    pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
@@ -87,7 +86,6 @@ pub struct Dependencies {
     pub capacity: Arc<dyn capacity::DeviceCapacity>,
     pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub worker_concurrency: usize,
-    pub cursor_key: Vec<u8>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub sessions: Arc<authorization::session::SessionAuthority>,
     pub inputs: Arc<Inputs>,
@@ -141,10 +139,6 @@ impl ExecutionService {
             },
             worker_concurrency: dependencies.worker_concurrency,
             worker_budget: dependencies.worker_budget,
-            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
-                ring::hmac::HMAC_SHA256,
-                &dependencies.cursor_key,
-            )),
             readiness: Default::default(),
 
             sessions: dependencies.sessions,
@@ -269,10 +263,6 @@ pub const RELATIONS_SQL: &str = concat!(
     "\n",
     include_str!("../schema/command-runtime.sql")
 );
-
-#[cfg(test)]
-#[path = "../tests/native_collection_unit.rs"]
-mod native_collection_unit;
 
 pub mod recovery_credentials;
 

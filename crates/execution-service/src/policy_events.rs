@@ -285,10 +285,12 @@ impl crate::transactions::ExecutionTransactions {
                     }
                 })
             }
-            // These are handled by Planning, whose lifecycle and telemetry owners hold their contracts.
-            Action::UnmanageDevice { .. } | Action::TelemetryProfile { .. } => {
-                Err(crate::Error::Unsupported.into())
-            }
+            // App dispatches these actions directly to their business owners.
+            Action::UnmanageDevice { .. }
+            | Action::TelemetryProfile { .. }
+            | Action::Execution { .. }
+            | Action::AgentCollection { .. }
+            | Action::NativeCollection { .. } => Err(crate::Error::Unsupported.into()),
         }
     }
 

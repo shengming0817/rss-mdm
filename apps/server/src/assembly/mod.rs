@@ -1,5 +1,5 @@
 //! Product route and service assembly.
-mod agent_facts;
+pub(crate) mod agent_facts;
 pub(crate) mod agent_tasks;
 pub(crate) mod apple_business;
 mod apple_facts;
@@ -764,3 +764,7 @@ pub(crate) mod timeline_associations;
 mod collection_ports;
 
 mod task_reads;
+
+#[cfg(test)]
+#[path = "../../tests/execution_owners/mod.rs"]
+mod execution_owners_t2;

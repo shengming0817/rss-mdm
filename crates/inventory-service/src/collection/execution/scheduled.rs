@@ -2,7 +2,6 @@
 use super::{CollectionService, admission as production, model::Target, policy, storage};
 use crate::{Error, transaction::Result};
 use rss_transactional_messaging_postgres::PgTransaction;
-use sqlx::Row;
 use uuid::Uuid;
 
 #[derive(Clone, Copy)]
@@ -123,7 +122,6 @@ pub(crate) async fn delay_in(
                     _,
                 ) => return Ok(None),
                 _ => match native
-                    .frozen
                     .input
                     .schedule
                     .next_after(now, target.device.as_bytes())?

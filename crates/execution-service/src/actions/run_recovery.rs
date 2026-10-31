@@ -1,7 +1,7 @@
 //! Individually fenced remaining-owner run recovery.
 //! ref: RSS reconcile-postgres/src/messaging.rs@d0202b30379a067a94ef386e4c071b7f6cc3d47c;
 //! Kubernetes sample-controller/controller.go (one queued object per reconciliation).
-use crate::{Error, ExecutionService, Result, storage};
+use crate::{Error, ExecutionService, Result};
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 

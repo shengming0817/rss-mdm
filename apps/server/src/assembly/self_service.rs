@@ -1,5 +1,5 @@
 //! One authorized self-service directory and receipt-first composition of concrete owners.
-use super::agent_tasks::{AgentTasks, collection_fault, fault, script_fault};
+use super::agent_tasks::{AgentTasks, fault, script_fault};
 use rss_mdm_agent_channel::{Error, Failure};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::{AuditStore, RequestAudit};
@@ -189,7 +189,7 @@ async fn script_policy(service: &AgentTasks, tx: &mut PgTransaction<'_>, id: Uui
         checked(service.requests.policy_reader.locked_in(tx, id).await?)?.ok_or(Error::NotFound)?;
     match policy.definition.action.kind() {
         rss_mdm_policy::ActionKind::Execution => Ok(true),
-        rss_mdm_policy::ActionKind::Software | rss_mdm_policy::ActionKind::MdmEnrollment => {
+        rss_mdm_policy::ActionKind::Software | rss_mdm_policy::ActionKind::RequestMdmEnrollment => {
             Ok(false)
         }
         _ => Err(Error::Forbidden),

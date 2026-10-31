@@ -44,7 +44,9 @@ pub async fn eligible_on(
     };
     let context = rss_mdm_windows_mdm::native::Context::from_capabilities(
         &version,
-        edition,
+        edition
+            .try_into()
+            .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?,
         rss_mdm_windows_mdm::native::Scope::Device,
         enrollment,
     )

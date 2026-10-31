@@ -18,7 +18,7 @@ pub fn validate_access(
 use crate::{
     Error, ExecutionService, Result, Target,
     actions::{production, storage as db},
-    authorization::{Permission, context::AuthorizedPrincipal},
+    authorization::context::AuthorizedPrincipal,
     storage,
     transaction::*,
 };

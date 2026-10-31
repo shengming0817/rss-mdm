@@ -19,7 +19,6 @@ pub struct Materials {
     pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub capacity: Arc<dyn DeviceCapacity>,
     pub instance: String,
-    pub content: Option<Arc<rss_mdm_content_service::Store>>,
 }
 pub struct Transactions {
     pub(crate) runtime: Arc<PgRuntime>,
@@ -31,7 +30,6 @@ pub struct Transactions {
     pub(crate) capacity: Arc<dyn DeviceCapacity>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
-    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
 }
 impl Transactions {
     pub async fn bind(
@@ -57,7 +55,6 @@ impl Transactions {
             agent_store: materials.agent_store.clone(),
             source: materials.source.clone(),
             capacity: materials.capacity.clone(),
-            content: materials.content.clone(),
         })
     }
     pub fn validate_in(&self, tx: &PgTransaction<'_>) -> crate::Result<()> {

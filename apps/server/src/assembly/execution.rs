@@ -379,7 +379,6 @@ pub(crate) async fn assemble(
                 source: source.clone(),
                 capacity: Arc::new(super::capacity::Capacity),
                 instance: config.identity.instance_id.clone(),
-                content: content.clone(),
             }),
         )
         .await
@@ -439,7 +438,6 @@ pub(crate) async fn assemble(
             capacity: Arc::new(super::capacity::Capacity),
             configuration_cleanup,
             worker_concurrency: config.background.device_concurrency,
-            cursor_key,
             recovery_credentials,
             sessions,
             source,

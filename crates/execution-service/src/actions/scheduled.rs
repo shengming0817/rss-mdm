@@ -1,5 +1,5 @@
 //! Policy discovery creates device targets; admission never holds a page of device locks.
-use super::{production, storage as db};
+use super::storage as db;
 use crate::{Error, ExecutionService, Result, Target, storage};
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;

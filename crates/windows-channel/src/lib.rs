@@ -803,3 +803,7 @@ pub async fn verify_delivery(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Err
 
 pub mod command_binding;
 pub const NATIVE_COMMANDS_SQL: &str = include_str!("../schema/native-commands.sql");
+
+#[cfg(test)]
+#[path = "../tests/collection_plan.rs"]
+mod collection_plan_tests;

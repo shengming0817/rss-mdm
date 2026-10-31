@@ -28,16 +28,16 @@ pub(super) async fn assignments(
         let (s,a,_audit,query,codec)=*ctx;let limit=query.limit();current.require(a,Permission::PolicyRead,None)?;current.require_all_devices(a,Permission::InventoryRead)?;
         let p=s.policy_reader.read_on(c,id).await.map_err(|_|Error::Unavailable(Failure::PlanningStorage))?.map_err(|_|Error::Conflict)?.ok_or(Error::PolicyMissing)?;
         let authority=current.query_binding(a)?;let scope=p.definition.scope;let input=json!([id,p.revision,p.version]);
-        let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,a,&authority,rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA.id,scope,&input).await?;
+        let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,a,&authority,rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA.id,scope,&input).await.map_err(window)?;
         let page=async {
-        let after=rss_mdm_scope_service::window::after(codec,query,&binding)?;
+        let after=rss_mdm_scope_service::window::after(codec,query,&binding).map_err(window)?;
         if matches!(p.definition.action,Action::UnmanageDevice {..}) {
             let page=s.execution.lifecycle_assignments_on(c,&p,after.as_deref(),limit,codec,&binding).await.map_err(super::history::execution_fault)?;
 
             return Ok(page);
         }
         let source=s.source.clone();let tenant=s.tenant;let scope=p.definition.scope;let cursor=after.clone();let channel=match p.definition.action.target_channel() {Some(rss_mdm_policy::SoftwareChannel::Agent)=>rss_mdm_inventory::Channel::Agent,Some(rss_mdm_policy::SoftwareChannel::Mdm)=>rss_mdm_inventory::Channel::Mdm,None=>return Err(Error::Malformed)};
-        let mut objects=source.assignment_objects_on(c,tenant,scope,channel,cursor.as_deref(),limit).await?;
+        let mut objects=source.assignment_objects_on(c,tenant,scope,channel,cursor.as_deref(),limit).await.map_err(super::source)?;
         let t=tenant.to_string();let version=p.version;let channel_name=channel.as_str();let cursor=after.clone();
         let retired=sqlx::query_scalar::<_,serde_json::Value>("SELECT input FROM mdm_policy.assignments WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND channel=$4 AND reason='source_removed' AND object>coalesce($5,'') COLLATE \"C\" ORDER BY object LIMIT $6").bind(t).bind(id).bind(version).bind(channel_name).bind(cursor).bind((limit+1) as i64).fetch_all(&mut *c).await.map_err(sql)?;
         for value in retired {let row:rss_mdm_scope_service::channels::AssignmentObject=serde_json::from_value(value).map_err(|_|Error::Malformed)?;if !objects.iter().any(|o|o.object==row.object){objects.push(row);}}
@@ -65,7 +65,7 @@ pub(super) async fn assignments(
             items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"qualification":object.admission,"sources":object.sources,"scopeResult":object.scope_result,"taskAdmission":task_admission,"operationIds":operations}));
         }
 
-        serde_json::from_value(json!({"items":items,"nextCursor":rss_mdm_scope_service::window::next(codec,&binding,next)?})).map_err(|_|Error::Unavailable(Failure::CommandInvariant))
+        serde_json::from_value(json!({"items":items,"nextCursor":rss_mdm_scope_service::window::next(codec,&binding,next).map_err(window)?})).map_err(|_|Error::Unavailable(Failure::CommandInvariant))
         }.await?;
         Ok(page)
     })).await

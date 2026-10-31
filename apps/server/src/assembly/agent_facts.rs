@@ -2,7 +2,7 @@
 use rss_mdm_execution_service::agent_facts::{Binding, Pending, Store};
 use sqlx::PgConnection;
 use uuid::Uuid;
-pub(super) struct AgentFacts;
+pub(crate) struct AgentFacts;
 fn error(e: rss_mdm_agent_channel::Error) -> rss_mdm_execution_service::Error {
     use rss_mdm_agent_channel::Error as A;
     use rss_mdm_execution_service::{Error as E, Failure};

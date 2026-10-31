@@ -1,5 +1,5 @@
 //! Policy changes wake all historical tasks, including after an action kind change.
-use crate::{Error, Result, Transactions};
+use crate::{Result, Transactions};
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;

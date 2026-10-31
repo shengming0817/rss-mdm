@@ -128,6 +128,22 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
     assert_eq!(signed.payload.task_id(), target);
     let stored:serde_json::Value=sqlx::query_scalar("SELECT offer FROM mdm_agent.task_attempts WHERE tenant_id=$1::uuid AND id=$2 AND run=$3 AND registration=$4").bind(c.tenant.to_string()).bind(signed.payload.attempt_id()).bind(target).bind(registration).fetch_one(&c.operator).await?;
     assert_eq!(stored, serde_json::to_value(signed)?);
+    let deadline: i64 = sqlx::query_scalar(
+        "SELECT deadline FROM mdm_agent.task_attempts WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(signed.payload.attempt_id())
+    .fetch_one(&c.operator)
+    .await?;
+    let expected: i64 = sqlx::query_scalar(
+        "SELECT deadline FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(target)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(deadline, expected);
+
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     let key = trust.keys.iter().find(|k| k.id == signed.key_id).unwrap();
     ring::signature::UnparsedPublicKey::new(

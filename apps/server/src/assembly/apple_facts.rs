@@ -1,9 +1,6 @@
 //! Field mapping between Apple protocol facts and their business consumers.
 use rss_mdm_apple_channel::protocol_types as protocol;
-use rss_mdm_apple_channel::protocol_types::{
-    AppleCollections as _, AppleProfiles as _, AppleResults as _,
-};
-use rss_mdm_audit_integration::Fact;
+use rss_mdm_apple_channel::protocol_types::{AppleProfiles as _, AppleResults as _};
 use rss_mdm_execution_service::apple_facts::*;
 use rss_mdm_registration_service::DevicePrincipal;
 use sqlx::PgConnection;

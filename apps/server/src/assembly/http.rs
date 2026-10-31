@@ -44,10 +44,12 @@ pub(crate) fn from_state(
         platform_access: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
             state.configuration.clone(),
+            state.agent_tasks.collections.clone(),
         )),
         departure: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
             state.configuration.clone(),
+            state.agent_tasks.collections.clone(),
         )),
         protection: state.protection.clone(),
         credentials: state.credentials.clone(),
@@ -89,6 +91,7 @@ pub(crate) fn from_state(
         departure: Arc::new(super::windows_business::WindowsBusiness(
             state.execution.clone(),
             state.configuration.clone(),
+            state.agent_tasks.collections.clone(),
         )),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),

@@ -26,7 +26,7 @@ pub async fn retire_in(
             let previous: Option<serde_json::Value> = row.try_get("state")?;
             let changed = if let Some(previous) = previous {
                 let mut state: rss_mdm_task_state::RunState =
-                    crate::stored(serde_json::from_value(previous.clone()))?;
+                    crate::transaction::stored(serde_json::from_value(previous.clone()))?;
                 state.cancel();
                 sqlx::query_scalar::<_, bool>(
                     "SELECT mdm_inventory.save_retired_collection_agent($1,$2,$3,$4)",

@@ -123,11 +123,11 @@ impl Port for Reads {
                 let collection_preview=match &input.definition.action {Action::AgentCollection{resource,..}|Action::NativeCollection{resource,..}=>Some(s.collections.preview_on(c,resource,channel,verified,proof,grant).await?),_=>None};
                 let scope=input.definition.scope;
                 let authority=grant.query_binding(proof)?;
-                let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,proof,&authority,rss_mdm_policy::pages::PREVIEW_SCHEMA.id,scope,&json!([input.definition,input.scope_result])).await.map_err(Error::from)?;
-                let after=rss_mdm_scope_service::window::after(codec,query,&binding).map_err(Error::from)?;
+                let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,proof,&authority,rss_mdm_policy::pages::PREVIEW_SCHEMA.id,scope,&json!([input.definition,input.scope_result])).await.map_err(window)?;
+                let after=rss_mdm_scope_service::window::after(codec,query,&binding).map_err(window)?;
                 let limit=query.limit();
-                let mut objects=s.source.assignment_objects_on(c,s.tenant,scope,channel,after.as_deref(),limit).await.map_err(Error::from)?;
-                let result=s.source.preview_scope_on(c,s.tenant,scope,channel,None).await.map_err(Error::from)?.result;
+                let mut objects=s.source.assignment_objects_on(c,s.tenant,scope,channel,after.as_deref(),limit).await.map_err(source)?;
+                let result=s.source.preview_scope_on(c,s.tenant,scope,channel,None).await.map_err(source)?.result;
                 if input.scope_result.is_some_and(|r|r!=result) {return Err(Error::Conflict);}
                 let more=objects.len()>limit;objects.truncate(limit);
                 let next=if more{objects.last().map(|o|o.object.key())}else{None};
@@ -150,7 +150,7 @@ impl Port for Reads {
                     }else{None};
                     items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"eligibility":object.admission,"taskAdmission":admission}));
                 }
-                serde_json::from_value(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":rss_mdm_scope_service::window::next(codec,&binding,next).map_err(Error::from)?})).map_err(|_|Error::Unavailable(Failure::CommandInvariant))
+                serde_json::from_value(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":rss_mdm_scope_service::window::next(codec,&binding,next).map_err(window)?})).map_err(|_|Error::Unavailable(Failure::CommandInvariant))
             })).await
         })
     }

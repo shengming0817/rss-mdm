@@ -178,8 +178,14 @@ async fn seed_run(tx: &mut sqlx::PgConnection, c: &Context, seed: RunSeed<'_>) -
     sqlx::query("INSERT INTO mdm_scope.scope_runs(tenant_id,id,scope,definition_revision,asset_cut,input,fingerprint,phase,object_count,member_count) VALUES($1::uuid,$2,$3,1,$4,$5,$6,$7,1,1)").bind(c.tenant.to_string()).bind(run).bind(scope).bind(cut.to_json()).bind(serde_json::to_value(input)?).bind(fingerprint).bind(phase).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_scope.scope_source_members(tenant_id,run,source,device,input,unknown) VALUES($1::uuid,$2,0,$3,$4,false)").bind(c.tenant.to_string()).bind(run).bind(object.object.key()).bind(serde_json::to_value(object)?).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_scope.scope_results(tenant_id,run,device,matched,explanation) VALUES($1::uuid,$2,$3,true,$4)").bind(c.tenant.to_string()).bind(run).bind(object.object.key()).bind(json!({"device":device,"targets":input.definition.targets,"limitations":[],"exclusions":[],"reasons":[]})).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_scope.scope_projection_runs(tenant_id,id,scope,previous_resolution,next_entry,phase,agent_revision,mdm_revision,channel_hashes) VALUES($1::uuid,$2,$3,$4,1,'project',1,1,$5)").bind(c.tenant.to_string()).bind(run).bind(scope).bind(previous).bind(json!({"agent":"0".repeat(64),"mdm":format!("{:x}",Sha256::digest(serde_json::to_vec(object)?))})).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_scope.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) VALUES($1::uuid,$2,'mdm',$3,true,false,$4,1)").bind(c.tenant.to_string()).bind(run).bind(device).bind(serde_json::to_value(&object.members[0])?).execute(&mut *tx).await?;
+    let channel = match object.members[0].channel {
+        rss_mdm_inventory::Channel::Agent => "agent",
+        rss_mdm_inventory::Channel::Mdm => "mdm",
+    };
+    let mut hashes = json!({"agent":"0".repeat(64),"mdm":"0".repeat(64)});
+    hashes[channel] = json!(format!("{:x}", Sha256::digest(serde_json::to_vec(object)?)));
+    sqlx::query("INSERT INTO mdm_scope.scope_projection_runs(tenant_id,id,scope,previous_resolution,next_entry,phase,agent_revision,mdm_revision,channel_hashes) VALUES($1::uuid,$2,$3,$4,1,'project',1,1,$5)").bind(c.tenant.to_string()).bind(run).bind(scope).bind(previous).bind(hashes).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_scope.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) VALUES($1::uuid,$2,$5,$3,true,false,$4,1)").bind(c.tenant.to_string()).bind(run).bind(device).bind(serde_json::to_value(&object.members[0])?).bind(channel).execute(&mut *tx).await?;
     sqlx::query(
         "UPDATE mdm_scope.scope_projection_runs SET phase=$3 WHERE tenant_id=$1::uuid AND id=$2",
     )

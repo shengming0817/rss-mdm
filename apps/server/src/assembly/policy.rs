@@ -48,7 +48,6 @@ pub(crate) async fn events(
                 source: materials.source.clone(),
                 capacity: Arc::new(super::capacity::Capacity),
                 instance: materials.instance.clone(),
-                content: materials.content.clone(),
             }),
         )
         .await

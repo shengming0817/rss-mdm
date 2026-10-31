@@ -53,3 +53,22 @@ fn script_fault(error: rss_mdm_script_service::transaction::Fault) -> Error {
 mod history;
 
 mod assignments;
+
+fn source(error: rss_mdm_scope_service::channels::SourceError) -> Error {
+    use rss_mdm_scope_service::channels::SourceError as S;
+    match error {
+        S::Capacity => Error::Unavailable(Failure::Capacity),
+        S::Missing => Error::ScopeNotFound,
+        S::Conflict => Error::QueryReadConflict,
+        S::Invariant => Error::Unavailable(Failure::PlanningStorage),
+        S::Storage(e) => sql(e),
+    }
+}
+fn window(error: rss_mdm_scope_service::window::Error) -> Error {
+    use rss_mdm_scope_service::window::Error as W;
+    match error {
+        W::Malformed => Error::Malformed,
+        W::Conflict => Error::QueryCursorInvalidated,
+        W::Source(e) => source(e),
+    }
+}
