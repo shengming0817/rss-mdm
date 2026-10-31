@@ -451,8 +451,8 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
     }
     let state = serde_json::json!({"probes":[],"statuses":[200],"values":["1"]});
     for (snapshot, first_command) in [(before, 2048i64), (after, 2049)] {
-        sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,evidence) VALUES($1::uuid,$2,$3,'mdm.windows',$4,'device',0,1,'{\"fields\":{}}','pending','{}')")
-            .bind(c.tenant.to_string()).bind(snapshot).bind(n.registration).bind(n.epoch).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,evidence) VALUES($1::uuid,$2,$3,'mdm.windows',$4,'device',$5,1,'{\"fields\":{}}','pending','{}')")
+            .bind(c.tenant.to_string()).bind(snapshot).bind(n.registration).bind(n.epoch).bind(first_command).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,kind,template_state,channel_state) VALUES($1::uuid,$2,$3,'17',1,$4,'agent',$5,$6)")
             .bind(c.tenant.to_string()).bind(snapshot).bind(n.registration).bind(first_command).bind(vec![0u8;68]).bind(&state).execute(&mut *tx).await?;
     }
