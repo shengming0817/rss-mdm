@@ -170,7 +170,29 @@ pub(crate) async fn open(
             cursor_key.clone(),
         )
         .await?;
+        let task_reads = Arc::new(super::task_reads::Reads {
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            tenant,
+            read_pool: read_pool.clone(),
+            source: materials.source.clone(),
+            scripts: rss_mdm_script_service::inputs::Inputs::bind(
+                runtime.clone(),
+                tenant,
+                content.clone(),
+                signing.loaded_key().is_some(),
+            ),
+            collections: rss_mdm_inventory_service::collection::execution::inputs::Inputs::bind(
+                runtime.clone(),
+                tenant,
+                content.clone(),
+                Arc::new(super::collection_ports::Delivery {
+                    protection: protection.clone(),
+                }),
+            ),
+            execution: queries.clone(),
+        });
         Ok(Assembly {
+            task_reads,
             configuration,
             read_pool,
             signing,
@@ -341,7 +363,6 @@ pub(crate) async fn assemble(
         protection: protection.clone(),
         agent_store: agent_store.clone(),
         apple_profiles: apple_store.clone(),
-        apple_collections: apple_store.clone(),
         windows_results: windows_results.clone(),
         apple_results: apple_store.clone(),
         instance: config.identity.instance_id.clone(),
@@ -364,7 +385,6 @@ pub(crate) async fn assemble(
         .await
         .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?,
         sessions.clone(),
-        &cursor_key,
     ));
     let collections = Arc::new(
         rss_mdm_inventory_service::collection::execution::CollectionService::new(
@@ -427,7 +447,6 @@ pub(crate) async fn assemble(
             inputs: inputs.clone(),
             agent_store,
             apple_profiles: apple_store.clone(),
-            apple_collections: apple_store.clone(),
             windows_results: windows_results.clone(),
             apple_results: apple_store.clone(),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
@@ -564,6 +583,7 @@ pub(crate) struct Assembly {
     pub(crate) scripts: Arc<rss_mdm_script_service::ScriptService>,
     pub(crate) collections:
         Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
+    pub(crate) task_reads: Arc<super::task_reads::Reads>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,

@@ -11,8 +11,7 @@ pub(crate) mod scheduled;
 mod state_schedule_tests;
 pub mod storage;
 
-pub mod native_collection;
-pub(crate) mod native_recovery;
+pub(crate) mod run_recovery;
 
 pub mod poll;
 

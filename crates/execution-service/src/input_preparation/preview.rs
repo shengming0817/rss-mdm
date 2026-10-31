@@ -8,18 +8,6 @@ pub(crate) enum PreviewInputs {
     Credential {
         architecture: Architecture,
     },
-    AgentCollection {
-        definition: rss_mdm_resource::AgentCollectionDefinition,
-        platform: Platform,
-        architecture: Architecture,
-    },
-    Native(rss_mdm_resource::NativeCollectionDefinition),
-    Script {
-        applicability: Option<rss_mdm_resource::Applicability>,
-        platform: rss_mdm_policy::Platform,
-        architecture: rss_mdm_policy::Architecture,
-        profile: rss_mdm_agent_wire::runtime::ExecutorProfile,
-    },
     Software(Box<FrozenSoftwareAction>),
     Onboarding(Frozen),
 }
@@ -53,7 +41,7 @@ impl Inputs {
     pub(crate) async fn recheck_preview_on(
         &self,
         c: &mut sqlx::PgConnection,
-        input: &PublicationInput<'_>,
+        _input: &PublicationInput<'_>,
         prepared: &PreparedPreview,
     ) -> Result<()> {
         if let Some(expected) = &prepared.resource {
@@ -72,22 +60,6 @@ impl Inputs {
                 || (version.kind() != r::Kind::Software && state != r::State::Active)
             {
                 return Err(Error::Conflict.into());
-            }
-            let selected = match input {
-                PublicationInput::Script { binding, .. }
-                | PublicationInput::AgentCollection { binding, .. }
-                | PublicationInput::NativeCollection { binding, .. } => {
-                    Some(variant(&version, binding)?)
-                }
-                _ => None,
-            };
-            if let Some(variant) = selected {
-                rss_mdm_inventory_service::collection::resource_authoring::validate_variant_on(
-                    c,
-                    self.tenant,
-                    variant,
-                )
-                .await?;
             }
         }
         match &prepared.inputs {
@@ -139,7 +111,7 @@ impl Inputs {
         &self,
         tx: &mut PgTransaction<'_>,
         input: &PublicationInput<'_>,
-        verified: Option<&Verified>,
+        _verified: Option<&Verified>,
         proof: &AuthorizedPrincipal,
         snapshot: &crate::authorization::Snapshot,
     ) -> Result<PreviewInputs> {
@@ -198,110 +170,6 @@ impl Inputs {
             .active_version_in(tx, binding.id(), binding.version())
             .await?;
         match input {
-            PublicationInput::Script {
-                binding,
-                parameters,
-                ..
-            } => {
-                if !self.materials.signing_enabled {
-                    return Err(Error::Conflict.into());
-                }
-                let prepared = script(
-                    &version,
-                    binding,
-                    *parameters,
-                    verified.ok_or(Error::Conflict)?,
-                )?;
-                if let resource::ScriptPurpose::Collection { mappings, .. } =
-                    &prepared.definition().spec().purpose
-                {
-                    let source = if prepared.definition().spec().profile
-                        == resource::ScriptProfile::Osquery
-                    {
-                        rss_mdm_inventory::Source::AgentOsquery
-                    } else {
-                        rss_mdm_inventory::Source::AgentScript
-                    };
-                    prepare_collection_in(
-                        tx,
-                        self.tenant,
-                        &version,
-                        prepared.variant(),
-                        source,
-                        mappings.keys(),
-                    )
-                    .await?;
-                }
-                Ok(PreviewInputs::Script {
-                    applicability: match &prepared.definition().spec().purpose {
-                        resource::ScriptPurpose::Collection { applicability, .. } => {
-                            Some(applicability.clone())
-                        }
-                        _ => None,
-                    },
-                    platform: binding.platform,
-                    architecture: binding.architecture,
-                    profile: match prepared.definition().spec().profile {
-                        resource::ScriptProfile::PowerShell7 => {
-                            rss_mdm_agent_wire::runtime::ExecutorProfile::PowerShell7
-                        }
-                        resource::ScriptProfile::PosixSh => {
-                            rss_mdm_agent_wire::runtime::ExecutorProfile::PosixSh
-                        }
-                        resource::ScriptProfile::Bash => {
-                            rss_mdm_agent_wire::runtime::ExecutorProfile::Bash
-                        }
-                        resource::ScriptProfile::Osquery => {
-                            rss_mdm_agent_wire::runtime::ExecutorProfile::Osquery
-                        }
-                    },
-                })
-            }
-            PublicationInput::AgentCollection { binding, .. } => {
-                if !self.materials.signing_enabled {
-                    return Err(Error::Conflict.into());
-                }
-                let definition = agent_collection(&version, binding, verified)?;
-                rss_mdm_inventory_service::collection::preparation::prepare_agent_fields(
-                    tx,
-                    self.tenant,
-                    variant(&version, binding)?,
-                    definition,
-                )
-                .await?;
-                // Native runs retain complete raw query evidence, beyond mapped fields.
-                snapshot.require(proof, Permission::InventorySensitiveRead, None)?;
-                Ok(PreviewInputs::AgentCollection {
-                    definition: definition.clone(),
-                    platform: binding.platform,
-                    architecture: binding.architecture,
-                })
-            }
-            PublicationInput::NativeCollection { binding, .. } => {
-                let (definition, _) = native_collection(&version, binding, verified)?;
-                let source = match definition.spec().adapter {
-                    resource::NativeAdapter::WindowsRead => rss_mdm_inventory::Source::MdmWindows,
-                    rss_mdm_resource::NativeAdapter::AppleDeviceInformation
-                    | rss_mdm_resource::NativeAdapter::AppleInstalledApplications
-                    | rss_mdm_resource::NativeAdapter::AppleSecurity
-                    | rss_mdm_resource::NativeAdapter::AppleProfiles
-                    | rss_mdm_resource::NativeAdapter::AppleCertificates
-                    | rss_mdm_resource::NativeAdapter::AppleUsers => {
-                        rss_mdm_inventory::Source::MdmApple
-                    }
-                };
-                prepare_collection_in(
-                    tx,
-                    self.tenant,
-                    &version,
-                    variant(&version, binding)?,
-                    source,
-                    definition.spec().mappings.keys(),
-                )
-                .await?;
-                Ok(PreviewInputs::Native(definition.clone()))
-            }
-
             PublicationInput::Software { .. } => Ok(PreviewInputs::Software(Box::new(
                 self.software_in(tx, input, &version).await?,
             ))),

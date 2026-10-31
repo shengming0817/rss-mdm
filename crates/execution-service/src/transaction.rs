@@ -387,19 +387,3 @@ impl From<rss_mdm_scope_service::window::Error> for Fault {
         Self::Request(e.into())
     }
 }
-
-impl From<rss_mdm_script_service::Error> for Fault {
-    fn from(e: rss_mdm_script_service::Error) -> Self {
-        Self::Request(e.into())
-    }
-}
-impl From<rss_mdm_script_service::transaction::Fault> for Fault {
-    fn from(e: rss_mdm_script_service::transaction::Fault) -> Self {
-        use rss_mdm_script_service::transaction::Fault as S;
-        match e {
-            S::Request(e) => Self::Request(e.into()),
-            S::Storage(e) => Self::Storage(e),
-            S::Sql(e) => Self::Sql(e),
-        }
-    }
-}

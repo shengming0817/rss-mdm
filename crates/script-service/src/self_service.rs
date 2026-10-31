@@ -114,20 +114,6 @@ fn target(p: &DevicePrincipal) -> Target {
         generation: p.generation(),
     }
 }
-fn bind(
-    p: &DevicePrincipal,
-    proof: Option<&AuthorizedPrincipal>,
-    audit: &RequestAudit,
-) -> std::result::Result<(), Error> {
-    if let Some(proof) = proof {
-        if proof.tenant_id() != p.tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
-        proof.check_live()?;
-        proof.bind_audit(audit)?;
-    }
-    Ok(())
-}
 fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
     let subject = match subject {
         wire::SelfServiceSubject::Device {} => "device".into(),
@@ -140,23 +126,6 @@ fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
         p.registration(),
         p.generation()
     )
-}
-fn request_actors(p: &DevicePrincipal, proof: Option<&AuthorizedPrincipal>) -> Result<Vec<String>> {
-    let mut actors = Vec::new();
-    if let Some(proof) = proof {
-        actors.push(actor(
-            p,
-            &wire::SelfServiceSubject::User {
-                user: wire::SelfServiceUser {
-                    tenant_id: checked_input(Uuid::parse_str(proof.tenant_id()))?,
-                    instance_id: checked_input(Uuid::parse_str(proof.instance_id()))?,
-                    principal_id: checked_input(Uuid::parse_str(proof.principal_id()))?,
-                },
-            },
-        ));
-    }
-    actors.push(actor(p, &wire::SelfServiceSubject::Device {}));
-    Ok(actors)
 }
 fn owns(subject: &wire::SelfServiceSubject, proof: Option<&AuthorizedPrincipal>) -> bool {
     match subject {

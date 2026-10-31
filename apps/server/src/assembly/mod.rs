@@ -54,6 +54,7 @@ pub(crate) struct Assembly {
     pub(crate) apple_delivery: Arc<rss_mdm_apple_channel::delivery::Delivery>,
     pub(crate) agent_delivery: Arc<rss_mdm_agent_channel::delivery::Delivery>,
     pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
+    pub(crate) task_reads: Arc<task_reads::Reads>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
@@ -186,6 +187,7 @@ pub(crate) async fn from_compiled(
         script_work: _,
         collection_work: _,
         queries,
+        task_reads,
         protection,
         content: content_writer,
         runtime: protocol_runtime,
@@ -540,6 +542,7 @@ pub(crate) async fn from_compiled(
         configuration_preview,
         configuration,
         queries,
+        task_reads,
         protection,
         audit_store,
         apple,
@@ -759,3 +762,5 @@ mod configuration_queries;
 pub(crate) mod timeline_associations;
 
 mod collection_ports;
+
+mod task_reads;

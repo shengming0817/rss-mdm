@@ -22,9 +22,6 @@ pub use model::{
 };
 use rss_mdm_authorization_service as authorization;
 
-mod agent_collection_eligibility;
-pub use agent_collection_eligibility::matches as native_collection_supported;
-pub mod script_eligibility;
 pub mod self_service;
 mod target;
 pub use target::Target;
@@ -98,7 +95,6 @@ pub struct Dependencies {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub apple_profiles: Arc<dyn apple_facts::AppleProfiles>,
-    pub apple_collections: Arc<dyn apple_facts::AppleCollections>,
     pub windows_results: Arc<dyn crate::windows_results::Store>,
     pub apple_results: Arc<dyn apple_facts::AppleResults>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
@@ -131,7 +127,6 @@ impl ExecutionService {
                 protection: dependencies.protection,
                 agent_store: dependencies.agent_store,
                 apple_profiles: dependencies.apple_profiles,
-                apple_collections: dependencies.apple_collections,
                 configuration_cleanup: dependencies.configuration_cleanup,
                 windows_results: dependencies.windows_results,
                 apple_results: dependencies.apple_results,
@@ -274,8 +269,6 @@ pub const RELATIONS_SQL: &str = concat!(
     "\n",
     include_str!("../schema/command-runtime.sql")
 );
-
-mod collection_eligibility;
 
 #[cfg(test)]
 #[path = "../tests/native_collection_unit.rs"]

@@ -1,4 +1,4 @@
-//! Durable native admission sweeps and individually fenced run recovery.
+//! Individually fenced remaining-owner run recovery.
 //! ref: RSS reconcile-postgres/src/messaging.rs@d0202b30379a067a94ef386e4c071b7f6cc3d47c;
 //! Kubernetes sample-controller/controller.go (one queued object per reconciliation).
 use crate::{Error, ExecutionService, Result, storage};
@@ -11,14 +11,14 @@ pub(crate) enum Work {
 }
 impl Work {
     pub(crate) fn parse(entity: &str) -> Option<Self> {
-        if let Some(id) = entity.strip_prefix("native-run:") {
+        if let Some(id) = entity.strip_prefix("run:") {
             return Uuid::parse_str(id).ok().map(Self::Run);
         }
         None
     }
     fn entity(self) -> String {
         match self {
-            Self::Run(id) => format!("native-run:{id}"),
+            Self::Run(id) => format!("run:{id}"),
         }
     }
 }
@@ -48,7 +48,7 @@ pub(crate) async fn wake_run(
 ) -> Result<()> {
     wake(reconcile, tx, Work::Run(id)).await
 }
-/// Only an accepted, authenticated protocol request records a new check-in.
+/// A durable run remains recoverable independently of notifications.
 pub(crate) async fn active(tx: &mut PgTransaction<'_>, work: Work) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c| Box::pin(async move {

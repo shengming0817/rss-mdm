@@ -17,7 +17,7 @@ impl ExecutionService {
             })
         })
         .await??;
-        actions::native_recovery::lock_device(tx, p.device()).await?;
+        actions::run_recovery::lock_device(tx, p.device()).await?;
         crate::transaction::prepare_audit_in(&self.transactions.audit_store, tx, audit, &[])
             .await
             .map_err(Into::into)

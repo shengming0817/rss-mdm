@@ -144,7 +144,9 @@ pub async fn recover_one(
                     .abandon_in(tx, report, if revoked { "revoked" } else { "timeout" })
                     .await?;
             }
-            if revoked || run.collection_run.is_none() {
+            if (revoked || run.collection_run.is_none())
+                && run.delivery != super::model::NativeDelivery::Sent
+            {
                 run.delivery = super::model::NativeDelivery::Cancelled;
             }
             storage::save_native(&service.transactions, tx, &run).await?;
@@ -166,6 +168,8 @@ pub async fn recover_one(
                     } else {
                         "succeeded"
                     }
+                } else if reason == "timeout" {
+                    "unknown"
                 } else {
                     "cancelled"
                 };

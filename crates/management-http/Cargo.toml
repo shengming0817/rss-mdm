@@ -25,6 +25,7 @@ rss-mdm-policy.workspace=true
 schemars.workspace=true
 rss-mdm-certificate-archive-service.workspace = true
 rss-mdm-execution-service.workspace = true
+rss-mdm-script-service.workspace = true
 base64.workspace = true
 zeroize.workspace = true
 url.workspace = true

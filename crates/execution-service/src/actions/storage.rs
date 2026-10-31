@@ -114,7 +114,7 @@ pub async fn save_run(
         if let Source::Policy { version } = run.source {
             let tenant = tx.tenant_id().to_string();
             let scheduled: bool = tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND current_version=$2 AND state='enabled' AND definition->'action'->>'kind' IN('native_collection','software'))")
+                sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND current_version=$2 AND state='enabled' AND definition->'action'->>'kind' ='software')")
                     .bind(tenant).bind(version).fetch_one(c).await
             })).await?;
             if scheduled {

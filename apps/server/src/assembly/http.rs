@@ -331,6 +331,7 @@ pub(crate) fn from_state(
             execution: state.execution.clone(),
             task_trust: state.task_trust.clone(),
             queries: state.queries.clone(),
+            task_reads: state.task_reads.clone(),
             policies: state.policies.clone(),
             assets: state.assets.clone(),
             catalog: state.resources.clone(),

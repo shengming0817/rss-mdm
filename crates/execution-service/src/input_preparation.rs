@@ -1,21 +1,14 @@
 //! Execution-owned resource preparation inside the caller's original transaction.
-mod native;
 pub(crate) mod preview;
 mod publication;
 mod request;
 mod software;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use crate::{Error, Inputs, action_contract::*, frozen::Frozen, transaction::*};
-use native::native_collection;
-pub(crate) use native::windows_collection_plan;
 pub use request::{PublicationAuthority, PublicationInput, ResourcePreparation};
 use rss_mdm_content_service::{StorageClass, Verified};
-use rss_mdm_inventory_service::collection::preparation::{
-    freeze_collection, prepare_collection_in,
-};
-use rss_mdm_policy::{Action, Architecture, ExactResourceBinding, Platform, SoftwareIntent};
-use rss_mdm_resource::{self as resource, self as r, SelectedScript};
-use rss_mdm_script_service::preparation::freeze_in;
+use rss_mdm_policy::{Action, Platform, SoftwareIntent};
+use rss_mdm_resource::{self as resource, self as r};
 use rss_transactional_messaging_postgres::PgTransaction;
 
 impl Inputs {
@@ -27,9 +20,6 @@ impl Inputs {
         let Some(input) = input else {
             return Ok(None);
         };
-        if matches!(input, ResourcePreparation::Script { .. }) && !self.materials.signing_enabled {
-            return Err(Error::Conflict);
-        }
         let artifact = inspect(&self.runtime, self.tenant, (self, input), |ctx, tx| {
             Box::pin(async move {
                 let (service, input) = *ctx;
@@ -183,96 +173,15 @@ impl Inputs {
         Ok(version)
     }
 }
-fn select<'a>(
-    version: &'a r::Version,
-    binding: &ExactResourceBinding,
-    parameters: rss_mdm_script_service::Parameters<'_>,
-) -> Result<SelectedScript<'a>> {
-    let exact = binding;
-    let selected = checked_input(version.select_script(
-        match exact.platform {
-            Platform::Windows => r::Platform::Windows,
-            Platform::Macos => r::Platform::MacOS,
-        },
-        match exact.architecture {
-            Architecture::X86_64 => r::Architecture::X86_64,
-            Architecture::Aarch64 => r::Architecture::Aarch64,
-        },
-        &checked_input(r::Id::new(&exact.variant))?,
-    ))?;
-    parameters.checked(selected.definition())?;
-    Ok(selected)
-}
-
-/// Rebind a live content proof to the exact selection read in the caller's transaction.
-fn script<'a>(
-    version: &'a r::Version,
-    binding: &ExactResourceBinding,
-    parameters: rss_mdm_script_service::Parameters<'_>,
-    verified: &Verified,
-) -> Result<SelectedScript<'a>> {
-    let prepared = select(version, binding, parameters)?;
-    if !verified.matches(prepared.artifact()) {
-        return Err(Error::Conflict.into());
-    }
-    Ok(prepared)
-}
-
-fn variant<'a>(
-    version: &'a resource::Version,
-    binding: &ExactResourceBinding,
-) -> Result<&'a resource::Variant> {
-    let exact = binding;
-    checked_input(version.resolve(
-        match exact.platform {
-            Platform::Windows => resource::Platform::Windows,
-            Platform::Macos => resource::Platform::MacOS,
-        },
-        match exact.architecture {
-            Architecture::X86_64 => resource::Architecture::X86_64,
-            Architecture::Aarch64 => resource::Architecture::Aarch64,
-        },
-        &checked_input(resource::Id::new(&exact.variant))?,
-    ))
-}
 
 fn resource_artifact(
     version: &r::Version,
-    input: ResourcePreparation<'_>,
+    _input: ResourcePreparation<'_>,
 ) -> Result<Option<(r::Artifact, StorageClass)>> {
-    let (artifact, class) = match input {
-        ResourcePreparation::Script {
-            binding,
-            parameters,
-        } => (
-            select(version, binding, parameters)?.artifact().clone(),
-            StorageClass::Artifact,
-        ),
-
-        ResourcePreparation::AgentCollection { binding } => {
-            match variant(version, binding)?.declaration() {
-                r::Declaration::AgentCollection { artifact, .. } => {
-                    (artifact.clone(), StorageClass::Artifact)
-                }
-                _ => return Err(Error::Malformed.into()),
-            }
-        }
-        ResourcePreparation::NativeCollection { binding } => {
-            match variant(version, binding)?.declaration() {
-                r::Declaration::NativeCollection { artifact, .. } => {
-                    (artifact.clone(), StorageClass::Artifact)
-                }
-                _ => return Err(Error::Malformed.into()),
-            }
-        }
-        ResourcePreparation::Software { .. } => {
-            if version.kind() != r::Kind::Software {
-                return Err(Error::Malformed.into());
-            }
-            return Ok(None);
-        }
-    };
-    Ok(Some((artifact, class)))
+    if version.kind() != r::Kind::Software {
+        return Err(Error::Malformed.into());
+    }
+    Ok(None)
 }
 /// Check the execution capabilities required by a prepared action.
 pub fn authorize_action(
@@ -285,34 +194,6 @@ pub fn authorize_action(
     }
     snapshot.require_all_devices(proof, action_permission(action))?;
     Ok(())
-}
-
-fn agent_collection<'a>(
-    version: &'a r::Version,
-    binding: &ExactResourceBinding,
-    verified: Option<&Verified>,
-) -> Result<&'a r::AgentCollectionDefinition> {
-    let v = variant(version, binding)?;
-    let r::Declaration::AgentCollection {
-        definition,
-        artifact,
-    } = v.declaration()
-    else {
-        return Err(Error::Malformed.into());
-    };
-    if !verified.is_some_and(|v| v.matches(artifact)) {
-        return Err(Error::Conflict.into());
-    }
-    if definition
-        .spec()
-        .mappings
-        .values()
-        .any(|m| m.counter_normalization.is_some())
-    {
-        // Durable counter baselines are owned only by the periodic telemetry runtime.
-        return Err(Error::Unsupported.into());
-    }
-    Ok(definition)
 }
 
 impl Inputs {

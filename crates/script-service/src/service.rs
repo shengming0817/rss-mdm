@@ -72,21 +72,15 @@ impl Transactions {
 pub struct ScriptService {
     pub(crate) transactions: Transactions,
     pub(crate) sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
-    pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
 }
 impl ScriptService {
     pub fn new(
         transactions: Transactions,
         sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
-        cursor_key: &[u8],
     ) -> Self {
         Self {
             transactions,
             sessions,
-            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
-                ring::hmac::HMAC_SHA256,
-                cursor_key,
-            )),
         }
     }
 }

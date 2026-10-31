@@ -134,3 +134,35 @@ pub async fn restore_native(
     let manifest = stored(wire::OutputManifest::new(bytes, digest.bytes()))?;
     Ok(Some(assemble_native(tx, plan, run, &manifest).await?))
 }
+
+/// Reconstruct bounded immutable evidence inside the caller's authorized read snapshot.
+pub async fn restore_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    attempt: uuid::Uuid,
+    reference: &wire::ScriptOutputReference,
+) -> Result<wire::NativeCollectionResult> {
+    let manifest = stored(wire::OutputManifest::new(
+        reference.bytes.try_into().map_err(|_| Error::Malformed)?,
+        stored(rss_mdm_resource::Digest::parse(&reference.sha256))?.bytes(),
+    ))?;
+    let rows=sqlx::query("SELECT manifest,chunk_index,bytes FROM mdm_inventory.collection_output_chunks WHERE tenant_id=$1::uuid AND attempt=$2 ORDER BY chunk_index LIMIT 65").bind(tenant).bind(attempt).fetch_all(c).await?;
+    let chunks = rows
+        .into_iter()
+        .map(|row| {
+            let manifest = stored(serde_json::from_value(row.try_get("manifest")?))?;
+            let index = stored(u16::try_from(row.try_get::<i32, _>("chunk_index")?))?;
+            stored(wire::OutputChunk::new(
+                manifest,
+                index,
+                &row.try_get::<Vec<u8>, _>("bytes")?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let bytes = stored(manifest.assemble(chunks))?;
+    let result = stored(serde_json::from_slice(&bytes))?;
+    if stored(serde_json::to_vec(&result))? != bytes {
+        return Err(Error::Conflict.into());
+    }
+    Ok(result)
+}

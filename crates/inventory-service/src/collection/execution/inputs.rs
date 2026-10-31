@@ -9,9 +9,9 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 pub struct Inputs {
     runtime: Arc<PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    pub(crate) tenant: rss_request_context::TenantId,
     content: Option<Arc<Store>>,
-    native: Arc<dyn NativeDelivery>,
+    pub(crate) native: Arc<dyn NativeDelivery>,
 }
 pub struct Publication<'a> {
     pub channel: Channel,
@@ -191,7 +191,10 @@ impl Inputs {
         }
     }
 }
-fn select<'a>(version: &'a r::Version, binding: &ExactResourceBinding) -> Result<&'a r::Variant> {
+pub(super) fn select<'a>(
+    version: &'a r::Version,
+    binding: &ExactResourceBinding,
+) -> Result<&'a r::Variant> {
     checked_input(version.resolve(
         match binding.platform {
             rss_mdm_policy::Platform::Windows => r::Platform::Windows,
@@ -204,7 +207,7 @@ fn select<'a>(version: &'a r::Version, binding: &ExactResourceBinding) -> Result
         &checked_input(r::Id::new(&binding.variant))?,
     ))
 }
-fn artifact(variant: &r::Variant, channel: Channel) -> Result<&r::Artifact> {
+pub(super) fn artifact(variant: &r::Variant, channel: Channel) -> Result<&r::Artifact> {
     match variant.declaration() {
         r::Declaration::AgentCollection { artifact, .. } if channel == Channel::Agent => {
             Ok(artifact)

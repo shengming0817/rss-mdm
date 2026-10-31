@@ -4,7 +4,7 @@ use axum::{Extension, Json, extract::State};
 use rss_mdm_policy::pages::Preview;
 pub struct StateServices {
     pub configuration: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
-    pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    pub tasks: Arc<dyn crate::execution::task_reads::Reads>,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
 }
 pub async fn preview(
@@ -48,12 +48,11 @@ pub async fn preview(
                 .map(|v| Json(PreviewResponse::Telemetry(v)))
                 .map_err(crate::telemetry::error);
         }
-        rss_mdm_execution_service::queries::preview::preview(
-            &s.queries, &a.proof, &audit, &input, &query, &codec,
-        )
-        .await
-        .map(|v| Json(PreviewResponse::Execution(v)))
-        .map_err(Into::into)
+        s.tasks
+            .preview(&a.proof, &audit, &input, &query, &codec)
+            .await
+            .map(|v| Json(PreviewResponse::Execution(v)))
+            .map_err(Into::into)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)

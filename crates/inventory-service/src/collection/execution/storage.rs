@@ -255,3 +255,12 @@ pub async fn native_progress_in(
         report,
     })
 }
+/// Resolve only this owner's immutable task identity for Timeline correlation.
+pub async fn association_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: uuid::Uuid,
+) -> std::result::Result<Option<(String, Option<uuid::Uuid>)>, sqlx::Error> {
+    sqlx::query_as("SELECT device,NULL::uuid FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(tenant).bind(id).fetch_optional(c).await
+}

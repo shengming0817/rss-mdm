@@ -10,10 +10,10 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 
 pub struct Inputs {
-    runtime: Arc<PgRuntime>,
-    tenant: rss_request_context::TenantId,
+    pub(crate) runtime: Arc<PgRuntime>,
+    pub(crate) tenant: rss_request_context::TenantId,
     content: Option<Arc<Store>>,
-    signing_enabled: bool,
+    pub(crate) signing_enabled: bool,
 }
 pub struct Publication<'a> {
     pub binding: &'a ExactResourceBinding,

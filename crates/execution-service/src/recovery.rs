@@ -353,7 +353,7 @@ pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, entity: &str) -> Resu
 pub(crate) enum PreparedRecovery {
     Empty,
     Retirement(crate::unmanage::PreparedRetirement),
-    Native(actions::native_recovery::Work, Uuid),
+    Native(actions::run_recovery::Work, Uuid),
     Policy(Uuid),
     Scheduled(actions::scheduled::Work, Uuid),
     AgentInstall(String),
@@ -375,17 +375,18 @@ pub(crate) async fn prepare(
     let prepared = if let Some(id) = crate::unmanage::operation(entity) {
         let batch = service.prepare_retirement_in(tx, id).await?;
         PreparedRecovery::Retirement(batch)
-    } else if let Some(work) = actions::native_recovery::Work::parse(entity) {
+    } else if let Some(work) = actions::run_recovery::Work::parse(entity) {
         let t = tenant.to_string();
         let device: String = tx.with_connection(move |c| Box::pin(async move {
             match work {
-                actions::native_recovery::Work::Run(id) => sqlx::query_scalar("SELECT device FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(id).fetch_one(c).await,
+                actions::run_recovery::Work::Run(id) => sqlx::query_scalar("SELECT device FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(id).fetch_one(c).await,
             }
         })).await?;
-        if !actions::native_recovery::try_lock_device(tx, &device).await? {
+        if !actions::run_recovery::try_lock_device(tx, &device).await? {
             return Ok(None);
         }
-        if let actions::native_recovery::Work::Run(id) = work {
+        {
+            let actions::run_recovery::Work::Run(id) = work;
             actions::storage::load_run(tx, id).await?;
         }
         let run_id = Uuid::new_v4();
@@ -393,7 +394,7 @@ pub(crate) async fn prepare(
         PreparedRecovery::Native(work, run_id)
     } else if let Some(work) = actions::scheduled::Work::parse(entity) {
         if let Some(device) = actions::scheduled::device_in(tx, work).await? {
-            if !actions::native_recovery::try_lock_device(tx, &device).await? {
+            if !actions::run_recovery::try_lock_device(tx, &device).await? {
                 return Ok(None);
             }
             PreparedRecovery::Scheduled(work, Uuid::new_v4())
@@ -410,7 +411,7 @@ pub(crate) async fn prepare(
             None => device(tx, entity).await?,
         };
         if let Some(device) = device {
-            if !actions::native_recovery::try_lock_device(tx, &device).await? {
+            if !actions::run_recovery::try_lock_device(tx, &device).await? {
                 return Ok(None);
             }
 
@@ -449,7 +450,7 @@ pub(crate) async fn apply_prepared(
             service.advance_retirement_in(tx, batch, audit).await
         }
         PreparedRecovery::Native(work, run_id) => {
-            actions::native_recovery::step(service, tx, work, run_id).await
+            actions::run_recovery::step(service, tx, work, run_id).await
         }
         PreparedRecovery::Policy(id) => actions::recovery::discover_in(service, tx, id)
             .await
@@ -643,7 +644,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let (service,entity) = *ctx;
             if entity == "inputs" { return crate::source_changes::pending_in(tx, service.transactions.source.clone()).await; }
             if let Some(id)=crate::unmanage::operation(entity){return crate::unmanage::active_in(tx,id).await;}
-            if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::needs_step(service,tx,work).await; }
+            if let Some(work)=actions::run_recovery::Work::parse(entity) { return actions::run_recovery::needs_step(service,tx,work).await; }
             if let Some(work)=actions::scheduled::Work::parse(entity) { return Ok(actions::scheduled::device_in(tx,work).await?.is_some()); }
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
             if let Some(digest)=entity.strip_prefix("agent-install:") {

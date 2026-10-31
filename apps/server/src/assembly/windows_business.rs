@@ -400,6 +400,12 @@ impl WakeDemand for WindowsBusiness {
                     .await
                     .map_err(policy_error)?,
             );
+            candidates.extend(
+                self.2
+                    .windows_wake_candidates_on(c, after)
+                    .await
+                    .map_err(collection_fault)?,
+            );
             candidates.sort();
             candidates.dedup();
             candidates.truncate(32);
@@ -424,7 +430,12 @@ impl WakeDemand for WindowsBusiness {
                 .windows_wake_pending_in(c, device, registration, generation)
                 .await
                 .map_err(policy_error)?;
-            Ok(execution || configuration)
+            let collection = self
+                .2
+                .windows_wake_pending_on(c, device, registration, generation)
+                .await
+                .map_err(collection_fault)?;
+            Ok(execution || configuration || collection)
         })
     }
 }

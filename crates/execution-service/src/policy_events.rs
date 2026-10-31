@@ -159,7 +159,7 @@ impl crate::transactions::ExecutionTransactions {
         if now >= deadline {
             return Ok(Decision::Expired);
         }
-        crate::actions::native_recovery::lock_device(tx, &target.device).await?;
+        crate::actions::run_recovery::lock_device(tx, &target.device).await?;
         if !policy.state.is_enabled() {
             return Ok(rejected("policy_disabled"));
         }
@@ -179,11 +179,7 @@ impl crate::transactions::ExecutionTransactions {
             return Ok(rejected("scope_not_eligible"));
         }
         match &policy.definition.action {
-            Action::Execution { .. }
-            | Action::Credential { .. }
-            | Action::AgentCollection { .. }
-            | Action::NativeCollection { .. }
-            | Action::RequestMdmEnrollment { .. } => {
+            Action::Credential { .. } | Action::RequestMdmEnrollment { .. } => {
                 let plan =
                     runs::load_policy_version(&self.policy_reader, tx, policy.version).await?;
                 production::accept_for_device(

@@ -23,7 +23,6 @@ rss-mdm-webhook-service.workspace = true
 rss-transactional-messaging.workspace = true
 rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
-ring.workspace = true
 tokio.workspace = true
 
 sha2.workspace = true
@@ -36,6 +35,7 @@ rss-mdm-software-service.workspace = true
 rss-mdm-task-state.workspace = true
 rss-request-context.workspace = true
 rss-transactional-messaging-postgres.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

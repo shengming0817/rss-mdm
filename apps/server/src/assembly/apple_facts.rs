@@ -130,41 +130,6 @@ impl AppleProfiles for AppleFacts {
         })
     }
 }
-impl AppleCollections for AppleFacts {
-    fn prepare_native_collection<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        id: Uuid,
-    ) -> Pending<'a, Vec<Fact>> {
-        Box::pin(async move {
-            self.0
-                .prepare_native_collection(c, tenant, id)
-                .await
-                .map_err(error)
-        })
-    }
-    fn pending_collections<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        registration: Uuid,
-        user_key: String,
-        limit: usize,
-    ) -> Pending<'a, Vec<PendingCollection>> {
-        Box::pin(async move {
-            self.0
-                .pending_collections(c, tenant, registration, user_key, limit)
-                .await
-                .map(|rows| {
-                    rows.into_iter()
-                        .map(|r| PendingCollection { id: r.id })
-                        .collect()
-                })
-                .map_err(error)
-        })
-    }
-}
 impl AppleResults for AppleFacts {
     fn platform_sso_observation<'a>(
         &'a self,

@@ -37,6 +37,8 @@ pub(super) async fn admit(
     tx.with_connection(|c| {
         Box::pin(async move {
             rss_mdm_agent_channel::verify_delivery(c).await?;
+            rss_mdm_script_service::verify_storage(c).await?;
+            rss_mdm_inventory_service::collection::execution::verify_storage(c).await?;
             rss_mdm_windows_channel::verify_delivery(c).await?;
             rss_mdm_inventory_postgres::verify_asset_history(c).await?;
             rss_mdm_execution_service::verify_authority(c)

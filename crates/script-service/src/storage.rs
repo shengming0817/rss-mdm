@@ -272,3 +272,17 @@ pub async fn unknown_conflict_in(tx: &mut PgTransaction<'_>, run: &Run) -> Resul
     let id = run.id;
     Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND resource_id=$3 AND id<>$4 AND (state->>'execution'='unknown' OR (state->>'execution'='running' AND deadline<=floor(extract(epoch FROM clock_timestamp())))))").bind(tenant).bind(device).bind(resource).bind(id).fetch_one(c).await})).await?)
 }
+/// Resolve only this owner's immutable task identity for Timeline correlation.
+pub async fn association_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: uuid::Uuid,
+) -> std::result::Result<Option<(String, Option<uuid::Uuid>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT device,NULL::uuid FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant)
+    .bind(id)
+    .fetch_optional(c)
+    .await
+}

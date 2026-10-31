@@ -66,7 +66,7 @@ impl ExecutionService {
         p: &DevicePrincipal,
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
-        super::native_recovery::lock_device(tx, p.device()).await?;
+        super::run_recovery::lock_device(tx, p.device()).await?;
         principal(&self.transactions, tx, p).await
     }
     pub async fn agent_admit_in(
@@ -790,7 +790,7 @@ impl ExecutionService {
     ) -> Result<rss_mdm_resource::Artifact> {
         self.transactions.runtime.validate_transaction(tx)?;
         let service = self;
-        super::native_recovery::lock_device(tx, p.device()).await?;
+        super::run_recovery::lock_device(tx, p.device()).await?;
         principal(&service.transactions, tx, p).await?;
         let run = db::load_run(tx, id).await?;
         belongs(&run, p)?;

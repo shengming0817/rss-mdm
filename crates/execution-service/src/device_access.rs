@@ -290,7 +290,7 @@ impl ExecutionService {
                 Box::pin(async move {
                     let (service, device, input, audit) = *ctx;
 
-                    crate::actions::native_recovery::lock_device(tx, device.device()).await?;
+                    crate::actions::run_recovery::lock_device(tx, device.device()).await?;
                     crate::transaction::prepare_audit_in(
                         &service.transactions.audit_store,
                         tx,

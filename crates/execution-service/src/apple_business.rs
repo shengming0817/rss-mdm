@@ -50,7 +50,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
-        actions::native_recovery::lock_device(tx, p.device()).await?;
+        actions::run_recovery::lock_device(tx, p.device()).await?;
         crate::transaction::prepare_audit_in(&self.transactions.audit_store, tx, audit, &[])
             .await
             .map_err(Into::into)
@@ -386,7 +386,7 @@ impl ExecutionService {
         devices.sort();
         devices.dedup();
         for device in devices {
-            actions::native_recovery::lock_device(tx, &device).await?;
+            actions::run_recovery::lock_device(tx, &device).await?;
         }
         crate::transaction::prepare_audit_in(&self.transactions.audit_store, tx, audit, &[])
             .await

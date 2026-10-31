@@ -11,11 +11,12 @@
 |---|---|
 | `authorization-service` | 当前管理主体、授权规则、授权证明及初始化 |
 | `registration-service` | 注册世代、来源授权、凭据和设备生命周期；Entra 注册策略与 Windows 注册操作回执 |
-| `inventory-service` | 采集质量与持久接收、资产、分组及合规 |
+| `inventory-service` | Agent/native 采集任务、逐 attempt 报告与采集质量、资产、分组及合规 |
 | `scope-service` | 目标定义、冻结成员计算、当前 Scope 结果与发布 |
 | `policy-service` | Policy 管理、发布、重跑、分配核对、事件接受与成员决定、业务审计、事务结算及所属 worker |
 | `resource-service` | 资源目录、不可变版本发布、启用和归档用例 |
-| `execution-service` | 冻结执行输入、命令、Run、Attempt、一次性远程操作、执行存储与交付恢复；独立 Queries 提供类型化读事实 |
+| `script-service` | 脚本冻结参数、Run、执行结果、自助服务、Unknown 屏障及恢复 |
+| `execution-service` | 剩余软件、凭据、注册和设备控制执行；独立 Queries 提供其类型化读事实 |
 | `content-service` | 内容授权、上传/镜像/回执用例、不可变文件与回收 |
 | `management-http` | 浏览器管理 HTTP、会话与错误投影 |
 | `agent-channel` | Agent 注册、报告、任务和内容协议；事件入口直接消费 Policy 批次服务 |

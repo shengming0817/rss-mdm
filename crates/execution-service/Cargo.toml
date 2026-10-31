@@ -7,7 +7,6 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
-rss-mdm-script-service.workspace = true
 rss-mdm-task-trust.workspace = true
 rss-mdm-task-state.workspace = true
 schemars.workspace = true

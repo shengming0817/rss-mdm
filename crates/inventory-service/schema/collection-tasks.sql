@@ -32,9 +32,6 @@ CREATE TABLE mdm_inventory.collection_admission (
  tenant_id uuid NOT NULL,
  registration uuid NOT NULL,
  policy_after uuid,
- offer_after_at bigint,
- offer_after_id uuid,
- CHECK((offer_after_at IS NULL)=(offer_after_id IS NULL)),
  PRIMARY KEY(tenant_id,registration)
 );
 CREATE TABLE mdm_inventory.collection_output_chunks (

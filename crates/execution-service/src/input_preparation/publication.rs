@@ -4,7 +4,7 @@ impl Inputs {
         &self,
         tx: &mut PgTransaction<'_>,
         action: &PublicationInput<'_>,
-        verified: Option<&rss_mdm_content_service::Verified>,
+        _verified: Option<&Verified>,
     ) -> Result<Frozen> {
         self.validate_in(tx)?;
         let resource = action.resource().ok_or(Error::Unsupported)?;
@@ -12,137 +12,8 @@ impl Inputs {
         let version = self
             .active_version_in(tx, binding.id(), binding.version())
             .await?;
-        if matches!(action, PublicationInput::Software { .. }) {
-            return Ok(Frozen::Software {
-                action: Box::new(self.software_in(tx, action, &version).await?),
-            });
-        }
-        if let PublicationInput::Script {
-            binding: exact,
-            parameters,
-            schedule,
-            frequency,
-            lifetime: run_lifetime_seconds,
-            ..
-        } = action
-        {
-            if !self.materials.signing_enabled {
-                return Err(Error::Conflict.into());
-            }
-            let prepared = script(
-                &version,
-                exact,
-                *parameters,
-                verified.ok_or(Error::Conflict)?,
-            )?;
-            return Ok(Frozen::Execution {
-                action: Box::new(
-                    freeze_in(
-                        tx,
-                        self.tenant,
-                        &prepared,
-                        parameters.checked(prepared.definition())?,
-                        (*schedule).clone(),
-                        *run_lifetime_seconds,
-                    )
-                    .await?,
-                ),
-                frequency: *frequency,
-            });
-        }
-        if let PublicationInput::AgentCollection {
-            binding,
-            schedule,
-            frequency,
-            lifetime,
-        } = action
-        {
-            // Persist definitions before channel setup; preview and task issuance require signing.
-            let definition = agent_collection(&version, binding, verified)?.clone();
-            let selected = variant(&version, binding)?;
-            let fields = rss_mdm_inventory_service::collection::preparation::prepare_agent_fields(
-                tx,
-                self.tenant,
-                selected,
-                &definition,
-            )
-            .await?;
-            return Ok(Frozen::AgentCollection {
-                frequency: *frequency,
-                action: Box::new(FrozenAgentCollection {
-                    input: ExecutionInput {
-                        platform: binding.platform,
-                        architecture: binding.architecture,
-                        schedule: (*schedule).clone(),
-                        run_lifetime_seconds: *lifetime,
-                    },
-                    resource: rss_mdm_agent_wire::runtime::TaskResource {
-                        id: version.resource().as_str().into(),
-                        version: version.label().as_str().into(),
-                        variant: selected.key().as_str().into(),
-                    },
-                    definition,
-                    fields,
-                    resource_digest: version.digest().bytes(),
-                }),
-            });
-        }
-        let exact = match action {
-            PublicationInput::NativeCollection { binding, .. } => *binding,
-            _ => return Err(Error::Malformed.into()),
-        };
-        let v = variant(&version, exact)?;
-        match (action, v.declaration()) {
-            (
-                PublicationInput::NativeCollection {
-                    schedule,
-                    frequency,
-                    lifetime: run_lifetime_seconds,
-                    ..
-                },
-                resource::Declaration::NativeCollection {
-                    definition: _,
-                    artifact: _,
-                },
-            ) => {
-                let (definition, windows_plan) = native_collection(&version, exact, verified)?;
-                let source = match definition.spec().adapter {
-                    resource::NativeAdapter::WindowsRead => rss_mdm_inventory::Source::MdmWindows,
-                    rss_mdm_resource::NativeAdapter::AppleDeviceInformation
-                    | rss_mdm_resource::NativeAdapter::AppleInstalledApplications
-                    | rss_mdm_resource::NativeAdapter::AppleSecurity
-                    | rss_mdm_resource::NativeAdapter::AppleProfiles
-                    | rss_mdm_resource::NativeAdapter::AppleCertificates
-                    | rss_mdm_resource::NativeAdapter::AppleUsers => {
-                        rss_mdm_inventory::Source::MdmApple
-                    }
-                };
-                let collection = freeze_collection(
-                    tx,
-                    self.tenant,
-                    &version,
-                    v,
-                    source,
-                    definition.spec().mappings.keys(),
-                )
-                .await?;
-                Ok(Frozen::NativeCollection {
-                    frequency: *frequency,
-                    action: Box::new(FrozenNativeCollection {
-                        input: ExecutionInput {
-                            platform: exact.platform,
-                            architecture: exact.architecture,
-                            schedule: (*schedule).clone(),
-                            run_lifetime_seconds: *run_lifetime_seconds,
-                        },
-                        definition: definition.clone(),
-                        windows_plan,
-                        collection,
-                        resource_digest: version.digest().bytes(),
-                    }),
-                })
-            }
-            _ => Err(Error::Malformed.into()),
-        }
+        Ok(Frozen::Software {
+            action: Box::new(self.software_in(tx, action, &version).await?),
+        })
     }
 }

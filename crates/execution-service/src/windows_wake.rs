@@ -95,32 +95,6 @@ impl ExecutionService {
                 break;
             }
         }
-        let mut after = Uuid::nil();
-        let target = crate::Target {
-            device: device.into(),
-            registration,
-            generation,
-        };
-        loop {
-            let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows' AND sealed_at IS NULL AND id>$3 AND (deadline IS NULL OR deadline>clock_timestamp()) ORDER BY id LIMIT 64")
-            .bind(&tenant).bind(registration).bind(after).fetch_all(&mut *c).await.map_err(database::db)?;
-            for id in &ids {
-                after = *id;
-                if crate::actions::native_collection::delivery_eligible_target_on(
-                    self.transactions.source.as_ref(),
-                    c,
-                    self.transactions.tenant,
-                    &target,
-                    *id,
-                )
-                .await?
-                {
-                    return Ok(true);
-                }
-            }
-            if ids.len() < 64 {
-                return Ok(false);
-            }
-        }
+        Ok(false)
     }
 }

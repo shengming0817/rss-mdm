@@ -309,7 +309,7 @@ pub(crate) async fn status_on(
 
 /// Binding coordinates are authenticated enrollment facts, never upload assertions.
 pub(crate) async fn capable_on(
-    store: &dyn rss_mdm_execution_service::agent_facts::Store,
+    store: &dyn rss_mdm_script_service::agent_facts::Store,
     c: &mut PgConnection,
     tenant: TenantId,
     registration: Uuid,
@@ -358,8 +358,13 @@ pub(crate) async fn capable_on(
                 return Err(Error::Unsupported);
             }
             let environment = announcement.environment();
-            rss_mdm_execution_service::native_collection_supported(
-                &binding,
+            rss_mdm_inventory_service::collection::execution::eligibility::matches(
+                &rss_mdm_inventory_service::collection::execution::agent_facts::Binding {
+                    execution_context: binding.execution_context.clone(),
+                    platform: binding.platform.clone(),
+                    architecture: binding.architecture.clone(),
+                    capabilities: binding.capabilities.clone(),
+                },
                 platform,
                 architecture,
                 definition,
@@ -378,8 +383,7 @@ pub(crate) async fn capable_on(
                 r::ScriptProfile::Osquery => w::ExecutorProfile::Osquery,
             };
             let profiles = announcement.profiles();
-            let environment =
-                rss_mdm_execution_service::script_eligibility::environment(&announcement);
+            let environment = rss_mdm_script_service::eligibility::environment(&announcement);
             let capabilities = profiles
                 .iter()
                 .map(|p| {
@@ -390,7 +394,7 @@ pub(crate) async fn capable_on(
                         .to_owned()
                 })
                 .collect();
-            rss_mdm_execution_service::script_eligibility::matches(
+            rss_mdm_script_service::eligibility::matches(
                 &binding,
                 platform,
                 architecture,

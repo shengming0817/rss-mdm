@@ -51,13 +51,6 @@ fn dispatch(
 #[derive(Clone, Copy)]
 pub enum AdmissionTrigger {
     Agent(Uuid),
-    CheckIn {
-        event: Uuid,
-        at: i64,
-    },
-    Registration {
-        at: i64,
-    },
     Scheduled,
     Custom {
         origin: rss_mdm_audit_integration::activity::ActivityOrigin,
@@ -67,12 +60,6 @@ pub enum AdmissionTrigger {
     },
 }
 impl AdmissionTrigger {
-    fn event_time(self, now: i64) -> i64 {
-        match self {
-            Self::CheckIn { at, .. } | Self::Registration { at } | Self::Custom { at, .. } => at,
-            Self::Agent(_) | Self::Scheduled => now,
-        }
-    }
     fn explicit(self) -> bool {
         matches!(self, Self::Agent(_) | Self::Scheduled)
     }
@@ -162,14 +149,10 @@ pub(crate) async fn accept_for_device(
                 }
                 match trigger {
                     AdmissionTrigger::Agent(request) => (now, format!("checkin:{request}")),
-                    AdmissionTrigger::CheckIn { event, at } => (at, format!("checkin:{event}")),
                     _ => return Ok(()),
                 }
             }
             Trigger::Registration => match trigger {
-                AdmissionTrigger::Registration { at } => {
-                    (at, format!("registration:{}", target.registration))
-                }
                 AdmissionTrigger::Agent(_) => {
                     (now, format!("registration:{}", target.registration))
                 }
@@ -325,7 +308,7 @@ pub(crate) async fn queue_run_in(
         sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,invocation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
             .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).bind(invocation).execute(c).await?;Ok(())
     })).await?;
-    super::native_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
+    super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         tx.tenant_id().to_string(),
@@ -377,7 +360,7 @@ pub async fn policy_pending_in(
     let device = target.device.clone();
     let registration = target.registration.to_string();
     let value=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or((state->>'execution'='unknown' AND (v.frozen->>'kind' NOT IN ('native_collection','agent_collection') OR (deadline>$4 AND state->>'cancellation'<>'confirmed'))) OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND (v.policy=$2::uuid OR ($7 AND v.frozen->>'kind'='mdm_enrollment')) AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
+        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or(state->>'execution'='unknown' OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND (v.policy=$2::uuid OR ($7 AND v.frozen->>'kind'='mdm_enrollment')) AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
             .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).bind(enrollment).fetch_one(c).await
     })).await?;
     Ok(value)

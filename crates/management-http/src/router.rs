@@ -41,6 +41,7 @@ pub struct Services {
     pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub task_trust: Arc<rss_mdm_task_trust::Service>,
+    pub task_reads: Arc<dyn crate::execution::task_reads::Reads>,
     pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub configuration_preview: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     pub policies: Arc<rss_mdm_policy_service::management::Policies>,
@@ -193,8 +194,15 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                     groups: s.groups.clone(),
                 })
             }),
-            http_register: crate::execution::actions::http::register(cursor())
-                .bind_with(context, |(s, _)| s.queries.clone()),
+            http_register: crate::execution::actions::http::register(cursor()).bind_with(
+                context,
+                |(s, _)| {
+                    Arc::new(crate::execution::actions::http::StateServices {
+                        execution: s.queries.clone(),
+                        tasks: s.task_reads.clone(),
+                    })
+                },
+            ),
             assets_routes: crate::assets::routes().bind_with(context, |(s, _)| {
                 Arc::new(crate::assets::http::HttpState {
                     assets: s.assets.clone(),
@@ -235,7 +243,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             windows_entra_register: crate::windows_entra::register()
                 .bind_with(context, |(s, _)| Arc::new(s.windows_entra.clone())),
             http_register: crate::execution::http::register(
-                runtime.map(|(s, _)| s.queries.clone()),
+                runtime.map(|(s, _)| s.task_reads.clone()),
                 cursor(),
             )
             .bind_with(context, |(s, _)| {
@@ -254,7 +262,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             http_register_previews: crate::planning::policies::http::register_previews(cursor())
                 .bind_with(context, |(s, _)| {
                     Arc::new(crate::planning::policies::http_preview::StateServices {
-                        queries: s.queries.clone(),
+                        tasks: s.task_reads.clone(),
                         configuration: s.configuration_preview.clone(),
                         telemetry: s.telemetry.clone(),
                     })

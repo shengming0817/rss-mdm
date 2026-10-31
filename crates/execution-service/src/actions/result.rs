@@ -1,14 +1,10 @@
 //! Persisted execution evidence uses its real Agent or native owner, including null/omission semantics.
 use rss_mdm_agent_wire::runtime as w;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use uuid::Uuid;
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum RunResult {
-    Script(w::ScriptRunResult),
-    AgentCollection(AgentCollection),
-    NativeCollection(NativeCollection),
     Software(Software),
     NativeSoftware(NativeSoftware),
     Access(w::AccessResult),
@@ -16,32 +12,6 @@ pub enum RunResult {
     CredentialRecovery(CredentialRecovery),
     Unmanage(Unmanage),
     Enrollment(Enrollment),
-}
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AgentCollection {
-    pub native: Option<w::NativeCollectionResult>,
-    pub queries: BTreeMap<String, NativeQuerySummary>,
-    pub plan_digest: [u8; 32],
-    pub output_reference: w::ScriptOutputReference,
-    pub trusted: bool,
-    pub received_at: i64,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct NativeQuerySummary {
-    pub query_digest: [u8; 32],
-    pub collected_at: i64,
-    pub status: w::NativeQueryStatus,
-    pub enumeration_complete: bool,
-    pub row_count: u32,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct NativeCollection {
-    pub collection_run: Uuid,
-    pub result: String,
-    pub reason: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -116,9 +86,6 @@ pub struct SummaryResult(Summary);
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 enum Summary {
-    Script(ScriptSummary),
-    AgentCollection(WithDiagnostics<AgentCollectionSummary>),
-    NativeCollection(WithDiagnostics<NativeCollection>),
     Software(Software<w::SoftwareTaskResult<DiagnosticsSummary>>),
     NativeSoftware(WithDiagnostics<NativeSoftware>),
     Access(WithDiagnostics<w::AccessResult>),
@@ -148,28 +115,6 @@ impl From<&w::TaskDiagnostics> for DiagnosticsSummary {
             failure: value.failure(),
         }
     }
-}
-#[derive(Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ScriptSummary {
-    collected_at: i64,
-    received_at: i64,
-    exit_code: Option<i32>,
-    quality: w::OutputQuality,
-    schema_valid: bool,
-    budget_valid: bool,
-    output_reference: Option<w::ScriptOutputReference>,
-    diagnostics: DiagnosticsSummary,
-    trusted: bool,
-}
-#[derive(Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AgentCollectionSummary {
-    queries: BTreeMap<String, NativeQuerySummary>,
-    plan_digest: [u8; 32],
-    output_reference: w::ScriptOutputReference,
-    trusted: bool,
-    received_at: i64,
 }
 impl<'de> Deserialize<'de> for SummaryResult {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -229,15 +174,6 @@ mod tests {
             value,
             json!({"operation":operation,"effect":"not_started","diagnostics":null})
         );
-        let value = summary(RunResult::NativeCollection(NativeCollection {
-            collection_run: operation,
-            result: "failed".into(),
-            reason: "complete".into(),
-        }));
-        assert_eq!(
-            value,
-            json!({"collectionRun":operation,"result":"failed","reason":"complete","diagnostics":null})
-        );
         assert!(
             serde_json::from_value::<SummaryResult>(
                 json!({"operation":operation,"effect":"future","diagnostics":null})
@@ -245,33 +181,5 @@ mod tests {
             .is_err()
         );
         assert!(serde_json::from_value::<RunResult>(json!({"unknownResult":{}})).is_err());
-    }
-    #[test]
-    fn script_summary_removes_streams_and_resource_output_but_preserves_timing() {
-        let value = summary(RunResult::Script(w::ScriptRunResult {
-            collected_at: 1,
-            received_at: 2,
-            exit_code: Some(0),
-            quality: w::OutputQuality::Complete,
-            schema_valid: true,
-            budget_valid: true,
-            output: json!({"private":"value"}),
-            output_reference: None,
-            diagnostics: w::TaskDiagnostics::new(
-                "secret output".into(),
-                "secret error".into(),
-                7,
-                1,
-                None,
-            )
-            .unwrap(),
-            trusted: true,
-        }));
-        assert!(value.get("output").is_none());
-        assert_eq!(
-            value["diagnostics"],
-            json!({"durationMs":7,"executedAt":1,"failure":null})
-        );
-        assert!(!value.to_string().contains("secret"));
     }
 }
