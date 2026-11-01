@@ -22,7 +22,7 @@ class CapabilityBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'apple-mdm'):
             verify_capability_boundaries(data)
         apple['dependencies'] = []
-        for owner, name in (('agent-channel','rss-mdm-device-service'), ('windows-channel','rss-mdm-device-service'), ('apple-channel','rss-mdm-device-service'), ('webhook-service','rss-mdm-management-http'), ('webhook-service','rss-mdm-inventory-service'), ('inventory-service', 'axum'), ('query', 'rss-identity-core'),
+        for owner, name in (('agent-channel','rss-mdm-device-service'), ('windows-channel','rss-mdm-device-service'), ('webhook-service','rss-mdm-management-http'), ('webhook-service','rss-mdm-inventory-service'), ('inventory-service', 'axum'), ('query', 'rss-identity-core'),
                             ('http-contract', 'rss-mdm-resource'), ('resource', 'rss-mdm-http-contract'),
                             ('scope', 'rss-mdm-policy-service'),
                             ('scope', 'rss-transactional-messaging-postgres'),

@@ -91,8 +91,8 @@ impl Harness {
             w::Capability::InventoryCollectionV1,
             w::Capability::TaskExecuteV1,
             w::Capability::MdmEnrollmentV1,
-            w::Capability::InventoryNativeV1,
             w::Capability::DeviceUnmanageV1,
+            w::Capability::InventoryNativeV1,
         ];
         let p =
             material::authenticated_agent(&c, registration, grant, &device, caps.clone()).await?;

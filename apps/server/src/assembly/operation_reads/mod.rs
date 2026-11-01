@@ -206,30 +206,23 @@ impl Operations {
             }
         }
         let mut result = BTreeMap::new();
-        for (id, value) in self
-            .tasks
-            .configuration
-            .classify_on(c, proof, grant, configuration, now)
-            .await
-            .map_err(super::task_reads::configuration_fault)?
-        {
-            use rss_mdm_policy_service::configuration::queries::records::{
-                Authorization as A, BlockReason as B,
-            };
-            let auth = match value {
-                A::Authorized => Authorization::Authorized,
-                A::NotApplicable => Authorization::NotApplicable,
-                A::Blocked { reason } => Authorization::Blocked {
-                    reason: match reason {
-                        B::LifecycleBlocked => BlockReason::LifecycleBlocked,
-                        B::RegistrationChanged => BlockReason::RegistrationChanged,
-                        B::InputMismatch => BlockReason::InputMismatch,
-                        B::SourceInvalid => BlockReason::SourceInvalid,
-                    },
-                },
-            };
-            result.insert(id, (auth, Reauthorization::NotApplicable));
-        }
+        result.extend(
+            self.tasks
+                .configuration
+                .classify_on(c, proof, grant, configuration, now)
+                .await
+                .map_err(super::task_reads::configuration_fault)?
+                .into_iter()
+                .map(|(id, value)| {
+                    (
+                        id,
+                        (
+                            configuration_authorization(value),
+                            Reauthorization::NotApplicable,
+                        ),
+                    )
+                }),
+        );
 
         for (id, d) in self
             .tasks
@@ -303,6 +296,25 @@ impl Operations {
     }
 }
 
+fn configuration_authorization(
+    value: rss_mdm_policy_service::configuration::queries::records::Authorization,
+) -> Authorization {
+    use rss_mdm_policy_service::configuration::queries::records::{
+        Authorization as A, BlockReason as B,
+    };
+    match value {
+        A::Authorized => Authorization::Authorized,
+        A::NotApplicable => Authorization::NotApplicable,
+        A::Blocked { reason } => Authorization::Blocked {
+            reason: match reason {
+                B::LifecycleBlocked => BlockReason::LifecycleBlocked,
+                B::RegistrationChanged => BlockReason::RegistrationChanged,
+                B::InputMismatch => BlockReason::InputMismatch,
+                B::SourceInvalid => BlockReason::SourceInvalid,
+            },
+        },
+    }
+}
 fn execution_authorization(
     v: rss_mdm_device_service::control::authorization_decision::Authorization,
 ) -> Authorization {

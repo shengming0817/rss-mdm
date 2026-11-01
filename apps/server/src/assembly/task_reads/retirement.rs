@@ -15,10 +15,10 @@ async fn objects_on(
     after: Option<&str>,
     limit: usize,
 ) -> Result<Vec<DeviceAssignment>> {
-    Ok(s.source
+    s.source
         .lifecycle_objects_on(c, s.tenant, scope, after, limit)
         .await
-        .map_err(source)?)
+        .map_err(source)
 }
 
 fn item(input: &DeviceAssignment, enabled: bool) -> Value {
@@ -98,7 +98,7 @@ pub async fn preview_on(
             .bind(tenant).bind(scope).fetch_optional(&mut *c).await.map(Option::flatten).map_err(sql)?;
     let result = result.ok_or(Error::Conflict)?;
     if input.scope_result.is_some_and(|r| r != result) {
-        return Err(Error::Conflict.into());
+        return Err(Error::Conflict);
     }
     let more = objects.len() > limit;
     objects.truncate(limit);

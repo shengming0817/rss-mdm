@@ -15,7 +15,7 @@ async fn current_confirmation_is_atomic() -> Result<()> {
     let proof = c.authenticate(&account).await?;
     let a = command::open(&c, false).await?;
     let mut tx = command::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) VALUES($1::uuid,$2,1,'10.0.22631',4,1,extract(epoch FROM clock_timestamp())::bigint)").bind(c.tenant.to_string()).bind(identity.registration).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) VALUES($1::uuid,$2,1,'10.0.22631.0',4,1,extract(epoch FROM clock_timestamp())::bigint)").bind(c.tenant.to_string()).bind(identity.registration).execute(&mut *tx).await?;
     tx.commit().await?;
     let id = Uuid::new_v4();
     let mut input = Input {

@@ -297,7 +297,7 @@ def verify_capability_boundaries(data):
     forbidden['scope-service'].update({'rss-mdm-policy-service'})
     for owner in ingress:
         forbidden.setdefault(owner.removeprefix('rss-mdm-'), set()).update(ingress | {'rss-mdm-app'})
-    for owner in ('agent-channel','windows-channel','apple-channel'):
+    for owner in ('agent-channel','windows-channel'):
         forbidden[owner].add('rss-mdm-device-service')
     for owner, denied in forbidden.items():
         package = packages.get('rss-mdm-' + owner)

@@ -67,8 +67,6 @@ pub trait AppleResults: Send + Sync {
         tenant: &'a str,
         requests: &'a [AppleControlCheck],
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, bool>>;
-    /// Server publication withdrawal is distinct from native object absence.
-
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,

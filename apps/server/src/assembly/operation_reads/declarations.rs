@@ -42,7 +42,7 @@ impl Operations {
                         *fence = Some((device.to_owned(), registration.clone()));
                         let Some(registration) = registration else {
                             if q.cursor().is_some() {
-                                return Err(Error::QueryCursorInvalidated.into());
+                                return Err(Error::QueryCursorInvalidated);
                             }
 
                             return Ok(Page {
@@ -118,7 +118,7 @@ impl Operations {
                             let records::NativeObservation::Declarations { facts, .. } =
                                 &observation
                             else {
-                                return Err(Error::Conflict.into());
+                                return Err(Error::Conflict);
                             };
                             let size = if let Some(facts) = facts {
                                 serde_json::to_vec(&(&facts.expected, &facts.status))
@@ -138,7 +138,7 @@ impl Operations {
                             };
                             if bytes + size > 8 * 1024 * 1024 {
                                 if items.is_empty() {
-                                    return Err(Error::Conflict.into());
+                                    return Err(Error::Conflict);
                                 }
                                 more = true;
                                 break;
