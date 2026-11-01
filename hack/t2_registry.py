@@ -9,6 +9,8 @@ MODULES = {
     'agent.foundation': dict(package='rss-mdm-agent-channel', target='foundation', installer=None,
         prefix='foundation::', profiles=('agent_foundation',),
         inputs=('crates/install-support/*','crates/agent-channel/*','crates/registration-service/*',
+                'crates/native-protection/*','crates/backend-postgres-support/src/access_admission.rs',
+                'crates/backend-postgres-support/src/access-admission.sql',
                 'crates/authorization-service/*','crates/pki-service/*','crates/inventory-postgres/*','crates/task-trust/*','crates/recovery-credentials/*',
                 'crates/policy-postgres/*','crates/scope-postgres/*','crates/inventory-service/*',
                 'crates/scope-service/src/registration.rs','crates/scope-service/src/channels/*',

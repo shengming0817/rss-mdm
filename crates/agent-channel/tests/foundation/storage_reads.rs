@@ -7,6 +7,17 @@ use rss_transactional_messaging_postgres::PgError;
 pub async fn verify(c: &Context) -> Result<()> {
     scope(c).await?;
     let runtime = c.inputs.runtime("da_policy_runtime", c.tenant).await?;
+    let cutoff = tokio::time::Instant::now().into_std() + Duration::from_secs(10);
+    assert!(
+        !rss_mdm_policy_service::worker::configuration_input_suspended(
+            &runtime, c.tenant, None, cutoff,
+        )
+        .await?
+    );
+    assert_eq!(
+        rss_mdm_policy_service::worker::queue_health(DA, &runtime, c.tenant, None, cutoff,).await?,
+        [0; 5]
+    );
     let batch_query = directory::BATCHES.parse("")?;
     let member_query = directory::MEMBERS.parse("")?;
     let batch = Uuid::new_v4();

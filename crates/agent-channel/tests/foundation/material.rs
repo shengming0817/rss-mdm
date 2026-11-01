@@ -121,6 +121,7 @@ async fn agent_material(
     Vec<u8>,
     Vec<u8>,
     rss_mdm_device_trust::agent::AgentTrust,
+    rss_mdm_certificate::ClientCertificateEvidence,
 )> {
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
@@ -187,7 +188,13 @@ async fn agent_material(
         .output()
         .await?;
     anyhow::ensure!(csr.status.success(), "CSR conversion");
-    Ok((peer, evidence.chain()[0].to_vec(), csr.stdout, trust))
+    Ok((
+        peer,
+        evidence.chain()[0].to_vec(),
+        csr.stdout,
+        trust,
+        evidence,
+    ))
 }
 
 pub async fn authenticated_agent(
@@ -202,9 +209,9 @@ pub async fn authenticated_agent(
 )> {
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
-    let (peer, certificate, csr, trust) = agent_material(c, device).await?;
+    let (peer, certificate, csr, trust, evidence) = agent_material(c, device).await?;
     let pki_trust = trust.trust.public()?;
-    super::registration_owner::assemble(c, trust).await?;
+    let service = super::registration_owner::assemble(c, trust).await?;
     let meta = peer.metadata();
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
     let credential = Uuid::new_v4();
@@ -289,5 +296,6 @@ pub async fn authenticated_agent(
     )
     .await?;
     tx.commit().await?;
+    super::audit_boundaries::registration(c, &service, &evidence, &pki_trust).await?;
     Ok((principal, pki_trust))
 }

@@ -201,7 +201,7 @@ impl Service {
     ) -> Result<R, Error> {
         let profile = self.profile();
 
-        if a.tenant() != self.tenant.to_string() {
+        if a.profile() != profile || a.tenant() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(6));

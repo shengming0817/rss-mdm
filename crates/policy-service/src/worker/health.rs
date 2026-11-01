@@ -1,12 +1,45 @@
 use super::*;
 impl Application {
-    /// A suspended input checkpoint stops configuration convergence even while the task runs.
+    /// A missing configuration participant has no suspended native input checkpoint.
     pub async fn configuration_input_suspended(
         &self,
         cutoff: std::time::Instant,
     ) -> std::result::Result<bool, HealthFailure> {
-        self.runtime
-            .local_tx(self.tenant, health_deadline(cutoff), |tx| {
+        configuration_input_suspended(
+            &self.runtime,
+            self.tenant,
+            self.configuration.as_deref(),
+            cutoff,
+        )
+        .await
+    }
+    /// Counts describe retained product job states, not managed task health or device effects.
+    pub async fn queue_health(
+        &self,
+        cutoff: std::time::Instant,
+    ) -> std::result::Result<[u64; 5], HealthFailure> {
+        queue_health(
+            self.profile(),
+            &self.runtime,
+            self.tenant,
+            self.configuration.as_deref(),
+            cutoff,
+        )
+        .await
+    }
+}
+/// Read native input suspension only when the actual configuration participant exists.
+pub async fn configuration_input_suspended(
+    runtime: &std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    tenant: rss_request_context::TenantId,
+    configuration: Option<&crate::configuration::Transactions>,
+    cutoff: std::time::Instant,
+) -> std::result::Result<bool, HealthFailure> {
+    if configuration.is_none() {
+        return Ok(false);
+    }
+    runtime
+            .local_tx(tenant, health_deadline(cutoff), |tx| {
                 Box::pin(async move {
                     let tenant = tx.tenant_id().to_string();
                     tx.with_connection(move |c| Box::pin(async move {
@@ -22,19 +55,21 @@ impl Application {
                 |_| Err(HealthFailure::SettlementUnknown),
                 |_| Err(HealthFailure::Deadline),
             )
-    }
-
-    /// Counts describe retained product job states, not managed task health or device effects.
-    pub async fn queue_health(
-        &self,
-        cutoff: std::time::Instant,
-    ) -> std::result::Result<[u64; 5], HealthFailure> {
-        let profile = self.profile();
-
-        self.runtime
-            .local_tx(self.tenant, health_deadline(cutoff), |tx| {
+}
+/// Read common product queue counts, adding native counts only for a configured participant.
+pub async fn queue_health(
+    profile: rss_mdm_install_support::StorageProfile,
+    runtime: &std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    tenant: rss_request_context::TenantId,
+    configuration: Option<&crate::configuration::Transactions>,
+    cutoff: std::time::Instant,
+) -> std::result::Result<[u64; 5], HealthFailure> {
+    let configured = configuration.is_some();
+    runtime
+            .local_tx(tenant, health_deadline(cutoff), |tx| {
                 Box::pin(async move {
                     let mut counts=rss_mdm_policy_postgres::work::counts_in(profile, tx).await?;
+                    if !configured { return Ok(counts); }
                     let tenant=tx.tenant_id().to_string();
                     let (pending,failed):(i64,bool)=tx.with_connection(move|c|Box::pin(async move{
                         sqlx::query_as("SELECT (SELECT count(*) FROM(SELECT FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND input_revision>observed_revision LIMIT 1001) p),EXISTS(SELECT FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid AND failure IS NOT NULL)").bind(tenant).fetch_one(c).await
@@ -51,7 +86,6 @@ impl Application {
                 |_| Err(HealthFailure::SettlementUnknown),
                 |_| Err(HealthFailure::Deadline),
             )
-    }
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]

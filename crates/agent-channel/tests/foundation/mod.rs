@@ -1,5 +1,6 @@
 //! Public-owner installation and actual Enrollment delivery, without the MDM application.
 mod admission;
+mod audit_boundaries;
 mod context;
 mod installation;
 mod isolation;
@@ -184,6 +185,7 @@ async fn exercise(c: &Context) -> Result<()> {
         rss_mdm_task_trust::Signing::new(StorageProfile::Mdm, c.tenant, Some(mismatch)).is_err()
     );
     tx.commit().await?;
+    audit_boundaries::task_trust(c, &p, signing.clone(), protection.clone(), &trust).await?;
     observation::enrollment(c, &p).await?;
     let target = accepted(c, &p).await?;
     let source = Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
@@ -232,6 +234,21 @@ async fn exercise(c: &Context) -> Result<()> {
         )
     };
     let input = w::TaskClaimRequest::new(Uuid::new_v4(), vec![], context.clone())?;
+    let before = audit_boundaries::snapshot(c).await?;
+    for rejected in audit_boundaries::rejected_audits(c) {
+        assert!(matches!(
+            delivery.claim(&p, &input, &rejected).await,
+            Err(rss_mdm_agent_channel::Error::Forbidden)
+        ));
+        assert!(matches!(
+            delivery
+                .download(&p, target, Uuid::new_v4(), None, &rejected)
+                .await,
+            Err(rss_mdm_agent_channel::Error::Forbidden)
+        ));
+        rejected.finalize(None);
+        assert_eq!(audit_boundaries::snapshot(c).await?, before);
+    }
     use rss_transactional_messaging_postgres::PgTransactionFault;
     c.runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);

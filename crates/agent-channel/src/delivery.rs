@@ -99,6 +99,9 @@ impl Delivery {
     where
         F: for<'a> FnOnce(&'a mut C, &'a mut PgTransaction<'_>) -> Pending<'a, R> + Send,
     {
+        if audit.profile() != self.profile() || audit.tenant() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
         let failure = Mutex::new(None);
         let attempt = self
             .runtime
@@ -394,6 +397,8 @@ impl Delivery {
         if self.tasks.profile() != self.profile()
             || self.profile() != p.profile()
             || self.tenant != p.tenant()
+            || audit.profile() != self.profile()
+            || audit.tenant() != self.tenant.to_string()
         {
             return Err(Error::Forbidden);
         }

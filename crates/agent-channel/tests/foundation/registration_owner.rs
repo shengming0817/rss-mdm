@@ -30,7 +30,10 @@ impl registration::agent_pki::Clock for context::Timer {
         Ok(now())
     }
 }
-pub async fn assemble(c: &Context, trust: rss_mdm_device_trust::agent::AgentTrust) -> Result<()> {
+pub async fn assemble(
+    c: &Context,
+    trust: rss_mdm_device_trust::agent::AgentTrust,
+) -> Result<agent::Service> {
     use rss_mdm_agent_wire::pki::Purpose;
     use rss_mdm_pki_service::{
         Configuration, StepCa,
@@ -99,5 +102,5 @@ pub async fn assemble(c: &Context, trust: rss_mdm_device_trust::agent::AgentTrus
             ..
         })
     ));
-    Ok(())
+    Ok(service)
 }

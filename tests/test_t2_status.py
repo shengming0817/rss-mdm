@@ -44,6 +44,15 @@ class T2Status(unittest.TestCase):
                 self.assertIn('agent.foundation', affected([path]))
         self.assertNotIn('agent.foundation', affected(['crates/scope-service/src/management.rs']))
 
+    def test_foundation_selects_its_protection_and_admission_inputs(self):
+        for path in ('crates/native-protection/src/storage_profile.rs',
+                     'crates/native-protection/src/lib.rs',
+                     'crates/backend-postgres-support/src/access_admission.rs',
+                     'crates/backend-postgres-support/src/access-admission.sql'):
+            with self.subTest(path=path):
+                self.assertIn('agent.foundation', affected([path]))
+        self.assertNotIn('agent.foundation', affected(['crates/backend-postgres-support/src/document.rs']))
+
     def test_multiple_owners_preserve_evidence_and_collect_failures(self):
         import ci
         modules = ['foundation.tenants', 'agent.foundation']

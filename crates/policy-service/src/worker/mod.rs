@@ -15,6 +15,7 @@ pub use runtime::{Automation, PolicyWork};
 pub(crate) mod health;
 pub use health::{
     AttemptFailure, AutomationFailure, AutomationHealth, HealthFailure, RunObservation,
+    configuration_input_suspended, queue_health,
 };
 
 use rss_mdm_audit_integration::RequestAudit;

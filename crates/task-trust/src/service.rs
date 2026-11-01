@@ -68,6 +68,20 @@ fn settle<T>(
     )
 }
 impl Service {
+    fn require_device(
+        &self,
+        p: &rss_mdm_registration_service::DevicePrincipal,
+        audit: &RequestAudit,
+    ) -> Result<(), Error> {
+        if p.profile() != self.signing.profile
+            || p.tenant() != self.tenant
+            || audit.profile() != self.signing.profile
+            || audit.tenant() != self.tenant.to_string()
+        {
+            return Err(Error::Forbidden);
+        }
+        Ok(())
+    }
     /// Current process signer identity; active authority must still be checked separately.
     pub fn loaded_task_signing_key(&self) -> Option<&str> {
         self.signing.loaded_key()
@@ -113,7 +127,7 @@ impl Service {
     ) -> Result<Trust, Error> {
         let profile = self.signing.profile;
 
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.profile() != profile || p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         p.require(Permission::RegistrationConfigurationWrite, None)?;
@@ -158,9 +172,7 @@ impl Service {
     ) -> Result<Trust, Error> {
         let profile = self.signing.profile;
 
-        if p.tenant() != self.tenant {
-            return Err(Error::Forbidden);
-        }
+        self.require_device(p, audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result = self
             .audit
@@ -198,9 +210,7 @@ impl Service {
     ) -> Result<(), Error> {
         let profile = self.signing.profile;
 
-        if p.tenant() != self.tenant {
-            return Err(Error::Forbidden);
-        }
+        self.require_device(p, audit)?;
         input.validate().map_err(|_| Error::Malformed)?;
         audit.operation(
             input.operation,
@@ -280,11 +290,9 @@ impl Service {
     ) -> Result<(), Error> {
         let profile = self.signing.profile;
 
+        self.require_device(p, audit)?;
         input.validate().map_err(|_| Error::Malformed)?;
-        if p.tenant() != self.tenant
-            || input.registration != p.registration()
-            || input.generation != p.generation() as u64
-        {
+        if input.registration != p.registration() || input.generation != p.generation() as u64 {
             return Err(Error::Forbidden);
         }
         audit.operation(
@@ -353,7 +361,7 @@ impl Service {
     ) -> Result<Option<rss_mdm_agent_wire::task_trust::ObservedInstallation>, Error> {
         let profile = self.signing.profile;
 
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.profile() != profile || p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         p.require(Permission::InventoryRead, Some(device))?;
@@ -399,7 +407,7 @@ pub async fn read_task_trust(
     audit: &RequestAudit,
     operation: Option<Uuid>,
 ) -> Result<Trust, Error> {
-    if p.tenant_id() != tenant.to_string() {
+    if p.profile() != profile || p.tenant_id() != tenant.to_string() {
         return Err(Error::Forbidden);
     }
     p.require(Permission::RegistrationConfigurationRead, None)?;
