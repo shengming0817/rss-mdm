@@ -281,7 +281,13 @@ async fn prepare_in(
         let locked = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    Ok(crate::lifecycle::try_lock_devices_in(c, &tenant, &[device]).await)
+                    Ok(crate::lifecycle::try_lock_devices_in(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        &tenant,
+                        &[device],
+                    )
+                    .await)
                 })
             })
             .await??;

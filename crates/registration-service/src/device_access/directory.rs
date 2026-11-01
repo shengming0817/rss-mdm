@@ -59,11 +59,14 @@ pub(crate) async fn authorization_binding(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
 ) -> Result<String, Error> {
-    Ok(
-        rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
-            .await?
-            .query_binding(p)?,
+    Ok(rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
     )
+    .await?
+    .query_binding(p)?)
 }
 #[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -153,10 +156,15 @@ impl Service {
             return Err(Error::Forbidden);
         }
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
-            .await?
-            .require(p, Permission::AccountWrite, Some(device))
-            .map_err(rss_mdm_authorization_service::Error::from)?;
+        rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?
+        .require(p, Permission::AccountWrite, Some(device))
+        .map_err(rss_mdm_authorization_service::Error::from)?;
         let before = authorization_binding(&mut tx, p).await?;
         let binding = q
             .binding(&(

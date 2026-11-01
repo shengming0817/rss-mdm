@@ -34,11 +34,11 @@ pub struct Values {
 }
 impl Default for Values {
     fn default() -> Self {
-        Self {
-            grant_seconds: 86400,
-            configuration_default_seconds: 86400,
-            platforms: vec![runtime::TaskPlatform::Windows, runtime::TaskPlatform::Macos],
-        }
+        serde_json::from_str(
+            crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm)
+                .agent_default_values,
+        )
+        .expect("fixed tenant defaults")
     }
 }
 impl Values {
@@ -74,23 +74,33 @@ pub struct Update {
 }
 /// Seed one newly registered tenant inside the installation operator's transaction.
 /// The caller owns tenant scoping and commit; existing settings are never replaced.
-pub async fn initialize_on(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
-    sqlx::query("INSERT INTO mdm_access.agent_enrollment_settings(tenant_id,revision,document) VALUES($1::uuid,1,$2)")
-        .bind(tenant).bind(serde_json::to_value(Values::default()).map_err(|_| Error::Malformed)?)
-        .execute(c).await.map_err(db)?;
+pub async fn initialize_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+) -> Result<(), Error> {
+    sqlx::query(crate::storage_profile::sql(profile).agent_settings_initialize_on_1)
+        .bind(tenant)
+        .bind(serde_json::to_value(Values::default()).map_err(|_| Error::Malformed)?)
+        .execute(c)
+        .await
+        .map_err(db)?;
     Ok(())
 }
 /// Fresh-install seed SQL shares the persisted default value definition.
-pub fn tenant_seed_sql() -> &'static str {
-    static SQL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SQL.get_or_init(|| {
-        let body = serde_json::to_string(&Values::default()).expect("default settings serialization").replace('\'', "''");
-        format!("CREATE FUNCTION mdm_access.seed_tenant_settings(t uuid) RETURNS void LANGUAGE sql SET search_path=pg_catalog,pg_temp AS $seed$ INSERT INTO mdm_access.agent_enrollment_settings(tenant_id,revision,document) VALUES(t,1,'{body}'::jsonb); $seed$; REVOKE ALL ON FUNCTION mdm_access.seed_tenant_settings(uuid) FROM PUBLIC;")
-    })
+pub fn tenant_seed_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    crate::storage_profile::sql(profile).agent_settings_tenant_seed_sql_1
 }
-pub async fn read_on(c: &mut PgConnection, tenant: &str) -> Result<Settings, Error> {
-    let row = sqlx::query("SELECT revision,document FROM mdm_access.agent_enrollment_settings WHERE tenant_id=$1::uuid")
-        .bind(tenant).fetch_one(c).await.map_err(db)?;
+pub async fn read_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+) -> Result<Settings, Error> {
+    let row = sqlx::query(crate::storage_profile::sql(profile).agent_settings_read_on_1)
+        .bind(tenant)
+        .fetch_one(c)
+        .await
+        .map_err(db)?;
     let values: Values =
         serde_json::from_value(row.try_get("document").map_err(db)?).map_err(|_| Error::Corrupt)?;
     values.validate().map_err(|_| Error::Corrupt)?;
@@ -104,6 +114,7 @@ pub async fn read_on(c: &mut PgConnection, tenant: &str) -> Result<Settings, Err
 }
 /// Lock the settings revision against a concurrent administrative disable.
 pub async fn admit_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     platform: runtime::TaskPlatform,
@@ -113,7 +124,7 @@ pub async fn admit_on(
         .execute(&mut *c)
         .await
         .map_err(db)?;
-    let values = read_on(c, tenant).await?.values;
+    let values = read_on(profile, c, tenant).await?.values;
     if !values.platforms.contains(&platform) {
         return Err(Error::Forbidden);
     }
@@ -121,13 +132,15 @@ pub async fn admit_on(
 }
 impl Service {
     pub async fn settings(&self, p: &AuthorizedPrincipal) -> Result<Settings, Failure> {
+        let profile = self.profile();
+
         p.manage(Permission::AgentEnrollmentRead)?;
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden.into());
         }
         let mut tx = self.store.begin(p.tenant_id()).await?;
-        authorize_on(&mut tx, p, Permission::AgentEnrollmentRead).await?;
-        let out = read_on(&mut tx, p.tenant_id()).await?;
+        authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
+        let out = read_on(profile, &mut tx, p.tenant_id()).await?;
         tx.commit().await.map_err(db)?;
         Ok(out)
     }
@@ -137,6 +150,8 @@ impl Service {
         input: &Update,
         a: &RequestAudit,
     ) -> Result<Settings, Failure> {
+        let profile = self.profile();
+
         self.proof(p, a)?;
         p.manage(Permission::AgentEnrollmentWrite)?;
         version(wire::API_VERSION, input.operation_id)?;
@@ -147,25 +162,61 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let d = digest(&(input.expected_revision, &input.values))?;
-        self.write(a,(self,p,input,a,d),|ctx,c|Box::pin(async move {
-            let (service,p,input,a,d)=ctx;
-            authorize_on(c,p,Permission::AgentEnrollmentWrite).await?;
-            let op=crate::operations::Operation{actor:crate::operations::Actor::from_authorized(p),key:input.operation_id,digest:d};
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2674))").bind(service.tenant.to_string()).execute(&mut *c).await.map_err(db)?;
-            sqlx::query("SELECT tenant_id FROM mdm_access.agent_enrollment_settings WHERE tenant_id=$1::uuid FOR UPDATE")
-                .bind(service.tenant.to_string()).fetch_one(&mut *c).await.map_err(db)?;
-            if let Some(old)=crate::operations::replay(c,&op).await? {
-                return Ok(Change{value:serde_json::from_str(&old).map_err(|_|Error::Corrupt)?, replay:true});
-            }
-            let current=read_on(c,p.tenant_id()).await?;
-            if current.revision!=input.expected_revision || current.revision>=i64::MAX as u64{return Err(Error::Conflict);}
-            sqlx::query("UPDATE mdm_access.agent_enrollment_settings SET revision=revision+1,document=$2 WHERE tenant_id=$1::uuid")
-                .bind(p.tenant_id()).bind(serde_json::to_value(&input.values).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
-            p.manage(Permission::AgentEnrollmentWrite)?;
-            let out=read_on(c,p.tenant_id()).await?;
-            crate::operations::save(c,&op,&serde_json::to_string(&out).map_err(|_|Error::Corrupt)?,a).await?;
-            Ok(Change{value:out, replay:false})
-        })).await.map_err(Into::into)
+        self.write(a, (self, p, input, a, d), |ctx, c| {
+            Box::pin(async move {
+                let (service, p, input, a, d) = ctx;
+                authorize_on(profile, c, p, Permission::AgentEnrollmentWrite).await?;
+                let op = crate::operations::Operation {
+                    actor: crate::operations::Actor::from_authorized(p),
+                    key: input.operation_id,
+                    digest: d,
+                };
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2674))")
+                    .bind(service.tenant.to_string())
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
+                sqlx::query(crate::storage_profile::sql(profile).agent_settings_update_settings_1)
+                    .bind(service.tenant.to_string())
+                    .fetch_one(&mut *c)
+                    .await
+                    .map_err(db)?;
+                if let Some(old) = crate::operations::replay(profile, c, &op).await? {
+                    return Ok(Change {
+                        value: serde_json::from_str(&old).map_err(|_| Error::Corrupt)?,
+                        replay: true,
+                    });
+                }
+                let current = read_on(profile, c, p.tenant_id()).await?;
+                if current.revision != input.expected_revision
+                    || current.revision >= i64::MAX as u64
+                {
+                    return Err(Error::Conflict);
+                }
+                sqlx::query(crate::storage_profile::sql(profile).agent_settings_update_settings_2)
+                    .bind(p.tenant_id())
+                    .bind(serde_json::to_value(&input.values).map_err(|_| Error::Malformed)?)
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
+                p.manage(Permission::AgentEnrollmentWrite)?;
+                let out = read_on(profile, c, p.tenant_id()).await?;
+                crate::operations::save(
+                    profile,
+                    c,
+                    &op,
+                    &serde_json::to_string(&out).map_err(|_| Error::Corrupt)?,
+                    a,
+                )
+                .await?;
+                Ok(Change {
+                    value: out,
+                    replay: false,
+                })
+            })
+        })
+        .await
+        .map_err(Into::into)
     }
 }
 

@@ -3,6 +3,7 @@ use crate::enrollment::managed::Authority;
 /// Persist one native grant after execution has verified its frozen installation authority.
 /// It creates neither an Enrollment request nor a Registration.
 pub async fn create_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     authority: Authority,
     input: &wire::NativeGrantRequest,
@@ -11,8 +12,8 @@ pub async fn create_in(
     input.validate().map_err(|_| Error::Malformed)?;
     let p = authority.principal();
     let tenant = p.tenant().to_string();
-    crate::admission::lock_in(c, &tenant).await?;
-    crate::lifecycle::require_work_in(c, &tenant, p.device()).await?;
+    crate::admission::lock_in(profile, c, &tenant).await?;
+    crate::lifecycle::require_work_in(profile, c, &tenant, p.device()).await?;
     if authority.installation() != input.installation_operation {
         return Err(Error::Forbidden);
     }
@@ -27,19 +28,15 @@ SELECT pg_advisory_xact_lock(hashtextextended($1,2630))
     .execute(&mut *c)
     .await
     .map_err(db)?;
-    if let Some(id) = sqlx::query_scalar::<_, Uuid>(
-        r#"
-SELECT id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='native' AND
-native_authority->>'installation'= $2
-"#,
-    )
-    .bind(&tenant)
-    .bind(input.installation_operation.to_string())
-    .fetch_optional(&mut *c)
-    .await
-    .map_err(db)?
+    if let Some(id) =
+        sqlx::query_scalar::<_, Uuid>(crate::storage_profile::sql(profile).agent_native_create_in_1)
+            .bind(&tenant)
+            .bind(input.installation_operation.to_string())
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(db)?
     {
-        let row = native_grant_row(c, &tenant, id).await?;
+        let row = native_grant_row(profile, c, &tenant, id).await?;
         if row.try_get::<String, _>("request_digest").map_err(db)? != digest
             || row.try_get::<String, _>("spki").map_err(db)? != bound
         {
@@ -48,63 +45,31 @@ native_authority->>'installation'= $2
         check_secret(&tenant, &row, &input.secret)?;
         return Ok((receipt(&row)?, true));
     }
-    crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent).await?;
-    let policy = settings::admit_on(c, &tenant, input.runtime.platform).await?;
+    crate::admission::require_new_in(profile, c, &tenant, crate::quotas::Channel::Agent).await?;
+    let policy = settings::admit_on(profile, c, &tenant, input.runtime.platform).await?;
     let id = Uuid::new_v4();
     let device = Uuid::new_v4().to_string();
-    sqlx::query(
-        r#"
-INSERT INTO
-mdm_access.agent_grants(tenant_id,
-id,
-operation_id,
-source,
-actor,
-instance,
-device,
-platform,
-secret_digest,
-request_digest,
-spki,
-state,
-created_at,
-expires_at,
-native_authority)
-VALUES($1::uuid,
-$2,
-$3,
-'native',
-$4,
-$5,
-$6,
-$7,
-$8,
-$9,
-$10,
-'available',
-statement_timestamp(),
-least(to_timestamp($11),
-statement_timestamp()+make_interval(secs=>$13)),
-$12)
-"#,
-    )
-    .bind(&tenant)
-    .bind(id)
-    .bind(input.operation_id)
-    .bind(authority.actor().subject())
-    .bind(authority.actor().instance_id())
-    .bind(device)
-    .bind(platform(input.runtime.platform))
-    .bind(secret_digest(&tenant, id, &input.secret))
-    .bind(digest)
-    .bind(bound)
-    .bind(authority.deadline() as f64)
-    .bind(native)
-    .bind(f64::from(policy.grant_seconds))
-    .execute(&mut *c)
-    .await
-    .map_err(db)?;
-    Ok((receipt(&native_grant_row(c, &tenant, id).await?)?, false))
+    sqlx::query(crate::storage_profile::sql(profile).agent_native_create_in_2)
+        .bind(&tenant)
+        .bind(id)
+        .bind(input.operation_id)
+        .bind(authority.actor().subject())
+        .bind(authority.actor().instance_id())
+        .bind(device)
+        .bind(platform(input.runtime.platform))
+        .bind(secret_digest(&tenant, id, &input.secret))
+        .bind(digest)
+        .bind(bound)
+        .bind(authority.deadline() as f64)
+        .bind(native)
+        .bind(f64::from(policy.grant_seconds))
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
+    Ok((
+        receipt(&native_grant_row(profile, c, &tenant, id).await?)?,
+        false,
+    ))
 }
 /// Native proof reconstructed only from a stored grant and its still-current registration.
 pub struct Source {
@@ -143,6 +108,7 @@ struct Stored {
     bootstrap: Uuid,
 }
 pub(crate) async fn source(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: rss_request_context::TenantId,
     value: serde_json::Value,
@@ -151,25 +117,29 @@ pub(crate) async fn source(
     if s.source.channel() != rss_mdm_inventory::Channel::Mdm || s.installation.is_nil() {
         return Err(Error::Corrupt);
     }
-    let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2 AND installation=$3 AND active AND state<>'revoked' AND (state='consumed' OR deadline>extract(epoch FROM clock_timestamp())) AND source->>'registration'=$4 AND source->>'credential'=$5 AND source->>'generation'=$6)")
-        .bind(tenant.to_string()).bind(s.bootstrap).bind(s.installation).bind(s.registration.to_string()).bind(s.credential.to_string()).bind(s.generation.to_string())
-        .fetch_one(&mut *c).await.map_err(db)?;
+    let current: bool =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).agent_native_source_1)
+            .bind(tenant.to_string())
+            .bind(s.bootstrap)
+            .bind(s.installation)
+            .bind(s.registration.to_string())
+            .bind(s.credential.to_string())
+            .bind(s.generation.to_string())
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
     if !current {
         return Err(Error::Forbidden);
     }
-    let locator: String = sqlx::query_scalar(
-        r#"
-SELECT locator FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND id=$2 AND
-registration=$3 AND channel='mdm' AND state='active'
-"#,
-    )
-    .bind(tenant.to_string())
-    .bind(s.credential)
-    .bind(s.registration)
-    .fetch_optional(&mut *c)
-    .await
-    .map_err(db)?
-    .ok_or(Error::Forbidden)?;
+    let locator: String =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).agent_native_source_2)
+            .bind(tenant.to_string())
+            .bind(s.credential)
+            .bind(s.registration)
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(db)?
+            .ok_or(Error::Forbidden)?;
     if locator.len() != 64 || !locator.is_ascii() {
         return Err(Error::Corrupt);
     }
@@ -182,14 +152,20 @@ registration=$3 AND channel='mdm' AND state='active'
         rss_mdm_inventory::ReportSource::MdmApple => rss_mdm_agent_wire::pki::Purpose::Apple,
         _ => return Err(Error::Forbidden),
     };
-    rss_mdm_pki_service::registry::current_certificate_in(c, tenant, usage, &bytes)
+    rss_mdm_pki_service::registry::current_certificate_in(profile, c, tenant, usage, &bytes)
         .await
         .map_err(|e| match e {
             rss_mdm_pki_service::Error::Storage => Error::Storage,
             _ => Error::Forbidden,
         })?;
-    let mount = crate::device::ChannelMount::new(tenant, s.source, crate::device::Purpose::Primary);
-    let principal = crate::device::store::management_in(c, &mount.credential(bytes)?).await?;
+    let mount = crate::device::ChannelMount::new(
+        profile,
+        tenant,
+        s.source,
+        crate::device::Purpose::Primary,
+    );
+    let principal =
+        crate::device::store::management_in(profile, c, &mount.credential(bytes)?).await?;
     if principal.registration() != s.registration
         || principal.generation() != s.generation
         || principal.credential() != s.credential
@@ -208,7 +184,16 @@ registration=$3 AND channel='mdm' AND state='active'
 // Native creation is serialized by its installation advisory lock. A read here
 // avoids granting the execution role lifecycle mutation rights or taking a
 // grant lock after the native-channel lock held by its caller.
-async fn native_grant_row(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
-    sqlx::query("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2 AND source='native'")
-        .bind(tenant).bind(id).fetch_one(c).await.map_err(db)
+async fn native_grant_row(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<PgRow, Error> {
+    sqlx::query(crate::storage_profile::sql(profile).agent_native_native_grant_row_1)
+        .bind(tenant)
+        .bind(id)
+        .fetch_one(c)
+        .await
+        .map_err(db)
 }

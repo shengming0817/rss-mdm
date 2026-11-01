@@ -46,11 +46,22 @@ pub(super) async fn authorize(
     permission: Permission,
 ) -> Result<(), Error> {
     p.check_live()?;
-    rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id()).await?;
-    rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
-        .await?
-        .require(p, permission, Some(device))
-        .map_err(|_| Error::Forbidden)?;
+    rss_mdm_authorization_service::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?
+    .require(p, permission, Some(device))
+    .map_err(|_| Error::Forbidden)?;
     Ok(())
 }
 
@@ -76,8 +87,19 @@ impl Service {
             .map_err(|_| Error::Unauthorized)?;
         sessions.recheck(&reference).await?;
         let mut tx = self.store.snapshot(employee.tenant_id()).await?;
-        crate::device::store::read_management_in(&mut tx, device).await?;
-        crate::lifecycle::require_work_in(&mut tx, employee.tenant_id(), device.device()).await?;
+        crate::device::store::read_management_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            device,
+        )
+        .await?;
+        crate::lifecycle::require_work_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            employee.tenant_id(),
+            device.device(),
+        )
+        .await?;
         let before = super::directory::authorization_binding(&mut tx, employee).await?;
         let binding = rss_mdm_query::cursor::fingerprint(&(
             "device_access.discovery",
@@ -145,10 +167,21 @@ impl Service {
         tx.rollback().await.map_err(db)?;
         sessions.recheck(&reference).await?;
         let mut current = self.store.begin(employee.tenant_id()).await?;
-        crate::device::store::revalidate_management(&mut current, device).await?;
-        crate::lifecycle::require_work_in(&mut current, employee.tenant_id(), device.device())
-            .await?;
+        crate::device::store::revalidate_management(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut current,
+            device,
+        )
+        .await?;
+        crate::lifecycle::require_work_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut current,
+            employee.tenant_id(),
+            device.device(),
+        )
+        .await?;
         rss_mdm_authorization_service::lock_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &mut current,
             employee.tenant_id(),
             employee.instance_id(),
@@ -215,8 +248,8 @@ impl Service {
         self.write_admitted(&self.access_audit, audit, (device, employee, input, admission, who),
             |ctx,c| Box::pin(async move { admit_session(c, ctx.1).await }), |ctx,c| Box::pin(async move {
             let (device,employee,input,admission,who) = ctx;
-            crate::device::store::revalidate_management(c, device).await?;
-            crate::lifecycle::require_work_in(c, employee.tenant_id(), device.device()).await?;
+            crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, device).await?;
+            crate::lifecycle::require_work_in(rss_mdm_install_support::StorageProfile::Mdm, c, employee.tenant_id(), device.device()).await?;
             super::lifecycle::require_subject_on(c,tenant_uuid(device.tenant())?,who).await?;
             let time = now(c).await?;
             if !employee.recently_authenticated(time, 300)? { return Err(Error::Unauthorized); }
@@ -271,11 +304,11 @@ impl Service {
         self.write_admitted(&self.access_audit,audit,(device,employee,input,admission,who,audit),
             |ctx,c| Box::pin(async move { admit_session(c, ctx.1).await }),|ctx,c|Box::pin(async move {
             let (device,employee,input,admission,who,audit)=ctx;
-            crate::device::store::revalidate_management(c,device).await?;
-            crate::lifecycle::require_work_in(c,employee.tenant_id(),device.device()).await?;
+            crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c,device).await?;
+            crate::lifecycle::require_work_in(rss_mdm_install_support::StorageProfile::Mdm, c,employee.tenant_id(),device.device()).await?;
             let hash=digest(&("device_access_confirm", input.operation_id,input.challenge,nonce_digest(&input.nonce),&input.local_session,&*who))?;
             let op=Operation { actor:Actor::from_authorized(employee),key:input.operation_id,digest:&hash };
-            if let Some(old)=crate::operations::replay(c,&op).await? {
+            if let Some(old)=crate::operations::replay(rss_mdm_install_support::StorageProfile::Mdm, c,&op).await? {
                 let saved:Binding=serde_json::from_str(&old).map_err(|_|Error::Corrupt)?;
                 saved.validate()?;
                 if saved.device!=device.device() || saved.registration!=device.registration() || saved.registration_generation!=device.generation() || saved.person!=*who {return Err(Error::Forbidden);}
@@ -304,7 +337,7 @@ impl Service {
             storage::insert_in(c,&binding).await?;
             super::lifecycle::emit_on(c,&binding,None,input.operation_id,"accepted").await?;
             sqlx::query("UPDATE mdm_access.device_access_ceremonies SET consumed=$3 WHERE tenant_id=$1 AND id=$2").bind(binding.tenant).bind(input.challenge).bind(binding.id).execute(&mut *c).await.map_err(db)?;
-            crate::operations::save(c,&op,&serde_json::to_string(&binding).map_err(|_|Error::Corrupt)?,audit).await?;
+            crate::operations::save(rss_mdm_install_support::StorageProfile::Mdm, c,&op,&serde_json::to_string(&binding).map_err(|_|Error::Corrupt)?,audit).await?;
             Ok(AuditedChange{value:binding, replay:false})
         })).await
     }
@@ -363,15 +396,15 @@ impl Service {
                     let (actor, device, id, input, admission, audit, _, _, idp_fingerprints) = ctx;
                     authorize(c, actor, device, Permission::AccountWrite).await?;
                     let tenant = Uuid::parse_str(actor.tenant_id()).map_err(|_| Error::Corrupt)?;
-                    crate::lifecycle::require_work_in(c, actor.tenant_id(), device).await?;
-                    crate::device::endpoints::lock_in(
+                    crate::lifecycle::require_work_in(rss_mdm_install_support::StorageProfile::Mdm, c, actor.tenant_id(), device).await?;
+                    crate::device::endpoints::lock_in(rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         actor.tenant_id(),
                         device,
                         rss_mdm_inventory::Channel::Agent,
                     )
                     .await?;
-                    let registration = crate::device::endpoints::current_in(
+                    let registration = crate::device::endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         actor.tenant_id(),
                         device,
@@ -385,7 +418,7 @@ impl Service {
                         key: input.operation_id,
                         digest: &hash,
                     };
-                    if crate::operations::replay(c, &op).await?.is_some() {
+                    if crate::operations::replay(rss_mdm_install_support::StorageProfile::Mdm, c, &op).await?.is_some() {
                         // Roll back this proof consumption, then return the committed receipt.
                         return Err(Error::Conflict);
                     }
@@ -408,7 +441,7 @@ impl Service {
                             person.validate()?;
                             if matches!(input.action,Action::Reinstate{..}) {
                                 super::lifecycle::require_settled_on(c,tenant,person).await?;
-                                let snapshot=rss_mdm_authorization_service::snapshot_on(c,actor.tenant_id(),actor.instance_id()).await?;
+                                let snapshot=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,actor.tenant_id(),actor.instance_id()).await?;
                                 snapshot.require(actor,Permission::IdentityAccountsManage,None).map_err(|_|Error::Forbidden)?;
                                 let changed=sqlx::query("UPDATE mdm_access.device_access_subject_denials SET denied=false,operation=$4 WHERE tenant_id=$1 AND instance=$2 AND principal=$3 AND denied")
                                     .bind(tenant).bind(person.instance).bind(person.principal).bind(input.operation_id).execute(&mut *c).await.map_err(db)?.rows_affected();
@@ -546,7 +579,7 @@ impl Service {
                         storage::insert_in(c, &value).await?;
                     }
                     super::lifecycle::emit_on(c, &value, old.as_ref().map(|b| b.person.principal), input.operation_id, "accepted").await?;
-                    crate::operations::save(
+                    crate::operations::save(rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &op,
                         &serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,
@@ -583,7 +616,9 @@ impl Service {
             key: operation,
             digest: hash,
         };
-        let value = crate::operations::read(&mut tx, &op).await?;
+        let value =
+            crate::operations::read(rss_mdm_install_support::StorageProfile::Mdm, &mut tx, &op)
+                .await?;
         let value = value
             .map(|value| {
                 let binding: Binding = serde_json::from_str(&value).map_err(|_| Error::Corrupt)?;

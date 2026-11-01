@@ -10,7 +10,15 @@ pub(crate) async fn lock_devices(tx: &mut PgTransaction<'_>, devices: &[String])
     let tenant = tx.tenant_id().to_string();
     let devices = devices.to_vec();
     tx.with_connection(move |c| {
-        Box::pin(async move { Ok(crate::lifecycle::lock_devices_in(c, &tenant, &devices).await) })
+        Box::pin(async move {
+            Ok(crate::lifecycle::lock_devices_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &tenant,
+                &devices,
+            )
+            .await)
+        })
     })
     .await??;
     Ok(())
@@ -46,10 +54,21 @@ pub async fn current(
     let snapshot = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                crate::installation::authorization::lock_shared_on(c, &tenant, &instance)
-                    .await
-                    .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-                Ok(crate::installation::authorization::snapshot_on(c, &tenant, &instance).await)
+                crate::installation::authorization::lock_shared_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await
+                .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
+                Ok(crate::installation::authorization::snapshot_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await)
             })
         })
         .await??;

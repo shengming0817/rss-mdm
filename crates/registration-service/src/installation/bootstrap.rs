@@ -170,6 +170,7 @@ impl Transactions {
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(rss_mdm_pki_service::registry::trust_on(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         tenant,
                         rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,

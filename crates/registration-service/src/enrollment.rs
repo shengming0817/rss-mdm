@@ -183,6 +183,9 @@ pub struct ResumeCommand<'a> {
     pub operation: Uuid,
 }
 impl EnrollmentService {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.access.profile()
+    }
     pub fn admission(&self) -> crate::admission::Admission {
         crate::admission::Admission::new(self.access.clone(), self.audit_store.clone())
     }
@@ -208,6 +211,8 @@ impl EnrollmentService {
         key: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
+        let profile = self.profile();
+
         if input.source == ReportSource::AgentBuiltin {
             return Err(Error::Malformed);
         }
@@ -220,6 +225,7 @@ impl EnrollmentService {
             .credentials
             .insert(continuation.duplicate().map_err(|_| Error::Unauthorized)?)?;
         let result = store::create_enrollment(
+            profile,
             &self.audit_store,
             permission,
             &input.password,
@@ -240,6 +246,8 @@ impl EnrollmentService {
         key: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<SelfReceipt, Error> {
+        let profile = self.profile();
+
         if key.is_nil()
             || input.source == ReportSource::AgentBuiltin
             || (input.source == ReportSource::MdmWindows) != input.windows_profile.is_some()
@@ -259,6 +267,7 @@ impl EnrollmentService {
             .credentials
             .insert(continuation.duplicate().map_err(|_| Error::Unauthorized)?)?;
         let result = store::create_enrollment(
+            profile,
             &self.audit_store,
             permission,
             &input.password,
@@ -279,13 +288,16 @@ impl EnrollmentService {
         continuation: &rss_mdm_authorization_service::credential::RequestCredential,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
-        let permission = store::owned_permission(&self.access, proof, command.id).await?;
+        let profile = self.profile();
+
+        let permission = store::owned_permission(profile, &self.access, proof, command.id).await?;
         let device = permission.device().to_owned();
         audit.target_device(&device);
         let reference = self
             .credentials
             .insert(continuation.duplicate().map_err(|_| Error::Unauthorized)?)?;
         let result = store::change_enrollment(
+            profile,
             &self.audit_store,
             permission,
             command.id,
@@ -320,10 +332,20 @@ impl EnrollmentService {
         audit: &rss_mdm_audit_integration::RequestAudit,
         native: &dyn read::NativeProgress,
     ) -> Result<read::Status, Error> {
-        let permission = store::owned_permission(&self.access, proof, id).await?;
+        let profile = self.profile();
+
+        let permission = store::owned_permission(profile, &self.access, proof, id).await?;
         let device = permission.device().to_owned();
         audit.target_device(&device);
-        read::enrollment_status(&self.access, permission, id, native, &self.credentials).await
+        read::enrollment_status(
+            profile,
+            &self.access,
+            permission,
+            id,
+            native,
+            &self.credentials,
+        )
+        .await
     }
     pub async fn registrations(
         &self,
@@ -333,7 +355,9 @@ impl EnrollmentService {
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<registrations::Row>>, Error>
     {
-        registrations::list(&self.access, proof, device, page, codec).await
+        let profile = self.profile();
+
+        registrations::list(profile, &self.access, proof, device, page, codec).await
     }
     pub async fn cancel(
         &self,
@@ -342,10 +366,12 @@ impl EnrollmentService {
         key: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
-        let permission = store::owned_permission(&self.access, proof, id).await?;
+        let profile = self.profile();
+
+        let permission = store::owned_permission(profile, &self.access, proof, id).await?;
         let device = permission.device().to_owned();
         audit.target_device(&device);
-        store::change_enrollment(&self.audit_store, permission, id, None, key, audit).await
+        store::change_enrollment(profile, &self.audit_store, permission, id, None, key, audit).await
     }
 }
 

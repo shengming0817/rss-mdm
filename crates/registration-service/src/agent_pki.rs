@@ -50,13 +50,18 @@ pub struct Issued {
     pub certificate: IssuedAgentCertificate,
 }
 pub struct AgentIssuer {
+    profile: rss_mdm_install_support::StorageProfile,
     providers: Arc<Providers>,
     trust: Arc<AgentTrust>,
     days: u16,
     clock: Arc<dyn Clock>,
 }
 impl AgentIssuer {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
         providers: Arc<Providers>,
         days: u16,
         development: bool,
@@ -74,6 +79,7 @@ impl AgentIssuer {
             .get(Purpose::Agent, &active.digest)
             .map_err(|_| IssuanceError::Configuration)?;
         Ok(Self {
+            profile,
             providers,
             trust,
             days,
@@ -113,6 +119,7 @@ impl AgentIssuer {
             .get(Purpose::Agent, &issuer)
             .map_err(|_| Error::Configuration)?;
         rss_mdm_pki_service::signing::authorize_in(
+            self.profile,
             c,
             tenant,
             "agent",
@@ -166,6 +173,9 @@ impl AgentIssuer {
         store: &rss_mdm_pki_service::signing::SigningStore,
         tenant: Uuid,
     ) -> Result<Issued, IssuanceError> {
+        if store.profile() != self.profile {
+            return Err(IssuanceError::Configuration);
+        }
         let now = self
             .clock
             .unix_seconds()

@@ -141,6 +141,8 @@ async fn change_on(
     c: &mut sqlx::PgConnection,
     context: &KeyWrite<'_>,
 ) -> Result<(Receipt, bool), Error> {
+    let profile = context.proof.profile();
+
     let KeyWrite {
         proof,
         id,
@@ -150,8 +152,8 @@ async fn change_on(
         secret,
         audit,
     } = context;
-    crate::store::lock(c, proof.tenant_id(), proof.instance_id()).await?;
-    let snapshot = crate::snapshot_on(c, proof.tenant_id(), proof.instance_id()).await?;
+    crate::store::lock(profile, c, proof.tenant_id(), proof.instance_id()).await?;
+    let snapshot = crate::snapshot_on(profile, c, proof.tenant_id(), proof.instance_id()).await?;
     snapshot.require(proof, Permission::AuthorizationWrite, None)?;
     if snapshot
         .installation
@@ -187,10 +189,21 @@ async fn change_on(
             {
                 return Err(Error::Conflict);
             }
-            sqlx::query("INSERT INTO mdm_access.api_keys(tenant_id,instance,id,revision,authority_revision,credential_revision,metadata,secret_digest,created_by,created_at) VALUES($1::uuid,$2::uuid,$3,1,1,1,$4,$5,$6,$7)")
-                .bind(proof.tenant_id()).bind(proof.instance_id()).bind(id).bind(serde_json::to_value(metadata).map_err(|_| Error::Malformed)?)
-                .bind(secret.ok_or(Error::Corrupt)?.digest(proof.instance_id(), proof.tenant_id())).bind(serde_json::to_value(creator).map_err(|_| Error::Malformed)?).bind(now)
-                .execute(&mut *c).await.map_err(db)?;
+            sqlx::query(crate::storage_profile::sql(profile).api_key_store_change_on_1)
+                .bind(proof.tenant_id())
+                .bind(proof.instance_id())
+                .bind(id)
+                .bind(serde_json::to_value(metadata).map_err(|_| Error::Malformed)?)
+                .bind(
+                    secret
+                        .ok_or(Error::Corrupt)?
+                        .digest(proof.instance_id(), proof.tenant_id()),
+                )
+                .bind(serde_json::to_value(creator).map_err(|_| Error::Malformed)?)
+                .bind(now)
+                .execute(&mut *c)
+                .await
+                .map_err(db)?;
         }
         mutation => {
             let old = old.ok_or(Error::Conflict)?;
@@ -229,13 +242,28 @@ async fn change_on(
             let credential =
                 i64::try_from(credential.ok_or(Error::Conflict)?).map_err(|_| Error::Conflict)?;
             let hash = secret.map(|secret| secret.digest(proof.instance_id(), proof.tenant_id()));
-            sqlx::query("UPDATE mdm_access.api_keys SET revision=$4,authority_revision=$5,credential_revision=$6,metadata=$7,secret_digest=coalesce($8,secret_digest),revoked=$9 WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3")
-                .bind(proof.tenant_id()).bind(proof.instance_id()).bind(id).bind(revision as i64).bind(authority).bind(credential).bind(serde_json::to_value(metadata).map_err(|_| Error::Malformed)?).bind(hash).bind(revoked)
-                .execute(&mut *c).await.map_err(db)?;
+            sqlx::query(crate::storage_profile::sql(profile).api_key_store_change_on_2)
+                .bind(proof.tenant_id())
+                .bind(proof.instance_id())
+                .bind(id)
+                .bind(revision as i64)
+                .bind(authority)
+                .bind(credential)
+                .bind(serde_json::to_value(metadata).map_err(|_| Error::Malformed)?)
+                .bind(hash)
+                .bind(revoked)
+                .execute(&mut *c)
+                .await
+                .map_err(db)?;
         }
     }
-    let bounded: bool = sqlx::query_scalar("SELECT coalesce(sum(octet_length(metadata::text)+octet_length(created_by::text)),0)<=2097152 FROM mdm_access.api_keys WHERE tenant_id=$1::uuid AND instance=$2::uuid")
-        .bind(proof.tenant_id()).bind(proof.instance_id()).fetch_one(&mut *c).await.map_err(db)?;
+    let bounded: bool =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).api_key_store_change_on_3)
+            .bind(proof.tenant_id())
+            .bind(proof.instance_id())
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
     if !bounded {
         return Err(Error::Conflict);
     }

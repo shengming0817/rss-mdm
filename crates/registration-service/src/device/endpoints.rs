@@ -16,13 +16,19 @@ pub struct PrimaryRegistration {
 }
 /// Current active primary and credential. Renewal leaves registration identity unchanged.
 pub async fn current_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     device: &str,
     channel: Channel,
 ) -> Result<Option<PrimaryRegistration>, Error> {
-    let row = sqlx::query("SELECT r.id,r.generation FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel=$3 AND r.purpose='primary' AND r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active')")
-        .bind(tenant).bind(device).bind(channel.as_str()).fetch_optional(c).await.map_err(db)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).device_endpoints_current_in_1)
+        .bind(tenant)
+        .bind(device)
+        .bind(channel.as_str())
+        .fetch_optional(c)
+        .await
+        .map_err(db)?;
     row.map(|r| {
         Ok(PrimaryRegistration {
             device: device.into(),
@@ -35,6 +41,7 @@ pub async fn current_in(
 }
 /// Bounded set projection with the same active primary and credential predicates.
 pub async fn current_page_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     devices: &[String],
@@ -42,8 +49,12 @@ pub async fn current_page_in(
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
-    let rows=sqlx::query("SELECT r.device,r.channel,r.id,r.generation FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=ANY($2) AND r.purpose='primary' AND r.state='active' AND EXISTS(SELECT FROM mdm_access.credentials k WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active') ORDER BY r.device,r.channel")
-        .bind(tenant).bind(devices).fetch_all(c).await.map_err(db)?;
+    let rows = sqlx::query(crate::storage_profile::sql(profile).device_endpoints_current_page_in_1)
+        .bind(tenant)
+        .bind(devices)
+        .fetch_all(c)
+        .await
+        .map_err(db)?;
     rows.into_iter()
         .map(|row| {
             Ok(PrimaryRegistration {
@@ -61,6 +72,7 @@ pub async fn current_page_in(
 }
 /// Historical primary registrations and credentials from one committed asset cut.
 pub async fn page_at(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     cut: &rss_mdm_inventory::AssetCut,
@@ -69,14 +81,13 @@ pub async fn page_at(
     if devices.len() > 1000 || cut.tenant().to_string() != tenant {
         return Err(Error::Malformed);
     }
-    let rows=sqlx::query(r#"WITH latest AS (
-        SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document FROM mdm_access.asset_authority_history
-        WHERE tenant_id=$1::uuid AND device=ANY($2) AND mdm.asset_visible($3::jsonb,revision)
-        ORDER BY kind,identity,revision DESC
-    ) SELECT r.device,r.document->>'channel' AS channel,r.identity::uuid AS id,(r.document->>'generation')::bigint AS generation
-    FROM latest r WHERE r.kind='registration' AND r.document->>'purpose'='primary' AND r.document->>'state'='active'
-        AND EXISTS(SELECT FROM latest k WHERE k.kind='credential' AND k.registration=r.registration AND k.document->>'state'='active')
-    ORDER BY r.device,channel"#).bind(tenant).bind(devices).bind(cut.to_json()).fetch_all(c).await.map_err(db)?;
+    let rows = sqlx::query(crate::storage_profile::sql(profile).device_endpoints_page_at_1)
+        .bind(tenant)
+        .bind(devices)
+        .bind(cut.to_json())
+        .fetch_all(c)
+        .await
+        .map_err(db)?;
     rows.into_iter()
         .map(|row| {
             Ok(PrimaryRegistration {
@@ -94,15 +105,17 @@ pub async fn page_at(
 }
 /// Borrow the same lifecycle lock as bind/revoke; callers order multiple endpoints lexically.
 pub async fn lock_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     device: &str,
     channel: Channel,
 ) -> Result<(), Error> {
-    super::store::lock_channel(c, tenant, device, channel).await
+    super::store::lock_channel(profile, c, tenant, device, channel).await
 }
 /// Bounded endpoint enumeration; the consumer applies its own authorization before projection.
 pub async fn page_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     after: &str,
@@ -111,12 +124,18 @@ pub async fn page_in(
     if !(1..=1001).contains(&limit) {
         return Err(Error::Malformed);
     }
-    sqlx::query_scalar("SELECT id FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id COLLATE \"C\">$2 COLLATE \"C\" ORDER BY id COLLATE \"C\" LIMIT $3")
-        .bind(tenant).bind(after).bind(limit).fetch_all(c).await.map_err(db)
+    sqlx::query_scalar(crate::storage_profile::sql(profile).device_endpoints_page_in_1)
+        .bind(tenant)
+        .bind(after)
+        .bind(limit)
+        .fetch_all(c)
+        .await
+        .map_err(db)
 }
 
 /// Current selected-primary-channel endpoints filtered to the consumer's authorized IDs.
 pub async fn candidate_page_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     channel: Channel,
@@ -127,8 +146,15 @@ pub async fn candidate_page_in(
     if !(1..=1001).contains(&limit) {
         return Err(Error::Malformed);
     }
-    sqlx::query_scalar(r#"SELECT r.device FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.channel=$2 AND r.purpose='primary' AND r.state='active' AND r.device COLLATE "C">$3 COLLATE "C" AND ($4::text[] IS NULL OR r.device=ANY($4)) ORDER BY r.device COLLATE "C" LIMIT $5"#)
-        .bind(tenant).bind(channel.as_str()).bind(after).bind(allowed).bind(limit).fetch_all(c).await.map_err(db)
+    sqlx::query_scalar(crate::storage_profile::sql(profile).device_endpoints_candidate_page_in_1)
+        .bind(tenant)
+        .bind(channel.as_str())
+        .bind(after)
+        .bind(allowed)
+        .bind(limit)
+        .fetch_all(c)
+        .await
+        .map_err(db)
 }
 
 /// Fixed-cut management facts, independent of collected Inventory values.
@@ -145,6 +171,7 @@ pub struct Lifecycle {
 }
 /// Read at most one page; selected identities include deleted endpoints for delta removal.
 pub async fn lifecycle_page_at(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     cut: &rss_mdm_inventory::AssetCut,
@@ -162,30 +189,27 @@ pub async fn lifecycle_page_at(
         sqlx::query_scalar("SELECT id FROM unnest($1::text[]) id WHERE id COLLATE \"C\">coalesce($2,'') COLLATE \"C\" ORDER BY id COLLATE \"C\" LIMIT $3")
             .bind(selected).bind(after).bind(limit as i64).fetch_all(&mut *c).await.map_err(db)?
     } else {
-        super::read::page_at(c, tenant.into(), cut, after, true, vec![], limit as i64)
-            .await
-            .map_err(db)?
+        super::read::page_at(
+            profile,
+            c,
+            tenant.into(),
+            cut,
+            after,
+            true,
+            vec![],
+            limit as i64,
+        )
+        .await
+        .map_err(db)?
     };
-    let rows = sqlx::query(r#"
-        WITH latest AS (
-            SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document
-            FROM mdm_access.asset_authority_history
-            WHERE tenant_id=$1::uuid AND device=ANY($2) AND mdm.asset_visible($3::jsonb,revision)
-            ORDER BY kind,identity,revision DESC
-        ), live AS (
-            SELECT r.device,CASE s.document->>'source'
-                WHEN 'mdm.windows' THEN 'windows' WHEN 'mdm.apple' THEN 'macos'
-                ELSE r.document->>'platform' END AS platform
-            FROM latest r JOIN latest s ON s.registration=r.registration AND s.kind='source'
-                JOIN latest k ON k.registration=r.registration AND k.kind='credential'
-                JOIN latest d ON d.device=r.device AND d.kind='device' AND d.document IS NOT NULL
-            WHERE r.kind='registration' AND r.document->>'purpose'='primary'
-                AND r.document->>'state'='active' AND k.document->>'state'='active'
-                AND s.document->>'enabled'='true'
-        ) SELECT d AS device,count(l.device)>0 AS managed,
-            min(l.platform) AS platform,count(DISTINCT l.platform)>1 OR bool_or(l.device IS NOT NULL AND l.platform IS NULL) AS conflict
-        FROM unnest($2::text[]) d LEFT JOIN live l ON l.device=d GROUP BY d ORDER BY d COLLATE "C"
-    "#).bind(tenant).bind(ids).bind(cut.to_json()).fetch_all(c).await.map_err(db)?;
+    let rows =
+        sqlx::query(crate::storage_profile::sql(profile).device_endpoints_lifecycle_page_at_1)
+            .bind(tenant)
+            .bind(ids)
+            .bind(cut.to_json())
+            .fetch_all(c)
+            .await
+            .map_err(db)?;
     rows.into_iter()
         .map(|r| {
             let conflict: bool = r.try_get("conflict").map_err(db)?;
@@ -211,4 +235,25 @@ pub async fn lifecycle_page_at(
             })
         })
         .collect()
+}
+
+/// Recheck a frozen channel membership on the caller's locked transaction.
+pub async fn current_members_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+    input: &serde_json::Value,
+    channel: rss_mdm_inventory::Channel,
+) -> Result<Option<PrimaryRegistration>, sqlx::Error> {
+    let value: Option<serde_json::Value> =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).current_members)
+            .bind(input)
+            .bind(channel.as_str())
+            .fetch_one(c)
+            .await?;
+    value
+        .map(|value| {
+            serde_json::from_value(value)
+                .map_err(|_| sqlx::Error::Protocol("invalid member authority".into()))
+        })
+        .transpose()
 }

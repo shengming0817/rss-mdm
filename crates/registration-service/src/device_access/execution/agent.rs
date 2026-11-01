@@ -23,6 +23,7 @@ pub(crate) async fn principal(
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::device::store::revalidate_source(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &checked,
                 rss_mdm_inventory::ReportSource::AgentBuiltin,
@@ -442,7 +443,15 @@ pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Res
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     tx.with_connection(move |c| {
-        Box::pin(async move { Ok(crate::lifecycle::lock_devices_in(c, &tenant, &[device]).await) })
+        Box::pin(async move {
+            Ok(crate::lifecycle::lock_devices_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &tenant,
+                &[device],
+            )
+            .await)
+        })
     })
     .await??;
     Ok(())

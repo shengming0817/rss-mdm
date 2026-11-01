@@ -3,31 +3,45 @@ use crate::Error;
 use sqlx::{Connection, PgPool, Postgres, Transaction};
 #[derive(Clone)]
 pub struct Store {
+    pub(crate) profile: rss_mdm_install_support::StorageProfile,
     pool: PgPool,
     pub(crate) clock: std::sync::Arc<dyn rss_request_context::Clock>,
 }
 impl Store {
-    pub fn from_pool(pool: PgPool, clock: std::sync::Arc<dyn rss_request_context::Clock>) -> Self {
-        Self { pool, clock }
+    pub fn from_pool(
+        profile: rss_mdm_install_support::StorageProfile,
+        pool: PgPool,
+        clock: std::sync::Arc<dyn rss_request_context::Clock>,
+    ) -> Self {
+        Self {
+            profile,
+            pool,
+            clock,
+        }
+    }
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
     }
     pub(crate) async fn acquire(&self) -> Result<sqlx::pool::PoolConnection<Postgres>, Error> {
         self.pool.acquire().await.map_err(db)
     }
     /// Startup validates the persisted recovery principal using the existing restricted pool.
     pub async fn require_management_initializer(&self) -> Result<(), Error> {
+        let profile = self.profile;
+
         let mut connection = None;
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             connection = Some(self.acquire().await?);
             let connection = connection.as_mut().expect("acquired connection");
             let mut tx = connection.begin().await.map_err(db)?;
-            let binding = crate::tenancy::InstallationTenants::load(&mut tx).await?;
+            let binding = crate::tenancy::InstallationTenants::load(profile, &mut tx).await?;
             Self::configure_transaction(&mut tx, binding.management_tenant()).await?;
-            let principal: Option<String> = sqlx::query_scalar("SELECT a.principal::text FROM mdm_access.authorization_initializations a JOIN public.mdm_installation i ON a.instance=i.instance_id AND a.tenant_id=i.management_tenant_id WHERE i.singleton")
+            let principal: Option<String> = sqlx::query_scalar(crate::storage_profile::sql(profile).database_require_management_initializer_1)
                 .fetch_optional(&mut *tx).await.map_err(db)?;
             let validation = if let Some(principal) = principal {
-                let instance: String = sqlx::query_scalar("SELECT instance_id::text FROM public.mdm_installation WHERE singleton")
+                let instance: String = sqlx::query_scalar(crate::storage_profile::sql(profile).database_require_management_initializer_2)
                     .fetch_one(&mut *tx).await.map_err(db)?;
-                let snapshot = crate::snapshot_on(&mut tx, binding.management_tenant(), &instance).await?;
+                let snapshot = crate::snapshot_on(profile, &mut tx, binding.management_tenant(), &instance).await?;
                 let valid = [crate::Permission::AuthorizationRead, crate::Permission::AuthorizationWrite, crate::Permission::IdentityAccountsManage]
                     .into_iter().all(|permission| snapshot.rules.iter().filter_map(|r| r.value.as_ref()).any(|rule|
                         matches!(&rule.subject, crate::Subject::User { user } if user.principal_id == principal)
@@ -50,11 +64,14 @@ impl Store {
         proof: &crate::context::AuthorizedPrincipal,
         management: bool,
     ) -> Result<(), Error> {
+        let profile = self.profile;
+
         let mut connection = None;
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             proof.check_live()?;
             connection = Some(self.acquire().await?);
             let binding = crate::tenancy::InstallationTenants::load(
+                profile,
                 connection.as_mut().expect("acquired connection"),
             )
             .await?;

@@ -40,6 +40,7 @@ struct Prepared {
     slot: InvocationSlot,
 }
 async fn prepare_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     plan: &crate::enrollment::tasks::policy::EnrollmentPolicy,
@@ -66,6 +67,7 @@ async fn prepare_in(
         None => return Ok(None),
     };
     let Some(slot) = invocation_slot_in(
+        profile,
         &service.transactions,
         tx,
         enrollment,
@@ -82,6 +84,7 @@ async fn prepare_in(
         return Err(Error::Malformed.into());
     }
     let (platform, _) = crate::enrollment::tasks::agent_facts::profile_in(
+        profile,
         &service.transactions,
         tx,
         target.registration,
@@ -140,9 +143,11 @@ impl Service {
         input: &wire::SelfServiceInvoke,
         audit: &RequestAudit,
     ) -> Result<Value> {
+        let profile = self.profile();
+
         let service = self;
         let id = Uuid::new_v4();
-        storage::lock_device(tx, p.device()).await?;
+        storage::lock_device(profile, tx, p.device()).await?;
         service.agent_prepare_in(tx, p).await?;
         let hash = fingerprint(input)?;
         let now = storage::now(tx).await?;
@@ -175,7 +180,7 @@ impl Service {
             return Err(Error::Forbidden.into());
         }
         let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
-        let subject = access::qualify_in(service, tx, config, &basis)
+        let subject = access::qualify_in(profile, service, tx, config, &basis)
             .await?
             .ok_or(Error::Forbidden)?;
         let actor = actor(p, &subject);
@@ -198,6 +203,7 @@ impl Service {
         let pending_scope = (admission == crate::participants::scope::ScopeAdmission::Pending)
             .then_some(policy.definition.scope);
         let Some(prepared) = prepare_in(
+            profile,
             service,
             tx,
             &plan,
@@ -223,6 +229,7 @@ impl Service {
         };
         checked_input(decision.validate(checked_input(Uuid::parse_str(&p.tenant().to_string()))?))?;
         let binding = crate::enrollment::tasks::agent_facts::agent_binding_in(
+            profile,
             tx,
             service.transactions.agent_store.clone(),
             p.registration(),
@@ -254,6 +261,7 @@ impl Service {
             pending_scope,
         };
         production::queue_run_in(
+            profile,
             &service.transactions,
             tx,
             &plan,
@@ -283,7 +291,15 @@ impl Service {
             policy_revision: policy.revision as u64,
             policy_version: policy.version,
         })?;
-        db::receipt(tx, &actor, input.operation_id, hash.clone(), &response).await?;
+        db::receipt(
+            profile,
+            tx,
+            &actor,
+            input.operation_id,
+            hash.clone(),
+            &response,
+        )
+        .await?;
         if let Some(proof) = proof {
             proof.check_live()?;
         }
@@ -302,12 +318,15 @@ impl Service {
         actor: &str,
         input: &wire::SelfServiceInvoke,
     ) -> Result<Option<Value>> {
+        let profile = self.profile();
+
         let hash = fingerprint(input)?;
-        let Some(response) = db::replay(tx, actor, input.operation_id, &hash).await? else {
+        let Some(response) = db::replay(profile, tx, actor, input.operation_id, &hash).await?
+        else {
             return Ok(None);
         };
         let id = stored(serde_json::from_value(response["runId"].clone()))?;
-        let run = db::load_run(tx, id).await?;
+        let run = db::load_run(profile, tx, id).await?;
         crate::enrollment::tasks::agent::belongs(&run, p)?;
         Ok(Some(response))
     }
@@ -320,19 +339,35 @@ impl Service {
         request: Uuid,
         audit: &RequestAudit,
     ) -> Result<Option<wire::SelfServiceStatus>> {
+        let profile = self.profile();
+
         let service = self;
-        storage::lock_device(tx, p.device()).await?;
+        storage::lock_device(profile, tx, p.device()).await?;
         service.agent_prepare_in(tx, p).await?;
         let actors = vec![actor.to_owned()];
         let tenant = tx.tenant_id().to_string();
-        let response: Option<Value> = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar("SELECT response FROM mdm_registration_tasks.receipts WHERE tenant_id=$1::uuid AND actor=ANY($2) AND id=$3 ORDER BY array_position($2,actor) LIMIT 1").bind(tenant).bind(actors).bind(request).fetch_optional(c).await })).await?;
+        let response: Option<Value> = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        crate::storage_profile::sql(profile)
+                            .enrollment_tasks_self_service_self_service_status_in_1,
+                    )
+                    .bind(tenant)
+                    .bind(actors)
+                    .bind(request)
+                    .fetch_optional(c)
+                    .await
+                })
+            })
+            .await?;
         let Some(response) = response else {
             return Ok(None);
         };
         let id = checked_input(Uuid::parse_str(
             response["runId"].as_str().ok_or(Error::Malformed)?,
         ))?;
-        let run = db::load_run(tx, id).await?;
+        let run = db::load_run(profile, tx, id).await?;
         crate::enrollment::tasks::agent::belongs(&run, p)?;
         let invocation = run.invocation.as_ref().ok_or(Error::Forbidden)?;
         let wire::TaskAuthorization::SelfService { subject, .. } = &invocation.authorization else {
@@ -377,6 +412,7 @@ struct InvocationSlot {
 }
 // A directory probe only reads the same facts rechecked atomically by invocation.
 async fn invocation_slot_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &crate::enrollment::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
     enrollment: &crate::enrollment::tasks::policy::EnrollmentPolicy,
@@ -386,7 +422,7 @@ async fn invocation_slot_in(
     now: i64,
 ) -> Result<Option<InvocationSlot>> {
     let (pending, last) =
-        storage::pending_in(tx, enrollment.owner, enrollment.id, target, now).await?;
+        storage::pending_in(profile, tx, enrollment.owner, enrollment.id, target, now).await?;
     let schedule = &enrollment.frozen.schedule;
     if pending || !production::check_in_interval_elapsed(&schedule.trigger, last, now) {
         return Ok(None);
@@ -398,8 +434,16 @@ async fn invocation_slot_in(
         entry,
         &format!("self-service:{request}"),
     );
-    if !production::occurrence_available_in(service, tx, enrollment.id, target, &occurrence, now)
-        .await?
+    if !production::occurrence_available_in(
+        profile,
+        service,
+        tx,
+        enrollment.id,
+        target,
+        &occurrence,
+        now,
+    )
+    .await?
     {
         return Ok(None);
     }
@@ -467,6 +511,7 @@ fn public_state(state: &rss_mdm_task_state::RunState) -> wire::TaskRunState {
 }
 
 pub(crate) async fn advance_waiting_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     run: &mut crate::enrollment::tasks::runs::Run,
@@ -520,6 +565,21 @@ pub(crate) async fn advance_waiting_in(
     let evidence = json(&run.source_objects)?;
     let id = run.id;
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_registration_tasks.runs SET invocation=$3,source_objects=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(document).bind(evidence).execute(c).await?;Ok(())})).await?;
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(
+                crate::storage_profile::sql(profile)
+                    .enrollment_tasks_self_service_advance_waiting_in_1,
+            )
+            .bind(tenant)
+            .bind(id)
+            .bind(document)
+            .bind(evidence)
+            .execute(c)
+            .await?;
+            Ok(())
+        })
+    })
+    .await?;
     Ok(true)
 }

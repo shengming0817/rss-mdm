@@ -47,6 +47,8 @@ struct Job {
 }
 impl Registry {
     pub async fn health(&self) -> Result<Vec<Health>, Error> {
+        let profile = self.profile();
+
         let mut result = Vec::new();
         for binding in self.bindings() {
             let trust = binding.public().map_err(|_| Error::Storage)?;
@@ -71,8 +73,14 @@ impl Registry {
                         .to_unix_duration()
                         .as_secs() as i64)
                 };
-                let pending=sqlx::query_scalar("SELECT count(*) FROM mdm_pki.revocations WHERE tenant_id=$1 AND purpose=$2 AND issuer=$3 AND state<>'published'")
-                    .bind(trust.tenant).bind(purpose(trust.purpose)).bind(&g.digest).fetch_one(&mut *tx).await.map_err(|_|Error::Storage)?;
+                let pending =
+                    sqlx::query_scalar(crate::storage_profile::sql(profile).maintenance_health_1)
+                        .bind(trust.tenant)
+                        .bind(purpose(trust.purpose))
+                        .bind(&g.digest)
+                        .fetch_one(&mut *tx)
+                        .await
+                        .map_err(|_| Error::Storage)?;
                 result.push(Health {
                     purpose: trust.purpose,
                     issuer: g.digest,
@@ -137,6 +145,8 @@ impl Registry {
         principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
         now: i64,
     ) -> Result<(), Error> {
+        let profile = self.profile();
+
         if inputs.is_empty() || inputs.len() > 16 || operation.is_nil() {
             return Err(Error::Request);
         }
@@ -190,35 +200,126 @@ impl Registry {
             .map_err(|_| Error::Request)?,
         )
         .to_vec();
-        let result=self.mutation(TenantId::parse(&tenant.to_string()).map_err(|_|Error::Request)?,a,
-            (principal,next.clone(),publications,fingerprint,now,operation),|ctx,c|Box::pin(async move {
-                let (p,next,publications,fingerprint,now,operation)=ctx;
-                if let Some(p)=p {
-                    p.check_live().map_err(|_|Error::Forbidden)?;
-                    rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await.map_err(|_|Error::Storage)?;
-                    rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await.map_err(|_|Error::Storage)?
-                        .require_all_devices(p,rss_mdm_authorization_service::Permission::Credentials).map_err(|_|Error::Forbidden)?;
-                }
-                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(next.tenant.to_string()).execute(&mut *c).await.map_err(|_|Error::Storage)?;
-                let bytes:Vec<u8>=sqlx::query_scalar("SELECT body FROM mdm_pki.trust WHERE tenant_id=$1 AND purpose=$2 FOR UPDATE")
-                    .bind(next.tenant).bind(purpose(next.purpose)).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
-                let current:Trust=serde_json::from_slice(&bytes).map_err(|_|Error::Storage)?;
-                if current.installation_digest()!=next.installation_digest(){return Err(Error::Conflict);}
-                let actor=p.map(|p|p.principal_id()).unwrap_or("service:device-pki");
-                let instance=p.map(|p|p.instance_id()).unwrap_or("");
-                let replay=crate::mutation::replay(c,&next.tenant.to_string(),actor,instance,*operation,"crl_publish",fingerprint).await?.is_some();
-                if replay { return Ok(Change{value:false, replay:true, key:format!("pki:{operation}:crl_publish")}); }
-                let checked=DeviceTrust::restore(current.clone(),current.purpose,*now).map_err(|_|Error::Storage)?;
-                checked.update(next.clone(),*now).map_err(|_|Error::Conflict)?;
-                for (issuer,published) in publications {
-                    let number=i64::try_from(published.number).map_err(|_|Error::Request)?;
-                    sqlx::query("UPDATE mdm_pki.revocations SET state='published',crl_number=$4 WHERE tenant_id=$1 AND purpose=$2 AND issuer=$3 AND serial=ANY($5) AND state<>'published'")
-                        .bind(next.tenant).bind(purpose(next.purpose)).bind(issuer.as_str()).bind(number).bind(&published.revoked).execute(&mut *c).await.map_err(|_|Error::Storage)?;
-                }
-                crate::registry::persist(c,next).await?;
-                if !replay {crate::mutation::save(c,(&next.tenant.to_string(),actor,instance),*operation,"crl_publish",fingerprint,b"null").await?;}
-                Ok(Change{value:true, replay, key:format!("pki:{operation}:crl_publish")})
-            })).await;
+        let result = self
+            .mutation(
+                TenantId::parse(&tenant.to_string()).map_err(|_| Error::Request)?,
+                a,
+                (
+                    principal,
+                    next.clone(),
+                    publications,
+                    fingerprint,
+                    now,
+                    operation,
+                ),
+                |ctx, c| {
+                    Box::pin(async move {
+                        let (p, next, publications, fingerprint, now, operation) = ctx;
+                        if let Some(p) = p {
+                            p.check_live().map_err(|_| Error::Forbidden)?;
+                            rss_mdm_authorization_service::lock_on(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                p.tenant_id(),
+                                p.instance_id(),
+                            )
+                            .await
+                            .map_err(|_| Error::Storage)?;
+                            rss_mdm_authorization_service::snapshot_on(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                p.tenant_id(),
+                                p.instance_id(),
+                            )
+                            .await
+                            .map_err(|_| Error::Storage)?
+                            .require_all_devices(
+                                p,
+                                rss_mdm_authorization_service::Permission::Credentials,
+                            )
+                            .map_err(|_| Error::Forbidden)?;
+                        }
+                        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
+                            .bind(next.tenant.to_string())
+                            .execute(&mut *c)
+                            .await
+                            .map_err(|_| Error::Storage)?;
+                        let bytes: Vec<u8> = sqlx::query_scalar(
+                            crate::storage_profile::sql(profile).maintenance_publish_set_1,
+                        )
+                        .bind(next.tenant)
+                        .bind(purpose(next.purpose))
+                        .fetch_one(&mut *c)
+                        .await
+                        .map_err(|_| Error::Storage)?;
+                        let current: Trust =
+                            serde_json::from_slice(&bytes).map_err(|_| Error::Storage)?;
+                        if current.installation_digest() != next.installation_digest() {
+                            return Err(Error::Conflict);
+                        }
+                        let actor = p.map(|p| p.principal_id()).unwrap_or("service:device-pki");
+                        let instance = p.map(|p| p.instance_id()).unwrap_or("");
+                        let replay = crate::mutation::replay(
+                            profile,
+                            c,
+                            &next.tenant.to_string(),
+                            actor,
+                            instance,
+                            *operation,
+                            "crl_publish",
+                            fingerprint,
+                        )
+                        .await?
+                        .is_some();
+                        if replay {
+                            return Ok(Change {
+                                value: false,
+                                replay: true,
+                                key: format!("pki:{operation}:crl_publish"),
+                            });
+                        }
+                        let checked = DeviceTrust::restore(current.clone(), current.purpose, *now)
+                            .map_err(|_| Error::Storage)?;
+                        checked
+                            .update(next.clone(), *now)
+                            .map_err(|_| Error::Conflict)?;
+                        for (issuer, published) in publications {
+                            let number =
+                                i64::try_from(published.number).map_err(|_| Error::Request)?;
+                            sqlx::query(
+                                crate::storage_profile::sql(profile).maintenance_publish_set_2,
+                            )
+                            .bind(next.tenant)
+                            .bind(purpose(next.purpose))
+                            .bind(issuer.as_str())
+                            .bind(number)
+                            .bind(&published.revoked)
+                            .execute(&mut *c)
+                            .await
+                            .map_err(|_| Error::Storage)?;
+                        }
+                        crate::registry::persist(profile, c, next).await?;
+                        if !replay {
+                            crate::mutation::save(
+                                profile,
+                                c,
+                                (&next.tenant.to_string(), actor, instance),
+                                *operation,
+                                "crl_publish",
+                                fingerprint,
+                                b"null",
+                            )
+                            .await?;
+                        }
+                        Ok(Change {
+                            value: true,
+                            replay,
+                            key: format!("pki:{operation}:crl_publish"),
+                        })
+                    })
+                },
+            )
+            .await;
         if matches!(result, Ok(true)) {
             self.binding(requested_purpose)?
                 .update(next, now)
@@ -322,26 +423,67 @@ impl Registry {
         provider: &crate::providers::Provider,
         now: i64,
     ) -> Result<Option<Job>, Error> {
+        let profile = self.profile();
+
         let a = RequestAudit::new(
             trust.tenant.to_string(),
             "device_pki_revoke_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         a.identify_service("service:device-pki");
-        let result=self.mutation(TenantId::parse(&trust.tenant.to_string()).map_err(|_|Error::Request)?,&a,
-            (trust,provider,now,&a),|ctx,c|Box::pin(async move {
-                let (trust,provider,now,a)=ctx;
-                let row=sqlx::query("SELECT serial,attempt,failures FROM mdm_pki.revocations WHERE tenant_id=$1 AND purpose=$2 AND issuer=$3 AND state<>'published' AND next_attempt<=clock_timestamp() ORDER BY next_attempt,attempt LIMIT 1 FOR UPDATE SKIP LOCKED")
-                    .bind(trust.tenant).bind(purpose(provider.purpose)).bind(&provider.issuer).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)?;
-                let Some(row)=row else{return Ok(Change{value:None, replay:true, key:String::new()});};
-                let job=Job{attempt:row.try_get("attempt").map_err(|_|Error::Storage)?,serial:row.try_get("serial").map_err(|_|Error::Storage)?,failures:row.try_get("failures").map_err(|_|Error::Storage)?};
-                a.operation(job.attempt,"device_pki_revoke_dispatch", rss_mdm_audit_integration::AuditIntent::Management);
-                let seconds=(60_i64.saturating_mul(1_i64<<job.failures.min(9))).min(21600);
-                sqlx::query("UPDATE mdm_pki.revocations SET failures=least(failures+1,32),next_attempt=clock_timestamp()+make_interval(secs=>$4) WHERE tenant_id=$1 AND purpose=$2 AND attempt=$3")
-                    .bind(trust.tenant).bind(purpose(provider.purpose)).bind(job.attempt).bind(seconds as f64).execute(c).await.map_err(|_|Error::Storage)?;
+        let result = self
+            .mutation(
+                TenantId::parse(&trust.tenant.to_string()).map_err(|_| Error::Request)?,
+                &a,
+                (trust, provider, now, &a),
+                |ctx, c| {
+                    Box::pin(async move {
+                        let (trust, provider, now, a) = ctx;
+                        let row =
+                            sqlx::query(crate::storage_profile::sql(profile).maintenance_claim_1)
+                                .bind(trust.tenant)
+                                .bind(purpose(provider.purpose))
+                                .bind(&provider.issuer)
+                                .fetch_optional(&mut *c)
+                                .await
+                                .map_err(|_| Error::Storage)?;
+                        let Some(row) = row else {
+                            return Ok(Change {
+                                value: None,
+                                replay: true,
+                                key: String::new(),
+                            });
+                        };
+                        let job = Job {
+                            attempt: row.try_get("attempt").map_err(|_| Error::Storage)?,
+                            serial: row.try_get("serial").map_err(|_| Error::Storage)?,
+                            failures: row.try_get("failures").map_err(|_| Error::Storage)?,
+                        };
+                        a.operation(
+                            job.attempt,
+                            "device_pki_revoke_dispatch",
+                            rss_mdm_audit_integration::AuditIntent::Management,
+                        );
+                        let seconds =
+                            (60_i64.saturating_mul(1_i64 << job.failures.min(9))).min(21600);
+                        sqlx::query(crate::storage_profile::sql(profile).maintenance_claim_2)
+                            .bind(trust.tenant)
+                            .bind(purpose(provider.purpose))
+                            .bind(job.attempt)
+                            .bind(seconds as f64)
+                            .execute(c)
+                            .await
+                            .map_err(|_| Error::Storage)?;
 
-                Ok(Change{key:format!("pki:{}:dispatch:{now}",job.attempt), value:Some(job), replay:false})
-            })).await;
+                        Ok(Change {
+                            key: format!("pki:{}:dispatch:{now}", job.attempt),
+                            value: Some(job),
+                            replay: false,
+                        })
+                    })
+                },
+            )
+            .await;
         a.finalize(
             result
                 .as_ref()
@@ -356,6 +498,8 @@ impl Registry {
         provider: &crate::providers::Provider,
         job: &Job,
     ) -> Result<(), Error> {
+        let profile = self.profile();
+
         let a = RequestAudit::new(
             trust.tenant.to_string(),
             "device_pki_revoke_submit",
@@ -367,12 +511,37 @@ impl Registry {
             "device_pki_revoke_submit",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let result=self.mutation(TenantId::parse(&trust.tenant.to_string()).map_err(|_|Error::Request)?,&a,(trust,provider,job),|ctx,c|Box::pin(async move {
-            let (trust,provider,job)=ctx;
-            let changed=sqlx::query("UPDATE mdm_pki.revocations SET state='submitted' WHERE tenant_id=$1 AND purpose=$2 AND attempt=$3 AND state='pending'")
-                .bind(trust.tenant).bind(purpose(provider.purpose)).bind(job.attempt).execute(c).await.map_err(|_|Error::Storage)?.rows_affected();
-            Ok(Change{value:(), replay:changed==0, key:if changed==0{String::new()}else{format!("pki:{}:submitted",job.attempt)}})
-        })).await;
+        let result = self
+            .mutation(
+                TenantId::parse(&trust.tenant.to_string()).map_err(|_| Error::Request)?,
+                &a,
+                (trust, provider, job),
+                |ctx, c| {
+                    Box::pin(async move {
+                        let (trust, provider, job) = ctx;
+                        let changed = sqlx::query(
+                            crate::storage_profile::sql(profile).maintenance_submitted_1,
+                        )
+                        .bind(trust.tenant)
+                        .bind(purpose(provider.purpose))
+                        .bind(job.attempt)
+                        .execute(c)
+                        .await
+                        .map_err(|_| Error::Storage)?
+                        .rows_affected();
+                        Ok(Change {
+                            value: (),
+                            replay: changed == 0,
+                            key: if changed == 0 {
+                                String::new()
+                            } else {
+                                format!("pki:{}:submitted", job.attempt)
+                            },
+                        })
+                    })
+                },
+            )
+            .await;
         a.finalize(
             result
                 .as_ref()

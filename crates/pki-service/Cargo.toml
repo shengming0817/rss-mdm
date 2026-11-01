@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-install-support.workspace = true
 openssl.workspace = true
 http.workspace = true
 rss-mdm-device-trust.workspace = true

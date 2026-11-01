@@ -15,3 +15,7 @@ GRANT SELECT ON mdm_access.agent_native_enrollments TO mdm_access;
 GRANT SELECT,INSERT ON mdm_access.requests,mdm_access.grants TO mdm_command_runtime;
 
 COMMIT;
+
+GRANT USAGE ON SCHEMA mdm_agent_packages TO mdm_access,mdm_command_runtime,mdm_policy_runtime;
+GRANT SELECT ON mdm_agent_packages.releases TO mdm_access,mdm_command_runtime,mdm_policy_runtime;
+GRANT SELECT ON mdm_pki.certificates,mdm_pki.revocations TO mdm_access,mdm_command_runtime,mdm_policy_runtime;

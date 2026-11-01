@@ -69,10 +69,15 @@ impl Service {
             return Err(Error::Forbidden);
         }
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
-            .await?
-            .require(p, Permission::EnterpriseApplicationsRead, None)
-            .map_err(rss_mdm_authorization_service::Error::from)?;
+        rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?
+        .require(p, Permission::EnterpriseApplicationsRead, None)
+        .map_err(rss_mdm_authorization_service::Error::from)?;
         let before = authorization_binding(&mut tx, p).await?;
         let binding = q
             .binding(&(p.tenant_id(), p.instance_id(), p.principal_id(), &before))

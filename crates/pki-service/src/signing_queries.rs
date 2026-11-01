@@ -64,18 +64,29 @@ fn query_error(e: rss_mdm_query::Error) -> Error {
     }
 }
 /// Caller proves the attempt belongs to its authorized device and owns the read snapshot.
-pub async fn read_in(c: &mut PgConnection, tenant: &str, attempt: Uuid) -> Result<Signing, Error> {
-    read_many_in(c, tenant, &[attempt])
+pub async fn read_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    attempt: Uuid,
+) -> Result<Signing, Error> {
+    read_many_in(profile, c, tenant, &[attempt])
         .await?
         .remove(&attempt)
         .ok_or(Error::Storage)
 }
 pub async fn read_many_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     attempts: &[Uuid],
 ) -> Result<std::collections::BTreeMap<Uuid, Signing>, Error> {
-    let rows=sqlx::query("SELECT attempt,purpose,issuer,state,binding,digest,deadline,successor,floor(extract(epoch FROM created_at))::bigint AS created_at FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=ANY($2)").bind(tenant).bind(attempts).fetch_all(c).await.map_err(db)?;
+    let rows = sqlx::query(crate::storage_profile::sql(profile).signing_queries_read_many_in_1)
+        .bind(tenant)
+        .bind(attempts)
+        .fetch_all(c)
+        .await
+        .map_err(db)?;
     let mut result = std::collections::BTreeMap::new();
     for row in rows {
         let attempt: Uuid = row.try_get("attempt").map_err(db)?;
@@ -119,6 +130,7 @@ fn column(name: &str) -> &'static str {
 }
 /// Caller supplies an authorization-bound query binding, never a client identity assertion.
 pub async fn operations_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     attempt: Uuid,
@@ -129,7 +141,7 @@ pub async fn operations_in(
     q.require_schema(&OPERATIONS).map_err(query_error)?;
     let after = q.after(codec, binding).map_err(query_error)?;
     let mut sql = sqlx::QueryBuilder::new(
-        "SELECT jsonb_build_object('actor',actor,'instance',instance,'operationId',operation) FROM mdm_pki.operations WHERE tenant_id=",
+        crate::storage_profile::sql(profile).signing_queries_operations_in_1,
     );
     sql.push_bind(tenant.to_owned())
         .push("::uuid AND signing_recovery_attempt=")
@@ -146,6 +158,7 @@ pub async fn operations_in(
 }
 /// Exact original receipt; absence never proves that an in-flight operation rolled back.
 pub async fn operation_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     attempt: Uuid,
@@ -160,8 +173,14 @@ pub async fn operation_in(
     {
         return Err(Error::Request);
     }
-    let row=sqlx::query("SELECT o.instance,o.receipt,s.chain FROM mdm_pki.operations o JOIN mdm_pki.signing s ON (s.tenant_id,s.attempt)=(o.tenant_id,o.signing_recovery_attempt) WHERE o.tenant_id=$1::uuid AND o.actor=$2 AND o.operation=$3 AND o.phase='signing_recover' AND o.signing_recovery_attempt=$4 AND s.purpose='windows'")
-        .bind(tenant).bind(&identity.actor).bind(operation).bind(attempt).fetch_optional(c).await.map_err(db)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).signing_queries_operation_in_1)
+        .bind(tenant)
+        .bind(&identity.actor)
+        .bind(operation)
+        .bind(attempt)
+        .fetch_optional(c)
+        .await
+        .map_err(db)?;
     row.map(|row| {
         if row.try_get::<String, _>("instance").map_err(db)? != identity.instance {
             return Err(Error::Conflict);

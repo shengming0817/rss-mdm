@@ -9,6 +9,7 @@ pub(crate) struct Prepared {
     row: sqlx::postgres::PgRow,
 }
 pub(crate) async fn prepare_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
@@ -17,13 +18,25 @@ pub(crate) async fn prepare_in(
     // Match management's Policy -> recovery row -> reconcile target order.
     crate::enrollment::tasks::transaction::checked(service.policy_reader.locked_in(tx, id).await?)?;
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("SELECT * FROM mdm_registration_tasks.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 FOR UPDATE").bind(tenant).bind(id).fetch_optional(c).await
-    })).await?;
+    let row = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(
+                    crate::storage_profile::sql(profile)
+                        .enrollment_tasks_policy_recovery_prepare_in_1,
+                )
+                .bind(tenant)
+                .bind(id)
+                .fetch_optional(c)
+                .await
+            })
+        })
+        .await?;
     Ok(row.map(|row| Prepared { id, row }))
 }
 /// Advance the fixed revision window under the locks acquired by prepare_in.
 pub(crate) async fn advance_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     prepared: &Prepared,
@@ -48,21 +61,47 @@ pub(crate) async fn advance_in(
     }
     if !done {
         let tenant = tx.tenant_id().to_string();
-        let mut rows=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,Uuid>("SELECT r.id FROM mdm_registration_tasks.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND ($3::uuid IS NULL OR r.id>$3) ORDER BY r.id LIMIT 33").bind(tenant).bind(id).bind(after).fetch_all(c).await
-        })).await?;
+        let mut rows = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar::<_, Uuid>(
+                        crate::storage_profile::sql(profile)
+                            .enrollment_tasks_policy_recovery_advance_in_1,
+                    )
+                    .bind(tenant)
+                    .bind(id)
+                    .bind(after)
+                    .fetch_all(c)
+                    .await
+                })
+            })
+            .await?;
         done = rows.len() <= 32;
         rows.truncate(32);
         after = rows.last().copied();
         for run in rows {
-            crate::enrollment::tasks::wake::run_in(&service.reconcile_messaging, tx, run).await?;
+            crate::enrollment::tasks::wake::run_in(profile, &service.reconcile_messaging, tx, run)
+                .await?;
         }
     }
     let tenant = tx.tenant_id().to_string();
     let consumed = if done { window } else { consumed };
-    tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("UPDATE mdm_registration_tasks.policy_recovery SET input_consumed=$3,input_window=$4,recovery_after=$5,runs_done=$6 WHERE tenant_id=$1::uuid AND policy=$2")
-            .bind(tenant).bind(id).bind(consumed).bind(window).bind(after).bind(done).execute(c).await?;Ok(())
-    })).await?;
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(
+                crate::storage_profile::sql(profile).enrollment_tasks_policy_recovery_advance_in_2,
+            )
+            .bind(tenant)
+            .bind(id)
+            .bind(consumed)
+            .bind(window)
+            .bind(after)
+            .bind(done)
+            .execute(c)
+            .await?;
+            Ok(())
+        })
+    })
+    .await?;
     Ok(consumed < revision)
 }

@@ -1,6 +1,7 @@
 //! Current self-service qualification belongs to the business owner.
 use super::*;
 pub async fn describe_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     p: &DevicePrincipal,
@@ -9,6 +10,10 @@ pub async fn describe_in(
     id: Uuid,
     now: i64,
 ) -> Result<Option<wire::SelfServiceDirectoryItem>> {
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden.into());
+    }
+
     let Some(policy) =
         crate::enrollment::tasks::policy::current_in(&service.transactions.policy_reader, tx, id)
             .await?
@@ -27,7 +32,7 @@ pub async fn describe_in(
     let Some(basis) = access::select(config, proof)? else {
         return Ok(None);
     };
-    let Some(subject) = access::qualify_in(service, tx, config, &basis).await? else {
+    let Some(subject) = access::qualify_in(profile, service, tx, config, &basis).await? else {
         return Ok(None);
     };
     if !matches!(
@@ -38,8 +43,17 @@ pub async fn describe_in(
     }
     let plan = crate::enrollment::tasks::policy::read_in(&service.transactions, tx, policy.version)
         .await?;
-    let Some(prepared) =
-        prepare_in(service, tx, &plan, &target(p), Uuid::new_v4(), None, now).await?
+    let Some(prepared) = prepare_in(
+        profile,
+        service,
+        tx,
+        &plan,
+        &target(p),
+        Uuid::new_v4(),
+        None,
+        now,
+    )
+    .await?
     else {
         return Ok(None);
     };

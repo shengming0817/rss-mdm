@@ -9,6 +9,8 @@ impl Service {
         input: &wire::ActivationRequest,
         a: &RequestAudit,
     ) -> Result<wire::ActivationReceipt, Failure> {
+        let profile = self.profile();
+
         version(input.wire_version, input.operation_id)?;
         let proof = self
             .trust()
@@ -29,9 +31,7 @@ impl Service {
                     let (service, input, a, proof, fingerprint, digest) = ctx;
                     let tenant = service.tenant.to_string();
                     let grant: Uuid = sqlx::query_scalar(
-                        r#"
-SELECT grant_id FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
-"#,
+                        crate::storage_profile::sql(profile).agent_activation_activate_3,
                     )
                     .bind(&tenant)
                     .bind(input.issuance_id)
@@ -39,11 +39,9 @@ SELECT grant_id FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=
                     .await
                     .map_err(db)?
                     .ok_or(Error::Unauthorized)?;
-                    let g = grant_row(c, &tenant, grant).await?;
+                    let g = grant_row(profile, c, &tenant, grant).await?;
                     let row = sqlx::query(
-                        r#"
-SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE
-"#,
+                        crate::storage_profile::sql(profile).agent_activation_activate_4,
                     )
                     .bind(&tenant)
                     .bind(input.issuance_id)
@@ -64,7 +62,8 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR 
                     }
                     let device: String = g.try_get("device").map_err(db)?;
                     a.target(&device);
-                    device::store::lock_channel(c, &tenant, &device, Channel::Agent).await?;
+                    device::store::lock_channel(profile, c, &tenant, &device, Channel::Agent)
+                        .await?;
                     if let Some(result) = row
                         .try_get::<Option<serde_json::Value>, _>("activation_result")
                         .map_err(db)?
@@ -77,20 +76,29 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR 
                         }
                         let out: wire::ActivationReceipt =
                             serde_json::from_value(result).map_err(|_| Error::Corrupt)?;
-                        let p = device::authenticate_agent_in(c, service.tenant, proof).await?;
+                        let p = device::authenticate_agent_in(profile, c, service.tenant, proof)
+                            .await?;
                         a.registration(p.registration());
-                        return Ok(Change {value: out, replay: true});
+                        return Ok(Change {
+                            value: out,
+                            replay: true,
+                        });
                     }
-                    crate::lifecycle::require_work_in(c, &tenant, &device).await?;
+                    crate::lifecycle::require_work_in(profile, c, &tenant, &device).await?;
                     service.grant_live(c, &g).await?;
                     if g.try_get::<Option<Uuid>, _>("target_registration")
                         .map_err(db)?
                         .is_none()
                     {
-                        crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent)
-                            .await?;
+                        crate::admission::require_new_in(
+                            profile,
+                            c,
+                            &tenant,
+                            crate::quotas::Channel::Agent,
+                        )
+                        .await?;
                     }
-                    let profile: wire::RuntimeProfile =
+                    let runtime_profile: wire::RuntimeProfile =
                         serde_json::from_value(row.try_get("profile").map_err(db)?)
                             .map_err(|_| Error::Corrupt)?;
                     let credential = Uuid::new_v4();
@@ -100,12 +108,7 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR 
                     {
                         let predecessor: Uuid = g.try_get("predecessor").map_err(db)?;
                         let old = sqlx::query(
-                            r#"
-SELECT r.generation,r.epoch,k.state AS credential_state,r.state FROM mdm_access.registrations r
-JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE
-r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.channel='agent' AND k.id=$4 FOR UPDATE OF
-r,k
-"#,
+                            crate::storage_profile::sql(profile).agent_activation_activate_5,
                         )
                         .bind(&tenant)
                         .bind(registration)
@@ -121,10 +124,7 @@ r,k
                             return Err(Error::Agent(wire::ErrorCode::CredentialRetired));
                         }
                         let result: serde_json::Value = sqlx::query_scalar(
-                            r#"
-SELECT activation_result FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND
-credential=$2
-"#,
+                            crate::storage_profile::sql(profile).agent_activation_activate_6,
                         )
                         .bind(&tenant)
                         .bind(predecessor)
@@ -134,9 +134,7 @@ credential=$2
                         let old_receipt: wire::ActivationReceipt =
                             serde_json::from_value(result).map_err(|_| Error::Corrupt)?;
                         let previous_profile: serde_json::Value = sqlx::query_scalar(
-                            r#"
-SELECT profile FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND credential=$2
-"#,
+                            crate::storage_profile::sql(profile).agent_activation_activate_7,
                         )
                         .bind(&tenant)
                         .bind(predecessor)
@@ -145,13 +143,14 @@ SELECT profile FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND cred
                         .map_err(db)?;
                         let previous: wire::RuntimeProfile =
                             serde_json::from_value(previous_profile).map_err(|_| Error::Corrupt)?;
-                        if previous.platform != profile.platform
-                            || previous.architecture != profile.architecture
-                            || old_receipt.runtime.capabilities != profile.capabilities
+                        if previous.platform != runtime_profile.platform
+                            || previous.architecture != runtime_profile.architecture
+                            || old_receipt.runtime.capabilities != runtime_profile.capabilities
                         {
                             return Err(Error::Conflict);
                         }
                         rss_mdm_pki_service::certificates::revoke_credential_in(
+                            profile,
                             c,
                             &tenant,
                             predecessor,
@@ -159,10 +158,7 @@ SELECT profile FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND cred
                         .await
                         .map_err(|_| Error::Storage)?;
                         sqlx::query(
-                            r#"
-UPDATE mdm_access.credentials SET state='superseded' WHERE tenant_id=$1::uuid AND id=$2 AND
-state='active'
-"#,
+                            crate::storage_profile::sql(profile).agent_activation_activate_8,
                         )
                         .bind(&tenant)
                         .bind(predecessor)
@@ -178,15 +174,27 @@ state='active'
                     } else {
                         let registration = Uuid::new_v4();
                         let epoch = Uuid::new_v4();
-                        let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='agent' AND state='active')")
-                            .bind(&tenant).bind(&device).fetch_one(&mut *c).await.map_err(db)?;
-                        if active {return Err(Error::Conflict);}
-                        let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0)+1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='agent'")
-                            .bind(&tenant).bind(&device).fetch_one(&mut *c).await.map_err(db)?;
+                        let active: bool = sqlx::query_scalar(
+                            crate::storage_profile::sql(profile).agent_activation_activate_1,
+                        )
+                        .bind(&tenant)
+                        .bind(&device)
+                        .fetch_one(&mut *c)
+                        .await
+                        .map_err(db)?;
+                        if active {
+                            return Err(Error::Conflict);
+                        }
+                        let generation: i64 = sqlx::query_scalar(
+                            crate::storage_profile::sql(profile).agent_activation_activate_2,
+                        )
+                        .bind(&tenant)
+                        .bind(&device)
+                        .fetch_one(&mut *c)
+                        .await
+                        .map_err(db)?;
                         sqlx::query(
-                            r#"
-INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING
-"#,
+                            crate::storage_profile::sql(profile).agent_activation_activate_9,
                         )
                         .bind(&tenant)
                         .bind(&device)
@@ -194,11 +202,7 @@ INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2) ON CONFLICT DO 
                         .await
                         .map_err(db)?;
                         sqlx::query(
-                            r#"
-INSERT INTO
-mdm_access.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch)
-VALUES($1::uuid,$2,$3,'agent',$6,$4,'active','primary',$5)
-"#,
+                            crate::storage_profile::sql(profile).agent_activation_activate_10,
                         )
                         .bind(&tenant)
                         .bind(registration)
@@ -209,7 +213,16 @@ VALUES($1::uuid,$2,$3,'agent',$6,$4,'active','primary',$5)
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
-                        crate::webhook::registration(c,&tenant,&device,registration,generation,"agent","active").await?;
+                        crate::webhook::registration(
+                            c,
+                            &tenant,
+                            &device,
+                            registration,
+                            generation,
+                            "agent",
+                            "active",
+                        )
+                        .await?;
                         for source in [
                             "agent.builtin",
                             "agent.script",
@@ -217,10 +230,7 @@ VALUES($1::uuid,$2,$3,'agent',$6,$4,'active','primary',$5)
                             "agent.native",
                         ] {
                             sqlx::query(
-                                r#"
-INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled)
-VALUES($1::uuid,$2,$3,$4,true)
-"#,
+                                crate::storage_profile::sql(profile).agent_activation_activate_11,
                             )
                             .bind(&tenant)
                             .bind(registration)
@@ -235,6 +245,7 @@ VALUES($1::uuid,$2,$3,$4,true)
                             .bind(
                                 c,
                                 Binding {
+                                    profile,
                                     tenant: service.tenant,
                                     device: device.clone(),
                                     registration,
@@ -242,26 +253,21 @@ VALUES($1::uuid,$2,$3,$4,true)
                                     epoch,
                                     operation: input.operation_id,
                                 },
-                                &profile,
+                                &runtime_profile,
                             )
                             .await?;
                         (registration, generation, epoch, runtime)
                     };
                     let _ = (generation, epoch);
                     a.registration(registration);
-                    sqlx::query(
-                        r#"
-INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state)
-VALUES($1::uuid,$2,$3,'agent',$4,'active')
-"#,
-                    )
-                    .bind(&tenant)
-                    .bind(credential)
-                    .bind(registration)
-                    .bind(&*fingerprint)
-                    .execute(&mut *c)
-                    .await
-                    .map_err(db)?;
+                    sqlx::query(crate::storage_profile::sql(profile).agent_activation_activate_12)
+                        .bind(&tenant)
+                        .bind(credential)
+                        .bind(registration)
+                        .bind(&*fingerprint)
+                        .execute(&mut *c)
+                        .await
+                        .map_err(db)?;
                     let chain: Vec<String> =
                         serde_json::from_value(row.try_get("certificate_chain").map_err(db)?)
                             .map_err(|_| Error::Corrupt)?;
@@ -270,6 +276,7 @@ VALUES($1::uuid,$2,$3,'agent',$4,'active')
                         .map_err(|_| Error::Corrupt)?;
                     let issuer: String = row.try_get("signing_issuer").map_err(db)?;
                     rss_mdm_pki_service::certificates::record_in(
+                        profile,
                         c,
                         &tenant,
                         "agent",
@@ -285,23 +292,20 @@ VALUES($1::uuid,$2,$3,'agent',$4,'active')
                         operation_id: input.operation_id,
                         runtime,
                     };
-                    sqlx::query(
-                        r#"
-UPDATE mdm_access.agent_issuances SET
-activation_operation=$3,activation_digest=$4,activation_result=$5,credential=$6 WHERE
-tenant_id=$1::uuid AND id=$2
-"#,
-                    )
-                    .bind(&tenant)
-                    .bind(input.issuance_id)
-                    .bind(input.operation_id)
-                    .bind(&*digest)
-                    .bind(serde_json::to_value(&out).map_err(|_| Error::Corrupt)?)
-                    .bind(credential)
-                    .execute(c)
-                    .await
-                    .map_err(db)?;
-                    Ok(Change {value: out, replay: false})
+                    sqlx::query(crate::storage_profile::sql(profile).agent_activation_activate_13)
+                        .bind(&tenant)
+                        .bind(input.issuance_id)
+                        .bind(input.operation_id)
+                        .bind(&*digest)
+                        .bind(serde_json::to_value(&out).map_err(|_| Error::Corrupt)?)
+                        .bind(credential)
+                        .execute(c)
+                        .await
+                        .map_err(db)?;
+                    Ok(Change {
+                        value: out,
+                        replay: false,
+                    })
                 })
             },
         )
@@ -313,14 +317,13 @@ tenant_id=$1::uuid AND id=$2
         &self,
         peer: &ClientCertificateEvidence,
     ) -> Result<DevicePrincipal, Failure> {
+        let profile = self.profile();
+
         let tenant = self.tenant.to_string();
         let mut tx = self.store.begin(&tenant).await?;
         let fingerprint = hex(Sha256::digest(&peer.chain()[0]));
         let expiry: Option<i64> = sqlx::query_scalar(
-            r#"
-SELECT not_after FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND fingerprint=$2 AND
-credential IS NOT NULL
-"#,
+            crate::storage_profile::sql(profile).agent_activation_authenticate_1,
         )
         .bind(&tenant)
         .bind(&fingerprint)
@@ -334,7 +337,7 @@ credential IS NOT NULL
             .trust()
             .verify_peer(peer, self.now()?)
             .map_err(|_| Error::Unauthorized)?;
-        let p = device::authenticate_agent_in(&mut tx, self.tenant, &proof).await?;
+        let p = device::authenticate_agent_in(profile, &mut tx, self.tenant, &proof).await?;
         tx.commit().await.map_err(db)?;
         Ok(p)
     }

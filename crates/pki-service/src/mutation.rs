@@ -20,10 +20,13 @@ impl Registry {
         ctx: C,
         f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, R> + Send,
     ) -> Result<R, Error> {
-        run(&self.audit, tenant, a, ctx, f).await
+        let profile = self.profile();
+
+        run(profile, &self.audit, tenant, a, ctx, f).await
     }
 }
 pub(crate) async fn run<C: Send, R: Send>(
+    _profile: rss_mdm_install_support::StorageProfile,
     store: &rss_mdm_audit_integration::AuditStore,
     tenant: TenantId,
     a: &RequestAudit,
@@ -108,6 +111,7 @@ fn error(e: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     }
 }
 pub async fn replay(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     actor: &str,
@@ -121,8 +125,14 @@ pub async fn replay(
         .execute(&mut *c)
         .await
         .map_err(|_| Error::Storage)?;
-    let row=sqlx::query("SELECT instance,digest,receipt FROM mdm_pki.operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation=$3 AND phase=$4")
-        .bind(tenant).bind(actor).bind(operation).bind(phase).fetch_optional(c).await.map_err(|_|Error::Storage)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).mutation_replay_1)
+        .bind(tenant)
+        .bind(actor)
+        .bind(operation)
+        .bind(phase)
+        .fetch_optional(c)
+        .await
+        .map_err(|_| Error::Storage)?;
     row.map(|r| {
         if r.try_get::<String, _>("instance")
             .map_err(|_| Error::Storage)?
@@ -138,6 +148,7 @@ pub async fn replay(
     .transpose()
 }
 pub async fn save(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     identity: (&str, &str, &str),
     operation: Uuid,
@@ -145,9 +156,13 @@ pub async fn save(
     digest: &[u8],
     receipt: &[u8],
 ) -> Result<(), Error> {
-    save_result(c, identity, operation, phase, digest, receipt, None).await
+    save_result(
+        profile, c, identity, operation, phase, digest, receipt, None,
+    )
+    .await
 }
 pub(crate) async fn save_signing_recovery(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     identity: (&str, &str, &str),
     operation: Uuid,
@@ -156,6 +171,7 @@ pub(crate) async fn save_signing_recovery(
     receipt: &[u8],
 ) -> Result<(), Error> {
     save_result(
+        profile,
         c,
         identity,
         operation,
@@ -167,6 +183,7 @@ pub(crate) async fn save_signing_recovery(
     .await
 }
 async fn save_result(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     identity: (&str, &str, &str),
     operation: Uuid,
@@ -176,7 +193,17 @@ async fn save_result(
     attempt: Option<Uuid>,
 ) -> Result<(), Error> {
     let (tenant, actor, instance) = identity;
-    sqlx::query("INSERT INTO mdm_pki.operations(tenant_id,actor,instance,operation,phase,digest,receipt,signing_recovery_attempt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(tenant).bind(actor).bind(instance).bind(operation).bind(phase).bind(digest).bind(receipt).bind(attempt).execute(c).await.map_err(|_|Error::Storage)?;
+    sqlx::query(crate::storage_profile::sql(profile).mutation_save_result_1)
+        .bind(tenant)
+        .bind(actor)
+        .bind(instance)
+        .bind(operation)
+        .bind(phase)
+        .bind(digest)
+        .bind(receipt)
+        .bind(attempt)
+        .execute(c)
+        .await
+        .map_err(|_| Error::Storage)?;
     Ok(())
 }

@@ -22,6 +22,7 @@ pub enum TriggerInput {
     },
 }
 pub async fn accept_for_device(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     policy: &EnrollmentPolicy,
@@ -31,16 +32,23 @@ pub async fn accept_for_device(
     id: Uuid,
 ) -> Result<()> {
     service.validate_in(tx)?;
-    storage::lock_device(tx, &target.device).await?;
-    if !crate::enrollment::tasks::eligibility::require_in(service, tx, target, &policy.frozen)
-        .await?
+    storage::lock_device(profile, tx, &target.device).await?;
+    if !crate::enrollment::tasks::eligibility::require_in(
+        profile,
+        service,
+        tx,
+        target,
+        &policy.frozen,
+    )
+    .await?
     {
         return Ok(());
     }
     let Some(entry) = policy.entry_in(service, tx, &target.device, now).await? else {
         return Ok(());
     };
-    let (pending, last) = storage::pending_in(tx, policy.owner, policy.id, target, now).await?;
+    let (pending, last) =
+        storage::pending_in(profile, tx, policy.owner, policy.id, target, now).await?;
     if pending {
         return Ok(());
     }
@@ -48,14 +56,40 @@ pub async fn accept_for_device(
     let version = policy.id;
     let device = target.device.clone();
     let explicit_allowed = matches!(trigger, TriggerInput::Agent(_));
-    let explicit = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as::<_, (Uuid,i64,i64)>("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND $5 AND NOT EXISTS(SELECT 1 FROM mdm_registration_tasks.runs r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1")
-            .bind(tenant).bind(version).bind(device).bind(now).bind(explicit_allowed).fetch_optional(c).await
-    })).await?;
+    let explicit = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_as::<_, (Uuid, i64, i64)>(
+                    crate::storage_profile::sql(profile)
+                        .enrollment_tasks_admission_accept_for_device_1,
+                )
+                .bind(tenant)
+                .bind(version)
+                .bind(device)
+                .bind(now)
+                .bind(explicit_allowed)
+                .fetch_optional(c)
+                .await
+            })
+        })
+        .await?;
     if explicit.is_none() {
         let tenant = tx.tenant_id().to_string();
         let registration = target.registration;
-        let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_registration_tasks.runs WHERE tenant_id=$1::uuid AND registration=$2)").bind(tenant).bind(registration).fetch_one(c).await})).await?;
+        let previous = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar::<_, bool>(
+                        crate::storage_profile::sql(profile)
+                            .enrollment_tasks_admission_accept_for_device_2,
+                    )
+                    .bind(tenant)
+                    .bind(registration)
+                    .fetch_one(c)
+                    .await
+                })
+            })
+            .await?;
         if previous {
             return Ok(());
         }
@@ -110,11 +144,13 @@ pub async fn accept_for_device(
             _ => i64::MAX,
         });
     if deadline <= available
-        || !occurrence_available_in(service, tx, policy.id, target, &occurrence, now).await?
+        || !occurrence_available_in(profile, service, tx, policy.id, target, &occurrence, now)
+            .await?
     {
         return Ok(());
     }
     queue_run_in(
+        profile,
         service,
         tx,
         policy,
@@ -145,6 +181,7 @@ pub struct RunInput<'a> {
     pub now: i64,
 }
 pub async fn queue_run_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     policy: &EnrollmentPolicy,
@@ -152,19 +189,26 @@ pub async fn queue_run_in(
 ) -> Result<()> {
     use rss_transactional_messaging::outbox::{AppendOutcome, OutboxWriter};
     service.validate_in(tx)?;
-    storage::lock_device(tx, &input.target.device).await?;
-    if storage::pending_in(tx, policy.owner, policy.id, input.target, input.now)
-        .await?
-        .0
-        || !occurrence_available_in(
-            service,
-            tx,
-            policy.id,
-            input.target,
-            &input.occurrence,
-            input.now,
-        )
-        .await?
+    storage::lock_device(profile, tx, &input.target.device).await?;
+    if storage::pending_in(
+        profile,
+        tx,
+        policy.owner,
+        policy.id,
+        input.target,
+        input.now,
+    )
+    .await?
+    .0 || !occurrence_available_in(
+        profile,
+        service,
+        tx,
+        policy.id,
+        input.target,
+        &input.occurrence,
+        input.now,
+    )
+    .await?
     {
         return Err(Error::Conflict.into());
     }
@@ -181,11 +225,11 @@ pub async fn queue_run_in(
             })
         })
         .await??;
-    let message = dispatch(tx.tenant_id(), policy.id, &input)?;
+    let message = dispatch(profile, tx.tenant_id(), policy.id, &input)?;
     let fingerprint = message.fingerprint().as_bytes().to_vec();
     let writer = rss_transactional_messaging_postgres::PgOutboxWriter::new(
         service.runtime.clone(),
-        messaging_domain(),
+        messaging_domain(profile),
     );
     if writer
         .append(tx, message)
@@ -212,14 +256,33 @@ pub async fn queue_run_in(
     )?))?;
     let id = input.id;
     let now = input.now;
-    tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_registration_tasks.runs(tenant_id,id,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,invocation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
-            .bind(tenant).bind(id).bind(version).bind(target.device).bind(target.registration)
-            .bind(target.generation).bind(input.occurrence).bind(input.available).bind(input.deadline)
-            .bind(state).bind(fingerprint).bind(now).bind(evidence).bind(origin).bind(invocation).execute(c).await?;
-        Ok(())
-    })).await?;
-    crate::enrollment::tasks::wake::run_in(&service.reconcile_messaging, tx, id).await?;
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(
+                crate::storage_profile::sql(profile).enrollment_tasks_admission_queue_run_in_1,
+            )
+            .bind(tenant)
+            .bind(id)
+            .bind(version)
+            .bind(target.device)
+            .bind(target.registration)
+            .bind(target.generation)
+            .bind(input.occurrence)
+            .bind(input.available)
+            .bind(input.deadline)
+            .bind(state)
+            .bind(fingerprint)
+            .bind(now)
+            .bind(evidence)
+            .bind(origin)
+            .bind(invocation)
+            .execute(c)
+            .await?;
+            Ok(())
+        })
+    })
+    .await?;
+    crate::enrollment::tasks::wake::run_in(profile, &service.reconcile_messaging, tx, id).await?;
     tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'command_relay')").execute(c).await?;Ok(())})).await?;
     let audit = RequestAudit::new(
         tx.tenant_id().to_string(),
@@ -236,7 +299,7 @@ pub async fn queue_run_in(
     audit.target(&id.to_string());
     audit.registration(input.target.registration);
     let result: Result<()> = async {
-        let run = storage::read_run(tx, id).await?;
+        let run = storage::read_run(profile, tx, id).await?;
         let fact = Fact::business(
             &audit,
             &format!("enrollment:{id}:accept"),
@@ -282,6 +345,7 @@ pub fn policy_occurrence(
     }
 }
 pub async fn occurrence_available_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     version: Uuid,
@@ -292,21 +356,39 @@ pub async fn occurrence_available_in(
     let tenant = tx.tenant_id().to_string();
     let device = target.device.clone();
     let key = occurrence.to_owned();
-    let exists: bool = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_registration_tasks.runs WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND occurrence=$4)")
-            .bind(tenant).bind(version).bind(device).bind(key).fetch_one(c).await
-    })).await?;
+    let exists: bool = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar(
+                    crate::storage_profile::sql(profile)
+                        .enrollment_tasks_admission_occurrence_available_in_1,
+                )
+                .bind(tenant)
+                .bind(version)
+                .bind(device)
+                .bind(key)
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?;
     Ok(!exists
         && service
             .capacity
             .available_in(tx, &target.device, now)
             .await?)
 }
-pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
-    rss_transactional_messaging::message::MessagingDomain::parse("mdm.registration.enrollment.v1")
-        .expect("fixed Enrollment domain")
+pub fn messaging_domain(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> rss_transactional_messaging::message::MessagingDomain {
+    rss_transactional_messaging::message::MessagingDomain::parse(match profile {
+        rss_mdm_install_support::StorageProfile::Mdm => "mdm.registration.enrollment.v1",
+        rss_mdm_install_support::StorageProfile::Da => "da.registration.enrollment.v1",
+    })
+    .expect("fixed Enrollment domain")
 }
 fn dispatch(
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: rss_request_context::TenantId,
     version: Uuid,
     input: &RunInput<'_>,
@@ -323,7 +405,7 @@ fn dispatch(
             AuthoredMessageMetadata::new(
                 tenant,
                 checked_input(Timepoint::try_from(input.now))?,
-                messaging_domain(),
+                messaging_domain(profile),
                 checked_input(MessageRoute::parse("agent.enrollment"))?,
                 ContractIdentity::new(
                     checked_input(ContractId::parse("mdm.registration.enrollment-dispatch"))?,

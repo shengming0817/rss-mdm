@@ -113,6 +113,7 @@ impl ObjectRef {
 }
 
 pub trait Sources: Send + Sync {
+    fn storage_profile(&self) -> rss_mdm_install_support::StorageProfile;
     fn preview_scope_on<'a>(
         &'a self,
         c: &'a mut PgConnection,

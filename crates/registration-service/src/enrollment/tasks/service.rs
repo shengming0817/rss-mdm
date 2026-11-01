@@ -13,6 +13,7 @@ pub struct Materials {
     pub instance: String,
 }
 pub struct Transactions {
+    profile: rss_mdm_install_support::StorageProfile,
     pub(crate) inventory: Arc<dyn super::Inventory>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
@@ -25,12 +26,46 @@ pub struct Transactions {
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
 }
 impl Transactions {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub async fn bind(
+        profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
+        if materials.inventory.storage_profile() != profile
+            || materials.agent_store.storage_profile() != profile
+            || materials.source.storage_profile() != profile
+        {
+            return Err(Error::Forbidden);
+        }
+        runtime
+            .local_tx(
+                tenant,
+                crate::enrollment::tasks::transaction::deadline(),
+                |tx| {
+                    Box::pin(async move {
+                        tx.with_connection(move |c| {
+                            Box::pin(
+                                async move { crate::verify_common_authority(profile, c).await },
+                            )
+                        })
+                        .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                |_| Ok(()),
+                |_| Err(Error::Unavailable),
+                |_| Err(Error::Unavailable),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::Unavailable),
+            )?;
         let reconcile_messaging = rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             tenant,
@@ -39,8 +74,13 @@ impl Transactions {
         .await
         .map_err(|_| Error::Unavailable)?;
         Ok(Self {
+            profile,
             inventory: materials.inventory.clone(),
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+                profile,
+                runtime.clone(),
+                tenant,
+            ),
             runtime,
             tenant,
             audit_store,
@@ -65,6 +105,12 @@ pub struct Service {
     pub(crate) sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
 }
 impl Service {
+    pub fn validate_in(&self, tx: &PgTransaction<'_>) -> crate::enrollment::tasks::Result<()> {
+        self.transactions.validate_in(tx)
+    }
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.transactions.profile()
+    }
     pub fn new(
         transactions: Transactions,
         sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,

@@ -14,8 +14,10 @@ impl crate::enrollment::tasks::Transactions {
         cause: (Uuid, ActivityOrigin),
         deadline: i64,
     ) -> crate::enrollment::tasks::transaction::Result<Decision> {
+        let profile = self.profile();
+
         self.validate_in(tx)?;
-        crate::enrollment::tasks::storage::lock_device(tx, &target.device).await?;
+        crate::enrollment::tasks::storage::lock_device(profile, tx, &target.device).await?;
         let now = crate::enrollment::tasks::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
@@ -36,6 +38,7 @@ impl crate::enrollment::tasks::Transactions {
             });
         }
         crate::enrollment::tasks::admission::accept_for_device(
+            profile,
             self,
             tx,
             &plan,
@@ -56,7 +59,7 @@ impl crate::enrollment::tasks::Transactions {
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(
-                        !crate::enrollment::tasks::storage::owned_ids_on(c, tenant, &[id])
+                        !crate::enrollment::tasks::storage::owned_ids_on(profile, c, tenant, &[id])
                             .await?
                             .is_empty(),
                     )
@@ -82,8 +85,10 @@ impl crate::enrollment::tasks::Transactions {
         target: &crate::enrollment::tasks::Target,
         id: Uuid,
     ) -> crate::enrollment::tasks::Result<bool> {
+        let profile = self.profile();
+
         self.validate_in(tx)?;
-        let run = crate::enrollment::tasks::storage::load_run(tx, id).await?;
+        let run = crate::enrollment::tasks::storage::load_run(profile, tx, id).await?;
         Ok(run.target.device == target.device
             && run.target.registration == target.registration
             && run.target.generation == target.generation

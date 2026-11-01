@@ -31,18 +31,22 @@ pub mod session;
 pub mod tenancy;
 
 /// Fresh product schema owned by this capability.
-pub const INSTALL_SQL: &str = concat!(
-    include_str!("../schema/install.sql"),
-    include_str!("../schema/authority.sql")
-);
-/// Cross-owner references and exact runtime privileges; apply after all owner tables.
-pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
+pub const fn install_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).install
+}
+pub const fn authority_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).authority
+}
+pub const fn relations_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).relations
+}
 
 pub mod baseline;
 pub mod initialization;
 
 /// This capability's closed privileges in the shared access connection.
-pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+pub const ACCESS_CONTRACT: &str =
+    crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm).access_contract;
 
 pub mod entra;
 
@@ -50,3 +54,16 @@ mod storage_authority;
 pub use storage_authority::verify_authority;
 
 pub mod native;
+
+mod storage_profile;
+
+pub mod installation;
+
+/// Shared owner objects, combined by the host for complete schema admission.
+pub const fn object_manifest(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).object_manifest
+}
+/// Exact access-role contract for this installation.
+pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).access_contract
+}

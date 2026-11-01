@@ -27,6 +27,7 @@ fn identity_failure(error: AuthorityError) -> Error {
     }
 }
 pub async fn initialize(
+    profile: rss_mdm_install_support::StorageProfile,
     authority: &Authority,
     store: &AuditStore,
     input: Initialization,
@@ -45,7 +46,7 @@ pub async fn initialize(
         return Err(Error::Malformed);
     }
     let user = verify_local(authority, expected, login, password).await?.0;
-    crate::store::initialize_verified_user(store, user, operation_id, audit).await
+    crate::store::initialize_verified_user(profile, store, user, operation_id, audit).await
 }
 
 /// 原凭据的真实认证与精确主体核对；不创建账户、不恢复密码，也不新增授权。
@@ -98,6 +99,7 @@ pub async fn verify_local(
 /// 离线转交复用原管理员身份补齐所属租户的完整授权；调用者先完成 verify_local。
 /// 原主体必须仍有直接租户授权管理权，审计和授权在同一事务提交。
 pub async fn complete_verified_administrator(
+    profile: rss_mdm_install_support::StorageProfile,
     store: &AuditStore,
     verified: VerifiedLocal,
     operation: uuid::Uuid,
@@ -126,20 +128,20 @@ pub async fn complete_verified_administrator(
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
     let tenant = TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?;
-    let result=store.write(tenant,&budget.source_control(),(store,&user,operation,audit,fact),|(store,user,operation,audit,fact),tx|Box::pin(async move {
-        let mut context=(*user,*operation);
-        let (receipt,replay)=tx.with_connection_context(&mut context,|(user,operation),c|Box::pin(async move {
-            crate::lock_on(c,&user.tenant_id,&user.instance_id).await?;
-            let installation=crate::tenancy::InstallationTenants::load(c).await?;
+    let result=store.write(tenant,&budget.source_control(),(profile,store,&user,operation,audit,fact),|(profile,store,user,operation,audit,fact),tx|Box::pin(async move {
+        let mut context=(*profile,*user,*operation);
+        let (receipt,replay)=tx.with_connection_context(&mut context,|(profile,user,operation),c|Box::pin(async move {
+            crate::lock_on(*profile, c,&user.tenant_id,&user.instance_id).await?;
+            let installation=crate::tenancy::InstallationTenants::load(*profile, c).await?;
             let desired=crate::store::administrator_rule((*user).clone(),installation.is_management(&user.tenant_id));
-            let rules=crate::snapshot_on(c,&user.tenant_id,&user.instance_id).await?;
+            let rules=crate::snapshot_on(*profile, c,&user.tenant_id,&user.instance_id).await?;
             if let Some(existing)=rules.rules.iter().find(|r|r.id==*operation) {
                 if existing.value.as_ref()!=Some(&desired) {return Err(Error::Conflict)}
                 return Ok((Receipt{id:existing.id,revision:existing.revision,deleted:false},true));
             }
             let authorized=rules.rules.iter().filter_map(|r|r.value.as_ref()).any(|r|matches!(&r.subject,crate::Subject::User{user:subject} if subject==*user) && r.grants.iter().any(|g|g.covers(crate::Permission::AuthorizationWrite,None)));
             if !authorized {return Err(Error::Forbidden)}
-            let receipt=crate::store::grant_verified_administrator_on(c,(*user).clone(),*operation).await?;
+            let receipt=crate::store::grant_verified_administrator_on(*profile, c,(*user).clone(),*operation).await?;
             Ok::<_,Error>((receipt,false))
         })).await?;
         (if replay { Ok(()) } else { store.append(tx, fact).await })?;
@@ -159,6 +161,7 @@ impl VerifiedLocal {
 
 /// Authenticate the exact installer subject, initialize its real rule, and freeze baseline evidence.
 pub async fn initialize_baseline(
+    profile: rss_mdm_install_support::StorageProfile,
     authority: &Authority,
     store: &AuditStore,
     input: Initialization,
@@ -167,9 +170,14 @@ pub async fn initialize_baseline(
 ) -> Result<(Receipt, crate::baseline::Authority), Error> {
     let verified = verify_local(authority, input.expected, input.login, input.password).await?;
     let user = verified.user().clone();
-    let receipt =
-        crate::store::initialize_verified_user(store, user.clone(), input.operation_id, audit)
-            .await?;
-    let frozen = crate::baseline::Authority::new(user, receipt.clone(), targets)?;
+    let receipt = crate::store::initialize_verified_user(
+        profile,
+        store,
+        user.clone(),
+        input.operation_id,
+        audit,
+    )
+    .await?;
+    let frozen = crate::baseline::Authority::new(profile, user, receipt.clone(), targets)?;
     Ok((receipt, frozen))
 }

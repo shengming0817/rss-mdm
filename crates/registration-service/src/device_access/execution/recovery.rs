@@ -101,6 +101,7 @@ pub(super) async fn stale_registration(
     Ok(tx
         .with_connection(move |c| {
             Box::pin(crate::device::read::stale_registration_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
                 target.registration,

@@ -93,6 +93,7 @@ fn source_coordinates(
     }
 }
 pub async fn qualify_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     config: &rss_mdm_policy::SelfService,
@@ -104,14 +105,15 @@ pub async fn qualify_in(
     let config = config.clone();
     let basis = basis.clone();
     tx.with_connection(move |c| {
-        Box::pin(
-            async move { Ok(qualify_on(c, &config, &basis, tenant, &instance, &sessions).await) },
-        )
+        Box::pin(async move {
+            Ok(qualify_on(profile, c, &config, &basis, tenant, &instance, &sessions).await)
+        })
     })
     .await?
 }
 
 pub(super) async fn qualify_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     config: &rss_mdm_policy::SelfService,
     basis: &Basis,
@@ -138,13 +140,16 @@ pub(super) async fn qualify_on(
             if matches!(config.access, Some(Access::Users { .. })) {
                 let tenant = user.tenant_id.clone();
                 let instance = user.instance_id.clone();
-                crate::enrollment::tasks::authorization::lock_shared_on(c, &tenant, &instance)
-                    .await
-                    .map_err(Error::from)?;
-                let snapshot =
-                    crate::enrollment::tasks::authorization::snapshot_on(c, &tenant, &instance)
-                        .await
-                        .map_err(Error::from)?;
+                crate::enrollment::tasks::authorization::lock_shared_on(
+                    profile, c, &tenant, &instance,
+                )
+                .await
+                .map_err(Error::from)?;
+                let snapshot = crate::enrollment::tasks::authorization::snapshot_on(
+                    profile, c, &tenant, &instance,
+                )
+                .await
+                .map_err(Error::from)?;
                 if !snapshot
                     .matches_subjects(SubjectFacts::Revalidated(&facts), &subjects)
                     .map_err(crate::enrollment::tasks::authorization::Error::from)

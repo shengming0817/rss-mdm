@@ -27,13 +27,15 @@ impl DeviceService {
         p: &AuthorizedPrincipal,
         device: &str,
     ) -> Result<RegistrationUser, Error> {
+        let profile = self.profile();
+
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
         }
         p.enrollment(device)?;
         let mut tx = self.access.begin(p.tenant_id()).await?;
-        target_on(&mut tx, p, device).await?;
-        read_on(&mut tx, p.tenant_id(), device).await
+        target_on(profile, &mut tx, p, device).await?;
+        read_on(profile, &mut tx, p.tenant_id(), device).await
     }
     pub async fn assign_registration_user(
         &self,
@@ -43,6 +45,8 @@ impl DeviceService {
         key: Uuid,
         audit: &RequestAudit,
     ) -> Result<RegistrationUser, Error> {
+        let profile = self.profile();
+
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
         }
@@ -79,21 +83,21 @@ impl DeviceService {
             let (store,p,device,change,op,audit) = *ctx;
             let (value,replayed) = tx.with_connection_context(&mut (p,device,change,op,audit), |ctx,c| Box::pin(async move {
                 let (p,device,change,op,audit) = *ctx;
-                rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
-                rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?.require(p,rss_mdm_authorization_service::Permission::Enrollment,Some(device)).map_err(rss_mdm_authorization_service::Error::from)?;
-                lock_on(c,p.tenant_id(),device).await?;
-                target_on(c,p,device).await?;
-                if let Some(old) = crate::operations::replay(c,op).await? {
+                rss_mdm_authorization_service::lock_on(profile, c,p.tenant_id(),p.instance_id()).await?;
+                rss_mdm_authorization_service::snapshot_on(profile, c,p.tenant_id(),p.instance_id()).await?.require(p,rss_mdm_authorization_service::Permission::Enrollment,Some(device)).map_err(rss_mdm_authorization_service::Error::from)?;
+                lock_on(profile, c,p.tenant_id(),device).await?;
+                target_on(profile, c,p,device).await?;
+                if let Some(old) = crate::operations::replay(profile, c,op).await? {
                     return Ok::<_,Error>((serde_json::from_str(&old).map_err(|_| Error::Corrupt)?,true));
                 }
-                let current = read_on(c,p.tenant_id(),device).await?;
+                let current = read_on(profile, c,p.tenant_id(),device).await?;
                 if current.revision != change.expected_revision { return Err(Error::Conflict); }
                 let revision = current.revision+1;
-                sqlx::query("INSERT INTO mdm_access.registration_users(tenant_id,device,revision,instance,principal) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=EXCLUDED.revision,instance=EXCLUDED.instance,principal=EXCLUDED.principal")
+                sqlx::query(crate::storage_profile::sql(profile).device_registration_user_assign_registration_user_1)
                     .bind(p.tenant_id()).bind(device).bind(revision as i64).bind(change.user.as_ref().map(|u| &u.instance_id)).bind(change.user.as_ref().map(|u| &u.principal_id)).execute(&mut *c).await.map_err(db)?;
                 p.enrollment(device)?;
                 let value = RegistrationUser { revision, user: change.user.clone() };
-                crate::operations::save(c,op,&serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,audit).await?;
+                crate::operations::save(profile, c,op,&serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,audit).await?;
                 Ok((value,false))
             })).await?;
             let fact = Fact::business(audit, &format!("registration-user:{}:{}",p.principal_id(),op.key), 200, "success", None)?;
@@ -106,21 +110,38 @@ impl DeviceService {
     }
 }
 async fn target_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
     device: &str,
 ) -> Result<(), Error> {
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden.into());
+    }
+
     p.enrollment(device)?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2) OR EXISTS(SELECT 1 FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=$2 AND q.issuance_operation IS NOT NULL AND q.state<>'cancelled') OR EXISTS(SELECT 1 FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND device=$2 AND state IN('available','issued','active'))")
-        .bind(p.tenant_id()).bind(device).fetch_one(c).await.map_err(db)?;
+    let exists: bool = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).device_registration_user_target_on_1,
+    )
+    .bind(p.tenant_id())
+    .bind(device)
+    .fetch_one(c)
+    .await
+    .map_err(db)?;
     if exists { Ok(()) } else { Err(Error::NotFound) }
 }
 pub async fn read_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     device: &str,
 ) -> Result<RegistrationUser, Error> {
-    let row = sqlx::query("SELECT revision,instance,principal FROM mdm_access.registration_users WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).fetch_optional(c).await.map_err(db)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).device_registration_user_read_on_1)
+        .bind(tenant)
+        .bind(device)
+        .fetch_optional(c)
+        .await
+        .map_err(db)?;
     if let Some(row) = row {
         let instance: Option<String> = row.try_get("instance").map_err(db)?;
         let principal: Option<String> = row.try_get("principal").map_err(db)?;
@@ -145,7 +166,12 @@ pub async fn read_on(
 }
 
 /// Serialize all manual assignments and authenticated first-login initialization.
-pub(crate) async fn lock_on(c: &mut PgConnection, tenant: &str, device: &str) -> Result<(), Error> {
+pub(crate) async fn lock_on(
+    _profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<(), Error> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2671))")
         .bind(format!("{tenant}:{device}"))
         .execute(c)
@@ -155,17 +181,29 @@ pub(crate) async fn lock_on(c: &mut PgConnection, tenant: &str, device: &str) ->
 }
 /// Caller owns the authenticated enrollment/login transaction and its success audit.
 /// A cleared relation is eligible on the next new login, never on operation replay.
-pub async fn initialize_on(c: &mut PgConnection, device: &str, user: &User) -> Result<(), Error> {
+pub async fn initialize_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    device: &str,
+    user: &User,
+) -> Result<(), Error> {
     user.validate(&user.tenant_id, &user.instance_id)
         .map_err(|_| Error::Malformed)?;
-    lock_on(c, &user.tenant_id, device).await?;
-    sqlx::query("INSERT INTO mdm_access.registration_users(tenant_id,device,revision,instance,principal) VALUES($1::uuid,$2,1,$3,$4) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=registration_users.revision+1,instance=EXCLUDED.instance,principal=EXCLUDED.principal WHERE registration_users.principal IS NULL")
-        .bind(&user.tenant_id).bind(device).bind(&user.instance_id).bind(&user.principal_id).execute(c).await.map_err(db)?;
+    lock_on(profile, c, &user.tenant_id, device).await?;
+    sqlx::query(crate::storage_profile::sql(profile).device_registration_user_initialize_on_1)
+        .bind(&user.tenant_id)
+        .bind(device)
+        .bind(&user.instance_id)
+        .bind(&user.principal_id)
+        .execute(c)
+        .await
+        .map_err(db)?;
     Ok(())
 }
 
 /// Borrow the consumer's tenant transaction and already-authorized device batch.
 pub async fn page_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     devices: &[String],
@@ -173,7 +211,12 @@ pub async fn page_on(
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
-    let rows=sqlx::query("SELECT device,revision,instance,principal FROM mdm_access.registration_users WHERE tenant_id=$1::uuid AND device=ANY($2)").bind(tenant).bind(devices).fetch_all(c).await.map_err(db)?;
+    let rows = sqlx::query(crate::storage_profile::sql(profile).device_registration_user_page_on_1)
+        .bind(tenant)
+        .bind(devices)
+        .fetch_all(c)
+        .await
+        .map_err(db)?;
     let mut result = devices
         .iter()
         .map(|id| {

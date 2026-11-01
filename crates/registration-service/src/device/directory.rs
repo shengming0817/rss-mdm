@@ -51,33 +51,46 @@ fn error(e: rss_mdm_query::Error) -> Error {
         _ => Error::Malformed,
     }
 }
-fn column(name: &str) -> &'static str {
+fn column(profile: rss_mdm_install_support::StorageProfile, name: &str) -> &'static str {
     match name {
         "id" => "d.id COLLATE \"C\"",
         "status" => "d.status COLLATE \"C\"",
-        "channel" => {
-            "ARRAY(SELECT r.channel FROM mdm_access.registrations r WHERE r.tenant_id=d.tenant_id AND r.device=d.id UNION SELECT CASE WHEN q.source LIKE 'mdm.%' THEN 'mdm' ELSE 'agent' END FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE g.tenant_id=d.tenant_id AND g.device=d.id)"
-        }
-        "source" => {
-            "ARRAY(SELECT 'agent.builtin' FROM mdm_access.registrations r WHERE r.tenant_id=d.tenant_id AND r.device=d.id AND r.channel='agent' UNION SELECT q.source FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE g.tenant_id=d.tenant_id AND g.device=d.id)"
-        }
+        "channel" => crate::storage_profile::sql(profile).device_directory_column_1,
+        "source" => crate::storage_profile::sql(profile).device_directory_column_2,
         _ => unreachable!("checked identity field"),
     }
 }
-async fn authority(c: &mut PgConnection, p: &AuthorizedPrincipal) -> Result<Snapshot, Error> {
-    rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
+async fn authority(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    p: &AuthorizedPrincipal,
+) -> Result<Snapshot, Error> {
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden.into());
+    }
+
+    rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
         .await
         .map_err(Into::into)
 }
 const PAGE_SOURCES: i64 = 1_048_576;
 const STATISTICS_SOURCES: i64 = 4_194_304;
-fn source_budget(tenant: &str, limit: i64, explain: bool) -> sqlx::QueryBuilder<sqlx::Postgres> {
+fn source_budget(
+    profile: rss_mdm_install_support::StorageProfile,
+    tenant: &str,
+    limit: i64,
+    explain: bool,
+) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut sql = sqlx::QueryBuilder::new(if explain {
         "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "
     } else {
         ""
     });
-    sql.push("WITH source_budget AS MATERIALIZED (SELECT count(*) AS rows FROM (SELECT tenant_id FROM mdm_access.directory_inputs WHERE tenant_id=").push_bind(tenant.to_owned()).push("::uuid LIMIT ").push_bind(limit+1).push(") probe) ");
+    sql.push(crate::storage_profile::sql(profile).device_directory_source_budget_1)
+        .push_bind(tenant.to_owned())
+        .push("::uuid LIMIT ")
+        .push_bind(limit + 1)
+        .push(") probe) ");
     sql
 }
 fn check_sources(rows: i64, limit: i64, stage: &'static str) -> Result<(), Error> {
@@ -93,21 +106,37 @@ fn check_sources(rows: i64, limit: i64, stage: &'static str) -> Result<(), Error
     Ok(())
 }
 fn selection(
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: &str,
     allowed: Option<std::collections::BTreeSet<String>>,
     q: &Query,
     after: Option<&rss_mdm_query::directory::Position>,
     explain: bool,
 ) -> Result<sqlx::QueryBuilder<sqlx::Postgres>, Error> {
-    let mut sql = source_budget(tenant, PAGE_SOURCES, explain);
-    sql.push(", selected AS (SELECT d.id,d.status FROM mdm_access.directory_metadata d WHERE (SELECT rows FROM source_budget)<=").push_bind(PAGE_SOURCES).push(" AND d.tenant_id=$1::uuid");
+    let mut sql = source_budget(profile, tenant, PAGE_SOURCES, explain);
+    sql.push(crate::storage_profile::sql(profile).device_directory_selection_1)
+        .push_bind(PAGE_SOURCES)
+        .push(" AND d.tenant_id=$1::uuid");
     if let Some(allowed) = allowed {
         sql.push(" AND d.id=ANY(")
             .push_bind(allowed.into_iter().collect::<Vec<_>>())
             .push(")");
     }
-    rss_mdm_query_postgres::append(&mut sql, q, after, column).map_err(error)?;
-    sql.push(") SELECT s.id,b.rows,e.summary FROM source_budget b LEFT JOIN selected s ON true LEFT JOIN mdm_access.directory_endpoints e ON e.tenant_id=$1::uuid AND e.id=s.id");
+    rss_mdm_query_postgres::append(
+        &mut sql,
+        q,
+        after,
+        match profile {
+            rss_mdm_install_support::StorageProfile::Mdm => {
+                |name| column(rss_mdm_install_support::StorageProfile::Mdm, name)
+            }
+            rss_mdm_install_support::StorageProfile::Da => {
+                |name| column(rss_mdm_install_support::StorageProfile::Da, name)
+            }
+        },
+    )
+    .map_err(error)?;
+    sql.push(crate::storage_profile::sql(profile).device_directory_selection_2);
     rss_mdm_query_postgres::order(&mut sql, q, |field| match field {
         "id" => "s.id COLLATE \"C\"",
         "status" => "s.status COLLATE \"C\"",
@@ -137,12 +166,14 @@ impl DeviceService {
                 >,
             > + Send,
     {
+        let profile = self.profile();
+
         q.require_schema(&SCHEMA).map_err(error)?;
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
         }
         let mut tx = self.access.snapshot(&self.tenant).await?;
-        let current = authority(&mut tx, p).await?;
+        let current = authority(profile, &mut tx, p).await?;
         let allowed = current
             .inventory_devices(p)
             .map_err(rss_mdm_authorization_service::Error::from)?;
@@ -157,7 +188,7 @@ impl DeviceService {
             ))
             .map_err(error)?;
         let after = q.after(codec, &binding).map_err(error)?;
-        let mut sql = selection(&self.tenant, allowed, q, after.as_ref(), false)?;
+        let mut sql = selection(profile, &self.tenant, allowed, q, after.as_ref(), false)?;
         let candidates: Vec<(Option<String>, i64, Option<Value>)> =
             sql.build_query_as().fetch_all(&mut *tx).await.map_err(db)?;
         check_sources(
@@ -211,15 +242,19 @@ impl DeviceService {
         p: &AuthorizedPrincipal,
         q: &Query,
     ) -> Result<rss_mdm_query::Statistics<DeviceStatistics>, Error> {
+        let profile = self.profile();
+
         q.require_schema(&SCHEMA).map_err(error)?;
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
         }
         let mut tx = self.access.snapshot(&self.tenant).await?;
-        let current = authority(&mut tx, p).await?;
+        let current = authority(profile, &mut tx, p).await?;
         let grant = current.query_binding(p)?;
-        let mut sql = source_budget(&self.tenant, STATISTICS_SOURCES, false);
-        sql.push("SELECT b.rows,CASE WHEN b.rows<=").push_bind(STATISTICS_SOURCES).push(" THEN (SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'pending',count(*) FILTER(WHERE d.status='pending'),'active',count(*) FILTER(WHERE d.status='active'),'revoked',count(*) FILTER(WHERE d.status='revoked')),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint) FROM mdm_access.directory_metadata d WHERE d.tenant_id=$1::uuid");
+        let mut sql = source_budget(profile, &self.tenant, STATISTICS_SOURCES, false);
+        sql.push("SELECT b.rows,CASE WHEN b.rows<=")
+            .push_bind(STATISTICS_SOURCES)
+            .push(crate::storage_profile::sql(profile).device_directory_directory_statistics_1);
         if let Some(allowed) = current
             .inventory_devices(p)
             .map_err(rss_mdm_authorization_service::Error::from)?
@@ -228,7 +263,19 @@ impl DeviceService {
                 .push_bind(allowed.into_iter().collect::<Vec<_>>())
                 .push(")");
         }
-        rss_mdm_query_postgres::filter(&mut sql, q, column).map_err(error)?;
+        rss_mdm_query_postgres::filter(
+            &mut sql,
+            q,
+            match profile {
+                rss_mdm_install_support::StorageProfile::Mdm => {
+                    |name| column(rss_mdm_install_support::StorageProfile::Mdm, name)
+                }
+                rss_mdm_install_support::StorageProfile::Da => {
+                    |name| column(rss_mdm_install_support::StorageProfile::Da, name)
+                }
+            },
+        )
+        .map_err(error)?;
         sql.push(") END FROM source_budget b");
         let (source_rows, value): (i64, Option<Value>) =
             sql.build_query_as().fetch_one(&mut *tx).await.map_err(db)?;
@@ -247,11 +294,13 @@ impl DeviceService {
         p: &AuthorizedPrincipal,
         device: &str,
     ) -> Result<Item, Error> {
+        let profile = self.profile();
+
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
         }
         let mut tx = self.access.snapshot(&self.tenant).await?;
-        let current = authority(&mut tx, p).await?;
+        let current = authority(profile, &mut tx, p).await?;
         current
             .require(p, Permission::InventoryRead, Some(device))
             .map_err(rss_mdm_authorization_service::Error::from)?;
@@ -267,8 +316,10 @@ impl DeviceService {
         c: &mut PgConnection,
         device: &str,
     ) -> Result<Item, Error> {
+        let profile = self.profile();
+
         Id::new(device).map_err(|_| Error::Malformed)?;
-        let value = page_on(c, &self.tenant, &[device.to_owned()]).await?;
+        let value = page_on(profile, c, &self.tenant, &[device.to_owned()]).await?;
         value["items"]
             .as_array()
             .and_then(|v| v.first())
@@ -279,6 +330,7 @@ impl DeviceService {
 }
 /// Hydrate an already authorized page. This API cannot enumerate a tenant.
 pub async fn page_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     devices: &[String],
@@ -286,7 +338,12 @@ pub async fn page_on(
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
-    let rows=sqlx::query("SELECT d.summary FROM unnest($2::text[]) WITH ORDINALITY p(id,n) JOIN mdm_access.directory_endpoints d ON d.id=p.id WHERE d.tenant_id=$1::uuid ORDER BY p.n").bind(tenant).bind(devices).fetch_all(c).await.map_err(db)?;
+    let rows = sqlx::query(crate::storage_profile::sql(profile).device_directory_page_on_1)
+        .bind(tenant)
+        .bind(devices)
+        .fetch_all(c)
+        .await
+        .map_err(db)?;
     rss_mdm_query_postgres::observe_rows("device.identity", &rows).map_err(db)?;
     use sqlx::Row;
     let items = rows

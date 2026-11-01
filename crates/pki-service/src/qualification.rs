@@ -42,6 +42,7 @@ impl Verifier {
     }
 }
 pub(crate) async fn for_certificate_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     purpose: &str,
@@ -49,17 +50,17 @@ pub(crate) async fn for_certificate_in(
 ) -> Result<Qualification, Error> {
     // Same lock order as trust publication: trust, then certificates. A new certificate
     // cannot commit an old-trust proof after the publisher finished its bounded scan.
-    let bytes: Vec<u8> = sqlx::query_scalar(
-        "SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose=$2 FOR SHARE",
-    )
-    .bind(tenant)
-    .bind(purpose)
-    .fetch_one(c)
-    .await
-    .map_err(|_| Error::Storage)?;
+    let bytes: Vec<u8> =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).qualification_for_certificate_in_1)
+            .bind(tenant)
+            .bind(purpose)
+            .fetch_one(c)
+            .await
+            .map_err(|_| Error::Storage)?;
     Verifier::new(tenant, purpose, &bytes)?.certificate(certificate)
 }
 pub(crate) async fn publish_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     purpose: Purpose,
@@ -69,9 +70,15 @@ pub(crate) async fn publish_in(
     let verifier = Verifier::new(tenant, purpose, bytes)?;
     let mut after = Vec::<u8>::new();
     loop {
-        let rows=sqlx::query("SELECT fingerprint,certificate FROM mdm_pki.certificates WHERE tenant_id=$1::uuid AND purpose=$2 AND fingerprint>$3 AND (verification_trust<>$4 OR verification_version<>$5) ORDER BY fingerprint LIMIT 128")
-            .bind(tenant).bind(purpose).bind(&after).bind(&verifier.trust)
-            .bind(rss_mdm_device_trust::qualification::VERSION).fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
+        let rows = sqlx::query(crate::storage_profile::sql(profile).qualification_publish_in_1)
+            .bind(tenant)
+            .bind(purpose)
+            .bind(&after)
+            .bind(&verifier.trust)
+            .bind(rss_mdm_device_trust::qualification::VERSION)
+            .fetch_all(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
         if rows.is_empty() {
             return Ok(());
         }
@@ -90,9 +97,17 @@ pub(crate) async fn publish_in(
             starts.push(qualification.start);
             ends.push(qualification.end);
         }
-        sqlx::query("UPDATE mdm_pki.certificates c SET verification_version=$3,verification_trust=$4,verification_start=q.start,verification_end=q.finish FROM unnest($5::bytea[],$6::bigint[],$7::bigint[]) q(fingerprint,start,finish) WHERE c.tenant_id=$1::uuid AND c.purpose=$2 AND c.fingerprint=q.fingerprint")
-            .bind(tenant).bind(purpose).bind(rss_mdm_device_trust::qualification::VERSION).bind(&verifier.trust)
-            .bind(fingerprints).bind(starts).bind(ends).execute(&mut *c).await.map_err(|_|Error::Storage)?;
+        sqlx::query(crate::storage_profile::sql(profile).qualification_publish_in_2)
+            .bind(tenant)
+            .bind(purpose)
+            .bind(rss_mdm_device_trust::qualification::VERSION)
+            .bind(&verifier.trust)
+            .bind(fingerprints)
+            .bind(starts)
+            .bind(ends)
+            .execute(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
         tokio::task::yield_now().await;
     }
 }

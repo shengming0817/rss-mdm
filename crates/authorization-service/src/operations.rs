@@ -6,13 +6,16 @@ pub(crate) async fn replay(
     tx: &mut sqlx::PgConnection,
     operation: &Operation<'_>,
 ) -> Result<Option<String>, Error> {
+    let profile = operation.actor.profile;
+
     let Operation {
         actor: proof,
         key,
         digest,
     } = operation;
     let lock = format!(
-        "authorization:{}:{}:{}:{}",
+        "authorization:{}:{}:{}:{}:{}",
+        profile.name(),
         proof.tenant,
         proof.subject.len(),
         proof.subject,
@@ -23,8 +26,13 @@ pub(crate) async fn replay(
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    let old = sqlx::query("SELECT digest,result,instance::text FROM mdm_access.authorization_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).fetch_optional(&mut *tx).await.map_err(db)?;
+    let old = sqlx::query(crate::storage_profile::sql(profile).operations_replay_1)
+        .bind(proof.tenant)
+        .bind(proof.subject)
+        .bind(key.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
     old.map(|old| {
         if old.try_get::<String, _>("digest").map_err(db)? != *digest
             || old.try_get::<String, _>("instance").map_err(db)? != proof.instance
@@ -41,6 +49,8 @@ pub(crate) async fn save(
     result: &str,
     audit: &RequestAudit,
 ) -> Result<(), Error> {
+    let profile = operation.actor.profile;
+
     let Operation {
         actor: proof,
         key,
@@ -54,8 +64,16 @@ pub(crate) async fn save(
     {
         return Err(Error::Forbidden);
     }
-    sqlx::query("INSERT INTO mdm_access.authorization_operations(tenant_id,actor,operation_id,digest,result,instance) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6::uuid)")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.instance).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).operations_save_1)
+        .bind(proof.tenant)
+        .bind(proof.subject)
+        .bind(key.to_string())
+        .bind(*digest)
+        .bind(result)
+        .bind(proof.instance)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     Ok(())
 }
 
@@ -92,6 +110,7 @@ pub(crate) fn settle<R>(
 
 #[derive(Clone, Copy)]
 pub(crate) struct Actor<'a> {
+    pub(crate) profile: rss_mdm_install_support::StorageProfile,
     tenant: &'a str,
     subject: &'a str,
     instance: &'a str,
@@ -105,14 +124,19 @@ pub(crate) struct Operation<'a> {
 impl<'a> Actor<'a> {
     pub(crate) fn from_authorized(proof: &'a crate::context::AuthorizedPrincipal) -> Self {
         Self {
+            profile: proof.profile(),
             tenant: proof.tenant_id(),
             subject: proof.principal_id(),
             instance: proof.instance_id(),
         }
     }
     /// Used only after the maintenance initializer has authenticated the initial manager.
-    pub(crate) fn for_initialization(user: &'a crate::User) -> Self {
+    pub(crate) fn for_initialization(
+        profile: rss_mdm_install_support::StorageProfile,
+        user: &'a crate::User,
+    ) -> Self {
         Self {
+            profile,
             tenant: &user.tenant_id,
             subject: &user.principal_id,
             instance: &user.instance_id,

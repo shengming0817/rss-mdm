@@ -146,6 +146,7 @@ pub trait NativeProgress: Send + Sync {
     >;
 }
 pub async fn enrollment_status(
+    profile: rss_mdm_install_support::StorageProfile,
     database: &crate::Store,
     permission: EnrollmentPermission<'_>,
     id: Uuid,
@@ -154,8 +155,17 @@ pub async fn enrollment_status(
 ) -> Result<Status, Error> {
     permission.check()?;
     let mut tx = database.snapshot(permission.proof().tenant_id()).await?;
-    let row = sqlx::query("SELECT q.state,q.source,q.authority_kind,CASE q.authority_kind WHEN 'apple_account' THEN q.account_version WHEN 'apple_ade' THEN q.organization_version WHEN 'windows_entra' THEN q.organization_version ELSE q.password_version END AS authorization_version,q.windows_profile,q.credential_ref,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,floor(extract(epoch FROM statement_timestamp()))::bigint AS now,r.id AS registration,r.generation,r.state AS registration_state,floor(extract(epoch FROM r.first_authenticated_at))::bigint AS first_authenticated_at,EXISTS(SELECT 1 FROM mdm_access.report_sources s WHERE s.tenant_id=r.tenant_id AND s.registration=r.id AND s.source=q.source AND s.enabled) AS source_enabled FROM mdm_access.requests q JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND g.device=$3 AND q.issuance_operation IS NOT NULL AND (NOT $4 OR (q.self_service AND g.instance=$5 AND g.actor=$6))")
-        .bind(permission.proof().tenant_id()).bind(id).bind(permission.device()).bind(permission.self_service()).bind(permission.proof().instance_id()).bind(permission.proof().principal_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).enrollment_read_enrollment_status_1)
+        .bind(permission.proof().tenant_id())
+        .bind(id)
+        .bind(permission.device())
+        .bind(permission.self_service())
+        .bind(permission.proof().instance_id())
+        .bind(permission.proof().principal_id())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Forbidden)?;
     let context = context(&row, permission.proof().tenant_id(), id)?;
     let expires_at: i64 = row.try_get("expires_at").map_err(db)?;
     let status = match row.try_get::<String, _>("state").map_err(db)?.as_str() {
@@ -299,13 +309,22 @@ fn diagnostic(
 /// Records only a real authenticated management exchange under its existing owner transaction.
 /// INVARIANT: ENROLLMENT-FIRST-CHECKIN-01 — stale credentials/generations cannot advance progress.
 pub async fn record_authenticated_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     principal: &crate::DevicePrincipal,
 ) -> Result<(), Error> {
-    crate::admission::require_windows_in(c, principal).await?;
-    crate::device::store::revalidate_management(c, principal).await?;
-    sqlx::query("UPDATE mdm_access.registrations SET first_authenticated_at=clock_timestamp() WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active' AND first_authenticated_at IS NULL")
-        .bind(principal.tenant().to_string()).bind(principal.registration()).bind(principal.generation())
-        .execute(c).await.map_err(db)?;
+    if profile != principal.profile() {
+        return Err(crate::Error::Forbidden.into());
+    }
+
+    crate::admission::require_windows_in(profile, c, principal).await?;
+    crate::device::store::revalidate_management(profile, c, principal).await?;
+    sqlx::query(crate::storage_profile::sql(profile).enrollment_read_record_authenticated_in_1)
+        .bind(principal.tenant().to_string())
+        .bind(principal.registration())
+        .bind(principal.generation())
+        .execute(c)
+        .await
+        .map_err(db)?;
     Ok(())
 }

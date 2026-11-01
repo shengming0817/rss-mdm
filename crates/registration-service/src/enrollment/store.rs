@@ -34,10 +34,20 @@ pub fn authorization(row: PgRow) -> Result<Authorization, Error> {
             .map_err(|_| Error::Storage)?,
     })
 }
-pub async fn request(tx: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
+pub async fn request(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<PgRow, Error> {
     // Cancelled rows cannot supply enrollment authority.
-    sqlx::query("SELECT r.id::text,CASE r.authority_kind WHEN 'apple_account' THEN r.account_version WHEN 'apple_ade' THEN r.organization_version WHEN 'windows_entra' THEN r.organization_version ELSE r.password_version END AS native_version,r.authority_kind,r.account_version,r.account_reference,r.account_challenge,r.organization_version,r.organization_challenge,r.self_service,r.state,r.source,r.windows_profile,r.password_digest,r.password_version,r.expected_generation,r.credential_ref::text,r.issuance_operation::text,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.expires_at::text AS deadline,r.expires_at>clock_timestamp() AS live,g.actor,g.instance,g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.issuance_operation IS NOT NULL AND r.authority_kind IN ('password','apple_account','apple_ade','windows_entra','agent_policy') FOR UPDATE OF r")
-        .bind(tenant).bind(id.to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)
+    sqlx::query(crate::storage_profile::sql(profile).enrollment_store_request_1)
+        .bind(tenant)
+        .bind(id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Forbidden)
 }
 
 #[allow(
@@ -45,6 +55,7 @@ pub async fn request(tx: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Res
     reason = "borrowed audit transaction retains explicit authorization, enrollment identity, source/profile and credential inputs"
 )]
 pub async fn create_enrollment(
+    profile: rss_mdm_install_support::StorageProfile,
     store: &rss_mdm_audit_integration::AuditStore,
     permission: EnrollmentPermission<'_>,
     password: &Password,
@@ -103,7 +114,7 @@ pub async fn create_enrollment(
                         .with_connection_context(
                             &mut (&*inputs, *op, *audit),
                             |(inputs, op, audit), c| {
-                                Box::pin(create_enrollment_on(c, inputs, op, audit))
+                                Box::pin(create_enrollment_on(profile, c, inputs, op, audit))
                             },
                         )
                         .await?;
@@ -147,6 +158,7 @@ struct CreateInputs<'a> {
     key: Uuid,
 }
 async fn create_enrollment_on(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     CreateInputs {
         permission,
@@ -164,14 +176,15 @@ async fn create_enrollment_on(
     let source = *source;
     let session = *session;
     let key = *key;
-    crate::admission::lock_in(tx, proof.tenant_id()).await?;
-    if let Some(old) = crate::operations::replay(tx, op).await? {
+    crate::admission::lock_in(profile, tx, proof.tenant_id()).await?;
+    if let Some(old) = crate::operations::replay(profile, tx, op).await? {
         permission.check()?;
         return serde_json::from_str(&old)
             .map(|receipt| (receipt, true))
             .map_err(|_| Error::Storage);
     }
     crate::admission::require_new_in(
+        profile,
         tx,
         proof.tenant_id(),
         crate::quotas::Channel::source(source),
@@ -188,6 +201,7 @@ async fn create_enrollment_on(
             return Err(Error::Forbidden);
         }
         crate::quotas::admit_on(
+            profile,
             tx,
             proof.tenant_id(),
             proof.instance_id(),
@@ -197,20 +211,49 @@ async fn create_enrollment_on(
         .await?;
     }
     if !permission.self_service() {
-        crate::lifecycle::authorize_reenrollment_in(tx, proof, device).await?;
+        crate::lifecycle::authorize_reenrollment_in(profile, tx, proof, device).await?;
     }
-    lock_channel(tx, proof.tenant_id(), device, source.channel()).await?;
-    crate::lifecycle::require_work_in(tx, proof.tenant_id(), device).await?;
-    let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND purpose='primary'")
-            .bind(proof.tenant_id()).bind(device).bind(source.channel().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
+    lock_channel(profile, tx, proof.tenant_id(), device, source.channel()).await?;
+    crate::lifecycle::require_work_in(profile, tx, proof.tenant_id(), device).await?;
+    let generation: i64 = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).enrollment_store_create_enrollment_on_1,
+    )
+    .bind(proof.tenant_id())
+    .bind(device)
+    .bind(source.channel().as_str())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?;
     let id = Uuid::new_v4();
     let grant = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2::uuid,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
-            .bind(proof.tenant_id()).bind(grant.to_string()).bind(proof.principal_id()).bind(proof.instance_id()).bind(device).execute(&mut *tx).await.map_err(db)?;
-    let expires: i64 = sqlx::query_scalar("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,source,expected_generation,password_digest,password_version,credential_ref,expires_at,issuance_operation,windows_profile,self_service) VALUES($1::uuid,$2::uuid,$3::uuid,'pending',$4,$5,$6,1,$7::uuid,clock_timestamp()+interval '300 seconds',$8::uuid,$9,$10) RETURNING floor(extract(epoch FROM expires_at))::bigint")
-            .bind(proof.tenant_id()).bind(id.to_string()).bind(grant.to_string()).bind(source.as_str()).bind(generation).bind(password_digest).bind(session.to_string()).bind(Uuid::new_v4().to_string()).bind(windows_profile.map(WindowsProfile::as_str)).bind(permission.self_service()).fetch_one(&mut *tx).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).enrollment_store_create_enrollment_on_2)
+        .bind(proof.tenant_id())
+        .bind(grant.to_string())
+        .bind(proof.principal_id())
+        .bind(proof.instance_id())
+        .bind(device)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    let expires: i64 = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).enrollment_store_create_enrollment_on_3,
+    )
+    .bind(proof.tenant_id())
+    .bind(id.to_string())
+    .bind(grant.to_string())
+    .bind(source.as_str())
+    .bind(generation)
+    .bind(password_digest)
+    .bind(session.to_string())
+    .bind(Uuid::new_v4().to_string())
+    .bind(windows_profile.map(WindowsProfile::as_str))
+    .bind(permission.self_service())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?;
     if permission.self_service() {
-        crate::device::registration_user::initialize_on(tx, device, &proof.user()?).await?;
+        crate::device::registration_user::initialize_on(profile, tx, device, &proof.user()?)
+            .await?;
     }
     let receipt = Receipt {
         operation_id: key,
@@ -222,6 +265,7 @@ async fn create_enrollment_on(
     };
     permission.check()?;
     crate::operations::save(
+        profile,
         tx,
         op,
         &serde_json::to_string(&receipt).expect("closed receipt"),
@@ -231,16 +275,22 @@ async fn create_enrollment_on(
     Ok((receipt, false))
 }
 pub async fn enrollment_target(
+    profile: rss_mdm_install_support::StorageProfile,
     database: &crate::Store,
     proof: &AuthorizedPrincipal,
     id: Uuid,
 ) -> Result<String, Error> {
+    if profile != proof.profile() {
+        return Err(crate::Error::Forbidden.into());
+    }
+
     let mut tx = database.begin(proof.tenant_id()).await?;
-    let row = request(&mut tx, proof.tenant_id(), id).await?;
+    let row = request(profile, &mut tx, proof.tenant_id(), id).await?;
     same_actor(&row, proof)?;
     row.try_get("device").map_err(db)
 }
 pub async fn change_enrollment(
+    profile: rss_mdm_install_support::StorageProfile,
     store: &rss_mdm_audit_integration::AuditStore,
     permission: EnrollmentPermission<'_>,
     id: Uuid,
@@ -289,7 +339,7 @@ pub async fn change_enrollment(
                         .with_connection_context(
                             &mut (&*inputs, *op, *audit),
                             |(inputs, op, audit), c| {
-                                Box::pin(change_enrollment_on(c, inputs, op, audit))
+                                Box::pin(change_enrollment_on(profile, c, inputs, op, audit))
                             },
                         )
                         .await?;
@@ -332,6 +382,7 @@ struct ChangeInputs<'a> {
     key: Uuid,
 }
 async fn change_enrollment_on(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     ChangeInputs {
         permission,
@@ -346,14 +397,14 @@ async fn change_enrollment_on(
     let proof = permission.proof();
     let id = *id;
     let key = *key;
-    crate::admission::lock_in(tx, proof.tenant_id()).await?;
-    if let Some(old) = crate::operations::replay(tx, op).await? {
+    crate::admission::lock_in(profile, tx, proof.tenant_id()).await?;
+    if let Some(old) = crate::operations::replay(profile, tx, op).await? {
         permission.check()?;
         return serde_json::from_str(&old)
             .map(|receipt| (receipt, true))
             .map_err(|_| Error::Storage);
     }
-    let row = request(tx, proof.tenant_id(), id).await?;
+    let row = request(profile, tx, proof.tenant_id(), id).await?;
     if resume.is_some() && row.try_get::<String, _>("authority_kind").map_err(db)? != "password" {
         return Err(Error::Forbidden);
     }
@@ -368,6 +419,7 @@ async fn change_enrollment_on(
         let source = ReportSource::parse(&row.try_get::<String, _>("source").map_err(db)?)
             .map_err(|_| Error::Corrupt)?;
         crate::admission::require_request_in(
+            profile,
             tx,
             proof.tenant_id(),
             id,
@@ -380,7 +432,10 @@ async fn change_enrollment_on(
         return Err(Error::Conflict);
     }
     let registration = if state == "bound" {
-        Some(crate::enrollment::store::active_registration(tx, proof.tenant_id(), id).await?)
+        Some(
+            crate::enrollment::store::active_registration(profile, tx, proof.tenant_id(), id)
+                .await?,
+        )
     } else {
         None
     };
@@ -392,6 +447,7 @@ async fn change_enrollment_on(
         let source = ReportSource::parse(&row.try_get::<String, _>("source").map_err(db)?)
             .map_err(|_| Error::Corrupt)?;
         crate::quotas::admit_on(
+            profile,
             tx,
             proof.tenant_id(),
             proof.instance_id(),
@@ -410,11 +466,23 @@ async fn change_enrollment_on(
         {
             return Err(Error::Conflict);
         }
-        sqlx::query_scalar("UPDATE mdm_access.requests SET password_digest=$3,password_version=password_version+1,credential_ref=$4::uuid,expires_at=clock_timestamp()+interval '300 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid RETURNING floor(extract(epoch FROM expires_at))::bigint")
-                .bind(proof.tenant_id()).bind(id.to_string()).bind(password_digest).bind(reference.to_string()).fetch_one(&mut *tx).await.map_err(db)?
+        sqlx::query_scalar(
+            crate::storage_profile::sql(profile).enrollment_store_change_enrollment_on_1,
+        )
+        .bind(proof.tenant_id())
+        .bind(id.to_string())
+        .bind(password_digest)
+        .bind(reference.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?
     } else {
-        sqlx::query("UPDATE mdm_access.requests SET state='cancelled' WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                .bind(proof.tenant_id()).bind(id.to_string()).execute(&mut *tx).await.map_err(db)?;
+        sqlx::query(crate::storage_profile::sql(profile).enrollment_store_change_enrollment_on_2)
+            .bind(proof.tenant_id())
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         row.try_get("expiry").map_err(db)?
     };
     let receipt = Receipt {
@@ -432,6 +500,7 @@ async fn change_enrollment_on(
     };
     permission.check()?;
     crate::operations::save(
+        profile,
         tx,
         op,
         &serde_json::to_string(&receipt).expect("closed receipt"),
@@ -441,13 +510,14 @@ async fn change_enrollment_on(
     Ok((receipt, false))
 }
 pub async fn enrollment_authorization(
+    profile: rss_mdm_install_support::StorageProfile,
     database: &crate::Store,
     tenant: &str,
     id: Uuid,
     password: &Password,
 ) -> Result<Authorization, Error> {
     let mut tx = database.begin(tenant).await?;
-    let row = request(&mut tx, tenant, id).await?;
+    let row = request(profile, &mut tx, tenant, id).await?;
     let device: String = row.try_get("device").map_err(db)?;
     let state: String = row.try_get("state").map_err(db)?;
     if state == "cancelled"
@@ -462,21 +532,40 @@ pub async fn enrollment_authorization(
     authorization(row)
 }
 pub async fn active_registration(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
 ) -> Result<Uuid, Error> {
-    let row = sqlx::query("SELECT r.id::text FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.request_id=$2::uuid AND r.state='active' AND c.state='active' FOR SHARE OF r,c")
-            .bind(tenant).bind(id.to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Conflict)?;
+    let row =
+        sqlx::query(crate::storage_profile::sql(profile).enrollment_store_active_registration_1)
+            .bind(tenant)
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .ok_or(Error::Conflict)?;
     uuid(&row, "id")
 }
 pub async fn mark_bound_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     auth: &Authorization,
 ) -> Result<(), Error> {
-    if sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND password_version=$3 AND expires_at>clock_timestamp() AND self_service=$4")
-        .bind(tenant).bind(auth.id).bind(auth.version).bind(auth.self_service).execute(tx).await.map_err(db)?.rows_affected()!=1{return Err(Error::Unauthorized)}
+    if sqlx::query(crate::storage_profile::sql(profile).enrollment_store_mark_bound_in_1)
+        .bind(tenant)
+        .bind(auth.id)
+        .bind(auth.version)
+        .bind(auth.self_service)
+        .execute(tx)
+        .await
+        .map_err(db)?
+        .rows_affected()
+        != 1
+    {
+        return Err(Error::Unauthorized);
+    }
     Ok(())
 }
 
@@ -493,13 +582,18 @@ fn same_actor(row: &PgRow, proof: &AuthorizedPrincipal) -> Result<(), Error> {
 
 /// Choose authority only from the persisted request and the authenticated original user.
 pub async fn owned_permission<'a>(
+    profile: rss_mdm_install_support::StorageProfile,
     database: &crate::Store,
     proof: &'a AuthorizedPrincipal,
     id: Uuid,
 ) -> Result<EnrollmentPermission<'a>, Error> {
+    if profile != proof.profile() {
+        return Err(crate::Error::Forbidden.into());
+    }
+
     proof.check_live()?;
     let mut tx = database.begin(proof.tenant_id()).await?;
-    let row = request(&mut tx, proof.tenant_id(), id).await?;
+    let row = request(profile, &mut tx, proof.tenant_id(), id).await?;
     same_actor(&row, proof)?;
     let device: String = row.try_get("device").map_err(db)?;
     if row.try_get::<bool, _>("self_service").map_err(db)? {

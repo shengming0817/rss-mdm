@@ -46,6 +46,13 @@ impl Snapshot {
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;
+        if self
+            .installation
+            .as_ref()
+            .is_some_and(|i| i.profile() != proof.profile())
+        {
+            return Err(AuthorizationError::Forbidden);
+        }
         let Some(credential) = proof.key_proof() else {
             return Ok(None);
         };
@@ -73,6 +80,7 @@ impl Snapshot {
                 "{:x}",
                 Sha256::digest(
                     serde_json::to_vec(&(
+                        proof.profile(),
                         proof.actor(),
                         key.authority_revision,
                         &key.metadata.grants
@@ -118,7 +126,8 @@ impl Snapshot {
         Ok(format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&(proof.actor(), grants)).map_err(|_| Error::Malformed)?
+                serde_json::to_vec(&(proof.profile(), proof.actor(), grants))
+                    .map_err(|_| Error::Malformed)?
             )
         ))
     }

@@ -30,10 +30,15 @@ pub struct Change {
 
 /// Capacity reservation remains serialized by the quota owner. Admission settings
 /// have a separate reader/writer fence so first authentication reserves no quota.
-pub async fn lock_in(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
-    crate::quotas::lock_on(c, tenant).await
+pub async fn lock_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+) -> Result<(), Error> {
+    crate::quotas::lock_on(profile, c, tenant).await
 }
 async fn fence(
+    _profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     channel: Channel,
@@ -52,12 +57,17 @@ async fn fence(
     Ok(())
 }
 pub async fn read_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     channel: Channel,
 ) -> Result<Setting, Error> {
-    let row = sqlx::query("SELECT revision,paused FROM mdm_access.registration_admission WHERE tenant_id=$1::uuid AND channel=$2")
-        .bind(tenant).bind(channel.as_str()).fetch_optional(c).await.map_err(db)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).admission_read_in_1)
+        .bind(tenant)
+        .bind(channel.as_str())
+        .fetch_optional(c)
+        .await
+        .map_err(db)?;
     let (revision, paused) = match row {
         None => (0, false),
         Some(r) => (
@@ -77,13 +87,14 @@ pub async fn read_in(
     })
 }
 pub async fn require_new_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     channel: Channel,
 ) -> Result<(), Error> {
-    lock_in(c, tenant).await?;
-    fence(c, tenant, channel, false).await?;
-    if read_in(c, tenant, channel).await?.admission == State::Paused {
+    lock_in(profile, c, tenant).await?;
+    fence(profile, c, tenant, channel, false).await?;
+    if read_in(profile, c, tenant, channel).await?.admission == State::Paused {
         return Err(Error::EnrollmentPaused);
     }
     Ok(())
@@ -91,16 +102,22 @@ pub async fn require_new_in(
 /// A bound Apple request is created at Authenticate; Windows binds at signing,
 /// so Windows additionally needs the first authenticated management transaction.
 pub async fn require_request_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     request: Uuid,
     channel: Channel,
 ) -> Result<(), Error> {
-    lock_in(c, tenant).await?;
-    let established: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND q.id=$2 AND r.state='active' AND (r.first_authenticated_at IS NOT NULL OR (q.source='mdm.apple' AND q.state='bound')))")
-        .bind(tenant).bind(request).fetch_one(&mut *c).await.map_err(db)?;
+    lock_in(profile, c, tenant).await?;
+    let established: bool =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).admission_require_request_in_1)
+            .bind(tenant)
+            .bind(request)
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
     if !established {
-        require_new_in(c, tenant, channel).await?;
+        require_new_in(profile, c, tenant, channel).await?;
     }
     Ok(())
 }
@@ -110,15 +127,20 @@ pub struct Admission {
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 impl Admission {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.store.profile()
+    }
     pub fn new(store: Arc<Store>, audit: Arc<rss_mdm_audit_integration::AuditStore>) -> Self {
         Self { store, audit }
     }
     pub async fn read(&self, p: &AuthorizedPrincipal) -> Result<Vec<Setting>, Error> {
+        let profile = self.profile();
+
         p.check_live()?;
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
         let mut values = Vec::new();
         for channel in Channel::ALL {
-            values.push(read_in(&mut tx, p.tenant_id(), channel).await?);
+            values.push(read_in(profile, &mut tx, p.tenant_id(), channel).await?);
         }
         tx.commit().await.map_err(db)?;
         Ok(values)
@@ -131,6 +153,8 @@ impl Admission {
         key: Uuid,
         audit: &RequestAudit,
     ) -> Result<Setting, Error> {
+        let profile = self.profile();
+
         use crate::operations::{Actor, Operation};
         p.manage(Permission::RegistrationConfigurationWrite)?;
         if key.is_nil() || change.expected_revision >= i64::MAX as u64 {
@@ -154,46 +178,124 @@ impl Admission {
             digest: &digest,
         };
         let budget = AuditBudget::new(std::time::Duration::from_secs(6));
-        let result=self.audit.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_|Error::Malformed)?,
-            &budget.source_control(),(&self.audit,p,channel,change,&op,audit),|ctx,tx|Box::pin(async move {
-            let (store,p,channel,change,op,audit)=*ctx;
-            let (revision,replayed)=tx.with_connection_context(&mut (p,channel,change,op,audit),|ctx,c|Box::pin(async move {
-                let (p,channel,change,op,audit)=*ctx;
-                lock_in(c,p.tenant_id()).await?;
-                fence(c,p.tenant_id(),channel,true).await?;
-                if let Some(old)=crate::operations::replay(c,op).await? {return Ok::<_,Error>((serde_json::from_str::<u64>(&old).map_err(|_|Error::Corrupt)?,true));}
-                let current=read_in(c,p.tenant_id(),channel).await?;
-                if current.revision!=change.expected_revision {return Err(Error::Conflict);}
-                let revision=current.revision+1;
-                sqlx::query("INSERT INTO mdm_access.registration_admission(tenant_id,channel,revision,paused) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,channel) DO UPDATE SET revision=EXCLUDED.revision,paused=EXCLUDED.paused")
-                    .bind(p.tenant_id()).bind(channel.as_str()).bind(revision as i64).bind(change.admission==State::Paused).execute(&mut *c).await.map_err(db)?;
-                p.manage(Permission::RegistrationConfigurationWrite)?;
-                crate::operations::save(c,op,&revision.to_string(),audit).await?;
-                Ok((revision,false))
-            })).await?;
-            let fact=Fact::business(audit, &format!("registration-admission:{}:{}",p.principal_id(),op.key), 200, "success", None)?;
-            (if replayed { Ok(()) } else { store.append(tx, &fact).await }).map_err(Error::from)?;
-            if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            audit.mark_commit_started();
-            Ok(Setting{channel,revision,admission:change.admission})
-        })).await;
+        let result = self
+            .audit
+            .write(
+                rss_request_context::TenantId::parse(p.tenant_id())
+                    .map_err(|_| Error::Malformed)?,
+                &budget.source_control(),
+                (&self.audit, p, channel, change, &op, audit),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let (store, p, channel, change, op, audit) = *ctx;
+                        let (revision, replayed) = tx
+                            .with_connection_context(
+                                &mut (p, channel, change, op, audit),
+                                |ctx, c| {
+                                    Box::pin(async move {
+                                        let (p, channel, change, op, audit) = *ctx;
+                                        lock_in(profile, c, p.tenant_id()).await?;
+                                        fence(profile, c, p.tenant_id(), channel, true).await?;
+                                        if let Some(old) =
+                                            crate::operations::replay(profile, c, op).await?
+                                        {
+                                            return Ok::<_, Error>((
+                                                serde_json::from_str::<u64>(&old)
+                                                    .map_err(|_| Error::Corrupt)?,
+                                                true,
+                                            ));
+                                        }
+                                        let current =
+                                            read_in(profile, c, p.tenant_id(), channel).await?;
+                                        if current.revision != change.expected_revision {
+                                            return Err(Error::Conflict);
+                                        }
+                                        let revision = current.revision + 1;
+                                        sqlx::query(
+                                            crate::storage_profile::sql(profile).admission_change_1,
+                                        )
+                                        .bind(p.tenant_id())
+                                        .bind(channel.as_str())
+                                        .bind(revision as i64)
+                                        .bind(change.admission == State::Paused)
+                                        .execute(&mut *c)
+                                        .await
+                                        .map_err(db)?;
+                                        p.manage(Permission::RegistrationConfigurationWrite)?;
+                                        crate::operations::save(
+                                            profile,
+                                            c,
+                                            op,
+                                            &revision.to_string(),
+                                            audit,
+                                        )
+                                        .await?;
+                                        Ok((revision, false))
+                                    })
+                                },
+                            )
+                            .await?;
+                        let fact = Fact::business(
+                            audit,
+                            &format!("registration-admission:{}:{}", p.principal_id(), op.key),
+                            200,
+                            "success",
+                            None,
+                        )?;
+                        (if replayed {
+                            Ok(())
+                        } else {
+                            store.append(tx, &fact).await
+                        })
+                        .map_err(Error::from)?;
+                        if replayed {
+                            audit.management_result(
+                                rss_mdm_audit_integration::ManagementResult::Replayed,
+                            );
+                        }
+                        audit.mark_commit_started();
+                        Ok(Setting {
+                            channel,
+                            revision,
+                            admission: change.admission,
+                        })
+                    })
+                },
+            )
+            .await;
         crate::operations::settle(result, audit)
     }
 }
 
 /// First Windows management admission uses durable authentication, not certificate issuance.
 pub async fn require_windows_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &crate::DevicePrincipal,
 ) -> Result<(), Error> {
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden.into());
+    }
+
     let tenant = p.tenant().to_string();
     // The active principal is checked under the actual endpoint/channel fence.
-    crate::device::store::revalidate_management(c, p).await?;
-    let authenticated: bool = sqlx::query_scalar("SELECT first_authenticated_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active'")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    crate::device::store::revalidate_management(profile, c, p).await?;
+    let authenticated: bool =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).admission_require_windows_in_1)
+            .bind(&tenant)
+            .bind(p.registration())
+            .bind(p.generation())
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(db)?
+            .ok_or(Error::Unauthorized)?;
     if !authenticated {
-        fence(c, &tenant, Channel::WindowsMdm, false).await?;
-        if read_in(c, &tenant, Channel::WindowsMdm).await?.admission == State::Paused {
+        fence(profile, c, &tenant, Channel::WindowsMdm, false).await?;
+        if read_in(profile, c, &tenant, Channel::WindowsMdm)
+            .await?
+            .admission
+            == State::Paused
+        {
             return Err(Error::EnrollmentPaused);
         }
     }

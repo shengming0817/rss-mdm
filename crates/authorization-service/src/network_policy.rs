@@ -45,12 +45,17 @@ fn normalized(values: &[String]) -> Result<Vec<String>, Error> {
     Ok(networks.into_iter().collect())
 }
 async fn read_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     instance: &str,
 ) -> Result<NetworkPolicy, Error> {
-    let row = sqlx::query("SELECT revision,networks FROM mdm_access.api_network_policy WHERE tenant_id=$1::uuid AND instance=$2::uuid")
-        .bind(tenant).bind(instance).fetch_optional(c).await.map_err(db)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).network_policy_read_on_1)
+        .bind(tenant)
+        .bind(instance)
+        .fetch_optional(c)
+        .await
+        .map_err(db)?;
     match row {
         None => Ok(NetworkPolicy {
             revision: 0,
@@ -72,6 +77,8 @@ async fn read_on(
 }
 impl Store {
     async fn installation_network_policy(&self) -> Result<NetworkPolicy, Error> {
+        let profile = self.profile;
+
         let mut connection = None;
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
             connection = Some(self.acquire().await?);
@@ -81,15 +88,15 @@ impl Store {
                 .begin()
                 .await
                 .map_err(db)?;
-            let binding = crate::tenancy::InstallationTenants::load(&mut tx).await?;
+            let binding = crate::tenancy::InstallationTenants::load(profile, &mut tx).await?;
             let instance: String = sqlx::query_scalar(
-                "SELECT instance_id::text FROM public.mdm_installation WHERE singleton",
+                crate::storage_profile::sql(profile).network_policy_installation_network_policy_1,
             )
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
             Self::configure_transaction(&mut tx, binding.management_tenant()).await?;
-            let policy = read_on(&mut tx, binding.management_tenant(), &instance).await?;
+            let policy = read_on(profile, &mut tx, binding.management_tenant(), &instance).await?;
             tx.rollback().await.map_err(db)?;
             Ok(policy)
         })
@@ -221,6 +228,8 @@ async fn change_on(
     c: &mut sqlx::PgConnection,
     context: &NetworkWrite<'_>,
 ) -> Result<(NetworkPolicy, bool), Error> {
+    let profile = context.proof.profile();
+
     let NetworkWrite {
         proof,
         change,
@@ -228,8 +237,8 @@ async fn change_on(
         audit,
     } = context;
     require_cookie(proof)?;
-    crate::store::lock(c, proof.tenant_id(), proof.instance_id()).await?;
-    let snapshot = crate::snapshot_on(c, proof.tenant_id(), proof.instance_id()).await?;
+    crate::store::lock(profile, c, proof.tenant_id(), proof.instance_id()).await?;
+    let snapshot = crate::snapshot_on(profile, c, proof.tenant_id(), proof.instance_id()).await?;
     snapshot.require(proof, Permission::AuthorizationWrite, None)?;
     if !snapshot
         .installation
@@ -249,13 +258,19 @@ async fn change_on(
             true,
         ));
     }
-    let current = read_on(c, proof.tenant_id(), proof.instance_id()).await?;
+    let current = read_on(profile, c, proof.tenant_id(), proof.instance_id()).await?;
     if current.revision != change.expected_revision {
         return Err(Error::Conflict);
     }
     let revision = current.revision + 1;
-    sqlx::query("INSERT INTO mdm_access.api_network_policy(tenant_id,instance,revision,networks) VALUES($1::uuid,$2::uuid,$3,$4) ON CONFLICT(tenant_id) DO UPDATE SET revision=excluded.revision,networks=excluded.networks")
-        .bind(proof.tenant_id()).bind(proof.instance_id()).bind(revision as i64).bind(serde_json::to_value(&change.networks).map_err(|_| Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).network_policy_change_on_1)
+        .bind(proof.tenant_id())
+        .bind(proof.instance_id())
+        .bind(revision as i64)
+        .bind(serde_json::to_value(&change.networks).map_err(|_| Error::Malformed)?)
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
     let receipt = crate::Receipt {
         id: Uuid::parse_str(proof.instance_id()).map_err(|_| Error::Corrupt)?,
         revision,

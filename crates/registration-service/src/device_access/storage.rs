@@ -23,11 +23,30 @@ pub async fn lock_registration(
     generation: i64,
 ) -> Result<(), Error> {
     let tenant = tenant.to_string();
-    crate::lifecycle::require_work_in(c, &tenant, device).await?;
-    crate::device::endpoints::lock_in(c, &tenant, device, Channel::Agent).await?;
-    let current = crate::device::endpoints::current_in(c, &tenant, device, Channel::Agent)
-        .await?
-        .ok_or(Error::Conflict)?;
+    crate::lifecycle::require_work_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant,
+        device,
+    )
+    .await?;
+    crate::device::endpoints::lock_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant,
+        device,
+        Channel::Agent,
+    )
+    .await?;
+    let current = crate::device::endpoints::current_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant,
+        device,
+        Channel::Agent,
+    )
+    .await?
+    .ok_or(Error::Conflict)?;
     if current.registration_id != registration || current.generation != generation {
         return Err(Error::Conflict);
     }
@@ -54,7 +73,13 @@ pub async fn get_in(c: &mut PgConnection, tenant: Uuid, id: Uuid) -> Result<Bind
 
 pub async fn locked_in(c: &mut PgConnection, tenant: Uuid, id: Uuid) -> Result<Binding, Error> {
     let first = get_in(c, tenant, id).await?;
-    crate::lifecycle::require_work_in(c, &tenant.to_string(), &first.device).await?;
+    crate::lifecycle::require_work_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant.to_string(),
+        &first.device,
+    )
+    .await?;
     locked_observation_in(c, tenant, id).await
 }
 
@@ -65,12 +90,23 @@ pub async fn locked_observation_in(
     id: Uuid,
 ) -> Result<Binding, Error> {
     let first = get_in(c, tenant, id).await?;
-    crate::device::endpoints::lock_in(c, &tenant.to_string(), &first.device, Channel::Agent)
-        .await?;
-    let current =
-        crate::device::endpoints::current_in(c, &tenant.to_string(), &first.device, Channel::Agent)
-            .await?
-            .ok_or(Error::Conflict)?;
+    crate::device::endpoints::lock_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant.to_string(),
+        &first.device,
+        Channel::Agent,
+    )
+    .await?;
+    let current = crate::device::endpoints::current_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant.to_string(),
+        &first.device,
+        Channel::Agent,
+    )
+    .await?
+    .ok_or(Error::Conflict)?;
     if current.registration_id != first.registration
         || current.generation != first.registration_generation
     {

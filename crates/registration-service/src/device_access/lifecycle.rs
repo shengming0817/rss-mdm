@@ -100,9 +100,13 @@ pub(super) async fn accept_offboarding_on(
         return Err(Error::Forbidden);
     }
     require_settled_on(c, current.tenant, &current.person).await?;
-    let snapshot =
-        rss_mdm_authorization_service::snapshot_on(c, actor.tenant_id(), actor.instance_id())
-            .await?;
+    let snapshot = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        actor.tenant_id(),
+        actor.instance_id(),
+    )
+    .await?;
     snapshot
         .require(actor, Permission::IdentityAccountsManage, None)
         .map_err(|_| Error::Forbidden)?;
@@ -120,6 +124,7 @@ pub(super) async fn accept_offboarding_on(
             .require(actor, Permission::AccountWrite, Some(&binding.device))
             .map_err(|_| Error::Forbidden)?;
         crate::device::endpoints::lock_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             actor.tenant_id(),
             &binding.device,
@@ -485,9 +490,13 @@ async fn load_on(
     {
         return Err(Error::Corrupt);
     }
-    let snapshot =
-        rss_mdm_authorization_service::snapshot_on(c, actor.tenant_id(), actor.instance_id())
-            .await?;
+    let snapshot = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        actor.tenant_id(),
+        actor.instance_id(),
+    )
+    .await?;
     snapshot
         .require(actor, Permission::IdentityAccountsManage, None)
         .map_err(|_| Error::Forbidden)?;

@@ -56,6 +56,7 @@ impl From<crate::Error> for Error {
     fn from(e: crate::Error) -> Self {
         use crate::Error as R;
         match e {
+            R::Unsupported => Self::Unsupported,
             R::Malformed => Self::Malformed,
             R::Unauthorized => Self::Unauthorized,
             R::Forbidden => Self::Forbidden,
