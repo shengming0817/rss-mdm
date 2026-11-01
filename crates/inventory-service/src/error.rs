@@ -1,7 +1,5 @@
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
-    #[error(transparent)]
-    Group(#[from] crate::groups::GroupMissing),
     #[error("invalid inventory input")]
     Malformed,
     #[error("inventory source rejected")]
@@ -32,7 +30,6 @@ pub enum Failure {
     AssetsStorage,
     Clock,
     CollectionQuery,
-    ComplianceStorage,
     PlanningStorage,
     InventoryQuery,
     ManualQuery,

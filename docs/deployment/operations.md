@@ -35,6 +35,7 @@ Inventory、Scope、Policy、Resource、Software、Content、Telemetry、Command
 组件分别展示就绪原因、诊断 health、真实受控任务状态和适用的依赖、队列或进度。health 的 degraded/unknown 表示本次观测故障或缺失；
 readiness 仍表达公开探针的既定条件，两者不能互相推断。入口暂停与依赖读取失败分开；
 任务 running、已转发任务、服务就绪均不表示业务完成或设备实际效果。执行恢复只有受控任务仍运行、恢复扫描和派发首轮均确认成功且未停止时才就绪；确认空扫描/空领取也有效。
+Control、Software、Installation、Native Credential、Script、Collection、Enrollment、Access 与 Credential Tasks 分别记录适用的恢复扫描、派发和输入阶段；一个 owner 成功不清除另一个 owner 的故障。
 依赖扫描或派发轮次故障撤销就绪，后续成功轮次可恢复；停止信号或任一分支退出立即撤销就绪，在途事务仍按原预算结算。
 可选通道及其子能力在 `channels` 中显示 `disabled / waiting / ready / degraded`，同时给出实际路由 `mounted`、阻断原因及已加载材料版本；不再作为核心组件影响 `/readyz`。材料已保存或已选择不代表当前进程已加载，更不代表网关入口或依赖操作可用。PKI 版本取自当前运行中的 verifier，签名与推送版本对应本进程实际加载的材料。
 `trust_conflict` 表示配置与既有信任发生冲突，属于阻断状态；保留数据库、密钥和信任历史，核对 hostname、租户、用途与材料，不通过清空持久信任绕过冲突。

@@ -23,6 +23,7 @@ async fn change(
     gate: &Gate,
 ) -> Result<()> {
     let changes = super::super::policy_ports::Changes {
+        reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
         messaging: rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             tenant,
@@ -49,7 +50,8 @@ async fn change(
         ctx.1.pid.store(pid,Ordering::Release);
         ctx.1.ready.notify_one();
         ctx.1.resume.notified().await;
-        script::transaction::checked(ctx.0.policy_changed_in(tx,policy).await)?;
+        let current=script::transaction::checked(ctx.0.reader.locked_in(tx,policy).await?)?.expect("policy");
+        script::transaction::checked(ctx.0.policy_changed_in(tx,&current,None).await)?;
         Ok(())
     })).await?;
     Ok(())
@@ -134,7 +136,11 @@ async fn claim_policy<T: rss_reconcile::Timer>(
 }
 async fn policy_change_race(collection: bool) -> Result<()> {
     let h = Harness::open().await?;
-    let (policy, _) = h.policy("policy-lock-order").await?;
+    let policy = if collection {
+        super::retirement::native(&h, None).await?.0
+    } else {
+        h.policy("policy-lock-order").await?.0
+    };
     super::workers::wake(&h, collection, policy).await?;
     let runtime = crate::identity::open_runtime(
         &h.c.inputs.database("shared", "mdm_policy_runtime"),

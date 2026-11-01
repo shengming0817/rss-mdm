@@ -219,7 +219,13 @@ impl SoftwareService {
             offer_activity = Some(activity);
             offer = Some(payload);
         }
-        db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
+        db::save_run(
+            &service.transactions.policy_reader,
+            &service.transactions.reconcile_messaging,
+            tx,
+            &run,
+        )
+        .await?;
         self.transactions
             .lifecycle
             .wake_in(
@@ -507,7 +513,13 @@ impl SoftwareService {
             }
             _ => return Err(Error::Malformed.into()),
         }
-        db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
+        db::save_run(
+            &service.transactions.policy_reader,
+            &service.transactions.reconcile_messaging,
+            tx,
+            &run,
+        )
+        .await?;
         self.transactions
             .lifecycle
             .wake_in(

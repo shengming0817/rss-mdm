@@ -21,6 +21,14 @@ pub async fn wake_execution_in(
         sqlx::query("INSERT INTO mdm_software_deployment.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,policy) DO UPDATE SET input_revision=mdm_software_deployment.policy_recovery.input_revision+1").bind(tenant).bind(policy).execute(c).await?;
         Ok(())
     })).await?;
+    wake_dispatch_in(reconcile, tx, policy).await
+}
+/// The caller has already advanced the gate dispatch revision in this transaction.
+pub(crate) async fn wake_dispatch_in(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    policy: Uuid,
+) -> Result<()> {
     let target = rss_reconcile::Target::new(
         crate::deployment::recovery_scope(tx.tenant_id()),
         format!("policy.{policy}"),

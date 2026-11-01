@@ -570,7 +570,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                             scheduler.store.clone(),
                         ));
                         let group_work =
-                            Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
+                            Arc::new(rss_mdm_group_service::runtime::GroupWork::new(
                                 inventory_services.groups.clone(),
                                 scheduler.store.clone(),
                             ));
@@ -580,7 +580,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 scheduler.store.clone(),
                             ));
                         let compliance_work = Arc::new(
-                            rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
+                            rss_mdm_compliance_service::runtime::ComplianceWork::new(
                                 inventory_services.compliance.clone(),
                                 scheduler.store.clone(),
                             ),
@@ -683,8 +683,8 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                     .critical(),
                                 crate::assembly::task_relay::registration(
                                     control.clone(),
-                                    script_work,
-                                    collection_work,
+                                    script_work.clone(),
+                                    collection_work.clone(),
                                     software_owner.service.clone(),
                                     registration_owner.native.clone(),
                                     registration_owner.worker.clone(),
@@ -709,6 +709,8 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                         let mut app = crate::assembly::from_compiled(
                             compiled,
                             crate::assembly::AssemblyDependencies {
+                                script_work,
+                                collection_work,
 
                                 telemetry: telemetry.clone(),
                                 certificate_archive: archive.clone(),

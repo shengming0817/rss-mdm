@@ -13,7 +13,7 @@ pub fn policy_id(entity: &str) -> Option<Uuid> {
 pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND input_revision>input_consumed) OR EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled' AND definition->'action'->>'kind'='software')")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND (input_revision>input_consumed OR dispatch_revision>dispatch_consumed)) OR EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled' AND definition->'action'->>'kind'='software')")
             .bind(tenant).bind(id).fetch_one(c).await
     })).await?)
 }
@@ -21,7 +21,7 @@ pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
 pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, policy: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND input_revision>input_consumed) OR EXISTS(SELECT FROM mdm_software_deployment.software_stage_stats s JOIN mdm_policy.policies p ON(p.tenant_id,p.current_version)=(s.tenant_id,s.version) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.state='enabled' AND (NOT s.membership_complete OR NOT s.ready))").bind(tenant).bind(policy).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND (input_revision>input_consumed OR dispatch_revision>dispatch_consumed)) OR EXISTS(SELECT FROM mdm_software_deployment.software_stage_stats s JOIN mdm_policy.policies p ON(p.tenant_id,p.current_version)=(s.tenant_id,s.version) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.state='enabled' AND (NOT s.membership_complete OR NOT s.ready))").bind(tenant).bind(policy).fetch_one(c).await
     })).await?)
 }
 
@@ -30,7 +30,7 @@ pub(crate) async fn discover_in(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<()> {
-    super::scheduled::discover_in(service, tx, id).await?;
+    recover_runs_in(service, tx, id).await?;
     if let Some(policy) =
         crate::deployment::sources::storage::read_in(&service.transactions.policy_reader, tx, id)
             .await?
@@ -47,7 +47,7 @@ pub(crate) async fn discover_in(
             .advance_stats_in(&service.transactions.admission(), tx, id)
             .await?;
         if software.assignment.release_gates_in(tx).await? {
-            crate::deployment::sources::storage::wake_execution_in(
+            crate::deployment::sources::storage::wake_dispatch_in(
                 &service.transactions.reconcile_messaging,
                 tx,
                 id,
@@ -55,6 +55,43 @@ pub(crate) async fn discover_in(
             .await?;
         }
     }
+    super::scheduled::dispatch_in(service, tx, id).await
+}
+
+/// Policy changes revisit accepted runs without rediscovering assignment targets.
+async fn recover_runs_in(
+    service: &SoftwareService,
+    tx: &mut PgTransaction<'_>,
+    policy: Uuid,
+) -> Result<()> {
+    crate::deployment::sources::storage::read_in(&service.transactions.policy_reader, tx, policy)
+        .await?
+        .ok_or(crate::deployment::Error::NotFound)?;
+    let tenant = tx.tenant_id().to_string();
+    let (revision, consumed, mut window, mut after): (i64, i64, i64, Option<Uuid>) = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_as("SELECT input_revision,input_consumed,input_window,recovery_after FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 FOR UPDATE").bind(tenant).bind(policy).fetch_one(c).await
+    })).await?;
+    if consumed == window {
+        window = revision;
+        after = None;
+    }
+    if consumed == window {
+        return Ok(());
+    }
+    let tenant = tx.tenant_id().to_string();
+    let rows: Vec<Uuid> = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT r.id FROM mdm_software_deployment.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND ($3::uuid IS NULL OR r.id>$3) ORDER BY r.id LIMIT 33").bind(tenant).bind(policy).bind(after).fetch_all(c).await
+    })).await?;
+    for id in rows.iter().take(32) {
+        super::run_recovery::wake_run(&service.transactions.reconcile_messaging, tx, *id).await?;
+    }
+    let more = rows.len() > 32;
+    let after = if more { Some(rows[31]) } else { None };
+    let consumed = if more { consumed } else { window };
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("UPDATE mdm_software_deployment.policy_recovery SET input_consumed=$3,input_window=$4,recovery_after=$5 WHERE tenant_id=$1::uuid AND policy=$2").bind(tenant).bind(policy).bind(consumed).bind(window).bind(after).execute(c).await?; Ok(())
+    })).await?;
     Ok(())
 }
 
@@ -197,7 +234,13 @@ pub async fn recover_one(
     {
         run.state.cancel();
     }
-    db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
+    db::save_run(
+        &service.transactions.policy_reader,
+        &service.transactions.reconcile_messaging,
+        tx,
+        &run,
+    )
+    .await?;
     audit_recovery(service, tx, &run, &previous).await?;
     Ok(())
 }

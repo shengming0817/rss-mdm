@@ -104,6 +104,10 @@ pub enum Error {
     #[error(transparent)]
     Inventory(#[from] rss_mdm_inventory_service::Error),
     #[error(transparent)]
+    Compliance(#[from] rss_mdm_compliance_service::Error),
+    #[error(transparent)]
+    Group(#[from] rss_mdm_group_service::Error),
+    #[error(transparent)]
     Software(#[from] rss_mdm_software_service::management::Error),
     #[error(transparent)]
     Content(#[from] rss_mdm_content_service::Error),

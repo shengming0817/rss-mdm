@@ -1,6 +1,6 @@
 //! Rule-bound projection and resumable integrity evidence, never an array value cache.
 use super::*;
-use rss_mdm_group_postgres::core as g;
+use rss_mdm_group as g;
 use rss_mdm_inventory::{ArrayState, ArrayValue, Catalog, Scalar};
 use rss_mdm_inventory_postgres::arrays::{self, ArrayScanState};
 use serde::{Deserialize, Serialize};

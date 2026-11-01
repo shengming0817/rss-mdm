@@ -279,12 +279,6 @@ pub async fn owns_on(
     .fetch_one(c)
     .await
 }
-pub async fn owns_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
-    let tenant = tx.tenant_id();
-    Ok(tx
-        .with_connection(move |c| Box::pin(owns_on(c, tenant, id)))
-        .await?)
-}
 
 /// Bounded immutable ownership probe; authorization does not affect persistent membership.
 pub async fn owned_ids_on(

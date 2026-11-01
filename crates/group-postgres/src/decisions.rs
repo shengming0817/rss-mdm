@@ -1,5 +1,4 @@
 use crate::{
-    core,
     storage::{data, stored_shape},
     *,
 };
@@ -39,17 +38,17 @@ pub enum DecisionValue {
     /// Conflicting predicate inputs.
     Conflict,
 }
-impl From<core::Outcome> for DecisionValue {
-    fn from(value: core::Outcome) -> Self {
+impl From<rss_mdm_group::Outcome> for DecisionValue {
+    fn from(value: rss_mdm_group::Outcome) -> Self {
         match value {
-            core::Outcome::Match => Self::Match,
-            core::Outcome::NoMatch => Self::NoMatch,
-            core::Outcome::Unknown(reason) => match reason {
-                core::UnknownReason::Null => Self::Null,
-                core::UnknownReason::Missing => Self::Missing,
-                core::UnknownReason::Deleted => Self::Deleted,
-                core::UnknownReason::Unsupported => Self::Unsupported,
-                core::UnknownReason::Conflict => Self::Conflict,
+            rss_mdm_group::Outcome::Match => Self::Match,
+            rss_mdm_group::Outcome::NoMatch => Self::NoMatch,
+            rss_mdm_group::Outcome::Unknown(reason) => match reason {
+                rss_mdm_group::UnknownReason::Null => Self::Null,
+                rss_mdm_group::UnknownReason::Missing => Self::Missing,
+                rss_mdm_group::UnknownReason::Deleted => Self::Deleted,
+                rss_mdm_group::UnknownReason::Unsupported => Self::Unsupported,
+                rss_mdm_group::UnknownReason::Conflict => Self::Conflict,
             },
         }
     }
@@ -104,14 +103,14 @@ pub(crate) fn manual(device: String) -> DecisionRecord {
         provenance: vec![],
     }
 }
-pub(crate) fn evaluated(object: core::ObjectEvaluation) -> DecisionRecord {
+pub(crate) fn evaluated(object: rss_mdm_group::ObjectEvaluation) -> DecisionRecord {
     DecisionRecord {
         device: object.key.id().into(),
         origin: DecisionOrigin::Rule,
         decision: match object.decision {
-            core::Decision::Match => DecisionValue::Match,
-            core::Decision::NoMatch => DecisionValue::NoMatch,
-            core::Decision::Unknown => DecisionValue::Unknown,
+            rss_mdm_group::Decision::Match => DecisionValue::Match,
+            rss_mdm_group::Decision::NoMatch => DecisionValue::NoMatch,
+            rss_mdm_group::Decision::Unknown => DecisionValue::Unknown,
         },
         explanations: object
             .contexts
@@ -161,9 +160,9 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         id: OperationId,
         objects: &[String],
-    ) -> InTransaction<std::collections::BTreeMap<String, core::Outcome>> {
+    ) -> InTransaction<std::collections::BTreeMap<String, rss_mdm_group::Outcome>> {
         crate::store::input!(self.check_transaction(tx)?);
-        if objects.len() > core::limits::OBJECTS {
+        if objects.len() > rss_mdm_group::limits::OBJECTS {
             return Ok(Err(Rejection::InvalidInput));
         }
         let build = crate::store::input!(self.build_in(tx, id).await?);
@@ -185,9 +184,9 @@ impl GroupStore {
                     (
                         o.clone(),
                         if matched.contains(o) {
-                            core::Outcome::Match
+                            rss_mdm_group::Outcome::Match
                         } else {
-                            core::Outcome::NoMatch
+                            rss_mdm_group::Outcome::NoMatch
                         },
                     )
                 })
@@ -200,7 +199,7 @@ impl GroupStore {
         for row in &metadata {
             bytes = bytes.saturating_add(row.try_get::<i32, _>("bytes")? as usize + 1024);
         }
-        if bytes > core::limits::BATCH_BYTES {
+        if bytes > rss_mdm_group::limits::BATCH_BYTES {
             return Ok(Err(Rejection::PageBudgetExceeded));
         }
         let rows =
@@ -216,17 +215,17 @@ impl GroupStore {
                 return Err(stored_shape());
             }
             let outcome = match record.decision {
-                DecisionValue::Match => core::Outcome::Match,
-                DecisionValue::NoMatch => core::Outcome::NoMatch,
-                _ => core::Outcome::Unknown(
+                DecisionValue::Match => rss_mdm_group::Outcome::Match,
+                DecisionValue::NoMatch => rss_mdm_group::Outcome::NoMatch,
+                _ => rss_mdm_group::Outcome::Unknown(
                     if record
                         .explanations
                         .iter()
                         .any(|e| e.outcome == DecisionValue::Conflict)
                     {
-                        core::UnknownReason::Conflict
+                        rss_mdm_group::UnknownReason::Conflict
                     } else {
-                        core::UnknownReason::Missing
+                        rss_mdm_group::UnknownReason::Missing
                     },
                 ),
             };

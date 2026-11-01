@@ -67,7 +67,7 @@ fn one_typed_condition_round_trips_through_the_existing_group_core() {
 
 #[test]
 fn registered_sensitive_paths_feed_group_sets_without_an_extra_grant() {
-    use rss_mdm_group_postgres::core as g;
+    use rss_mdm_group as g;
     use rss_mdm_inventory::{Catalog, ResolvedField, Sensitivity, State};
     let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     let mut fields = rss_mdm_inventory::builtin::fields();
@@ -174,7 +174,7 @@ fn registered_sensitive_paths_feed_group_sets_without_an_extra_grant() {
 
 #[test]
 fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
-    use rss_mdm_group_postgres::core as g;
+    use rss_mdm_group as g;
     use rss_mdm_inventory::{Catalog, ResolvedField, State};
     let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     let catalog = Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();

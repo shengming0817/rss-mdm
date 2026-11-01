@@ -101,16 +101,17 @@ pub async fn history(
 
 /// One fixed difference window with bounded event and rule fanout pages.
 pub struct Dispatch {
+    pub from_cut: Option<Value>,
     pub to_cut: Value,
     pub event_after: i64,
-    pub through: i64,
+    pub through: Option<i64>,
     pub cursor: Option<String>,
 }
 pub async fn lock_dispatch(
     c: &mut PgConnection,
     t: TenantId,
     candidate: Value,
-) -> Result<Option<Dispatch>> {
+) -> Result<Dispatch> {
     tenant(c, t).await?;
     sqlx::query(
         "INSERT INTO mdm_compliance.dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
@@ -122,31 +123,33 @@ pub async fn lock_dispatch(
         sqlx::query_as("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid FOR UPDATE")
         .bind(t.to_string()).fetch_one(&mut *c).await?;
     let to_cut = to_cut.unwrap_or(candidate);
-    let through = match through {
-        Some(value) => Some(value),
-        None => sqlx::query_scalar("SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND mdm.asset_visible($3::jsonb,revision) AND NOT mdm.asset_visible($4::jsonb,revision) ORDER BY revision LIMIT 1000) page")
-            .bind(t.to_string()).bind(event_after).bind(&to_cut).bind(from_cut).fetch_one(&mut *c).await?,
-    };
-    let Some(through) = through else {
-        sqlx::query("UPDATE mdm_compliance.dispatch SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid")
-            .bind(t.to_string()).bind(to_cut).execute(c).await?;
-        return Ok(None);
-    };
-    sqlx::query(
-        "UPDATE mdm_compliance.dispatch SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid",
-    )
-    .bind(t.to_string())
-    .bind(&to_cut)
-    .bind(through)
-    .execute(c)
-    .await?;
-    Ok(Some(Dispatch {
+    Ok(Dispatch {
+        from_cut,
         to_cut,
         event_after,
         through,
         cursor,
-    }))
+    })
 }
+/// Store the owner-selected page or complete the frozen change window.
+pub async fn open_dispatch_page(c: &mut PgConnection, t: TenantId, page: &Dispatch) -> Result<()> {
+    tenant(c, t).await?;
+    if let Some(through) = page.through {
+        sqlx::query(
+            "UPDATE mdm_compliance.dispatch SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid",
+        )
+        .bind(t.to_string())
+        .bind(&page.to_cut)
+        .bind(through)
+        .execute(c)
+        .await?;
+    } else {
+        sqlx::query("UPDATE mdm_compliance.dispatch SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid")
+            .bind(t.to_string()).bind(&page.to_cut).execute(c).await?;
+    }
+    Ok(())
+}
+
 pub async fn save_dispatch(
     c: &mut PgConnection,
     t: TenantId,
@@ -154,9 +157,10 @@ pub async fn save_dispatch(
     cursor: Option<&str>,
 ) -> Result<()> {
     tenant(c, t).await?;
+    let through = page.through.ok_or_else(corrupt)?;
     sqlx::query("UPDATE mdm_compliance.dispatch SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid")
-        .bind(t.to_string()).bind(if cursor.is_none() { page.through } else { page.event_after })
-        .bind(cursor.map(|_| page.through)).bind(cursor).execute(c).await?;
+        .bind(t.to_string()).bind(if cursor.is_none() { through } else { page.event_after })
+        .bind(cursor.map(|_| through)).bind(cursor).execute(c).await?;
     Ok(())
 }
 
@@ -205,9 +209,17 @@ pub async fn clear_evaluation(c: &mut PgConnection, t: TenantId, id: Uuid) -> Re
     Ok(())
 }
 
-/// Read the Compliance owner's durable input lag and invalidation queue.
-pub async fn inputs_pending(c: &mut PgConnection, t: TenantId) -> Result<bool> {
+/// Compliance-owned durable position and explicit invalidation queue.
+pub struct InputState {
+    pub from_cut: Option<Value>,
+    pub invalidated: bool,
+}
+pub async fn input_state(c: &mut PgConnection, t: TenantId) -> Result<InputState> {
     tenant(c, t).await?;
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid),revision)) OR EXISTS(SELECT 1 FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL)")
-        .bind(t.to_string()).fetch_one(c).await
+    let (from_cut, invalidated) = sqlx::query_as("SELECT (SELECT from_cut FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid),EXISTS(SELECT FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL)")
+  .bind(t.to_string()).fetch_one(c).await?;
+    Ok(InputState {
+        from_cut,
+        invalidated,
+    })
 }

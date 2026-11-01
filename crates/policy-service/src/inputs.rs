@@ -47,13 +47,15 @@ pub trait ExecutionChanges: Send + Sync {
     fn policy_changed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        policy: uuid::Uuid,
+        policy: &'a rss_mdm_policy::Policy,
+        previous: Option<&'a rss_mdm_policy::Policy>,
     ) -> Pending<'a, (), Fault>;
     fn assignment_changed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         version: uuid::Uuid,
         target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
+        available: bool,
     ) -> Pending<'a, (), Fault>;
     fn devices_changed_in<'a>(
         &'a self,

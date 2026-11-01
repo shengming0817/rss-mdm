@@ -106,22 +106,3 @@ pub async fn wake_native_batch_in(
     }
     Ok(())
 }
-
-/// A changed assignment wakes its exact registration generation; no policy-wide rescan.
-pub async fn wake_policy_device_in(
-    reconcile: &rss_reconcile_postgres::PgMessagingStore,
-    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    version: uuid::Uuid,
-    target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
-) -> crate::deployment::Result<()> {
-    crate::deployment::actions::scheduled::wake_in(
-        reconcile,
-        tx,
-        crate::deployment::actions::scheduled::Work {
-            version,
-            registration: target.registration_id,
-            generation: target.generation,
-        },
-    )
-    .await
-}

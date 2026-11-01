@@ -43,8 +43,13 @@ impl AssetService {
             let saved_queries=sqlx::query_scalar("SELECT count(*) FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND document IS NOT NULL AND (jsonb_path_exists(document,'$.query.**.field ? (@ == $field || @ starts with $prefix)',jsonb_build_object('field',$2::text,'prefix',$2::text||'.')) OR jsonb_path_exists(document,'$.query.fields[*] ? (@ == $field)',jsonb_build_object('field',$2::text)))").bind(tenant.to_string()).bind(key).fetch_one(c).await?;
             Ok((groups,compliance,saved_queries))
         })).await?;
-        let (templates, telemetry_profiles, archived_resource_versions) =
-            rss_mdm_resource_postgres::field_reference_details_in(tx, field.as_str()).await?;
+        let rss_mdm_resource_postgres::FieldReferenceCounts {
+            collections: templates,
+            telemetry: telemetry_profiles,
+            archived: archived_resource_versions,
+        } = rss_mdm_resource_postgres::FieldReferences::bind(self.runtime.clone(), self.tenant)
+            .counts_in(tx, field.as_str())
+            .await?;
         Ok(FieldImpact {
             groups,
             templates,
@@ -224,19 +229,16 @@ impl AssetService {
                 checked_input(codec.decode(&token, &context))
             })
             .transpose()?;
-        let mut rows = rss_mdm_resource_postgres::field_mapping_references_in(
-            tx,
-            field.as_str(),
-            after,
-            query.limit + 1,
-        )
-        .await?;
+        let mut rows =
+            rss_mdm_resource_postgres::FieldReferences::bind(self.runtime.clone(), self.tenant)
+                .mappings_in(tx, field.as_str(), after, query.limit + 1)
+                .await?;
         let more = rows.len() > usize::from(query.limit);
         rows.truncate(usize::from(query.limit));
         let next = if more {
-            let (owner, version, _, _) = rows.last().ok_or(Error::Malformed)?;
+            let row = rows.last().ok_or(Error::Malformed)?;
             Some(
-                checked_input(codec.encode(&context, &(owner, version)))?
+                checked_input(codec.encode(&context, &(&row.resource, &row.version)))?
                     .as_str()
                     .to_owned(),
             )
@@ -244,7 +246,13 @@ impl AssetService {
             None
         };
         let mut items = Vec::new();
-        for (resource, version, telemetry, state) in rows {
+        for rss_mdm_resource_postgres::FieldMappingReference {
+            resource,
+            version,
+            telemetry,
+            state,
+        } in rows
+        {
             let state = match state {
                 rss_mdm_resource::State::Frozen => "frozen",
                 rss_mdm_resource::State::Active => "active",

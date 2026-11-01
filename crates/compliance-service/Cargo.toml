@@ -1,0 +1,42 @@
+[package]
+name = "rss-mdm-compliance-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+ring.workspace = true
+rss-contract.workspace = true
+rss-mdm-audit-integration.workspace = true
+rss-mdm-authorization-service.workspace = true
+rss-mdm-compliance.workspace = true
+rss-mdm-compliance-postgres.workspace = true
+rss-mdm-group.workspace = true
+rss-mdm-group-postgres.workspace = true
+rss-mdm-inventory.workspace = true
+rss-mdm-inventory-service.workspace = true
+rss-mdm-policy.workspace = true
+rss-mdm-query.workspace = true
+rss-mdm-registration-service.workspace = true
+rss-mdm-task-state.workspace = true
+rss-mdm-webhook-service.workspace = true
+rss-reconcile.workspace = true
+rss-reconcile-postgres.workspace = true
+rss-request-context.workspace = true
+rss-runtime.workspace = true
+rss-transactional-messaging.workspace = true
+rss-transactional-messaging-postgres.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx = { workspace = true, features = ["json"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+tokio-util.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

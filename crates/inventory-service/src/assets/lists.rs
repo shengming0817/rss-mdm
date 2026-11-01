@@ -125,9 +125,7 @@ impl AssetService {
         scope: &ReadScope,
         cut: &AssetCut,
     ) -> Result<DeviceView> {
-        let reader = planning::SnapshotReader {
-            tenant: self.tenant,
-        };
+        let reader = planning::SnapshotReader::bind(self.runtime.clone(), self.tenant);
         let ids = vec![device.to_owned()];
         let tenant = self.tenant.to_string();
         let selected = ids.clone();
@@ -212,6 +210,7 @@ impl AssetService {
         let device_id = device.to_owned();
         let read_scope = scope.clone();
         let selected_source = source.clone();
+        let snapshot = planning::SnapshotReader::bind(self.runtime.clone(), tenant);
         let (total, items, next) = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
@@ -228,7 +227,7 @@ impl AssetService {
                         }
                         let catalog =
                             stored(rss_mdm_inventory::Catalog::new(vec![definition.clone()]))?;
-                        let mut summary = planning::SnapshotReader { tenant }
+                        let mut summary = snapshot
                             .scoped_summary_devices_on(
                                 c,
                                 cut,

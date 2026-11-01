@@ -95,7 +95,7 @@ pub struct SoftwareService {
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
-    pub(crate) readiness: health::Readiness,
+    pub(crate) readiness: rss_mdm_recovery_observation::Readiness,
     pub(crate) transactions: Arc<Transactions>,
 }
 impl SoftwareService {
@@ -107,6 +107,11 @@ impl SoftwareService {
         worker_budget: Arc<tokio::sync::Semaphore>,
         worker_concurrency: usize,
     ) -> Self {
+        let readiness = rss_mdm_recovery_observation::Readiness::new(
+            recovery_scope(transactions.tenant),
+            true,
+            true,
+        );
         Self {
             transactions,
             sessions,
@@ -114,7 +119,7 @@ impl SoftwareService {
             reconcile,
             worker_budget,
             worker_concurrency,
-            readiness: Default::default(),
+            readiness,
         }
     }
     pub fn recovery_store(
@@ -122,7 +127,7 @@ impl SoftwareService {
     ) -> impl rss_reconcile::DurableStore<Claim = rss_reconcile_postgres::PgClaim> + '_ {
         health::ObservedStore(self)
     }
-    pub fn health(&self) -> health::Health {
+    pub fn health(&self) -> rss_mdm_recovery_observation::Health {
         self.readiness.health()
     }
 }

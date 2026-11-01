@@ -124,8 +124,7 @@
     "mdm.array_versions",
     "mdm.array_items",
     "mdm_assets.directory_inputs",
-    "mdm.manual_assignments",
-    "mdm_assets.group_fields"
+    "mdm.manual_assignments"
   ],
   "verified_schemas": []
 }

@@ -66,7 +66,7 @@ pub struct Service {
     pub(crate) worker_concurrency: usize,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
-    pub(crate) readiness: health::Readiness,
+    pub(crate) readiness: rss_mdm_recovery_observation::Readiness,
 
     pub(crate) transactions: transactions::Transactions,
 }
@@ -128,14 +128,18 @@ impl Service {
             },
             worker_concurrency: dependencies.worker_concurrency,
             worker_budget: dependencies.worker_budget,
-            readiness: Default::default(),
+            readiness: rss_mdm_recovery_observation::Readiness::new(
+                recovery_scope(dependencies.tenant),
+                true,
+                true,
+            ),
 
             outbox: dependencies.outbox,
             reconcile: dependencies.reconcile,
         }
     }
 
-    pub fn health(&self) -> health::Health {
+    pub fn health(&self) -> rss_mdm_recovery_observation::Health {
         self.readiness.health()
     }
 }

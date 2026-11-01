@@ -2,9 +2,9 @@
 use crate::{Error, Failure};
 use std::sync::Arc;
 pub(crate) struct Services {
-    pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub(crate) groups: Arc<rss_mdm_group_service::Groups>,
     pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
-    pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
+    pub(crate) compliance: Arc<rss_mdm_compliance_service::Compliance>,
 }
 impl Services {
     pub(crate) async fn new(
@@ -22,6 +22,7 @@ impl Services {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             rss_mdm_inventory_service::admit_storage_in(c, tenant).await?;
+                            rss_mdm_compliance_service::admit_storage_in(c, tenant).await?;
                             Ok(())
                         })
                     })
@@ -54,19 +55,17 @@ impl Services {
             .map_err(|_| Error::Unavailable(Failure::Database))?,
         );
         let group_service = Arc::new(
-            rss_mdm_inventory_service::groups::Groups::new(
-                rss_mdm_inventory_service::groups::Dependencies {
-                    read_pool,
-                    reconcile_messaging: messaging.clone(),
-                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-                    tenant,
-                    groups: groups.clone(),
-                    cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key),
-                    audit_store: audit_store.clone(),
-                    runtime: runtime.clone(),
-                    clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
-                },
-            )
+            rss_mdm_group_service::Groups::new(rss_mdm_group_service::Dependencies {
+                read_pool,
+                reconcile_messaging: messaging.clone(),
+                objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+                tenant,
+                groups: groups.clone(),
+                cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key),
+                audit_store: audit_store.clone(),
+                runtime: runtime.clone(),
+                clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
+            })
             .await?,
         );
         Ok(Self {
@@ -80,8 +79,8 @@ impl Services {
                 key,
                 messaging.clone(),
             )),
-            compliance: Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
-                rss_mdm_inventory_service::compliance::Dependencies {
+            compliance: Arc::new(rss_mdm_compliance_service::Compliance::new(
+                rss_mdm_compliance_service::Dependencies {
                     audit_store,
                     runtime,
                     tenant,

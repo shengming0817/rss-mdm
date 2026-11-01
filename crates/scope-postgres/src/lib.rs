@@ -156,7 +156,10 @@ impl ScopeBinding {
 /// Coordinates are derived from the definition and published head without a mirror table.
 pub const GROUP_REFERENCE_FACTS_SQL: &str = r#"
 SELECT s.tenant_id,s.id,s.revision,s.deleted,s.resolution,s.resolution_revision,s.calculation_revision,
- v.definition,r.phase,
+ r.phase,
+ ARRAY(SELECT (e->>'id')::uuid FROM jsonb_array_elements(coalesce(nullif(v.definition->'targets','null'::jsonb),'[]'::jsonb)) e WHERE e->>'kind'='group' ORDER BY (e->>'id')::uuid) AS target_group_ids,
+ ARRAY(SELECT (e->>'id')::uuid FROM jsonb_array_elements(coalesce(nullif(v.definition->'limitations','null'::jsonb),'[]'::jsonb)) e WHERE e->>'kind'='group' ORDER BY (e->>'id')::uuid) AS limitation_group_ids,
+ ARRAY(SELECT (e->>'id')::uuid FROM jsonb_array_elements(coalesce(nullif(v.definition->'exclusions','null'::jsonb),'[]'::jsonb)) e WHERE e->>'kind'='group' ORDER BY (e->>'id')::uuid) AS exclusion_group_ids,
  ARRAY(SELECT e.target::uuid FROM mdm_scope.scope_sources e WHERE e.tenant_id=s.tenant_id AND e.scope=s.id AND e.kind='group' ORDER BY e.target)::uuid[] AS group_ids
 FROM mdm_scope.scopes s
 JOIN mdm_scope.scope_versions v ON(v.tenant_id,v.id,v.revision)=(s.tenant_id,s.id,s.revision)

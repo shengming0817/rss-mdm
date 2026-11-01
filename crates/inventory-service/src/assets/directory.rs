@@ -68,14 +68,14 @@ impl AssetService {
             .bind(devices)
             .fetch_all(&mut *c)
             .await?;
-        let selected = planning::SnapshotReader { tenant }
-            .select_sources_on(
-                c,
-                rows,
-                &rss_mdm_inventory::CollectionScope::Device,
-                &fields,
-            )
-            .await?;
+        let selected = planning::SnapshotReader::select_sources_on(
+            c,
+            tenant,
+            rows,
+            &rss_mdm_inventory::CollectionScope::Device,
+            &fields,
+        )
+        .await?;
         let mut owners = selected
             .subjects
             .into_iter()

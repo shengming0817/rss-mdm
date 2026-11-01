@@ -227,7 +227,7 @@ impl Reconciler<PgClaim> for QueryWork {
             Err(Error::Conflict) => "superseded",
             Err(Error::Malformed) => "invalid_input",
             Err(Error::Forbidden | Error::Unauthorized) => "permission_denied",
-            Err(Error::Group(_) | Error::NotFound) => "source_unavailable",
+            Err(Error::NotFound) => "source_unavailable",
             Err(Error::Unavailable(
                 Failure::AssetBytesLimit | Failure::AssetObjectLimit | Failure::AssetSourceLimit,
             )) => "capacity_exceeded",

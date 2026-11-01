@@ -7,6 +7,9 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-group-service.workspace = true
+rss-mdm-compliance-service.workspace = true
+rss-mdm-recovery-observation.workspace = true
 rss-mdm-task-state.workspace = true
 rss-mdm-script-service.workspace = true
 rss-mdm-task-trust.workspace = true

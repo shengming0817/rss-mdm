@@ -18,21 +18,12 @@ ALTER TABLE ONLY mdm_assets.asset_query_facets
 ALTER TABLE ONLY mdm_assets.asset_query_results
     ADD CONSTRAINT asset_query_results_tenant_id_run_fkey FOREIGN KEY (tenant_id, run) REFERENCES mdm_assets.asset_query_runs(tenant_id, id);
 
-
-
-ALTER TABLE ONLY mdm_assets.group_fields
-    ADD CONSTRAINT group_fields_tenant_id_group_id_fkey FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id);
-
 GRANT USAGE ON SCHEMA mdm TO mdm_runtime;
 GRANT USAGE ON SCHEMA mdm TO mdm_api;
 GRANT USAGE ON SCHEMA mdm TO mdm_inventory_runtime;
 GRANT USAGE ON SCHEMA mdm TO mdm_command_runtime;
 
 GRANT USAGE ON SCHEMA mdm_assets TO mdm_inventory_runtime;
-
-GRANT USAGE ON SCHEMA mdm_compliance TO mdm_inventory_runtime;
-
-GRANT USAGE ON SCHEMA mdm_group TO mdm_group_runtime;
 
 GRANT USAGE ON SCHEMA mdm_inventory TO mdm_access;
 
@@ -144,10 +135,6 @@ GRANT UPDATE(matched) ON TABLE mdm_assets.asset_query_runs TO mdm_inventory_runt
 
 GRANT UPDATE(unknown) ON TABLE mdm_assets.asset_query_runs TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT,DELETE ON TABLE mdm_assets.group_fields TO mdm_inventory_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_assets.group_operations TO mdm_inventory_runtime;
-
 GRANT SELECT,INSERT ON TABLE mdm_assets.operations TO mdm_inventory_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_assets.field_layouts TO mdm_inventory_runtime;
@@ -158,74 +145,6 @@ GRANT SELECT,INSERT ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
 GRANT UPDATE(revision) ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
 
 GRANT UPDATE(document) ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
-
-GRANT SELECT,INSERT,DELETE ON TABLE mdm_compliance.fields TO mdm_inventory_runtime;
-
-GRANT SELECT,INSERT,DELETE ON TABLE mdm_compliance.groups TO mdm_inventory_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_compliance.operations TO mdm_inventory_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_compliance.results TO mdm_inventory_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
-
-GRANT UPDATE(revision) ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
-
-GRANT UPDATE(enabled) ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
-
-GRANT UPDATE(desired) ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
-
-GRANT UPDATE(current_run) ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_compliance.versions TO mdm_inventory_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_group.groups TO mdm_group_runtime;
-
-GRANT UPDATE(presentation) ON TABLE mdm_group.groups TO mdm_group_runtime;
-
-GRANT UPDATE(revision) ON TABLE mdm_group.groups TO mdm_group_runtime;
-
-GRANT UPDATE(calculation_revision) ON TABLE mdm_group.groups TO mdm_group_runtime;
-
-GRANT UPDATE(member_version) ON TABLE mdm_group.groups TO mdm_group_runtime;
-
-GRANT UPDATE(member_count) ON TABLE mdm_group.groups TO mdm_group_runtime;
-
-GRANT UPDATE(rule_version) ON TABLE mdm_group.groups TO mdm_group_runtime;
-
-GRANT UPDATE(deleted) ON TABLE mdm_group.groups TO mdm_group_runtime;
-
-GRANT UPDATE(member_set) ON TABLE mdm_group.groups TO mdm_group_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_group.member_changes TO mdm_group_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_group.member_pages TO mdm_group_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_group.member_rows TO mdm_group_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT UPDATE(phase) ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT UPDATE(cursor) ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT UPDATE(diff_cursor) ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT UPDATE(processed_count) ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT UPDATE(object_count) ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT UPDATE(member_count) ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT UPDATE(added) ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT UPDATE(removed) ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT UPDATE(receipt) ON TABLE mdm_group.member_runs TO mdm_group_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_group.operations TO mdm_group_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_group.rules TO mdm_group_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_inventory.collection_operations TO mdm_access;
 

@@ -16,14 +16,19 @@ pub(crate) struct RuntimeDiagnostics {
     pub devices: Arc<rss_mdm_device_service::Associations>,
     pub planning: Arc<rss_mdm_policy_service::application::Application>,
     pub scopes: Arc<rss_mdm_scope_service::Scopes>,
-    pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub groups: Arc<rss_mdm_group_service::Groups>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
-    pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
+    pub compliance: Arc<rss_mdm_compliance_service::Compliance>,
     pub scope_group_health: Arc<crate::scope_group_changes::Health>,
     pub execution: Arc<rss_mdm_device_service::control::Service>,
     pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
     pub installation: Arc<rss_mdm_registration_service::installation::Service>,
+    pub scripts: Arc<rss_mdm_script_service::worker::Worker>,
+    pub collections: Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
+    pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::worker::Worker>,
+    pub access_tasks: Arc<rss_mdm_registration_service::device_access::execution::worker::Worker>,
+    pub credential_tasks: Option<Arc<rss_mdm_recovery_credentials::tasks::worker::Worker>>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
     pub instance: String,
@@ -85,58 +90,20 @@ impl RuntimeDiagnostics {
         }
     }
     fn execution_component(&self) -> Component {
-        use rss_mdm_device_service::control::health::Phase as E;
-        use rss_mdm_registration_service::installation::health::Phase as R;
-        use rss_mdm_software_service::deployment::health::Phase as S;
-        let execution = self.execution.health();
-        let software = self.software.health();
-        let installation = self.installation.health();
         let mut statuses = vec![
-            RecoveryStatus {
-                task: execution.task,
-                stopping: execution.stopping,
-                phases: [execution.recovery, execution.relay, execution.inputs].map(|p| match p {
-                    E::Initializing => None,
-                    E::Healthy => Some(Ok(())),
-                    E::Failed(e) => Some(Err(e)),
-                }),
-            },
-            RecoveryStatus {
-                task: software.task,
-                stopping: software.stopping,
-                phases: [software.recovery, software.relay, software.inputs].map(|p| match p {
-                    S::Initializing => None,
-                    S::Healthy => Some(Ok(())),
-                    S::Failed(e) => Some(Err(e)),
-                }),
-            },
-            RecoveryStatus {
-                task: installation.task,
-                stopping: installation.stopping,
-                phases: [
-                    installation.recovery,
-                    installation.relay,
-                    installation.inputs,
-                ]
-                .map(|p| match p {
-                    R::Initializing => None,
-                    R::Healthy => Some(Ok(())),
-                    R::Failed(e) => Some(Err(e)),
-                }),
-            },
+            self.execution.health(),
+            self.software.health(),
+            self.installation.health(),
+            self.scripts.health(),
+            self.collections.health(),
+            self.enrollment.health(),
+            self.access_tasks.health(),
         ];
         if let Some(recovery) = &self.recovery {
-            use rss_mdm_recovery_credentials::native::health::Phase as C;
-            let health = recovery.health();
-            statuses.push(RecoveryStatus {
-                task: health.task,
-                stopping: health.stopping,
-                phases: [health.recovery, health.relay, health.inputs].map(|p| match p {
-                    C::Initializing => None,
-                    C::Healthy => Some(Ok(())),
-                    C::Failed(e) => Some(Err(e)),
-                }),
-            });
+            statuses.push(recovery.health());
+        }
+        if let Some(credentials) = &self.credential_tasks {
+            statuses.push(credentials.health());
         }
         recovery_component(&statuses)
     }
@@ -188,17 +155,22 @@ impl RuntimeDiagnostics {
             automation.reasons.push(Reason::DependencyUnavailable);
             automation.health = Health::Degraded;
         }
-        for owner in [self.assets.worker_status(), self.compliance.worker_status()] {
-            if owner.task != Some(rss_runtime::TaskState::Running) {
+        let assets = self.assets.worker_status();
+        let compliance = self.compliance.worker_status();
+        for (task, observed, failed) in [
+            (assets.task, assets.observed, assets.failed),
+            (compliance.task, compliance.observed, compliance.failed),
+        ] {
+            if task != Some(rss_runtime::TaskState::Running) {
                 automation.readiness = Readiness::NotReady;
                 automation.health = Health::Unknown;
                 automation.reasons.push(Reason::WorkerNotRunning);
-            } else if !owner.observed {
+            } else if !observed {
                 automation.readiness = Readiness::NotReady;
                 automation.health = Health::Unknown;
                 automation.reasons.push(Reason::Unobserved);
             }
-            if owner.failed {
+            if failed {
                 automation.readiness = Readiness::NotReady;
                 automation.health = Health::Degraded;
                 automation.reasons.push(Reason::DependencyUnavailable);
@@ -268,6 +240,21 @@ impl RuntimeDiagnostics {
                 }),
             )
         };
+        let project_compliance = |s: rss_mdm_compliance_service::WorkerStatus| {
+            (
+                s.scan.map(|v| RunObservation {
+                    failure: v.failure.map(group_runner_failure),
+                    observed_at: v.observed_at,
+                }),
+                s.unresolved_attempts,
+                s.truncated,
+                s.latest_failure.map(|v| AttemptFailure {
+                    stage: v.stage,
+                    failure: group_runner_failure(v.failure),
+                    observed_at: v.observed_at,
+                }),
+            )
+        };
         let observations = [
             (
                 groups.scan.map(|v| RunObservation {
@@ -296,7 +283,7 @@ impl RuntimeDiagnostics {
                 }),
             ),
             project(self.assets.worker_status()),
-            project(self.compliance.worker_status()),
+            project_compliance(self.compliance.worker_status()),
         ];
         for (scan, unresolved, truncated, latest) in observations {
             health.scan = merge_observation(health.scan, scan);
@@ -422,16 +409,17 @@ impl RuntimeDiagnostics {
                 rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             ))
         );
-        let group_queues = match (group_queues, scope_queues) {
+        let group_queues = match (
+            group_queues.map_err(|e| queue_failure(e.into())),
+            scope_queues.map_err(|e| queue_failure(e.into())),
+        ) {
             (Ok(mut g), Ok(s)) => {
                 for (n, v) in g.iter_mut().zip(s) {
                     *n = n.saturating_add(v);
                 }
                 Ok(g)
             }
-            _ => Err(rss_mdm_inventory_service::Error::Unavailable(
-                rss_mdm_inventory_service::Failure::AssetsStorage,
-            )),
+            (Err(e), _) | (_, Err(e)) => Err(e),
         };
         inventory.dependencies.push(dependency(
             DependencyName::InventoryDelivery,
@@ -489,7 +477,10 @@ impl RuntimeDiagnostics {
             self.assets.queue_health(remaining()),
             self.compliance.queue_health(remaining())
         );
-        queues = merge_owner_queues(merge_owner_queues(queues, query_counts), compliance_counts);
+        queues = merge_owner_queues(
+            merge_owner_queues(queues, query_counts.map_err(|e| queue_failure(e.into()))),
+            compliance_counts.map_err(|e| queue_failure(e.into())),
+        );
         let values = queues.as_ref().ok();
         automation.queues = [
             QueueName::Pending,
@@ -729,18 +720,12 @@ impl RuntimeDiagnostics {
         }
     }
 }
-// Host projection of independent owners; an unobserved phase remains distinct from failure.
-struct RecoveryStatus {
-    task: Option<rss_runtime::TaskState>,
-    stopping: bool,
-    phases: [Option<Result<(), rss_reconcile::ErrorKind>>; 3],
-}
-fn recovery_component(states: &[RecoveryStatus]) -> Component {
-    let ready = states.iter().all(|s| {
-        s.task == Some(rss_runtime::TaskState::Running)
-            && !s.stopping
-            && s.phases.iter().all(|p| matches!(p, Some(Ok(()))))
-    });
+// Only phases actually owned by each worker participate in readiness.
+fn recovery_component(states: &[rss_mdm_recovery_observation::Health]) -> Component {
+    use rss_mdm_recovery_observation::Phase;
+    let ready = states
+        .iter()
+        .all(rss_mdm_recovery_observation::Health::is_ready);
     let mut result = component(ComponentName::ExecutionRecovery, ready);
     result.task = Some(task(
         states
@@ -759,17 +744,17 @@ fn recovery_component(states: &[RecoveryStatus]) -> Component {
         if state.stopping {
             result.reasons.push(Reason::Stopping);
         }
-        for phase in state.phases {
+        for phase in state.phases() {
             match phase {
-                None => {
+                Phase::Initializing => {
                     initializing = true;
                     result.reasons.push(Reason::Initializing);
                 }
-                Some(Err(kind)) => {
+                Phase::Failed(kind) => {
                     failed = true;
                     result.reasons.push(execution_failure(kind));
                 }
-                Some(Ok(())) => (),
+                Phase::Healthy => (),
             }
         }
     }
@@ -937,16 +922,36 @@ fn run_result(value: rss_mdm_policy_service::worker::RunObservation) -> RunResul
     }
 }
 
+fn queue_failure(error: crate::Error) -> HealthFailure {
+    use crate::Error as E;
+    match error {
+        E::CommitUnknown
+        | E::RollbackFailed
+        | E::Inventory(
+            rss_mdm_inventory_service::Error::CommitUnknown
+            | rss_mdm_inventory_service::Error::RollbackFailed,
+        )
+        | E::Group(
+            rss_mdm_group_service::Error::CommitUnknown
+            | rss_mdm_group_service::Error::RollbackFailed,
+        )
+        | E::Compliance(
+            rss_mdm_compliance_service::Error::CommitUnknown
+            | rss_mdm_compliance_service::Error::RollbackFailed,
+        )
+        | E::Scope(
+            rss_mdm_scope_service::Error::CommitUnknown
+            | rss_mdm_scope_service::Error::RollbackFailed,
+        ) => HealthFailure::SettlementUnknown,
+        _ => HealthFailure::Storage,
+    }
+}
 fn merge_owner_queues(
     totals: Result<[u64; 6], HealthFailure>,
-    counts: Result<[u64; 5], rss_mdm_inventory_service::Error>,
+    counts: Result<[u64; 5], HealthFailure>,
 ) -> Result<[u64; 6], HealthFailure> {
     let mut totals = totals?;
-    let counts = counts.map_err(|error| match error {
-        rss_mdm_inventory_service::Error::CommitUnknown
-        | rss_mdm_inventory_service::Error::RollbackFailed => HealthFailure::SettlementUnknown,
-        _ => HealthFailure::Storage,
-    })?;
+    let counts = counts?;
     for (total, count) in totals.iter_mut().zip(counts) {
         *total = total.saturating_add(count).min(1001);
     }

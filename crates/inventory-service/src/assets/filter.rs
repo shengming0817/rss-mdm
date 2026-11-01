@@ -1,5 +1,5 @@
 use super::*;
-use rss_mdm_group_postgres::core as g;
+use rss_mdm_group as g;
 use rss_mdm_inventory::{Catalog, FieldPath, State, ValueType};
 pub fn scalar(value: &Scalar) -> Result<g::Scalar> {
     checked_input(value.validate())?;
@@ -42,7 +42,7 @@ pub(super) fn kind(value: rss_mdm_inventory::Kind) -> Result<g::ScalarType> {
         rss_mdm_inventory::Kind::Time => g::ScalarType::Time,
     })
 }
-pub(crate) fn criteria(
+pub fn criteria(
     c: &Criteria,
     catalog: &Catalog,
     fields: &mut BTreeMap<String, g::Field>,

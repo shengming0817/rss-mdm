@@ -4,7 +4,7 @@ pub mod agent;
 
 pub mod production;
 pub mod recovery;
-pub(crate) mod scheduled;
+pub mod scheduled;
 
 pub mod storage;
 

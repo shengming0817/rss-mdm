@@ -70,23 +70,16 @@ pub fn settle<T>(
     failure: Mutex<Option<Error>>,
     owner: TransactionOwner,
 ) -> std::result::Result<T, Error> {
-    attempt.fold(
-        |v| {
-            audit.mark_committed();
-            Ok(v)
-        },
+    audit.observe_attempt(attempt).fold(
+        Ok,
         |_| Err(Error::Unavailable(owner.failure())),
         |_| {
-            audit.mark_rolled_back();
             Err(failure
                 .into_inner()
                 .expect("request result")
                 .unwrap_or(Error::Unavailable(owner.failure())))
         },
-        |_| {
-            audit.mark_rollback_failed();
-            Err(Error::RollbackFailed)
-        },
+        |_| Err(Error::RollbackFailed),
         |_| Err(Error::CommitUnknown),
         |_| Err(Error::Unavailable(owner.failure())),
     )
@@ -202,14 +195,12 @@ use serde_json::Value;
 #[derive(Clone, Copy)]
 pub enum TransactionOwner {
     Assets,
-    Compliance,
     Collections,
 }
 impl TransactionOwner {
     fn failure(self) -> Failure {
         match self {
             Self::Assets => Failure::AssetsStorage,
-            Self::Compliance => Failure::ComplianceStorage,
             Self::Collections => Failure::CollectionQuery,
         }
     }

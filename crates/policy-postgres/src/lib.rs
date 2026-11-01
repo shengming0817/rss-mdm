@@ -70,8 +70,8 @@ const ADMISSION: Admission = Admission {
 /// Current Policy reference metadata for a tenant-bound composable read ($1 is the tenant).
 /// The projection exposes only Scope and rollout references, never action payloads.
 pub const GROUP_REFERENCE_FACTS_SQL: &str = r#"
-SELECT tenant_id,id,revision,state,jsonb_build_object('scope',definition->'scope','action',jsonb_build_object('rollout',jsonb_build_object('stages',
- coalesce((SELECT jsonb_agg(jsonb_build_object('scope',stage->'scope')) FROM jsonb_array_elements(coalesce(definition#>'{action,rollout,stages}','[]')) stage),'[]'::jsonb)))) AS definition
+SELECT tenant_id,id,revision,state,(definition->>'scope')::uuid AS scope_id,
+ ARRAY(SELECT DISTINCT (stage->>'scope')::uuid FROM jsonb_array_elements(coalesce(definition#>'{action,rollout,stages}','[]')) stage ORDER BY (stage->>'scope')::uuid) AS rollout_scope_ids
 FROM mdm_policy.policies WHERE tenant_id=$1::uuid
 "#;
 

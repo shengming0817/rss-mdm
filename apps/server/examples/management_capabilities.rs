@@ -18,10 +18,10 @@ fn main() {
         serde_json::to_string_pretty(&serde_json::json!({
             "resources":resources.into_values().collect::<Vec<_>>(),
             "directoryQueries":[
-                rss_mdm_inventory_service::groups::directory::schema(),
+                rss_mdm_group_service::directory::schema(),
                 &rss_mdm_scope_service::directory::SCHEMA,
                 &rss_mdm_policy_service::management::read::SCHEMA,
-                rss_mdm_inventory_service::compliance::directory::schema(),
+                rss_mdm_compliance_service::directory::schema(),
                 &rss_mdm_inventory_service::assets::saved_directory::SCHEMA,
                 &rss_mdm_software_service::management::directory::SOURCES,
                 &rss_mdm_software_service::management::publication::directory::PUBLICATIONS,

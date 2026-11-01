@@ -322,3 +322,64 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
     assert_eq!(native_notifications(&h, task).await?, (true, 1, 1));
     h.close().await
 }
+
+#[tokio::test]
+#[ignore = "T2: a real Script store acquisition failure survives another owner scan and relay, then clears only after its own successful scan"]
+async fn actual_owner_scan_is_required_to_clear_readiness_failure() -> Result<()> {
+    use rss_mdm_recovery_observation::Phase;
+    let h = Harness::open().await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_millis(50))
+        .connect_with(
+            h.c.inputs
+                .database("shared", "mdm_scheduler_runtime")
+                .options()?,
+        )
+        .await?;
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
+    let cancel = CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    let store = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let worker = script::worker::Worker::new(
+        h.a.scripts.clone(),
+        store,
+        Arc::new(tokio::sync::Semaphore::new(1)),
+        1,
+    )?;
+    let held = pool.acquire().await?;
+    let scope = script::wake::scope(h.c.tenant);
+    assert!(
+        worker
+            .recovery_store()
+            .claim_due(&scope, 1, Duration::from_secs(30), &control)
+            .await
+            .is_err()
+    );
+    let failed = worker.health().recovery;
+    assert!(matches!(failed, Phase::Failed(_)));
+    h.a.collection_work
+        .recovery_store()
+        .claim_due(
+            &collection::wake::scope(h.c.tenant),
+            1,
+            Duration::from_secs(30),
+            &control,
+        )
+        .await?;
+    worker.record_relay_health(&Ok(0));
+    assert_eq!(worker.health().recovery, failed);
+    drop(held);
+    assert!(
+        worker
+            .recovery_store()
+            .claim_due(&scope, 1, Duration::from_secs(30), &control)
+            .await?
+            .claims
+            .is_empty()
+    );
+    assert_eq!(worker.health().recovery, Phase::Healthy);
+    drop(worker);
+    pool.close().await;
+    h.close().await
+}

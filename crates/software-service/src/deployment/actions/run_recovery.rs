@@ -60,7 +60,7 @@ pub(crate) async fn active(tx: &mut PgTransaction<'_>, work: Work) -> Result<boo
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c| Box::pin(async move {
         match work {
-            Work::Run(id) => sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2 AND state->>'execution' IN('not_started','running','unknown') AND state->>'cancellation'<>'confirmed')")
+            Work::Run(id) => sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2 AND state->>'execution' IN('not_started','running','unknown','waiting_reboot') AND state->>'cancellation'<>'confirmed')")
                 .bind(tenant).bind(id).fetch_one(c).await,
         }
     })).await?)

@@ -109,7 +109,7 @@ impl From<rss_mdm_inventory_service::Error> for Error {
             I::Conflict => Self::Conflict,
             I::CommitUnknown => Self::CommitUnknown,
             I::RollbackFailed => Self::RollbackFailed,
-            I::NotFound | I::Group(_) => Self::NotFound,
+            I::NotFound => Self::NotFound,
             I::Audit(e) => e.as_ref().into(),
             I::Unavailable(f) => Self::Unavailable(match f {
                 rss_mdm_inventory_service::Failure::RequestDeadline => Failure::RequestDeadline,

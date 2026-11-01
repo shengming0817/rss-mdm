@@ -113,7 +113,7 @@ pub struct Service {
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
     pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) worker_concurrency: usize,
-    pub(crate) readiness: health::Readiness,
+    pub(crate) readiness: rss_mdm_recovery_observation::Readiness,
 }
 impl Service {
     pub fn new(
@@ -123,8 +123,11 @@ impl Service {
         worker_budget: Arc<tokio::sync::Semaphore>,
         worker_concurrency: usize,
     ) -> Self {
-        let readiness = health::Readiness::default();
-        readiness.inputs(Ok(()));
+        let readiness = rss_mdm_recovery_observation::Readiness::new(
+            recovery_scope(transactions.tenant),
+            true,
+            false,
+        );
         Self {
             transactions,
             outbox,
@@ -139,7 +142,7 @@ impl Service {
     ) -> impl rss_reconcile::DurableStore<Claim = rss_reconcile_postgres::PgClaim> + '_ {
         health::ObservedStore(self)
     }
-    pub fn health(&self) -> health::Health {
+    pub fn health(&self) -> rss_mdm_recovery_observation::Health {
         self.readiness.health()
     }
 }

@@ -267,13 +267,14 @@ pub(crate) async fn changes(
     tenant: TenantId,
 ) -> Result<Arc<dyn rss_mdm_policy_service::inputs::ExecutionChanges>, crate::Error> {
     let messaging = rss_reconcile_postgres::PgMessagingStore::new(
-        runtime,
+        runtime.clone(),
         tenant,
         rss_mdm_policy_service::transaction::deadline(),
     )
     .await
     .map_err(|_| crate::Error::Unavailable(crate::Failure::PlanningStorage))?;
     Ok(Arc::new(super::policy_ports::Changes {
+        reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime, tenant),
         messaging,
         targets: Arc::new(rss_mdm_scope_service::channels::ChannelTargets {
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),

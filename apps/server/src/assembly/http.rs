@@ -138,6 +138,14 @@ pub(crate) fn from_state(
         execution: state.execution.clone(),
         software: state.software.service.clone(),
         installation: state.registration.native.clone(),
+        scripts: state.script_work.clone(),
+        collections: state.collection_work.clone(),
+        enrollment: state.registration.worker.clone(),
+        access_tasks: state.access_execution.worker.clone(),
+        credential_tasks: state
+            .credential_execution
+            .as_ref()
+            .map(|v| v.worker.clone()),
         recovery: state
             .credential_execution
             .as_ref()

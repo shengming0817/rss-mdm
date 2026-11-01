@@ -117,7 +117,6 @@ impl From<rss_mdm_inventory_service::Error> for Error {
     fn from(e: rss_mdm_inventory_service::Error) -> Self {
         use rss_mdm_inventory_service::{Error as I, Failure as F};
         match e {
-            I::Group(m) => Self::Group(m),
             I::Malformed => Self::Malformed,
             I::Unauthorized => Self::Unauthorized,
             I::Forbidden => Self::Forbidden,
@@ -135,7 +134,7 @@ impl From<rss_mdm_inventory_service::Error> for Error {
                 F::AssetsStorage => crate::Failure::AssetsStorage,
                 F::Clock => crate::Failure::Clock,
                 F::CollectionQuery => crate::Failure::CollectionQuery,
-                F::ComplianceStorage => crate::Failure::ComplianceStorage,
+
                 F::PlanningStorage => crate::Failure::PlanningStorage,
                 F::InventoryQuery => crate::Failure::InventoryQuery,
                 F::ManualQuery => crate::Failure::ManualQuery,
@@ -669,6 +668,85 @@ mod tests {
                 serde_json::to_value(diagnostic).unwrap(),
                 serde_json::json!({"kind":"unavailable","reason":reason})
             );
+        }
+    }
+}
+
+impl From<rss_mdm_group_service::Error> for Error {
+    fn from(value: rss_mdm_group_service::Error) -> Self {
+        use rss_mdm_group_service::{Error as E, Failure as F};
+        match value {
+            E::Group(missing) => Self::Group(missing),
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::NotFound => Self::NotFound,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Audit(e) => Self::from(e.as_ref()),
+            E::Unavailable(f) => Self::Unavailable(match f {
+                F::AssetBytesLimit => crate::Failure::AssetBytesLimit,
+                F::AssetObjectLimit => crate::Failure::AssetObjectLimit,
+                F::AssetSourceLimit => crate::Failure::AssetSourceLimit,
+                F::Capacity => crate::Failure::Capacity,
+                F::Clock => crate::Failure::Clock,
+                F::Database => crate::Failure::Database,
+                F::GroupStorage => crate::Failure::PlanningStorage,
+                F::PlanningStorage => crate::Failure::PlanningStorage,
+                F::RequestDeadline => crate::Failure::RequestDeadline,
+                F::Runtime => crate::Failure::Runtime,
+            }),
+        }
+    }
+}
+impl From<rss_mdm_group_service::transaction::Fault> for Error {
+    fn from(value: rss_mdm_group_service::transaction::Fault) -> Self {
+        match value {
+            rss_mdm_group_service::transaction::Fault::Request(e) => e.into(),
+            rss_mdm_group_service::transaction::Fault::Storage(_)
+            | rss_mdm_group_service::transaction::Fault::Sql(_) => {
+                Self::Unavailable(crate::Failure::PlanningStorage)
+            }
+        }
+    }
+}
+
+impl From<rss_mdm_compliance_service::Error> for Error {
+    fn from(value: rss_mdm_compliance_service::Error) -> Self {
+        use rss_mdm_compliance_service::{Error as E, Failure as F};
+        match value {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::NotFound => Self::NotFound,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Audit(e) => Self::from(e.as_ref()),
+            E::Unavailable(f) => Self::Unavailable(match f {
+                F::AssetBytesLimit => crate::Failure::AssetBytesLimit,
+                F::AssetObjectLimit => crate::Failure::AssetObjectLimit,
+                F::AssetSourceLimit => crate::Failure::AssetSourceLimit,
+                F::AssetsStorage => crate::Failure::AssetsStorage,
+                F::Capacity => crate::Failure::Capacity,
+                F::Clock => crate::Failure::Clock,
+                F::ComplianceStorage => crate::Failure::ComplianceStorage,
+                F::Database => crate::Failure::Database,
+                F::PlanningStorage => crate::Failure::PlanningStorage,
+                F::RequestDeadline => crate::Failure::RequestDeadline,
+            }),
+        }
+    }
+}
+impl From<rss_mdm_compliance_service::transaction::Fault> for Error {
+    fn from(value: rss_mdm_compliance_service::transaction::Fault) -> Self {
+        match value {
+            rss_mdm_compliance_service::transaction::Fault::Request(e) => e.into(),
+            rss_mdm_compliance_service::transaction::Fault::Storage(_)
+            | rss_mdm_compliance_service::transaction::Fault::Sql(_) => {
+                Self::Unavailable(crate::Failure::ComplianceStorage)
+            }
         }
     }
 }

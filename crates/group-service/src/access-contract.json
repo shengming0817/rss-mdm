@@ -1,0 +1,8 @@
+{
+  "tables": [],
+  "functions": [],
+  "external_relations": [
+    "mdm_assets.group_fields"
+  ],
+  "verified_schemas": []
+}

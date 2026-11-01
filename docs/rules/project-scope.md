@@ -53,3 +53,11 @@ ActorId。结构守卫限制原始字段写入这些 owner。事实构造失败�
 事务执行与结算归 RSS。审计必要性由产品 AuditIntent 声明，与事务结果独立。普通读取、轮询、常规遥测和安装包下载不写管理审计；普通拒绝使用有界日志和计数。关键变更保留原子业务事实，敏感读取、关键越权和多阶段最终结果在受保护响应交付前可靠提交。SensitiveAction 单源标识凭据披露、私密证书导出、审计检索、脚本内容及资产/遥测批量导出；业务动作名称仍归各 owner。
 
 `mail-service` 仅持有 SMTP 材料、资格和固定测试投递，不拥有通知订阅产品。管理入口复用产品授权和 Audit，网络资格由显式一次性维护命令核验。
+
+## 恢复观测共享
+
+`rss-mdm-recovery-observation` 只拥有进程内受控任务状态、精确 scope 的扫描结果、目标未结故障和适用的 relay/input 观测。
+透明 store 包装只记录真实 `claim_due` 和 `finish` 结果；确认 Converged/Reobserve 才清除同一目标故障。
+业务循环、timer、预算、资格、事务、派发和结算策略继续由各 owner 持有。`task-state` 保持纯状态转换。
+
+Group 与 Compliance 应用分别归 `group-service`、`compliance-service`，拥有各自 DTO、审计结算、任务、目录、启动校验和错误。Inventory 不再导出它们；固定资产快照与有界变更读取由绑定 runtime / tenant 的 `SnapshotReader` 提供。Group 到 Compliance 的失效通过 `compliance-postgres` 借用原事务完成，服务间不互相依赖。

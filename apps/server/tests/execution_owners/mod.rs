@@ -269,3 +269,7 @@ impl Harness {
 }
 
 mod script_cases;
+
+mod scheduled;
+
+mod command_recovery;

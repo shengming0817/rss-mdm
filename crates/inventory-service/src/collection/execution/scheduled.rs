@@ -4,6 +4,76 @@ use crate::{Error, transaction::Result};
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 
+/// Ephemeral proof of a current, enabled version owned by this scheduler.
+/// Private fields and no deserialization prevent persisted work from becoming authority.
+pub struct VerifiedNativeCollectionVersion<'a> {
+    reader: &'a rss_mdm_policy_postgres::PolicyReader,
+    version: Uuid,
+}
+impl<'a> VerifiedNativeCollectionVersion<'a> {
+    pub async fn verify_in(
+        reader: &'a rss_mdm_policy_postgres::PolicyReader,
+        tx: &mut PgTransaction<'_>,
+        version: Uuid,
+    ) -> Result<Option<Self>> {
+        let stored_version = crate::transaction::checked(reader.version_in(tx, version).await?)?
+            .ok_or(crate::Error::Unavailable(crate::Failure::PlanningStorage))?;
+        if stored_version.action_kind != rss_mdm_policy::ActionKind::NativeCollection {
+            return Ok(None);
+        }
+        let frozen: super::frozen::Published =
+            crate::transaction::stored(serde_json::from_value(stored_version.frozen))?;
+        if !matches!(frozen, super::frozen::Published::NativeCollection { .. }) {
+            return Err((crate::Error::Unavailable(crate::Failure::PlanningStorage)).into());
+        }
+        let policy =
+            crate::transaction::checked(reader.locked_in(tx, stored_version.policy).await?)?
+                .ok_or(crate::Error::Unavailable(crate::Failure::PlanningStorage))?;
+        if policy.version != version {
+            return Ok(None);
+        }
+        if policy.definition.action.kind() != rss_mdm_policy::ActionKind::NativeCollection {
+            return Err((crate::Error::Unavailable(crate::Failure::PlanningStorage)).into());
+        }
+        if !policy.state.is_enabled() {
+            return Ok(None);
+        }
+        Ok(Some(Self { reader, version }))
+    }
+    /// Revalidate on the borrowing transaction; a proof cannot act as a cached authorization lease.
+    pub async fn wake_assignment_in(
+        &self,
+        reconcile: &rss_reconcile_postgres::PgMessagingStore,
+        tx: &mut PgTransaction<'_>,
+        target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
+    ) -> Result<()> {
+        if target.channel.as_str() != "mdm" {
+            return Ok(());
+        }
+        let work = Work {
+            version: self.version,
+            registration: target.registration_id,
+            generation: target.generation,
+        };
+        if let Some(device) = device_in(self.reader, tx, work).await? {
+            if device != target.device {
+                return Err(Error::Unavailable(crate::Failure::PlanningStorage).into());
+            }
+        }
+        wake_in(
+            reconcile,
+            tx,
+            self,
+            Work {
+                version: self.version,
+                registration: target.registration_id,
+                generation: target.generation,
+            },
+        )
+        .await
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Work {
     pub version: Uuid,
@@ -31,8 +101,15 @@ impl Work {
 pub(crate) async fn wake_in(
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
+    verified: &VerifiedNativeCollectionVersion<'_>,
     work: Work,
 ) -> Result<()> {
+    if verified.version != work.version {
+        return Err((crate::Error::Unavailable(crate::Failure::PlanningStorage)).into());
+    }
+    if device_in(verified.reader, tx, work).await?.is_none() {
+        return Ok(());
+    }
     let target = rss_reconcile::Target::new(super::wake::scope(tx.tenant_id()), work.entity())
         .map_err(|_| Error::Malformed)?;
     reconcile
@@ -47,15 +124,24 @@ pub(crate) async fn wake_in(
     Ok(())
 }
 
-pub(crate) async fn device_in(tx: &mut PgTransaction<'_>, work: Work) -> Result<Option<String>> {
+pub(crate) async fn device_in(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    work: Work,
+) -> Result<Option<String>> {
+    if VerifiedNativeCollectionVersion::verify_in(reader, tx, work.version)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    if work.generation <= 0 || work.registration.is_nil() {
+        return Err((crate::Error::Unavailable(crate::Failure::PlanningStorage)).into());
+    }
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c| Box::pin(async move {
-        // The existing Policy kernel holds a shared barrier without granting
-        // Execution UPDATE privilege on authored policies. Re-read after that lock.
-        sqlx::query("SELECT mdm_policy.lock_policy(policy) FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(&tenant).bind(work.version).execute(&mut *c).await?;
-        sqlx::query_scalar("SELECT r.device FROM mdm_access.registrations r JOIN mdm_policy.policies p ON p.tenant_id=r.tenant_id AND p.current_version=$2 AND p.state='enabled' WHERE r.tenant_id=$1::uuid AND r.id=$3 AND r.generation=$4 AND r.state='active'")
-            .bind(tenant).bind(work.version).bind(work.registration).bind(work.generation).fetch_optional(c).await
+        sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active' AND purpose='primary' AND channel='mdm'")
+            .bind(tenant).bind(work.registration).bind(work.generation).fetch_optional(c).await
     })).await?)
 }
 
@@ -65,7 +151,7 @@ pub(crate) async fn advance_in(
     work: Work,
     run: Uuid,
 ) -> Result<()> {
-    let Some(device) = device_in(tx, work).await? else {
+    let Some(device) = device_in(&service.transactions.policy_reader, tx, work).await? else {
         return Ok(());
     };
     let plan = policy::read_in(&service.transactions, tx, work.version).await?;
@@ -93,7 +179,7 @@ pub(crate) async fn delay_in(
     tx: &mut PgTransaction<'_>,
     work: Work,
 ) -> Result<Option<std::time::Duration>> {
-    let Some(device) = device_in(tx, work).await? else {
+    let Some(device) = device_in(&service.transactions.policy_reader, tx, work).await? else {
         return Ok(None);
     };
     let plan = policy::read_in(&service.transactions, tx, work.version).await?;
@@ -143,28 +229,4 @@ fn bounded_delay(delay: std::time::Duration) -> std::time::Duration {
         std::time::Duration::from_millis(1),
         std::time::Duration::from_secs(86400),
     )
-}
-
-/// Assignment updates wake their exact immutable registration generation.
-pub async fn wake_assignment_in(
-    reconcile: &rss_reconcile_postgres::PgMessagingStore,
-    tx: &mut PgTransaction<'_>,
-    version: Uuid,
-    target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
-) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    let native:bool=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND frozen->>'kind'='native_collection')").bind(tenant).bind(version).fetch_one(c).await})).await?;
-    if native {
-        wake_in(
-            reconcile,
-            tx,
-            Work {
-                version,
-                registration: target.registration_id,
-                generation: target.generation,
-            },
-        )
-        .await?;
-    }
-    Ok(())
 }

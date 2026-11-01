@@ -182,7 +182,11 @@ CREATE TABLE mdm_software_deployment.policy_recovery (
     input_consumed bigint NOT NULL DEFAULT 0 CHECK(input_consumed>=0),
     input_window bigint NOT NULL DEFAULT 0 CHECK(input_window>=input_consumed),
     stats_revision bigint NOT NULL DEFAULT 0 CHECK(stats_revision>=0),
-    target_after text,
+    dispatch_revision bigint NOT NULL DEFAULT 0,
+    dispatch_consumed bigint NOT NULL DEFAULT 0,
+    dispatch_window bigint NOT NULL DEFAULT 0,
+    dispatch_after text,
+    CHECK(dispatch_revision>=dispatch_window AND dispatch_window>=dispatch_consumed AND dispatch_consumed>=0),
     tenant_id uuid NOT NULL,
     policy uuid NOT NULL,
     recovery_after uuid

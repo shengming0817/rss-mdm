@@ -362,3 +362,17 @@ SELECT r.tenant_id,r.id,r.revision,r.enabled,
  ARRAY(SELECT e.group_id FROM mdm_compliance.groups e WHERE(e.tenant_id,e.rule_id)=(r.tenant_id,r.id) ORDER BY e.group_id) AS group_ids
 FROM mdm_compliance.rules r WHERE r.tenant_id=$1::uuid
 "#;
+
+/// Invalidate dependent assessments and notify their owner in the caller's transaction.
+/// The durable rule state is authoritative; notification only accelerates discovery.
+pub async fn group_changed_in(
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    group: uuid::Uuid,
+) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |c| Box::pin(async move {
+  invalidate_group(c, tenant, group).await?;
+  sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'compliance')").execute(c).await?;
+  Ok(())
+ })).await
+}

@@ -240,7 +240,70 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     .bind(id)
     .fetch_one(&c.operator)
     .await?;
-    assert_eq!(stored, serde_json::to_value(state)?);
+    assert_eq!(stored, serde_json::to_value(&state)?);
+    // A new owner takes the Policy, while the original Software run retains its uncertainty.
+    let next = Uuid::new_v4();
+    let actor = rss_mdm_authorization_service::Actor::Account {
+        user: c.user(Uuid::new_v4()),
+    };
+    let frozen = serde_json::to_value(
+        rss_mdm_device_service::control::frozen::Frozen::UnmanageDevice {
+            schedule: schedule(),
+            run_lifetime_seconds: 300,
+            actor,
+        },
+    )?;
+    let mut changed = command::seed_transaction(&c).await?;
+    sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,2,'unmanage_device',$4,$5)").bind(c.tenant.to_string()).bind(next).bind(ap).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *changed).await?;
+    let action = serde_json::to_value(rss_mdm_policy::Action::UnmanageDevice {
+        schedule: schedule(),
+        run_lifetime_seconds: 300,
+    })?;
+    sqlx::query("UPDATE mdm_policy.policies SET current_version=$3,version_number=2,revision=revision+1,definition=jsonb_set(definition,'{action}',$4) WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(ap).bind(next).bind(action).execute(&mut *changed).await?;
+    changed.commit().await?;
+    owner::transaction::inspect(
+        &a.resources.storage.runtime,
+        c.tenant,
+        a.software.service.as_ref(),
+        move |service, tx| {
+            Box::pin(async move { owner::actions::recovery::recover_one(service, tx, id).await })
+        },
+    )
+    .await?;
+    let recovered:rss_mdm_task_state::RunState=serde_json::from_value(sqlx::query_scalar("SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?)?;
+    assert_eq!(recovered.execution, rss_mdm_task_state::Execution::Unknown);
+    assert_eq!(
+        recovered.cancellation,
+        rss_mdm_task_state::Cancellation::Requested
+    );
+    assert_eq!(recovered.attempt(), state.attempt());
+    // The same exit also retains waiting-for-reboot evidence rather than manufacturing success.
+    let mut reboot = rss_mdm_task_state::RunState::new(now() + 300, now())?;
+    reboot.claim(attempt, now())?;
+    reboot.received(attempt, now())?;
+    reboot.start(attempt, now())?;
+    reboot.waiting_reboot(attempt)?;
+    let mut tx = command::seed_transaction(&c).await?;
+    sqlx::query("UPDATE mdm_software_deployment.action_runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(reboot)?).execute(&mut *tx).await?;
+    tx.commit().await?;
+    owner::transaction::inspect(
+        &a.resources.storage.runtime,
+        c.tenant,
+        a.software.service.as_ref(),
+        move |service, tx| {
+            Box::pin(async move { owner::actions::recovery::recover_one(service, tx, id).await })
+        },
+    )
+    .await?;
+    let recovered:rss_mdm_task_state::RunState=serde_json::from_value(sqlx::query_scalar("SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?)?;
+    assert_eq!(
+        recovered.execution,
+        rss_mdm_task_state::Execution::WaitingReboot
+    );
+    assert_eq!(
+        recovered.cancellation,
+        rss_mdm_task_state::Cancellation::Requested
+    );
     Fixture::close(a).await?;
     c.close().await;
     Ok(())
@@ -295,6 +358,7 @@ async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Resu
     assert_eq!(current["stages"][0]["totalTargets"], 1);
     assert_eq!(current["stages"][0]["verifiedSuccess"], 0);
     assert_eq!(current["stages"][1]["open"], false);
+    let dispatch_before:i64=sqlx::query_scalar("SELECT dispatch_revision FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2").bind(c.tenant.to_string()).bind(p).fetch_one(&c.operator).await?;
     // The actual reducer consumes one legal completed original effect.
     verified(&c, &a, &resource, id).await?;
     reduce(&c, &a, p, v).await?;
@@ -306,6 +370,11 @@ async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Resu
     )?;
     assert_eq!(verified["stages"][0]["verifiedSuccess"], 1);
     assert_eq!(verified["stages"][1]["open"], true);
+    let dispatch_after:i64=sqlx::query_scalar("SELECT dispatch_revision FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2").bind(c.tenant.to_string()).bind(p).fetch_one(&c.operator).await?;
+    assert!(
+        dispatch_after > dispatch_before,
+        "a gate transition must durably reopen dispatch even without a notification receiver"
+    );
     // Hold the stats relation so the reader has already read Scope before a new revision commits.
     let mut change = command::seed_transaction(&c).await?;
     sqlx::query("LOCK TABLE mdm_software_deployment.software_stage_stats IN ACCESS EXCLUSIVE MODE")

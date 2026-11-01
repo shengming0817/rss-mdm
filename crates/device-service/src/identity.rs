@@ -400,11 +400,11 @@ pub(crate) async fn endpoint_page(
             .collect(),
     )
     .map_err(|_| Error::Storage)?;
-    let reader = rss_mdm_inventory_service::assets::planning::SnapshotReader { tenant };
-    let devices = reader
-        .scalar_devices_on(c, cut, ids, &catalog)
-        .await
-        .map_err(|_| Error::Storage)?;
+    let devices = rss_mdm_inventory_service::assets::raw_snapshot::scalar_devices_on(
+        c, tenant, cut, ids, &catalog,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
     let primary = endpoints::page_at(c, &tenant.to_string(), cut, ids).await?;
     endpoint_facts(&devices.iter().collect::<Vec<_>>(), primary)
 }

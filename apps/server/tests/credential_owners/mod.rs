@@ -27,7 +27,7 @@ fn keys(active: &str) -> Result<recovery::KeyRing> {
         ],
     )?)
 }
-fn protection(c: &Context, active: &str) -> Result<Arc<recovery::Protection>> {
+pub(super) fn protection(c: &Context, active: &str) -> Result<Arc<recovery::Protection>> {
     let dir = c.inputs.directory.join("task-trust-ca");
     let recipient = recovery::Recipient::from_pem(
         &std::fs::read(dir.join("ca.pem"))?,

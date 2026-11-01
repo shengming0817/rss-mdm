@@ -27,9 +27,9 @@ impl BackgroundConfig {
         self.device_concurrency as u32 + 8
     }
     pub(crate) fn inventory_connections(&self) -> u32 {
-        (rss_mdm_inventory_service::groups::runtime::CONCURRENCY
+        (rss_mdm_group_service::runtime::CONCURRENCY
             + rss_mdm_inventory_service::assets::runtime::CONCURRENCY
-            + rss_mdm_inventory_service::compliance::runtime::CONCURRENCY) as u32
+            + rss_mdm_compliance_service::runtime::CONCURRENCY) as u32
             + 2
     }
     pub(crate) fn scope_connections(&self) -> u32 {
