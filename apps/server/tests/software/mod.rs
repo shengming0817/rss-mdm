@@ -42,14 +42,20 @@ async fn count(c: &Context) -> Result<i64> {
 #[ignore = "T2: independent input owners commit their first suspension and distinct audit facts in the same tenant"]
 async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let runtime = planning::owner(&c, "mdm_command_runtime").await?;
-    let audit = audit(&c);
+    let a = command::open(&c, false).await?;
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
+    let store = c
+        .audit
+        .on_runtime(a.runtime.clone(), c.tenant, &budget.control())
+        .await?;
+    let request = audit(&c);
     rss_mdm_execution_service::transaction::run(
-        &runtime.audit,
-        &runtime.runtime,
+        &store,
+        &a.runtime,
         c.tenant,
-        &audit,
-        &runtime.audit,
+        &request,
+        &store,
         |store, tx| {
             Box::pin(
                 async move { rss_mdm_execution_service::source_changes::fail_in(tx, store).await },
@@ -57,16 +63,19 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         },
     )
     .await?;
+    request.finalize(None);
     for _ in 0..2 {
+        let request = audit(&c);
         owner::transaction::run(
-            &runtime.audit,
-            &runtime.runtime,
+            &store,
+            &a.runtime,
             c.tenant,
-            &audit,
-            &runtime.audit,
+            &request,
+            &store,
             |store, tx| Box::pin(async move { owner::source_changes::fail_in(tx, store).await }),
         )
         .await?;
+        request.finalize(None);
     }
     let states: Vec<(String, i64)> = sqlx::query_as(
         "SELECT failure,failure_generation FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid UNION ALL SELECT failure,failure_generation FROM mdm_software_deployment.device_source_dispatch WHERE tenant_id=$1::uuid",
@@ -76,7 +85,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         "SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business'",
     ).bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(facts, 2);
-    runtime.runtime.close().await;
+    command::close(a).await?;
     c.close().await;
     Ok(())
 }
