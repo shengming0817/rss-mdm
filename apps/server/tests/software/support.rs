@@ -177,18 +177,18 @@ pub fn stage(scope: Uuid) -> rss_mdm_policy::SoftwareRolloutStage {
         minimum_verified_percent: None,
     }
 }
-pub async fn accept(
+pub(super) async fn accept(
     c: &Context,
-    a: &super::super::execution::Assembly,
+    a: &super::Fixture,
     policy: Uuid,
     target: &owner::Target,
     id: Uuid,
 ) -> Result<w::PolicyEventDecision> {
     decision(c, a, policy, target, id, false, None).await
 }
-pub async fn decision(
+pub(super) async fn decision(
     c: &Context,
-    a: &super::super::execution::Assembly,
+    a: &super::Fixture,
     policy: Uuid,
     target: &owner::Target,
     id: Uuid,
@@ -198,19 +198,20 @@ pub async fn decision(
     let audit = Arc::new(
         c.audit
             .on_runtime(
-                a.runtime.clone(),
+                a.resources.storage.runtime.clone(),
                 c.tenant,
                 &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6))
                     .control(),
             )
             .await?,
     );
-    let reader = rss_mdm_policy_postgres::PolicyReader::bind(a.runtime.clone(), c.tenant);
+    let reader =
+        rss_mdm_policy_postgres::PolicyReader::bind(a.resources.storage.runtime.clone(), c.tenant);
     let request = audit_request(c);
     let saved = std::sync::Mutex::new(None);
     let result = owner::transaction::run(
         &audit,
-        &a.runtime,
+        &a.resources.storage.runtime,
         c.tenant,
         &request,
         (
@@ -263,16 +264,16 @@ pub async fn decision(
         other => Ok(other?),
     }
 }
-pub async fn verified(
+pub(super) async fn verified(
     c: &Context,
-    a: &super::super::execution::Assembly,
+    a: &super::Fixture,
     resource: &r::Version,
     id: Uuid,
 ) -> Result<()> {
     use rss_mdm_software_service::preparation::{Delivery, Selection, Target, evidence};
     let prepare = a.software.materials.inputs.software.clone();
     let steps = owner::transaction::inspect(
-        &a.runtime,
+        &a.resources.storage.runtime,
         c.tenant,
         (
             prepare,

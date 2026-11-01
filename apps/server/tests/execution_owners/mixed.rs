@@ -130,8 +130,8 @@ async fn agent_collection_preview_requires_host_signing() -> Result<()> {
     use rss_mdm_authorization_service::Permission;
     use rss_mdm_management_http::execution::task_reads::Reads;
     let h = Harness::open().await?;
-    let unsigned = command::open(&h.c, false).await?;
-    assert!(unsigned.signing.loaded_key().is_none());
+    let unsigned = Fixture::open(&h.c, false).await?;
+    assert!(unsigned.resources.signing.loaded_key().is_none());
     let (definition, _, template) = agent(&h)?;
     let announcement = w::TaskClaimRequest::new(
         Uuid::new_v4(),
@@ -202,6 +202,6 @@ async fn agent_collection_preview_requires_host_signing() -> Result<()> {
         "preview error: {:?}",
         result.err()
     );
-    command::close(unsigned).await?;
+    Fixture::close(unsigned).await?;
     h.close().await
 }

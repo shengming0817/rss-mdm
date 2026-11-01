@@ -1,6 +1,50 @@
 //! Content management borrows its own runtime and the established identity ports.
 use crate::{Error, Failure, identity::Identity, owner_storage::OwnerRuntime};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
+pub(crate) struct Resource(pub Arc<rss_mdm_content_service::Store>);
+impl rss_runtime::ManagedResource for Resource {
+    fn name(&self) -> &str {
+        "content-store"
+    }
+    async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+}
+pub(crate) async fn open(
+    config: &crate::config::Config,
+    protection: Arc<rss_mdm_native_protection::Protector>,
+) -> std::result::Result<Option<Arc<rss_mdm_content_service::Store>>, Error> {
+    let Some(c) = config.content.as_ref() else {
+        return Ok(None);
+    };
+    let bad = || Error::Configuration(crate::ConfigIssue::Content);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(crate::background::CONTENT_CONNECTIONS)
+        .acquire_timeout(Duration::from_secs(6))
+        .connect_with(config.business_databases.content.options()?)
+        .await
+        .map_err(|_| bad())?;
+    match rss_mdm_content_service::Store::open(
+        protection,
+        c,
+        &config.identity.tenant_id,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+        pool.clone(),
+    )
+    .await
+    {
+        Ok(store) => Ok(Some(store)),
+        Err(e) => {
+            pool.close().await;
+            Err(e.into())
+        }
+    }
+}
+
 pub(crate) async fn access(
     owner: &OwnerRuntime,
     identity: &Identity,

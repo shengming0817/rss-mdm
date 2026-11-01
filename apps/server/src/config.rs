@@ -154,7 +154,7 @@ pub struct Config {
     pub access_database: Database,
     pub runtime_database: Database,
     pub scope_group_database: Database,
-    pub execution: ExecutionStorage,
+    pub command_database: Database,
     pub(crate) content: Option<rss_mdm_content_service::Config>,
     pub(crate) task_signing: Option<crate::task_signing::Config>,
     pub(crate) storage_binding: crate::owner_storage::StorageBinding,
@@ -245,12 +245,12 @@ impl Config {
         if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
             return Err(Error::Configuration(ConfigIssue::Tenant));
         }
-        if self.execution.database.user != "mdm_command_runtime"
-            || self.execution.database.host != self.access_database.host
-            || self.execution.database.port != self.access_database.port
-            || self.execution.database.name != self.access_database.name
+        if self.command_database.user != "mdm_command_runtime"
+            || self.command_database.host != self.access_database.host
+            || self.command_database.port != self.access_database.port
+            || self.command_database.name != self.access_database.name
         {
-            return Err(Error::Configuration(ConfigIssue::Execution));
+            return Err(Error::Configuration(ConfigIssue::CommandStorage));
         }
         self.business_databases.validate(&self.access_database)?;
         if self.publication.database.user != "mdm_software_driver"
@@ -355,9 +355,3 @@ pub(crate) fn secret(path: &Path) -> Result<Zeroizing<String>, Error> {
 #[cfg(test)]
 #[path = "../tests/config/unit.rs"]
 mod tests;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExecutionStorage {
-    pub database: Database,
-}

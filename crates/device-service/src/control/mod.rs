@@ -29,7 +29,6 @@ pub mod actions;
 mod apple;
 pub mod health;
 mod input_storage;
-mod lifecycle;
 mod retirement;
 mod windows_wake;
 pub use retirement::retire_in;
@@ -43,7 +42,6 @@ pub mod recovery;
 
 mod service;
 pub mod storage;
-pub use lifecycle::Resource;
 
 use rss_device_command as dc;
 use rss_device_command::Store;

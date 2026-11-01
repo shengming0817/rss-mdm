@@ -1,9 +1,11 @@
 //! Agent owns the authenticated claim/signature/attempt seam; no Policy publication journey.
+mod fixture;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     device_material_support as material,
 };
 use anyhow::Result;
+use fixture::Fixture;
 use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use serde_json::json;
@@ -96,11 +98,11 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         .fetch_one(&c.operator)
     };
     let untouched = state(sentinel).await?;
-    let a = command::open(&c, true).await?;
+    let a = Fixture::open(&c, true).await?;
     let audit = Arc::new(
         c.audit
             .on_runtime(
-                a.runtime.clone(),
+                a.resources.storage.runtime.clone(),
                 c.tenant,
                 &rss_mdm_audit_integration::budget::AuditBudget::new(
                     std::time::Duration::from_secs(5),
@@ -110,16 +112,16 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
             .await?,
     );
     let delivery = rss_mdm_agent_channel::delivery::Delivery {
-        runtime: a.runtime.clone(),
+        runtime: a.resources.storage.runtime.clone(),
         tenant: c.tenant,
         audit,
-        signing: a.signing.clone(),
+        signing: a.resources.signing.clone(),
         tasks: Arc::new(crate::assembly::agent_tasks::AgentTasks {
             access: a.access_execution.service.clone(),
-            credentials: a.credential_execution.as_ref().map(|v| v.tasks.clone()),
+            credentials: None,
             software: a.software.service.clone(),
             registration: a.registration.enrollment.clone(),
-            content: a.content.clone(),
+            content: None,
             requests: a.self_service.clone(),
             execution: a.service.clone(),
             scripts: a.scripts.clone(),
@@ -178,7 +180,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
     .await?;
     assert_eq!(count, 1);
     drop(delivery);
-    command::close(a).await?;
+    Fixture::close(a).await?;
     c.close().await;
     Ok(())
 }

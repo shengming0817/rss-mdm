@@ -272,7 +272,9 @@ impl From<rss_mdm_device_service::control::Error> for Error {
 
             E::Configuration(c) => Self::Configuration(match c {
                 rss_mdm_device_service::control::ConfigIssue::Audit => ConfigIssue::Audit,
-                rss_mdm_device_service::control::ConfigIssue::Execution => ConfigIssue::Execution,
+                rss_mdm_device_service::control::ConfigIssue::CommandStorage => {
+                    ConfigIssue::CommandStorage
+                }
                 rss_mdm_device_service::control::ConfigIssue::Content => ConfigIssue::Content,
                 rss_mdm_device_service::control::ConfigIssue::Publication => {
                     ConfigIssue::Publication
@@ -539,7 +541,9 @@ impl From<rss_mdm_policy_service::Error> for Error {
             P::Unsupported => Self::Unsupported,
             P::Unavailable(f) => match f {
                 F::Preparation => Self::Unavailable(Failure::PlanningStorage),
-                F::PreparationConfiguration => Self::Configuration(crate::ConfigIssue::Execution),
+                F::PreparationConfiguration => {
+                    Self::Configuration(crate::ConfigIssue::CommandStorage)
+                }
                 F::Inventory(f) => rss_mdm_inventory_service::Error::Unavailable(f).into(),
                 F::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
                 F::AuditContract => Self::Unavailable(Failure::AuditContract),

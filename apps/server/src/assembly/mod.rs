@@ -17,9 +17,10 @@ use crate::{
 };
 use std::sync::Arc;
 
+pub(crate) mod collection;
 pub(crate) mod content;
-pub(crate) mod execution;
-mod host_storage;
+pub(crate) mod device_control;
+pub(crate) mod host_storage;
 pub(crate) mod http;
 pub(crate) mod inventory;
 mod native_ownership;
@@ -27,7 +28,9 @@ pub(crate) mod policy;
 mod policy_ports;
 pub(crate) mod publication;
 pub(crate) mod resource;
+pub(crate) mod script;
 pub(crate) mod software;
+pub(crate) mod task_trust;
 pub(crate) mod webhooks;
 pub(crate) struct Assembly {
     pub(crate) operation_reads: Arc<operation_reads::Operations>,
@@ -99,7 +102,30 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) execution: crate::assembly::execution::Assembly,
+    pub(crate) access_execution: access_execution::Assembly,
+    pub(crate) credential_execution: Option<credential_execution::Assembly>,
+    pub(crate) credential_receipts:
+        Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
+    pub(crate) software: software::Assembly,
+    pub(crate) registration: registration::Assembly,
+    pub(crate) read_pool: sqlx::PgPool,
+    pub(crate) configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
+    pub(crate) signing: Arc<rss_mdm_task_trust::Signing>,
+    pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
+    pub(crate) channels: Arc<crate::channel_status::Channels>,
+    pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
+    pub(crate) bootstrap:
+        Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
+    pub(crate) control: Arc<rss_mdm_device_service::control::Service>,
+    pub(crate) self_service: Arc<self_service::Requests>,
+    pub(crate) scripts: Arc<rss_mdm_script_service::ScriptService>,
+    pub(crate) collections:
+        Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
+    pub(crate) task_reads: Arc<task_reads::Reads>,
+    pub(crate) queries: Arc<rss_mdm_device_service::control::queries::Queries>,
+    pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
+    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub(crate) protocol_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
     pub(crate) access: Arc<Database>,
@@ -156,7 +182,27 @@ pub(crate) async fn from_compiled(
         timeline,
         associations,
         audit_store,
-        execution,
+        access_execution,
+        credential_execution,
+        credential_receipts,
+        software,
+        registration,
+        read_pool,
+        configuration,
+        signing,
+        task_trust,
+        channels,
+        providers,
+        bootstrap,
+        control: execution,
+        self_service,
+        scripts,
+        collections,
+        task_reads,
+        queries,
+        protection,
+        content: content_writer,
+        protocol_runtime,
         clock,
         monotonic,
         access,
@@ -176,32 +222,6 @@ pub(crate) async fn from_compiled(
         compliance,
         identity,
     } = dependencies;
-    let crate::assembly::execution::Assembly {
-        credential_receipts,
-        access_execution,
-        credential_execution,
-        materials: _,
-        software,
-        registration,
-        configuration,
-        read_pool,
-        signing,
-        task_trust,
-        channels,
-        providers,
-        bootstrap,
-        service: execution,
-        scripts,
-        collections,
-        self_service,
-        script_work: _,
-        collection_work: _,
-        queries,
-        task_reads,
-        protection,
-        content: content_writer,
-        runtime: protocol_runtime,
-    } = execution;
     let configuration_preview =
         Arc::new(rss_mdm_policy_service::configuration::preview::Previews {
             publications: Arc::new(
@@ -797,7 +817,7 @@ pub(crate) mod timeline_associations;
 
 mod collection_ports;
 
-mod task_reads;
+pub(crate) mod task_reads;
 
 #[cfg(test)]
 #[path = "../../tests/execution_owners/mod.rs"]
@@ -806,7 +826,7 @@ mod execution_owners_t2;
 mod task_cleanup;
 
 mod registration_sources;
-mod software_sources;
+pub(crate) mod software_sources;
 
 mod registration_agent_facts;
 mod registration_apple_facts;
@@ -816,7 +836,7 @@ mod software_apple_facts;
 mod software_windows_facts;
 
 mod owner_errors;
-mod registration;
+pub(crate) mod registration;
 
 mod device_reads;
 mod operation_reads;
@@ -828,9 +848,9 @@ mod registration_installation_t2;
 #[path = "../../tests/software/mod.rs"]
 mod software_t2;
 
-mod access_execution;
+pub(crate) mod access_execution;
 mod credential_apple_facts;
-mod credential_execution;
+pub(crate) mod credential_execution;
 
 #[cfg(test)]
 #[path = "../../tests/credential_owners/mod.rs"]

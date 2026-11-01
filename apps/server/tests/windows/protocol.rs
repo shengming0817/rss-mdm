@@ -1,4 +1,6 @@
 //! Real TLS, HTTP adapter and persisted SyncML package recovery with the real business participant.
+#[path = "fixture.rs"]
+mod fixture;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     native_identity_t2_support as identity,
@@ -10,6 +12,7 @@ use axum::{
     response::Response,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
+use fixture::Fixture;
 use rss_mdm_windows_mdm::{CodecLimits, Secret, syncml as s};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio_rustls::{
@@ -101,7 +104,7 @@ struct Host {
     address: SocketAddr,
     stop: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
-    assembly: crate::assembly::execution::Assembly,
+    assembly: Fixture,
     lifecycle: rss_runtime::ShutdownStack,
     control: rss_runtime::AdmissionControl,
 }
@@ -121,7 +124,7 @@ impl Host {
             tokio::net::TcpStream::connect(self.address).await.is_err(),
             "listener must close"
         );
-        command::close(self.assembly).await
+        Fixture::close(self.assembly).await
     }
 }
 #[allow(
@@ -133,12 +136,12 @@ async fn host(
     n: &identity::Native,
     w: Arc<rss_mdm_windows_channel::Windows>,
 ) -> Result<Host> {
-    let a = command::open(c, false).await?;
+    let a = Fixture::open(c, false).await?;
     let monotonic = Arc::new(crate::Monotonic(std::time::Instant::now));
     let audit = Arc::new(
         c.audit
             .on_runtime(
-                a.runtime.clone(),
+                a.resources.storage.runtime.clone(),
                 c.tenant,
                 &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
                     .control(),
@@ -148,7 +151,7 @@ async fn host(
     let requests = Arc::new(tokio::sync::Semaphore::new(16));
     let state = Arc::new(rss_mdm_windows_channel::HttpState {
         query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[7; 32])?,
-        protection: a.protection.clone(),
+        protection: a.resources.protection.clone(),
         mount: rss_mdm_registration_service::device::ChannelMount::new(
             c.tenant,
             rss_mdm_inventory::ReportSource::MdmWindows,
@@ -158,10 +161,10 @@ async fn host(
         access: c.database.windows_store(),
         clock: Arc::new(identity::Clock),
         delivery: Arc::new(rss_mdm_windows_channel::management::exchange::Delivery {
-            runtime: a.runtime.clone(),
+            runtime: a.resources.storage.runtime.clone(),
             tenant: c.tenant,
             audit,
-            protection: a.protection.clone(),
+            protection: a.resources.protection.clone(),
             business: Arc::new(crate::assembly::windows_business::WindowsBusiness(
                 a.service.clone(),
                 a.configuration.clone(),
@@ -432,7 +435,7 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
     use uuid::Uuid;
     let c = Context::open("shared", &[]).await?;
     let n = identity::seed(&c, "windows").await?;
-    let a = command::open(&c, false).await?;
+    let a = Fixture::open(&c, false).await?;
     let operation = Uuid::new_v4();
     let before = Uuid::new_v4();
     let after = Uuid::new_v4();
@@ -474,7 +477,7 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
         (Uuid::new_v4(), 1, after, Delivery::Unknown, false),
     ] {
         let facts = rss_mdm_windows_channel::results::Results {
-            protection: a.materials.protection.clone(),
+            protection: a.resources.protection.clone(),
         }
         .installations(
             &mut tx,
@@ -494,7 +497,7 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
         );
     }
     let sentinel_facts = rss_mdm_windows_channel::results::Results {
-        protection: a.materials.protection.clone(),
+        protection: a.resources.protection.clone(),
     }
     .installations(
         &mut tx,
@@ -512,7 +515,7 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
     sqlx::query("UPDATE mdm_windows.attempt_items i SET receipt_accepted=false FROM mdm_windows.attempts a WHERE (i.tenant_id,i.attempt)=(a.tenant_id,a.id) AND a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='execute'")
         .bind(c.tenant.to_string()).bind(operation).execute(&mut *tx).await?;
     let facts = rss_mdm_windows_channel::results::Results {
-        protection: a.materials.protection.clone(),
+        protection: a.resources.protection.clone(),
     }
     .installations(
         &mut tx,
@@ -539,7 +542,7 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(persisted, 0);
-    command::close(a).await?;
+    Fixture::close(a).await?;
     c.close().await;
     Ok(())
 }

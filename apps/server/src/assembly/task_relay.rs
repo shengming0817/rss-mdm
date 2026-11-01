@@ -12,7 +12,8 @@ pub(crate) fn registration(
     installation: Arc<rss_mdm_registration_service::installation::Service>,
     enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::worker::Worker>,
     access: Arc<rss_mdm_registration_service::device_access::execution::worker::Worker>,
-    credentials: Option<super::credential_execution::Assembly>,
+    credentials: Option<Arc<rss_mdm_recovery_credentials::tasks::worker::Worker>>,
+    native_credentials: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
     notify: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("mdm-task-relay", Duration::from_secs(20));
@@ -54,9 +55,11 @@ pub(crate) fn registration(
             match access.relay_once().await{Ok(n)=>pending+=n,Err(e)=>{use rss_mdm_registration_service::device_access::execution::Error as E;if matches!(e,E::Malformed|E::Forbidden|E::Unauthorized|E::Invariant){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"access","reason":e.to_string()}));}}
             if let Some(credentials)=&credentials {
             if stop.is_cancelled(){return Ok(());}
-            match credentials.worker.relay_once().await{Ok(n)=>pending+=n,Err(e)=>{use rss_mdm_recovery_credentials::tasks::Error as E;if matches!(e,E::Malformed|E::Forbidden|E::Unauthorized|E::Invariant){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"credential","reason":e.to_string()}));}}
+            match credentials.relay_once().await{Ok(n)=>pending+=n,Err(e)=>{use rss_mdm_recovery_credentials::tasks::Error as E;if matches!(e,E::Malformed|E::Forbidden|E::Unauthorized|E::Invariant){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"credential","reason":e.to_string()}));}}
+            }
+            if let Some(credentials) = &native_credentials {
                 if stop.is_cancelled(){return Ok(());}
-                let result=credentials.native.relay_once().await;credentials.native.record_relay_health(&result);
+                let result=credentials.relay_once().await;credentials.record_relay_health(&result);
                 match result{Ok(n)=>pending+=n,Err(e)=>{use rss_mdm_recovery_credentials::native::{Error as E,Failure as F};if matches!(e,E::Malformed|E::Forbidden|E::Unauthorized|E::Unavailable(F::CommandInvariant|F::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}}}
             }
             if pending==0 {tokio::select!{()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(Duration::from_secs(5))=>{}}}

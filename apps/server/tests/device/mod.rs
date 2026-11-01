@@ -1,8 +1,10 @@
+mod fixture;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     native_identity_t2_support as native,
 };
 use anyhow::Result;
+use fixture::Fixture;
 use uuid::Uuid;
 #[tokio::test]
 #[ignore = "T2 #3121-1: stale dangerous-action confirmation has no command effects; current confirmation binds exact generation"]
@@ -13,7 +15,7 @@ async fn current_confirmation_is_atomic() -> Result<()> {
     let identity = native::seed(&c, "windows").await?;
     let account = c.account(&[Permission::DeviceWipe]).await?;
     let proof = c.authenticate(&account).await?;
-    let a = command::open(&c, false).await?;
+    let a = Fixture::open(&c, false).await?;
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) VALUES($1::uuid,$2,1,'10.0.22631.0',4,1,extract(epoch FROM clock_timestamp())::bigint)").bind(c.tenant.to_string()).bind(identity.registration).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -48,7 +50,7 @@ async fn current_confirmation_is_atomic() -> Result<()> {
         .await?;
     let stored:(Uuid,i64)=sqlx::query_as("SELECT registration,registration_generation FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
     assert_eq!(stored, (identity.registration, 1));
-    command::close(a).await?;
+    Fixture::close(a).await?;
     c.close().await;
     Ok(())
 }

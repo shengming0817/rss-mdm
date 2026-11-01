@@ -31,7 +31,6 @@ pub mod error_projection;
 pub mod health;
 pub mod input_storage;
 pub mod inventory;
-pub mod lifecycle;
 pub mod managed_registration;
 pub mod missing;
 pub mod model;
@@ -61,7 +60,6 @@ pub mod worker_wake;
 
 pub use diagnostic::{ConfigIssue, Failure};
 pub use error::Error;
-pub use lifecycle::Resource;
 pub use model::{
     AttemptPhase, Change, Create, DispatchFailure, DispatchV1, NativeTarget, Task, TaskSummary,
 };

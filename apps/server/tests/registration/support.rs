@@ -51,7 +51,8 @@ impl agent_pki::Clock for Clock {
 pub fn service(
     c: &Context,
     n: &Native,
-    a: &super::super::execution::Assembly,
+    authority: Arc<rss_mdm_software_service::deployment::managed_registration::AuthorityReader>,
+    protection: Arc<rss_mdm_native_protection::Protector>,
     m: &Materials,
 ) -> Result<agent::Service> {
     use rss_mdm_agent_wire::pki::Purpose;
@@ -115,9 +116,9 @@ pub fn service(
         issuer,
         clock,
         binding: Arc::new(rss_mdm_agent_channel::Bindings),
-        native: a.software.authority.clone(),
+        native: authority,
         bootstrap: Some(Arc::new(bootstrap)),
-        protection: a.protection.clone(),
+        protection: protection,
         installations: Arc::new(crate::agent_configurations::Installations),
     })?)
 }

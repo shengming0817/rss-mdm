@@ -50,7 +50,7 @@ pub(super) fn error(e: rss_mdm_policy_service::Error) -> rss_mdm_device_service:
         P::Unsupported => Error::Unsupported,
         P::Unavailable(F::Inventory(f)) => rss_mdm_inventory_service::Error::Unavailable(f).into(),
         P::Unavailable(F::PreparationConfiguration) => {
-            Error::Configuration(rss_mdm_device_service::control::ConfigIssue::Execution)
+            Error::Configuration(rss_mdm_device_service::control::ConfigIssue::CommandStorage)
         }
         P::Unavailable(f) => Error::Unavailable(match f {
             F::Preparation => Failure::CommandStorage,

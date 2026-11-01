@@ -125,7 +125,7 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     config["device_pki"]=[]
     for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime")]:
         config[field]=database(runtime,role)
-    config["execution"]["database"]=database(runtime,"mdm_command_runtime")
+    config["command_database"]=database(runtime,"mdm_command_runtime")
     config["webhooks"]["recovery_database"]=database(runtime,"mdm_webhook_operator")
     config["identity"]["database"]=database(runtime,"mdm_identity_runtime")
     config["tenant_administration"]=dict(registry_database=database(runtime,"mdm_tenant_registry"),

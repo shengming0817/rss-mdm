@@ -533,7 +533,7 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},
         "audit":audit,"listen":input.listen,"product_origin":input.origin,"trusted_gateway":input.trusted_gateway,
         "identity":{"instance_id":saved.receipt.instance_id,"tenant_id":saved.receipt.tenant_id,"database":input.database("mdm_identity_runtime")?,"oidc":null},
-        "access_database":input.database("mdm_access")?,"runtime_database":input.database("mdm_runtime")?,"execution":{"database":input.database("mdm_command_runtime")?},
+        "access_database":input.database("mdm_access")?,"runtime_database":input.database("mdm_runtime")?,"command_database":input.database("mdm_command_runtime")?,
         "storage_binding":{"target":saved.target,"lineage":saved.lineage,"epoch":1},
         "business_databases":{"inventory":input.database("mdm_inventory_runtime")?,"scope":input.database("mdm_scope_runtime")?,"policy":input.database("mdm_policy_runtime")?,"resource":input.database("mdm_resource_runtime")?,"software":input.database("mdm_software_runtime")?,"content":input.database("mdm_content_runtime")?,"telemetry":input.database("mdm_telemetry_runtime")?,"scheduler":input.database("mdm_scheduler_runtime")?},
         "publication":{"database":input.database("mdm_software_driver")?,"sources":[]},

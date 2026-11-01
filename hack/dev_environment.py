@@ -388,7 +388,7 @@ class Environment:
         config['agent_pki']={'mode':'disabled'}
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime')
-        config['execution']['database']=database(runtime,'mdm_command_runtime')
+        config['command_database']=database(runtime,'mdm_command_runtime')
         config['webhooks']['recovery_database']=database(runtime,'mdm_webhook_operator')
         for owner in ('inventory','scope','policy','resource','software','content','telemetry','scheduler'):
             config['business_databases'][owner]=database(runtime,'mdm_'+owner+'_runtime')

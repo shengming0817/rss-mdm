@@ -55,7 +55,7 @@ pub(crate) async fn events(
             }),
         )
         .await
-        .map_err(|_| crate::Error::Configuration(crate::ConfigIssue::Execution))?,
+        .map_err(|_| crate::Error::Configuration(crate::ConfigIssue::CommandStorage))?,
     );
     let collections = Arc::new(
         rss_mdm_inventory_service::collection::execution::Transactions::bind(

@@ -19,13 +19,13 @@ fn policy() -> Result<rss_reconcile::Policy> {
 }
 pub(super) async fn wake(h: &Harness, collection: bool, policy: Uuid) -> Result<()> {
     let messaging = rss_reconcile_postgres::PgMessagingStore::new(
-        h.a.runtime.clone(),
+        h.a.resources.storage.runtime.clone(),
         h.c.tenant,
         script::transaction::deadline(),
     )
     .await?;
     script::transaction::inspect(
-        &h.a.runtime,
+        &h.a.resources.storage.runtime,
         h.c.tenant,
         (messaging, collection, policy),
         |ctx, tx| {
@@ -96,7 +96,9 @@ async fn first_page(
     let force = CancellationToken::new();
     let stop = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
-    let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), &control).await?;
+    let store =
+        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), &control)
+            .await?;
     let scope = if collection {
         collection::wake::scope(h.c.tenant)
     } else {
@@ -174,7 +176,9 @@ async fn resume(
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), &control).await?;
+    let store =
+        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), &control)
+            .await?;
     assert!(
         store
             .claim_due(scope, 64, Duration::from_secs(30), &control)
@@ -189,11 +193,11 @@ async fn checkpoint_restart(collection: bool) -> Result<()> {
     let (policy, ids) = seed_runs(&h, collection).await?;
     wake(&h, collection, policy).await?;
     let scope = first_page(&h, collection, policy, &ids).await?;
-    let a = command::open(&h.c, true).await?;
+    let a = Fixture::open(&h.c, true).await?;
     let (audit, delivery) = super::delivery(&h.c, &a).await?;
     drop(std::mem::replace(&mut h.delivery, delivery));
     drop(std::mem::replace(&mut h.audit, audit));
-    command::close(std::mem::replace(&mut h.a, a)).await?;
+    Fixture::close(std::mem::replace(&mut h.a, a)).await?;
     resume(&h, collection, policy, &scope).await?;
     wake(&h, collection, policy).await?;
     resume(&h, collection, policy, &scope).await?;
@@ -220,7 +224,9 @@ async fn drain_native(h: &Harness, task: Uuid) -> Result<()> {
     let cancel = CancellationToken::new();
     let stop = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
-    let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), &control).await?;
+    let store =
+        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), &control)
+            .await?;
     let scope = collection::wake::scope(h.c.tenant);
     let target = rss_reconcile::Target::new(scope.clone(), format!("run:{task}"))?;
     store
@@ -263,11 +269,11 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
     tx.commit().await?;
     script::transaction::run(
         &h.audit,
-        &h.a.runtime,
+        &h.a.resources.storage.runtime,
         h.c.tenant,
         &request(&h.c),
-        &h,
-        |h, tx| {
+        &h.audit,
+        |audit, tx| {
             Box::pin(async move {
                 let tenant = tx.tenant_id().to_string();
                 let (count, facts) = tx
@@ -283,7 +289,7 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
                     })
                     .await?;
                 assert_eq!(count.map_err(script::Error::from)?, 1);
-                h.audit.append_batch_in(tx, &facts).await?;
+                audit.append_batch_in(tx, &facts).await?;
                 Ok(())
             })
         },
@@ -293,13 +299,13 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
     // A failure after emitting must roll back both the event and completion receipt.
     let failed: std::result::Result<(), _> = script::transaction::run(
         &h.audit,
-        &h.a.runtime,
+        &h.a.resources.storage.runtime,
         h.c.tenant,
         &request(&h.c),
-        &h,
-        |h, tx| {
+        &h.a.collections,
+        |collections, tx| {
             Box::pin(async move {
-                collection::recovery::recover_one(&h.a.collections, tx, task).await?;
+                collection::recovery::recover_one(collections, tx, task).await?;
                 Err(script::Error::Conflict.into())
             })
         },
