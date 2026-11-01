@@ -234,6 +234,7 @@ impl Service {
         } else {
             crate::control::task_cleanup::Progress::default()
         };
+        let mut cleanup = None;
         for channel in &original.channels {
             if matches!(channel.stage, Stage::Complete | Stage::Revoke) {
                 continue;
@@ -294,7 +295,14 @@ impl Service {
                 {
                     continue;
                 }
-                let (remaining, blocker) = self.cleanup_progress_in(tx, id).await?;
+                let (remaining, blocker) = match cleanup {
+                    Some(progress) => progress,
+                    None => {
+                        let progress = self.cleanup_progress_in(tx, id).await?;
+                        cleanup = Some(progress);
+                        progress
+                    }
+                };
                 if remaining || configuration.pending || tasks.pending {
                     let blocker = blocker
                         .into_iter()
@@ -697,40 +705,67 @@ impl Service {
         retirement: Uuid,
     ) -> Result<(bool, Option<(i32, Option<Uuid>)>)> {
         let tenant = tx.tenant_id();
-        let (running,unknown,commands)=tx.with_connection(move |c|Box::pin(async move {
-            let (running,unknown):(bool,Option<Uuid>)=sqlx::query_as("SELECT coalesce(bool_or(state->>'execution' IN('running','waiting_reboot','unknown')),false),(array_agg(id ORDER BY id) FILTER(WHERE state->>'execution'='unknown'))[1] FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2)").bind(tenant.to_string()).bind(retirement).fetch_one(&mut *c).await?;
-            let commands:Vec<(Uuid,bool)>=sqlx::query_as("SELECT o.id,d.terminal_at IS NULL FROM mdm_devices.control_operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2) AND (d.terminal_at IS NULL OR d.status<>'applied') ORDER BY o.id").bind(tenant.to_string()).bind(retirement).fetch_all(c).await?;
-            Ok((running,unknown,commands))
+        let (pending, unknown) = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_as::<_, (bool, Option<Uuid>)>(r#"
+SELECT EXISTS(SELECT 1 FROM mdm_devices.unmanage_runs u
+ JOIN mdm_devices.retirement_channels r ON(r.tenant_id,r.registration,r.generation)=(u.tenant_id,u.registration,u.generation)
+ WHERE r.tenant_id=$1::uuid AND r.operation=$2 AND u.state->>'execution' IN('running','waiting_reboot','unknown'))
+ OR EXISTS(SELECT 1 FROM mdm_devices.control_operations o
+ JOIN mdm_devices.retirement_channels r ON(r.tenant_id,r.registration,r.generation)=(o.tenant_id,o.registration,o.registration_generation)
+ JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
+ WHERE r.tenant_id=$1::uuid AND r.operation=$2 AND d.terminal_at IS NULL),
+ (SELECT u.id FROM mdm_devices.unmanage_runs u
+ JOIN mdm_devices.retirement_channels r ON(r.tenant_id,r.registration,r.generation)=(u.tenant_id,u.registration,u.generation)
+ WHERE r.tenant_id=$1::uuid AND r.operation=$2 AND u.state->>'execution'='unknown' ORDER BY u.id LIMIT 1)
+"#).bind(tenant.to_string()).bind(retirement).fetch_one(c).await
         })).await?;
-        let mut blocker = unknown;
-        let pending = running || commands.iter().any(|(_, pending)| *pending);
-        // Bounded channel reads preserve the exact operation identity and initiating transaction.
-        for page in commands.chunks(1000) {
-            let ids = page
-                .iter()
-                .filter(|(_, pending)| !pending)
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>();
-            let windows = self.transactions.windows_results.clone();
-            let apple = self.transactions.apple_results.clone();
-            let sent = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        let result = async {
-                            let mut sent = windows.sent(c, tenant, ids.clone()).await?;
-                            sent.extend(apple.sent(c, tenant, ids).await?);
-                            Ok::<_, Error>(sent)
-                        }
-                        .await;
-                        Ok(result)
-                    })
-                })
-                .await??;
-            blocker = blocker.into_iter().chain(sent).min();
+        if pending {
+            return Ok((true, unknown.map(|id| (0, Some(id)))));
         }
-        Ok((
-            pending || blocker.is_some(),
-            blocker.map(|id| (0, Some(id))),
-        ))
+        // Acceptance fences new controls. Terminal RSS commands absorb late events;
+        // device/claim locks prevent a skipped, unsent terminal command being dispatched.
+        // Persist only checked history, on the same fenced transaction as retirement.
+        // ref: sqlx-core 0.9.0 query_as.rs (fetch_all requires an explicit result bound).
+        const PAGE: usize = 64;
+        let mut ids: Vec<Uuid> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar(r#"
+SELECT o.id FROM mdm_devices.control_operations o
+ JOIN mdm_devices.retirement_channels r ON(r.tenant_id,r.registration,r.generation)=(o.tenant_id,o.registration,o.registration_generation)
+ JOIN mdm_devices.retirements t ON(t.tenant_id,t.id)=(r.tenant_id,r.operation)
+ JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
+ WHERE r.tenant_id=$1::uuid AND r.operation=$2 AND d.terminal_at IS NOT NULL AND d.status<>'applied'
+ AND (t.cleanup_after IS NULL OR o.id>t.cleanup_after)
+ ORDER BY o.id LIMIT 65
+"#).bind(tenant.to_string()).bind(retirement).fetch_all(c).await
+        })).await?;
+        let more = ids.len() > PAGE;
+        ids.truncate(PAGE);
+        if ids.is_empty() {
+            return Ok((false, None));
+        }
+        let after = *ids.last().ok_or(Error::Conflict)?;
+        let windows = self.transactions.windows_results.clone();
+        let apple = self.transactions.apple_results.clone();
+        let blocker = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    let result = async {
+                        let mut sent = windows.sent(c, tenant, ids.clone()).await?;
+                        sent.extend(apple.sent(c, tenant, ids).await?);
+                        Ok::<_, Error>(sent.into_iter().next())
+                    }
+                    .await;
+                    Ok(result)
+                })
+            })
+            .await??;
+        if let Some(id) = blocker {
+            return Ok((true, Some((0, Some(id)))));
+        }
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("UPDATE mdm_devices.retirements SET cleanup_after=$3 WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant.to_string()).bind(retirement).bind(after).execute(c).await
+        })).await?;
+        Ok((more, None))
     }
 }

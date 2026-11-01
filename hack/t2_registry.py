@@ -50,6 +50,7 @@ MODULES = {
                 'crates/device-service/src/control/*', 'crates/device-service/src/lifecycle.rs',
                 'crates/device-service/src/planning*', 'crates/device-service/schema/*',
                 'crates/registration-service/src/lifecycle.rs', 'crates/registration-service/schema/*',
+                'crates/pki-service/src/certificates.rs', 'crates/pki-service/schema/install.sql',
                 'crates/task-state/*', 'crates/management-http/src/execution/task_reads.rs',
                 'apps/server/src/assembly/*', 'apps/server/src/registration_lifecycle.rs',
                 'apps/server/tests/execution_owners/*', 'apps/server/tests/support/planning.rs',

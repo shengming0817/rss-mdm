@@ -55,7 +55,9 @@ class T2Status(unittest.TestCase):
                      'crates/device-service/src/control/retirement.rs',
                      'crates/device-service/src/control/recovery.rs',
                      'crates/device-service/src/control/source_changes.rs',
-                     'crates/registration-service/src/lifecycle.rs'):
+                     'crates/registration-service/src/lifecycle.rs',
+                     'crates/pki-service/src/certificates.rs',
+                     'crates/pki-service/schema/install.sql'):
             with self.subTest(path=path):
                 self.assertIn('device.retirement', affected([path]))
         self.assertEqual(affected(['docs/architecture/enterprise-tasks.md']), [])

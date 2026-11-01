@@ -396,3 +396,75 @@ async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Re
     tx.commit().await?;
     Ok(id)
 }
+
+#[tokio::test]
+#[ignore = "T2: retirement checkpoints one bounded history page per claim and preserves sent blockers after restart"]
+async fn cleanup_history_is_bounded_and_resumes() -> Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_device_service::control::device_control::{Action, Input};
+    let mut h = Harness::open().await?;
+    let native = crate::native_identity_t2_support::seed(&h.c, "windows").await?;
+    h.object = serde_json::from_value(
+        json!({"object":{"kind":"endpoint","id":native.device},"associationVersion":null,"verified":true,"members":[{"device":native.device,"channel":"mdm","registrationId":native.registration,"generation":1}]}),
+    )?;
+    h.scope = planning::published(&h.c, &h.object).await?.scope;
+    let account = h.c.account(&[Permission::DeviceWipe]).await?;
+    let proof = h.c.authenticate(&account).await?;
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) VALUES($1::uuid,$2,1,'10.0.22631.0',4,1,extract(epoch FROM clock_timestamp())::bigint)")
+        .bind(h.c.tenant.to_string()).bind(native.registration).execute(&mut *tx).await?;
+    tx.commit().await?;
+    for n in 1..=65 {
+        h.a.service
+            .create_control(
+                &proof,
+                &native.device,
+                &Input {
+                    operation_id: Uuid::from_u128(n),
+                    deadline: now() + 300,
+                    action: Action::Wipe {
+                        confirmed: true,
+                        expected_registration_id: native.registration,
+                        expected_generation: 1,
+                    },
+                },
+                &h.c.request(&proof)?,
+            )
+            .await?;
+    }
+    // Legal terminal history: cancellation alone does not confirm remote stop.
+    let blocked = Uuid::from_u128(65);
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("UPDATE rss_device_command.commands d SET status='cancelled',version=d.version+1,terminal_at=d.queued_at+1 FROM mdm_devices.control_operations o WHERE (o.tenant_id,o.id::text)=(d.tenant_id,d.command_id) AND o.tenant_id=$1::uuid AND o.registration=$2")
+        .bind(h.c.tenant.to_string()).bind(native.registration).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.attempts(tenant_id,id,operation,registration,generation,ordinal,credential,session,message,phase,request) VALUES($1::uuid,$2,$3,$4,1,1,$5,1,1,'execute',$6)")
+        .bind(h.c.tenant.to_string()).bind(Uuid::new_v4()).bind(blocked).bind(native.registration).bind(native.credential).bind(vec![0u8;68]).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let retirement = accept(&h, &h.object).await?;
+    step(&h, retirement).await?;
+    assert_eq!(state(&h, retirement).await?.0, "cleanup");
+    let checkpoint: Option<Uuid> = sqlx::query_scalar(
+        "SELECT cleanup_after FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(retirement)
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert_eq!(checkpoint, Some(Uuid::from_u128(64)));
+    let replacement = command::open(&h.c, true).await?;
+    command::close(std::mem::replace(&mut h.a, replacement)).await?;
+    step(&h, retirement).await?;
+    assert_eq!(
+        state(&h, retirement).await?,
+        ("cleanup".into(), "unknown".into(), Some(blocked))
+    );
+    let resumed: Option<Uuid> = sqlx::query_scalar(
+        "SELECT cleanup_after FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(retirement)
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert_eq!(resumed, checkpoint);
+    h.close().await
+}
