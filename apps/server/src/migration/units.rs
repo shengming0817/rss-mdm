@@ -133,8 +133,8 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_software_service::deployment::SOURCE_CHANGES_SQL,
         ),
         (
-            "execution-service-schema-v1",
-            rss_mdm_execution_service::INSTALL_SQL,
+            "device-control-schema-v1",
+            rss_mdm_device_service::control::INSTALL_SQL,
         ),
         (
             "policy-configuration-v1",
@@ -149,8 +149,8 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_policy_service::configuration::RELATIONS_SQL,
         ),
         (
-            "execution-source-changes-v1",
-            rss_mdm_execution_service::SOURCE_CHANGES_SQL,
+            "device-control-source-changes-v1",
+            rss_mdm_device_service::control::SOURCE_CHANGES_SQL,
         ),
         (
             "scope-channel-projections-v1",
@@ -213,8 +213,8 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::TASKS_RELATIONS_SQL,
         ),
         (
-            "execution-service-relations-v1",
-            rss_mdm_execution_service::RELATIONS_SQL,
+            "device-control-relations-v1",
+            rss_mdm_device_service::control::RELATIONS_SQL,
         ),
         (
             "scope-channel-relations-v1",

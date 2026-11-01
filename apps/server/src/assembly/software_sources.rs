@@ -448,10 +448,10 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
         Box<dyn Future<Output = rss_mdm_software_service::deployment::Result<()>> + Send + 'a>,
     > {
         Box::pin(async move {
-            rss_mdm_execution_service::unmanage::wake_device_in(messaging, tx, device)
+            rss_mdm_device_service::control::unmanage::wake_device_in(messaging, tx, device)
                 .await
                 .map_err(|e| {
-                    use rss_mdm_execution_service::transaction::Fault as F;
+                    use rss_mdm_device_service::control::transaction::Fault as F;
                     use rss_mdm_software_service::deployment::{
                         Error as E, Failure, transaction::Fault as O,
                     };

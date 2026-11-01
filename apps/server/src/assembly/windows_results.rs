@@ -1,13 +1,13 @@
 //! Maps Windows-owned durable facts into business read projections.
-use rss_mdm_execution_service::queries::records::{WindowsFrame, WindowsReceipt};
-use rss_mdm_execution_service::windows_results::*;
+use rss_mdm_device_service::control::queries::records::{WindowsFrame, WindowsReceipt};
+use rss_mdm_device_service::control::windows_results::*;
 use rss_request_context::TenantId;
 use sqlx::PgConnection;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 pub(super) struct WindowsResults(pub rss_mdm_windows_channel::results::Results);
-pub(super) fn error(e: rss_mdm_windows_channel::Error) -> rss_mdm_execution_service::Error {
-    use rss_mdm_execution_service::{Error as E, Failure};
+pub(super) fn error(e: rss_mdm_windows_channel::Error) -> rss_mdm_device_service::control::Error {
+    use rss_mdm_device_service::control::{Error as E, Failure};
     use rss_mdm_windows_channel::Error as W;
     match e {
         W::Malformed => E::Malformed,
@@ -20,6 +20,29 @@ pub(super) fn error(e: rss_mdm_windows_channel::Error) -> rss_mdm_execution_serv
     }
 }
 impl Store for WindowsResults {
+    fn control_support<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        checks: Vec<(Uuid, Uuid, i64, rss_mdm_windows_mdm::native::Request)>,
+    ) -> Pending<'a, BTreeMap<Uuid, bool>> {
+        Box::pin(async move {
+            self.0
+                .control_support_on(c, tenant, checks)
+                .await
+                .map_err(error)
+        })
+    }
+
+    fn sent<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        ids: Vec<Uuid>,
+    ) -> Pending<'a, std::collections::BTreeSet<Uuid>> {
+        Box::pin(async move { self.0.sent_on(c, tenant, ids).await.map_err(error) })
+    }
+
     fn bind_command<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -30,52 +53,6 @@ impl Store for WindowsResults {
             rss_mdm_windows_channel::command_binding::bind_on(c, tenant, binding)
                 .await
                 .map_err(error)
-        })
-    }
-
-    fn installations<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: TenantId,
-        reads: Vec<InstallationRead>,
-    ) -> Pending<'a, BTreeMap<Uuid, Installation>> {
-        Box::pin(async move {
-            use rss_mdm_windows_channel::results as channel;
-            let reads = reads
-                .into_iter()
-                .map(|r| channel::InstallationRead {
-                    id: r.id,
-                    registration: r.registration,
-                    generation: r.generation,
-                    snapshot: r.snapshot,
-                })
-                .collect::<Vec<_>>();
-            Ok(self
-                .0
-                .installations(c, tenant, &reads)
-                .await
-                .map_err(error)?
-                .into_iter()
-                .map(|(id, v)| {
-                    (
-                        id,
-                        Installation {
-                            channel_state: v.channel_state,
-                            delivery: match v.delivery {
-                                channel::InstallationDelivery::Unknown => {
-                                    InstallationDelivery::Unknown
-                                }
-                                channel::InstallationDelivery::Acknowledged => {
-                                    InstallationDelivery::Acknowledged
-                                }
-                                channel::InstallationDelivery::Rejected => {
-                                    InstallationDelivery::Rejected
-                                }
-                            },
-                        },
-                    )
-                })
-                .collect())
         })
     }
 
@@ -97,7 +74,7 @@ impl Store for WindowsResults {
                 })
                 .collect::<Vec<_>>();
             Ok(self.0.observations(c,tenant,&reads).await.map_err(error)?.into_iter().map(|(id,v)|(id,Evidence{assessment:v.assessment,receipts:v.receipts.into_iter().map(|r|WindowsReceipt{
- phase:match r.phase{rss_mdm_windows_channel::participants::AttemptPhase::Prepare=>rss_mdm_execution_service::AttemptPhase::Prepare,rss_mdm_windows_channel::participants::AttemptPhase::Execute=>rss_mdm_execution_service::AttemptPhase::Execute,rss_mdm_windows_channel::participants::AttemptPhase::Observe=>rss_mdm_execution_service::AttemptPhase::Observe},
+ phase:match r.phase{rss_mdm_windows_channel::participants::AttemptPhase::Prepare=>rss_mdm_device_service::control::AttemptPhase::Prepare,rss_mdm_windows_channel::participants::AttemptPhase::Execute=>rss_mdm_device_service::control::AttemptPhase::Execute,rss_mdm_windows_channel::participants::AttemptPhase::Observe=>rss_mdm_device_service::control::AttemptPhase::Observe},
 ordinal:r.ordinal,session:r.session,message:r.message,command:r.command,parent_command:r.parent_command,item:r.item,kind:r.kind,uri:r.uri,status:r.status,value:r.value,accepted:r.accepted,received_at:r.received_at,result_accepted:r.result_accepted,result_received_at:r.result_received_at,redacted:r.redacted,frames:r.frames.into_iter().map(|f|WindowsFrame{message:f.message,command:f.command,start_byte:f.start_byte,end_byte:f.end_byte,total_bytes:f.total_bytes,status:f.status,accepted:f.accepted,received_at:f.received_at}).collect()}).collect()})).collect())
         })
     }

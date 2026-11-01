@@ -8,7 +8,7 @@ use sqlx::PgConnection;
 use std::sync::Arc;
 use uuid::Uuid;
 pub(crate) struct AppleBusiness(
-    pub Arc<rss_mdm_execution_service::ExecutionService>,
+    pub Arc<rss_mdm_device_service::control::Service>,
     pub Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
     pub Arc<rss_mdm_software_service::deployment::SoftwareService>,
@@ -16,10 +16,10 @@ pub(crate) struct AppleBusiness(
     pub Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
     pub Arc<rss_mdm_registration_service::device_access::execution::Service>,
 );
-pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_apple_channel::Error {
+pub(super) fn error(e: rss_mdm_device_service::control::Error) -> rss_mdm_apple_channel::Error {
     use rss_mdm_apple_channel::Missing;
     use rss_mdm_apple_channel::{Error as A, Failure};
-    use rss_mdm_execution_service::Error as E;
+    use rss_mdm_device_service::control::Error as E;
     match e {
         E::Malformed => A::Malformed,
         E::CertificateRequest => A::CertificateRequest,
@@ -36,27 +36,27 @@ pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_apple_channe
         E::NotFound => A::NotFound,
         E::Resource(_) => A::Missing(Missing::Resource),
         E::Execution(e) => A::Missing(match e {
-            rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {
+            rss_mdm_device_service::control::missing::ExecutionError::MissingOperation => {
                 Missing::Operation
             }
-            rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task,
+            rss_mdm_device_service::control::missing::ExecutionError::MissingTask => Missing::Task,
         }),
 
         E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
         E::Unavailable(f) => A::Unavailable(match f {
-            rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-            rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-            rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-            rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-            rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-            rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+            rss_mdm_device_service::control::Failure::RequestDeadline => Failure::RequestDeadline,
+            rss_mdm_device_service::control::Failure::Audit => Failure::Audit,
+            rss_mdm_device_service::control::Failure::AuditIntegrity => Failure::AuditIntegrity,
+            rss_mdm_device_service::control::Failure::AuditAdmission => Failure::AuditAdmission,
+            rss_mdm_device_service::control::Failure::AuditIsolation => Failure::AuditIsolation,
+            rss_mdm_device_service::control::Failure::AuditContract => Failure::AuditContract,
 
             _ => Failure::Business,
         }),
     }
 }
-fn fault(e: rss_mdm_execution_service::transaction::Fault) -> rss_mdm_apple_channel::Error {
-    use rss_mdm_execution_service::transaction::Fault;
+fn fault(e: rss_mdm_device_service::control::transaction::Fault) -> rss_mdm_apple_channel::Error {
+    use rss_mdm_device_service::control::transaction::Fault;
     match e {
         Fault::Request(e) => error(e),
         Fault::Storage(e) => e.into(),
@@ -64,13 +64,15 @@ fn fault(e: rss_mdm_execution_service::transaction::Fault) -> rss_mdm_apple_chan
     }
 }
 
-pub(super) fn target(t: rss_mdm_execution_service::NativeTarget) -> Target {
+pub(super) fn target(t: rss_mdm_device_service::control::NativeTarget) -> Target {
     match t {
-        rss_mdm_execution_service::NativeTarget::Device => Target::Device,
-        rss_mdm_execution_service::NativeTarget::User { user_id } => Target::User { user_id },
+        rss_mdm_device_service::control::NativeTarget::Device => Target::Device,
+        rss_mdm_device_service::control::NativeTarget::User { user_id } => Target::User { user_id },
     }
 }
-pub(super) fn command(c: rss_mdm_execution_service::apple_facts::AppleCommand) -> AppleCommand {
+pub(super) fn command(
+    c: rss_mdm_device_service::control::apple_facts::AppleCommand,
+) -> AppleCommand {
     AppleCommand {
         operation: c.operation,
         owner: c.owner,
@@ -82,7 +84,7 @@ pub(super) fn command(c: rss_mdm_execution_service::apple_facts::AppleCommand) -
         request: c.request,
     }
 }
-fn admission(a: rss_mdm_execution_service::apple_business::AppleAdmission) -> Admission {
+fn admission(a: rss_mdm_device_service::control::apple_business::AppleAdmission) -> Admission {
     Admission {
         eligible: a.eligible,
         dispatch: a.dispatch,
@@ -337,7 +339,7 @@ impl Business for AppleBusiness {
                     .await
                     .map(configuration_admission)
                     .map_err(policy_fault),
-                Owner::Execution => self
+                Owner::Device => self
                     .0
                     .apple_command_in(tx, p, id)
                     .await
@@ -385,7 +387,7 @@ impl Business for AppleBusiness {
                     .apple_settle_in(tx, p, id, input_version, fact, audit)
                     .await
                     .map_err(policy_fault),
-                Owner::Execution => self
+                Owner::Device => self
                     .0
                     .apple_settle_in(tx, p, id, input_version, fact, audit)
                     .await
@@ -434,19 +436,6 @@ impl Business for AppleBusiness {
                     )
                     .await
                     .map_err(policy_fault),
-                Owner::Execution => self
-                    .0
-                    .apple_synchronized_in(
-                        tx,
-                        p,
-                        fact.operation,
-                        &fact.input_version,
-                        &fact.user,
-                        fact.registration,
-                        fact.generation,
-                    )
-                    .await
-                    .map_err(fault),
                 Owner::Software => self
                     .3
                     .apple_synchronized_in(
@@ -460,7 +449,7 @@ impl Business for AppleBusiness {
                     )
                     .await
                     .map_err(software_fault),
-                Owner::Registration | Owner::Recovery => {
+                Owner::Device | Owner::Registration | Owner::Recovery => {
                     Err(rss_mdm_apple_channel::Error::Forbidden)
                 }
             }
@@ -483,7 +472,7 @@ impl Business for AppleBusiness {
                     .apple_rejected_in(tx, p, id, reason)
                     .await
                     .map_err(policy_fault),
-                Owner::Execution => self
+                Owner::Device => self
                     .0
                     .apple_rejected_in(tx, p, id, reason)
                     .await
@@ -517,7 +506,6 @@ impl Business for AppleBusiness {
     ) -> Pending<'a, Vec<Admission>> {
         Box::pin(async move {
             let mut configuration = Vec::new();
-            let mut execution = Vec::new();
             let mut software = Vec::new();
             for id in ids {
                 match native_ownership::in_transaction(tx, id)
@@ -525,21 +513,13 @@ impl Business for AppleBusiness {
                     .map_err(policy_fault)?
                 {
                     Owner::Configuration => configuration.push(id),
-                    Owner::Execution => execution.push(id),
                     Owner::Software => software.push(id),
-                    Owner::Registration | Owner::Recovery => {
+                    Owner::Device | Owner::Registration | Owner::Recovery => {
                         return Err(rss_mdm_apple_channel::Error::Forbidden);
                     }
                 }
             }
-            let mut rows = self
-                .0
-                .apple_declarations_in(tx, p, user, execution)
-                .await
-                .map_err(fault)?
-                .into_iter()
-                .map(admission)
-                .collect::<Vec<_>>();
+            let mut rows = Vec::new();
             rows.extend(
                 self.1
                     .apple_declarations_in(tx, p, user, configuration)
@@ -621,19 +601,13 @@ impl Business for AppleBusiness {
                     .await
                     .map(|(r, t)| (r, super::configuration_channels::target(t)))
                     .map_err(policy_fault),
-                Owner::Execution => self
-                    .0
-                    .apple_asset_authority_in(tx, p, id)
-                    .await
-                    .map(|(r, t)| (r, target(t)))
-                    .map_err(fault),
                 Owner::Software => self
                     .3
                     .apple_asset_authority_in(tx, p, id)
                     .await
                     .map(|(r, t)| (r, software_target(t)))
                     .map_err(software_fault),
-                Owner::Registration | Owner::Recovery => {
+                Owner::Device | Owner::Registration | Owner::Recovery => {
                     Err(rss_mdm_apple_channel::Error::Forbidden)
                 }
             }
@@ -721,9 +695,14 @@ impl Departure for AppleBusiness {
         registration: Uuid,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            rss_mdm_execution_service::unmanage::native_departure_in(c, tenant, registration, true)
-                .await
-                .map_err(error)
+            rss_mdm_device_service::control::unmanage::native_departure_in(
+                c,
+                tenant,
+                registration,
+                true,
+            )
+            .await
+            .map_err(error)
         })
     }
 }

@@ -10,8 +10,8 @@ struct Position {
     available_at: i64,
     task_id: Uuid,
 }
-pub(crate) fn execution_fault(error: rss_mdm_execution_service::transaction::Fault) -> Error {
-    use rss_mdm_execution_service::transaction::Fault as F;
+pub(crate) fn execution_fault(error: rss_mdm_device_service::control::transaction::Fault) -> Error {
+    use rss_mdm_device_service::control::transaction::Fault as F;
     match error {
         F::Request(e) => e.into(),
         F::Sql(e) => sql(e),
@@ -238,7 +238,7 @@ impl Reads {
                         .map(RunDetail::Enrollment)
                         .map_err(enrollment_fault)
                     }
-                    Owner::Execution => s
+                    Owner::Device => s
                         .execution
                         .run_detail_on(c, proof, grant, policy, id, now)
                         .await

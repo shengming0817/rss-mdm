@@ -1,14 +1,13 @@
 //! Field mapping between Apple protocol facts and their business consumers.
 use rss_mdm_apple_channel::protocol_types as protocol;
 use rss_mdm_apple_channel::protocol_types::{AppleProfiles as _, AppleResults as _};
-use rss_mdm_execution_service::apple_facts::*;
-use rss_mdm_registration_service::DevicePrincipal;
+use rss_mdm_device_service::control::apple_facts::*;
 use sqlx::PgConnection;
 use uuid::Uuid;
 pub(crate) struct AppleFacts(pub rss_mdm_apple_channel::flow_store::Store);
-pub(super) fn error(e: rss_mdm_apple_channel::Error) -> rss_mdm_execution_service::Error {
+pub(super) fn error(e: rss_mdm_apple_channel::Error) -> rss_mdm_device_service::control::Error {
     use rss_mdm_apple_channel::{Error as A, Failure as F};
-    use rss_mdm_execution_service::{Error as E, Failure};
+    use rss_mdm_device_service::control::{Error as E, Failure};
     match e {
         A::CommitUnknown => E::CommitUnknown,
         A::RollbackFailed => E::RollbackFailed,
@@ -63,34 +62,6 @@ impl AppleProfiles for AppleFacts {
         })
     }
 
-    fn declaration_candidates<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        p: &'a DevicePrincipal,
-        user: &'a str,
-    ) -> Pending<'a, Vec<Uuid>> {
-        Box::pin(async move {
-            self.0
-                .declaration_candidates(c, p, user)
-                .await
-                .map_err(error)
-        })
-    }
-    fn previous_declarations<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        device: String,
-        user: String,
-        owner: String,
-    ) -> Pending<'a, Vec<Uuid>> {
-        Box::pin(async move {
-            self.0
-                .previous_declarations(c, tenant, device, user, owner)
-                .await
-                .map_err(error)
-        })
-    }
     fn reserve_profile<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -128,6 +99,15 @@ impl AppleProfiles for AppleFacts {
     }
 }
 impl AppleResults for AppleFacts {
+    fn sent<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        ids: Vec<Uuid>,
+    ) -> Pending<'a, std::collections::BTreeSet<Uuid>> {
+        Box::pin(async move { self.0.sent_on(c, tenant, ids).await.map_err(error) })
+    }
+
     fn evidence_page<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -139,42 +119,20 @@ impl AppleResults for AppleFacts {
             self.0
                 .evidence_page(c, tenant, requests, native_values)
                 .await
-                .map(|rows| {
-                    rows.into_iter()
-                        .map(|(id, f)| {
-                            (
-                                id,
-                                match f {
-                                    protocol::AppleEvidence::Declarations(d) => {
-                                        AppleEvidence::Declarations(d)
-                                    }
-                                    protocol::AppleEvidence::Observations(o) => {
-                                        AppleEvidence::Observations(o)
-                                    }
-                                },
-                            )
-                        })
-                        .collect()
+                .map_err(error)?
+                .into_iter()
+                .map(|(id, f)| match f {
+                    protocol::AppleEvidence::Observations(o) => {
+                        Ok((id, AppleEvidence::Observations(o)))
+                    }
+                    protocol::AppleEvidence::Declarations(_) => {
+                        Err(rss_mdm_device_service::control::Error::Conflict)
+                    }
                 })
-                .map_err(error)
+                .collect()
         })
     }
-    fn declaration_page<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        registration: Uuid,
-        generation: i64,
-        after: Option<Uuid>,
-        limit: usize,
-    ) -> Pending<'a, Vec<(Uuid, String)>> {
-        Box::pin(async move {
-            self.0
-                .declaration_page(c, tenant, registration, generation, after, limit)
-                .await
-                .map_err(error)
-        })
-    }
+
     fn device_controls_supported<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -189,13 +147,13 @@ impl AppleResults for AppleFacts {
                     registration: r.registration,
                     generation: r.generation,
                     action: match r.action {
-                        rss_mdm_execution_service::device_control::Kind::Restart => {
+                        rss_mdm_device_service::control::device_control::Kind::Restart => {
                             protocol::ControlKind::Restart
                         }
-                        rss_mdm_execution_service::device_control::Kind::Lock => {
+                        rss_mdm_device_service::control::device_control::Kind::Lock => {
                             protocol::ControlKind::Lock
                         }
-                        rss_mdm_execution_service::device_control::Kind::Wipe => {
+                        rss_mdm_device_service::control::device_control::Kind::Wipe => {
                             protocol::ControlKind::Wipe
                         }
                     },
@@ -208,33 +166,7 @@ impl AppleResults for AppleFacts {
                 .map_err(error)
         })
     }
-    fn withdrawal_published<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        operation: Uuid,
-    ) -> Pending<'a, bool> {
-        Box::pin(async move {
-            self.0
-                .withdrawal_published(c, tenant, operation)
-                .await
-                .map_err(error)
-        })
-    }
-    fn declarations<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        operation: Uuid,
-        native_values: bool,
-    ) -> Pending<'a, Option<rss_mdm_apple_mdm::native::evidence::DeclarationEvidence>> {
-        Box::pin(async move {
-            self.0
-                .declarations(c, tenant, operation, native_values)
-                .await
-                .map_err(error)
-        })
-    }
+
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,

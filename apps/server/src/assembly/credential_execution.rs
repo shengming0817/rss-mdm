@@ -85,11 +85,11 @@ pub(crate) async fn assemble(
         protection: protection.clone(),
     });
     let copies = Arc::new(Copies {
-        control: rss_mdm_execution_service::credential_inputs::Copies::bind(
+        control: rss_mdm_device_service::control::credential_inputs::Copies::bind(
             runtime.clone(),
             tenant,
             protection.clone(),
-            channel.clone(),
+            Arc::new(super::device_materials::Channel(channel.clone())),
         )
         .await?,
         recovery: native::inputs::Copies::bind(runtime.clone(), tenant, protection, channel)
@@ -118,7 +118,7 @@ pub(crate) async fn assemble(
     })
 }
 struct Copies {
-    control: rss_mdm_execution_service::credential_inputs::Copies,
+    control: rss_mdm_device_service::control::credential_inputs::Copies,
     recovery: native::inputs::Copies,
 }
 impl rss_mdm_recovery_credentials::cleanup::InputCopies for Copies {
@@ -137,7 +137,7 @@ impl rss_mdm_recovery_credentials::cleanup::InputCopies for Copies {
                 .with_connection(move |c| {
                     Box::pin(async move {
                         Ok((
-                            rss_mdm_execution_service::storage::owned_ids_on(
+                            rss_mdm_device_service::control::storage::owned_ids_on(
                                 c,
                                 tenant,
                                 &[operation],
@@ -153,7 +153,29 @@ impl rss_mdm_recovery_credentials::cleanup::InputCopies for Copies {
                 .await
                 .map_err(|_| Error::Storage)?;
             match (control, recovery) {
-                (true, false) => self.control.purge_in(tx, operation).await,
+                (true, false) => self
+                    .control
+                    .purge_in(tx, operation)
+                    .await
+                    .map(|purged| {
+                        if purged {
+                            rss_mdm_recovery_credentials::cleanup::CopyState::Purged
+                        } else {
+                            rss_mdm_recovery_credentials::cleanup::CopyState::Retained
+                        }
+                    })
+                    .map_err(|e| match e {
+                        rss_mdm_device_service::control::transaction::Fault::Request(
+                            rss_mdm_device_service::control::Error::CommitUnknown,
+                        ) => Error::CommitUnknown,
+                        rss_mdm_device_service::control::transaction::Fault::Request(
+                            rss_mdm_device_service::control::Error::RollbackFailed,
+                        ) => Error::RollbackFailed,
+                        rss_mdm_device_service::control::transaction::Fault::Request(
+                            rss_mdm_device_service::control::Error::Conflict,
+                        ) => Error::Conflict,
+                        _ => Error::Storage,
+                    }),
                 (false, true) => self.recovery.purge_in(tx, operation).await,
                 _ => Err(Error::Integrity),
             }

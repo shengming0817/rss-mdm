@@ -302,7 +302,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         .await
                         .map_err(|e| ProcessError::at("startup.execution", e))?;
                         startup.stage_resource(DynManagedResource::new_box(
-                            rss_mdm_execution_service::Resource(execution.service.clone()),
+                            rss_mdm_device_service::control::Resource(execution.service.clone()),
                         ));
 let policies=crate::assembly::policy::management(&policy_application,Arc::new(rss_mdm_software_service::deployment::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.software.materials.inputs.clone())),compiled.config.enrollment_entries.clone(),&cursor_key,content.clone(),protection.clone(),compiled.config.software_distribution.mdm_enabled,execution.signing.loaded_key().is_some(),execution.credential_execution.is_some()).await.map_err(assembly_error)?;
 let events=crate::assembly::policy::events(policy_application.clone(),execution.materials.clone(),execution.software.materials.clone(),execution.registration.materials.clone(),execution.access_execution.materials.clone(),execution.credential_execution.as_ref().map(|v|v.materials.clone())).await.map_err(assembly_error)?;
@@ -311,7 +311,8 @@ let events=crate::assembly::policy::events(policy_application.clone(),execution.
 let telemetry_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.telemetry,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.telemetry_control_connections(),audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
  agent_facts: Arc::new(crate::assembly::agent_facts::AgentFacts),
-                    query_reads: execution.queries.clone(),
+                    read_pool: execution.read_pool.clone(),
+clock: Arc::new(crate::lifecycle::RuntimeTimer),
  audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),inventory_tenant,Arc::new(rss_mdm_device_service::planning::PlanningObjects))),objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects),
 };
                                 let service = config
@@ -397,7 +398,7 @@ let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
                         );
                         let device_work=Arc::new(rss_mdm_device_service::worker::DeviceWork::new(
                             associations.clone(),source_runtime.clone(),scheduler.store.clone(),
-                            Arc::new(crate::registration_lifecycle::Bridge),compiled.config.background.device_concurrency,
+                            compiled.config.background.device_concurrency,
                             rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(8)),
                         ).await.map_err(|_|ProcessError::at("startup.device_worker",Error::Unavailable(Failure::Database)))?);
                         let timeline = access

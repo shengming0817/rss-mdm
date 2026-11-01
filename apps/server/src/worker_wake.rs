@@ -243,9 +243,9 @@ impl ManagedResource for Listener {
 mod tests;
 
 impl Signals {
-    pub(crate) fn execution(&self) -> Arc<rss_mdm_execution_service::worker_wake::Signals> {
+    pub(crate) fn execution(&self) -> Arc<rss_mdm_device_service::control::worker_wake::Signals> {
         Arc::new(
-            rss_mdm_execution_service::worker_wake::Signals::from_handles([
+            rss_mdm_device_service::control::worker_wake::Signals::from_handles([
                 self.handle(Work::CommandRelay),
                 self.handle(Work::CommandRecovery),
             ]),

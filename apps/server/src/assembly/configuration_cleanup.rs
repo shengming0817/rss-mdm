@@ -1,6 +1,6 @@
 //! The retirement coordinator borrows Policy cleanup on its original transaction.
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_execution_service::{
+use rss_mdm_device_service::control::{
     Error, Failure,
     configuration_cleanup::*,
     transaction::{Fault, Result},
@@ -34,7 +34,7 @@ impl ConfigurationCleanup for Cleanup {
     }
 }
 
-pub(super) fn error(e: rss_mdm_policy_service::Error) -> rss_mdm_execution_service::Error {
+pub(super) fn error(e: rss_mdm_policy_service::Error) -> rss_mdm_device_service::control::Error {
     use rss_mdm_policy_service::{Error as P, Failure as F};
     match e {
         P::CommitUnknown => Error::CommitUnknown,
@@ -50,7 +50,7 @@ pub(super) fn error(e: rss_mdm_policy_service::Error) -> rss_mdm_execution_servi
         P::Unsupported => Error::Unsupported,
         P::Unavailable(F::Inventory(f)) => rss_mdm_inventory_service::Error::Unavailable(f).into(),
         P::Unavailable(F::PreparationConfiguration) => {
-            Error::Configuration(rss_mdm_execution_service::ConfigIssue::Execution)
+            Error::Configuration(rss_mdm_device_service::control::ConfigIssue::Execution)
         }
         P::Unavailable(f) => Error::Unavailable(match f {
             F::Preparation => Failure::CommandStorage,

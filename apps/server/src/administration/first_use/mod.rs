@@ -373,7 +373,7 @@ mod permission_tests {
             Error::Forbidden,
             Error::Authorization(rss_mdm_authorization_service::Error::Unauthorized),
             Error::Webhook(rss_mdm_webhook_service::Error::Denied),
-            Error::Execution(rss_mdm_execution_service::Error::Forbidden),
+            Error::Execution(rss_mdm_device_service::control::Error::Forbidden),
         ] {
             let step = projected_step("webhook", &["webhook-own"], Err(error)).unwrap();
             assert_eq!(step.status, Status::Forbidden);

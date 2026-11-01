@@ -3,7 +3,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Owner {
-    Execution,
+    Device,
     Access,
     Credential,
     Script,
@@ -18,8 +18,8 @@ pub(crate) async fn on(
 ) -> Result<Owner, sqlx::Error> {
     let owners = [
         (
-            Owner::Execution,
-            rss_mdm_execution_service::capacity::owned_ids_on(c, tenant, &[id]).await?,
+            Owner::Device,
+            rss_mdm_device_service::control::capacity::owned_ids_on(c, tenant, &[id]).await?,
         ),
         (
             Owner::Script,

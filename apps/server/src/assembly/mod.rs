@@ -51,7 +51,7 @@ pub(crate) struct Assembly {
     pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) execution: Arc<rss_mdm_device_service::control::Service>,
     pub(crate) access_execution: access_execution::Assembly,
     pub(crate) credential_execution: Option<credential_execution::Assembly>,
     pub(crate) agent_tasks: Arc<agent_tasks::AgentTasks>,
@@ -60,7 +60,7 @@ pub(crate) struct Assembly {
     pub(crate) agent_delivery: Arc<rss_mdm_agent_channel::delivery::Delivery>,
     pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
     pub(crate) task_reads: Arc<task_reads::Reads>,
-    pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    pub(crate) queries: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub(crate) policy_application: Arc<rss_mdm_policy_service::application::Application>,
@@ -537,6 +537,9 @@ pub(crate) async fn from_compiled(
         content: content_writer.clone(),
     });
     let operation_reads = Arc::new(operation_reads::Operations {
+        apple: Arc::new(rss_mdm_apple_channel::flow_store::Store {
+            protection: protection.clone(),
+        }),
         recovery: credential_execution.as_ref().map(|v| v.native.clone()),
         tasks: task_reads.clone(),
         registration: registration.native.clone(),
@@ -790,8 +793,6 @@ mod configuration_channels;
 
 mod configuration_cleanup;
 
-mod configuration_queries;
-
 pub(crate) mod timeline_associations;
 
 mod collection_ports;
@@ -834,3 +835,9 @@ mod credential_execution;
 #[cfg(test)]
 #[path = "../../tests/credential_owners/mod.rs"]
 mod credential_owners_t2;
+
+mod device_materials;
+
+#[cfg(test)]
+#[path = "../../tests/device/mod.rs"]
+mod device_t2;

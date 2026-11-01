@@ -433,8 +433,8 @@ pub(super) async fn operation_permissions(
                     .permissions()
                     .map_err(|_| Error::Forbidden)?
             }
-            super::native_ownership::Owner::Execution => {
-                rss_mdm_execution_service::storage::load_on(c, tenant, protection, id)
+            super::native_ownership::Owner::Device => {
+                rss_mdm_device_service::control::storage::load_on(c, tenant, protection, id)
                     .await
                     .map_err(super::policy_ports::fault)
                     .map_err(fault)?

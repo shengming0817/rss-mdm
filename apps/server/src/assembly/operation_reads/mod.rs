@@ -6,17 +6,19 @@ use rss_mdm_query::{cursor::CursorCodec, directory::Query};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
+mod declarations;
 mod selection;
 pub(crate) struct Operations {
+    pub apple: Arc<rss_mdm_apple_channel::flow_store::Store>,
     pub tasks: Arc<super::task_reads::Reads>,
     pub registration: Arc<rss_mdm_registration_service::installation::Service>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
-    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub execution: Arc<rss_mdm_device_service::control::Service>,
 }
 fn sql(e: sqlx::Error) -> Error {
     super::task_reads::sql(e)
 }
-fn execution_fault(e: rss_mdm_execution_service::transaction::Fault) -> Error {
+fn execution_fault(e: rss_mdm_device_service::control::transaction::Fault) -> Error {
     super::task_reads::history::execution_fault(e)
 }
 fn software_fault(e: rss_mdm_software_service::deployment::transaction::Fault) -> Error {
@@ -79,7 +81,7 @@ fn relation(
 ) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut sql = sqlx::QueryBuilder::new("WITH tenant_context AS(SELECT ");
     sql.push_bind(tenant).push("::uuid),executions AS(");
-    sql.push(rss_mdm_execution_service::directory::RELATION_SQL)
+    sql.push("SELECT id,device,kind,registration,generation,source_kind,policy_version,policy,deadline,status,input_bytes FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid UNION ALL ").push(rss_mdm_device_service::control::directory::RELATION_SQL)
         .push(" UNION ALL ")
         .push(rss_mdm_software_service::deployment::directory::RELATION_SQL)
         .push(" UNION ALL ")
@@ -125,14 +127,36 @@ impl Operations {
         grant.require(proof, Permission::OperationRead, Some(device))?;
         use super::native_ownership::{self, Owner};
         match native_ownership::on(c, self.tasks.tenant, id).await? {
-            Owner::Execution | Owner::Configuration => self
+            Owner::Device => self
                 .tasks
                 .execution
                 .read_on(c, proof, grant, now, device, id, redacted)
                 .await
                 .map(rss_mdm_management_http::execution::projection::command)
-                .map(Detail::Execution)
+                .map(Detail::Device)
                 .map_err(execution_fault),
+            Owner::Configuration => {
+                let mut detail = self
+                    .tasks
+                    .configuration
+                    .detail_on(c, proof, grant, now, device, id)
+                    .await
+                    .map_err(super::task_reads::configuration_fault)?;
+                if redacted {
+                    detail.observation = self
+                        .tasks
+                        .configuration
+                        .evidence_on(c, proof, grant, vec![id])
+                        .await
+                        .map_err(super::task_reads::configuration_fault)?
+                        .remove(&id)
+                        .ok_or(Error::Conflict)?
+                        .observation;
+                }
+                Ok(Detail::Configuration(
+                    rss_mdm_management_http::execution::projection::configuration_command(detail),
+                ))
+            }
             Owner::Software => self
                 .tasks
                 .software
@@ -171,15 +195,42 @@ impl Operations {
         use super::native_ownership::{self, Owner};
         let (mut execution, mut software, mut registration) = (Vec::new(), Vec::new(), Vec::new());
         let mut recovery = Vec::new();
+        let mut configuration = Vec::new();
         for (id, owner) in native_ownership::batch_on(c, self.tasks.tenant, &ids).await? {
             match owner {
-                Owner::Execution | Owner::Configuration => execution.push(id),
+                Owner::Device => execution.push(id),
+                Owner::Configuration => configuration.push(id),
                 Owner::Software => software.push(id),
                 Owner::Registration => registration.push(id),
                 Owner::Recovery => recovery.push(id),
             }
         }
         let mut result = BTreeMap::new();
+        for (id, value) in self
+            .tasks
+            .configuration
+            .classify_on(c, proof, grant, configuration, now)
+            .await
+            .map_err(super::task_reads::configuration_fault)?
+        {
+            use rss_mdm_policy_service::configuration::queries::records::{
+                Authorization as A, BlockReason as B,
+            };
+            let auth = match value {
+                A::Authorized => Authorization::Authorized,
+                A::NotApplicable => Authorization::NotApplicable,
+                A::Blocked { reason } => Authorization::Blocked {
+                    reason: match reason {
+                        B::LifecycleBlocked => BlockReason::LifecycleBlocked,
+                        B::RegistrationChanged => BlockReason::RegistrationChanged,
+                        B::InputMismatch => BlockReason::InputMismatch,
+                        B::SourceInvalid => BlockReason::SourceInvalid,
+                    },
+                },
+            };
+            result.insert(id, (auth, Reauthorization::NotApplicable));
+        }
+
         for (id, d) in self
             .tasks
             .execution
@@ -253,9 +304,11 @@ impl Operations {
 }
 
 fn execution_authorization(
-    v: rss_mdm_execution_service::authorization_decision::Authorization,
+    v: rss_mdm_device_service::control::authorization_decision::Authorization,
 ) -> Authorization {
-    use rss_mdm_execution_service::authorization_decision::{Authorization as A, BlockReason as R};
+    use rss_mdm_device_service::control::authorization_decision::{
+        Authorization as A, BlockReason as R,
+    };
     match v {
         A::Authorized => Authorization::Authorized,
         A::NotApplicable => Authorization::NotApplicable,
@@ -270,9 +323,9 @@ fn execution_authorization(
     }
 }
 fn execution_reauthorization(
-    v: rss_mdm_execution_service::authorization_decision::Reauthorization,
+    v: rss_mdm_device_service::control::authorization_decision::Reauthorization,
 ) -> Reauthorization {
-    use rss_mdm_execution_service::authorization_decision::{
+    use rss_mdm_device_service::control::authorization_decision::{
         Reauthorization as A, ReauthorizationReason as R,
     };
     match v {
@@ -354,6 +407,20 @@ fn registration_authorization(
     }
 }
 impl rss_mdm_management_http::execution::operations::Reads for Operations {
+    fn declarations<'a>(
+        &'a self,
+        proof: &'a AuthorizedPrincipal,
+        device: &'a str,
+        query: &'a rss_mdm_query::window::Query,
+        audit: &'a RequestAudit,
+        codec: &'a CursorCodec,
+    ) -> rss_mdm_management_http::execution::task_reads::Pending<
+        'a,
+        rss_mdm_management_http::execution::declarations::Page,
+    > {
+        Box::pin(self.declarations_read(proof, device, query, audit, codec))
+    }
+
     fn directory<'a>(
         &'a self,
         proof: &'a AuthorizedPrincipal,
@@ -369,13 +436,13 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                 let page=selection::page(s,c,(p,grant),q,codec,&binding,now).await?;
                 let mut run_ids=Vec::new();
                 if q.selects("evidence"){for row in &page.items{if row["kind"]=="action_run"{run_ids.push(uuid::Uuid::parse_str(row["id"].as_str().ok_or(Error::Malformed)?).map_err(|_|Error::Malformed)?);}}}
-                let execution_ids=rss_mdm_execution_service::capacity::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
+                let execution_ids=rss_mdm_device_service::control::capacity::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let software_ids=rss_mdm_software_service::deployment::capacity::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let enrollment_ids=rss_mdm_registration_service::enrollment::tasks::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let access_ids=rss_mdm_registration_service::device_access::execution::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let credential_ids=rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 for id in &run_ids{if [access_ids.contains(id),credential_ids.contains(id),execution_ids.contains(id),software_ids.contains(id),enrollment_ids.contains(id)].into_iter().filter(|v|*v).count()!=1{return Err(Error::Unavailable(Failure::CommandInvariant));}}
-                let mut execution=rss_mdm_execution_service::directory::run_summaries_on(c,s.tasks.tenant,execution_ids.into_iter().collect()).await.map_err(execution_fault)?;
+                let mut execution=rss_mdm_device_service::control::directory::run_summaries_on(c,s.tasks.tenant,execution_ids.into_iter().collect()).await.map_err(execution_fault)?;
                 let mut software=rss_mdm_software_service::deployment::directory::run_summaries_on(c,s.tasks.tenant,software_ids.into_iter().collect()).await.map_err(software_fault)?;
                 let mut items=Vec::with_capacity(page.items.len());
                 for row in page.items{
@@ -385,7 +452,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                     let evidence=if !q.selects("evidence"){None}else{Some(match metadata.kind{
                         KindOfOperation::Command=>Evidence::Native(Box::new(s.detail_on(c,p,grant,now,&metadata.device,metadata.id,true).await?)),
                         KindOfOperation::ActionRun=>{
-                            if let Some(v)=execution.remove(&metadata.id){Evidence::Execution(v)}
+                            if let Some(v)=execution.remove(&metadata.id){Evidence::Device(v)}
                             else if let Some(v)=software.remove(&metadata.id){Evidence::Software(v)}
                             else if access_ids.contains(&metadata.id){Evidence::Access(rss_mdm_registration_service::device_access::execution::queries::detail_on(c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::access_fault)?)}
                             else if credential_ids.contains(&metadata.id){Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::credential_fault)?)}
@@ -450,12 +517,14 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
         proof: &'a AuthorizedPrincipal,
         device: &'a str,
         id: Uuid,
-        change: &'a rss_mdm_execution_service::Change,
-        reauthorization: Option<&'a rss_mdm_execution_service::device_control::Reauthorization>,
+        change: &'a rss_mdm_device_service::control::Change,
+        reauthorization: Option<
+            &'a rss_mdm_device_service::control::device_control::Reauthorization,
+        >,
         audit: &'a RequestAudit,
     ) -> rss_mdm_management_http::execution::task_reads::Pending<
         'a,
-        rss_mdm_execution_service::ChangedReceipt,
+        rss_mdm_device_service::control::ChangedReceipt,
     > {
         Box::pin(async move {
             let owner = self
@@ -471,7 +540,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                 })
                 .await?;
             // Only direct device controls support management cancel/reauthorization; policies own desired work.
-            if owner != super::native_ownership::Owner::Execution {
+            if owner != super::native_ownership::Owner::Device {
                 return Err(Error::Conflict);
             }
             self.execution

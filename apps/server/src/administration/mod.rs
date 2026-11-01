@@ -18,8 +18,8 @@ fn permission_denied(error: &crate::Error) -> bool {
                     | rss_mdm_authorization_service::Error::Unauthorized
             )
             | Error::Execution(
-                rss_mdm_execution_service::Error::Forbidden
-                    | rss_mdm_execution_service::Error::Unauthorized
+                rss_mdm_device_service::control::Error::Forbidden
+                    | rss_mdm_device_service::control::Error::Unauthorized
             )
             | Error::Webhook(
                 rss_mdm_webhook_service::Error::Denied

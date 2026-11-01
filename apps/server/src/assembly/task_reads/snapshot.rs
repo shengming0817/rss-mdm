@@ -6,6 +6,27 @@ impl Reads {
     pub(crate) async fn snapshot<C: Send, R: Send, F>(
         &self,
         proof: &AuthorizedPrincipal,
+        context: C,
+        operation: F,
+    ) -> Result<R, Error>
+    where
+        F: for<'c> FnOnce(
+                &'c mut C,
+                &'c mut sqlx::PgConnection,
+                &'c Snapshot,
+                i64,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<R, Error>> + Send + 'c>,
+            > + Send,
+    {
+        self.snapshot_registered(proof, context, |ctx, c, grant, now, _| {
+            operation(ctx, c, grant, now)
+        })
+        .await
+    }
+    pub(crate) async fn snapshot_registered<C: Send, R: Send, F>(
+        &self,
+        proof: &AuthorizedPrincipal,
         mut context: C,
         operation: F,
     ) -> Result<R, Error>
@@ -15,6 +36,10 @@ impl Reads {
                 &'c mut sqlx::PgConnection,
                 &'c Snapshot,
                 i64,
+                &'c mut Option<(
+                    String,
+                    Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
+                )>,
             ) -> std::pin::Pin<
                 Box<dyn std::future::Future<Output = Result<R, Error>> + Send + 'c>,
             > + Send,
@@ -40,11 +65,12 @@ impl Reads {
             let grant=rss_mdm_authorization_service::snapshot_on(&mut tx,proof.tenant_id(),proof.instance_id()).await?;
             let binding=grant.query_binding(proof)?;
             let now=sqlx::query_scalar("SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint").fetch_one(&mut *tx).await.map_err(sql)?;
-            let value=operation(&mut context,&mut tx,&grant,now).await?;
+            let mut registration=None;
+            let value=operation(&mut context,&mut tx,&grant,now,&mut registration).await?;
             tx.rollback().await.map_err(sql)?;
-            Ok::<_,Error>((value,binding))
+            Ok::<_,Error>((value,binding,registration))
         }).await;
-        let (value, binding) = match result {
+        let (value, binding, registration) = match result {
             Ok(Ok(v)) => v,
             other => {
                 connection.close_on_drop();
@@ -67,6 +93,11 @@ impl Reads {
             rss_mdm_authorization_service::lock_shared_on(&mut tx,proof.tenant_id(),proof.instance_id()).await?;
             let grant=rss_mdm_authorization_service::snapshot_on(&mut tx,proof.tenant_id(),proof.instance_id()).await?;
             if grant.query_binding(proof)?!=binding {return Err(Error::QueryReadConflict);}
+            if let Some((device,expected))=&registration {
+                use rss_mdm_registration_service::device::endpoints;
+                endpoints::lock_in(&mut tx,proof.tenant_id(),device,rss_mdm_inventory::Channel::Mdm).await?;
+                if endpoints::current_in(&mut tx,proof.tenant_id(),device,rss_mdm_inventory::Channel::Mdm).await? != *expected { return Err(Error::QueryReadConflict); }
+            }
             proof.check_live()?;
             tx.rollback().await.map_err(sql)?;
             Ok::<_,Error>(())

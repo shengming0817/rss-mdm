@@ -175,7 +175,7 @@ pub const CATALOG: &[Item] = &[
     item!(
         "task-key",
         Tenant,
-        "execution-service",
+        "device-control",
         DomainService,
         SigningTrust,
         RegistrationConfigurationRead

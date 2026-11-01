@@ -9,7 +9,7 @@ use uuid::Uuid;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Owner {
     Configuration,
-    Execution,
+    Device,
     Software,
     Registration,
     Recovery,
@@ -34,7 +34,7 @@ pub(super) async fn batch_on(
         rss_mdm_policy_service::configuration::storage::owned_ids_on(c, tenant, ids)
             .await
             .map_err(|_| Error::Unavailable(Failure::Database))?;
-    let execution = rss_mdm_execution_service::storage::owned_ids_on(c, tenant, ids)
+    let execution = rss_mdm_device_service::control::storage::owned_ids_on(c, tenant, ids)
         .await
         .map_err(|_| Error::Unavailable(Failure::Database))?;
     let software = rss_mdm_software_service::deployment::storage::owned_ids_on(c, tenant, ids)
@@ -51,7 +51,7 @@ pub(super) async fn batch_on(
         .map(|id| {
             let owners = [
                 (configuration.contains(id), Owner::Configuration),
-                (execution.contains(id), Owner::Execution),
+                (execution.contains(id), Owner::Device),
                 (software.contains(id), Owner::Software),
                 (registration.contains(id), Owner::Registration),
                 (recovery.contains(id), Owner::Recovery),
