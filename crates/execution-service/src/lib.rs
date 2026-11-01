@@ -80,7 +80,7 @@ pub struct Dependencies {
     pub task_cleanup: Arc<dyn crate::task_cleanup::TaskCleanup>,
     pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub worker_concurrency: usize,
-    pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
+    pub lock_pins: Option<Arc<rss_mdm_recovery_credentials::lock_pin::LockPins>>,
     pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn agent_facts::Store>,
@@ -109,7 +109,7 @@ impl ExecutionService {
         Self {
             transactions: transactions::ExecutionTransactions {
                 capacity: dependencies.capacity,
-                recovery_credentials: dependencies.recovery_credentials,
+                lock_pins: dependencies.lock_pins,
 
                 source: dependencies.source,
                 protection: dependencies.protection,
@@ -135,9 +135,7 @@ impl ExecutionService {
             reconcile: dependencies.reconcile,
         }
     }
-    pub fn recovery_credentials(&self) -> Option<Arc<rss_mdm_recovery_credentials::Protection>> {
-        self.transactions.recovery_credentials.clone()
-    }
+
     pub fn health(&self) -> health::Health {
         self.readiness.health()
     }
@@ -174,57 +172,14 @@ pub use transactions::ExecutionMaterials;
 
 pub mod queries;
 
-/// Policy publication receives immutable input preparation, never execution readers or workers.
-pub struct Inputs {
-    pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) tenant: TenantId,
-    pub(crate) materials: Arc<InputMaterials>,
-}
-/// Immutable preparation ports shared by independently bound transaction participants.
-pub struct InputMaterials {
-    pub recovery_enabled: bool,
-    pub protection: Arc<rss_mdm_native_protection::Protector>,
-    pub content: Option<Arc<rss_mdm_content_service::Store>>,
-    pub signing_enabled: bool,
-}
-impl Inputs {
-    /// Bind preparation and publication to the actual initiating runtime.
-    pub fn bind(runtime: Arc<PgRuntime>, tenant: TenantId, materials: Arc<InputMaterials>) -> Self {
-        Self {
-            runtime,
-            tenant,
-            materials,
-        }
-    }
-    pub(crate) fn validate_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
-        self.runtime.validate_transaction(tx)?;
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
-        Ok(())
-    }
-}
-
-pub const INSTALL_SQL: &str = concat!(
-    include_str!("../schema/install.sql"),
-    "\n",
-    include_str!("../schema/device-access-qualification.sql")
-);
+pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const RELATIONS_SQL: &str = concat!(
     include_str!("../schema/relations.sql"),
     "\n",
     include_str!("../schema/command-runtime.sql")
 );
 
-pub mod recovery_credentials;
-
-pub(crate) mod credential_tasks;
-
-mod credential_maintenance;
-
-impl Inputs {}
-
-pub mod device_access;
+pub mod credential_inputs;
 
 mod storage_authority;
 pub use storage_authority::verify_authority;

@@ -13,6 +13,4 @@ pub mod poll;
 
 pub mod history;
 
-pub(crate) mod evidence;
-
 pub mod result;

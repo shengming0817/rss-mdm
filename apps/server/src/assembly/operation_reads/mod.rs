@@ -10,6 +10,7 @@ mod selection;
 pub(crate) struct Operations {
     pub tasks: Arc<super::task_reads::Reads>,
     pub registration: Arc<rss_mdm_registration_service::installation::Service>,
+    pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
 }
 fn sql(e: sqlx::Error) -> Error {
@@ -84,7 +85,13 @@ fn relation(
         .push(" UNION ALL ")
         .push(rss_mdm_registration_service::installation::queries::RELATION_SQL)
         .push(" UNION ALL ")
-        .push(rss_mdm_registration_service::enrollment::tasks::queries::RELATION_SQL);
+        .push(rss_mdm_registration_service::enrollment::tasks::queries::RELATION_SQL)
+        .push(" UNION ALL ")
+        .push(rss_mdm_registration_service::device_access::execution::queries::RELATION_SQL)
+        .push(" UNION ALL ")
+        .push(rss_mdm_recovery_credentials::tasks::queries::RELATION_SQL)
+        .push(" UNION ALL ")
+        .push(rss_mdm_recovery_credentials::native::queries::RELATION_SQL);
     sql.push("),source_probe AS MATERIALIZED(SELECT id FROM executions LIMIT ")
         .push_bind(source_limit + 1)
         .push("),source_count AS MATERIALIZED (");
@@ -135,6 +142,15 @@ impl Operations {
                 .map(Box::new)
                 .map(Detail::Software)
                 .map_err(software_fault),
+            Owner::Recovery => self
+                .recovery
+                .as_ref()
+                .ok_or(Error::Unsupported)?
+                .read_on(c, proof, grant, device, id)
+                .await
+                .map(rss_mdm_management_http::execution::projection::recovery_command)
+                .map(Detail::Recovery)
+                .map_err(recovery_fault),
             Owner::Registration => self
                 .registration
                 .read_on(c, proof, grant, device, id)
@@ -154,11 +170,13 @@ impl Operations {
     ) -> Result<BTreeMap<Uuid, (Authorization, Reauthorization)>, Error> {
         use super::native_ownership::{self, Owner};
         let (mut execution, mut software, mut registration) = (Vec::new(), Vec::new(), Vec::new());
+        let mut recovery = Vec::new();
         for (id, owner) in native_ownership::batch_on(c, self.tasks.tenant, &ids).await? {
             match owner {
                 Owner::Execution | Owner::Configuration => execution.push(id),
                 Owner::Software => software.push(id),
                 Owner::Registration => registration.push(id),
+                Owner::Recovery => recovery.push(id),
             }
         }
         let mut result = BTreeMap::new();
@@ -205,6 +223,30 @@ impl Operations {
                     Reauthorization::NotApplicable,
                 ),
             );
+        }
+        if !recovery.is_empty() {
+            for (id, d) in self
+                .recovery
+                .as_ref()
+                .ok_or(Error::Unsupported)?
+                .decisions_on(c, recovery)
+                .await
+                .map_err(recovery_fault)?
+            {
+                use rss_mdm_recovery_credentials::native::queries::Authorization as A;
+                result.insert(
+                    id,
+                    (
+                        match d.authorization {
+                            A::Authorized => Authorization::Authorized,
+                            A::Blocked { .. } => Authorization::Blocked {
+                                reason: BlockReason::SourceInvalid,
+                            },
+                        },
+                        Reauthorization::NotApplicable,
+                    ),
+                );
+            }
         }
         Ok(result)
     }
@@ -330,7 +372,9 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                 let execution_ids=rss_mdm_execution_service::capacity::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let software_ids=rss_mdm_software_service::deployment::capacity::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let enrollment_ids=rss_mdm_registration_service::enrollment::tasks::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
-                for id in &run_ids{if [execution_ids.contains(id),software_ids.contains(id),enrollment_ids.contains(id)].into_iter().filter(|v|*v).count()!=1{return Err(Error::Unavailable(Failure::CommandInvariant));}}
+                let access_ids=rss_mdm_registration_service::device_access::execution::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
+                let credential_ids=rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
+                for id in &run_ids{if [access_ids.contains(id),credential_ids.contains(id),execution_ids.contains(id),software_ids.contains(id),enrollment_ids.contains(id)].into_iter().filter(|v|*v).count()!=1{return Err(Error::Unavailable(Failure::CommandInvariant));}}
                 let mut execution=rss_mdm_execution_service::directory::run_summaries_on(c,s.tasks.tenant,execution_ids.into_iter().collect()).await.map_err(execution_fault)?;
                 let mut software=rss_mdm_software_service::deployment::directory::run_summaries_on(c,s.tasks.tenant,software_ids.into_iter().collect()).await.map_err(software_fault)?;
                 let mut items=Vec::with_capacity(page.items.len());
@@ -343,6 +387,8 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                         KindOfOperation::ActionRun=>{
                             if let Some(v)=execution.remove(&metadata.id){Evidence::Execution(v)}
                             else if let Some(v)=software.remove(&metadata.id){Evidence::Software(v)}
+                            else if access_ids.contains(&metadata.id){Evidence::Access(rss_mdm_registration_service::device_access::execution::queries::detail_on(c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::access_fault)?)}
+                            else if credential_ids.contains(&metadata.id){Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::credential_fault)?)}
                             else{Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::enrollment_fault)?)}
                         }
                     })};
@@ -433,5 +479,14 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                 .await
                 .map_err(Into::into)
         })
+    }
+}
+
+fn recovery_fault(e: rss_mdm_recovery_credentials::native::transaction::Fault) -> Error {
+    use rss_mdm_recovery_credentials::native::transaction::Fault as F;
+    match e {
+        F::Sql(e) => sql(e),
+        F::Storage(_) => Error::Unavailable(Failure::Database),
+        F::Request(e) => e.into(),
     }
 }

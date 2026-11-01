@@ -614,6 +614,16 @@ pub async fn source_operation_in(
 pub async fn cleared_in(c: &mut PgConnection, coordinates: &Coordinates) -> Result<(), Error> {
     active_in(c, coordinates.tenant, &coordinates.binding).await?;
     locked_version(c, coordinates).await?;
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM mdm_recovery.entries WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(coordinates.tenant)
+    .bind(coordinates.material)
+    .fetch_one(&mut *c)
+    .await?;
+    if revision != coordinates.version {
+        return Err(Error::Conflict);
+    }
     sqlx::query("UPDATE mdm_recovery.versions SET validity='revoked',pending=false,invalidated_at=coalesce(invalidated_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1 AND entry=$2 AND (invalidated_at IS NULL OR pending)")
         .bind(coordinates.tenant).bind(coordinates.material).execute(&mut *c).await?;
     sqlx::query(

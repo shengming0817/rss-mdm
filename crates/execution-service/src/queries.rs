@@ -14,7 +14,6 @@ pub struct Queries {
     pub(crate) apple_results: Arc<dyn apple_facts::AppleResults>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
-    pub(crate) inputs: Arc<Inputs>,
     pub(crate) signed: bool,
     pub(crate) content_available: bool,
 }
@@ -28,7 +27,6 @@ pub struct Dependencies {
     pub apple_results: Arc<dyn apple_facts::AppleResults>,
     pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
-    pub inputs: Arc<Inputs>,
     pub signed: bool,
     pub content_available: bool,
 }
@@ -45,7 +43,6 @@ impl Queries {
             apple_results: dependencies.apple_results,
             runtime: dependencies.runtime,
             tenant: dependencies.tenant,
-            inputs: dependencies.inputs,
             signed: dependencies.signed,
             content_available: dependencies.content_available,
         }

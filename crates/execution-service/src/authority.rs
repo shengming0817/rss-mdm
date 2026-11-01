@@ -18,13 +18,6 @@ pub enum ExecutionAuthority {
         required: Vec<Permission>,
     },
 
-    Credential {
-        required: Vec<Permission>,
-        actor: Actor,
-        registration: uuid::Uuid,
-        generation: i64,
-        operation: uuid::Uuid,
-    },
     DeviceControl {
         action: crate::device_control::Kind,
         confirmation: Option<crate::device_control::RegistrationConfirmation>,
@@ -47,7 +40,7 @@ impl ExecutionAuthority {
             .await
             .map_err(Error::from),
 
-            Self::DeviceControl { .. } | Self::Credential { .. } => Ok(true),
+            Self::DeviceControl { .. } => Ok(true),
         }
     }
     pub(crate) fn for_control(
@@ -71,23 +64,21 @@ impl ExecutionAuthority {
     pub fn apple_owner(&self, _operation: uuid::Uuid) -> Result<String, Error> {
         Ok(match self {
             Self::Retirement { retirement, .. } => format!("retirement:{retirement}"),
-            Self::DeviceControl { actor, .. } | Self::Credential { actor, .. } => {
+            Self::DeviceControl { actor, .. } => {
                 format!("actor:{}:{}", actor.instance_id(), actor.subject())
             }
         })
     }
     pub fn required(&self) -> &[Permission] {
         match self {
-            Self::Retirement { required, .. }
-            | Self::Credential { required, .. }
-            | Self::DeviceControl { required, .. } => required,
+            Self::Retirement { required, .. } | Self::DeviceControl { required, .. } => required,
         }
     }
     pub fn bind_required(&mut self, permissions: Vec<Permission>) {
         match self {
-            Self::Retirement { required, .. }
-            | Self::Credential { required, .. }
-            | Self::DeviceControl { required, .. } => *required = permissions,
+            Self::Retirement { required, .. } | Self::DeviceControl { required, .. } => {
+                *required = permissions
+            }
         }
     }
 

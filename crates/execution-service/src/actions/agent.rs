@@ -1,6 +1,6 @@
 use super::storage as db;
 use crate::{Error, device::DevicePrincipal};
-use crate::{ExecutionService, Result, checked_input, storage};
+use crate::{ExecutionService, Result, storage};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::Fact;
 use rss_mdm_task_state::{Cancellation, Execution};
@@ -67,87 +67,7 @@ impl ExecutionService {
         super::run_recovery::lock_device(tx, p.device()).await?;
         principal(&self.transactions, tx, p).await
     }
-    pub async fn agent_admit_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        p: &DevicePrincipal,
-        input: &wire::TaskClaimRequest,
-        audit: &RequestAudit,
-    ) -> Result<()> {
-        let service = self;
-        let now = storage::now(tx).await?;
-        let binding = crate::agent_facts::agent_binding_in(
-            tx,
-            service.transactions.agent_store.clone(),
-            p.registration(),
-        )
-        .await?
-        .ok_or(Error::Forbidden)?;
-        let versions = crate::sources::admission::agent_versions_in(tx, p.registration())
-            .await?
-            .into_iter()
-            .map(|version| (version, Uuid::new_v4()))
-            .collect::<Vec<_>>();
-        let partitions = [];
 
-        let access = if binding
-            .capabilities
-            .contains(&wire::Capability::DeviceAccessV1)
-        {
-            let prepared =
-                crate::device_access::prepare_reconciliation_in(&service.transactions, tx, p)
-                    .await?;
-            Some(prepared)
-        } else {
-            None
-        };
-        crate::transaction::prepare_audit_in(
-            &service.transactions.audit_store,
-            tx,
-            audit,
-            &partitions,
-        )
-        .await?;
-        for (id, run_id) in versions {
-            let policy =
-                db::load_policy_version(&service.transactions.policy_reader, tx, id).await?;
-            let target = crate::Target {
-                device: p.device().into(),
-                registration: p.registration(),
-                generation: p.generation(),
-            };
-            match &policy {
-                db::ScheduledPolicy::Credential(v)
-                    if crate::credential_tasks::capable(&binding, v.frozen.input.architecture) =>
-                {
-                    super::production::accept_for_device(
-                        &service.transactions,
-                        tx,
-                        &policy,
-                        &target,
-                        super::production::AdmissionTrigger::Agent(input.operation_id()),
-                        now,
-                        run_id,
-                    )
-                    .await?
-                }
-
-                _ => (),
-            }
-        }
-        if let Some(prepared) = access {
-            crate::device_access::reconcile_in(
-                &service.transactions,
-                tx,
-                prepared,
-                now,
-                rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
-                audit,
-            )
-            .await?;
-        }
-        Ok(())
-    }
     pub async fn agent_offer_one_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -175,17 +95,9 @@ impl ExecutionService {
         let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
         let previous = run.state.clone();
         run.state.expire(now);
-        let capable = match &plan {
-            db::ScheduledPolicy::DeviceAccess(v) => {
-                crate::device_access::capable(&binding, &v.binding.configuration.windows)
-            }
-            db::ScheduledPolicy::Retirement(_) => binding
-                .capabilities
-                .contains(&wire::Capability::DeviceUnmanageV1),
-            db::ScheduledPolicy::Credential(v) => {
-                crate::credential_tasks::capable(&binding, v.frozen.input.architecture)
-            }
-        };
+        let capable = binding
+            .capabilities
+            .contains(&wire::Capability::DeviceUnmanageV1);
         let allowed = capable
             && plan
                 .authorized_run_in(&service.transactions, tx, &run, now)
@@ -338,7 +250,6 @@ impl ExecutionService {
             plan.completion_authorized_in(&service.transactions, tx, &run.target, now)
                 .await?
         };
-        let effect_allowed = allowed && run.state.cancellation == Cancellation::None;
         if matches!(
             input.event(),
             wire::TaskEvent::Start | wire::TaskEvent::Received
@@ -350,7 +261,7 @@ impl ExecutionService {
             return Err(Error::Conflict.into());
         }
         let mut permit = None;
-        let mut credentials = Vec::new();
+        let credentials = Vec::new();
         match input.event() {
             wire::TaskEvent::SoftwareResult(_)
             | wire::TaskEvent::EnrollmentResult { .. }
@@ -359,139 +270,10 @@ impl ExecutionService {
             | wire::TaskEvent::ChunkedCollectionResult { .. }
             | wire::TaskEvent::OutputChunk(_)
             | wire::TaskEvent::ChunkedResult(_) => return Err(Error::Malformed.into()),
-            wire::TaskEvent::DeviceAccessPrepared(value) => {
-                if !matches!(plan, db::ScheduledPolicy::DeviceAccess(_))
-                    || !matches!(run.state.execution, Execution::Running | Execution::Unknown)
-                    || run.state.started_at.is_none()
-                {
-                    return Err(Error::Forbidden.into());
-                }
-                crate::device_access::provisioning::prepared(
-                    &service.transactions,
-                    tx,
-                    &run,
-                    input,
-                    value,
-                )
-                .await?;
-            }
-            wire::TaskEvent::DeviceAccessResult(value) => {
-                let db::ScheduledPolicy::DeviceAccess(access_plan) = &plan else {
-                    return Err(Error::Forbidden.into());
-                };
-                let access_complete = value.effect.complete(
-                    &access_plan.binding.configuration,
-                    access_plan.binding.intent.platform(),
-                );
-                if !matches!(plan, db::ScheduledPolicy::DeviceAccess(_))
-                    || !matches!(run.state.execution, Execution::Running | Execution::Unknown)
-                    || run.state.started_at.is_none()
-                {
-                    return Err(Error::Forbidden.into());
-                }
-                crate::device_access::finish_in(
-                    &service.transactions,
-                    tx,
-                    &run,
-                    input,
-                    value,
-                    effect_allowed,
-                )
-                .await?;
-                if crate::device_access::provisioning::unresolved(
-                    &service.transactions,
-                    tx,
-                    &run,
-                    input.attempt_id(),
-                    !matches!(value.effect, wire::AccessEffect::Unknown)
-                        && (!matches!(
-                            value.effect,
-                            wire::AccessEffect::Applied { .. }
-                                | wire::AccessEffect::WhfbRetired { .. }
-                        ) || access_complete),
-                )
-                .await?
-                    || matches!(value.effect, wire::AccessEffect::Unknown)
-                    || matches!(
-                        value.effect,
-                        wire::AccessEffect::Applied { .. } | wire::AccessEffect::WhfbRetired { .. }
-                    ) && !access_complete
-                {
-                    run.state.uncertain_result(input.attempt_id())?;
-                } else {
-                    run.state.result(input.attempt_id(), access_complete)?;
-                }
-                run.result = Some(super::result::RunResult::Access(value.clone()));
-            }
-            wire::TaskEvent::CredentialEscrow(value) => {
-                if !matches!(
-                    plan,
-                    db::ScheduledPolicy::Credential(_) | db::ScheduledPolicy::DeviceAccess(_)
-                ) || !effect_allowed
-                    || !matches!(run.state.execution, Execution::Running | Execution::Unknown)
-                    || run.state.started_at.is_none()
-                {
-                    return Err(Error::Forbidden.into());
-                }
-                credentials = if matches!(plan, db::ScheduledPolicy::DeviceAccess(_)) {
-                    crate::device_access::provisioning::escrow(
-                        &service.transactions,
-                        tx,
-                        &run,
-                        input.attempt_id(),
-                        value,
-                    )
-                    .await?
-                } else {
-                    crate::credential_tasks::escrow(
-                        &service.transactions,
-                        tx,
-                        &run,
-                        input.attempt_id(),
-                        value,
-                    )
-                    .await?
-                };
-                if !run.state.trusts_result(now) {
-                    run.state.uncertain_result(input.attempt_id())?;
-                    let tenant =
-                        checked_input(Uuid::parse_str(&service.transactions.tenant.to_string()))?;
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            Ok(
-                                rss_mdm_recovery_credentials::storage::unknown_in(c, tenant, id)
-                                    .await,
-                            )
-                        })
-                    })
-                    .await?
-                    .map_err(crate::recovery_credentials::error)?;
-                }
-            }
-            wire::TaskEvent::CredentialResult(value) => {
-                if !matches!(plan, db::ScheduledPolicy::Credential(_))
-                    || !effect_allowed
-                    || !matches!(run.state.execution, Execution::Running | Execution::Unknown)
-                    || run.state.started_at.is_none()
-                {
-                    return Err(Error::Forbidden.into());
-                }
-                match crate::credential_tasks::finish(
-                    &service.transactions,
-                    tx,
-                    &run,
-                    input.attempt_id(),
-                    value,
-                )
-                .await?
-                {
-                    Execution::Unknown => run.state.uncertain_result(input.attempt_id())?,
-                    Execution::Succeeded => run.state.result(input.attempt_id(), true)?,
-                    Execution::Failed => run.state.result(input.attempt_id(), false)?,
-                    _ => return Err(Error::Conflict.into()),
-                }
-                run.result = Some(super::result::RunResult::Credential(value.clone()));
-            }
+            wire::TaskEvent::DeviceAccessPrepared(_)
+            | wire::TaskEvent::DeviceAccessResult(_)
+            | wire::TaskEvent::CredentialEscrow(_)
+            | wire::TaskEvent::CredentialResult(_) => return Err(Error::Unsupported.into()),
             wire::TaskEvent::UnmanageResult { outcome } => {
                 if !matches!(plan, db::ScheduledPolicy::Retirement(_)) {
                     return Err(Error::Malformed.into());
@@ -513,23 +295,12 @@ impl ExecutionService {
 
             wire::TaskEvent::Received => {
                 run.state.received(input.attempt_id(), now)?;
-                if matches!(plan, db::ScheduledPolicy::DeviceAccess(_)) {
-                    crate::device_access::received_in(tx, &run).await?;
-                }
             }
             wire::TaskEvent::Start => {
                 if run.state.execution != Execution::NotStarted {
                     return Err(Error::Conflict.into());
                 }
-                if matches!(plan, db::ScheduledPolicy::Credential(_)) {
-                    crate::credential_tasks::start(
-                        &service.transactions,
-                        tx,
-                        &run,
-                        input.attempt_id(),
-                    )
-                    .await?;
-                }
+
                 run.state.start(input.attempt_id(), now)?;
                 let expiry = run.deadline;
                 let payload = plan
@@ -549,21 +320,7 @@ impl ExecutionService {
             }
             wire::TaskEvent::Cancelled => {
                 run.state.cancel();
-                if matches!(plan, db::ScheduledPolicy::DeviceAccess(_))
-                    && run.state.started_at.is_some()
-                    && crate::device_access::provisioning::unresolved(
-                        &service.transactions,
-                        tx,
-                        &run,
-                        input.attempt_id(),
-                        true,
-                    )
-                    .await?
-                {
-                    run.state.uncertain_result(input.attempt_id())?;
-                } else {
-                    run.state.cancelled(input.attempt_id())?;
-                }
+                run.state.cancelled(input.attempt_id())?;
             }
         }
         db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;

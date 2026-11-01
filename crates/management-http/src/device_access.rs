@@ -16,14 +16,14 @@ pub(crate) struct Services {
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     pub(crate) registration: Arc<Service>,
-    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) admission: Arc<rss_mdm_registration_service::device_access::execution::Service>,
     pub(crate) identity: Arc<crate::identity::Identity>,
 }
 pub fn routes(
     cursor: rss_mdm_query::cursor::CursorCodec,
     recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     registration: Option<Arc<Service>>,
-    execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    admission: Arc<rss_mdm_registration_service::device_access::execution::Service>,
     identity: Arc<crate::identity::Identity>,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     let enabled = registration.is_some();
@@ -33,7 +33,7 @@ pub fn routes(
                 cursor,
                 recovery,
                 registration,
-                execution,
+                admission,
                 identity,
             })
         }),
@@ -295,7 +295,7 @@ async fn change(
                 &input,
                 proof.as_ref(),
                 &idp_fingerprints,
-                s.execution.as_ref(),
+                s.admission.as_ref(),
                 &audit,
             )
             .await?,

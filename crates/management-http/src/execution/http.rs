@@ -188,6 +188,7 @@ async fn reauthorize(
 }
 
 pub struct HttpState {
+    pub recovery: Option<std::sync::Arc<rss_mdm_recovery_credentials::native::Service>>,
     pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
     pub operations: Arc<dyn super::operations::Reads>,
     pub task_trust: std::sync::Arc<rss_mdm_task_trust::Service>,
@@ -229,13 +230,13 @@ async fn create_recovery(
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
     input: Result<
-        Json<rss_mdm_execution_service::recovery_credentials::Input>,
+        Json<rss_mdm_recovery_credentials::native::operations::Input>,
         axum::extract::rejection::JsonRejection,
     >,
 ) -> Result<
     rss_mdm_http_contract::signature::WithStatus<
         202,
-        Json<rss_mdm_execution_service::AcceptedReceipt>,
+        Json<rss_mdm_recovery_credentials::native::AcceptedReceipt>,
     >,
     Error,
 > {
@@ -246,7 +247,9 @@ async fn create_recovery(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.target_device(&device);
-    app.execution
+    app.recovery
+        .as_ref()
+        .ok_or(Error::Unsupported)?
         .create_recovery_credential(&auth.proof, &device, &input, &audit)
         .await
         .map(|v| rss_mdm_http_contract::signature::WithStatus(Json(v)))

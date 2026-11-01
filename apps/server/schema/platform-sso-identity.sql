@@ -8,7 +8,7 @@ GRANT SELECT ON mdm_apple.devices,mdm_apple.profiles,mdm_apple.attempts,mdm.inve
 GRANT EXECUTE ON FUNCTION mdm_policy.lock_policy(uuid),mdm_scope.scope_admission(uuid,text) TO mdm_identity_runtime;
 GRANT EXECUTE ON FUNCTION mdm_access.access_binding_ready(jsonb),mdm_devices.object_current(jsonb,text),
  mdm_scope.scope_state(uuid,text),mdm_scope.channel_admission(uuid,text,text),
- mdm_commands.access_policy(uuid,text,bigint),mdm_commands.active_access_binding(uuid,bigint,bigint)
+ mdm_access.access_policy(uuid,text,bigint),mdm_access.active_access_binding(uuid,bigint,bigint)
  TO mdm_identity_runtime;
 -- DA consumes Identity's proof on the existing Identity runtime. The access role is unchanged.
 GRANT SELECT,INSERT ON mdm_access.registration_operations TO mdm_identity_runtime;

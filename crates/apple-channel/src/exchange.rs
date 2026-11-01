@@ -136,6 +136,7 @@ impl ports::AppleExchange for Exchange {
                         principal: p.clone(),
                         report: self.dictionary.clone(),
                         key: self.apple.protection.clone(),
+                        credentials: self.apple.credential_receipts.clone(),
                         status: self.status,
                         user: self.user,
                     }))
@@ -145,6 +146,7 @@ impl ports::AppleExchange for Exchange {
     }
 }
 struct CommandAttempt {
+    credentials: Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
     principal: crate::device::DevicePrincipal,
     report: plist::Dictionary,
     attempt: crate::attempt::Attempt,
@@ -194,15 +196,28 @@ impl ports::AppleAttempt for CommandAttempt {
             if !accepted {
                 return Ok(S::Waiting);
             }
-            if !phase.prerequisite() {
-                crate::recovery_credentials::receive(
-                    c,
-                    &command,
-                    &target,
-                    &self.report,
-                    self.status,
-                )
-                .await?;
+            if !phase.prerequisite()
+                && let Some(credentials) = &self.credentials
+            {
+                use rss_mdm_recovery_credentials::native_receipts::ReceiptStatus;
+                let status = match self.status {
+                    protocol::Status::Acknowledged => ReceiptStatus::Acknowledged,
+                    protocol::Status::Error => ReceiptStatus::Error,
+                    _ => ReceiptStatus::Pending,
+                };
+                credentials
+                    .receive_in(
+                        c,
+                        uuid::Uuid::parse_str(&target.tenant).map_err(|_| Error::Malformed)?,
+                        command.operation,
+                        &target.device,
+                        target.registration,
+                        target.generation,
+                        &self.report,
+                        status,
+                    )
+                    .await
+                    .map_err(|_| Error::Unavailable(crate::Failure::AppleStorage))?;
             }
             if phase == Phase::Observe
                 && self.status == protocol::Status::Acknowledged

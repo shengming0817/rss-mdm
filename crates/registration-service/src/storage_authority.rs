@@ -16,9 +16,25 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
         .split("$$")
         .nth(1)
         .expect("owner function body");
+    let access_policy = include_str!("../schema/device-access-qualification.sql")
+        .split_once("CREATE FUNCTION mdm_access.access_policy(")
+        .expect("owner function")
+        .1
+        .split("$$")
+        .nth(1)
+        .expect("owner function body");
+    let active_binding = include_str!("../schema/device-access-qualification.sql")
+        .split_once("CREATE FUNCTION mdm_access.active_access_binding(")
+        .expect("owner function")
+        .1
+        .split("$$")
+        .nth(1)
+        .expect("owner function body");
     let rejected: Option<String> = sqlx::query_scalar(include_str!("authority-admission.sql"))
         .bind(body_1)
         .bind(body_2)
+        .bind(access_policy)
+        .bind(active_binding)
         .fetch_optional(connection)
         .await?;
     if let Some(signature) = rejected {

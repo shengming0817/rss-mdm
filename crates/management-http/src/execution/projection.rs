@@ -600,6 +600,107 @@ pub fn registration_command(
         observation: registration_observation(v.observation),
     }
 }
+pub fn recovery_observation(
+    facts: rss_mdm_recovery_credentials::native::queries::NativeObservation,
+) -> Observation {
+    match facts {
+        rss_mdm_recovery_credentials::native::queries::NativeObservation::Declarations {
+            facts,
+            progress,
+        } => {
+            let (synchronization, input_version, expected, native_status, received_at) =
+                if let Some(facts) = facts {
+                    (
+                        match facts.publication {
+                            PublicationState::Published => Synchronization::Published,
+                            PublicationState::Withdrawn => Synchronization::Withdrawn,
+                        },
+                        Some(facts.input_version),
+                        Some(facts.expected),
+                        Some(facts.status),
+                        facts.received_at,
+                    )
+                } else {
+                    (Synchronization::Unpublished, None, None, None, None)
+                };
+            Observation::Apple {
+                observation: Box::new(AppleObservation::Declarations {
+                    progress: records::CommandStatus(progress.0),
+                    synchronization,
+                    effect: Unverified::Unverified,
+                    compliance: Unknown::Unknown,
+                    input_version,
+                    expected,
+                    native_status,
+                    received_at,
+                }),
+            }
+        }
+        rss_mdm_recovery_credentials::native::queries::NativeObservation::Apple {
+            facts,
+            progress,
+            effect_confirmed,
+        } => Observation::Apple {
+            observation: Box::new(match facts {
+                ReadEvidence::Command {
+                    receipts: rows,
+                    outcome,
+                    fields,
+                    error,
+                } => AppleObservation::NativeCommand {
+                    receipts: receipts(rows),
+                    progress: records::CommandStatus(progress.0),
+                    effect: Unverified::Unverified,
+                    result: outcome,
+                    fields,
+                    error,
+                },
+                ReadEvidence::Profile {
+                    receipts: rows,
+                    progress,
+                    verification,
+                    status,
+                    received_at,
+                } => {
+                    let result = match verification {
+                        Some(Verification::Matched) if effect_confirmed => ProfileResult::Matched,
+                        Some(Verification::Mismatched | Verification::Failed) => {
+                            ProfileResult::Mismatched
+                        }
+                        _ => ProfileResult::Unknown,
+                    };
+                    AppleObservation::ProfilePresence {
+                        receipts: receipts(rows),
+                        result,
+                        effect: Unknown::Unknown,
+                        progress,
+                        native_status: status,
+                        received_at,
+                    }
+                }
+            }),
+        },
+    }
+}
+
+pub fn recovery_command(
+    v: rss_mdm_recovery_credentials::native::queries::Detail,
+) -> rss_mdm_recovery_credentials::native::queries::Detail<Observation> {
+    rss_mdm_recovery_credentials::native::queries::Detail {
+        operation_id: v.operation_id,
+        command_id: v.command_id,
+        revision: v.revision,
+        task: v.task,
+        target: v.target,
+        input_version: v.input_version,
+        deadline: v.deadline,
+        dispatch_failure: v.dispatch_failure,
+        authorization: v.authorization,
+        reauthorization: v.reauthorization,
+        command_status: v.command_status,
+        observation: recovery_observation(v.observation),
+    }
+}
 
 #[cfg(test)]
 mod tests {

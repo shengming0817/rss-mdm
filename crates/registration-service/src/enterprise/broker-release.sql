@@ -12,7 +12,7 @@ JOIN identity_session_references s ON s.tenant_id=x.tenant_id
  AND s.credential_kind=x.document#>>'{reference,credentialKind}'
 JOIN mdm_agent.bindings native ON native.tenant_id=x.tenant_id AND native.registration=(x.document#>>'{binding,registration}')::uuid
 CROSS JOIN LATERAL (SELECT floor(extract(epoch FROM statement_timestamp()))::bigint AS now) clock
-CROSS JOIN LATERAL (SELECT mdm_commands.active_access_binding((x.document#>>'{binding,id}')::uuid,(x.document#>>'{binding,generation}')::bigint,clock.now) AS value) active
+CROSS JOIN LATERAL (SELECT mdm_access.active_access_binding((x.document#>>'{binding,id}')::uuid,(x.document#>>'{binding,generation}')::bigint,clock.now) AS value) active
 WHERE x.tenant_id=$1 AND x.id=$5 AND x.phase='consumed' AND x.document->>'phase'='consumed'
  AND rp.document=x.document->'relyingParty' AND rp.document->>'enabled'='true'
  AND rp.document->>'targetFingerprint'=$3

@@ -12,7 +12,6 @@ pub mod policy_recovery;
 pub mod poll;
 pub mod recovery;
 pub mod runs;
-pub mod scope;
 pub mod self_service;
 mod service;
 pub mod storage;
@@ -23,7 +22,7 @@ pub mod worker;
 use super::task::FrozenEnrollment;
 pub use error::Error;
 use rss_mdm_authorization_service as authorization;
-pub use service::{DeviceCapacity, Materials, Service, Transactions};
+pub use service::{Materials, Service, Transactions};
 pub use target::Target;
 pub use transaction::{Result, checked_input, stored};
 pub trait Inventory: Send + Sync {

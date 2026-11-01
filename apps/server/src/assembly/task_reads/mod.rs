@@ -9,6 +9,7 @@ pub(crate) struct Reads {
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::Materials>,
     pub entries: rss_mdm_registration_service::enrollment::task::Entries,
     pub signing_enabled: bool,
+    pub recovery_enabled: bool,
     pub clock: Arc<dyn rss_request_context::Clock>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub tenant: rss_request_context::TenantId,
@@ -99,3 +100,49 @@ pub(super) fn enrollment_fault(
     }
 }
 mod projections;
+
+pub(super) fn access_fault(
+    e: rss_mdm_registration_service::device_access::execution::transaction::Fault,
+) -> Error {
+    use rss_mdm_registration_service::device_access::execution::{
+        Error as E, transaction::Fault as F,
+    };
+    match e {
+        F::Sql(e) => sql(e),
+        F::Storage(_) => Error::Unavailable(Failure::Database),
+        F::Request(e) => match e {
+            E::Malformed => Error::Malformed,
+            E::Forbidden => Error::Forbidden,
+            E::Unauthorized => Error::Unauthorized,
+            E::NotFound => Error::NotFound,
+            E::Conflict => Error::Conflict,
+            E::CommitUnknown => Error::CommitUnknown,
+            E::RollbackFailed => Error::RollbackFailed,
+            E::Unsupported => Error::Unsupported,
+            E::Audit(_) => Error::Unavailable(Failure::Audit),
+            _ => Error::Unavailable(Failure::CommandInvariant),
+        },
+    }
+}
+
+pub(super) fn credential_fault(
+    e: rss_mdm_recovery_credentials::tasks::transaction::Fault,
+) -> Error {
+    use rss_mdm_recovery_credentials::tasks::{Error as E, transaction::Fault as F};
+    match e {
+        F::Sql(e) => sql(e),
+        F::Storage(_) => Error::Unavailable(Failure::Database),
+        F::Request(e) => match e {
+            E::Malformed => Error::Malformed,
+            E::Forbidden => Error::Forbidden,
+            E::Unauthorized => Error::Unauthorized,
+            E::NotFound => Error::NotFound,
+            E::Conflict => Error::Conflict,
+            E::CommitUnknown => Error::CommitUnknown,
+            E::RollbackFailed => Error::RollbackFailed,
+            E::Unsupported => Error::Unsupported,
+            E::Audit(_) => Error::Unavailable(Failure::Audit),
+            _ => Error::Unavailable(Failure::CommandInvariant),
+        },
+    }
+}

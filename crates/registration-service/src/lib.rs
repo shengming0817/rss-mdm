@@ -66,3 +66,5 @@ pub const TASKS_SQL: &str = concat!(
     include_str!("../schema/tasks/task-retirement.sql")
 );
 pub const TASKS_RELATIONS_SQL: &str = include_str!("../schema/tasks/relations.sql");
+
+pub mod participants;

@@ -1,11 +1,9 @@
 //! Host assembly of execution storage, recovery and content adapters.
 use crate::{Error, Failure};
-use rss_mdm_execution_service::{ExecutionService, deadline, recovery, storage};
+use rss_mdm_execution_service::{ExecutionService, deadline};
 use rss_request_context::TenantId;
 use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
-use rss_transactional_messaging_postgres::{
-    PgConfig, PgError, PgOutboxStore, PgPassword, PgPrivateCa, PgRuntime,
-};
+use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
 use std::{sync::Arc, time::Duration};
 pub(crate) struct ContentResource(pub Arc<rss_mdm_content_service::Store>);
 impl rss_runtime::ManagedResource for ContentResource {
@@ -98,6 +96,16 @@ pub(crate) async fn open(
             .map_err(|_| Error::Unavailable(Failure::CommandStorage))?,
     );
     let task_signing_audit = audit_store.clone();
+    let recovery_materials = config
+        .recovery_credentials
+        .as_ref()
+        .map(crate::recovery_credentials::Config::open)
+        .transpose()?;
+    let credential_receipts = recovery_materials.as_ref().map(|protection| {
+        Arc::new(
+            rss_mdm_recovery_credentials::native_receipts::NativeReceipts::new(protection.clone()),
+        )
+    });
     let result = async {
         let channels = Arc::new(crate::channel_status::Channels::new(config));
         let providers = crate::device_pki::prepare(&config.device_pki, &channels)?;
@@ -147,6 +155,8 @@ pub(crate) async fn open(
             collection_work,
             software_owner,
             registration_owner,
+            access_execution,
+            credential_execution,
             self_service,
             queries,
             materials,
@@ -163,11 +173,7 @@ pub(crate) async fn open(
             signing.clone(),
             bootstrap_urls,
             sessions,
-            config
-                .recovery_credentials
-                .as_ref()
-                .map(crate::recovery_credentials::Config::open)
-                .transpose()?,
+            recovery_materials,
             command_clock,
             cursor_key.clone(),
         )
@@ -177,6 +183,7 @@ pub(crate) async fn open(
             enrollment: registration_owner.materials.clone(),
             entries: config.enrollment_entries.clone(),
             signing_enabled: signing.loaded_key().is_some(),
+            recovery_enabled: credential_execution.is_some(),
             clock: Arc::new(crate::lifecycle::RuntimeTimer),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             tenant,
@@ -199,6 +206,9 @@ pub(crate) async fn open(
             execution: queries.clone(),
         });
         Ok(Assembly {
+            credential_receipts,
+            access_execution,
+            credential_execution,
             task_reads,
             software: software_owner,
             registration: registration_owner,
@@ -260,6 +270,8 @@ pub(crate) async fn assemble(
         Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
         super::software::Assembly,
         super::registration::Assembly,
+        super::access_execution::Assembly,
+        Option<super::credential_execution::Assembly>,
         Arc<super::self_service::Requests>,
         Arc<rss_mdm_execution_service::queries::Queries>,
         Arc<rss_mdm_execution_service::ExecutionMaterials>,
@@ -288,12 +300,13 @@ pub(crate) async fn assemble(
 
         _ => return Err(Error::Unavailable(Failure::CommandInvariant)),
     };
-    let (outbox, store, reconcile, read_pool) = open_storage(
+    let (outbox, store, reconcile, read_pool) = super::host_storage::open(
         runtime.clone(),
         config.execution.database.options()?,
         tenant,
         &protection,
         command_clock,
+        rss_mdm_execution_service::messaging_domain(),
     )
     .await?;
     let source = Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
@@ -318,17 +331,6 @@ pub(crate) async fn assemble(
             .map(|(name, service)| (name, Arc::new(service.exports())))
             .collect(),
     ));
-    let input_materials = Arc::new(rss_mdm_execution_service::InputMaterials {
-        recovery_enabled: recovery_credentials.is_some(),
-        protection: protection.clone(),
-        content: content.clone(),
-        signing_enabled: signing.loaded_key().is_some(),
-    });
-    let inputs = Arc::new(rss_mdm_execution_service::Inputs::bind(
-        runtime.clone(),
-        tenant,
-        input_materials.clone(),
-    ));
     let configuration = super::policy::configuration(
         runtime.clone(),
         audit_store.clone(),
@@ -352,7 +354,6 @@ pub(crate) async fn assemble(
 
             runtime: runtime.clone(),
             tenant,
-            inputs: inputs.clone(),
             signed: signing.loaded_key().is_some(),
             content_available: content.is_some(),
         },
@@ -427,6 +428,37 @@ pub(crate) async fn assemble(
         worker_budget.clone(),
     )
     .await?;
+    // Keep independent owner startup futures off the enclosing host startup stack.
+    let access_execution = Box::pin(super::access_execution::assemble(
+        runtime.clone(),
+        tenant,
+        audit_store.clone(),
+        protection.clone(),
+        source.clone(),
+        recovery_credentials.clone(),
+        reconcile.clone(),
+        worker_budget.clone(),
+        config.background.device_concurrency,
+    ))
+    .await?;
+    let credential_execution = if let Some(credentials) = recovery_credentials.clone() {
+        Some(
+            Box::pin(super::credential_execution::assemble(
+                config,
+                runtime.clone(),
+                tenant,
+                audit_store.clone(),
+                protection.clone(),
+                credentials,
+                source.clone(),
+                reconcile.clone(),
+                worker_budget.clone(),
+            ))
+            .await?,
+        )
+    } else {
+        None
+    };
     let software_owner = super::software::assemble(
         config,
         runtime.clone(),
@@ -453,8 +485,11 @@ pub(crate) async fn assemble(
             software_owner.transactions.clone(),
         )),
         configuration_cleanup: configuration_cleanup.clone(),
-        recovery_credentials: recovery_credentials.clone(),
-        inputs: input_materials,
+        lock_pins: recovery_credentials.as_ref().map(|p| {
+            Arc::new(rss_mdm_recovery_credentials::lock_pin::LockPins::new(
+                p.clone(),
+            ))
+        }),
         source: source.clone(),
         protection: protection.clone(),
         agent_store: agent_store.clone(),
@@ -498,7 +533,11 @@ pub(crate) async fn assemble(
             )),
             configuration_cleanup,
             worker_concurrency: config.background.device_concurrency,
-            recovery_credentials,
+            lock_pins: recovery_credentials.as_ref().map(|p| {
+                Arc::new(rss_mdm_recovery_credentials::lock_pin::LockPins::new(
+                    p.clone(),
+                ))
+            }),
 
             source,
             protection: protection.clone(),
@@ -524,7 +563,6 @@ pub(crate) async fn assemble(
             instance: config.identity.instance_id.clone(),
         },
     ));
-    service.validate_recovery_credentials().await?;
     service
         .initialize_recovery()
         .await
@@ -537,6 +575,8 @@ pub(crate) async fn assemble(
         collection_work,
         software_owner,
         registration_owner,
+        access_execution,
+        credential_execution,
         self_service,
         queries,
         materials,
@@ -545,86 +585,12 @@ pub(crate) async fn assemble(
     ))
 }
 
-/// Execution storage admission on the host's runtime, independent of product assembly.
-pub(crate) async fn open_storage(
-    runtime: Arc<PgRuntime>,
-    options: sqlx::postgres::PgConnectOptions,
-    tenant: TenantId,
-    protection: &rss_mdm_native_protection::Protector,
-    command_clock: rss_device_command_postgres::CommandClock,
-) -> Result<
-    (
-        Arc<PgOutboxStore<()>>,
-        rss_device_command_postgres::PgStore<()>,
-        rss_reconcile_postgres::PgStore,
-        sqlx::PgPool,
-    ),
-    Error,
-> {
-    let bad = || Error::Configuration(crate::ConfigIssue::Execution);
-    storage::bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
-    let caller = runtime.clone();
-    let (outbox, store) = runtime
-        .local_tx(tenant, deadline(), move |tx| {
-            Box::pin(async move {
-                tx.with_connection(|c| {
-                    Box::pin(async move {
-                        rss_mdm_policy_postgres::verify_authority(c).await?;
-                        rss_mdm_scope_postgres::verify_authority(c).await?;
-                        rss_mdm_inventory_service::verify_authority(c).await?;
-                        rss_mdm_agent_channel::signature_retirement::verify_authority(c).await?;
-                        rss_mdm_apple_channel::verify_authority(c).await
-                    })
-                })
-                .await?;
-                super::command_storage::admit(tx).await.map_err(|_| {
-                    PgError::from(sqlx::Error::Protocol("command admission".into()))
-                })?;
-                storage::bind_command_in(caller, tx, command_clock)
-                    .await
-                    .inspect_err(|_| eprintln!("command startup: device-command admission failed"))
-            })
-        })
-        .await
-        .fold(
-            Ok,
-            |_| {
-                eprintln!("command startup: transaction failed");
-                Err(bad())
-            },
-            |_| {
-                eprintln!("command startup: transaction failed");
-                Err(bad())
-            },
-            |_| Err(Error::RollbackFailed),
-            |_| Err(Error::CommitUnknown),
-            |_| {
-                eprintln!("command startup: transaction failed");
-                Err(bad())
-            },
-        )?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(crate::background::SCHEDULER_CONNECTIONS)
-        .acquire_timeout(Duration::from_secs(5))
-        .connect_with(options)
-        .await
-        .map_err(|_| bad())?;
-    let timer = recovery::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    let reconcile = match rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("command startup: reconcile admission failed");
-            pool.close().await;
-            return Err(bad());
-        }
-    };
-    Ok((outbox, store, reconcile, pool))
-}
-
 #[derive(Clone)]
 pub(crate) struct Assembly {
+    pub(crate) access_execution: super::access_execution::Assembly,
+    pub(crate) credential_execution: Option<super::credential_execution::Assembly>,
+    pub(crate) credential_receipts:
+        Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
     pub(crate) software: super::software::Assembly,
     pub(crate) registration: super::registration::Assembly,
     pub(crate) read_pool: sqlx::PgPool,

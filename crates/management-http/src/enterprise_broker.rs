@@ -17,14 +17,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 pub(crate) struct Services {
     pub(crate) registration: Arc<Service>,
-    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) admission: Arc<rss_mdm_registration_service::device_access::execution::Service>,
     pub(crate) identity: Arc<crate::identity::Identity>,
     pub(crate) origin: String,
     pub(crate) platform_configuration: serde_json::Value,
 }
 pub fn routes(
     registration: Option<Arc<Service>>,
-    execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    admission: Arc<rss_mdm_registration_service::device_access::execution::Service>,
     identity: Arc<crate::identity::Identity>,
     host: &str,
     platform_configuration: serde_json::Value,
@@ -34,7 +34,7 @@ pub fn routes(
         registration.map(|registration| {
             Arc::new(Services {
                 registration,
-                execution,
+                admission,
                 identity,
                 origin: format!("https://{host}"),
                 platform_configuration,
@@ -164,7 +164,7 @@ async fn begin(
     let client = client(&s, &input.relying_party)?;
     let (context, created) = s
         .registration
-        .broker_prepare(&input, &browser, client, s.execution.as_ref(), &a)
+        .broker_prepare(&input, &browser, client, s.admission.as_ref(), &a)
         .await?;
     let challenge = if created {
         let challenge = s
@@ -186,7 +186,7 @@ async fn begin(
                 input.operation_id,
                 &browser,
                 challenge,
-                s.execution.as_ref(),
+                s.admission.as_ref(),
                 &a,
             )
             .await?
@@ -207,7 +207,7 @@ async fn complete(
     let browser = browser(&s, &h, false, true)?;
     let context = s
         .registration
-        .broker_claim(&input, &browser, s.execution.as_ref(), &a)
+        .broker_claim(&input, &browser, s.admission.as_ref(), &a)
         .await?;
     let attempt = context.attempt.ok_or(Error::Conflict)?;
     let result = async {
@@ -259,7 +259,7 @@ async fn complete(
                 &browser,
                 &actor,
                 token,
-                s.execution.as_ref(),
+                s.admission.as_ref(),
                 &a,
             )
             .await
@@ -285,7 +285,7 @@ async fn status(
     let browser = browser(&s, &h, false, false)?;
     Ok(Json(
         s.registration
-            .broker_status(id, &browser, s.execution.as_ref())
+            .broker_status(id, &browser, s.admission.as_ref())
             .await?,
     ))
 }
@@ -320,7 +320,7 @@ async fn consume(
             client,
             input.session,
             Some(&input.continuation),
-            s.execution.as_ref(),
+            s.admission.as_ref(),
         )
         .await?;
     let facts = s
@@ -336,7 +336,7 @@ async fn consume(
             input.operation_id,
             &input.continuation,
             &facts,
-            s.execution.as_ref(),
+            s.admission.as_ref(),
             &a,
         )
         .await?;

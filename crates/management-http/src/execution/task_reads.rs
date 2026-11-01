@@ -52,6 +52,8 @@ pub static RUNS_SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::S
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunSummary {
     Software(rss_mdm_software_service::deployment::queries::records::RunSummary),
+    Access(rss_mdm_registration_service::device_access::execution::queries::Record),
+    Credential(rss_mdm_recovery_credentials::tasks::queries::Record),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
     Execution(rss_mdm_execution_service::queries::records::RunSummary),
     Script(rss_mdm_script_service::queries::Summary),
@@ -61,6 +63,8 @@ impl RunSummary {
     pub fn position(&self) -> (i64, uuid::Uuid) {
         match self {
             Self::Software(r) => (r.available_at, r.task_id),
+            Self::Access(r) => (r.available_at, r.task_id),
+            Self::Credential(r) => (r.available_at, r.task_id),
             Self::Enrollment(r) => (r.available_at, r.task_id),
             Self::Execution(r) => (r.available_at, r.task_id),
             Self::Script(r) => (r.available_at, r.task_id),
@@ -75,6 +79,8 @@ impl RunSummary {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunDetail {
     Software(rss_mdm_software_service::deployment::queries::records::RunDetail),
+    Access(rss_mdm_registration_service::device_access::execution::queries::Record),
+    Credential(rss_mdm_recovery_credentials::tasks::queries::Record),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
     Execution(rss_mdm_execution_service::queries::records::RunDetail),
     Script(rss_mdm_script_service::queries::Detail),

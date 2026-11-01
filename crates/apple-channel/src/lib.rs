@@ -57,6 +57,8 @@ pub struct IdentitySeed {
     pub notify_id: String,
 }
 pub struct Apple {
+    pub(crate) credential_receipts:
+        Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
     pub(crate) platform_sso: Option<Arc<platform_sso::Runtime>>,
 
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
@@ -164,6 +166,7 @@ impl Apple {
         let configuration = protocol_identity(&config);
         Self {
             platform_sso: None,
+            credential_receipts: None,
 
             protection,
             config,
@@ -180,6 +183,13 @@ impl Apple {
         }
     }
 
+    pub fn with_credential_receipts(
+        mut self,
+        receipts: Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
+    ) -> Self {
+        self.credential_receipts = receipts;
+        self
+    }
     pub fn with_platform_sso(mut self, runtime: Option<Arc<platform_sso::Runtime>>) -> Self {
         self.platform_sso = runtime;
         self

@@ -284,7 +284,6 @@ fn admission(
             generation: op.registration_generation,
         },
         command: apple_facts::AppleCommand {
-            recovery: s.transactions.recovery_credentials.clone(),
             operation: op.id,
             authorized_declarations: Vec::new(),
             owner: op.authority.apple_owner(op.id)?,

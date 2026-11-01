@@ -41,6 +41,8 @@ async fn delivery(
             a.collections.clone(),
             a.software.service.clone(),
             a.registration.native.clone(),
+            a.credential_execution.as_ref().map(|v| v.native.clone()),
+            a.access_execution.service.clone(),
         )),
         facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: a.protection.clone(),

@@ -62,6 +62,12 @@ impl Port for Reads {
                 .map(super::projections::software_preview)
                 .map_err(Into::into);
             }
+            if matches!(
+                input.definition.action,
+                Action::DeviceAccess { .. } | Action::Credential { .. }
+            ) {
+                return access_credentials(self, proof, audit, input, query, codec).await;
+            }
             if matches!(input.definition.action, Action::RequestMdmEnrollment { .. }) {
                 return enrollment(self, proof, audit, input, query, codec).await;
             }
@@ -276,6 +282,117 @@ async fn enrollment(
                             .await
                             .map_err(enrollment_fault)?,
                         )
+                    } else {
+                        None
+                    };
+                    if admission.as_ref().is_some_and(|a| !a.is_eligible()) {
+                        object.availability =
+                            rss_mdm_scope_service::channels::Availability::Unavailable;
+                        object.reason = Some("target_unavailable".into());
+                    }
+                    items.push(PreviewTarget {
+                        object: object.object,
+                        channel: Some(object.channel),
+                        availability: object.availability,
+                        reason: object.reason,
+                        target: object.target,
+                        eligibility: object.admission,
+                        task_admission: admission,
+                    });
+                }
+                Ok(Preview {
+                    action: input.definition.action.clone(),
+                    scope_result: result,
+                    items,
+                    next_cursor: rss_mdm_scope_service::window::next(codec, &binding, next)
+                        .map_err(window)?,
+                })
+            })
+        },
+    )
+    .await
+    .inspect(|_| audit.require_final_request())
+}
+
+async fn access_credentials(
+    s: &Reads,
+    proof: &AuthorizedPrincipal,
+    audit: &rss_mdm_audit_integration::RequestAudit,
+    input: &rss_mdm_policy::pages::Preview,
+    query: &rss_mdm_query::window::Query,
+    codec: &rss_mdm_query::cursor::CursorCodec,
+) -> Result<rss_mdm_management_http::execution::task_reads::Preview, Error> {
+    use rss_mdm_management_http::execution::task_reads::{Preview, PreviewTarget};
+    input.definition.validate().map_err(|_| Error::Malformed)?;
+    query
+        .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
+        .map_err(|_| Error::Malformed)?;
+    proof.manage(Permission::PolicyRead)?;
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    s.snapshot(
+        proof,
+        (s, proof, input, query, codec),
+        |ctx, c, grant, _now| {
+            Box::pin(async move {
+                let (s, proof, input, query, codec) = *ctx;
+                grant.require(proof, Permission::PolicyRead, None)?;
+                grant.require(proof, Permission::ScopeRead, None)?;
+                grant.require_all_devices(proof, Permission::InventoryRead)?;
+                if !s.signing_enabled{return Err(Error::Unsupported)}
+                let permission=match &input.definition.action {Action::DeviceAccess{..}=>Permission::AccountWrite,Action::Credential{operation,..}=>{if !s.recovery_enabled{return Err(Error::Unsupported)}rss_mdm_recovery_credentials::tasks::credential_tasks::permission(operation)},_=>return Err(Error::Malformed)};
+                grant.require_all_devices(proof,permission)?;
+                let authority = grant.query_binding(proof)?;
+                let scope = input.definition.scope;
+                let channel = Channel::Agent;
+                let binding = rss_mdm_scope_service::window::binding_on(
+                    &s.source,
+                    c,
+                    proof,
+                    &authority,
+                    rss_mdm_policy::pages::PREVIEW_SCHEMA.id,
+                    scope,
+                    &json!([input.definition, input.scope_result]),
+                )
+                .await
+                .map_err(window)?;
+                let after =
+                    rss_mdm_scope_service::window::after(codec, query, &binding).map_err(window)?;
+                let limit = query.limit();
+                let mut objects = s
+                    .source
+                    .assignment_objects_on(c, s.tenant, scope, channel, after.as_deref(), limit)
+                    .await
+                    .map_err(source)?;
+                let result = s
+                    .source
+                    .preview_scope_on(c, s.tenant, scope, channel, None)
+                    .await
+                    .map_err(source)?
+                    .result;
+                if input.scope_result.is_some_and(|r| r != result) {
+                    return Err(Error::Conflict);
+                }
+                let more = objects.len() > limit;
+                objects.truncate(limit);
+                let next = if more {
+                    objects.last().map(|o| o.object.key())
+                } else {
+                    None
+                };
+                let mut items = Vec::new();
+                for mut object in objects {
+                    let admission = if let Some(target) = &object.target {
+                        let binding=s.enrollment.agent_store.binding(c,s.tenant.to_string(),target.registration_id).await.map_err(|_|Error::Unavailable(Failure::Database))?;
+                        let allowed=binding.is_some_and(|b|match &input.definition.action {
+                            Action::DeviceAccess{windows,..}=>rss_mdm_registration_service::device_access::execution::admission::capable(&b,windows),
+                            Action::Credential{architecture,..}=>rss_mdm_recovery_credentials::tasks::credential_tasks::capable(&b,*architecture),_=>false
+                        });
+                        use rss_mdm_policy::pages::{TaskAdmission,TaskAdmissionState};
+                        Some(TaskAdmission::new(if allowed{TaskAdmissionState::Eligible}else{TaskAdmissionState::UnsupportedCapability},None))
+
                     } else {
                         None
                     };

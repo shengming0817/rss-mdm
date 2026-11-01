@@ -113,6 +113,8 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         audit,
         signing: a.signing.clone(),
         tasks: Arc::new(crate::assembly::agent_tasks::AgentTasks {
+            access: a.access_execution.service.clone(),
+            credentials: a.credential_execution.as_ref().map(|v| v.tasks.clone()),
             software: a.software.service.clone(),
             registration: a.registration.enrollment.clone(),
             content: a.content.clone(),

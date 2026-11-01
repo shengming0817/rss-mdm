@@ -17,9 +17,9 @@ use crate::{
 };
 use std::sync::Arc;
 
-mod command_storage;
 pub(crate) mod content;
 pub(crate) mod execution;
+mod host_storage;
 pub(crate) mod http;
 pub(crate) mod inventory;
 mod native_ownership;
@@ -52,6 +52,8 @@ pub(crate) struct Assembly {
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) access_execution: access_execution::Assembly,
+    pub(crate) credential_execution: Option<credential_execution::Assembly>,
     pub(crate) agent_tasks: Arc<agent_tasks::AgentTasks>,
     pub(crate) windows_delivery: Arc<rss_mdm_windows_channel::management::exchange::Delivery>,
     pub(crate) apple_delivery: Arc<rss_mdm_apple_channel::delivery::Delivery>,
@@ -175,6 +177,9 @@ pub(crate) async fn from_compiled(
         identity,
     } = dependencies;
     let crate::assembly::execution::Assembly {
+        credential_receipts,
+        access_execution,
+        credential_execution,
         materials: _,
         software,
         registration,
@@ -329,6 +334,7 @@ pub(crate) async fn from_compiled(
                             clock.unix_seconds()?,
                             (&platform_origin, identity.tenant),
                             providers.clone(),
+                            credential_receipts.clone(),
                         ),
                     )?
                     .map(Arc::new),
@@ -504,12 +510,16 @@ pub(crate) async fn from_compiled(
             collections.clone(),
             software.service.clone(),
             registration.native.clone(),
+            credential_execution.as_ref().map(|v| v.native.clone()),
+            access_execution.service.clone(),
         )),
         facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: protection.clone(),
         }),
     });
     let agent_tasks = Arc::new(agent_tasks::AgentTasks {
+        access: access_execution.service.clone(),
+        credentials: credential_execution.as_ref().map(|v| v.tasks.clone()),
         requests: self_service,
         software: software.service.clone(),
         registration: registration.enrollment.clone(),
@@ -527,11 +537,14 @@ pub(crate) async fn from_compiled(
         content: content_writer.clone(),
     });
     let operation_reads = Arc::new(operation_reads::Operations {
+        recovery: credential_execution.as_ref().map(|v| v.native.clone()),
         tasks: task_reads.clone(),
         registration: registration.native.clone(),
         execution: execution.clone(),
     });
     let state = Arc::new(Assembly {
+        access_execution,
+        credential_execution,
         operation_reads,
         software,
         registration,
@@ -813,3 +826,11 @@ mod registration_installation_t2;
 #[cfg(test)]
 #[path = "../../tests/software/mod.rs"]
 mod software_t2;
+
+mod access_execution;
+mod credential_apple_facts;
+mod credential_execution;
+
+#[cfg(test)]
+#[path = "../../tests/credential_owners/mod.rs"]
+mod credential_owners_t2;

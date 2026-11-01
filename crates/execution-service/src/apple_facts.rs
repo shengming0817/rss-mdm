@@ -61,15 +61,6 @@ pub enum AppleEvidence {
     Observations(Vec<rss_mdm_apple_mdm::native::evidence::Observation>),
 }
 pub trait AppleResults: Send + Sync {
-    /// Correlate native PSSO readback before projecting a Password completion.
-    /// Registration qualification deliberately does not require an already-Applied binding.
-    fn platform_sso_observation<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        binding: &'a rss_mdm_registration_service::device_access::Binding,
-        facts: &'a rss_mdm_agent_wire::runtime::AccessMacPlatformSsoFacts,
-    ) -> Pending<'a, bool>;
-
     /// Bounded evidence for one authorized page; all native decoding stays with Apple.
     fn evidence_page<'a>(
         &'a self,
@@ -78,15 +69,6 @@ pub trait AppleResults: Send + Sync {
         requests: Vec<(Uuid, rss_mdm_apple_mdm::native::request::Request)>,
         native_values: bool,
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, AppleEvidence>>;
-    /// Purge input copies only after execution delivery settles and the material owner permits expiry.
-    fn purge_credential_inputs<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        operation: Uuid,
-        terminal: bool,
-    ) -> Pending<'a, bool>;
-    /// Current-generation declaration keys from the caller's consistent evidence snapshot.
     fn declaration_page<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -130,7 +112,6 @@ pub trait AppleResults: Send + Sync {
     ) -> Pending<'a, Vec<rss_mdm_apple_mdm::native::evidence::Observation>>;
 }
 pub struct AppleCommand {
-    pub recovery: Option<std::sync::Arc<rss_mdm_recovery_credentials::Protection>>,
     pub operation: Uuid,
     pub owner: String,
     pub authorized_declarations: Vec<Uuid>,

@@ -1,6 +1,5 @@
 use crate::Error;
 use crate::Target;
-use crate::sources::admission::ExecutionPolicy;
 
 use crate::{Result, checked_input, storage, stored};
 use rss_mdm_task_state::RunState;
@@ -12,13 +11,11 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
-    DeviceAccess { version: Uuid, delivery: Uuid },
     Policy { version: Uuid },
 }
 impl Source {
     pub fn columns(self) -> (&'static str, Uuid) {
         match self {
-            Self::DeviceAccess { version, .. } => ("device_access", version),
             Self::Policy { version } => ("policy", version),
         }
     }
@@ -54,10 +51,6 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
         retirement: row.try_get("retirement")?,
         id,
         source: match row.try_get::<&str, _>("source_kind")? {
-            "device_access" => Source::DeviceAccess {
-                version: row.try_get("policy_version")?,
-                delivery: id,
-            },
             "policy" => Source::Policy {
                 version: row.try_get("policy_version")?,
             },
@@ -174,9 +167,7 @@ pub async fn audit_details(
 }
 
 pub enum ScheduledPolicy {
-    DeviceAccess(crate::device_access::Plan),
     Retirement(crate::unmanage::RetirementPlan),
-    Credential(ExecutionPolicy<crate::credential_tasks::FrozenCredential>),
 }
 pub struct TaskIssue {
     pub run: Uuid,
@@ -186,115 +177,29 @@ pub struct TaskIssue {
 }
 impl ScheduledPolicy {
     pub fn owner(&self) -> Uuid {
-        match self {
-            Self::DeviceAccess(v) => v.owner,
-            Self::Credential(v) => v.owner,
-
-            Self::Retirement(v) => v.owner,
-        }
+        let Self::Retirement(v) = self;
+        v.owner
     }
     pub(crate) async fn authorized_in(
         &self,
-        service: &crate::transactions::ExecutionTransactions,
+        _service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
-        now: i64,
+        _now: i64,
     ) -> Result<bool> {
-        if let Self::Retirement(v) = self {
-            return v.allowed_in(tx, target, None).await;
-        }
-
-        let tenant = tx.tenant_id().to_string();
-        let device = target.device.clone();
-        let allowed = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(rss_mdm_registration_service::lifecycle::work_allowed_in(
-                        c, &tenant, &device,
-                    )
-                    .await)
-                })
-            })
-            .await??;
-        if !allowed {
-            return Ok(false);
-        }
-        match self {
-            Self::DeviceAccess(v) => v.allowed_in(service, tx, target).await,
-            Self::Retirement(v) => v.allowed_in(tx, target, None).await,
-            Self::Credential(v) => Ok(crate::credential_tasks::eligible(
-                service,
-                tx,
-                target,
-                v.frozen.input.architecture,
-            )
-            .await?
-                && v.frozen.authorized_in(service, tx, target, now).await?
-                && v.authorized_in(&service.source, tx, &target.device, now)
-                    .await?),
-        }
-    }
-    /// Recheck current authority for an existing Run without reselecting rollout.
-    pub(crate) async fn run_admission_in(
-        &self,
-        service: &crate::transactions::ExecutionTransactions,
-        tx: &mut PgTransaction<'_>,
-        target: &Target,
-        now: i64,
-    ) -> Result<bool> {
-        match self {
-            Self::Credential(v) => Ok(v.active
-                && v.frozen.authorized_in(service, tx, target, now).await?
-                && crate::credential_tasks::eligible(
-                    service,
-                    tx,
-                    target,
-                    v.frozen.input.architecture,
-                )
-                .await?),
-
-            Self::DeviceAccess(v) => v.allowed_in(service, tx, target).await,
-            Self::Retirement(v) => v.allowed_in(tx, target, None).await,
-        }
+        let Self::Retirement(v) = self;
+        v.allowed_in(tx, target, None).await
     }
     pub(crate) async fn authorized_run_in(
         &self,
-        service: &crate::transactions::ExecutionTransactions,
+        _service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         run: &Run,
-        now: i64,
+        _now: i64,
     ) -> Result<bool> {
-        if let Self::Retirement(v) = self {
-            return v.allowed_in(tx, &run.target, Some(run.id)).await;
-        }
-        if let Self::DeviceAccess(v) = self {
-            return v.allowed_in(service, tx, &run.target).await;
-        }
-
-        if run.state.started_at.is_none() {
-            let channel = { rss_mdm_inventory::Channel::Agent };
-            let source = service.source.clone();
-            let tenant = tx.tenant_id();
-            let device = run.target.device.clone();
-            let evidence = run.source_objects.clone();
-            if !tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(source
-                            .evidence_valid_on(c, tenant, channel, &device, &evidence)
-                            .await)
-                    })
-                })
-                .await??
-            {
-                return Ok(false);
-            }
-        }
-        self.run_admission_in(service, tx, &run.target, now).await
+        let Self::Retirement(v) = self;
+        v.allowed_in(tx, &run.target, Some(run.id)).await
     }
-
-    /// Completion keeps current business authority without requiring a fresh executor context.
-    /// Capability and OS helper admission remains mandatory for every new Offer and Start.
     pub(crate) async fn completion_authorized_in(
         &self,
         service: &crate::transactions::ExecutionTransactions,
@@ -302,9 +207,6 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
-        if let Self::Credential(v) = self {
-            return Ok(v.active && v.frozen.authorized_in(service, tx, target, now).await?);
-        }
         self.authorized_in(service, tx, target, now).await
     }
     pub(crate) async fn withdrawn_in(
@@ -314,12 +216,7 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
-        match self {
-            Self::DeviceAccess(v) => Ok(!v.allowed_in(service, tx, target).await?),
-            Self::Retirement(v) => Ok(!v.allowed_in(tx, target, None).await?),
-            Self::Credential(v) => Ok(v.withdrawn_in(&service.source, tx, &target.device).await?
-                || !v.frozen.authorized_in(service, tx, target, now).await?),
-        }
+        Ok(!self.authorized_in(service, tx, target, now).await?)
     }
     pub(crate) async fn task(
         &self,
@@ -328,13 +225,8 @@ impl ScheduledPolicy {
         target: &Target,
         issue: TaskIssue,
     ) -> Result<rss_mdm_agent_wire::runtime::TaskPayload> {
-        match self {
-            Self::DeviceAccess(v) => v.task(service, tx, target, issue).await,
-            Self::Retirement(v) => v.task(service, tx, target, issue).await,
-            Self::Credential(v) => {
-                crate::credential_tasks::task(v, service, tx, target, issue).await
-            }
-        }
+        let Self::Retirement(v) = self;
+        v.task(service, tx, target, issue).await
     }
 }
 pub(crate) async fn agent_profile_in(
@@ -369,7 +261,6 @@ pub async fn load_policy_version(
 ) -> Result<ScheduledPolicy> {
     let (policy, frozen) = crate::sources::storage::version_in(reader, tx, id).await?;
     match frozen {
-        crate::frozen::Frozen::DeviceAccess { .. } => Err(Error::Unsupported.into()),
         crate::frozen::Frozen::UnmanageDevice {
             run_lifetime_seconds,
             ..
@@ -380,9 +271,6 @@ pub async fn load_policy_version(
                 lifetime: run_lifetime_seconds,
             },
         )),
-        crate::frozen::Frozen::Credential { .. } => Ok(ScheduledPolicy::Credential(
-            crate::sources::admission::credential_in(reader, tx, id).await?,
-        )),
     }
 }
 
@@ -392,9 +280,6 @@ pub async fn load_source(
     source: Source,
 ) -> Result<ScheduledPolicy> {
     match source {
-        Source::DeviceAccess { delivery, .. } => Ok(ScheduledPolicy::DeviceAccess(
-            crate::device_access::load(tx, delivery).await?,
-        )),
         Source::Policy { version } => load_policy_version(reader, tx, version).await,
     }
 }

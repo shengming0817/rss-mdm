@@ -12,6 +12,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 #[derive(Clone)]
 pub(crate) struct AgentTasks {
+    pub access: Arc<rss_mdm_registration_service::device_access::execution::Service>,
+    pub credentials: Option<Arc<rss_mdm_recovery_credentials::tasks::Service>>,
     pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub registration: Arc<rss_mdm_registration_service::enrollment::tasks::Service>,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
@@ -194,6 +196,30 @@ impl Tasks for AgentTasks {
                 .into_iter()
                 .map(|v| (v, Owner::Registration)),
             );
+            candidates.extend(
+                rss_mdm_registration_service::device_access::execution::poll::offer_candidates(
+                    tx,
+                    p.registration(),
+                    now,
+                    after,
+                )
+                .await
+                .map_err(access_fault)?
+                .into_iter()
+                .map(|v| (v, Owner::Access)),
+            );
+            candidates.extend(
+                rss_mdm_recovery_credentials::tasks::actions::poll::offer_candidates(
+                    tx,
+                    p.registration(),
+                    now,
+                    after,
+                )
+                .await
+                .map_err(credential_fault)?
+                .into_iter()
+                .map(|v| (v, Owner::Credential)),
+            );
             candidates.sort_by_key(|(coordinate, _)| *coordinate);
             if candidates.windows(2).any(|v| v[0].0.1 == v[1].0.1) {
                 return Err(rss_mdm_agent_channel::Error::Conflict);
@@ -217,18 +243,24 @@ impl Tasks for AgentTasks {
                     )
                 })??
                 .ok_or(rss_mdm_agent_channel::Error::Unauthorized)?;
-            if binding.capabilities.iter().any(|v| {
-                matches!(
-                    v,
-                    wire::Capability::DeviceAccessV1
-                        | wire::Capability::DeviceUnmanageV1
-                        | wire::Capability::CredentialsWindowsV1
-                )
-            }) {
-                self.execution
+            if binding
+                .capabilities
+                .contains(&wire::Capability::DeviceAccessV1)
+            {
+                self.access
                     .agent_admit_in(tx, p, input, audit)
                     .await
-                    .map_err(fault)?;
+                    .map_err(access_fault)?;
+            }
+            if binding
+                .capabilities
+                .contains(&wire::Capability::CredentialsWindowsV1)
+                && let Some(credentials) = &self.credentials
+            {
+                credentials
+                    .agent_admit_in(tx, p, input, audit)
+                    .await
+                    .map_err(credential_fault)?;
             }
             if binding.script() {
                 self.scripts
@@ -261,6 +293,18 @@ impl Tasks for AgentTasks {
                     return Err(rss_mdm_agent_channel::Error::Conflict);
                 }
                 offer = match owner {
+                    Owner::Access => self
+                        .access
+                        .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
+                        .await
+                        .map_err(access_fault)?,
+                    Owner::Credential => self
+                        .credentials
+                        .as_ref()
+                        .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
+                        .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
+                        .await
+                        .map_err(credential_fault)?,
                     Owner::Execution => self
                         .execution
                         .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
@@ -306,6 +350,18 @@ impl Tasks for AgentTasks {
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             match owner_in(tx, signed.payload.task_id()).await? {
+                Owner::Access => self
+                    .access
+                    .agent_replay_offer_in(tx, p, signed, audit)
+                    .await
+                    .map_err(access_fault),
+                Owner::Credential => self
+                    .credentials
+                    .as_ref()
+                    .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
+                    .agent_replay_offer_in(tx, p, signed, audit)
+                    .await
+                    .map_err(credential_fault),
                 Owner::Execution => self
                     .execution
                     .agent_replay_offer_in(tx, p, signed, audit)
@@ -344,6 +400,18 @@ impl Tasks for AgentTasks {
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             match owner_in(tx, task).await? {
+                Owner::Access => self
+                    .access
+                    .agent_replay_event_in(tx, p, task, input, audit)
+                    .await
+                    .map_err(access_fault),
+                Owner::Credential => self
+                    .credentials
+                    .as_ref()
+                    .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
+                    .agent_replay_event_in(tx, p, task, input, audit)
+                    .await
+                    .map_err(credential_fault),
                 Owner::Execution => self
                     .execution
                     .agent_replay_event_in(tx, p, task, input, audit)
@@ -382,6 +450,34 @@ impl Tasks for AgentTasks {
     ) -> Pending<'a, EventEffects> {
         Box::pin(async move {
             Ok(match owner_in(tx, task).await? {
+                Owner::Access => {
+                    let e = self
+                        .access
+                        .agent_event_in(tx, p, task, input, audit)
+                        .await
+                        .map_err(access_fault)?;
+                    EventEffects {
+                        start: e.start,
+                        cancelled: e.cancelled,
+                        credentials: e.credentials,
+                        fact: e.fact,
+                    }
+                }
+                Owner::Credential => {
+                    let e = self
+                        .credentials
+                        .as_ref()
+                        .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
+                        .agent_event_in(tx, p, task, input, audit)
+                        .await
+                        .map_err(credential_fault)?;
+                    EventEffects {
+                        start: e.start,
+                        cancelled: e.cancelled,
+                        credentials: e.credentials,
+                        fact: e.fact,
+                    }
+                }
                 Owner::Execution => {
                     let e = self
                         .execution
@@ -493,6 +589,24 @@ impl Tasks for AgentTasks {
                 .await
                 .map_err(registration_fault)?,
             );
+            page.extend(
+                rss_mdm_registration_service::device_access::execution::poll::cancellations(
+                    tx,
+                    registration,
+                    after,
+                )
+                .await
+                .map_err(access_fault)?,
+            );
+            page.extend(
+                rss_mdm_recovery_credentials::tasks::actions::poll::cancellations(
+                    tx,
+                    registration,
+                    after,
+                )
+                .await
+                .map_err(credential_fault)?,
+            );
             page.sort_by_key(|v| v.task_id());
             if page.windows(2).any(|v| v[0].task_id() == v[1].task_id()) {
                 return Err(rss_mdm_agent_channel::Error::Conflict);
@@ -512,6 +626,8 @@ impl Tasks for AgentTasks {
     ) -> Pending<'a, rss_mdm_resource::Artifact> {
         Box::pin(async move {
             match owner_in(tx, task).await? {
+                Owner::Access => Err(rss_mdm_agent_channel::Error::Forbidden),
+                Owner::Credential => Err(rss_mdm_agent_channel::Error::Forbidden),
                 Owner::Execution => Err(rss_mdm_agent_channel::Error::Forbidden),
                 Owner::Software => self
                     .software
@@ -617,10 +733,12 @@ impl RecoveryUse for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            self.execution
+            self.credentials
+                .as_ref()
+                .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
                 .record_access_recovery_use(p, input, audit)
                 .await
-                .map_err(error)
+                .map_err(credential_error)
         })
     }
 }
@@ -754,4 +872,62 @@ pub(super) async fn prepare(
     .map_err(|_| {
         rss_mdm_agent_channel::Error::Unavailable(rss_mdm_agent_channel::Failure::Business)
     })?
+}
+
+pub(super) fn access_error(
+    e: rss_mdm_registration_service::device_access::execution::Error,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_agent_channel::{Error as A, Failure};
+    use rss_mdm_registration_service::device_access::execution::Error as S;
+    match e {
+        S::Unsupported => A::Unsupported,
+        S::Malformed => A::Malformed,
+        S::Conflict => A::Conflict,
+        S::Forbidden => A::Forbidden,
+        S::Unauthorized => A::Unauthorized,
+        S::NotFound => A::NotFound,
+        S::CommitUnknown => A::CommitUnknown,
+        S::RollbackFailed => A::RollbackFailed,
+        S::Invariant | S::Unavailable => A::Unavailable(Failure::Business),
+        S::Audit(e) => e.as_ref().into(),
+    }
+}
+pub(super) fn access_fault(
+    e: rss_mdm_registration_service::device_access::execution::transaction::Fault,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_registration_service::device_access::execution::transaction::Fault as F;
+    match e {
+        F::Request(e) => access_error(e),
+        F::Storage(e) => e.into(),
+        F::Sql(e) => e.into(),
+    }
+}
+
+pub(super) fn credential_error(
+    e: rss_mdm_recovery_credentials::tasks::Error,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_agent_channel::{Error as A, Failure};
+    use rss_mdm_recovery_credentials::tasks::Error as S;
+    match e {
+        S::Unsupported => A::Unsupported,
+        S::Malformed => A::Malformed,
+        S::Conflict => A::Conflict,
+        S::Forbidden => A::Forbidden,
+        S::Unauthorized => A::Unauthorized,
+        S::NotFound => A::NotFound,
+        S::CommitUnknown => A::CommitUnknown,
+        S::RollbackFailed => A::RollbackFailed,
+        S::Invariant | S::Unavailable => A::Unavailable(Failure::Business),
+        S::Audit(e) => e.as_ref().into(),
+    }
+}
+pub(super) fn credential_fault(
+    e: rss_mdm_recovery_credentials::tasks::transaction::Fault,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_recovery_credentials::tasks::transaction::Fault as F;
+    match e {
+        F::Request(e) => credential_error(e),
+        F::Storage(e) => e.into(),
+        F::Sql(e) => e.into(),
+    }
 }

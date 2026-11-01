@@ -1,23 +1,14 @@
 //! Enrollment materials bind to the initiating runtime, including Policy participants.
-use crate::enrollment::tasks::{Error, agent_facts};
+use crate::enrollment::tasks::Error;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 
-/// Application composition sums the concrete owners under the existing device lock.
-pub trait DeviceCapacity: Send + Sync {
-    fn available_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        device: &'a str,
-        now: i64,
-    ) -> std::pin::Pin<Box<dyn Future<Output = crate::enrollment::tasks::Result<bool>> + Send + 'a>>;
-}
-
+use crate::participants::{agent as agent_facts, capacity::DeviceCapacity};
 pub struct Materials {
     pub inventory: Arc<dyn super::Inventory>,
     pub agent_store: Arc<dyn agent_facts::Store>,
-    pub source: Arc<dyn crate::enrollment::tasks::scope::Sources>,
+    pub source: Arc<dyn crate::participants::scope::Sources>,
     pub capacity: Arc<dyn DeviceCapacity>,
     pub instance: String,
 }
@@ -28,7 +19,7 @@ pub struct Transactions {
     pub(crate) instance: String,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
-    pub(crate) source: Arc<dyn crate::enrollment::tasks::scope::Sources>,
+    pub(crate) source: Arc<dyn crate::participants::scope::Sources>,
     pub(crate) capacity: Arc<dyn DeviceCapacity>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,

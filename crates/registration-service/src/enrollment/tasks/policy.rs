@@ -1,5 +1,6 @@
 //! Registration consumes immutable Enrollment input and current Policy/Scope qualification.
 use super::*;
+use crate::participants::scope;
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_inventory::Channel;
 use rss_mdm_policy::{Frequency, Policy};

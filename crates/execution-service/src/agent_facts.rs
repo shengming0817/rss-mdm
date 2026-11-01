@@ -27,14 +27,8 @@ impl Binding {
     pub fn task(&self) -> bool {
         self.capabilities
             .contains(&rss_mdm_agent_wire::runtime::Capability::DeviceUnmanageV1)
-            || self
-                .capabilities
-                .contains(&rss_mdm_agent_wire::runtime::Capability::DeviceAccessV1)
             || self.script()
             || self.native_collection()
-            || self
-                .capabilities
-                .contains(&rss_mdm_agent_wire::runtime::Capability::CredentialsWindowsV1)
     }
 }
 pub trait Store: Send + Sync {

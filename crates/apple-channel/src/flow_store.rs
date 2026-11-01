@@ -366,25 +366,6 @@ impl channels::AppleResults for Store {
             Ok(result)
         })
     }
-    fn purge_credential_inputs<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        operation: Uuid,
-        terminal: bool,
-    ) -> Pending<'a, bool> {
-        Box::pin(async move {
-            crate::recovery_credentials::purge_inputs(
-                c,
-                &self.protection,
-                &tenant,
-                operation,
-                terminal,
-            )
-            .await
-        })
-    }
-
     fn declaration_page<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -747,4 +728,29 @@ async fn send_command(
 
 fn storage(e: sqlx::Error) -> Error {
     db(e)
+}
+
+impl rss_mdm_recovery_credentials::cleanup::ChannelCopies for Store {
+    fn purge_in<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: &'a str,
+        operation: Uuid,
+        command: &'a rss_device_command::Command,
+    ) -> rss_mdm_recovery_credentials::cleanup::Pending<
+        'a,
+        rss_mdm_recovery_credentials::cleanup::CopyState,
+    > {
+        Box::pin(async move {
+            crate::recovery_credentials::purge_inputs(
+                c,
+                &self.protection,
+                tenant,
+                operation,
+                command,
+            )
+            .await
+            .map_err(|_| rss_mdm_recovery_credentials::Error::Storage)
+        })
+    }
 }

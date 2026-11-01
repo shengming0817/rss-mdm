@@ -284,7 +284,6 @@ impl Channels for ConfigurationChannels {
                         generation: r.binding.generation,
                     },
                     apple::AppleCommand {
-                        recovery: None,
                         operation: r.binding.operation,
                         owner: String::new(),
                         authorized_declarations: Vec::new(),
@@ -424,6 +423,15 @@ pub(super) async fn operation_permissions(
                     .request
                     .task
                     .permissions()?
+            }
+            super::native_ownership::Owner::Recovery => {
+                rss_mdm_recovery_credentials::native::storage::load_on(c, tenant, protection, id)
+                    .await
+                    .map_err(|_| Error::Unavailable(Failure::Database))?
+                    .request
+                    .task
+                    .permissions()
+                    .map_err(|_| Error::Forbidden)?
             }
             super::native_ownership::Owner::Execution => {
                 rss_mdm_execution_service::storage::load_on(c, tenant, protection, id)

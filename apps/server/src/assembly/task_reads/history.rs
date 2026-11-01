@@ -116,6 +116,32 @@ impl Reads {
                         .into_iter()
                         .map(RunSummary::Enrollment),
                     );
+                    items.extend(
+                        rss_mdm_registration_service::device_access::execution::queries::page_on(
+                            c,
+                            &s.tenant.to_string(),
+                            policy,
+                            after,
+                            limit + 1,
+                        )
+                        .await
+                        .map_err(access_fault)?
+                        .into_iter()
+                        .map(RunSummary::Access),
+                    );
+                    items.extend(
+                        rss_mdm_recovery_credentials::tasks::queries::page_on(
+                            c,
+                            &s.tenant.to_string(),
+                            policy,
+                            after,
+                            limit + 1,
+                        )
+                        .await
+                        .map_err(credential_fault)?
+                        .into_iter()
+                        .map(RunSummary::Credential),
+                    );
                     items.sort_by_key(|v| std::cmp::Reverse(v.position()));
                     let mut ids = std::collections::BTreeSet::new();
                     if items.iter().any(|v| !ids.insert(v.position().1)) {
@@ -175,6 +201,30 @@ impl Reads {
                         .await
                         .map(RunDetail::Software)
                         .map_err(software_fault),
+                    Owner::Access => {
+                        rss_mdm_registration_service::device_access::execution::queries::detail_on(
+                            c,
+                            &s.tenant.to_string(),
+                            policy,
+                            id,
+                            proof,
+                            grant,
+                        )
+                        .await
+                        .map(RunDetail::Access)
+                        .map_err(access_fault)
+                    }
+                    Owner::Credential => rss_mdm_recovery_credentials::tasks::queries::detail_on(
+                        c,
+                        &s.tenant.to_string(),
+                        policy,
+                        id,
+                        proof,
+                        grant,
+                    )
+                    .await
+                    .map(RunDetail::Credential)
+                    .map_err(credential_fault),
                     Owner::Registration => {
                         rss_mdm_registration_service::enrollment::tasks::queries::detail_on(
                             c,

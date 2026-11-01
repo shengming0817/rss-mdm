@@ -1,5 +1,5 @@
 //! Explicit App mappings for registration's borrowed source participants.
-use rss_mdm_registration_service::enrollment::tasks::scope::*;
+use rss_mdm_registration_service::participants::scope::*;
 use rss_mdm_scope_service::channels;
 use rss_request_context::TenantId;
 use sqlx::PgConnection;

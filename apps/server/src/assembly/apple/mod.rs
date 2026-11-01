@@ -16,6 +16,9 @@ impl Apple {
         now: i64,
         platform: (&str, rss_request_context::TenantId),
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
+        credential_receipts: Option<
+            Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>,
+        >,
     ) -> Result<Self, Error> {
         let trust = crate::device_pki::load(
             &config.trust_file,
@@ -61,6 +64,7 @@ impl Apple {
                 webhooks,
                 providers,
             )
+            .with_credential_receipts(credential_receipts)
             .with_account_keys(materials.accounts)
             .with_platform_sso(platform_sso.clone()),
         );

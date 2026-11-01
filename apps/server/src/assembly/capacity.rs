@@ -25,7 +25,27 @@ async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result
                     c, tenant, &device, now,
                 )
                 .await?;
-            Ok(execution + script + collection + software + registration < 128)
+            let access =
+                rss_mdm_registration_service::device_access::execution::storage::active_count_on(
+                    c, tenant, &device, now,
+                )
+                .await?;
+            let credential_native =
+                rss_mdm_recovery_credentials::native::storage::active_count_on(c, tenant, &device)
+                    .await?;
+            let credential = rss_mdm_recovery_credentials::tasks::storage::active_count_on(
+                c, tenant, &device, now,
+            )
+            .await?;
+            Ok(execution
+                + script
+                + collection
+                + software
+                + registration
+                + access
+                + credential_native
+                + credential
+                < 128)
         })
     })
     .await
@@ -76,7 +96,7 @@ impl rss_mdm_software_service::deployment::capacity::DeviceCapacity for Capacity
     }
 }
 
-impl rss_mdm_registration_service::enrollment::tasks::DeviceCapacity for Capacity {
+impl rss_mdm_registration_service::participants::capacity::DeviceCapacity for Capacity {
     fn available_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
@@ -84,7 +104,7 @@ impl rss_mdm_registration_service::enrollment::tasks::DeviceCapacity for Capacit
         now: i64,
     ) -> std::pin::Pin<
         Box<
-            dyn Future<Output = rss_mdm_registration_service::enrollment::tasks::Result<bool>>
+            dyn Future<Output = Result<bool, rss_mdm_registration_service::participants::Error>>
                 + Send
                 + 'a,
         >,

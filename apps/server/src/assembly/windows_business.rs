@@ -216,6 +216,7 @@ impl Business for WindowsBusiness {
                             .await
                             .map_err(software_fault)?
                         }
+                        Owner::Recovery => return Err(rss_mdm_windows_channel::Error::Forbidden),
                         Owner::Registration => {
                             rss_mdm_registration_service::installation::settle_windows_receipt_in(
                                 &self.4, tx, id, complete, audit,
@@ -315,6 +316,7 @@ impl Business for WindowsBusiness {
                     .await
                     .map(software_operation)
                     .map_err(software_error),
+                Owner::Recovery => Err(rss_mdm_windows_channel::Error::Forbidden),
                 Owner::Registration => self
                     .4
                     .windows_operation_on(c, p, id)
@@ -404,6 +406,7 @@ impl Business for WindowsBusiness {
                     )
                     .await
                     .map_err(software_error),
+                Owner::Recovery => Err(rss_mdm_windows_channel::Error::Forbidden),
                 Owner::Registration => self
                     .4
                     .windows_dispatch_failure_on(
