@@ -277,12 +277,13 @@ async fn mixed_references_are_owned_authorized_and_stable_across_pages() -> Resu
         )
         .await?;
     assert!(page.deletion_blocked);
+    assert!(page.items.iter().any(|entry| entry.source.id == child));
     assert!(
         page.items
             .iter()
             .all(|e| e.source.kind == group::references::Kind::Group)
     );
-    assert!(
+    assert!(matches!(
         owners
             .groups
             .execute(
@@ -297,9 +298,53 @@ async fn mixed_references_are_owned_authorized_and_stable_across_pages() -> Resu
                 &c.request(&hidden)?,
                 &hidden
             )
-            .await
-            .is_err()
-    );
+            .await,
+        Err(group::Error::Conflict)
+    ));
+    drop(owners);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: a hidden Scope reference alone blocks Group deletion with an explicit reference conflict"]
+async fn hidden_scope_reference_alone_blocks_group_deletion() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[P::InventoryRead, P::GroupRead, P::GroupWrite])
+        .await?;
+    let proof = c.authenticate(&account).await?;
+    let owners = Owners::open(&c).await?;
+    let root = owners.create(&c, &proof, None).await?;
+    scope(&c, &[root]).await?;
+    let page = owners
+        .groups
+        .references(
+            &proof,
+            root,
+            &group::references::Query::parse("limit=20")?,
+            &c.request(&proof)?,
+        )
+        .await?;
+    assert!(page.items.is_empty());
+    assert!(page.next_cursor.is_none());
+    assert!(page.deletion_blocked);
+    let deletion = owners
+        .groups
+        .execute(
+            &group::Command::Group {
+                id: root,
+                change: Box::new(group::operation::Operation {
+                    operation_id: Uuid::new_v4(),
+                    expected_revision: 1,
+                    input: group::GroupChange::Delete,
+                }),
+            },
+            &c.request(&proof)?,
+            &proof,
+        )
+        .await;
+    assert!(matches!(deletion, Err(group::Error::Conflict)));
     drop(owners);
     c.close().await;
     Ok(())
