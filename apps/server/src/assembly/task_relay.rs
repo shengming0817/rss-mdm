@@ -26,7 +26,24 @@ pub(crate) fn registration(
             let result=installation.relay_once().await; installation.record_relay_health(&result);
             match result {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_registration_service::installation::Error::Malformed|rss_mdm_registration_service::installation::Error::Forbidden|rss_mdm_registration_service::installation::Error::Unauthorized|rss_mdm_registration_service::installation::Error::Unavailable(rss_mdm_registration_service::installation::Failure::CommandInvariant|rss_mdm_registration_service::installation::Failure::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}}}
             if stop.is_cancelled(){return Ok(());}
-            match enrollment.relay_once().await {Ok(n)=>pending+=n,Err(e)=>{use rss_mdm_registration_service::enrollment::tasks::Error as E;if matches!(e,E::Malformed|E::Forbidden|E::Unauthorized|E::Invariant){return Err(rss_runtime::ShutdownError::new(e));}}}
+            match enrollment.relay_once().await {
+                Ok(n) => pending += n,
+                Err(e) => {
+                    use rss_mdm_registration_service::enrollment::tasks::Error as E;
+                    let reason = match e {
+                        E::Malformed | E::Forbidden | E::Unauthorized | E::Invariant => {
+                            return Err(rss_runtime::ShutdownError::new(e));
+                        }
+                        E::CommitUnknown => "commit_unknown",
+                        E::RollbackFailed => "rollback_failed",
+                        E::Unavailable => "unavailable",
+                        E::Conflict => "conflict",
+                        E::NotFound => "not_found",
+                        E::Audit(_) => "audit",
+                    };
+                    eprintln!("{}", serde_json::json!({"event":"mdm_task_relay_failure","owner":"enrollment","reason":reason}));
+                }
+            }
             if pending==0 {tokio::select!{()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(Duration::from_secs(5))=>{}}}
         }
     })

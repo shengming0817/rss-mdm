@@ -99,6 +99,50 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
     assert_eq!(source["registration"], json!(n.registration));
     assert_eq!(source["generation"], 1);
     assert_eq!(source["bootstrap"], json!(bootstrap));
+    // Registration projects its own state on the caller's real role/tenant snapshot.
+    // Issuing a grant does not itself invent an authenticated Agent registration.
+    use rss_mdm_registration_service::installation::queries as observations;
+    let pool = c.inputs.pool("shared", "mdm_command_runtime").await?;
+    let mut snapshot = pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *snapshot)
+        .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(c.tenant.to_string())
+        .execute(&mut *snapshot)
+        .await?;
+    let projected = observations::installations_on(&mut snapshot, c.tenant, &[installation])
+        .await?
+        .remove(&installation)
+        .expect("requested installation");
+    assert!(projected.registration.is_none());
+    assert!(matches!(
+        projected.bootstrap.expect("retained bootstrap").state,
+        observations::BootstrapState::Consumed
+    ));
+    assert!(
+        observations::cleanup_pending_on(&mut snapshot, &c.tenant.to_string(), n.registration, 1)
+            .await?
+    );
+    assert!(
+        !observations::cleanup_pending_on(&mut snapshot, &c.tenant.to_string(), n.registration, 2)
+            .await?
+    );
+    let contact =
+        observations::native_contact_on(&mut snapshot, &c.tenant.to_string(), n.registration, 1)
+            .await?;
+    assert_eq!(
+        (contact.active, contact.bindings, contact.last),
+        (0, 0, None)
+    );
+    let foreign = rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?;
+    let hidden = observations::installations_on(&mut snapshot, foreign, &[installation])
+        .await?
+        .remove(&installation)
+        .expect("requested installation");
+    assert!(hidden.bootstrap.is_none() && hidden.registration.is_none());
+    snapshot.rollback().await?;
+    pool.close().await;
     command::close(a).await?;
     c.close().await;
     Ok(())

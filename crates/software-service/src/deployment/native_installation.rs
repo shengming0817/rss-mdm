@@ -6,6 +6,9 @@ use crate::deployment::sources as policies;
 use crate::installation::package::{Identity, Package};
 use rss_mdm_inventory::ReportSource;
 use rss_mdm_policy::{Architecture, Platform, SoftwareTarget, schedule::Trigger};
+use rss_mdm_registration_service::installation::queries::{
+    AgentRegistration, BootstrapObservation, installations_on,
+};
 
 impl SoftwareService {
     /// Opaque operation locates a fixed public package; it carries no enrollment authority.
@@ -205,20 +208,22 @@ pub(crate) async fn installation_observations_on(
             .fetch_all(c)
             .await
     }?;
-    rss_mdm_query_postgres::observe_rows("execution.installation", &rows)?;
+    rss_mdm_query_postgres::observe_rows("software.installation", &rows)?;
     let mut metadata = std::collections::BTreeMap::new();
-    let mut registrations = Vec::new();
     for row in rows {
         if !row.try_get::<bool, _>("within_budget")? {
             return Err(Error::Conflict.into());
         }
         if let Some(operation) = row.try_get::<Option<Uuid>, _>("operation")? {
-            if let Some(id) = row.try_get::<Option<Uuid>, _>("agent_registration")? {
-                registrations.push(id);
-            }
             metadata.insert(operation, row);
         }
     }
+    let mut observations =
+        installations_on(c, tenant, &ops.iter().map(|op| op.id).collect::<Vec<_>>()).await?;
+    let registrations = observations
+        .values()
+        .filter_map(|v| v.registration.as_ref().map(|r| r.id))
+        .collect();
     let profiles = agent.bindings(c, tenant.to_string(), registrations).await?;
     let requests = ops
         .iter()
@@ -237,16 +242,9 @@ pub(crate) async fn installation_observations_on(
     let mut output = std::collections::BTreeMap::new();
     for op in ops {
         let row = metadata.remove(&op.id).ok_or(Error::Conflict)?;
-        let agent_id: Option<Uuid> = row.try_get("agent_registration")?;
-        let bound = agent_id
-            .map(|id| {
-                Ok::<_, sqlx::Error>((
-                    id,
-                    row.try_get::<String, _>("agent_device")?,
-                    row.try_get::<String, _>("agent_state")?,
-                ))
-            })
-            .transpose()?;
+        let observation = observations.remove(&op.id).ok_or(Error::Conflict)?;
+        let bound = observation.registration;
+        let agent_id = bound.as_ref().map(|r| r.id);
         let profile = agent_id.and_then(|id| profiles.get(&id).map(|p| p.capabilities.clone()));
         let rows = match apple.remove(&op.id) {
             Some(apple_facts::AppleEvidence::Observations(rows)) => rows,
@@ -270,7 +268,7 @@ pub(crate) async fn installation_observations_on(
             query: windows.channel_state,
             delivery: windows.delivery,
             bound,
-            bootstrap: row.try_get("bootstrap")?,
+            bootstrap: observation.bootstrap,
             profile,
             rows,
         };
@@ -283,8 +281,8 @@ struct InstallationFacts {
     sent: bool,
     query: Option<serde_json::Value>,
     delivery: crate::deployment::windows_results::InstallationDelivery,
-    bound: Option<(Uuid, String, String)>,
-    bootstrap: Option<serde_json::Value>,
+    bound: Option<AgentRegistration>,
+    bootstrap: Option<BootstrapObservation>,
     profile: Option<Vec<rss_mdm_agent_wire::runtime::Capability>>,
     rows: Vec<rss_mdm_apple_mdm::native::evidence::Observation>,
 }
@@ -423,8 +421,8 @@ fn installation_from_facts(
             crate::deployment::windows_results::InstallationDelivery::Unknown => "unknown",
         };
     }
-    let registered = if let Some((id, device, state)) = bound {
-        serde_json::json!({"deviceId":device,"registrationId":id,"state":state,"capabilities":profile})
+    let registered = if let Some(registration) = bound {
+        serde_json::json!({"deviceId":registration.device,"registrationId":registration.id,"state":registration.state,"capabilities":profile})
     } else {
         serde_json::Value::Null
     };
@@ -436,11 +434,8 @@ fn installation_from_facts(
 const INSTALLATION_PAGE: &str = r#"
 WITH selected AS MATERIALIZED (
  SELECT o.id AS operation,
- EXISTS(SELECT FROM mdm_windows.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute') OR EXISTS(SELECT FROM mdm_apple.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.state<>'pending') AS sent,
- r.id AS agent_registration,r.device AS agent_device,r.state AS agent_state,
- (SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=o.tenant_id AND installation=o.id AND active) AS bootstrap
+ EXISTS(SELECT FROM mdm_windows.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute') OR EXISTS(SELECT FROM mdm_apple.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.state<>'pending') AS sent
  FROM mdm_software_deployment.operations o
- LEFT JOIN LATERAL(SELECT r.id,r.device,r.state FROM mdm_access.agent_grants e JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(e.tenant_id,e.id) WHERE e.tenant_id=o.tenant_id AND e.source='native' AND e.native_authority->>'installation'=o.id::text ORDER BY r.id LIMIT 1) r ON true
  WHERE o.tenant_id=$1::uuid AND o.id=ANY($2)
 ), budget AS (SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
 SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok
@@ -613,13 +608,15 @@ impl crate::deployment::transactions::Transactions {
         let contact = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    Ok(crate::deployment::agent_install::recovery::contact_on(
-                        c,
-                        &tenant,
-                        registration,
-                        generation,
+                    Ok(
+                        rss_mdm_registration_service::installation::queries::native_contact_on(
+                            c,
+                            &tenant,
+                            registration,
+                            generation,
+                        )
+                        .await,
                     )
-                    .await)
                 })
             })
             .await??;
@@ -901,7 +898,7 @@ impl crate::deployment::transactions::Transactions {
                 let contact = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(crate::deployment::agent_install::recovery::contact_on(
+                            Ok(rss_mdm_registration_service::installation::queries::native_contact_on(
                                 c,
                                 &tenant,
                                 registration,

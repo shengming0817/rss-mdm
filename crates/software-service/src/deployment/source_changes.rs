@@ -1,4 +1,4 @@
-//! Execution owns device-source consumption; Scope has its own independent checkpoint.
+//! Software owns its device-source consumption; other owners keep independent checkpoints.
 use crate::deployment::transaction::*;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
@@ -113,11 +113,11 @@ pub async fn fail_in(
             "automation_failed",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        audit.identify_service("service:execution-inputs");
+        audit.identify_service("service:software-inputs");
         audit.target("asset_ingress");
         let fact = rss_mdm_audit_integration::Fact::business(
             &audit,
-            &format!("device-ingress:{generation}:failed"),
+            &format!("software-device-ingress:{generation}:failed"),
             200,
             "failed",
             None,
@@ -133,7 +133,7 @@ pub async fn verify_storage(c: &mut sqlx::PgConnection) -> std::result::Result<(
         .await?;
     if !valid {
         return Err(sqlx::Error::Protocol(
-            "Execution input checkpoint rejected".into(),
+            "Software input checkpoint rejected".into(),
         ));
     }
     Ok(())
@@ -187,7 +187,7 @@ async fn relation_page_in(
     Ok(())
 }
 
-/// The Execution input target shares the existing owner runner and store.
+/// The Software input target shares the existing owner runner and store.
 pub fn target(tenant: rss_request_context::TenantId) -> rss_reconcile::Target {
     rss_reconcile::Target::new(crate::deployment::recovery_scope(tenant), "inputs")
         .expect("input target")

@@ -2,36 +2,13 @@
 use super::Package;
 use crate::deployment::{Error, database::db};
 use rss_mdm_inventory::channel::Current;
+use rss_mdm_registration_service::installation::queries::{NativeContact, cleanup_pending_on};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
 const HEALTH_GRACE_SECONDS: i64 = 300;
 const RETRY_PROBE_GRACE_SECONDS: i64 = 60;
 const MAX_ATTEMPTS_WITHOUT_CONTACT: i64 = 3;
-
-pub(crate) struct Contact {
-    pub active: i64,
-    bindings: i64,
-    pub last: Option<i64>,
-}
-
-pub(crate) async fn contact_on(
-    c: &mut PgConnection,
-    tenant: &str,
-    registration: Uuid,
-    generation: i64,
-) -> Result<Contact, Error> {
-    let (active, bindings, last) = sqlx::query_as::<_, (i64, i64, Option<i64>)>(
-        "SELECT count(*) FILTER(WHERE r.state='active'),count(*),floor(extract(epoch FROM max(coalesce(r.last_communication_received_at,r.first_authenticated_at,g.created_at))))::bigint FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.source='native' AND g.native_authority->>'registration'=$2 AND g.native_authority->>'generation'=$3 AND r.channel='agent' AND r.purpose='primary'",
-    )
-    .bind(tenant).bind(registration.to_string()).bind(generation.to_string())
-    .fetch_one(c).await.map_err(db)?;
-    Ok(Contact {
-        active,
-        bindings,
-        last,
-    })
-}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Signal {
@@ -41,7 +18,12 @@ pub(crate) enum Signal {
     Unknown,
 }
 
-pub(crate) fn signal(fact: &Current, package: &Package, contact: &Contact, now: i64) -> Signal {
+pub(crate) fn signal(
+    fact: &Current,
+    package: &Package,
+    contact: &NativeContact,
+    now: i64,
+) -> Signal {
     if contact.active > 1 || contact.last.is_some_and(|at| at > now) {
         return Signal::Unknown;
     }
@@ -101,10 +83,11 @@ pub(crate) async fn gate_on(
     // A probe begun before an old attempt ended cannot establish recovery readiness.
     let started: i64 = sqlx::query_scalar("SELECT started_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND sealed_at IS NOT NULL")
         .bind(tenant).bind(snapshot).bind(registration).fetch_one(&mut *c).await.map_err(db)?;
-    let (pending, deadline, attempts, cleanup) = sqlx::query_as::<_, (Option<Uuid>, Option<i64>, i64, bool)>(
-        "SELECT (array_agg(o.id ORDER BY d.queued_at DESC,o.id DESC) FILTER(WHERE d.terminal_at IS NULL AND d.deadline>$6::bigint*1000000))[1],max(d.deadline/1000000),count(*) FILTER(WHERE o.policy_version=$4 AND d.queued_at>greatest($5::bigint,coalesce((SELECT max(t.created_at) FROM mdm_policy.triggers t WHERE t.tenant_id=o.tenant_id AND t.version=$4 AND t.deadline>$6::bigint),0))*1000000),coalesce(bool_or(EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b WHERE (b.tenant_id,b.installation)=(o.tenant_id,o.id) AND b.active AND NOT b.cleanup_complete)),false) FROM mdm_software_deployment.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.authority->>'kind'='agent_install'",
+    let (pending, deadline, attempts) = sqlx::query_as::<_, (Option<Uuid>, Option<i64>, i64)>(
+        "SELECT (array_agg(o.id ORDER BY d.queued_at DESC,o.id DESC) FILTER(WHERE d.terminal_at IS NULL AND d.deadline>$6::bigint*1000000))[1],max(d.deadline/1000000),count(*) FILTER(WHERE o.policy_version=$4 AND d.queued_at>greatest($5::bigint,coalesce((SELECT max(t.created_at) FROM mdm_policy.triggers t WHERE t.tenant_id=o.tenant_id AND t.version=$4 AND t.deadline>$6::bigint),0))*1000000) FROM mdm_software_deployment.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.authority->>'kind'='agent_install'",
     ).bind(tenant).bind(registration).bind(generation).bind(version)
-        .bind(last_contact.unwrap_or(0)).bind(now).fetch_one(c).await.map_err(db)?;
+        .bind(last_contact.unwrap_or(0)).bind(now).fetch_one(&mut *c).await.map_err(db)?;
+    let cleanup = cleanup_pending_on(c, tenant, registration, generation).await?;
     Ok(decide(pending, deadline, attempts, cleanup, started))
 }
 

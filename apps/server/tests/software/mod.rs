@@ -39,6 +39,49 @@ async fn count(c: &Context) -> Result<i64> {
 }
 
 #[tokio::test]
+#[ignore = "T2: independent input owners commit their first suspension and distinct audit facts in the same tenant"]
+async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let runtime = planning::owner(&c, "mdm_command_runtime").await?;
+    let audit = audit(&c);
+    rss_mdm_execution_service::transaction::run(
+        &runtime.audit,
+        &runtime.runtime,
+        c.tenant,
+        &audit,
+        &runtime.audit,
+        |store, tx| {
+            Box::pin(
+                async move { rss_mdm_execution_service::source_changes::fail_in(tx, store).await },
+            )
+        },
+    )
+    .await?;
+    for _ in 0..2 {
+        owner::transaction::run(
+            &runtime.audit,
+            &runtime.runtime,
+            c.tenant,
+            &audit,
+            &runtime.audit,
+            |store, tx| Box::pin(async move { owner::source_changes::fail_in(tx, store).await }),
+        )
+        .await?;
+    }
+    let states: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT failure,failure_generation FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid UNION ALL SELECT failure,failure_generation FROM mdm_software_deployment.device_source_dispatch WHERE tenant_id=$1::uuid",
+    ).bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
+    assert_eq!(states, vec![("automation_suspended".into(), 1); 2]);
+    let facts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business'",
+    ).bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    assert_eq!(facts, 2);
+    runtime.runtime.close().await;
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "T2: concurrent Agent/MDM aliases on associated endpoints share one Software effect fence"]
 async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result<()> {
     let c = Context::open("shared", &[]).await?;

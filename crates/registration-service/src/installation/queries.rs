@@ -2,6 +2,140 @@
 use super::*;
 use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
 use serde::{Deserialize, Serialize};
+use sqlx::{PgConnection, Row};
+
+/// Contact facts for Agent identities bound to one original native generation.
+pub struct NativeContact {
+    pub active: i64,
+    pub bindings: i64,
+    pub last: Option<i64>,
+}
+
+pub async fn native_contact_on(
+    c: &mut PgConnection,
+    tenant: &str,
+    registration: Uuid,
+    generation: i64,
+) -> std::result::Result<NativeContact, crate::Error> {
+    let (active, bindings, last) = sqlx::query_as::<_, (i64, i64, Option<i64>)>(
+        "SELECT count(*) FILTER(WHERE r.state='active'),count(*),floor(extract(epoch FROM max(coalesce(r.last_communication_received_at,r.first_authenticated_at,g.created_at))))::bigint FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.source='native' AND g.native_authority->>'registration'=$2 AND g.native_authority->>'generation'=$3 AND r.channel='agent' AND r.purpose='primary'",
+    ).bind(tenant).bind(registration.to_string()).bind(generation.to_string())
+        .fetch_one(c).await.map_err(crate::database::db)?;
+    Ok(NativeContact {
+        active,
+        bindings,
+        last,
+    })
+}
+
+/// A retained bootstrap duty blocks another installation for its original source generation.
+pub async fn cleanup_pending_on(
+    c: &mut PgConnection,
+    tenant: &str,
+    registration: Uuid,
+    generation: i64,
+) -> std::result::Result<bool, crate::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND source->>'registration'=$2 AND source->>'generation'=$3 AND active AND NOT cleanup_complete)")
+        .bind(tenant).bind(registration.to_string()).bind(generation.to_string())
+        .fetch_one(c).await.map_err(crate::database::db)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootstrapState {
+    Prepared,
+    Signing,
+    Issued,
+    Consumed,
+    Revoked,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapObservation {
+    pub state: BootstrapState,
+    pub delivery: Uuid,
+    pub cleanup: Option<Uuid>,
+    pub cleanup_complete: bool,
+    pub cleanup_retry_at: i64,
+    pub deadline: i64,
+}
+
+#[derive(Deserialize)]
+pub struct AgentRegistration {
+    pub id: Uuid,
+    pub device: String,
+    pub state: crate::enrollment::read::RegistrationState,
+}
+
+pub struct InstallationObservation {
+    pub bootstrap: Option<BootstrapObservation>,
+    pub registration: Option<AgentRegistration>,
+}
+
+/// Reads only Registration facts on the caller's authorized, tenant-bound snapshot.
+pub async fn installations_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    installations: &[Uuid],
+) -> std::result::Result<std::collections::BTreeMap<Uuid, InstallationObservation>, crate::Error> {
+    if installations.len() > 1000 {
+        return Err(crate::Error::Malformed);
+    }
+    let rows = sqlx::query(INSTALLATIONS)
+        .bind(tenant.to_string())
+        .bind(installations)
+        .fetch_all(c)
+        .await
+        .map_err(crate::database::db)?;
+    rss_mdm_query_postgres::observe_rows("registration.installations", &rows)
+        .map_err(crate::database::db)?;
+    let mut output = std::collections::BTreeMap::new();
+    for row in rows {
+        if !row
+            .try_get::<bool, _>("within_budget")
+            .map_err(crate::database::db)?
+        {
+            return Err(crate::Error::Capacity);
+        }
+        if let Some(id) = row
+            .try_get::<Option<Uuid>, _>("installation")
+            .map_err(crate::database::db)?
+        {
+            let bootstrap = row
+                .try_get::<Option<serde_json::Value>, _>("bootstrap")
+                .map_err(crate::database::db)?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| crate::Error::Corrupt)?;
+            let registration = row
+                .try_get::<Option<serde_json::Value>, _>("registration")
+                .map_err(crate::database::db)?
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| crate::Error::Corrupt)?;
+            output.insert(
+                id,
+                InstallationObservation {
+                    bootstrap,
+                    registration,
+                },
+            );
+        }
+    }
+    Ok(output)
+}
+
+const INSTALLATIONS: &str = r#"
+WITH selected AS MATERIALIZED (
+ SELECT i AS installation,
+ (SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=i AND active) AS bootstrap,
+ (SELECT jsonb_build_object('id',r.id,'device',r.device,'state',r.state) FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.source='native' AND g.native_authority->>'installation'=i::text ORDER BY r.id LIMIT 1) AS registration
+ FROM unnest($2::uuid[]) i
+), budget AS (SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
+SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok
+"#;
+
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Detail<O = NativeObservation> {

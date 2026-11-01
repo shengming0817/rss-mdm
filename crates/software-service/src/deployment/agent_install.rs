@@ -138,7 +138,13 @@ pub async fn dispatch_ready_on(
             .fetch_one(&mut *c)
             .await
             .map_err(db)?;
-    let contact = recovery::contact_on(c, tenant, registration, generation).await?;
+    let contact = rss_mdm_registration_service::installation::queries::native_contact_on(
+        c,
+        tenant,
+        registration,
+        generation,
+    )
+    .await?;
     Ok(matches!(
         recovery::signal(&fact, package, &contact, now),
         recovery::Signal::Absent | recovery::Signal::Unresponsive

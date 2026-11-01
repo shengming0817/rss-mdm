@@ -3,14 +3,14 @@ WITH reachable AS (
  SELECT r.* FROM pg_roles r WHERE r.rolname=current_user OR pg_has_role(session_user,r.oid,'MEMBER')
 ), required(relation,insertable,deletable) AS (VALUES
  ('mdm_apple.native_commands',true,false),('mdm_windows.native_commands',true,false),
- ('mdm_access.agent_bootstraps',true,false),('mdm_access.command_authorities',true,false),('mdm_commands.operations',true,false),
+ ('mdm_access.command_authorities',true,false),('mdm_commands.operations',true,false),
  ('mdm_commands.requests',true,false),('mdm_commands.action_runs',true,false),
  ('mdm_commands.action_receipts',true,false),('mdm_commands.policy_recovery',true,false),
  ('mdm_flow.native_protection',true,false),
  ('mdm_agent.bindings',false,false),('mdm_access.device_access_bindings',false,false),
  ('mdm_access.requests',false,false)
 ), updates(relation,col) AS (VALUES
- ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),('mdm_access.command_authorities','epoch'),('mdm_access.command_authorities','registration'),('mdm_access.command_authorities','registration_generation'),
+ ('mdm_access.command_authorities','epoch'),('mdm_access.command_authorities','registration'),('mdm_access.command_authorities','registration_generation'),
  ('mdm_commands.operations','authority'),('mdm_commands.operations','revision'),('mdm_commands.operations','request'),
  ('mdm_commands.action_runs','access_binding'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','source_objects'),
  ('mdm_commands.policy_recovery','input_revision'),

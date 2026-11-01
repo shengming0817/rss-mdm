@@ -156,6 +156,21 @@ impl Transactions {
             .local_tx(tenant, deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
+                    tx.with_connection(|c| {
+                        Box::pin(async move {
+                            let valid: bool =
+                                sqlx::query_scalar(include_str!("bootstrap-admission.sql"))
+                                    .fetch_one(c)
+                                    .await?;
+                            if !valid {
+                                return Err(sqlx::Error::Protocol(
+                                    "Registration bootstrap participant admission".into(),
+                                ));
+                            }
+                            Ok(())
+                        })
+                    })
+                    .await?;
                     storage::bind_command_in(
                         caller,
                         tx,

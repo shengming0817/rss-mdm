@@ -90,7 +90,13 @@ pub async fn state_on(
             }
             use crate::deployment::agent_install::recovery::{self, Gate, Signal};
             let tenant_name = tenant.to_string();
-            let contact = recovery::contact_on(c, &tenant_name, registration, generation).await?;
+            let contact = rss_mdm_registration_service::installation::queries::native_contact_on(
+                c,
+                &tenant_name,
+                registration,
+                generation,
+            )
+            .await?;
             match recovery::signal(&fact, package, &contact, now) {
                 Signal::Healthy => return status(State::AlreadySatisfied),
                 Signal::Unknown => return status(State::ChannelUnknown),
