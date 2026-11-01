@@ -10,7 +10,7 @@ MODULES = {
         prefix='foundation::',profiles=('da_foundation',),
         inputs=('crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs',
                 'crates/registration-service/*','crates/task-trust/*','crates/pki-service/*','crates/install-support/*',
-                'crates/audit-integration/*','crates/authorization-service/*','hack/da_foundation_materials.py')),
+                'crates/audit-integration/*','crates/authorization-service/*','hack/da_foundation_materials.py','hack/task_trust_materials.py')),
 
     'agent.foundation': dict(package='rss-mdm-agent-channel', target='foundation', installer=None,
         prefix='foundation::', profiles=('agent_foundation',),

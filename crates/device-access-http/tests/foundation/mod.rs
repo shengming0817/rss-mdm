@@ -232,6 +232,40 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         401
     );
     material::verify(&signed, &trust_public)?;
+    let limited = material::device_administrator(&c, &receipt.device).await?;
+    let mut scoped = export.clone();
+    scoped.operation_id = Uuid::new_v4();
+    scoped.configuration.revision = i64::MAX as u64;
+    scoped.configuration.epoch = i64::MAX as u64;
+    scoped.configuration.audience = da::Audience::Device {
+        device: receipt.device.clone(),
+        registration: receipt.registration,
+        generation: receipt.generation,
+    };
+    assert_eq!(
+        client
+            .post(format!("{base}/configurations"))
+            .bearer_auth(&limited)
+            .json(&scoped)
+            .send()
+            .await?
+            .status(),
+        403
+    );
+    // The rejected cross-scope write must not poison the existing publication head.
+    let mut next_revision = export.clone();
+    next_revision.operation_id = Uuid::new_v4();
+    next_revision.configuration.revision = 2;
+    let _: da::SignedConfiguration = material::success(
+        client
+            .post(format!("{base}/configurations"))
+            .bearer_auth(&token)
+            .json(&next_revision)
+            .send()
+            .await?,
+    )
+    .await?;
+
     assert_eq!(
         peer.get(format!("{base}/configurations/{}", export.operation_id))
             .send()
@@ -367,6 +401,21 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .await
             .is_err()
     );
+    // A retained old-key receipt remains available after rotation.
+    let old_receipt: da::SignedConfiguration = material::success(
+        peer.get(format!("{base2}/configurations/{}", export.operation_id))
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(old_receipt.signature, signed.signature);
+    assert_eq!(
+        peer.get(format!("{base2}/configurations/{}", Uuid::new_v4()))
+            .send()
+            .await?
+            .status(),
+        403
+    );
     // Durable export retention survives process reload, even after every live consumer ACKs.
     let retained:i64=sqlx::query_scalar("SELECT max_verify_until FROM rss_da.signing_keys WHERE tenant_id=$1::uuid AND usage='da_configuration' AND key_id=$2").bind(c.tenant.to_string()).bind(old_key).fetch_one(&c.operator).await?;
     assert_eq!(retained, export.configuration.expires_at);
@@ -438,7 +487,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .status(),
         401
     );
-    unknown_recovery(&c, &material, &client, base2, &token).await?;
+    unknown_recovery(&c, &material, &client, base2, &token, export.operation_id).await?;
     drop(next_server);
     drop(server);
     drop(material);
@@ -452,6 +501,7 @@ async fn unknown_recovery(
     client: &reqwest::Client,
     base: &str,
     token: &str,
+    old_export: Uuid,
 ) -> Result<()> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rss_mdm_agent_wire::{da, enroll};
@@ -552,13 +602,40 @@ async fn unknown_recovery(
     assert_eq!(replay.certificate_chain, recovered.certificate_chain);
     assert_eq!(m.issued_count()?, previous + 1);
     let peer = m.client(Some((&recovered, 3)))?;
-    let _: da::Registration = material::success(
+    let registration: da::Registration = material::success(
         peer.post(format!("{base}/activate"))
             .json(&enroll::ActivationRequest {
                 wire_version: 1,
                 operation_id: Uuid::new_v4(),
                 issuance_id: id,
             })
+            .send()
+            .await?,
+    )
+    .await?;
+    let trust: da::ConfigurationTrust = material::success(
+        peer.get(format!("{base}/configuration-trust"))
+            .send()
+            .await?,
+    )
+    .await?;
+    material::empty(
+        peer.post(format!("{base}/configuration-trust/acknowledgements"))
+            .json(&rss_mdm_agent_wire::task_trust::Acknowledgement {
+                version: 1,
+                operation: Uuid::new_v4(),
+                registration: registration.registration,
+                generation: registration.generation,
+                revision: trust.revision,
+                digest: trust.installation_digest()?,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    // This newly enrolled device has never acknowledged the old key as Prepared/Active.
+    let _: da::SignedConfiguration = material::success(
+        peer.get(format!("{base}/configurations/{old_export}"))
             .send()
             .await?,
     )

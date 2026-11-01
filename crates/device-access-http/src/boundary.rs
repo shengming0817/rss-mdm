@@ -84,7 +84,10 @@ pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: N
         } else {
             match tokio::time::timeout(Duration::from_secs(12), next.run(request)).await {
                 Ok(v) => v,
-                Err(_) => Error::Unknown.into_response(),
+                Err(_) => Error::Classified(
+                    rss_mdm_audit_integration::completion::ResponseFailure::Deadline,
+                )
+                .into_response(),
             }
         };
         let failure = response

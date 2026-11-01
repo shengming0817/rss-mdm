@@ -92,8 +92,13 @@ impl ConfigurationService {
                 }
                 let config=&input.configuration;
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3130))").bind(format!("{tenant}:{}",config.id)).execute(&mut *c).await.map_err(db)?;
-                if let Some((revision,epoch))=sqlx::query_as::<_,(i64,i64)>(crate::storage_profile::sql(profile,Use::DaConfiguration).configuration_latest).bind(tenant.to_string()).bind(config.id).fetch_optional(&mut *c).await.map_err(db)?
-                    && (config.revision<=revision as u64 || config.epoch<epoch as u64) { return Err(Error::Conflict); }
+                if let Some(previous)=sqlx::query_scalar::<_,serde_json::Value>(crate::storage_profile::sql(profile,Use::DaConfiguration).configuration_latest).bind(tenant.to_string()).bind(config.id).fetch_optional(&mut *c).await.map_err(db)? {
+                    let previous:SignedConfiguration=serde_json::from_value(previous).map_err(|_| Error::Conflict)?;
+                    // Replacing a configuration requires authority over its existing audience
+                    // as well as the requested audience; an ID cannot escape its owner scope.
+                    service.authorize(c,p,Some(&previous.configuration)).await?;
+                    if config.revision<=previous.configuration.revision || config.epoch<previous.configuration.epoch { return Err(Error::Conflict); }
+                }
 
                 let current=trust::current(profile,Use::DaConfiguration,c,tenant).await?;
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(db)?;
@@ -223,7 +228,7 @@ impl ConfigurationService {
                                 {
                                     return Err(Error::Forbidden);
                                 }
-                                trust::require_issue(
+                                trust::require_verification(
                                     profile,
                                     Use::DaConfiguration,
                                     c,

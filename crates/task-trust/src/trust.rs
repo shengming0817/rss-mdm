@@ -373,7 +373,7 @@ pub(crate) async fn acknowledge(
     }
     Ok(())
 }
-/// An Agent that enrolled during rotation also needs the exact key in a durable acknowledgement.
+/// New signatures require a currently active key and installation while prepared or active.
 pub(crate) async fn require_issue(
     profile: rss_mdm_install_support::StorageProfile,
     usage: Use,
@@ -381,13 +381,32 @@ pub(crate) async fn require_issue(
     p: &rss_mdm_registration_service::device::DevicePrincipal,
     key_id: &str,
 ) -> Result<(), Error> {
+    require_installed_key(profile, usage, c, p, key_id, false).await
+}
+/// Existing receipts remain deliverable while their key is retained for verification.
+pub(crate) async fn require_verification(
+    profile: rss_mdm_install_support::StorageProfile,
+    usage: Use,
+    c: &mut PgConnection,
+    p: &rss_mdm_registration_service::device::DevicePrincipal,
+    key_id: &str,
+) -> Result<(), Error> {
+    require_installed_key(profile, usage, c, p, key_id, true).await
+}
+async fn require_installed_key(
+    profile: rss_mdm_install_support::StorageProfile,
+    usage: Use,
+    c: &mut PgConnection,
+    p: &rss_mdm_registration_service::device::DevicePrincipal,
+    key_id: &str,
+    verification: bool,
+) -> Result<(), Error> {
     fence(profile, usage, c, p.tenant(), true).await?;
     let trust = current(profile, usage, c, p.tenant()).await?;
-    if !trust
-        .keys
-        .iter()
-        .any(|k| k.id == key_id && k.state == KeyState::Active)
-    {
+    if !trust.keys.iter().any(|k| {
+        k.id == key_id
+            && (k.state == KeyState::Active || verification && k.state == KeyState::VerifyOnly)
+    }) {
         return Err(Error::Conflict);
     }
     let installed: bool =
@@ -396,6 +415,7 @@ pub(crate) async fn require_issue(
             .bind(p.registration())
             .bind(p.generation())
             .bind(key_id)
+            .bind(verification)
             .fetch_one(c)
             .await
             .map_err(db)?;

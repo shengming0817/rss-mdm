@@ -260,6 +260,12 @@ pub fn verify(signed: &da::SignedConfiguration, trust: &da::ConfigurationTrust) 
     Ok(())
 }
 pub async fn administrator(c: &Context) -> Result<String> {
+    administrator_for(c, None).await
+}
+pub async fn device_administrator(c: &Context, device: &str) -> Result<String> {
+    administrator_for(c, Some(device)).await
+}
+async fn administrator_for(c: &Context, device: Option<&str>) -> Result<String> {
     use rss_identity_core::account::{LoginKey, Password};
     use rss_mdm_authorization_service as access;
     let principal = Uuid::new_v4();
@@ -296,23 +302,30 @@ pub async fn administrator(c: &Context) -> Result<String> {
     };
     let rule = access::Rule {
         subject: access::Subject::User { user },
-        grants: [
-            access::Permission::Enrollment,
-            access::Permission::Credentials,
-            access::Permission::ConfigurationWrite,
-            access::Permission::RegistrationConfigurationWrite,
-            access::Permission::RegistrationConfigurationRead,
-        ]
-        .into_iter()
-        .map(|operation| access::Grant {
-            operation,
-            scope: if operation.device() {
-                access::Scope::AllDevices
-            } else {
-                access::Scope::Tenant
-            },
-        })
-        .collect(),
+        grants: if let Some(device) = device {
+            vec![access::Grant {
+                operation: access::Permission::ConfigurationWrite,
+                scope: access::Scope::Device { id: device.into() },
+            }]
+        } else {
+            [
+                access::Permission::Enrollment,
+                access::Permission::Credentials,
+                access::Permission::ConfigurationWrite,
+                access::Permission::RegistrationConfigurationWrite,
+                access::Permission::RegistrationConfigurationRead,
+            ]
+            .into_iter()
+            .map(|operation| access::Grant {
+                operation,
+                scope: if operation.device() {
+                    access::Scope::AllDevices
+                } else {
+                    access::Scope::Tenant
+                },
+            })
+            .collect()
+        },
     };
     sqlx::query("INSERT INTO rss_da.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)").bind(c.tenant.to_string()).bind(&c.inputs.installation.instance_id).bind(Uuid::new_v4()).bind(serde_json::to_value(rule)?).execute(&mut *tx).await?;
     tx.commit().await?;

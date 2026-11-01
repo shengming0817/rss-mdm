@@ -41,7 +41,7 @@ macro_rules! define_storage {
         mod $module {
             pub(super) const SQL: super::Statements = super::Statements {
                 configuration_save: concat!("INSERT INTO ",$exports,"(tenant_id,operation,actor,instance,request,configuration,revision,epoch,result) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)"),
-                configuration_latest: concat!("SELECT revision,epoch FROM ",$exports," WHERE tenant_id=$1::uuid AND configuration=$2 ORDER BY revision DESC LIMIT 1"),
+                configuration_latest: concat!("SELECT result FROM ",$exports," WHERE tenant_id=$1::uuid AND configuration=$2 ORDER BY revision DESC LIMIT 1"),
                 configuration_receipt: concat!("SELECT actor,instance,request,result FROM ",$exports," WHERE tenant_id=$1::uuid AND operation=$2"),
                 retain_until: concat!("UPDATE ", $keys, " SET max_verify_until=greatest(max_verify_until,$3) WHERE usage='",$usage,"' AND tenant_id=$1::uuid AND key_id=$2"),
                 pending_until: concat!("SELECT max_verify_until>floor(extract(epoch FROM clock_timestamp()))::bigint FROM ", $keys," WHERE usage='",$usage,"' AND tenant_id=$1::uuid AND key_id=$2"),
@@ -137,7 +137,7 @@ COMMIT;
                 trust_acknowledge_2: concat!("SELECT digest FROM ", $versions, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND revision=$2"),
                 trust_acknowledge_3: concat!("INSERT INTO ", $acknowledgements, "(usage,tenant_id,operation_id,registration,generation,revision,digest) VALUES('", $usage, "',$1::uuid,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING"),
                 trust_acknowledge_4: concat!("SELECT registration=$3 AND generation=$4 AND revision=$5 AND digest=$6 FROM ", $acknowledgements, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND operation_id=$2"),
-                trust_require_issue_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $acknowledgements, " a JOIN ", $versions, " v USING(tenant_id,usage,revision) WHERE a.usage='", $usage, "' AND a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.digest=v.digest AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.body->'keys') k WHERE k->>'id'=$4 AND k->>'state' IN('prepared','active')))"),
+                trust_require_issue_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $acknowledgements, " a JOIN ", $versions, " v USING(tenant_id,usage,revision) WHERE a.usage='", $usage, "' AND a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.digest=v.digest AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.body->'keys') k WHERE k->>'id'=$4 AND (k->>'state' IN('prepared','active') OR ($5 AND k->>'state'='verify_only'))))"),
                 trust_load_1: concat!("SELECT private_key FROM ", $keys, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND key_id=$2"),
                 trust_selected_trust_1: concat!("SELECT body,revision,digest FROM ", $versions, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND revision=$2"),
                 trust_operation_1: concat!("SELECT body FROM ", $versions, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND operation_id=$2"),
