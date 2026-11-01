@@ -8,17 +8,7 @@ pub struct DeviceSummary {
     pub arrays: BTreeMap<FieldKey, ResolvedArray>,
 }
 impl planning::SnapshotReader {
-    pub async fn summary_devices_on(
-        &self,
-        c: &mut sqlx::PgConnection,
-        cut: &AssetCut,
-        ids: &[String],
-        catalog: &Catalog,
-    ) -> Result<Vec<DeviceSummary>> {
-        self.scoped_summary_devices_on(c, cut, ids, catalog, &CollectionScope::Device)
-            .await
-    }
-    pub async fn scoped_summary_devices_on(
+    pub(super) async fn scoped_summary_devices_on(
         &self,
         c: &mut sqlx::PgConnection,
         cut: &AssetCut,

@@ -123,53 +123,22 @@ impl SnapshotReader {
         .await?
     }
 
-    /// Authoritative endpoint sources borrowed by device views and identity reconciliation.
-    /// Sensitive fields are excluded before field resolution.
-    pub async fn scalar_devices_on(
+    /// Bounded scalar and array summaries borrowed from this runtime's original transaction.
+    pub async fn summary_devices_in(
         &self,
-        c: &mut sqlx::PgConnection,
-        cut: &rss_mdm_inventory::AssetCut,
+        tx: &mut PgTransaction<'_>,
+        cut: &AssetCut,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
-    ) -> Result<Vec<DeviceView>> {
-        self.scoped_scalar_devices_on(
-            c,
+    ) -> Result<Vec<DeviceSummary>> {
+        self.summary_devices_at_in(
+            tx,
             cut,
             ids,
             catalog,
             &rss_mdm_inventory::CollectionScope::Device,
         )
         .await
-    }
-
-    pub(super) async fn scoped_scalar_devices_on(
-        &self,
-        c: &mut sqlx::PgConnection,
-        cut: &rss_mdm_inventory::AssetCut,
-        ids: &[String],
-        catalog: &rss_mdm_inventory::Catalog,
-
-        collection_scope: &rss_mdm_inventory::CollectionScope,
-    ) -> Result<Vec<DeviceView>> {
-        let scalar_catalog = stored(rss_mdm_inventory::Catalog::new(
-            catalog
-                .fields()
-                .filter(|f| !matches!(f.value_type, rss_mdm_inventory::ValueType::Array { .. }))
-                .cloned()
-                .collect(),
-        ))?;
-        Ok(super::raw_snapshot::read_on(
-            c,
-            self.tenant,
-            cut,
-            ids,
-            &scalar_catalog,
-            collection_scope,
-        )
-        .await?
-        .into_iter()
-        .map(|v| v.scalars)
-        .collect())
     }
 }
 

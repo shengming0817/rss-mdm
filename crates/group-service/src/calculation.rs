@@ -393,16 +393,9 @@ impl Groups {
                         })
                     })
                     .await?;
-                let read_catalog = catalog.clone();
-                let raw_result = tx
-                    .with_connection_context(&mut (asset_cut,), move |(asset_cut,), c| {
-                        Box::pin(async move {
-                            Ok(reader
-                                .summary_devices_on(c, asset_cut, &ids, &read_catalog)
-                                .await)
-                        })
-                    })
-                    .await?;
+                let raw_result = reader
+                    .summary_devices_in(tx, asset_cut, &ids, &catalog)
+                    .await;
                 let raw = match raw_result {
                     Err(rss_mdm_inventory_service::transaction::Fault::Request(
                         rss_mdm_inventory_service::Error::Unavailable(

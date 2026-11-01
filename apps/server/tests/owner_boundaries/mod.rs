@@ -321,6 +321,20 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
         (reader, wrong, foreign, refs, before, at),
         |ctx, tx| {
             Box::pin(async move {
+                let catalog = rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields())
+                    .expect("builtin catalog");
+                assert!(
+                    ctx.1
+                        .summary_devices_in(tx, &ctx.5, &[], &catalog)
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    ctx.2
+                        .summary_devices_in(tx, &ctx.5, &[], &catalog)
+                        .await
+                        .is_err()
+                );
                 assert!(
                     ctx.1
                         .changes_exist_in(tx, Some(&ctx.4), None)
