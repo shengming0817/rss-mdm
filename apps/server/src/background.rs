@@ -61,7 +61,7 @@ impl BackgroundConfig {
             ("policy-owner", self.policy_connections()),
             ("resource-owner", 2),
             ("software-owner", 2),
-            ("execution", self.command_connections()),
+            ("command", self.command_connections()),
             ("execution-scheduler", SCHEDULER_CONNECTIONS),
             ("business-scheduler", SCHEDULER_CONNECTIONS),
             ("notifications", 1),
