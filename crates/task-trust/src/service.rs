@@ -78,7 +78,15 @@ impl Service {
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
     ) -> Result<Trust, Error> {
-        read_task_trust(&self.audit, self.tenant, p, audit, None).await
+        read_task_trust(
+            self.signing.profile,
+            &self.audit,
+            self.tenant,
+            p,
+            audit,
+            None,
+        )
+        .await
     }
     pub async fn task_trust_operation(
         &self,
@@ -86,7 +94,15 @@ impl Service {
         audit: &RequestAudit,
         operation: Uuid,
     ) -> Result<Trust, Error> {
-        read_task_trust(&self.audit, self.tenant, p, audit, Some(operation)).await
+        read_task_trust(
+            self.signing.profile,
+            &self.audit,
+            self.tenant,
+            p,
+            audit,
+            Some(operation),
+        )
+        .await
     }
     pub async fn change_task_trust(
         &self,
@@ -95,6 +111,8 @@ impl Service {
         operation: Uuid,
         change: &Change,
     ) -> Result<Trust, Error> {
+        let profile = self.signing.profile;
+
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
@@ -113,15 +131,15 @@ impl Service {
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,change),c|Box::pin(async move {
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
                 if !p.recently_authenticated(now,300)? {return Err(Error::Unauthorized)}
-                rss_mdm_authorization_service::lock_shared_on(c,p.tenant_id(),p.instance_id()).await?;
-                let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+                rss_mdm_authorization_service::lock_shared_on(profile,  c,p.tenant_id(),p.instance_id()).await?;
+                let rules=rss_mdm_authorization_service::snapshot_on(profile,  c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::RegistrationConfigurationWrite,None)?;
-                let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
+                let replayed:bool=sqlx::query_scalar(crate::storage_profile::sql(profile).service_change_task_trust_1).bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
                 let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
                 let value=match change {
-                    Change::Prepare{expected_revision}=>trust::prepare(c,service.tenant,*operation,*expected_revision,&service.protection,&actor).await?,
-                    Change::Retire{expected_revision,key_id}=>trust::retire(c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor,service.retirement.as_ref()).await?,
-                    Change::Activate{expected_revision,key_id}=>trust::activate(c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor).await?,
+                    Change::Prepare{expected_revision}=>trust::prepare(profile, c,service.tenant,*operation,*expected_revision,&service.protection,&actor).await?,
+                    Change::Retire{expected_revision,key_id}=>trust::retire(profile, c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor,service.retirement.as_ref()).await?,
+                    Change::Activate{expected_revision,key_id}=>trust::activate(profile, c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor).await?,
                 };
                 p.check_live()?;Ok::<_,Error>((value,replayed))
             })).await?;
@@ -138,6 +156,8 @@ impl Service {
         p: &rss_mdm_registration_service::device::DevicePrincipal,
         audit: &RequestAudit,
     ) -> Result<Trust, Error> {
+        let profile = self.signing.profile;
+
         if p.tenant() != self.tenant {
             return Err(Error::Forbidden);
         }
@@ -154,12 +174,13 @@ impl Service {
                         tx.with_connection_context(&mut context, |(service, p), c| {
                             Box::pin(async move {
                                 rss_mdm_registration_service::device::store::revalidate_source(
+                                    profile,
                                     c,
                                     p,
                                     rss_mdm_inventory::ReportSource::AgentBuiltin,
                                 )
                                 .await?;
-                                trust::current(c, service.tenant).await
+                                trust::current(profile, c, service.tenant).await
                             })
                         })
                         .await
@@ -175,6 +196,8 @@ impl Service {
         audit: &RequestAudit,
         input: &Acknowledgement,
     ) -> Result<(), Error> {
+        let profile = self.signing.profile;
+
         if p.tenant() != self.tenant {
             return Err(Error::Forbidden);
         }
@@ -186,18 +209,64 @@ impl Service {
         );
         audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,input),|(service,p,audit,input),tx|Box::pin(async move {
-            let mut context=(*p,*input);
-            let replayed=tx.with_connection_context(&mut context,|(p,input),c|Box::pin(async move {
-                rss_mdm_registration_service::device::store::revalidate_source(c,p,rss_mdm_inventory::ReportSource::AgentBuiltin).await?;
-                let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_task_signing.acknowledgements WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(p.tenant().to_string()).bind(input.operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
-                trust::acknowledge(c,p,input).await?;Ok::<_,Error>(replayed)
-            })).await?;
+        let result = self
+            .audit
+            .write(
+                self.tenant,
+                &budget.source_control(),
+                (self, p, audit, input),
+                |(service, p, audit, input), tx| {
+                    Box::pin(async move {
+                        let mut context = (*p, *input);
+                        let replayed = tx
+                            .with_connection_context(&mut context, |(p, input), c| {
+                                Box::pin(async move {
+                                    rss_mdm_registration_service::device::store::revalidate_source(
+                                        profile,
+                                        c,
+                                        p,
+                                        rss_mdm_inventory::ReportSource::AgentBuiltin,
+                                    )
+                                    .await?;
+                                    let replayed: bool = sqlx::query_scalar(
+                                        crate::storage_profile::sql(profile)
+                                            .service_acknowledge_task_trust_1,
+                                    )
+                                    .bind(p.tenant().to_string())
+                                    .bind(input.operation)
+                                    .fetch_one(&mut *c)
+                                    .await
+                                    .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
+                                    trust::acknowledge(profile, c, p, input).await?;
+                                    Ok::<_, Error>(replayed)
+                                })
+                            })
+                            .await?;
 
-            let fact=Fact::business(audit, &format!("task-signing-ack:{}",input.operation), 200, "success", None).map_err(|_|Error::Malformed)?;
-            (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
-            if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}audit.mark_commit_started();Ok(())
-        })).await;
+                        let fact = Fact::business(
+                            audit,
+                            &format!("task-signing-ack:{}", input.operation),
+                            200,
+                            "success",
+                            None,
+                        )
+                        .map_err(|_| Error::Malformed)?;
+                        (if replayed {
+                            Ok(())
+                        } else {
+                            service.audit.append(tx, &fact).await
+                        })?;
+                        if replayed {
+                            audit.management_result(
+                                rss_mdm_audit_integration::ManagementResult::Replayed,
+                            );
+                        }
+                        audit.mark_commit_started();
+                        Ok(())
+                    })
+                },
+            )
+            .await;
         settle(result, audit, true)
     }
 }
@@ -209,6 +278,8 @@ impl Service {
         audit: &RequestAudit,
         input: &rss_mdm_agent_wire::task_trust::Observation,
     ) -> Result<(), Error> {
+        let profile = self.signing.profile;
+
         input.validate().map_err(|_| Error::Malformed)?;
         if p.tenant() != self.tenant
             || input.registration != p.registration()
@@ -236,12 +307,14 @@ impl Service {
                             .with_connection_context(&mut context, |(p, input), c| {
                                 Box::pin(async move {
                                     rss_mdm_registration_service::device::store::revalidate_source(
+                                        profile,
                                         c,
                                         p,
                                         rss_mdm_inventory::ReportSource::AgentBuiltin,
                                     )
                                     .await?;
                                     super::observations::record_in(
+                                        profile,
                                         c,
                                         &p.tenant().to_string(),
                                         input,
@@ -278,6 +351,8 @@ impl Service {
         audit: &RequestAudit,
         device: &str,
     ) -> Result<Option<rss_mdm_agent_wire::task_trust::ObservedInstallation>, Error> {
+        let profile = self.signing.profile;
+
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
@@ -297,6 +372,7 @@ impl Service {
                             .with_connection_context(&mut context, |(service, device), c| {
                                 Box::pin(async move {
                                     super::observations::latest_in(
+                                        profile,
                                         c,
                                         &service.tenant.to_string(),
                                         device,
@@ -316,6 +392,7 @@ impl Service {
 }
 
 pub async fn read_task_trust(
+    profile: rss_mdm_install_support::StorageProfile,
     store: &rss_mdm_audit_integration::AuditStore,
     tenant: rss_request_context::TenantId,
     p: &AuthorizedPrincipal,
@@ -341,9 +418,9 @@ pub async fn read_task_trust(
                         .with_connection(move |c| {
                             Box::pin(async move {
                                 if let Some(id) = operation {
-                                    trust::operation(c, tenant, id).await
+                                    trust::operation(profile, c, tenant, id).await
                                 } else {
-                                    trust::current(c, tenant).await
+                                    trust::current(profile, c, tenant).await
                                 }
                             })
                         })

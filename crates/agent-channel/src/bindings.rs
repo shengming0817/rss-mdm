@@ -2,8 +2,16 @@ use crate::binding_facts::{Binding, Pending};
 use crate::{Error, database::db};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
-pub struct Bindings;
+pub struct Bindings {
+    profile: rss_mdm_install_support::StorageProfile,
+}
 impl Bindings {
+    pub const fn new(profile: rss_mdm_install_support::StorageProfile) -> Self {
+        Self { profile }
+    }
+    pub const fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub fn update_context<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -11,8 +19,16 @@ impl Bindings {
         registration: Uuid,
         context: &'a rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     ) -> Pending<'a, ()> {
+        let profile = self.profile();
+
         Box::pin(async move {
-            let row=sqlx::query("SELECT platform,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(registration).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+            let row = sqlx::query(crate::storage_profile::sql(profile).bindings_update_context_1)
+                .bind(&tenant)
+                .bind(registration)
+                .fetch_optional(&mut *c)
+                .await
+                .map_err(db)?
+                .ok_or(Error::Unauthorized)?;
             let platform = match row.try_get::<String, _>("platform").map_err(db)?.as_str() {
                 "windows" => rss_mdm_agent_wire::runtime::TaskPlatform::Windows,
                 "macos" => rss_mdm_agent_wire::runtime::TaskPlatform::Macos,
@@ -27,7 +43,13 @@ impl Bindings {
             validate_context_update(context, &previous)?;
             if context.revision > previous.revision {
                 let value = serde_json::to_value(context).map_err(|_| Error::Malformed)?;
-                sqlx::query("UPDATE mdm_agent.bindings SET execution_context=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(value).execute(c).await.map_err(db)?;
+                sqlx::query(crate::storage_profile::sql(profile).bindings_update_context_2)
+                    .bind(tenant)
+                    .bind(registration)
+                    .bind(value)
+                    .execute(c)
+                    .await
+                    .map_err(db)?;
             }
             Ok(())
         })
@@ -51,8 +73,17 @@ impl Bindings {
         tenant: String,
         registration: Uuid,
     ) -> Pending<'a, Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>> {
+        let profile = self.profile();
+
         Box::pin(async move {
-            let value: Option<serde_json::Value> = sqlx::query_scalar("SELECT announcement FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map_err(db)?.flatten();
+            let value: Option<serde_json::Value> =
+                sqlx::query_scalar(crate::storage_profile::sql(profile).bindings_announcement_1)
+                    .bind(tenant)
+                    .bind(registration)
+                    .fetch_optional(c)
+                    .await
+                    .map_err(db)?
+                    .flatten();
             value
                 .map(serde_json::from_value)
                 .transpose()
@@ -66,9 +97,18 @@ impl Bindings {
         registration: Uuid,
         input: &'a rss_mdm_agent_wire::runtime::TaskClaimRequest,
     ) -> Pending<'a, ()> {
+        let profile = self.profile();
+
         Box::pin(async move {
             let value = serde_json::to_value(input).map_err(|_| Error::Malformed)?;
-            let n = sqlx::query("UPDATE mdm_agent.bindings SET announcement=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(value).execute(c).await.map_err(db)?.rows_affected();
+            let n = sqlx::query(crate::storage_profile::sql(profile).bindings_announce_1)
+                .bind(tenant)
+                .bind(registration)
+                .bind(value)
+                .execute(c)
+                .await
+                .map_err(db)?
+                .rows_affected();
             if n != 1 {
                 return Err(Error::Unauthorized);
             }
@@ -81,8 +121,15 @@ impl Bindings {
         tenant: String,
         registrations: Vec<Uuid>,
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, Binding>> {
+        let profile = self.profile();
+
         Box::pin(async move {
-            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=1").bind(tenant).bind(registrations).fetch_all(c).await.map_err(db)?;
+            let rows = sqlx::query(crate::storage_profile::sql(profile).bindings_bindings_1)
+                .bind(tenant)
+                .bind(registrations)
+                .fetch_all(c)
+                .await
+                .map_err(db)?;
             rows.into_iter()
                 .map(|r| {
                     let value = |key: &str| r.try_get::<String, _>(key).map_err(db);
@@ -105,10 +152,11 @@ impl Bindings {
     }
 }
 pub(crate) async fn inventory_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &crate::device::DevicePrincipal,
 ) -> Result<(), Error> {
-    if !Bindings
+    if !Bindings::new(profile)
         .binding(c, p.tenant().to_string(), p.registration())
         .await?
         .is_some_and(|b| b.inventory())
@@ -118,6 +166,7 @@ pub(crate) async fn inventory_in(
     Ok(())
 }
 pub(crate) async fn bind_agent_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: Uuid,
@@ -138,13 +187,23 @@ pub(crate) async fn bind_agent_in(
         rss_mdm_agent_wire::runtime::TaskArchitecture::X86_64 => "x86_64",
         rss_mdm_agent_wire::runtime::TaskArchitecture::Aarch64 => "aarch64",
     };
-    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2::uuid,1,$3,$4,$5,$6)")
-        .bind(tenant).bind(registration.to_string()).bind(capabilities).bind(platform).bind(architecture).bind(context)
-        .execute(&mut *tx).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).bindings_bind_agent_in_1)
+        .bind(tenant)
+        .bind(registration.to_string())
+        .bind(capabilities)
+        .bind(platform)
+        .bind(architecture)
+        .bind(context)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     Ok(())
 }
 
 impl rss_mdm_registration_service::agent::RuntimeBinding for Bindings {
+    fn storage_profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     fn bind<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -152,8 +211,14 @@ impl rss_mdm_registration_service::agent::RuntimeBinding for Bindings {
         p: &'a rss_mdm_agent_wire::enroll::RuntimeProfile,
     ) -> rss_mdm_registration_service::agent::Pending<'a, rss_mdm_agent_wire::runtime::BindingProfile>
     {
+        let profile = self.profile();
+
         Box::pin(async move {
+            if b.profile != self.profile {
+                return Err(rss_mdm_registration_service::Error::Forbidden);
+            }
             bind_agent_in(
+                profile,
                 c,
                 &b.tenant.to_string(),
                 b.registration,
@@ -165,9 +230,10 @@ impl rss_mdm_registration_service::agent::RuntimeBinding for Bindings {
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
-            let collections = crate::builtin_collections(c, b.tenant, b.registration, b.epoch)
-                .await
-                .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
+            let collections =
+                crate::builtin_collections(profile, c, b.tenant, b.registration, b.epoch)
+                    .await
+                    .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
             Ok(rss_mdm_agent_wire::runtime::BindingProfile {
                 wire_version: 1,
                 operation_id: b.operation,

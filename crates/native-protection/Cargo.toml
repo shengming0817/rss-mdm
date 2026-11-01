@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [dependencies]
+rss-mdm-install-support.workspace = true
 rss-data-protection.workspace = true
 rss-request-context.workspace = true
 ring.workspace = true

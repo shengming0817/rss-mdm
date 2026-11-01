@@ -237,8 +237,18 @@ impl Service {
                         let operation = input.operation_id;
                         tx.with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(vault::link_native_in(c, tenant, operation, &binding, &link)
-                                    .await)
+                                Ok(vault::link_native_in(
+                                    crate::Custody::new(
+                                        rss_mdm_install_support::StorageProfile::Mdm,
+                                        None,
+                                    ),
+                                    c,
+                                    tenant,
+                                    operation,
+                                    &binding,
+                                    &link,
+                                )
+                                .await)
                             })
                         })
                     }
@@ -311,7 +321,15 @@ async fn prepare(
         subject,
     };
     let reserve = async |c: &mut sqlx::PgConnection, subject: Subject, expected: i64| {
-        vault::reserve_in(c, tenant, &binding(subject), input.operation_id, expected).await
+        vault::reserve_in(
+            crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+            c,
+            tenant,
+            &binding(subject),
+            input.operation_id,
+            expected,
+        )
+        .await
     };
     let request = match &input.action {
         Action::ConfigureFilevault => {
@@ -386,6 +404,7 @@ async fn prepare(
             }
             link.coordinates = Some(
                 vault::reserve_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
                     c,
                     tenant,
                     filevault.as_ref().ok_or(E::Conflict)?,
@@ -406,6 +425,7 @@ async fn prepare(
             link.action = "rotate_filevault".into();
             link.coordinates = Some(
                 vault::reserve_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
                     c,
                     tenant,
                     filevault.as_ref().ok_or(E::Conflict)?,
@@ -441,12 +461,25 @@ async fn prepare(
         } => {
             let mut fields = Vec::new();
             if let Some(current) = current {
-                let old =
-                    vault::coordinates_in(c, tenant, device, current.id, current.version).await?;
+                let old = vault::coordinates_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                    c,
+                    tenant,
+                    device,
+                    current.id,
+                    current.version,
+                )
+                .await?;
                 if old.binding != binding(Subject::RecoveryLock) {
                     return Err(E::Conflict);
                 }
-                let value = vault::secret_in(c, &protection.keys, &old).await?;
+                let value = vault::secret_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                    c,
+                    &protection.keys,
+                    &old,
+                )
+                .await?;
                 fields.push((
                     "CurrentPassword",
                     text(std::str::from_utf8(value.expose()).map_err(|_| E::Integrity)?),
@@ -470,6 +503,7 @@ async fn prepare(
                     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random.as_ref()),
                 );
                 vault::ingest_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
                     c,
                     &protection.keys,
                     &coordinates,
@@ -485,13 +519,21 @@ async fn prepare(
         Action::VerifyRecoveryLock { material }
         | Action::ReconcileRecoveryLock { material, .. } => {
             link.action = "verify_recovery_lock".into();
-            let coordinates =
-                vault::coordinates_in(c, tenant, device, material.id, material.version).await?;
+            let coordinates = vault::coordinates_in(
+                crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                c,
+                tenant,
+                device,
+                material.id,
+                material.version,
+            )
+            .await?;
             if coordinates.binding != binding(Subject::RecoveryLock) {
                 return Err(E::Conflict);
             }
             if let Action::ReconcileRecoveryLock { operation, .. } = &input.action {
                 let original = vault::native_action_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
                     c,
                     tenant,
                     *operation,
@@ -510,7 +552,13 @@ async fn prepare(
                 }
                 link.reconciles = Some(*operation);
             }
-            let value = vault::secret_in(c, &protection.keys, &coordinates).await?;
+            let value = vault::secret_in(
+                crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                c,
+                &protection.keys,
+                &coordinates,
+            )
+            .await?;
             let request = command(
                 "VerifyRecoveryLock",
                 vec![(

@@ -618,6 +618,7 @@ async fn try_lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<boo
             Box::pin(async move {
                 Ok(async {
                     if !rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &tenant,
                         std::slice::from_ref(&device),
@@ -627,6 +628,7 @@ async fn try_lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<boo
                         return Ok(false);
                     }
                     rss_mdm_registration_service::device::store::lock_channel(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &tenant,
                         &device,

@@ -7,26 +7,35 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub struct Credentials {
+    profile: rss_mdm_install_support::StorageProfile,
     pool: PgPool,
     audit: Arc<AuditStore>,
     keys: Arc<KeyRing>,
     access_audit: Option<Arc<AuditStore>>,
-    login_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
+    eligibility: Option<Arc<dyn crate::eligibility::Eligibility>>,
 }
 impl Credentials {
+    pub fn custody(&self) -> crate::Custody<'_> {
+        crate::Custody::new(self.profile, self.eligibility.as_deref())
+    }
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
         pool: PgPool,
         audit: Arc<AuditStore>,
         keys: Arc<KeyRing>,
         access_audit: Option<Arc<AuditStore>>,
-        login_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
+        eligibility: Option<Arc<dyn crate::eligibility::Eligibility>>,
     ) -> Self {
         Self {
+            profile,
             pool,
             audit,
             keys,
             access_audit,
-            login_admission,
+            eligibility,
         }
     }
     pub fn keys(&self) -> &Arc<KeyRing> {
@@ -41,13 +50,16 @@ impl Credentials {
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<crate::Material>>, Error>
     {
+        let profile = self.profile();
+
         principal.require(Permission::InventoryRead, Some(device))?;
         let mut tx = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
             .await?;
-        configure(&mut tx, principal.tenant_id()).await?;
+        configure(profile, &mut tx, principal.tenant_id()).await?;
         let snapshot = rss_mdm_authorization_service::snapshot_on(
+            profile,
             &mut tx,
             principal.tenant_id(),
             principal.instance_id(),
@@ -57,12 +69,22 @@ impl Credentials {
             .require(principal, Permission::InventoryRead, Some(device))
             .map_err(rss_mdm_authorization_service::Error::from)?;
         let grant = snapshot.query_binding(principal)?;
-        let page = crate::directory::read(&mut tx, principal, device, &grant, query, codec).await?;
+        let page =
+            crate::directory::read(profile, &mut tx, principal, device, &grant, query, codec)
+                .await?;
         tx.rollback().await?;
         let mut current = self.pool.begin().await?;
-        configure(&mut current, principal.tenant_id()).await?;
-        authorize(&mut current, principal, device, Permission::InventoryRead).await?;
+        configure(profile, &mut current, principal.tenant_id()).await?;
+        authorize(
+            profile,
+            &mut current,
+            principal,
+            device,
+            Permission::InventoryRead,
+        )
+        .await?;
         let snapshot = rss_mdm_authorization_service::snapshot_on(
+            profile,
             &mut current,
             principal.tenant_id(),
             principal.instance_id(),
@@ -102,6 +124,8 @@ impl Credentials {
         replay: bool,
         audit: &RequestAudit,
     ) -> Result<Disclosure, Error> {
+        let profile = self.profile();
+
         audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
             rss_mdm_audit_integration::SensitiveAction::CredentialReveal,
         ));
@@ -147,13 +171,13 @@ impl Credentials {
                                     if let Some(input)=access {
                                         if *replay {rss_identity_postgres::recheck_authenticated_session_on(c,principal.session()?).await.map_err(|_|Error::Unauthorized)?;} else {rss_identity_postgres::consume_step_up_on(c,principal.session()?,&input.context(principal,device,*id,*version)?,input.proof.as_ref().ok_or(Error::Unauthorized)?.expose()).await.map_err(|e|match e.kind(){rss_transactional_messaging::error::MessagingErrorKind::Conflict=>Error::Unauthorized,_=>Error::Storage})?;}
                                     }
-                                    authorize(c, principal, device, Permission::Credentials)
+                                    authorize(profile, c, principal, device, Permission::Credentials)
                                         .await?;
                                     if let Some(input)=access {
-                                        let exists=disclosure_receipt(c,principal,device,*id,*version,input.operation_id).await?;
+                                        let exists=disclosure_receipt(profile, c,principal,device,*id,*version,input.operation_id).await?;
                                         if exists!=*replay{return Err(Error::Conflict);}
                                     }
-                                    let (material, key, sealed) = read_locked(
+                                    let (material, key, sealed) = read_locked(service.custody(),
                                         c,
                                         principal.tenant_id(),
                                         device,
@@ -165,22 +189,12 @@ impl Credentials {
                                         return Err(Error::NotFound);
                                     }
                                     if matches!(material.binding.subject,Subject::RssLogin{..})!=access.is_some(){return Err(Error::Forbidden);}
-                                    if let Subject::RssLogin{binding,binding_generation,..}=&material.binding.subject {
-                                        let tenant=Uuid::parse_str(principal.tenant_id()).map_err(|_|Error::Malformed)?;
-                                        let current=rss_mdm_registration_service::device_access::storage::locked_in(c,tenant,*binding).await?;
-                                        let selection=service.login_admission.policy(c,tenant,device,current.policy).await?;
-                                        rss_mdm_registration_service::device_access::lifecycle::require_subject_on(c,tenant,&current.person).await?;
-                                        let subject=rss_identity_postgres::platform::PlatformBinding{
-                                            instance:rss_identity_core::InstanceId::parse(&current.person.instance.to_string()).map_err(|_|Error::Integrity)?,
-                                            account:rss_identity_core::account::AccountKey{tenant:rss_request_context::TenantId::parse(principal.tenant_id()).map_err(|_|Error::Integrity)?,principal:rss_identity_core::PrincipalId::parse(&current.person.principal.to_string()).map_err(|_|Error::Integrity)?},
-                                            binding_id:current.id,binding_epoch:current.generation,source_id:current.id,source_version:current.generation,external_identity:None,
-                                        };
-                                        // Actor recheck/step-up already owns this tenant's Identity guard.
-                                        rss_identity_postgres::platform::admit_platform_subject_on(c,subject.instance,&subject,None).await.map_err(|e|match e{rss_identity_postgres::platform::PlatformSubjectAdmissionError::Rejected=>Error::Forbidden,_=>Error::Storage})?;
-
-                                        if current.state==rss_mdm_registration_service::device_access::State::Revoked || current.generation!=*binding_generation || !selection.configuration.enabled || selection.version!=current.policy_version {return Err(Error::Forbidden);}
+                                    if matches!(material.binding.subject, Subject::RssLogin { .. }) {
+                                        let eligibility=service.eligibility.as_ref().ok_or(Error::Unsupported)?;
+                                        if eligibility.storage_profile()!=profile { return Err(Error::Forbidden.into()); }
+                                        eligibility.disclose(c, principal, &material.binding).await?;
                                     }
-                                    let coordinates = Coordinates {
+                                    let coordinates = Coordinates { profile,
                                         tenant: Uuid::parse_str(principal.tenant_id())
                                             .map_err(|_| Error::Malformed)?,
                                         material: *id,
@@ -196,7 +210,7 @@ impl Credentials {
                                         .map_err(|_| Error::Integrity)?;
                                     principal.check_live()?;
                                     if let Some(input)=access && !*replay {
-                                        sqlx::query("INSERT INTO mdm_recovery.disclosures(tenant_id,actor,operation,device,entry,version) VALUES($1::uuid,$2,$3,$4,$5,$6)").bind(principal.tenant_id()).bind(principal.principal_id()).bind(input.operation_id).bind(*device).bind(*id).bind(*version).execute(c).await?;
+                                        sqlx::query(crate::storage_profile::sql(profile).service_disclose_inner_1).bind(principal.tenant_id()).bind(principal.principal_id()).bind(input.operation_id).bind(*device).bind(*id).bind(*version).execute(c).await?;
                                     }
                                     Ok::<_, Error>(Disclosure {
                                         material,
@@ -225,6 +239,8 @@ impl Credentials {
         version: i64,
         audit: &RequestAudit,
     ) -> Result<Material, Error> {
+        let profile = self.profile();
+
         principal.bind_audit(audit)?;
         audit.set_action(
             "recovery_credential_revoke",
@@ -241,59 +257,123 @@ impl Credentials {
         )
         .map_err(|_| Error::Audit)?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(4));
-        let attempt=self.audit.write(rss_request_context::TenantId::parse(principal.tenant_id()).map_err(|_|Error::Malformed)?,
-            &budget.source_control(),(self,principal,device,id,version,audit,fact),|context,tx|Box::pin(async move {
-            let material=tx.with_connection_context(context,|context,c|Box::pin(async move {
-                let (_,principal,device,id,version,_,_)=context;
-                // Read metadata first, then acquire authorization and registration before material locks.
-                let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=$2) OR mdm_recovery.filevault_accessible(e.subject,$2)) AND e.id=$3 AND v.version=$4")).bind(principal.tenant_id()).bind(*device).bind(*id).bind(*version).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
-                let material=storage::decode(&row)?;
-                authorize(c,principal,device,material.binding.subject.permission()).await?;
-                read_locked(c,principal.tenant_id(),device,*id,*version).await?;
-                sqlx::query("UPDATE mdm_recovery.versions SET validity='revoked',invalidated_at=coalesce(invalidated_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND entry=$2 AND version=$3").bind(principal.tenant_id()).bind(*id).bind(*version).execute(&mut *c).await?;
-                sqlx::query("UPDATE mdm_recovery.entries SET current_version=NULL WHERE tenant_id=$1::uuid AND id=$2 AND current_version=$3").bind(principal.tenant_id()).bind(*id).bind(*version).execute(&mut *c).await?;
-                let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND e.id=$2 AND v.version=$3")).bind(principal.tenant_id()).bind(*id).bind(*version).fetch_one(c).await?;
-                storage::decode(&row)
-            })).await?;
-            context.0.audit.append(tx, &context.6).await?;
-            context.5.mark_commit_started();
-            Ok::<_,Error>(material)
-        })).await;
+        let attempt = self
+            .audit
+            .write(
+                rss_request_context::TenantId::parse(principal.tenant_id())
+                    .map_err(|_| Error::Malformed)?,
+                &budget.source_control(),
+                (self, principal, device, id, version, audit, fact),
+                |context, tx| {
+                    Box::pin(async move {
+                        let material = tx
+                            .with_connection_context(context, |context, c| {
+                                Box::pin(async move {
+                                    let (service, principal, device, id, version, _, _) = context;
+                                    // Read metadata first, then acquire authorization and registration before material locks.
+                                    let row = sqlx::query(
+                                        crate::storage_profile::sql(profile).service_revoke_1,
+                                    )
+                                    .bind(principal.tenant_id())
+                                    .bind(*device)
+                                    .bind(*id)
+                                    .bind(*version)
+                                    .fetch_optional(&mut *c)
+                                    .await?
+                                    .ok_or(Error::NotFound)?;
+                                    let material = storage::decode(&row)?;
+                                    authorize(
+                                        profile,
+                                        c,
+                                        principal,
+                                        device,
+                                        material.binding.subject.permission(),
+                                    )
+                                    .await?;
+                                    read_locked(
+                                        service.custody(),
+                                        c,
+                                        principal.tenant_id(),
+                                        device,
+                                        *id,
+                                        *version,
+                                    )
+                                    .await?;
+                                    sqlx::query(
+                                        crate::storage_profile::sql(profile).service_revoke_2,
+                                    )
+                                    .bind(principal.tenant_id())
+                                    .bind(*id)
+                                    .bind(*version)
+                                    .execute(&mut *c)
+                                    .await?;
+                                    sqlx::query(
+                                        crate::storage_profile::sql(profile).service_revoke_3,
+                                    )
+                                    .bind(principal.tenant_id())
+                                    .bind(*id)
+                                    .bind(*version)
+                                    .execute(&mut *c)
+                                    .await?;
+                                    let row = sqlx::query(
+                                        crate::storage_profile::sql(profile).service_revoke_4,
+                                    )
+                                    .bind(principal.tenant_id())
+                                    .bind(*id)
+                                    .bind(*version)
+                                    .fetch_one(c)
+                                    .await?;
+                                    storage::decode(&row)
+                                })
+                            })
+                            .await?;
+                        context.0.audit.append(tx, &context.6).await?;
+                        context.5.mark_commit_started();
+                        Ok::<_, Error>(material)
+                    })
+                },
+            )
+            .await;
         finish(attempt, audit)
     }
 }
 
-async fn configure(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
+async fn configure(
+    _profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+) -> Result<(), Error> {
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','4000',true),set_config('lock_timeout','1000',true)").bind(tenant).execute(c).await?;
     Ok(())
 }
 pub(crate) async fn authorize(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
     device: &str,
     permission: Permission,
 ) -> Result<(), Error> {
     p.check_live()?;
-    rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id()).await?;
-    rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
+    rss_mdm_authorization_service::lock_on(profile, c, p.tenant_id(), p.instance_id()).await?;
+    rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
         .await?
         .require(p, permission, Some(device))
         .map_err(|_| Error::Forbidden)?;
     Ok(())
 }
 async fn read_locked(
+    custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: &str,
     device: &str,
     id: Uuid,
     version: i64,
 ) -> Result<(Material, Option<String>, Option<Vec<u8>>), Error> {
+    let profile = custody.profile();
     if id.is_nil() || version < 1 {
         return Err(Error::Malformed);
     }
-    let statement = storage::select_material!(
-        " WHERE e.tenant_id=$1::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=$2) OR mdm_recovery.filevault_accessible(e.subject,$2)) AND e.id=$3 AND v.version=$4 AND NOT e.retired"
-    );
+    let statement = crate::storage_profile::sql(profile).service_read_locked_1;
     let row = sqlx::query(statement)
         .bind(tenant)
         .bind(device)
@@ -304,12 +384,20 @@ async fn read_locked(
         .ok_or(Error::NotFound)?;
     let material = storage::decode(&row)?;
     storage::active_in(
+        custody,
         c,
         Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
         &material.binding,
     )
     .await?;
-    let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=$2) OR mdm_recovery.filevault_accessible(e.subject,$2)) AND e.id=$3 AND v.version=$4 AND NOT e.retired FOR UPDATE OF e,v")).bind(tenant).bind(device).bind(id).bind(version).fetch_optional(c).await?.ok_or(Error::NotFound)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).service_read_locked_2)
+        .bind(tenant)
+        .bind(device)
+        .bind(id)
+        .bind(version)
+        .fetch_optional(c)
+        .await?
+        .ok_or(Error::NotFound)?;
     Ok((
         storage::decode(&row)?,
         row.try_get("key_id")?,
@@ -388,6 +476,7 @@ impl DisclosureRequest {
     }
 }
 async fn disclosure_receipt(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
     device: &str,
@@ -395,7 +484,12 @@ async fn disclosure_receipt(
     version: i64,
     operation: Uuid,
 ) -> Result<bool, Error> {
-    let row=sqlx::query("SELECT device,entry,version FROM mdm_recovery.disclosures WHERE tenant_id=$1::uuid AND actor=$2 AND operation=$3").bind(p.tenant_id()).bind(p.principal_id()).bind(operation).fetch_optional(c).await?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).service_disclosure_receipt_1)
+        .bind(p.tenant_id())
+        .bind(p.principal_id())
+        .bind(operation)
+        .fetch_optional(c)
+        .await?;
     if let Some(row) = row {
         if row.try_get::<String, _>("device")? != device
             || row.try_get::<Uuid, _>("entry")? != id
@@ -417,11 +511,13 @@ impl Credentials {
         version: i64,
         operation: Uuid,
     ) -> Result<bool, Error> {
+        let profile = self.profile();
+
         p.credentials(device)?;
         let mut tx = self.pool.begin().await?;
-        configure(&mut tx, p.tenant_id()).await?;
-        authorize(&mut tx, p, device, Permission::Credentials).await?;
-        let found = disclosure_receipt(&mut tx, p, device, id, version, operation).await?;
+        configure(profile, &mut tx, p.tenant_id()).await?;
+        authorize(profile, &mut tx, p, device, Permission::Credentials).await?;
+        let found = disclosure_receipt(profile, &mut tx, p, device, id, version, operation).await?;
         tx.rollback().await?;
         p.check_live()?;
         Ok(found)

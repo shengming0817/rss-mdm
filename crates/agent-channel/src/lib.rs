@@ -15,6 +15,7 @@ mod bindings;
 mod database;
 pub mod delivery;
 pub mod enroll;
+pub mod enrollment_tasks;
 pub mod participants;
 pub mod signature_retirement;
 pub use bindings::Bindings;
@@ -304,6 +305,7 @@ async fn report_inner(
     let input = body.decode(headers, wire::MAX_REQUEST_BYTES)?.value;
     let principal = authenticate(&app.enrollment, headers, peer).await?;
     let scope = device::scope(
+        principal.profile(),
         principal.tenant(),
         principal.registration(),
         InventorySource::AgentBuiltin.as_str(),
@@ -318,6 +320,7 @@ async fn report_inner(
     audit.registration(principal.registration());
     audit.target_device(principal.device());
     let scope = crate::device::scope_dataset(
+        principal.profile(),
         principal.tenant(),
         principal.registration(),
         InventorySource::AgentBuiltin.as_str(),
@@ -325,14 +328,14 @@ async fn report_inner(
         input.collection().dataset(),
     )
     .map_err(Error::from)?;
-    let batch = batch(&input)?;
+    let batch = report_batch(&input)?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
     let attempt = app.audit_store.write(principal.tenant(),
             &budget.source_control(),
         (&app.audit_store, &principal, &scope, &input, &batch, audit),
         |(store, principal, scope, input, batch, audit), tx| Box::pin(async move {
             let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),
-                |(principal, scope, input, batch), c| Box::pin(async move {crate::bindings::inventory_in(c,principal).await?;let accepted=crate::collection::agent::accept_in(c,principal,scope,batch,input).await.map_err(Error::from)?;crate::device::store::record_communication_in(c,principal).await?;Ok::<_,Error>(accepted)})).await?;
+                |(principal, scope, input, batch), c| Box::pin(async move {crate::bindings::inventory_in(principal.profile(),c,principal).await?;let accepted=crate::collection::agent::accept_in(principal.profile(),c,principal,scope,batch,input).await.map_err(Error::from)?;crate::device::store::record_communication_in(principal.profile(),c,principal).await?;Ok::<_,Error>(accepted)})).await?;
             let result = match input.body() { wire::ReportBody::Snapshot(_) => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
             let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("agent-report:{}", input.report_id()), 202, "success", None)
                 .and_then(|fact| fact.with_details(serde_json::json!({"reportId":input.report_id(),"collectionResult":result,"receivedAt":received_at})))
@@ -377,6 +380,7 @@ async fn status_inner(
     }
     let principal = authenticate(&app.enrollment, headers, peer).await?;
     let scope = device::scope(
+        principal.profile(),
         principal.tenant(),
         principal.registration(),
         InventorySource::AgentBuiltin.as_str(),
@@ -391,16 +395,21 @@ async fn status_inner(
     audit.registration(principal.registration());
     audit.target_device(principal.device());
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
-    let live_scope =
-        crate::device::store::revalidate_source(&mut tx, &principal, InventorySource::AgentBuiltin)
-            .await?;
+    let live_scope = crate::device::store::revalidate_source(
+        principal.profile(),
+        &mut tx,
+        &principal,
+        InventorySource::AgentBuiltin,
+    )
+    .await?;
     if live_scope != scope {
         return Err(Error::Unauthorized.into());
     }
-    crate::bindings::inventory_in(&mut tx, &principal).await?;
-    let (report, received_at) = crate::collection::store::agent_report_in(&mut tx, &scope, id)
-        .await?
-        .ok_or(AgentError::Wire(wire::ErrorCode::ReportNotFound))?;
+    crate::bindings::inventory_in(principal.profile(), &mut tx, &principal).await?;
+    let (report, received_at) =
+        crate::collection::store::agent_report_in(principal.profile(), &mut tx, &scope, id)
+            .await?
+            .ok_or(AgentError::Wire(wire::ErrorCode::ReportNotFound))?;
     tx.commit().await.map_err(db)?;
     let delivery = app
         .inventory
@@ -482,7 +491,8 @@ pub(crate) async fn authenticate(
         .await
         .map_err(|e| AgentError::Enrollment(e.code))
 }
-fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
+/// Convert validated wire observations; authentication and durable admission remain separate.
+pub fn report_batch(input: &wire::ReportRequest) -> Result<Batch, Error> {
     let definition = collection::wire::to_domain(input.collection())?;
     let changes = input
         .values()
@@ -508,7 +518,7 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
                     .map_err(|_| Error::Malformed)?,
             ))
         })
-        .collect::<Result<Vec<_>, AgentError>>()?;
+        .collect::<Result<Vec<_>, Error>>()?;
     let body = match input.body() {
         wire::ReportBody::Snapshot(_) => Body::Snapshot(changes),
         wire::ReportBody::Partial(_) => Body::Partial(changes),
@@ -578,16 +588,22 @@ impl From<rss_mdm_inventory_service::Error> for AgentError {
 }
 
 /// Fresh product schema owned by this capability.
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const fn install_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).install
+}
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
-pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
+pub const fn relations_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).relations
+}
 
 pub mod boundary;
 
 /// This capability's closed privileges in the shared access connection.
-pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+pub const ACCESS_CONTRACT: &str =
+    crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm).access_contract;
 
 async fn builtin_collections(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     registration: Uuid,
@@ -595,6 +611,7 @@ async fn builtin_collections(
 ) -> Result<Vec<wire::CollectionDefinition>, Error> {
     let key = rss_mdm_inventory::builtin::MDM_ENROLLMENT;
     let scope = device::scope_dataset(
+        profile,
         tenant,
         registration,
         InventorySource::AgentBuiltin.as_str(),
@@ -602,7 +619,7 @@ async fn builtin_collections(
         key.as_str(),
     )?;
     Ok(vec![collection::wire::to_wire(
-        &collection::store::freeze_in(c, &scope, 1, &[key]).await?,
+        &collection::store::freeze_in(profile, c, &scope, 1, &[key]).await?,
     )?])
 }
 
@@ -641,14 +658,21 @@ impl contract::BodyDecoder for ReportDecoder {
 }
 
 /// This owner's exact privileges in the shared host transaction role.
-pub const UPDATE_COLUMNS: &str = include_str!("update-columns.sql");
+pub const fn update_columns_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).update_columns
+}
 
 /// This owner's exact privileges in the shared host transaction role.
-pub const ALLOWED_TABLES: &str = include_str!("allowed-tables.sql");
+pub const fn allowed_tables_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).allowed_tables
+}
 
 /// Structural contract for this owner's durable delivery facts; App verifies the complete role.
-pub async fn verify_delivery(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
-    let allowed: bool = sqlx::query_scalar(include_str!("delivery-admission.sql"))
+pub async fn verify_delivery(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+) -> Result<(), sqlx::Error> {
+    let allowed: bool = sqlx::query_scalar(crate::storage_profile::sql(profile).delivery_admission)
         .fetch_one(c)
         .await?;
     if !allowed {
@@ -658,3 +682,16 @@ pub async fn verify_delivery(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Err
     }
     Ok(())
 }
+
+mod storage_profile;
+
+/// Shared owner objects, combined by the host for complete schema admission.
+pub const fn object_manifest(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).object_manifest
+}
+/// Exact access-role contract for this installation.
+pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).access_contract
+}
+
+pub mod enrollment_facts;

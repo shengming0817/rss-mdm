@@ -33,14 +33,28 @@ impl NativeReceipts {
         report: &plist::Dictionary,
         status: ReceiptStatus,
     ) -> Result<(), Error> {
-        let Some(action) =
-            vault::native_action_in(c, tenant, operation, device, registration, generation).await?
+        let Some(action) = vault::native_action_in(
+            crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+            c,
+            tenant,
+            operation,
+            device,
+            registration,
+            generation,
+        )
+        .await?
         else {
             return Ok(());
         };
         if status != ReceiptStatus::Acknowledged {
             if status == ReceiptStatus::Error {
-                vault::unknown_in(c, tenant, operation).await?;
+                vault::unknown_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                    c,
+                    tenant,
+                    operation,
+                )
+                .await?;
             }
             return Ok(());
         }
@@ -61,10 +75,21 @@ impl NativeReceipts {
                         .and_then(|v| v.get("EncryptedNewRecoveryKey"))
                 };
                 let Some(cms) = value.and_then(plist::Value::as_data) else {
-                    vault::unknown_in(c, tenant, operation).await?;
+                    vault::unknown_in(
+                        crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                        c,
+                        tenant,
+                        operation,
+                    )
+                    .await?;
                     return Ok(());
                 };
-                let source_operation = vault::source_operation_in(c, &coordinates).await?;
+                let source_operation = vault::source_operation_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                    c,
+                    &coordinates,
+                )
+                .await?;
                 let value = crate::filevault::receive_reserved_cms(
                     c,
                     &self.protection,
@@ -74,7 +99,14 @@ impl NativeReceipts {
                     cms,
                 )
                 .await?;
-                vault::replace_native_coordinates_in(c, tenant, operation, &value).await?;
+                vault::replace_native_coordinates_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                    c,
+                    tenant,
+                    operation,
+                    &value,
+                )
+                .await?;
             }
             "verify_recovery_lock" => {
                 if report
@@ -82,24 +114,63 @@ impl NativeReceipts {
                     .and_then(plist::Value::as_boolean)
                     == Some(true)
                 {
-                    let operation = vault::source_operation_in(c, &coordinates).await?;
+                    let operation = vault::source_operation_in(
+                        crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                        c,
+                        &coordinates,
+                    )
+                    .await?;
                     if let Some(original) = action.reconciles {
-                        vault::reconcile_in(c, &coordinates, original).await?;
+                        vault::reconcile_in(
+                            crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                            c,
+                            &coordinates,
+                            original,
+                        )
+                        .await?;
                     } else {
-                        vault::verify_in(c, &coordinates, operation).await?;
+                        vault::verify_in(
+                            crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                            c,
+                            &coordinates,
+                            operation,
+                        )
+                        .await?;
                     }
                 } else {
-                    vault::uncertain_version_in(c, &coordinates).await?;
+                    vault::uncertain_version_in(
+                        crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                        c,
+                        &coordinates,
+                    )
+                    .await?;
                 }
             }
             "clear_recovery_lock" => {
-                vault::cleared_in(c, &coordinates).await?;
+                vault::cleared_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                    c,
+                    &coordinates,
+                )
+                .await?;
             }
             "set_recovery_lock" => {
-                vault::unknown_in(c, tenant, operation).await?;
+                vault::unknown_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                    c,
+                    tenant,
+                    operation,
+                )
+                .await?;
             }
             "lock_pin" => {
-                vault::settled_in(c, &coordinates, operation).await?;
+                vault::settled_in(
+                    crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                    c,
+                    &coordinates,
+                    operation,
+                )
+                .await?;
             }
             _ => return Err(Error::Malformed),
         }

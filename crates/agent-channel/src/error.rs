@@ -65,6 +65,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
         use rss_mdm_registration_service::Error as R;
         match e {
             R::Agent(c) => Self::Agent(c),
+            R::Unsupported => Self::Unsupported,
             R::Malformed => Self::Malformed,
             R::Unauthorized => Self::Unauthorized,
             R::Forbidden => Self::Forbidden,

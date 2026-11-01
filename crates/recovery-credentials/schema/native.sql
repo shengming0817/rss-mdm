@@ -1,4 +1,29 @@
 BEGIN;
+CREATE TABLE mdm_recovery.native_actions (
+ tenant_id uuid NOT NULL, operation uuid NOT NULL, device text NOT NULL,
+ registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
+ action text NOT NULL CHECK(action IN('configure_filevault','collect_filevault','rotate_filevault','set_recovery_lock','clear_recovery_lock','verify_recovery_lock','lock_pin')),
+ inputs_purged boolean NOT NULL DEFAULT false,
+ reconciles uuid,
+ coordinates jsonb CHECK(octet_length(coordinates::text)<=4096), recipient text NOT NULL,
+ PRIMARY KEY(tenant_id,operation),
+ FOREIGN KEY(tenant_id,registration,generation) REFERENCES mdm_access.registrations(tenant_id,id,generation)
+);
+ALTER TABLE mdm_recovery.native_actions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_recovery.native_actions FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_recovery.native_actions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+ALTER TABLE mdm_recovery.entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_recovery.entries FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_recovery.versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_recovery.versions FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_recovery.entries USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON mdm_recovery.versions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+
+REVOKE ALL ON mdm_recovery.native_actions FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm_recovery.native_actions TO mdm_access,mdm_command_runtime;
+GRANT UPDATE(inputs_purged) ON mdm_recovery.native_actions TO mdm_command_runtime;
+COMMIT;
+BEGIN;
 SET LOCAL check_function_bodies=false;
 CREATE FUNCTION mdm_recovery_tasks.native_status(p_operation uuid) RETURNS text
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'

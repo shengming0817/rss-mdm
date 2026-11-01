@@ -1,7 +1,8 @@
 //! Verify the exact owner bodies and ACL of the privileged retirement participants.
 pub async fn verify_storage(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+    verify_agent_authority(rss_mdm_install_support::StorageProfile::Mdm, c).await?;
     let native = include_str!("../schema/native.sql");
-    let relations = include_str!("../schema/task-relations.sql");
+    let relations = crate::task_relations_sql(rss_mdm_install_support::StorageProfile::Mdm);
     let body_1 = native
         .split_once("CREATE FUNCTION mdm_recovery_tasks.native_status(")
         .expect("owner function")
@@ -40,6 +41,31 @@ pub async fn verify_storage(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Erro
     if let Some(name) = rejected {
         return Err(sqlx::Error::Protocol(format!(
             "owner retirement authority rejected: {name}"
+        )));
+    }
+    Ok(())
+}
+
+/// Common Agent retirement authority; native installation is not required.
+pub async fn verify_agent_authority(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+) -> Result<(), sqlx::Error> {
+    let sql = crate::storage_profile::sql(profile);
+    let body = crate::task_relations_sql(profile)
+        .split_once(sql.agent_authority_header)
+        .expect("owner function")
+        .1
+        .split("$$")
+        .nth(1)
+        .expect("owner body");
+    let rejected: Option<String> = sqlx::query_scalar(sql.agent_authority_admission)
+        .bind(body)
+        .fetch_optional(c)
+        .await?;
+    if let Some(name) = rejected {
+        return Err(sqlx::Error::Protocol(format!(
+            "recovery authority rejected: {name}"
         )));
     }
     Ok(())

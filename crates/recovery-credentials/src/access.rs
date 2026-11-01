@@ -13,11 +13,27 @@ use sqlx::PgConnection;
 use std::sync::Arc;
 use uuid::Uuid;
 pub struct AccessMaterials {
+    profile: rss_mdm_install_support::StorageProfile,
     protection: Arc<Protection>,
+    eligibility: Arc<dyn crate::eligibility::Eligibility>,
 }
 impl AccessMaterials {
-    pub fn new(protection: Arc<Protection>) -> Self {
-        Self { protection }
+    pub fn custody(&self) -> crate::Custody<'_> {
+        crate::Custody::new(self.profile, Some(self.eligibility.as_ref()))
+    }
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
+    pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
+        protection: Arc<Protection>,
+        eligibility: Arc<dyn crate::eligibility::Eligibility>,
+    ) -> Self {
+        Self {
+            profile,
+            protection,
+            eligibility,
+        }
     }
 }
 fn error(e: Error) -> rss_mdm_registration_service::Error {
@@ -99,7 +115,7 @@ impl AccessRecovery for AccessMaterials {
                         generation: b.registration_generation,
                         subject: subject(&facts.recovery.subject)?,
                     };
-                    let current = storage::current_in(c, b.tenant, &binding)
+                    let current = storage::current_in(self.custody(), c, b.tenant, &binding)
                         .await?
                         .ok_or(Error::Conflict)?;
                     if current.validity != Validity::Verified || !current.escrowed {
@@ -119,6 +135,7 @@ impl AccessRecovery for AccessMaterials {
                 let expected_revision = if let Some(subject) = expected {
                     let subject = self::subject(&subject)?;
                     storage::revisions_in(
+                        self.custody(),
                         c,
                         b.tenant,
                         &b.device,
@@ -164,9 +181,9 @@ impl AccessRecovery for AccessMaterials {
                 || b.revision != task.revision || b.definition_digest()? != task.definition_digest
                 || !matches!(&b.account, Some(wire::AccessAccount::Windows { sid: current, .. }) if current == sid) { return Err(Error::Conflict) }
             let binding = task_binding(task, &item.subject)?;
-            let coordinates = storage::reserve_in(c, task.tenant_id, &binding, task.task_id, item.expected_revision).await?;
-            storage::ingest_in(c, &self.protection.keys, &coordinates, task.task_id, &secret).await?;
-            storage::link_agent_in(c, task.task_id, task.attempt_id, &coordinates).await?;
+            let coordinates = storage::reserve_in(self.custody(), c, task.tenant_id, &binding, task.task_id, item.expected_revision).await?;
+            storage::ingest_in(self.custody(), c, &self.protection.keys, &coordinates, task.task_id, &secret).await?;
+            storage::link_agent_in(self.custody(), c, task.task_id, task.attempt_id, &coordinates).await?;
             Ok(vec![wire::CredentialReceipt { subject: item.subject.clone(), material: coordinates.material, version: coordinates.version }])
         }.await.map_err(error)
         })
@@ -181,6 +198,7 @@ impl AccessRecovery for AccessMaterials {
             async {
                 let binding = task_binding(task, &facts.recovery.subject)?;
                 let coordinates = storage::coordinates_in(
+                    self.custody(),
                     c,
                     task.tenant_id,
                     &binding.device,
@@ -194,6 +212,7 @@ impl AccessRecovery for AccessMaterials {
                 match &task.windows {
                     Some(wire::AccessWindowsPlan::Initialize { .. }) => {
                         let stored = storage::agent_materials_in(
+                            self.custody(),
                             c,
                             task.tenant_id,
                             task.task_id,
@@ -206,14 +225,15 @@ impl AccessRecovery for AccessMaterials {
                         {
                             return Err(Error::Conflict);
                         }
-                        storage::verify_in(c, &coordinates, task.task_id).await?;
+                        storage::verify_in(self.custody(), c, &coordinates, task.task_id).await?;
                     }
                     Some(wire::AccessWindowsPlan::Preserve { facts: expected })
                         if facts == expected =>
                     {
-                        let current = storage::current_in(c, task.tenant_id, &binding)
-                            .await?
-                            .ok_or(Error::Conflict)?;
+                        let current =
+                            storage::current_in(self.custody(), c, task.tenant_id, &binding)
+                                .await?
+                                .ok_or(Error::Conflict)?;
                         if current.id != coordinates.material
                             || current.version != coordinates.version
                             || current.validity != Validity::Verified
@@ -237,17 +257,26 @@ impl AccessRecovery for AccessMaterials {
         disposition: BindingDisposition,
         terminal: bool,
     ) -> Pending<'a, bool> {
+        let profile = self.profile();
+
         Box::pin(async move {
             async {
-                let values =
-                    storage::agent_materials_in(c, task.tenant_id, task.task_id, task.attempt_id)
-                        .await?;
+                let values = storage::agent_materials_in(
+                    self.custody(),
+                    c,
+                    task.tenant_id,
+                    task.task_id,
+                    task.attempt_id,
+                )
+                .await?;
                 if matches!(disposition, BindingDisposition::Withdrawn) {
                     if terminal {
                         for v in values {
                             storage::settled_in(
+                                self.custody(),
                                 c,
                                 &Coordinates {
+                                    profile,
                                     tenant: task.tenant_id,
                                     material: v.id,
                                     version: v.version,
@@ -267,7 +296,11 @@ impl AccessRecovery for AccessMaterials {
         })
     }
     fn unknown<'a>(&'a self, c: &'a mut PgConnection, tenant: Uuid, run: Uuid) -> Pending<'a, ()> {
-        Box::pin(async move { storage::unknown_in(c, tenant, run).await.map_err(error) })
+        Box::pin(async move {
+            storage::unknown_in(self.custody(), c, tenant, run)
+                .await
+                .map_err(error)
+        })
     }
     fn unbound<'a>(
         &'a self,
@@ -278,9 +311,29 @@ impl AccessRecovery for AccessMaterials {
         revision: i64,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            storage::access_unbound_in(c, tenant, binding, generation, revision)
-                .await
-                .map_err(error)
+            let b = access::storage::locked_observation_in(c, tenant, binding).await?;
+            if b.state != access::State::Revoked
+                || b.generation != generation
+                || b.revision != revision
+                || b.applied_revision != Some(revision)
+                || !matches!(b.effect, Some(wire::AccessEffect::Unbound { .. }))
+            {
+                return Err(rss_mdm_registration_service::Error::Conflict);
+            }
+            storage::access_unbound_in(
+                self.custody(),
+                c,
+                &crate::eligibility::Unbound {
+                    tenant,
+                    device: b.device,
+                    registration: b.registration,
+                    registration_generation: b.registration_generation,
+                    binding,
+                    generation,
+                },
+            )
+            .await
+            .map_err(error)
         })
     }
 }

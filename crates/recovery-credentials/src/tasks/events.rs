@@ -12,8 +12,10 @@ impl crate::tasks::Transactions {
         cause: (Uuid, ActivityOrigin),
         deadline: i64,
     ) -> crate::tasks::transaction::Result<Decision> {
+        let profile = self.profile();
+
         self.validate_in(tx)?;
-        crate::tasks::storage::lock_device(tx, &target.device).await?;
+        crate::tasks::storage::lock_device(profile, tx, &target.device).await?;
         let now = crate::tasks::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
@@ -34,6 +36,7 @@ impl crate::tasks::Transactions {
             });
         }
         crate::tasks::actions::production::accept_for_device(
+            profile,
             self,
             tx,
             &plan,
@@ -53,9 +56,11 @@ impl crate::tasks::Transactions {
         let exists = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    Ok(!crate::tasks::storage::owned_ids_on(c, tenant, &[id])
-                        .await?
-                        .is_empty())
+                    Ok(
+                        !crate::tasks::storage::owned_ids_on(profile, c, tenant, &[id])
+                            .await?
+                            .is_empty(),
+                    )
                 })
             })
             .await?;
@@ -78,8 +83,9 @@ impl crate::tasks::Transactions {
         target: &crate::tasks::Target,
         id: Uuid,
     ) -> crate::tasks::Result<bool> {
+        let profile = self.profile();
         self.validate_in(tx)?;
-        let run = crate::tasks::storage::load_run(tx, id).await?;
+        let run = crate::tasks::storage::load_run(profile, tx, id).await?;
         Ok(run.target.device == target.device
             && run.target.registration == target.registration
             && run.target.generation == target.generation

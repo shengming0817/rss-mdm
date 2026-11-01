@@ -10,6 +10,7 @@ pub struct Materials {
     pub recovery_credentials: Arc<crate::Protection>,
 }
 pub struct Transactions {
+    profile: rss_mdm_install_support::StorageProfile,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -21,20 +22,32 @@ pub struct Transactions {
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
 }
 impl Transactions {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub async fn bind(
+        profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
+        if materials.agent_store.storage_profile() != profile
+            || materials.source.storage_profile() != profile
+        {
+            return Err(Error::Forbidden);
+        }
         runtime
             .local_tx(tenant, transaction::deadline(), |tx| {
                 Box::pin(async move {
                     tx.with_connection(|c| {
                         Box::pin(async move {
-                            let valid: bool = sqlx::query_scalar(include_str!("admission.sql"))
-                                .fetch_one(c)
-                                .await?;
+                            crate::verify_agent_authority(profile, c).await?;
+                            let valid: bool = sqlx::query_scalar(
+                                crate::storage_profile::sql(profile).task_admission,
+                            )
+                            .fetch_one(c)
+                            .await?;
                             if !valid {
                                 return Err(sqlx::Error::Protocol("task owner admission".into()));
                             }
@@ -61,7 +74,12 @@ impl Transactions {
         .await
         .map_err(|_| Error::Unavailable)?;
         Ok(Self {
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            profile,
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+                profile,
+                runtime.clone(),
+                tenant,
+            ),
             runtime,
             tenant,
             audit_store,
@@ -84,6 +102,9 @@ pub struct Service {
     pub(crate) transactions: Transactions,
 }
 impl Service {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.transactions.profile()
+    }
     pub fn new(transactions: Transactions) -> Self {
         Self { transactions }
     }

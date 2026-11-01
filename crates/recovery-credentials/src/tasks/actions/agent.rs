@@ -9,6 +9,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 
 pub(crate) async fn principal(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
     principal: &DevicePrincipal,
@@ -22,6 +23,7 @@ pub(crate) async fn principal(
         Box::pin(async move {
             Ok(
                 rss_mdm_registration_service::device::store::revalidate_source(
+                    profile,
                     c,
                     &checked,
                     rss_mdm_inventory::ReportSource::AgentBuiltin,
@@ -70,9 +72,11 @@ impl Service {
         tx: &mut PgTransaction<'_>,
         p: &DevicePrincipal,
     ) -> Result<()> {
+        let profile = self.profile();
+
         self.transactions.runtime.validate_transaction(tx)?;
-        lock_device(tx, p.device()).await?;
-        principal(&self.transactions, tx, p).await
+        lock_device(profile, tx, p.device()).await?;
+        principal(profile, &self.transactions, tx, p).await
     }
     pub async fn agent_admit_in(
         &self,
@@ -81,6 +85,8 @@ impl Service {
         input: &wire::TaskClaimRequest,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let profile = self.profile();
+
         let service = self;
         let now = storage::now(tx).await?;
         let binding = crate::tasks::agent_facts::agent_binding_in(
@@ -90,7 +96,7 @@ impl Service {
         )
         .await?
         .ok_or(Error::Forbidden)?;
-        let versions = crate::tasks::policy::agent_versions_in(tx, p.registration())
+        let versions = crate::tasks::policy::agent_versions_in(profile, tx, p.registration())
             .await?
             .into_iter()
             .map(|version| (version, Uuid::new_v4()))
@@ -114,6 +120,7 @@ impl Service {
             };
             if crate::tasks::credential_tasks::capable(&binding, policy.frozen.input.architecture) {
                 super::production::accept_for_device(
+                    profile,
                     &service.transactions,
                     tx,
                     &policy,
@@ -136,6 +143,8 @@ impl Service {
         attempt: Uuid,
         audit: &RequestAudit,
     ) -> Result<Option<(wire::TaskPayload, Fact, i64)>> {
+        let profile = self.profile();
+
         self.agent_prepare_in(tx, p).await?;
         let service = self;
         let now = storage::now(tx).await?;
@@ -149,7 +158,7 @@ impl Service {
         .ok_or(Error::Forbidden)?;
         let mut offer = None;
         let mut offer_activity = None;
-        let mut run = db::load_run(tx, id).await?;
+        let mut run = db::load_run(profile, tx, id).await?;
         belongs(&run, p)?;
         let plan =
             db::load_policy_version(&service.transactions.policy_reader, tx, run.policy_version)
@@ -197,7 +206,7 @@ impl Service {
             offer_activity = Some(activity);
             offer = Some(payload);
         }
-        db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
+        db::save_run(profile, &service.transactions.reconcile_messaging, tx, &run).await?;
         offer
             .map(|payload| {
                 let fact = Fact::business(audit, &event_key, 200, "success", None)?
@@ -213,7 +222,9 @@ impl Service {
         signed: &wire::SignedTask,
         audit: &RequestAudit,
     ) -> Result<()> {
-        let run = db::load_run(tx, signed.payload.task_id()).await?;
+        let profile = self.profile();
+
+        let run = db::load_run(profile, tx, signed.payload.task_id()).await?;
         belongs(&run, p)?;
         audit.plan(run.policy_version);
         audit.target(&run.id.to_string());
@@ -243,7 +254,9 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<()> {
-        let run = db::load_run(tx, id).await?;
+        let profile = self.profile();
+
+        let run = db::load_run(profile, tx, id).await?;
         belongs(&run, p)?;
         audit.plan(run.policy_version);
         audit.target(&id.to_string());
@@ -282,8 +295,10 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<EventEffects> {
+        let profile = self.profile();
+
         let service = self;
-        let mut run = db::load_run(tx, id).await?;
+        let mut run = db::load_run(profile, tx, id).await?;
         belongs(&run, p)?;
         crate::tasks::transaction::prepare_audit_in(
             &service.transactions.audit_store,
@@ -347,6 +362,7 @@ impl Service {
                     return Err(Error::Forbidden.into());
                 }
                 credentials = crate::tasks::credential_tasks::escrow(
+                    profile,
                     &service.transactions,
                     tx,
                     &run,
@@ -359,7 +375,15 @@ impl Service {
                     let tenant =
                         checked_input(Uuid::parse_str(&service.transactions.tenant.to_string()))?;
                     tx.with_connection(move |c| {
-                        Box::pin(async move { Ok(crate::storage::unknown_in(c, tenant, id).await) })
+                        Box::pin(async move {
+                            Ok(crate::storage::unknown_in(
+                                crate::Custody::new(profile, None),
+                                c,
+                                tenant,
+                                id,
+                            )
+                            .await)
+                        })
                     })
                     .await?
                     .map_err(Error::from)?;
@@ -373,6 +397,7 @@ impl Service {
                     return Err(Error::Forbidden.into());
                 }
                 match crate::tasks::credential_tasks::finish(
+                    profile,
                     &service.transactions,
                     tx,
                     &run,
@@ -398,6 +423,7 @@ impl Service {
                 }
                 {
                     crate::tasks::credential_tasks::start(
+                        profile,
                         &service.transactions,
                         tx,
                         &run,
@@ -427,7 +453,7 @@ impl Service {
                 run.state.cancelled(input.attempt_id())?;
             }
         }
-        db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
+        db::save_run(profile, &service.transactions.reconcile_messaging, tx, &run).await?;
         let fact = Fact::business(audit, &event_key, 200, "success", None)?;
         let fact = fact.with_activity(&super::activity::run(
             &run,
@@ -447,21 +473,30 @@ impl Service {
         registration: Uuid,
         after: Option<Uuid>,
     ) -> Result<Vec<wire::TaskCancellation>> {
+        let profile = self.profile();
+
         self.transactions.runtime.validate_transaction(tx)?;
-        super::poll::cancellations(tx, registration, after).await
+        super::poll::cancellations(profile, tx, registration, after).await
     }
 }
 use rss_mdm_audit_integration::RequestAudit;
 
-pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+pub(crate) async fn lock_device(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            Ok(
-                rss_mdm_registration_service::lifecycle::lock_devices_in(c, &tenant, &[device])
-                    .await,
+            Ok(rss_mdm_registration_service::lifecycle::lock_devices_in(
+                profile,
+                c,
+                &tenant,
+                &[device],
             )
+            .await)
         })
     })
     .await??;

@@ -173,6 +173,7 @@ pub async fn current_registration(tx: &mut PgTransaction<'_>, device: &str) -> R
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::native::device::store::lock_channel(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &t,
                 &d,
@@ -185,6 +186,7 @@ pub async fn current_registration(tx: &mut PgTransaction<'_>, device: &str) -> R
     let rows = tx
         .with_connection(move |c| {
             Box::pin(crate::native::device::read::active_channel_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
                 vec![device],
@@ -225,6 +227,7 @@ pub async fn require_source(
     let valid = tx
         .with_connection(move |c| {
             Box::pin(crate::native::device::read::enabled_source_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
                 registration,

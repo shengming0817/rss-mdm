@@ -322,4 +322,12 @@ impl Aead for Key {
 pub mod binding;
 pub mod canonical;
 
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const fn install_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).install
+}
+
+mod storage_profile;
+
+pub const fn object_manifest(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).object_manifest
+}

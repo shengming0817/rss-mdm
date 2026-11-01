@@ -55,6 +55,8 @@ impl Service {
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
+        let profile = self.profile();
+
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             self.transactions.tenant.to_string(),
             "command_dispatch",
@@ -67,21 +69,79 @@ impl Service {
         );
         audit.target(&id.to_string());
         audit.identify_service("command-dispatch");
-        let result=transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
-            let (service,id,fingerprint,audit)=ctx;
-            transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
-            let run=super::storage::read_run(tx,*id).await?;
-            let fact=Fact::business(audit, &format!("action:{id}:dispatch"), 200, "success", None)?
-                .with_activity(&super::activity::run(&run,rss_mdm_audit_integration::activity::ActivityPhase::Dispatched))?;
-            let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
-            let old=tx.with_connection(move|c|Box::pin(async move{
-                let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_recovery_tasks.runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
-                if old==Some(false){sqlx::query("UPDATE mdm_recovery_tasks.runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).execute(c).await?;}
-                Ok(old)
-            })).await?.ok_or(Error::Invariant)?;
-            if old{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            (if old { Ok(()) } else { service.transactions.audit_store.append_in(tx, &fact).await })?;Ok(())
-        })).await;
+        let result = transaction::run(
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
+            &audit,
+            (self, id, fingerprint, &audit),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (service, id, fingerprint, audit) = ctx;
+                    transaction::prepare_audit_in(
+                        &service.transactions.audit_store,
+                        tx,
+                        audit,
+                        &[],
+                    )
+                    .await?;
+                    let run = super::storage::read_run(profile, tx, *id).await?;
+                    let fact = Fact::business(
+                        audit,
+                        &format!("action:{id}:dispatch"),
+                        200,
+                        "success",
+                        None,
+                    )?
+                    .with_activity(&super::activity::run(
+                        &run,
+                        rss_mdm_audit_integration::activity::ActivityPhase::Dispatched,
+                    ))?;
+                    let tenant = tx.tenant_id().to_string();
+                    let id = id.to_string();
+                    let fingerprint = fingerprint.clone();
+                    let old = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                let old = sqlx::query_scalar::<_, bool>(
+                                    crate::storage_profile::sql(profile)
+                                        .tasks_actions_recovery_accept_action_dispatch_1,
+                                )
+                                .bind(&tenant)
+                                .bind(&id)
+                                .bind(&fingerprint)
+                                .fetch_optional(&mut *c)
+                                .await?;
+                                if old == Some(false) {
+                                    sqlx::query(
+                                        crate::storage_profile::sql(profile)
+                                            .tasks_actions_recovery_accept_action_dispatch_2,
+                                    )
+                                    .bind(tenant)
+                                    .bind(id)
+                                    .execute(c)
+                                    .await?;
+                                }
+                                Ok(old)
+                            })
+                        })
+                        .await?
+                        .ok_or(Error::Invariant)?;
+                    if old {
+                        audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
+                    (if old {
+                        Ok(())
+                    } else {
+                        service.transactions.audit_store.append_in(tx, &fact).await
+                    })?;
+                    Ok(())
+                })
+            },
+        )
+        .await;
         audit.finalize(
             result
                 .as_ref()
@@ -93,6 +153,7 @@ impl Service {
 }
 
 pub(super) async fn stale_registration(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     target: &Target,
 ) -> Result<bool> {
@@ -102,6 +163,7 @@ pub(super) async fn stale_registration(
         .with_connection(move |c| {
             Box::pin(
                 rss_mdm_registration_service::device::read::stale_registration_in(
+                    profile,
                     c,
                     tenant,
                     target.registration,
@@ -113,14 +175,19 @@ pub(super) async fn stale_registration(
         .await?)
 }
 
-pub async fn recover_one(service: &Service, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
+pub async fn recover_one(
+    profile: rss_mdm_install_support::StorageProfile,
+    service: &Service,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<()> {
     let now = storage::now(tx).await?;
-    let mut run = db::load_run(tx, id).await?;
+    let mut run = db::load_run(profile, tx, id).await?;
     let plan =
         crate::tasks::policy::read_in(&service.transactions.policy_reader, tx, run.policy_version)
             .await?;
     let previous = run.state.clone();
-    let stale = stale_registration(tx, &run.target).await?;
+    let stale = stale_registration(profile, tx, &run.target).await?;
     if stale
         || plan
             .withdrawn_in(&service.transactions, tx, &run.target, now)
@@ -136,7 +203,7 @@ pub async fn recover_one(service: &Service, tx: &mut PgTransaction<'_>, id: Uuid
     {
         run.state.cancel();
     }
-    db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
+    db::save_run(profile, &service.transactions.reconcile_messaging, tx, &run).await?;
     audit_recovery(service, tx, &run, &previous).await?;
     Ok(())
 }

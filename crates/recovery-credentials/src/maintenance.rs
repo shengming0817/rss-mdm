@@ -11,32 +11,43 @@ use rss_transactional_messaging_postgres::PgRuntime;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 pub struct Maintenance {
+    profile: rss_mdm_install_support::StorageProfile,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     audit_store: Arc<AuditStore>,
     protection: Arc<Protection>,
-    copies: Arc<dyn InputCopies>,
+    copies: Option<Arc<dyn InputCopies>>,
     budget: Arc<tokio::sync::Semaphore>,
+    retention: Option<Arc<dyn crate::eligibility::Retention>>,
 }
 impl Maintenance {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         audit_store: Arc<AuditStore>,
         protection: Arc<Protection>,
-        copies: Arc<dyn InputCopies>,
+        copies: Option<Arc<dyn InputCopies>>,
         budget: Arc<tokio::sync::Semaphore>,
+        retention: Option<Arc<dyn crate::eligibility::Retention>>,
     ) -> Self {
         Self {
+            profile,
             runtime,
             tenant,
             audit_store,
             protection,
             copies,
             budget,
+            retention,
         }
     }
     pub async fn validate_keys(&self) -> Result<(), Error> {
+        let profile = self.profile();
+
         let tenant = Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Malformed)?;
         transaction::inspect(
             &self.runtime,
@@ -46,9 +57,15 @@ impl Maintenance {
                 Box::pin(async move {
                     let keys = protection.keys.clone();
                     tx.with_connection(move |c| {
-                        Box::pin(
-                            async move { Ok(materials::validate_keys_in(c, tenant, &keys).await) },
-                        )
+                        Box::pin(async move {
+                            Ok(materials::validate_keys_in(
+                                crate::Custody::new(profile, None),
+                                c,
+                                tenant,
+                                &keys,
+                            )
+                            .await)
+                        })
                     })
                     .await??;
                     Ok(())
@@ -70,6 +87,8 @@ impl Maintenance {
   })
     }
     pub async fn run_once(&self) -> Result<(), Error> {
+        let profile = self.profile();
+
         let audit = RequestAudit::new(
             self.tenant.to_string(),
             "recovery_credential_maintenance",
@@ -86,31 +105,56 @@ impl Maintenance {
                 Box::pin(async move {
                     let (service, audit) = *ctx;
                     let tenant = checked_input(Uuid::parse_str(&service.tenant.to_string()))?;
-                    let keys = service.protection.keys.clone();
-                    let prepared = tx
+                    let mut expired = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(materials::prepare_rewrap_in(c, tenant, &keys).await)
+                                Ok(materials::expired_in(
+                                    crate::Custody::new(profile, None),
+                                    c,
+                                    tenant,
+                                )
+                                .await)
                             })
                         })
                         .await??;
-                    let expired = tx
-                        .with_connection(move |c| {
-                            Box::pin(async move { Ok(materials::expired_in(c, tenant).await) })
-                        })
-                        .await??;
-                    transaction::prepare_audit_in(&service.audit_store, tx, audit, &[]).await?;
-                    let keys = service.protection.keys.clone();
-                    let rewrapped = tx
-                        .with_connection(move |c| {
-                            Box::pin(
-                                async move { Ok(materials::rewrap_in(c, prepared, &keys).await) },
-                            )
-                        })
-                        .await??;
-                    let mut changed = rewrapped > 0;
-                    let mut remaining = 100;
+                    // All external subject fences precede material/version and copy locks.
+                    // Stable ordering also covers concurrent maintenance on another process.
+                    expired.sort_by_key(|m| {
+                        (
+                            match m.binding.subject {
+                                crate::Subject::RssLogin { binding, .. } => binding,
+                                _ => Uuid::nil(),
+                            },
+                            m.id,
+                            m.version,
+                        )
+                    });
+                    let mut releasable = Vec::new();
                     for material in expired {
+                        let retention = service.retention.clone();
+                        let candidate = material.clone();
+                        let permit = tx
+                            .with_connection(move |c| {
+                                Box::pin(async move {
+                                    Ok(materials::retention_in(
+                                        crate::Custody::new(profile, None),
+                                        c,
+                                        tenant,
+                                        &candidate,
+                                        retention.as_deref(),
+                                    )
+                                    .await)
+                                })
+                            })
+                            .await??;
+                        if let Some(permit) = permit {
+                            releasable.push((material, permit));
+                        }
+                    }
+                    transaction::prepare_audit_in(&service.audit_store, tx, audit, &[]).await?;
+                    let mut changed = false;
+                    let mut remaining = 100;
+                    for (material, permit) in releasable {
                         if remaining == 0 {
                             break;
                         }
@@ -119,46 +163,107 @@ impl Maintenance {
                         let version = material.version;
                         tx.with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(materials::cleanup_visited_in(c, tenant, id, version).await)
+                                Ok(materials::cleanup_visited_in(
+                                    crate::Custody::new(profile, None),
+                                    c,
+                                    tenant,
+                                    id,
+                                    version,
+                                )
+                                .await)
                             })
                         })
                         .await??;
                         changed = true;
-                        let copies = tx
-                            .with_connection(move |c| {
-                                Box::pin(async move {
-                                    Ok(materials::input_copies_in(c, tenant, registration).await)
-                                })
-                            })
-                            .await??;
-                        for operation in copies.into_iter().take(remaining) {
-                            remaining -= 1;
-                            if service.copies.purge_in(tx, operation).await? == CopyState::Purged {
-                                tx.with_connection(move |c| {
+                        if let Some(copy_owner) = &service.copies {
+                            let copies = tx
+                                .with_connection(move |c| {
                                     Box::pin(async move {
-                                        Ok(materials::input_purged_in(c, tenant, operation).await)
+                                        Ok(materials::input_copies_in(
+                                            crate::Custody::new(profile, None),
+                                            c,
+                                            tenant,
+                                            registration,
+                                        )
+                                        .await)
                                     })
                                 })
                                 .await??;
+                            for operation in copies.into_iter().take(remaining) {
+                                remaining -= 1;
+                                if copy_owner.purge_in(tx, operation).await? == CopyState::Purged {
+                                    tx.with_connection(move |c| {
+                                        Box::pin(async move {
+                                            Ok(materials::input_purged_in(
+                                                crate::Custody::new(profile, None),
+                                                c,
+                                                tenant,
+                                                operation,
+                                            )
+                                            .await)
+                                        })
+                                    })
+                                    .await??;
+                                }
                             }
-                        }
-                        if tx
-                            .with_connection(move |c| {
-                                Box::pin(async move {
-                                    Ok(materials::inputs_remain_in(c, tenant, registration).await)
+                            if tx
+                                .with_connection(move |c| {
+                                    Box::pin(async move {
+                                        Ok(materials::inputs_remain_in(
+                                            crate::Custody::new(profile, None),
+                                            c,
+                                            tenant,
+                                            registration,
+                                        )
+                                        .await)
+                                    })
                                 })
-                            })
-                            .await??
-                        {
-                            continue;
+                                .await??
+                            {
+                                continue;
+                            }
                         }
                         tx.with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(materials::clear_expired_in(c, tenant, id, version).await)
+                                Ok(materials::clear_expired_in(
+                                    crate::Custody::new(profile, None),
+                                    c,
+                                    permit,
+                                )
+                                .await)
                             })
                         })
                         .await??;
                     }
+                    let keys = service.protection.keys.clone();
+                    let prepared = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(materials::prepare_rewrap_in(
+                                    crate::Custody::new(profile, None),
+                                    c,
+                                    tenant,
+                                    &keys,
+                                )
+                                .await)
+                            })
+                        })
+                        .await??;
+                    let keys = service.protection.keys.clone();
+                    let rewrapped = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(materials::rewrap_in(
+                                    crate::Custody::new(profile, None),
+                                    c,
+                                    prepared,
+                                    &keys,
+                                )
+                                .await)
+                            })
+                        })
+                        .await??;
+                    changed |= rewrapped > 0;
                     if changed {
                         let fact = rss_mdm_audit_integration::Fact::business(
                             audit,
