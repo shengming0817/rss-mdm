@@ -476,6 +476,7 @@ impl Application {
         let input: wire::PolicyEventRequest =
             stored(serde_json::from_value(row.try_get("input")?))?;
         let audit = RequestAudit::new(
+            self.profile(),
             self.tenant.to_string(),
             "policy_event_member",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -784,6 +785,7 @@ impl Application {
         let profile = self.profile();
 
         let audit = RequestAudit::new(
+            self.profile(),
             self.tenant.to_string(),
             "policy_event_member",
             rss_mdm_audit_integration::AuditIntent::Management,

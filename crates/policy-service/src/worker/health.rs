@@ -102,10 +102,15 @@ pub(crate) struct AutomationObservation {
     truncated: bool,
 }
 impl AutomationObservation {
-    fn scanned(&mut self, scope: &rss_reconcile::Scope, observation: RunObservation) {
+    fn scanned(
+        &mut self,
+        profile: rss_mdm_install_support::StorageProfile,
+        scope: &rss_reconcile::Scope,
+        observation: RunObservation,
+    ) {
         let index = match scope.reconciler() {
-            "mdm.policy" => 0,
-            crate::worker::jobs::EVENT_SCOPE => 1,
+            domain if domain == crate::worker::jobs::domain(profile) => 0,
+            domain if domain == crate::worker::jobs::event_domain(profile) => 1,
             _ => return,
         };
         self.scans[index] = Some(observation);
@@ -162,6 +167,7 @@ impl Application {
             .lock()
             .expect("automation observation")
             .scanned(
+                self.profile(),
                 scope,
                 RunObservation {
                     failure: result.err().map(reconcile_failure),
@@ -257,6 +263,7 @@ mod tests {
         observations.failed(a.clone(), failure(Stage::Apply));
         observations.failed(b.clone(), failure(Stage::Finish));
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             a.scope(),
             RunObservation {
                 failure: None,
@@ -282,11 +289,14 @@ mod tests {
     #[test]
     fn scan_recovery_requires_success_from_the_failed_scope() {
         let assets = target("changes");
-        let events =
-            rss_reconcile::Scope::new(assets.scope().tenant(), crate::worker::jobs::EVENT_SCOPE)
-                .unwrap();
+        let events = rss_reconcile::Scope::new(
+            assets.scope().tenant(),
+            crate::worker::jobs::event_domain(rss_mdm_install_support::StorageProfile::Mdm),
+        )
+        .unwrap();
         let mut observations = AutomationObservation::default();
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &events,
             RunObservation {
                 failure: Some(AutomationFailure::StorageUnavailable),
@@ -294,6 +304,7 @@ mod tests {
             },
         );
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             assets.scope(),
             RunObservation {
                 failure: None,
@@ -305,6 +316,7 @@ mod tests {
             Some(AutomationFailure::StorageUnavailable)
         ));
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &events,
             RunObservation {
                 failure: None,
@@ -313,6 +325,7 @@ mod tests {
         );
         assert!(observations.snapshot().scan.unwrap().failure.is_none());
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             assets.scope(),
             RunObservation {
                 failure: Some(AutomationFailure::SettlementUnknown),
@@ -320,6 +333,7 @@ mod tests {
             },
         );
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &events,
             RunObservation {
                 failure: None,
@@ -331,6 +345,7 @@ mod tests {
             Some(AutomationFailure::SettlementUnknown)
         ));
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             assets.scope(),
             RunObservation {
                 failure: None,

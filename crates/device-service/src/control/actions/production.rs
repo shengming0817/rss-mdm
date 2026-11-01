@@ -112,6 +112,7 @@ pub(crate) async fn queue_run_in(
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tx.tenant_id().to_string(),
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,

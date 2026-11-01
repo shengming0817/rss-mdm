@@ -35,6 +35,15 @@ class T2Status(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 discover(independent(cases), [module])
 
+    def test_foundation_selects_real_scope_provider_changes(self):
+        for path in ('crates/scope-service/src/registration.rs',
+                     'crates/scope-service/src/channels.rs',
+                     'crates/scope-service/src/channels/enrollment.rs',
+                     'crates/scope-service/src/storage_profile.rs'):
+            with self.subTest(path=path):
+                self.assertIn('agent.foundation', affected([path]))
+        self.assertNotIn('agent.foundation', affected(['crates/scope-service/src/management.rs']))
+
     def test_multiple_owners_preserve_evidence_and_collect_failures(self):
         import ci
         modules = ['foundation.tenants', 'agent.foundation']

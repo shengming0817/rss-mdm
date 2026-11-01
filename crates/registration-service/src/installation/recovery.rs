@@ -256,6 +256,7 @@ impl Service {
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -508,6 +509,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                 ));
             }
             let audit = RequestAudit::new(
+                rss_mdm_audit_integration::StorageProfile::Mdm,
                 self.transactions.tenant.to_string(),
                 "management_read",
                 rss_mdm_audit_integration::AuditIntent::Routine,
@@ -553,6 +555,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
             }
             {
                 let audit = RequestAudit::new(
+                    rss_mdm_audit_integration::StorageProfile::Mdm,
                     self.transactions.tenant.to_string(),
                     "management_write",
                     rss_mdm_audit_integration::AuditIntent::Management,

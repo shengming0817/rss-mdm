@@ -216,6 +216,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         version: 1,
     };
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         c.tenant.to_string(),
         "task-trust",
         rss_mdm_audit_integration::AuditIntent::Management,

@@ -7,6 +7,7 @@ mod material;
 mod observation;
 mod registration_owner;
 mod scope_seed;
+mod shared_state;
 use anyhow::Result;
 use context::{Context, Inputs};
 use rss_mdm_agent_wire::runtime as w;
@@ -139,8 +140,9 @@ async fn exercise(c: &Context) -> Result<()> {
         w::Capability::InventoryCollectionV1,
         w::Capability::MdmEnrollmentV1,
     ];
-    let p = material::authenticated_agent(&c, registration, grant, &device, capabilities.clone())
-        .await?;
+    let (p, pki_trust) =
+        material::authenticated_agent(&c, registration, grant, &device, capabilities.clone())
+            .await?;
     material::seed_ack(&c, &trust, registration, p.generation()).await?;
     let context = execution_context();
     let mut tx = c.seed().await?;
@@ -211,10 +213,19 @@ async fn exercise(c: &Context) -> Result<()> {
         tenant: c.tenant,
         audit: c.audit.clone(),
         signing,
-        tasks: Arc::new(rss_mdm_agent_channel::enrollment_tasks::EnrollmentTasks::new(enrollment)),
+        tasks: Arc::new(
+            rss_mdm_agent_channel::enrollment_tasks::EnrollmentTasks::new(enrollment.clone()),
+        ),
         content: None,
     };
-    let audit = || RequestAudit::new(c.tenant.to_string(), "agent_claim", AuditIntent::Management);
+    let audit = || {
+        RequestAudit::new(
+            DA,
+            c.tenant.to_string(),
+            "agent_claim",
+            AuditIntent::Management,
+        )
+    };
     let input = w::TaskClaimRequest::new(Uuid::new_v4(), vec![], context.clone())?;
     use rss_transactional_messaging_postgres::PgTransactionFault;
     c.runtime
@@ -261,6 +272,19 @@ async fn exercise(c: &Context) -> Result<()> {
         )?;
         let first = delivery.event(&p, target, &request, &audit()).await?;
         assert_eq!(first.permit().is_some(), start);
+        if start {
+            let native = rss_mdm_agent_wire::enroll::NativeEnrollmentRequest {
+                operation_id: Uuid::new_v4(),
+                attempt_id: signed.payload.attempt_id(),
+                password: w::Secret::parse(&URL_SAFE_NO_PAD.encode([6; 32]))?,
+            };
+            assert!(matches!(
+                enrollment
+                    .native_enrollment(&p, target, &native, &audit())
+                    .await,
+                Err(registration::enrollment::tasks::Error::Unsupported)
+            ));
+        }
         let replay = delivery.event(&p, target, &request, &audit()).await?;
         assert_eq!(serde_json::to_value(first)?, serde_json::to_value(replay)?);
     }
@@ -295,6 +319,7 @@ async fn exercise(c: &Context) -> Result<()> {
     tx.rollback().await?;
     isolation::profiles(c, &p, &context).await?;
     isolation::authority(c).await?;
+    shared_state::verify(c, pki_trust).await?;
     // A revocation that wins the registration row lock invalidates the old principal.
     let mut revoke = c.seed().await?;
     sqlx::query(

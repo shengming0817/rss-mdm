@@ -27,7 +27,7 @@ impl AuthorizedPrincipal {
     /// Bind authenticated identity to the same tenant's audit facts, including denied requests.
     /// Expiry/authorization is checked by the operation; recording the known actor is not a grant.
     pub fn bind_audit(&self, audit: &rss_mdm_audit_integration::RequestAudit) -> Result<(), Error> {
-        if audit.tenant() != self.tenant_id() {
+        if audit.profile() != self.profile() || audit.tenant() != self.tenant_id() {
             audit.intent(rss_mdm_audit_integration::AuditIntent::Security);
             return Err(Error::Forbidden);
         }

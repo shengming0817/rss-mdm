@@ -292,19 +292,6 @@ impl From<crate::deployment::scope::SourceError> for Error {
     }
 }
 
-impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
-    fn from(e: rss_mdm_audit_integration::operation_receipts::Error) -> Self {
-        use rss_mdm_audit_integration::operation_receipts::Error as Receipt;
-        match e {
-            Receipt::Storage(e) => Self::Storage(e),
-            Receipt::Sql(e) => Self::Sql(e),
-            Receipt::Conflict => Error::Conflict.into(),
-            Receipt::Malformed => Error::Malformed.into(),
-            Receipt::Invariant => Error::Unavailable(Failure::CommandStorage).into(),
-        }
-    }
-}
-
 pub(crate) async fn prepare_audit_in(
     store: &rss_mdm_audit_integration::AuditStore,
     tx: &mut PgTransaction<'_>,

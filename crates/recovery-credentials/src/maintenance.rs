@@ -90,6 +90,7 @@ impl Maintenance {
         let profile = self.profile();
 
         let audit = RequestAudit::new(
+            self.profile(),
             self.tenant.to_string(),
             "recovery_credential_maintenance",
             rss_mdm_audit_integration::AuditIntent::Management,

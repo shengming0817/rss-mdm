@@ -9,6 +9,7 @@ pub async fn audit_recovery(
 ) -> Result<()> {
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            service.profile(),
             tx.tenant_id().to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -58,6 +59,7 @@ impl Service {
         let profile = self.profile();
 
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            profile,
             self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,

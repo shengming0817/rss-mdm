@@ -150,6 +150,7 @@ pub async fn finish_in(
         .map_err(db)?;
     crate::wake::notify(c).await.map_err(db)?;
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        profile,
         p.tenant().to_string(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -209,6 +210,7 @@ pub async fn abandon_in(
         return Ok(None);
     };
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        profile,
         tenant.into(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,

@@ -44,6 +44,7 @@ pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
         return Ok(false);
     }
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.clone(),
         "apple_ade_worker",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -356,6 +357,7 @@ async fn finish(
     response: Result<Value, client::RemoteError>,
 ) -> Result<(), Error> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.into(),
         "apple_ade_worker",
         rss_mdm_audit_integration::AuditIntent::Management,

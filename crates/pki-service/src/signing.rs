@@ -210,6 +210,7 @@ impl SigningStore {
         let binding = binding(purpose, issuer, provider, intent)?;
         let hash = Sha256::digest(&binding).to_vec();
         let a = rss_mdm_audit_integration::RequestAudit::new(
+            self.profile(),
             tenant.to_string(),
             "device_pki_signing_claim",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -347,6 +348,7 @@ impl SigningStore {
             .transpose()
             .map_err(|_| Error::Storage)?;
         let a = rss_mdm_audit_integration::RequestAudit::new(
+            self.profile(),
             tenant.to_string(),
             "device_pki_signing_result",
             rss_mdm_audit_integration::AuditIntent::Management,

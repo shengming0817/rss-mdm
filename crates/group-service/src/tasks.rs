@@ -178,6 +178,7 @@ impl Groups {
                 Some(_) => "automation_failed",
             };
             let audit = rss_mdm_audit_integration::RequestAudit::new(
+                rss_mdm_audit_integration::StorageProfile::Mdm,
                 self.tenant.to_string(),
                 action,
                 rss_mdm_audit_integration::AuditIntent::Management,

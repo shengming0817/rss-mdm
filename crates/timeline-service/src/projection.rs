@@ -237,6 +237,7 @@ mod identity_tests {
     const TENANT: &str = "11111111-1111-4111-8111-111111111111";
     fn resolve(action: &'static str, key: &str, id: Uuid, details: Value) -> Option<Identity> {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             TENANT.into(),
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -331,6 +332,7 @@ mod identity_tests {
             Some(Identity::ActionRun(id))
         );
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             TENANT.into(),
             "command_accept",
             rss_mdm_audit_integration::AuditIntent::Management,

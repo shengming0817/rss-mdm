@@ -35,7 +35,9 @@ impl ScopeWork {
         .map_err(|_| storage(sqlx::Error::Protocol("asset input capture failed".into()).into()))
     }
     fn check(&self, scope: &Scope) -> std::result::Result<(), ReconcileError> {
-        if scope.tenant() != self.scopes.tenant || scope.reconciler() != "mdm.scopes" {
+        if scope.tenant() != self.scopes.tenant
+            || scope.reconciler() != crate::tasks::domain(self.scopes.profile())
+        {
             return Err(ReconcileError::new(ErrorKind::Invariant));
         }
         Ok(())
@@ -422,7 +424,7 @@ impl ScopeWork {
                 concurrency:CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
-            let scope=Scope::new(self.scopes.tenant,"mdm.scopes").expect("constant scope");
+            let scope=Scope::new(self.scopes.tenant,crate::tasks::domain(self.scopes.profile())).expect("constant scope");
             self.schedule.wake(&Target::new(scope.clone(), "inputs").expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
                          rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
                 if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {

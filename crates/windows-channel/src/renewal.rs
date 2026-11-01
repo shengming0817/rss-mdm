@@ -390,6 +390,7 @@ pub(crate) async fn activate(
         return Ok(());
     }
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         "windows_renewal",
         rss_mdm_audit_integration::AuditIntent::Management,

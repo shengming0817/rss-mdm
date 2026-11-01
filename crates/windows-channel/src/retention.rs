@@ -20,6 +20,7 @@ pub async fn prune_management(
         return Ok(0);
     }
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.into(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,

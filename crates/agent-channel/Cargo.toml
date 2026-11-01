@@ -54,6 +54,7 @@ name = "foundation"
 path = "tests/foundation.rs"
 
 [dev-dependencies]
+rss-reconcile.workspace = true
 tokio = { workspace = true, features = ["process", "net", "rt-multi-thread"] }
 rss-mdm-backend-postgres-support.workspace = true
 rss-transactional-messaging-postgres = { workspace = true, features = ["integration"] }

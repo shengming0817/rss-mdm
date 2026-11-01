@@ -231,6 +231,7 @@ pub async fn seal(
     // The terminal fact is audited in the caller's transaction. Its owner records commit
     // uncertainty (HTTP envelope or retention task); this helper never commits independently.
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        profile,
         run.scope.tenant().to_string(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -485,6 +486,7 @@ impl Delivery {
             return Ok(0);
         }
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            profile,
             tenant.into(),
             "collection_finish",
             rss_mdm_audit_integration::AuditIntent::Management,

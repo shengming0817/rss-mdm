@@ -68,7 +68,12 @@ async fn admit(
             rss_mdm_audit_integration::AuditIntent::Routine,
             request_intent,
         );
-    let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route), intent);
+    let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
+        envelope.tenant.clone(),
+        route_action(route),
+        intent,
+    );
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
         Ok(p) => p,
@@ -133,6 +138,7 @@ pub async fn authentication(
 ) -> Response {
     let started = envelope.clock.now();
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         envelope.tenant.clone(),
         "authentication",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -526,6 +532,7 @@ mod tests {
                 ));
             }
             let audit = RequestAudit::new(
+                rss_mdm_audit_integration::StorageProfile::Mdm,
                 "11111111-1111-4111-8111-111111111111".into(),
                 "protected_request",
                 rss_mdm_audit_integration::AuditIntent::Management,

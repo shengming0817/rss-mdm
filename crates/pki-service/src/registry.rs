@@ -256,6 +256,7 @@ impl Registry {
                     .to_vec();
             let id = Uuid::from_bytes(hash[..16].try_into().map_err(|_| Error::Storage)?);
             let a = RequestAudit::new(
+                self.profile(),
                 tenant.to_string(),
                 "device_pki_admit",
                 rss_mdm_audit_integration::AuditIntent::Management,

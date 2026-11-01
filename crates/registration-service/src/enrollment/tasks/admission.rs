@@ -285,6 +285,7 @@ pub async fn queue_run_in(
     crate::enrollment::tasks::wake::run_in(profile, &service.reconcile_messaging, tx, id).await?;
     tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'command_relay')").execute(c).await?;Ok(())})).await?;
     let audit = RequestAudit::new(
+        profile,
         tx.tenant_id().to_string(),
         "enrollment_accept",
         rss_mdm_audit_integration::AuditIntent::Management,

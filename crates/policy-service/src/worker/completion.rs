@@ -15,8 +15,10 @@ impl DurableStore for PolicyWork {
         control: &Control<'_, T>,
     ) -> std::result::Result<(), ReconcileError> {
         self.check_scope(target.scope())?;
-        if target.entity().starts_with("event:")
-            != (target.scope().reconciler() == jobs::EVENT_SCOPE)
+        if (crate::configuration::recovery::owns_entity(target.entity())
+            && self.service.configuration.is_none())
+            || target.entity().starts_with("event:")
+                != (target.scope().reconciler() == jobs::event_domain(self.profile()))
         {
             return Err(ReconcileError::new(ErrorKind::Invariant));
         }
@@ -29,8 +31,10 @@ impl DurableStore for PolicyWork {
         control: &Control<'_, T>,
     ) -> std::result::Result<(), ReconcileError> {
         self.check_scope(target.scope())?;
-        if target.entity().starts_with("event:")
-            != (target.scope().reconciler() == jobs::EVENT_SCOPE)
+        if (crate::configuration::recovery::owns_entity(target.entity())
+            && self.service.configuration.is_none())
+            || target.entity().starts_with("event:")
+                != (target.scope().reconciler() == jobs::event_domain(self.profile()))
         {
             return Err(ReconcileError::new(ErrorKind::Invariant));
         }

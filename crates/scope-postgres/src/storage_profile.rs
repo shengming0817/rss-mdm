@@ -64,9 +64,12 @@ pub(crate) struct Statements {
     pub group_change_admission: &'static str,
     pub object_manifest: &'static str,
     pub access_contract: &'static str,
+    pub operation_lock: &'static str,
+    pub operation_replay: &'static str,
+    pub operation_receipt: &'static str,
 }
 macro_rules! define_storage {
-    ($module:ident, $schema:literal, $schema_decl:literal, $schema_name:literal, $access_schema:literal, $access:literal, $tasks:literal, $tasks_name:literal, $asset_dispatch:literal, $asset_dispatch_name:literal, $group_changes:literal, $group_changes_name:literal, $owner:literal, $command_runtime:literal, $inventory_runtime:literal, $scope_runtime:literal, $policy_runtime:literal, $telemetry_runtime:literal, $scope_admission_header:literal, $scope_state_header:literal, $lock_reference_target_header:literal, $channel_admission_header:literal, $create_mdm_scope:literal, $role_mdm_identity_runtime:literal, $role_mdm_resource_runtime:literal, $role_mdm_software_runtime:literal, $object_qualification:literal, $index_26:literal, $index_27:literal, $index_28:literal, $index_29:literal, $index_30:literal, $index_31:literal, $index_32:literal, $index_33:literal, $index_34:literal, $index_35:literal, $index_36:literal, $index_37:literal, $index_38:literal, $index_39:literal, $index_40:literal, $index_41:literal, $index_42:literal, $index_43:literal, $index_44:literal, $access_contract_external_relations:literal) => {
+    ($module:ident, $schema:literal, $schema_decl:literal, $schema_name:literal, $access_schema:literal, $access:literal, $tasks:literal, $tasks_name:literal, $asset_dispatch:literal, $asset_dispatch_name:literal, $group_changes:literal, $group_changes_name:literal, $owner:literal, $command_runtime:literal, $inventory_runtime:literal, $scope_runtime:literal, $policy_runtime:literal, $telemetry_runtime:literal, $scope_admission_header:literal, $scope_state_header:literal, $lock_reference_target_header:literal, $channel_admission_header:literal, $create_mdm_scope:literal, $role_mdm_identity_runtime:literal, $role_mdm_resource_runtime:literal, $role_mdm_software_runtime:literal, $object_qualification:literal, $index_26:literal, $index_27:literal, $index_28:literal, $index_29:literal, $index_30:literal, $index_31:literal, $index_32:literal, $index_33:literal, $index_34:literal, $index_35:literal, $index_36:literal, $index_37:literal, $index_38:literal, $index_39:literal, $index_40:literal, $index_41:literal, $index_42:literal, $index_43:literal, $index_44:literal, $access_contract_external_relations:literal, $operations:literal, $operations_name:literal) => {
         mod $module {
             pub(super) const SQL: super::Statements = super::Statements {
                 install: concat!(r###"-- Scope owns definitions, frozen inputs and collection results.
@@ -279,6 +282,27 @@ CREATE POLICY tenant ON "###, $asset_dispatch, r###" USING(tenant_id=nullif(curr
 GRANT SELECT,INSERT ON "###, $tasks, ",", $asset_dispatch, " TO ", $scope_runtime, r###";
 GRANT UPDATE(completed,failure,failure_detail,replacement_task) ON "###, $tasks, " TO ", $scope_runtime, r###";
 GRANT UPDATE(from_cut,to_cut,event_after,page_through,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON "###, $asset_dispatch, " TO ", $scope_runtime, r###";
+CREATE TABLE "###, $operations, r###" (
+    tenant_id uuid NOT NULL,
+    id uuid NOT NULL,
+    fingerprint bytea NOT NULL,
+    response jsonb NOT NULL,
+    actor text NOT NULL,
+    CONSTRAINT operations_actor_check CHECK ((length(actor) > 0)),
+    CONSTRAINT operations_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
+    CONSTRAINT operations_response_check CHECK ((octet_length((response)::text) <= 8388608))
+);
+
+ALTER TABLE ONLY "###, $operations, r###" FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE ONLY "###, $operations, r###"
+    ADD CONSTRAINT operations_pkey PRIMARY KEY (tenant_id, actor, id);
+
+ALTER TABLE "###, $operations, r###" ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant ON "###, $operations, r###" USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+
 COMMIT;
 
 -- A foreign owner may pin an existing Scope without receiving Scope UPDATE rights.
@@ -370,6 +394,7 @@ GRANT EXECUTE ON FUNCTION "###, $schema, "scope_admission(uuid,text) TO ", $acce
 
 
 GRANT SELECT ON "###, $schema, "scopes,", $schema, "scope_runs,", $schema, "scope_source_members TO ", $access, r###";
+GRANT SELECT,INSERT ON "###, $operations, " TO ", $scope_runtime, r###";
 COMMIT;
 
 GRANT USAGE ON "###, $schema_decl, " TO ", $inventory_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
@@ -586,10 +611,10 @@ WHERE s.tenant_id=$1::uuid
  SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))
 ), owned AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
- WHERE n.nspname="###, $schema_name, " AND c.relkind='r' AND c.relname IN(", $asset_dispatch_name, ",'scope_results','scope_runs','scope_source_members','scope_sources','scope_versions','scopes',", $tasks_name, r###")
+ WHERE n.nspname="###, $schema_name, " AND c.relkind='r' AND c.relname IN(", $asset_dispatch_name, ",'scope_results','scope_runs','scope_source_members','scope_sources','scope_versions','scopes',", $tasks_name, ",", $operations_name, r###")
 )
 SELECT current_setting('transaction_isolation')='read committed'
-AND (SELECT count(*) FROM owned)=8
+AND (SELECT count(*) FROM owned)=9
 AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication OR oid IN(SELECT relowner FROM owned))
 AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT relrowsecurity OR NOT relforcerowsecurity
  OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR NOT has_table_privilege(current_user,t.oid,'INSERT')
@@ -613,7 +638,7 @@ AND has_function_privilege(current_user,'"###, $schema, r###"scope_state(uuid,te
 AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT EXISTS(
  SELECT 1 FROM pg_constraint k WHERE k.conrelid=t.oid AND k.contype='p' AND k.convalidated AND NOT k.condeferrable
  AND (SELECT array_agg(a.attname::text ORDER BY key.n) FROM unnest(k.conkey) WITH ORDINALITY key(attnum,n) JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=key.attnum)=
- CASE t.relname WHEN 'scope_results' THEN ARRAY['tenant_id','run','device'] WHEN 'scope_source_members' THEN ARRAY['tenant_id','run','source','device'] WHEN 'scope_sources' THEN ARRAY['tenant_id','scope','kind','target'] WHEN 'scope_versions' THEN ARRAY['tenant_id','id','revision'] WHEN "###, $asset_dispatch_name, r###" THEN ARRAY['tenant_id'] ELSE ARRAY['tenant_id','id'] END))
+ CASE t.relname WHEN "###, $operations_name, " THEN ARRAY['tenant_id','actor','id'] WHEN 'scope_results' THEN ARRAY['tenant_id','run','device'] WHEN 'scope_source_members' THEN ARRAY['tenant_id','run','source','device'] WHEN 'scope_sources' THEN ARRAY['tenant_id','scope','kind','target'] WHEN 'scope_versions' THEN ARRAY['tenant_id','id','revision'] WHEN ", $asset_dispatch_name, r###" THEN ARRAY['tenant_id'] ELSE ARRAY['tenant_id','id'] END))
 AND NOT EXISTS(SELECT 1 FROM owned t,LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
 AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM owned) AND NOT tgisinternal)
 -- Required rights are checked on current_user above. Every role reachable by the
@@ -746,8 +771,11 @@ SELECT EXISTS(SELECT FROM pg_class c WHERE c.oid='"###, $group_changes, r###"'::
  AND NOT EXISTS(SELECT FROM pg_attribute col CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE col.attrelid=c.oid AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))))
  AND NOT EXISTS(SELECT FROM pg_roles WHERE oid IN(SELECT oid FROM reachable) AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication))
 "###),
-                object_manifest: concat!(r###"{"tables":[""###, $asset_dispatch, r###"",""###, $group_changes, r###"",""###, $schema, r###"scope_channel_results",""###, $schema, r###"scope_projection_runs",""###, $schema, r###"scope_results",""###, $schema, r###"scope_runs",""###, $schema, r###"scope_source_members",""###, $schema, r###"scope_sources",""###, $schema, r###"scope_versions",""###, $schema, r###"scopes",""###, $tasks, r###""],"functions":[""###, $schema, r###"channel_admission",""###, $schema, r###"guard_scope_channel_result",""###, $schema, r###"lock_reference_target",""###, $schema, r###"scope_admission",""###, $schema, r###"scope_state"],"views":[]}"###),
+                object_manifest: concat!(r###"{"tables":[""###, $asset_dispatch, r###"",""###, $group_changes, r###"",""###, $schema, r###"scope_channel_results",""###, $schema, r###"scope_projection_runs",""###, $schema, r###"scope_results",""###, $schema, r###"scope_runs",""###, $schema, r###"scope_source_members",""###, $schema, r###"scope_sources",""###, $schema, r###"scope_versions",""###, $schema, r###"scopes",""###, $tasks, r###"",""###, $operations, r###""],"functions":[""###, $schema, r###"channel_admission",""###, $schema, r###"guard_scope_channel_result",""###, $schema, r###"lock_reference_target",""###, $schema, r###"scope_admission",""###, $schema, r###"scope_state"],"views":[]}"###),
                 access_contract: concat!(r###"{"tables":[],"functions":[{"name":""###, $schema, r###"scope_admission","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"scope_state","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"channel_admission","search_path":"search_path=pg_catalog"}],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
+                operation_lock: concat!("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,'", $operations, "',$2::text,$3::text)::text,2889))"),
+                operation_replay: concat!("SELECT fingerprint,response FROM ", $operations, " WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3"),
+                operation_receipt: concat!("INSERT INTO ", $operations, "(tenant_id,actor,id,fingerprint,response) VALUES($1::uuid,$2,$3,$4,$5)"),
             };
         }
     };
@@ -799,7 +827,9 @@ define_storage!(
     "ADD CONSTRAINT scopes_tenant_id_resolution_fkey",
     "CREATE INDEX group_changes_pending",
     "CREATE INDEX scope_channel_results_cursor",
-    r###""mdm_scope.scopes","mdm_scope.scope_runs","mdm_scope.scope_source_members","mdm_scope.scope_channel_results","mdm_scope.scope_projection_runs""###
+    r###""mdm_scope.scopes","mdm_scope.scope_runs","mdm_scope.scope_source_members","mdm_scope.scope_channel_results","mdm_scope.scope_projection_runs""###,
+    "mdm_scope.operations",
+    "'operations'"
 );
 define_storage!(
     da,
@@ -848,7 +878,9 @@ define_storage!(
     "ADD CONSTRAINT scope_scopes_tenant_id_resolution_fkey",
     "CREATE INDEX scope_group_changes_pending",
     "CREATE INDEX scope_scope_channel_results_cursor",
-    ""
+    "",
+    "rss_da.scope_operations",
+    "'scope_operations'"
 );
 pub(crate) const fn sql(profile: StorageProfile) -> &'static Statements {
     match profile {

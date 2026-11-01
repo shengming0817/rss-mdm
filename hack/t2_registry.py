@@ -10,7 +10,11 @@ MODULES = {
         prefix='foundation::', profiles=('agent_foundation',),
         inputs=('crates/install-support/*','crates/agent-channel/*','crates/registration-service/*',
                 'crates/authorization-service/*','crates/pki-service/*','crates/inventory-postgres/*','crates/task-trust/*','crates/recovery-credentials/*',
-                'crates/policy-postgres/*','crates/scope-postgres/*','crates/inventory-service/*')),
+                'crates/policy-postgres/*','crates/scope-postgres/*','crates/inventory-service/*',
+                'crates/scope-service/src/registration.rs','crates/scope-service/src/channels/*',
+                'crates/scope-service/src/channels.rs','crates/scope-service/src/storage_profile.rs',
+                'crates/scope-service/src/tasks.rs','crates/scope-service/src/runtime.rs',
+                'crates/policy-service/src/worker/*','crates/audit-integration/*')),
 
     'task.command_owners': dict(prefix='assembly::execution_owners_t2::command_recovery::', profiles=('shared',),
         inputs=('crates/software-service/*','crates/device-service/src/control/*','crates/registration-service/src/installation/*','crates/recovery-credentials/src/native/*','apps/server/tests/execution_owners/*','apps/server/tests/credential_owners/*')),

@@ -189,6 +189,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             return Err(failure(Error::Invariant));
         }
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             service.transactions.tenant.to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,

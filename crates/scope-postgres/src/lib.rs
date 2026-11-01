@@ -355,3 +355,5 @@ pub const fn object_manifest(profile: rss_mdm_install_support::StorageProfile) -
 pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
     storage_profile::sql(profile).access_contract
 }
+
+mod operations;

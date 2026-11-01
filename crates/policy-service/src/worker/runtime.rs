@@ -65,8 +65,13 @@ impl PolicyWork {
         scope: &rss_reconcile::Scope,
     ) -> std::result::Result<(), rss_reconcile::Error> {
         if scope.tenant() != self.service.tenant
-            || !matches!(scope.reconciler(), "mdm.policy" | jobs::EVENT_SCOPE)
-            || (scope.reconciler() == jobs::EVENT_SCOPE && self.execution().is_none())
+            || ![
+                jobs::domain(self.profile()),
+                jobs::event_domain(self.profile()),
+            ]
+            .contains(&scope.reconciler())
+            || (scope.reconciler() == jobs::event_domain(self.profile())
+                && self.execution().is_none())
         {
             return Err(rss_reconcile::Error::new(
                 rss_reconcile::ErrorKind::Invariant,
@@ -80,13 +85,14 @@ impl PolicyWork {
     ) -> std::result::Result<(), rss_reconcile::Error> {
         self.check_scope(claim.target().scope())?;
         if (matches!(claim.target().entity(), "inputs" | "schedules")
-            || crate::configuration::recovery::owns_entity(claim.target().entity()))
-            && claim.target().scope().reconciler() == "mdm.policy"
+            || (self.service.configuration.is_some()
+                && crate::configuration::recovery::owns_entity(claim.target().entity())))
+            && claim.target().scope().reconciler() == jobs::domain(self.profile())
         {
             return Ok(());
         }
         if claim.target().entity().starts_with("event:")
-            != (claim.target().scope().reconciler() == jobs::EVENT_SCOPE)
+            != (claim.target().scope().reconciler() == jobs::event_domain(self.profile()))
             || jobs::target_job(claim.target().entity())
                 .and_then(|id| Uuid::parse_str(id).ok())
                 .is_none()
@@ -139,8 +145,9 @@ impl Automation {
             let event_policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
                 concurrency:EVENT_CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
-            let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.policy").expect("constant domain");
-            for entity in ["inputs", "schedules", "configuration-inputs", "configuration-relay"] {
+            let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::domain(self.profile())).expect("constant domain");
+            let configuration_inputs = self.service.configuration.iter().flat_map(|_| ["configuration-inputs", "configuration-relay"]);
+            for entity in ["inputs", "schedules"].into_iter().chain(configuration_inputs) {
                 self.store.wake(&rss_reconcile::Target::new(scope.clone(),entity).expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
             }
             let runner=async {rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,signals.automation(),|event| {
@@ -151,7 +158,7 @@ impl Automation {
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)};
             let event_runner=async {
                 if self.work.execution().is_none() {cancel.cancelled().await;return Ok(());}
-                let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::EVENT_SCOPE).expect("constant domain");
+                let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::event_domain(self.profile())).expect("constant domain");
                 rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,event_policy,&control,&cancel,signals.events(),|event| {
                     if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
                         eprintln!("{}",serde_json::json!({"event":"mdm_policy_event_failure","diagnostic":format!("{event:?}")}));
@@ -186,6 +193,7 @@ fn reconcile_error(error: Error) -> rss_reconcile::Error {
         Error::Conflict | Error::ReadConflict => rss_reconcile::ErrorKind::Fenced,
         Error::Unavailable(Failure::RequestDeadline) => rss_reconcile::ErrorKind::Deadline,
         Error::Unavailable(Failure::NativeInputIntegrity | Failure::CommandInvariant)
+        | Error::Unsupported
         | Error::Malformed
         | Error::Forbidden
         | Error::Unauthorized => rss_reconcile::ErrorKind::Permanent,

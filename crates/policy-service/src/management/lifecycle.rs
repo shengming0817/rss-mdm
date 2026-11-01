@@ -162,7 +162,7 @@ impl crate::application::Application {
                 self.reconcile_messaging
                     .wake_in(
                         tx,
-                        &crate::worker::jobs::job_target(tenant, id),
+                        &crate::worker::jobs::job_target(profile, tenant, id),
                         &rss_reconcile::ResourceSet::empty(tenant),
                         (),
                         move |_, tx| {
@@ -287,6 +287,7 @@ impl crate::application::Application {
         self.changes.retirement_accepted_in(tx, accepted.0).await?;
         if !accepted.1 {
             let audit = RequestAudit::new(
+                self.profile(),
                 tenant.to_string(),
                 "device_retirement_accepted",
                 rss_mdm_audit_integration::AuditIntent::Management,

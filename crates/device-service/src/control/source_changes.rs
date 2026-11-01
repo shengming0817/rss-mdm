@@ -106,6 +106,7 @@ pub async fn fail_in(
     })).await?;
     if let Some(generation) = generation {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             tx.tenant_id().to_string(),
             "automation_failed",
             rss_mdm_audit_integration::AuditIntent::Management,

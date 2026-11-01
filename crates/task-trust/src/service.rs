@@ -441,6 +441,7 @@ mod tests {
     #[test]
     fn settlement_preserves_unknown_and_failed_rollback() {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             uuid::Uuid::new_v4().to_string(),
             "task-trust",
             rss_mdm_audit_integration::AuditIntent::Management,

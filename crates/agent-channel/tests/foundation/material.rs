@@ -196,10 +196,14 @@ pub async fn authenticated_agent(
     grant: Uuid,
     device: &str,
     capabilities: Vec<rss_mdm_agent_wire::runtime::Capability>,
-) -> Result<rss_mdm_registration_service::DevicePrincipal> {
+) -> Result<(
+    rss_mdm_registration_service::DevicePrincipal,
+    rss_mdm_agent_wire::pki::Trust,
+)> {
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
     let (peer, certificate, csr, trust) = agent_material(c, device).await?;
+    let pki_trust = trust.trust.clone();
     super::registration_owner::assemble(c, trust).await?;
     let meta = peer.metadata();
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
@@ -280,5 +284,5 @@ pub async fn authenticated_agent(
     )
     .await?;
     tx.commit().await?;
-    Ok(principal)
+    Ok((principal, pki_trust))
 }

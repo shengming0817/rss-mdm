@@ -896,6 +896,7 @@ pub(crate) async fn prepare_transaction<C: Send, R: Send>(
     > + Send,
 ) -> Result<R, Error> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         "windows_signing_prepare",
         rss_mdm_audit_integration::AuditIntent::Management,

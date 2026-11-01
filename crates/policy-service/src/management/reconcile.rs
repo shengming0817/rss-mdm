@@ -244,6 +244,7 @@ impl crate::application::Application {
     ) -> Result<()> {
         use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit, activity::*};
         let audit = RequestAudit::new(
+            self.profile(),
             tx.tenant_id().to_string(),
             "policy_assignment",
             AuditIntent::Management,

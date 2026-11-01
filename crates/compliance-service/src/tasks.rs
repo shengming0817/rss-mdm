@@ -103,6 +103,7 @@ impl Compliance {
             Some(_) => "automation_failed",
         };
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             t.to_string(),
             action,
             rss_mdm_audit_integration::AuditIntent::Management,

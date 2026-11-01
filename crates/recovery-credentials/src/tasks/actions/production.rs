@@ -295,6 +295,7 @@ pub(crate) async fn queue_run_in(
     crate::tasks::wake::run_in(profile, &service.reconcile_messaging, tx, id).await?;
 
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        profile,
         tx.tenant_id().to_string(),
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,

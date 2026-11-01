@@ -1,7 +1,23 @@
 use super::*;
-pub fn job_target(tenant: TenantId, id: Uuid) -> rss_reconcile::Target {
+pub const fn domain(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    match profile {
+        rss_mdm_install_support::StorageProfile::Mdm => "mdm.policy",
+        rss_mdm_install_support::StorageProfile::Da => "da.policy",
+    }
+}
+pub const fn event_domain(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    match profile {
+        rss_mdm_install_support::StorageProfile::Mdm => "mdm.policy-events",
+        rss_mdm_install_support::StorageProfile::Da => "da.policy-events",
+    }
+}
+pub fn job_target(
+    profile: rss_mdm_install_support::StorageProfile,
+    tenant: TenantId,
+    id: Uuid,
+) -> rss_reconcile::Target {
     rss_reconcile::Target::new(
-        rss_reconcile::Scope::new(tenant, "mdm.policy").expect("constant domain"),
+        rss_reconcile::Scope::new(tenant, domain(profile)).expect("constant domain"),
         format!("job:{id}"),
     )
     .expect("UUID entity")
@@ -17,9 +33,9 @@ pub(super) async fn forward_jobs_in(
             Uuid::parse_str(&id).map_err(|_| Error::Unavailable(Failure::AutomationStorage))?;
         let event = kind == "policy_event";
         let target = if event {
-            event_target(tenant, id)
+            event_target(profile, tenant, id)
         } else {
-            job_target(tenant, id)
+            job_target(profile, tenant, id)
         };
         reconcile
             .wake_in(
@@ -108,6 +124,7 @@ pub async fn finish_job_in(
     }
     if let Some((target, kind)) = target {
         let audit = RequestAudit::new(
+            profile,
             tx.tenant_id().to_string(),
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -158,10 +175,13 @@ pub async fn replacement_in(
     Ok(())
 }
 
-pub const EVENT_SCOPE: &str = "mdm.policy-events";
-pub fn event_target(tenant: TenantId, id: Uuid) -> rss_reconcile::Target {
+pub fn event_target(
+    profile: rss_mdm_install_support::StorageProfile,
+    tenant: TenantId,
+    id: Uuid,
+) -> rss_reconcile::Target {
     rss_reconcile::Target::new(
-        rss_reconcile::Scope::new(tenant, EVENT_SCOPE).expect("constant domain"),
+        rss_reconcile::Scope::new(tenant, event_domain(profile)).expect("constant domain"),
         format!("event:{id}"),
     )
     .expect("UUID entity")

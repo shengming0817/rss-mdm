@@ -27,6 +27,7 @@ pub async fn audit_recovery(
     }
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             tx.tenant_id().to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -74,6 +75,7 @@ impl ScriptService {
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), crate::Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,

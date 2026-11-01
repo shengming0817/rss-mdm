@@ -216,10 +216,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_scope_postgres::projections_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
-            "operation-receipts-schema-v1",
-            rss_mdm_audit_integration::OPERATION_RECEIPTS_SQL,
-        ),
-        (
             "agent-channel-schema-v1",
             rss_mdm_agent_channel::install_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
@@ -316,10 +312,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_scope_postgres::projection_relations_sql(
                 rss_mdm_install_support::StorageProfile::Mdm,
             ),
-        ),
-        (
-            "operation-receipts-relations-v1",
-            rss_mdm_audit_integration::OPERATION_RECEIPT_RELATIONS_SQL,
         ),
         (
             "scope-relations-v1",

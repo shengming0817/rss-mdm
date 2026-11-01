@@ -26,6 +26,7 @@ fn context() -> w::SoftwareExecutionContext {
 }
 fn request(c: &Context) -> RequestAudit {
     RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         c.tenant.to_string(),
         "agent_task_event",
         AuditIntent::Management,

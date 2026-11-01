@@ -277,6 +277,7 @@ pub async fn advance_run(
         required: vec![crate::deployment::authorization::Permission::SoftwareDeploy],
     };
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tx.tenant_id().to_string(),
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,

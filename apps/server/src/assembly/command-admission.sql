@@ -70,7 +70,6 @@ WITH tables AS (
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm_script.runs',true,true,false),('mdm_script.receipts',true,true,false),('mdm_script.output_chunks',true,true,false),('mdm_script.agent_admission',true,true,false),('mdm_script.policy_recovery',true,true,false),('mdm_inventory.collection_tasks',true,true,false),('mdm_inventory.collection_admission',true,true,false),('mdm_inventory.collection_output_chunks',true,true,false),('mdm_inventory.collection_policy_recovery',true,true,false),('mdm_inventory.collection_native_checkins',true,true,false),
- ('mdm_planning.operations',true,true,false),
  ('mdm_planning.configuration_execution_facts',true,false,false),
  ('mdm_planning.configuration_recovery',true,true,false),
  ('mdm_planning.configuration_receipts',true,true,false),

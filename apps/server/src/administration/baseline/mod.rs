@@ -197,6 +197,7 @@ async fn execute(
     let proof = authority.principal(&state.authorization).await?;
     proof.require_initialization_target(&step.target)?;
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         "baseline_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -391,6 +392,7 @@ pub(crate) async fn reserve(
     }
     let operation = manifest::id(tenant, "intent");
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         "baseline_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,

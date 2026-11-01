@@ -13,6 +13,7 @@ pub enum AuthenticationKind {
     ApiKey,
 }
 struct Context {
+    profile: crate::StorageProfile,
     request_id: Uuid,
     tenant: String,
     state: Mutex<State>,
@@ -90,14 +91,20 @@ pub enum FailureReason {
     Cancelled,
 }
 impl RequestAudit {
-    /// Create a request identity for one tenant; persisted facts validate its canonical tenant ID.
-    pub fn new(tenant: String, action: &'static str, intent: crate::AuditIntent) -> Self {
+    /// Create a request identity for one product and tenant; persisted facts validate its canonical tenant ID.
+    pub fn new(
+        profile: crate::StorageProfile,
+        tenant: String,
+        action: &'static str,
+        intent: crate::AuditIntent,
+    ) -> Self {
         Self(Arc::new(Context {
+            profile,
             request_id: Uuid::new_v4(),
             tenant,
             state: Mutex::new(State {
                 snapshot: Snapshot {
-                    target_type: "mdm",
+                    target_type: profile.name(),
                     actor: None,
                     actor_kind: "unidentified",
                     instance: None,
@@ -131,6 +138,7 @@ impl RequestAudit {
     /// Copy coordinates/facts for an independently owned transaction without sharing its diagnostic finalization.
     pub fn transaction_copy(&self) -> Self {
         Self(Arc::new(Context {
+            profile: self.0.profile,
             request_id: self.0.request_id,
             tenant: self.0.tenant.clone(),
             state: Mutex::new(State {
@@ -145,6 +153,7 @@ impl RequestAudit {
         let mut snapshot = self.snapshot();
         snapshot.action = action;
         Self(Arc::new(Context {
+            profile: self.0.profile,
             request_id: self.0.request_id,
             tenant: self.0.tenant.clone(),
             state: Mutex::new(State {
@@ -152,6 +161,10 @@ impl RequestAudit {
                 finalized: true,
             }),
         }))
+    }
+    /// Product source chosen by the owner, never by request payload data.
+    pub fn profile(&self) -> crate::StorageProfile {
+        self.0.profile
     }
     /// Return the unique request event coordinate, distinct from a business operation identity.
     pub fn request_id(&self) -> Uuid {
@@ -360,6 +373,7 @@ mod tests {
     #[test]
     fn target_rejects_values_that_cannot_be_persisted() {
         let audit = RequestAudit::new(
+            crate::StorageProfile::Mdm,
             "tenant".into(),
             "collection_read",
             crate::AuditIntent::Routine,
@@ -375,6 +389,7 @@ mod tests {
     #[test]
     fn cancellation_preserves_operation_and_distinguishes_commit_phase() {
         let a = RequestAudit::new(
+            crate::StorageProfile::Mdm,
             "tenant".into(),
             "enrollment_create",
             crate::AuditIntent::Management,

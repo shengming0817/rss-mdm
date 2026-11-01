@@ -91,6 +91,7 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
             .await
             .map_err(|_| Error::Storage)?;
             let audit = RequestAudit::new(
+                rss_mdm_audit_integration::StorageProfile::Mdm,
                 tenant.to_string(),
                 "storage_migration_commit",
                 AuditIntent::Management,

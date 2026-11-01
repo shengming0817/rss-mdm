@@ -116,7 +116,8 @@ impl Registry {
         p.require_all_devices(rss_mdm_authorization_service::Permission::Credentials)
             .map_err(|_| Error::Forbidden)?;
         p.bind_audit(a).map_err(|_| Error::Forbidden)?;
-        if input.operation.is_nil()
+        if p.profile() != self.profile()
+            || input.operation.is_nil()
             || self.trust(input.purpose)?.tenant.to_string() != p.tenant_id()
         {
             return Err(Error::Forbidden);
@@ -218,7 +219,7 @@ impl Registry {
                         if let Some(p) = p {
                             p.check_live().map_err(|_| Error::Forbidden)?;
                             rss_mdm_authorization_service::lock_on(
-                                rss_mdm_install_support::StorageProfile::Mdm,
+                                profile,
                                 c,
                                 p.tenant_id(),
                                 p.instance_id(),
@@ -226,7 +227,7 @@ impl Registry {
                             .await
                             .map_err(|_| Error::Storage)?;
                             rss_mdm_authorization_service::snapshot_on(
-                                rss_mdm_install_support::StorageProfile::Mdm,
+                                profile,
                                 c,
                                 p.tenant_id(),
                                 p.instance_id(),
@@ -374,6 +375,7 @@ impl Registry {
             );
             let publication_now = clock()?;
             let a = RequestAudit::new(
+                self.profile(),
                 trust.tenant.to_string(),
                 "device_pki_crl_publish",
                 rss_mdm_audit_integration::AuditIntent::Management,
@@ -426,6 +428,7 @@ impl Registry {
         let profile = self.profile();
 
         let a = RequestAudit::new(
+            self.profile(),
             trust.tenant.to_string(),
             "device_pki_revoke_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -501,6 +504,7 @@ impl Registry {
         let profile = self.profile();
 
         let a = RequestAudit::new(
+            self.profile(),
             trust.tenant.to_string(),
             "device_pki_revoke_submit",
             rss_mdm_audit_integration::AuditIntent::Management,

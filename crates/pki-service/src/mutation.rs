@@ -26,14 +26,14 @@ impl Registry {
     }
 }
 pub(crate) async fn run<C: Send, R: Send>(
-    _profile: rss_mdm_install_support::StorageProfile,
+    profile: rss_mdm_install_support::StorageProfile,
     store: &rss_mdm_audit_integration::AuditStore,
     tenant: TenantId,
     a: &RequestAudit,
     ctx: C,
     f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, R> + Send,
 ) -> Result<R, Error> {
-    if a.tenant() != tenant.to_string() {
+    if a.profile() != profile || a.tenant() != tenant.to_string() {
         return Err(Error::Forbidden);
     }
     let budget = AuditBudget::new(Duration::from_secs(5));

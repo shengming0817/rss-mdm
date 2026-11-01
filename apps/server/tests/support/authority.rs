@@ -181,6 +181,7 @@ impl Context {
     }
     pub fn request(&self, proof: &access::context::AuthorizedPrincipal) -> Result<RequestAudit> {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             self.tenant.to_string(),
             "foundation",
             AuditIntent::Management,

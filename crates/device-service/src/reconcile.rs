@@ -118,6 +118,7 @@ pub(crate) async fn publish(
     }
 
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         t.clone(),
         "device_association_automatic",
         rss_mdm_audit_integration::AuditIntent::Management,

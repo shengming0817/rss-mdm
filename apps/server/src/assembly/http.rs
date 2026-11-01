@@ -191,6 +191,7 @@ pub(crate) fn from_state(
         tenant: state.identity.tenant.to_string(),
     };
     let agent_boundary = rss_mdm_agent_channel::boundary::Envelope {
+        profile: rss_mdm_install_support::StorageProfile::Mdm,
         admission,
         host: host.clone(),
         clock: monotonic.clone(),

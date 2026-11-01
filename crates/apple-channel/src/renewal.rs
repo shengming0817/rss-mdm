@@ -82,6 +82,7 @@ async fn prepare(
     candidate: Candidate,
 ) -> Result<(), Error> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.into(),
         "apple_renewal",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -491,6 +492,7 @@ pub async fn activate(
     udid: &str,
 ) -> Result<(), Error> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         app.identity.tenant().to_string(),
         "apple_renewal",
         rss_mdm_audit_integration::AuditIntent::Management,

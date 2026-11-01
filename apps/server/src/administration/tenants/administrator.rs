@@ -136,7 +136,7 @@ impl Service {
         );
         audit.target(tenant);
         audit.require_final_request();
-        let target_audit = RequestAudit::new(
+        let target_audit = RequestAudit::new(rss_mdm_audit_integration::StorageProfile::Mdm,
             tenant.into(),
             "tenant_administrator_create",
             rss_mdm_audit_integration::AuditIntent::Management,

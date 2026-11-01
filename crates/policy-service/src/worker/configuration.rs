@@ -63,6 +63,7 @@ impl PolicyWork {
             None
         };
         let audit = RequestAudit::new(
+            self.profile(),
             self.service.tenant.to_string(),
             "configuration_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,

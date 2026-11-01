@@ -21,6 +21,9 @@ impl Service {
         audit: &RequestAudit,
     ) -> std::result::Result<NativeEnrollmentReceipt, Error> {
         let profile = self.profile();
+        if profile != rss_mdm_install_support::StorageProfile::Mdm {
+            return Err(Error::Unsupported);
+        }
 
         crate::enrollment::tasks::transaction::run(
             &self.transactions.audit_store,
@@ -143,6 +146,9 @@ impl AgentPolicyAuthority for Service {
     > {
         Box::pin(async move {
             use crate::Error as E;
+            if self.profile() != rss_mdm_install_support::StorageProfile::Mdm {
+                return Err(E::Unsupported);
+            }
             if self.transactions.tenant.to_string() != d.tenant {
                 return Err(E::Forbidden);
             }
