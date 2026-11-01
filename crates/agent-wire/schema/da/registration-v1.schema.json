@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Committed credential mapping after proof of possession.",
+  "properties": {
+    "credential": {
+      "description": "Exact current credential identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "device": {
+      "description": "Registration-owner allocated endpoint identity.",
+      "type": "string"
+    },
+    "generation": {
+      "description": "Positive registration generation, checked against the current mapping.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "issuanceId": {
+      "description": "Original persisted certificate signing attempt.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Stable caller operation identity; changed input under the same ID conflicts.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "registration": {
+      "description": "Registration identity; renewed credentials retain the same generation.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "serviceId": {
+      "description": "Stable installation instance, independent of its network location.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "tenant": {
+      "description": "Tenant owning this identity and signing authority.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "serviceId",
+    "tenant",
+    "device",
+    "registration",
+    "generation",
+    "credential",
+    "issuanceId",
+    "operationId"
+  ],
+  "title": "Registration",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/Registration"
+}

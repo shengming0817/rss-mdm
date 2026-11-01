@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-device-access-http": "crates/device-access-http",
     "rss-mdm-install-support": "crates/install-support",
     "rss-mdm-script-service": "crates/script-service",
     "rss-mdm-scope-postgres": "crates/scope-postgres",
@@ -203,7 +204,7 @@ def verify_backend_support(data):
                 continue
             owner = packages[node['id']]
             # The independent DA host fixture exercises the real admission contract.
-            if owner == 'rss-mdm-agent-channel':
+            if owner in {'rss-mdm-agent-channel','rss-mdm-device-access-http'}:
                 require(dependency.get('dep_kinds') and all(kind.get('kind') == 'dev' for kind in dependency['dep_kinds']),
                         'Agent foundation may consume backend support only in tests')
             else:
@@ -225,7 +226,7 @@ def verify_audit_integration(data):
     require(len(ids) == 1, 'exactly one product audit integration package is required')
     identity = ids[0]
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
-    require(parents == {'rss-mdm-group-service', 'rss-mdm-compliance-service', 'rss-mdm-script-service','rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',   'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
+    require(parents == {'rss-mdm-group-service', 'rss-mdm-compliance-service', 'rss-mdm-script-service','rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',   'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
     require(set(nodes[identity]['features']) <= {'default'}, 'audit integration exposes an unsupported feature')
     pending, visited = [identity], set()
     while pending:
@@ -272,7 +273,7 @@ def verify_agent_wire(data):
 def verify_capability_boundaries(data):
     """Cargo owns package identities and target/optional/build dependency declarations."""
     packages = {p['name']: p for p in data['packages'] if p['id'] in data['workspace_members']}
-    ingress = {'rss-mdm-' + p for p in ('management-http', 'agent-channel', 'windows-channel', 'apple-channel')}
+    ingress = {'rss-mdm-' + p for p in ('management-http', 'device-access-http', 'agent-channel', 'windows-channel', 'apple-channel')}
     forbidden = {
         'certificate': {'sqlx', 'axum', 'reqwest', 'rss-runtime'},
         'apple-mdm': {'sqlx', 'axum', 'reqwest', 'tokio', 'tokio-rustls'},

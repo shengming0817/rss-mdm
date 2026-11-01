@@ -79,7 +79,7 @@ async fn state(h: &Harness, id: Uuid) -> Result<(String, String, Option<Uuid>)> 
 // The issuance fixture already contains a verified real certificate. Seed its
 // retained PKI mapping so retirement must enqueue physical revocation, not an empty set.
 async fn certificate(h: &Harness) -> Result<()> {
-    let (leaf, metadata): (Vec<u8>, Value) = sqlx::query_as("SELECT decode(i.certificate_chain->>0,'base64'),i.metadata FROM mdm_access.agent_issuances i JOIN mdm_access.credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) WHERE k.tenant_id=$1::uuid AND k.registration=$2")
+    let (leaf, metadata): (Vec<u8>, Value) = sqlx::query_as("SELECT decode(i.certificate_chain->>0,'base64'),i.metadata FROM mdm_access.certificate_issuances i JOIN mdm_access.credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) WHERE k.tenant_id=$1::uuid AND k.registration=$2")
         .bind(h.c.tenant.to_string()).bind(h.p.registration()).fetch_one(&h.c.operator).await?;
     let issuer: Vec<u8> = serde_json::from_value(metadata["issuer"].clone())?;
     let serial: Vec<u8> = serde_json::from_value(metadata["serial"].clone())?;

@@ -92,6 +92,7 @@ pub(crate) fn prepare(
                     Purpose::Apple => ChannelName::Apple,
                     Purpose::Agent => ChannelName::Agent,
                     Purpose::AgentBootstrap => ChannelName::AgentBootstrap,
+                    Purpose::DaDevice => return Err(Error::Forbidden),
                 };
                 channels.set(
                     name,

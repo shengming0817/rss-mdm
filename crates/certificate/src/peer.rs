@@ -65,6 +65,18 @@ pub struct ClientCertificateEvidence {
     chain: Arc<[CertificateDer<'static>]>,
 }
 impl ClientCertificateEvidence {
+    /// Extract possession only from a completed rustls server handshake using its configured verifier.
+    pub fn from_tls(
+        stream: &tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    ) -> Result<Option<Self>, Error> {
+        let connection = stream.get_ref().1;
+        if connection.is_handshaking() {
+            return Err(Error::Unauthorized);
+        }
+        Ok(connection.peer_certificates().map(|chain| Self {
+            chain: Arc::from(chain.to_vec()),
+        }))
+    }
     /// Borrow the attested certificate for the exact channel's current trust verifier.
     pub fn chain(&self) -> &[CertificateDer<'static>] {
         &self.chain

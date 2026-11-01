@@ -215,7 +215,7 @@ async fn issue_message(
             certificate_subject: &subject,
             management_url: &w.management_url(Purpose::WindowsDeclared),
             renewal_discovery_url: &w.renewal_discovery_url(Purpose::WindowsDeclared),
-            provider_id: &w.provider(Purpose::WindowsDeclared),
+            provider_id: &w.provider(Purpose::WindowsDeclared)?,
             username: &intent.registration.to_string(),
             client_password: Secret(&secrets.client_password),
             server_password: Secret(&secrets.server_password),

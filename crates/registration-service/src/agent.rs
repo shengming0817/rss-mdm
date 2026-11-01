@@ -5,21 +5,22 @@ pub mod bootstrap;
 pub mod configurations;
 pub mod connections;
 pub mod current_user;
+pub mod da;
 mod grants;
 pub(crate) mod issuance;
 pub mod native;
 pub mod queries;
 pub mod settings;
 mod trust;
-use crate::agent_pki::{AgentIssuer, Clock};
+use crate::certificate_issuance::{Clock, DeviceIssuer};
 use crate::{Error, Store, database::db};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use issuance::{now, row_platform};
 use rss_mdm_agent_wire::{enroll as wire, runtime};
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
-use rss_mdm_certificate::agent::VerifiedAgentCsr;
-use rss_mdm_device_trust::agent::AgentTrust;
+use rss_mdm_certificate::device_identity::VerifiedDeviceCsr;
+use rss_mdm_device_trust::device_identity::DeviceIdentityTrust;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row, postgres::PgRow};
@@ -100,9 +101,9 @@ pub struct Service {
     pub(crate) store: Arc<Store>,
     audit: Arc<AuditStore>,
     pub(crate) access_audit: Arc<AuditStore>,
-    issuer: Arc<AgentIssuer>,
+    issuer: Arc<DeviceIssuer>,
     clock: Arc<dyn Clock>,
-    binding: Arc<dyn RuntimeBinding>,
+    binding: Option<Arc<dyn RuntimeBinding>>,
     native: Option<Arc<dyn NativeAdmission>>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     installations: Option<Arc<dyn configurations::InstallationAdmission>>,
@@ -114,7 +115,7 @@ pub struct Assembly {
     pub store: Arc<Store>,
     pub audit: Arc<AuditStore>,
     pub access_audit: Arc<AuditStore>,
-    pub issuer: Arc<AgentIssuer>,
+    pub issuer: Arc<DeviceIssuer>,
     pub clock: Arc<dyn Clock>,
     pub binding: Arc<dyn RuntimeBinding>,
     pub native: Option<Arc<dyn NativeAdmission>>,
@@ -131,7 +132,8 @@ impl Service {
         self.store.profile()
     }
     pub fn new(a: Assembly) -> Result<Self, Error> {
-        if a.binding.storage_profile() != a.store.profile()
+        if a.issuer.purpose() != rss_mdm_agent_wire::pki::Purpose::Agent
+            || a.binding.storage_profile() != a.store.profile()
             || a.issuer.profile() != a.store.profile()
         {
             return Err(Error::Configuration);
@@ -144,7 +146,7 @@ impl Service {
             access_audit: a.access_audit,
             issuer: a.issuer,
             clock: a.clock,
-            binding: a.binding,
+            binding: Some(a.binding),
             native: a.native,
             protection: a.protection,
             installations: a.installations,
@@ -159,7 +161,7 @@ impl Service {
             .map(|t| t.service_id)
             .map_err(|_| Error::Configuration)
     }
-    pub fn trust(&self) -> &Arc<AgentTrust> {
+    pub fn trust(&self) -> &Arc<DeviceIdentityTrust> {
         self.issuer.trust()
     }
     pub fn now(&self) -> Result<i64, Error> {
@@ -200,6 +202,7 @@ impl Service {
         f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, Change<R>> + Send,
     ) -> Result<R, Error> {
         let profile = self.profile();
+        let installation = self.service_id()?;
 
         if a.profile() != profile || a.tenant() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -222,6 +225,11 @@ impl Service {
                                 Box::pin(async move {
                                     let before = ctx.3.take().ok_or(Error::Corrupt)?;
                                     before(&mut ctx.1, c).await?;
+                                    if crate::device::installation_in(profile, c).await?
+                                        != installation
+                                    {
+                                        return Err(Error::Forbidden);
+                                    }
                                     crate::admission::lock_in(profile, c, &ctx.0).await?;
                                     let f = ctx.2.take().ok_or(Error::Corrupt)?;
                                     f(&mut ctx.1, c).await
@@ -233,7 +241,7 @@ impl Service {
                             let op = snapshot.operation_id.ok_or(Error::Malformed)?;
                             let fact = Fact::business(
                                 a,
-                                &format!("agent-enroll:{}:{op}", snapshot.action),
+                                &format!("certificate-registration:{}:{op}", snapshot.action),
                                 200,
                                 "success",
                                 None,
@@ -259,6 +267,13 @@ impl Service {
         crate::operations::settle(out, a)
     }
     async fn grant_live(&self, c: &mut PgConnection, row: &PgRow) -> Result<(), Error> {
+        if row
+            .try_get::<String, _>("certificate_purpose")
+            .map_err(db)?
+            != rss_mdm_pki_service::registry::purpose(self.issuer.purpose())
+        {
+            return Err(Error::Forbidden);
+        }
         let profile = self.profile();
 
         if row.try_get::<String, _>("state").map_err(db)? == "revoked" {
@@ -301,7 +316,7 @@ fn hex(value: impl AsRef<[u8]>) -> String {
 }
 fn secret_digest(tenant: &str, id: Uuid, secret: &runtime::Secret) -> String {
     let mut h = Sha256::new();
-    h.update(b"rss-mdm-agent-bootstrap/v1\0");
+    h.update(b"rss-device-certificate-grant/v1\0");
     h.update(tenant.as_bytes());
     h.update(id.as_bytes());
     h.update(secret.expose().as_bytes());
@@ -327,12 +342,13 @@ fn version(v: u8, operation: Uuid) -> Result<(), Error> {
         Ok(())
     }
 }
-fn csr(encoded: &str) -> Result<VerifiedAgentCsr, Error> {
+fn csr(encoded: &str) -> Result<VerifiedDeviceCsr, Error> {
     if encoded.len() > 43692 {
         return Err(Error::Malformed);
     }
     let der = STANDARD.decode(encoded).map_err(|_| Error::Malformed)?;
-    VerifiedAgentCsr::verify(&der).map_err(|_| Error::Malformed)
+    VerifiedDeviceCsr::verify(&der, rss_mdm_agent_wire::pki::Purpose::Agent)
+        .map_err(|_| Error::Malformed)
 }
 async fn grant_row(
     profile: rss_mdm_install_support::StorageProfile,
@@ -393,4 +409,51 @@ async fn authorize_on(
         .await?
         .require(p, permission, None)
         .map_err(|_| Error::Forbidden)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "receipt", rename_all = "snake_case")]
+pub(crate) enum ActivationResult {
+    Agent(wire::ActivationReceipt),
+    Da(rss_mdm_agent_wire::da::Registration),
+}
+impl ActivationResult {
+    pub(crate) fn agent(self) -> Result<wire::ActivationReceipt, Error> {
+        match self {
+            Self::Agent(v) => Ok(v),
+            _ => Err(Error::Forbidden),
+        }
+    }
+    pub(crate) fn da(self) -> Result<rss_mdm_agent_wire::da::Registration, Error> {
+        match self {
+            Self::Da(v) => Ok(v),
+            _ => Err(Error::Forbidden),
+        }
+    }
+}
+
+impl Service {
+    pub(super) fn consumer_use(&self) -> crate::device::ConsumerUse {
+        match self.registration_kind() {
+            crate::device::RegistrationKind::DaDevice => {
+                crate::device::ConsumerUse::DaConfiguration
+            }
+            _ => crate::device::ConsumerUse::AgentTask,
+        }
+    }
+    pub(super) fn registration_kind(&self) -> crate::device::RegistrationKind {
+        match self.issuer.purpose() {
+            rss_mdm_agent_wire::pki::Purpose::DaDevice => crate::device::RegistrationKind::DaDevice,
+            _ => crate::device::RegistrationKind::Agent,
+        }
+    }
+    pub(super) fn registration_channel(&self) -> Option<&'static str> {
+        self.registration_kind().channel().map(|c| c.as_str())
+    }
+    pub(super) fn registration_purpose(&self) -> crate::device::Purpose {
+        match self.registration_kind() {
+            crate::device::RegistrationKind::DaDevice => crate::device::Purpose::DaDevice,
+            _ => crate::device::Purpose::Primary,
+        }
+    }
 }

@@ -1,7 +1,6 @@
 use super::*;
 use crate::device::{self, DevicePrincipal};
 use rss_mdm_certificate::ClientCertificateEvidence;
-use rss_mdm_inventory::Channel;
 impl Service {
     pub async fn activate(
         &self,
@@ -9,6 +8,20 @@ impl Service {
         input: &wire::ActivationRequest,
         a: &RequestAudit,
     ) -> Result<wire::ActivationReceipt, Failure> {
+        if self.issuer.purpose() != rss_mdm_agent_wire::pki::Purpose::Agent {
+            return Err(Error::Forbidden.into());
+        }
+        self.activate_certificate(peer, input, a)
+            .await?
+            .agent()
+            .map_err(Into::into)
+    }
+    pub(super) async fn activate_certificate(
+        &self,
+        peer: &ClientCertificateEvidence,
+        input: &wire::ActivationRequest,
+        a: &RequestAudit,
+    ) -> Result<ActivationResult, Failure> {
         let profile = self.profile();
 
         version(input.wire_version, input.operation_id)?;
@@ -20,7 +33,7 @@ impl Service {
         let request_digest = digest(input)?;
         a.operation(
             input.operation_id,
-            "agent_certificate_activate",
+            "device_certificate_activate",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         self.write(
@@ -62,8 +75,14 @@ impl Service {
                     }
                     let device: String = g.try_get("device").map_err(db)?;
                     a.target(&device);
-                    device::store::lock_channel(profile, c, &tenant, &device, Channel::Agent)
-                        .await?;
+                    device::store::lock_registration(
+                        profile,
+                        c,
+                        &tenant,
+                        &device,
+                        service.registration_kind(),
+                    )
+                    .await?;
                     if let Some(result) = row
                         .try_get::<Option<serde_json::Value>, _>("activation_result")
                         .map_err(db)?
@@ -74,9 +93,9 @@ impl Service {
                         {
                             return Err(Error::Conflict);
                         }
-                        let out: wire::ActivationReceipt =
+                        let out: ActivationResult =
                             serde_json::from_value(result).map_err(|_| Error::Corrupt)?;
-                        let p = device::authenticate_agent_in(profile, c, service.tenant, proof)
+                        let p = device::authenticate_endpoint_in(profile, c, service.tenant, proof)
                             .await?;
                         a.registration(p.registration());
                         return Ok(Change {
@@ -86,9 +105,10 @@ impl Service {
                     }
                     crate::lifecycle::require_work_in(profile, c, &tenant, &device).await?;
                     service.grant_live(c, &g).await?;
-                    if g.try_get::<Option<Uuid>, _>("target_registration")
-                        .map_err(db)?
-                        .is_none()
+                    if service.issuer.purpose() == rss_mdm_agent_wire::pki::Purpose::Agent
+                        && g.try_get::<Option<Uuid>, _>("target_registration")
+                            .map_err(db)?
+                            .is_none()
                     {
                         crate::admission::require_new_in(
                             profile,
@@ -98,7 +118,7 @@ impl Service {
                         )
                         .await?;
                     }
-                    let runtime_profile: wire::RuntimeProfile =
+                    let runtime_profile: Option<wire::RuntimeProfile> =
                         serde_json::from_value(row.try_get("profile").map_err(db)?)
                             .map_err(|_| Error::Corrupt)?;
                     let credential = Uuid::new_v4();
@@ -114,6 +134,7 @@ impl Service {
                         .bind(registration)
                         .bind(&device)
                         .bind(predecessor)
+                        .bind(service.registration_channel())
                         .fetch_optional(&mut *c)
                         .await
                         .map_err(db)?
@@ -131,7 +152,7 @@ impl Service {
                         .fetch_one(&mut *c)
                         .await
                         .map_err(db)?;
-                        let old_receipt: wire::ActivationReceipt =
+                        let old_receipt: ActivationResult =
                             serde_json::from_value(result).map_err(|_| Error::Corrupt)?;
                         let previous_profile: serde_json::Value = sqlx::query_scalar(
                             crate::storage_profile::sql(profile).agent_activation_activate_7,
@@ -141,14 +162,19 @@ impl Service {
                         .fetch_one(&mut *c)
                         .await
                         .map_err(db)?;
-                        let previous: wire::RuntimeProfile =
+                        let previous: Option<wire::RuntimeProfile> =
                             serde_json::from_value(previous_profile).map_err(|_| Error::Corrupt)?;
-                        if previous.platform != runtime_profile.platform
-                            || previous.architecture != runtime_profile.architecture
-                            || old_receipt.runtime.capabilities != runtime_profile.capabilities
-                        {
-                            return Err(Error::Conflict);
-                        }
+                        let runtime = match (&runtime_profile, &previous, old_receipt) {
+                            (Some(current), Some(previous), ActivationResult::Agent(old))
+                                if current.platform == previous.platform
+                                    && current.architecture == previous.architecture
+                                    && old.runtime.capabilities == current.capabilities =>
+                            {
+                                Some(old.runtime)
+                            }
+                            (None, None, ActivationResult::Da(_)) => None,
+                            _ => return Err(Error::Conflict),
+                        };
                         rss_mdm_pki_service::certificates::revoke_credential_in(
                             profile,
                             c,
@@ -169,7 +195,7 @@ impl Service {
                             registration,
                             old.try_get::<i64, _>("generation").map_err(db)?,
                             old.try_get::<Uuid, _>("epoch").map_err(db)?,
-                            old_receipt.runtime,
+                            runtime,
                         )
                     } else {
                         let registration = Uuid::new_v4();
@@ -179,6 +205,7 @@ impl Service {
                         )
                         .bind(&tenant)
                         .bind(&device)
+                        .bind(service.registration_channel())
                         .fetch_one(&mut *c)
                         .await
                         .map_err(db)?;
@@ -190,6 +217,7 @@ impl Service {
                         )
                         .bind(&tenant)
                         .bind(&device)
+                        .bind(service.registration_channel())
                         .fetch_one(&mut *c)
                         .await
                         .map_err(db)?;
@@ -210,6 +238,8 @@ impl Service {
                         .bind(grant)
                         .bind(epoch)
                         .bind(generation)
+                        .bind(service.registration_channel())
+                        .bind(service.registration_purpose().as_str())
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
@@ -220,16 +250,22 @@ impl Service {
                             &device,
                             registration,
                             generation,
-                            "agent",
+                            rss_mdm_pki_service::registry::purpose(service.issuer.purpose()),
                             "active",
                         )
                         .await?;
-                        for source in [
-                            "agent.builtin",
-                            "agent.script",
-                            "agent.osquery",
-                            "agent.native",
-                        ] {
+                        for source in
+                            if service.registration_kind() == device::RegistrationKind::Agent {
+                                &[
+                                    "agent.builtin",
+                                    "agent.script",
+                                    "agent.osquery",
+                                    "agent.native",
+                                ][..]
+                            } else {
+                                &[]
+                            }
+                        {
                             sqlx::query(
                                 crate::storage_profile::sql(profile).agent_activation_activate_11,
                             )
@@ -241,22 +277,33 @@ impl Service {
                             .await
                             .map_err(db)?;
                         }
-                        let runtime = service
-                            .binding
-                            .bind(
-                                c,
-                                Binding {
-                                    profile,
-                                    tenant: service.tenant,
-                                    device: device.clone(),
-                                    registration,
-                                    generation,
-                                    epoch,
-                                    operation: input.operation_id,
-                                },
-                                &runtime_profile,
+                        let runtime = if let (Some(binding), Some(runtime_profile)) =
+                            (&service.binding, &runtime_profile)
+                        {
+                            Some(
+                                binding
+                                    .bind(
+                                        c,
+                                        Binding {
+                                            profile,
+                                            tenant: service.tenant,
+                                            device: device.clone(),
+                                            registration,
+                                            generation,
+                                            epoch,
+                                            operation: input.operation_id,
+                                        },
+                                        runtime_profile,
+                                    )
+                                    .await?,
                             )
-                            .await?;
+                        } else if service.registration_kind() == device::RegistrationKind::DaDevice
+                            && runtime_profile.is_none()
+                        {
+                            None
+                        } else {
+                            return Err(Error::Forbidden);
+                        };
                         (registration, generation, epoch, runtime)
                     };
                     let _ = (generation, epoch);
@@ -266,6 +313,7 @@ impl Service {
                         .bind(credential)
                         .bind(registration)
                         .bind(&*fingerprint)
+                        .bind(service.registration_channel())
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
@@ -280,18 +328,30 @@ impl Service {
                         profile,
                         c,
                         &tenant,
-                        "agent",
+                        rss_mdm_pki_service::registry::purpose(service.issuer.purpose()),
                         registration,
                         &issuer,
                         &leaf,
                     )
                     .await
                     .map_err(|_| Error::Storage)?;
-                    let out = wire::ActivationReceipt {
-                        wire_version: wire::API_VERSION,
-                        issuance_id: input.issuance_id,
-                        operation_id: input.operation_id,
-                        runtime,
+                    let out = match runtime {
+                        Some(runtime) => ActivationResult::Agent(wire::ActivationReceipt {
+                            wire_version: wire::API_VERSION,
+                            issuance_id: input.issuance_id,
+                            operation_id: input.operation_id,
+                            runtime,
+                        }),
+                        None => ActivationResult::Da(rss_mdm_agent_wire::da::Registration {
+                            service_id: service.service_id()?,
+                            tenant: Uuid::parse_str(&tenant).map_err(|_| Error::Corrupt)?,
+                            device,
+                            registration,
+                            generation: u64::try_from(generation).map_err(|_| Error::Corrupt)?,
+                            credential,
+                            issuance_id: input.issuance_id,
+                            operation_id: input.operation_id,
+                        }),
                     };
                     sqlx::query(crate::storage_profile::sql(profile).agent_activation_activate_13)
                         .bind(&tenant)
@@ -338,7 +398,7 @@ impl Service {
             .trust()
             .verify_peer(peer, self.now()?)
             .map_err(|_| Error::Unauthorized)?;
-        let p = device::authenticate_agent_in(profile, &mut tx, self.tenant, &proof).await?;
+        let p = device::authenticate_endpoint_in(profile, &mut tx, self.tenant, &proof).await?;
         tx.commit().await.map_err(db)?;
         Ok(p)
     }

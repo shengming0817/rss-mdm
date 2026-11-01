@@ -15,6 +15,7 @@ pub fn purpose(value: Purpose) -> &'static str {
         Purpose::Windows => "windows",
         Purpose::Apple => "apple",
         Purpose::Agent => "agent",
+        Purpose::DaDevice => "da_device",
         Purpose::AgentBootstrap => "agent_bootstrap",
     }
 }
@@ -102,7 +103,10 @@ impl Registry {
     }
     pub(crate) fn binding(&self, purpose: Purpose) -> Result<&DeviceTrust, Error> {
         if self.profile() == rss_mdm_install_support::StorageProfile::Da
-            && !matches!(purpose, Purpose::Agent | Purpose::AgentBootstrap)
+            && !matches!(
+                purpose,
+                Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
+            )
         {
             return Err(Error::Configuration);
         }
@@ -135,7 +139,10 @@ impl Registry {
         if self.profile() == rss_mdm_install_support::StorageProfile::Da
             && self.bindings.iter().any(|b| {
                 b.public().map_or(true, |t| {
-                    !matches!(t.purpose, Purpose::Agent | Purpose::AgentBootstrap)
+                    !matches!(
+                        t.purpose,
+                        Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
+                    )
                 })
             })
         {
@@ -181,7 +188,7 @@ impl Registry {
                         || (configured.origin != stored.origin
                             && !matches!(
                                 configured.purpose,
-                                Purpose::Agent | Purpose::AgentBootstrap
+                                Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
                             ))
                         || configured.issuers.iter().any(|g| {
                             !stored.issuers.iter().chain(archived.iter()).any(|s| {
@@ -347,7 +354,10 @@ impl Registry {
         if self.profile() == rss_mdm_install_support::StorageProfile::Da
             && self.bindings.iter().any(|b| {
                 b.public().map_or(true, |t| {
-                    !matches!(t.purpose, Purpose::Agent | Purpose::AgentBootstrap)
+                    !matches!(
+                        t.purpose,
+                        Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
+                    )
                 })
             })
         {
@@ -408,7 +418,10 @@ impl Registry {
             || input.candidate.revision != old.revision + 1
             || input.candidate.service_id != old.service_id
             || (input.candidate.origin != old.origin
-                && !matches!(old.purpose, Purpose::Agent | Purpose::AgentBootstrap))
+                && !matches!(
+                    old.purpose,
+                    Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
+                ))
             || input.candidate.tenant != old.tenant
             || input.candidate.purpose != old.purpose
         {

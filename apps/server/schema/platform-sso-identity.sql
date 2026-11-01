@@ -15,7 +15,7 @@ GRANT SELECT,INSERT ON mdm_access.registration_operations TO mdm_identity_runtim
 GRANT INSERT ON mdm_access.device_access_bindings TO mdm_identity_runtime;
 GRANT UPDATE(instance,principal,generation,revision,state,account,document) ON mdm_access.device_access_bindings TO mdm_identity_runtime;
 GRANT USAGE ON SCHEMA mdm_agent TO mdm_identity_runtime;
-GRANT SELECT ON mdm_agent.bindings,mdm_access.agent_issuances TO mdm_identity_runtime;
+GRANT SELECT ON mdm_agent.bindings,mdm_access.certificate_issuances TO mdm_identity_runtime;
 GRANT SELECT,INSERT,DELETE ON mdm_access.device_access_ceremonies TO mdm_identity_runtime;
 GRANT UPDATE(consumed) ON mdm_access.device_access_ceremonies TO mdm_identity_runtime;
 COMMIT;

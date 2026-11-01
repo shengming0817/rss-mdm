@@ -381,6 +381,7 @@ async fn rewrap_native(
     .map_err(|_| Error::Corrupt)?;
     rewritten += rss_mdm_task_trust::trust::rewrap(
         rss_mdm_install_support::StorageProfile::Mdm,
+        rss_mdm_task_trust::Use::AgentTask,
         &mut *c,
         tenant,
         protector,

@@ -18,7 +18,7 @@ pub async fn native_contact_on(
     generation: i64,
 ) -> std::result::Result<NativeContact, crate::Error> {
     let (active, bindings, last) = sqlx::query_as::<_, (i64, i64, Option<i64>)>(
-        "SELECT count(*) FILTER(WHERE r.state='active'),count(*),floor(extract(epoch FROM max(coalesce(r.last_communication_received_at,r.first_authenticated_at,g.created_at))))::bigint FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.source='native' AND g.native_authority->>'registration'=$2 AND g.native_authority->>'generation'=$3 AND r.channel='agent' AND r.purpose='primary'",
+        "SELECT count(*) FILTER(WHERE r.state='active'),count(*),floor(extract(epoch FROM max(coalesce(r.last_communication_received_at,r.first_authenticated_at,g.created_at))))::bigint FROM mdm_access.certificate_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.certificate_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.source='native' AND g.native_authority->>'registration'=$2 AND g.native_authority->>'generation'=$3 AND r.channel='agent' AND r.purpose='primary'",
     ).bind(tenant).bind(registration.to_string()).bind(generation.to_string())
         .fetch_one(c).await.map_err(crate::database::db)?;
     Ok(NativeContact {
@@ -130,7 +130,7 @@ const INSTALLATIONS: &str = r#"
 WITH selected AS MATERIALIZED (
  SELECT i AS installation,
  (SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=i AND active) AS bootstrap,
- (SELECT jsonb_build_object('id',r.id,'device',r.device,'state',r.state) FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.source='native' AND g.native_authority->>'installation'=i::text ORDER BY r.id LIMIT 1) AS registration
+ (SELECT jsonb_build_object('id',r.id,'device',r.device,'state',r.state) FROM mdm_access.certificate_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.certificate_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.source='native' AND g.native_authority->>'installation'=i::text ORDER BY r.id LIMIT 1) AS registration
  FROM unnest($2::uuid[]) i
 ), budget AS (SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
 SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok

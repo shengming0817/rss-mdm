@@ -30,7 +30,7 @@ fn provision(
     provisioning::renewal(
         certificate,
         &thumbprint,
-        &app.windows()?.provider(purpose),
+        &app.windows()?.provider(purpose)?,
         enrollment(kind)?,
         &CodecLimits::default(),
     )
@@ -197,7 +197,7 @@ async fn issue_on(
         c,
         &tenant,
         p.device(),
-        p.channel(),
+        p.require_channel()?,
     )
     .await?;
     crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, p)
@@ -301,7 +301,7 @@ async fn prepare_on(
         tx,
         &tenant,
         p.device(),
-        p.channel(),
+        p.require_channel()?,
     )
     .await?;
     crate::device::store::revalidate_management(

@@ -525,7 +525,7 @@ pub(crate) async fn current(
         c,
         &p.tenant().to_string(),
         p.device(),
-        p.channel(),
+        p.require_channel()?,
     )
     .await?;
     crate::device::store::revalidate_source(

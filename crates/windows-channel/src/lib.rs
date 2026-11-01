@@ -160,12 +160,16 @@ impl Windows {
         }
         Ok(certificates)
     }
-    pub fn provider(&self, purpose: rss_mdm_registration_service::Purpose) -> String {
+    pub fn provider(
+        &self,
+        purpose: rss_mdm_registration_service::Purpose,
+    ) -> Result<String, Error> {
         match purpose {
-            rss_mdm_registration_service::Purpose::Primary => self.provider_id.clone(),
+            rss_mdm_registration_service::Purpose::Primary => Ok(self.provider_id.clone()),
             rss_mdm_registration_service::Purpose::WindowsDeclared => {
-                format!("{}-declared", self.provider_id)
+                Ok(format!("{}-declared", self.provider_id))
             }
+            rss_mdm_registration_service::Purpose::DaDevice => Err(Error::Forbidden),
         }
     }
     pub fn management_urls(&self, purpose: rss_mdm_registration_service::Purpose) -> Vec<String> {

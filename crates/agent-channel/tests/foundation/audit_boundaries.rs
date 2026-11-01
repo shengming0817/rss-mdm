@@ -86,7 +86,7 @@ pub async fn task_trust(
     let before = snapshot(c).await?;
     for audit in rejected_audits(c) {
         assert!(matches!(
-            service.agent_task_trust(p, &audit).await,
+            service.device_trust(p, &audit).await,
             Err(rss_mdm_task_trust::Error::Forbidden)
         ));
         assert!(matches!(
@@ -106,7 +106,7 @@ pub async fn task_trust(
         "task_trust",
         AuditIntent::Management,
     );
-    assert_eq!(service.agent_task_trust(p, &audit).await?, *trust);
+    assert_eq!(service.device_trust(p, &audit).await?, *trust);
     service.acknowledge_task_trust(p, &audit, &ack).await?;
     audit.finalize(None);
     let audit = RequestAudit::new(

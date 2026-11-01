@@ -54,6 +54,7 @@ impl Inputs {
             Box::pin(async move {
                 Ok(rss_mdm_task_trust::trust::check_revision(
                     rss_mdm_install_support::StorageProfile::Mdm,
+                    rss_mdm_task_trust::Use::AgentTask,
                     c,
                     tenant,
                     revision,

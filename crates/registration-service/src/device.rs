@@ -26,18 +26,21 @@ use rss_mdm_inventory::{Channel, ReportSource};
 pub enum Purpose {
     Primary,
     WindowsDeclared,
+    DaDevice,
 }
 impl Purpose {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Primary => "primary",
             Self::WindowsDeclared => "windows_declared",
+            Self::DaDevice => "da_device",
         }
     }
     pub(crate) fn parse(value: &str) -> Result<Self, Error> {
         match value {
             "primary" => Ok(Self::Primary),
             "windows_declared" => Ok(Self::WindowsDeclared),
+            "da_device" => Ok(Self::DaDevice),
             _ => Err(Error::Storage),
         }
     }
@@ -100,6 +103,75 @@ impl ChannelMount {
         })
     }
 }
+/// Registration identity is independent of Inventory transport channels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegistrationKind {
+    Agent,
+    NativeMdm,
+    DaDevice,
+}
+impl RegistrationKind {
+    pub fn channel(self) -> Option<Channel> {
+        match self {
+            Self::Agent => Some(Channel::Agent),
+            Self::NativeMdm => Some(Channel::Mdm),
+            Self::DaDevice => None,
+        }
+    }
+    pub(crate) fn from_channel(channel: Channel) -> Self {
+        match channel {
+            Channel::Agent => Self::Agent,
+            Channel::Mdm => Self::NativeMdm,
+        }
+    }
+    pub(crate) fn lock_name(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::NativeMdm => "mdm",
+            Self::DaDevice => "da_device",
+        }
+    }
+}
+/// Closed actual consumers, selected by services rather than HTTP request strings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsumerUse {
+    AgentTask,
+    DaConfiguration,
+}
+impl ConsumerUse {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentTask => "agent_task",
+            Self::DaConfiguration => "da_configuration",
+        }
+    }
+}
+/// Only current credentials and enabled sources define a use's consumers.
+pub async fn consumers_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    usage: ConsumerUse,
+) -> Result<Vec<(Uuid, i64)>, Error> {
+    consumers_for_device_in(profile, c, tenant, usage, None).await
+}
+/// Current consumers for one endpoint, using the same registration-owned eligibility rule.
+pub async fn consumers_for_device_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    usage: ConsumerUse,
+    device: Option<&str>,
+) -> Result<Vec<(Uuid, i64)>, Error> {
+    sqlx::query_as(crate::storage_profile::sql(profile).device_trust_consumers)
+        .bind(tenant.to_string())
+        .bind(usage.as_str())
+        .bind(device)
+        .fetch_all(c)
+        .await
+        .map_err(crate::database::db)
+}
+
 /// Immutable request-scoped identity resolved from the authoritative registration mapping.
 /// ```compile_fail
 /// let proof: rss_mdm_registration_service::DevicePrincipal = serde_json::from_str("{}").unwrap();
@@ -111,7 +183,8 @@ pub struct DevicePrincipal {
     device: String,
     registration: Uuid,
     generation: i64,
-    channel: Channel,
+    kind: RegistrationKind,
+    installation: Uuid,
     credential: Uuid,
     user_context: Option<Uuid>,
     purpose: Purpose,
@@ -143,8 +216,17 @@ impl DevicePrincipal {
     pub fn generation(&self) -> i64 {
         self.generation
     }
-    pub fn channel(&self) -> Channel {
-        self.channel
+    pub fn kind(&self) -> RegistrationKind {
+        self.kind
+    }
+    pub fn installation(&self) -> Uuid {
+        self.installation
+    }
+    pub fn channel(&self) -> Option<Channel> {
+        self.kind.channel()
+    }
+    pub fn require_channel(&self) -> Result<Channel, Error> {
+        self.channel().ok_or(Error::Forbidden)
     }
     /// Full enrollment permits only its enrolled-user scope; this is not an OS or organization identity.
     pub fn user_context(&self) -> Option<Uuid> {
@@ -347,30 +429,44 @@ impl DeviceService {
 }
 
 /// Resolve an Agent only from the certificate owner's sealed TLS verification result.
-pub async fn authenticate_agent_in(
+pub async fn authenticate_endpoint_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    peer: &rss_mdm_device_trust::agent::VerifiedAgentPeer,
+    peer: &rss_mdm_device_trust::device_identity::VerifiedDevicePeer,
 ) -> Result<DevicePrincipal, Error> {
     use crate::database::db;
     use rss_mdm_agent_wire::enroll::ErrorCode as C;
     use sqlx::Row;
+    let installation = installation_in(profile, c).await?;
+    if peer.metadata().service_id != installation
+        || peer.metadata().tenant.to_string() != tenant.to_string()
+    {
+        return Err(Error::Unauthorized);
+    }
+    let (kind, purpose) = match peer.metadata().purpose {
+        rss_mdm_agent_wire::pki::Purpose::Agent => (RegistrationKind::Agent, Purpose::Primary),
+        rss_mdm_agent_wire::pki::Purpose::DaDevice => {
+            (RegistrationKind::DaDevice, Purpose::DaDevice)
+        }
+        _ => return Err(Error::Unauthorized),
+    };
     let fingerprint: String = peer
         .metadata()
         .fingerprint
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let row = sqlx::query(crate::storage_profile::sql(profile).device_authenticate_agent_in_1)
+    let row = sqlx::query(crate::storage_profile::sql(profile).device_authenticate_endpoint_in_1)
         .bind(tenant.to_string())
         .bind(fingerprint)
+        .bind(purpose.as_str())
         .fetch_optional(&mut *c)
         .await
         .map_err(db)?
         .ok_or(Error::Unauthorized)?;
     let device: String = row.try_get("device").map_err(db)?;
-    store::lock_channel(profile, c, &tenant.to_string(), &device, Channel::Agent).await?;
+    store::lock_registration(profile, c, &tenant.to_string(), &device, kind).await?;
     let p = DevicePrincipal {
         profile,
         tenant,
@@ -379,8 +475,9 @@ pub async fn authenticate_agent_in(
         generation: row.try_get("generation").map_err(db)?,
         epoch: row.try_get("epoch").map_err(db)?,
         credential: row.try_get("credential").map_err(db)?,
-        channel: Channel::Agent,
-        purpose: Purpose::Primary,
+        kind,
+        installation,
+        purpose,
         parent: None,
         user_context: None,
     };
@@ -398,4 +495,36 @@ pub async fn authenticate_agent_in(
     }
     management::revalidate(profile, c, &p).await?;
     Ok(p)
+}
+
+/// Read the one admitted installation; never resolve an instance from client identifiers.
+pub async fn installation_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+) -> Result<Uuid, Error> {
+    sqlx::query_scalar(crate::storage_profile::sql(profile).device_installation_identity)
+        .fetch_one(c)
+        .await
+        .map_err(crate::database::db)
+}
+/// Current use is checked inside the caller's transaction and registration fence.
+pub async fn require_use_in(
+    c: &mut sqlx::PgConnection,
+    p: &DevicePrincipal,
+    usage: ConsumerUse,
+) -> Result<(), Error> {
+    if installation_in(p.profile(), c).await? != p.installation() {
+        return Err(Error::Forbidden);
+    }
+    match (usage, p.kind()) {
+        (ConsumerUse::AgentTask, RegistrationKind::Agent) => {
+            store::revalidate_source(p.profile(), c, p, ReportSource::AgentBuiltin)
+                .await
+                .map(|_| ())
+        }
+        (ConsumerUse::DaConfiguration, RegistrationKind::DaDevice) => {
+            management::revalidate(p.profile(), c, p).await
+        }
+        _ => Err(Error::Forbidden),
+    }
 }

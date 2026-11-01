@@ -10,7 +10,7 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use rss_mdm_agent_wire::{enroll as wire, runtime as w};
-use rss_mdm_registration_service::{agent, agent_pki};
+use rss_mdm_registration_service::{agent, certificate_issuance as agent_pki};
 use rss_mdm_software_service::deployment as owner;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -119,9 +119,9 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
         serde_json::to_value(replay?)?
     );
     assert_eq!(support::counts(&c).await?, (1, 1));
-    let bounded:bool=sqlx::query_scalar("SELECT g.expires_at<=to_timestamp(b.deadline) FROM mdm_access.agent_grants g JOIN mdm_access.agent_bootstraps b ON b.tenant_id=g.tenant_id AND b.id=(g.native_authority->>'bootstrap')::uuid WHERE g.tenant_id=$1::uuid AND g.source='native'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    let bounded:bool=sqlx::query_scalar("SELECT g.expires_at<=to_timestamp(b.deadline) FROM mdm_access.certificate_grants g JOIN mdm_access.agent_bootstraps b ON b.tenant_id=g.tenant_id AND b.id=(g.native_authority->>'bootstrap')::uuid WHERE g.tenant_id=$1::uuid AND g.source='native'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert!(bounded);
-    let source:Value=sqlx::query_scalar("SELECT native_authority FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='native'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    let source:Value=sqlx::query_scalar("SELECT native_authority FROM mdm_access.certificate_grants WHERE tenant_id=$1::uuid AND source='native'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(source["installation"], json!(installation));
     assert_eq!(source["registration"], json!(n.registration));
     assert_eq!(source["generation"], 1);

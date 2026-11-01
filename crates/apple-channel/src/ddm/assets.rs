@@ -14,7 +14,7 @@ pub async fn asset_binding(
         c,
         &p.tenant().to_string(),
         p.device(),
-        p.channel(),
+        p.require_channel()?,
     )
     .await?;
     crate::device::store::revalidate_source(

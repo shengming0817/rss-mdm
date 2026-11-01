@@ -1,5 +1,5 @@
 use super::*;
-use rss_mdm_device_trust::agent::IssuedAgentCertificate;
+use rss_mdm_device_trust::device_identity::IssuedDeviceCertificate;
 pub(crate) struct Signing {
     pub attempt: Uuid,
     pub issuer: [u8; 32],
@@ -9,6 +9,16 @@ pub(crate) struct Signing {
     pub deadline: i64,
     pub start: i64,
     pub end: i64,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CertificateInput {
+    pub wire_version: u8,
+    pub operation_id: Uuid,
+    pub grant_id: Uuid,
+    pub secret: runtime::Secret,
+    pub csr: String,
+    pub runtime: Option<wire::RuntimeProfile>,
 }
 enum Claim {
     New(Signing),
@@ -21,11 +31,45 @@ impl Service {
         input: &wire::CertificateRequest,
         a: &RequestAudit,
     ) -> Result<wire::Candidate, Failure> {
+        if self.issuer.purpose() != rss_mdm_agent_wire::pki::Purpose::Agent {
+            return Err(Error::Forbidden.into());
+        }
+        self.issue_request(
+            &CertificateInput {
+                wire_version: input.wire_version,
+                operation_id: input.operation_id,
+                grant_id: input.grant_id,
+                secret: input.secret.clone(),
+                csr: input.csr.clone(),
+                runtime: Some(input.runtime.clone()),
+            },
+            a,
+        )
+        .await
+    }
+    pub(super) async fn issue_request(
+        &self,
+        input: &CertificateInput,
+        a: &RequestAudit,
+    ) -> Result<wire::Candidate, Failure> {
         let profile = self.profile();
 
         version(input.wire_version, input.operation_id)?;
-        input.runtime.validate().map_err(|_| Error::Malformed)?;
-        let verified = csr(&input.csr)?;
+        match (&input.runtime, self.issuer.purpose()) {
+            (Some(runtime), rss_mdm_agent_wire::pki::Purpose::Agent) => {
+                runtime.validate().map_err(|_| Error::Malformed)?
+            }
+            (None, rss_mdm_agent_wire::pki::Purpose::DaDevice) => {}
+            _ => return Err(Error::Forbidden.into()),
+        }
+        if input.csr.len() > 43692 {
+            return Err(Error::Malformed.into());
+        }
+        let verified = VerifiedDeviceCsr::verify(
+            &STANDARD.decode(&input.csr).map_err(|_| Error::Malformed)?,
+            self.issuer.purpose(),
+        )
+        .map_err(|_| Error::Malformed)?;
         let request_digest = digest(input)?;
         let spki = hex(verified.spki());
         let csr = STANDARD.decode(&input.csr).map_err(|_| Error::Malformed)?;
@@ -33,7 +77,7 @@ impl Service {
         a.require_final_request();
         a.operation(
             input.operation_id,
-            "agent_certificate_authorize",
+            "device_certificate_authorize",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let claim = self
@@ -71,10 +115,11 @@ impl Service {
                         });
                     }
                     service.grant_live(c, &grant).await?;
-                    if grant
-                        .try_get::<Option<Uuid>, _>("target_registration")
-                        .map_err(db)?
-                        .is_none()
+                    if service.issuer.purpose() == rss_mdm_agent_wire::pki::Purpose::Agent
+                        && grant
+                            .try_get::<Option<Uuid>, _>("target_registration")
+                            .map_err(db)?
+                            .is_none()
                     {
                         crate::admission::require_new_in(
                             profile,
@@ -100,7 +145,10 @@ impl Service {
                     {
                         return Err(Error::Forbidden);
                     }
-                    if row_platform(&grant)? != input.runtime.platform
+                    if input
+                        .runtime
+                        .as_ref()
+                        .is_some_and(|r| row_platform(&grant).ok() != Some(r.platform))
                         || grant
                             .try_get::<Option<String>, _>("spki")
                             .map_err(db)?
@@ -115,7 +163,9 @@ impl Service {
                     a.target(&device);
                     let start = now(c).await?;
                     let end = service.issuer.end(start)?;
-                    let identity = rss_mdm_certificate::agent::identity(
+                    let identity = rss_mdm_certificate::device_identity::identity(
+                        service.issuer.purpose(),
+                        service.service_id()?,
                         Uuid::parse_str(&tenant).map_err(|_| Error::Configuration)?,
                         &device,
                     )
@@ -206,7 +256,7 @@ impl Service {
     }
     async fn record_unknown(
         &self,
-        input: &wire::CertificateRequest,
+        input: &CertificateInput,
         id: Uuid,
         a: &RequestAudit,
     ) -> Result<(), Error> {
@@ -214,7 +264,7 @@ impl Service {
 
         a.operation(
             input.operation_id,
-            "agent_certificate_unknown",
+            "device_certificate_unknown",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         self.write(a, (self, id), |ctx, c| {
@@ -241,7 +291,7 @@ impl Service {
         &self,
         grant: Uuid,
         id: Uuid,
-        certificate: &IssuedAgentCertificate,
+        certificate: &IssuedDeviceCertificate,
         operation: Uuid,
         a: &RequestAudit,
         principal: Option<&AuthorizedPrincipal>,
@@ -250,11 +300,11 @@ impl Service {
 
         a.operation(
             operation,
-            "agent_certificate_result",
+            "device_certificate_result",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let digest = if principal.is_some() {
-            digest(&("agent_issuance_recovery", id, &certificate.chain))?
+            digest(&("certificate_issuance_recovery", id, &certificate.chain))?
         } else {
             hex(certificate.csr_digest)
         };
@@ -361,7 +411,7 @@ impl Service {
                         profile,
                         c,
                         &tenant,
-                        "agent",
+                        rss_mdm_pki_service::registry::purpose(service.issuer.purpose()),
                         g.try_get::<Option<Uuid>, _>("target_registration")
                             .map_err(db)?,
                         &hex(certificate.metadata.issuer),
@@ -374,7 +424,7 @@ impl Service {
                             profile,
                             c,
                             &tenant,
-                            "agent",
+                            rss_mdm_pki_service::registry::purpose(service.issuer.purpose()),
                             &hex(certificate.metadata.issuer),
                             &rss_mdm_device_trust::serial(&certificate.metadata.serial),
                         )
@@ -465,8 +515,11 @@ impl Service {
         let grant = i.try_get::<Uuid, _>("grant_id").map_err(db)?;
         let g = grant_row(profile, &mut tx, &tenant, grant).await?;
         p.credentials(&g.try_get::<String, _>("device").map_err(db)?)?;
-        let verified = VerifiedAgentCsr::verify(&i.try_get::<Vec<u8>, _>("csr").map_err(db)?)
-            .map_err(|_| Error::Corrupt)?;
+        let verified = VerifiedDeviceCsr::verify(
+            &i.try_get::<Vec<u8>, _>("csr").map_err(db)?,
+            self.issuer.purpose(),
+        )
+        .map_err(|_| Error::Corrupt)?;
         if input.certificate_chain.is_empty() || input.certificate_chain.len() > 4 {
             return Err(Error::Malformed.into());
         }

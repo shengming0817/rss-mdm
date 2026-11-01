@@ -23,6 +23,7 @@ pub(crate) async fn signing(
     .await?;
     let signing = Arc::new(rss_mdm_task_trust::Signing::new(
         rss_mdm_install_support::StorageProfile::Mdm,
+        rss_mdm_task_trust::Use::AgentTask,
         tenant,
         loaded_signing,
     )?);

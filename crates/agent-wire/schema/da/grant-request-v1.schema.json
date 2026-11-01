@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Administrator-authorized CSR-bound registration or credential renewal grant.",
+  "properties": {
+    "csr": {
+      "description": "Canonical base64 DER RSA CSR with the dedicated DA device subject.",
+      "type": "string"
+    },
+    "expiresInSeconds": {
+      "description": "Requested grant lifetime, bounded from 60 seconds to seven days.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "operationId": {
+      "description": "Stable caller operation identity; changed input under the same ID conflicts.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "secret": {
+      "$ref": "#/$defs/Secret",
+      "description": "Canonical random bootstrap secret, never included in receipts or audit."
+    }
+  },
+  "required": [
+    "operationId",
+    "secret",
+    "csr",
+    "expiresInSeconds"
+  ],
+  "title": "GrantRequest",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/GrantRequest"
+}

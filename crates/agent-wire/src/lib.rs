@@ -39,3 +39,5 @@ pub mod osquery;
 
 /// Device-scoped management activities and incremental history.
 pub mod activities;
+
+pub mod da;

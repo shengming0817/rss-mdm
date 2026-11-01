@@ -60,7 +60,8 @@ pub(super) async fn read(
         device: row.try_get("device").map_err(db)?,
         registration,
         generation: row.try_get("generation").map_err(db)?,
-        channel: credential.channel,
+        kind: RegistrationKind::from_channel(credential.channel),
+        installation: installation_in(profile, c).await?,
         credential: row.try_get("credential").map_err(db)?,
         purpose: Purpose::parse(&row.try_get::<String, _>("purpose").map_err(db)?)?,
         epoch: row.try_get("epoch").map_err(db)?,
@@ -85,7 +86,7 @@ pub(super) async fn revalidate(
     }
 
     let tenant = p.tenant().to_string();
-    store::lock_channel(profile, c, &tenant, p.device(), p.channel()).await?;
+    store::lock_registration(profile, c, &tenant, p.device(), p.kind()).await?;
     validate(profile, c, p).await
 }
 
@@ -113,7 +114,10 @@ pub(super) async fn validate(
             return Err(Error::Unauthorized);
         }
     }
-    if p.channel() == Channel::Agent {
+    if matches!(
+        p.kind(),
+        RegistrationKind::Agent | RegistrationKind::DaDevice
+    ) {
         let row = sqlx::query(crate::storage_profile::sql(profile).device_management_validate_2)
             .bind(p.tenant().to_string())
             .bind(p.credential())

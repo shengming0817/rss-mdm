@@ -1,6 +1,6 @@
 //! Task Trust settles management and device acknowledgements with the existing Audit owner.
 use super::trust;
-use crate::{Error, Service};
+use crate::{Error, Service, Use};
 use rss_mdm_agent_wire::task_trust::{Acknowledgement, Trust};
 use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
@@ -35,7 +35,7 @@ fn failure(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
         rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
-fn settle<T>(
+pub(crate) fn settle<T>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<
         T,
         rss_mdm_audit_integration::TransactionError<Error>,
@@ -68,7 +68,7 @@ fn settle<T>(
     )
 }
 impl Service {
-    fn require_device(
+    pub(crate) fn require_device(
         &self,
         p: &rss_mdm_registration_service::DevicePrincipal,
         audit: &RequestAudit,
@@ -94,6 +94,7 @@ impl Service {
     ) -> Result<Trust, Error> {
         read_task_trust(
             self.signing.profile,
+            self.signing.usage,
             &self.audit,
             self.tenant,
             p,
@@ -110,6 +111,7 @@ impl Service {
     ) -> Result<Trust, Error> {
         read_task_trust(
             self.signing.profile,
+            self.signing.usage,
             &self.audit,
             self.tenant,
             p,
@@ -126,6 +128,7 @@ impl Service {
         change: &Change,
     ) -> Result<Trust, Error> {
         let profile = self.signing.profile;
+        let usage = self.signing.usage;
 
         if p.profile() != profile || p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -148,29 +151,30 @@ impl Service {
                 rss_mdm_authorization_service::lock_shared_on(profile,  c,p.tenant_id(),p.instance_id()).await?;
                 let rules=rss_mdm_authorization_service::snapshot_on(profile,  c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::RegistrationConfigurationWrite,None)?;
-                let replayed:bool=sqlx::query_scalar(crate::storage_profile::sql(profile).service_change_task_trust_1).bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
+                let replayed:bool=sqlx::query_scalar(crate::storage_profile::sql(profile, usage).service_change_task_trust_1).bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
                 let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
                 let value=match change {
-                    Change::Prepare{expected_revision}=>trust::prepare(profile, c,service.tenant,*operation,*expected_revision,&service.protection,&actor).await?,
-                    Change::Retire{expected_revision,key_id}=>trust::retire(profile, c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor,service.retirement.as_ref()).await?,
-                    Change::Activate{expected_revision,key_id}=>trust::activate(profile, c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor).await?,
+                    Change::Prepare{expected_revision}=>trust::prepare(profile, usage, c,service.tenant,*operation,*expected_revision,&service.protection,&actor).await?,
+                    Change::Retire{expected_revision,key_id}=>trust::retire(profile, usage, c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor,service.retirement.as_deref()).await?,
+                    Change::Activate{expected_revision,key_id}=>trust::activate(profile, usage, c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor).await?,
                 };
                 p.check_live()?;Ok::<_,Error>((value,replayed))
             })).await?;
 
-            let fact=Fact::business(audit, &format!("task-signing:{operation}"), 200, "success", None).map_err(|_|Error::Malformed)?;
+            let fact=Fact::business(audit, &format!("task-signing:{}:{operation}",usage.as_str()), 200, "success", None).map_err(|_|Error::Malformed)?;
             (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)
         })).await;
         settle(result, audit, true)
     }
-    pub async fn agent_task_trust(
+    pub async fn device_trust(
         &self,
         p: &rss_mdm_registration_service::device::DevicePrincipal,
         audit: &RequestAudit,
     ) -> Result<Trust, Error> {
         let profile = self.signing.profile;
+        let usage = self.signing.usage;
 
         self.require_device(p, audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
@@ -185,14 +189,9 @@ impl Service {
                         let mut context = (*service, *p);
                         tx.with_connection_context(&mut context, |(service, p), c| {
                             Box::pin(async move {
-                                rss_mdm_registration_service::device::store::revalidate_source(
-                                    profile,
-                                    c,
-                                    p,
-                                    rss_mdm_inventory::ReportSource::AgentBuiltin,
-                                )
-                                .await?;
-                                trust::current(profile, c, service.tenant).await
+                                rss_mdm_registration_service::device::require_use_in(c, p, usage)
+                                    .await?;
+                                trust::current(profile, usage, c, service.tenant).await
                             })
                         })
                         .await
@@ -209,6 +208,7 @@ impl Service {
         input: &Acknowledgement,
     ) -> Result<(), Error> {
         let profile = self.signing.profile;
+        let usage = self.signing.usage;
 
         self.require_device(p, audit)?;
         input.validate().map_err(|_| Error::Malformed)?;
@@ -231,15 +231,12 @@ impl Service {
                         let replayed = tx
                             .with_connection_context(&mut context, |(p, input), c| {
                                 Box::pin(async move {
-                                    rss_mdm_registration_service::device::store::revalidate_source(
-                                        profile,
-                                        c,
-                                        p,
-                                        rss_mdm_inventory::ReportSource::AgentBuiltin,
+                                    rss_mdm_registration_service::device::require_use_in(
+                                        c, p, usage,
                                     )
                                     .await?;
                                     let replayed: bool = sqlx::query_scalar(
-                                        crate::storage_profile::sql(profile)
+                                        crate::storage_profile::sql(profile, usage)
                                             .service_acknowledge_task_trust_1,
                                     )
                                     .bind(p.tenant().to_string())
@@ -247,7 +244,7 @@ impl Service {
                                     .fetch_one(&mut *c)
                                     .await
                                     .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-                                    trust::acknowledge(profile, c, p, input).await?;
+                                    trust::acknowledge(profile, usage, c, p, input).await?;
                                     Ok::<_, Error>(replayed)
                                 })
                             })
@@ -255,7 +252,7 @@ impl Service {
 
                         let fact = Fact::business(
                             audit,
-                            &format!("task-signing-ack:{}", input.operation),
+                            &format!("task-signing-ack:{}:{}", usage.as_str(), input.operation),
                             200,
                             "success",
                             None,
@@ -289,6 +286,7 @@ impl Service {
         input: &rss_mdm_agent_wire::task_trust::Observation,
     ) -> Result<(), Error> {
         let profile = self.signing.profile;
+        let usage = self.signing.usage;
 
         self.require_device(p, audit)?;
         input.validate().map_err(|_| Error::Malformed)?;
@@ -314,15 +312,13 @@ impl Service {
                         let replayed = tx
                             .with_connection_context(&mut context, |(p, input), c| {
                                 Box::pin(async move {
-                                    rss_mdm_registration_service::device::store::revalidate_source(
-                                        profile,
-                                        c,
-                                        p,
-                                        rss_mdm_inventory::ReportSource::AgentBuiltin,
+                                    rss_mdm_registration_service::device::require_use_in(
+                                        c, p, usage,
                                     )
                                     .await?;
                                     super::observations::record_in(
                                         profile,
+                                        usage,
                                         c,
                                         &p.tenant().to_string(),
                                         input,
@@ -360,6 +356,7 @@ impl Service {
         device: &str,
     ) -> Result<Option<rss_mdm_agent_wire::task_trust::ObservedInstallation>, Error> {
         let profile = self.signing.profile;
+        let usage = self.signing.usage;
 
         if p.profile() != profile || p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -381,6 +378,7 @@ impl Service {
                                 Box::pin(async move {
                                     super::observations::latest_in(
                                         profile,
+                                        usage,
                                         c,
                                         &service.tenant.to_string(),
                                         device,
@@ -401,6 +399,7 @@ impl Service {
 
 pub async fn read_task_trust(
     profile: rss_mdm_install_support::StorageProfile,
+    usage: Use,
     store: &rss_mdm_audit_integration::AuditStore,
     tenant: rss_request_context::TenantId,
     p: &AuthorizedPrincipal,
@@ -426,9 +425,9 @@ pub async fn read_task_trust(
                         .with_connection(move |c| {
                             Box::pin(async move {
                                 if let Some(id) = operation {
-                                    trust::operation(profile, c, tenant, id).await
+                                    trust::operation(profile, usage, c, tenant, id).await
                                 } else {
-                                    trust::current(profile, c, tenant).await
+                                    trust::current(profile, usage, c, tenant).await
                                 }
                             })
                         })

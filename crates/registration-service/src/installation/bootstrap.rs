@@ -318,7 +318,7 @@ impl Transactions {
             let parent = installation.id;
             let deadline = installation.deadline;
             let cleanup=tx.with_connection(move|c|Box::pin(async move {Ok(async {
-                let activated:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.native_authority->>'installation'=$2::text)").bind(tenant.to_string()).bind(parent).fetch_one(&mut *c).await.map_err(|_|crate::Error::Storage)?;
+                let activated:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.certificate_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.certificate_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.native_authority->>'installation'=$2::text)").bind(tenant.to_string()).bind(parent).fetch_one(&mut *c).await.map_err(|_|crate::Error::Storage)?;
                 Ok::<_,crate::Error>(activated || deadline<=now || reader.delivery_ended_on(c,tenant,parent).await?)
             }.await)})).await??;
             if !cleanup {

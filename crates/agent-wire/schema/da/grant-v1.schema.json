@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Durable grant receipt; possession of its secret is still required to issue.",
+  "properties": {
+    "device": {
+      "description": "Registration-owner allocated endpoint identity.",
+      "type": "string"
+    },
+    "expiresAt": {
+      "description": "Exclusive validity limit in Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "grantId": {
+      "description": "Identifier of the original persisted authorization.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Stable caller operation identity; changed input under the same ID conflicts.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "grantId",
+    "operationId",
+    "device",
+    "expiresAt"
+  ],
+  "title": "Grant",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/Grant"
+}

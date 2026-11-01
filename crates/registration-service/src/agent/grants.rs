@@ -26,7 +26,7 @@ impl Service {
                     .await
                     .map_err(db)?;
                 if let Some(id) = sqlx::query_scalar::<_, Uuid>(
-                    crate::storage_profile::sql(profile).agent_grants_request_1,
+                    crate::storage_profile::sql(profile).certificate_grants_request_1,
                 )
                 .bind(&tenant)
                 .bind(input.operation_id)
@@ -57,17 +57,18 @@ impl Service {
                     .execute(&mut *c)
                     .await
                     .map_err(db)?;
-                let pending: i64 =
-                    sqlx::query_scalar(crate::storage_profile::sql(profile).agent_grants_request_2)
-                        .bind(&tenant)
-                        .fetch_one(&mut *c)
-                        .await
-                        .map_err(db)?;
+                let pending: i64 = sqlx::query_scalar(
+                    crate::storage_profile::sql(profile).certificate_grants_request_2,
+                )
+                .bind(&tenant)
+                .fetch_one(&mut *c)
+                .await
+                .map_err(db)?;
                 if pending >= 1000 {
                     return Err(Error::Capacity);
                 }
                 let id = Uuid::new_v4();
-                sqlx::query(crate::storage_profile::sql(profile).agent_grants_request_3)
+                sqlx::query(crate::storage_profile::sql(profile).certificate_grants_request_3)
                     .bind(&tenant)
                     .bind(id)
                     .bind(input.operation_id)
@@ -186,7 +187,8 @@ impl Service {
                     if let Some(device) = device {
                         crate::lifecycle::authorize_reenrollment_in(profile, c, p, device).await?;
                         let retired: bool = sqlx::query_scalar(
-                            crate::storage_profile::sql(profile).agent_grants_authorize_target_1,
+                            crate::storage_profile::sql(profile)
+                                .certificate_grants_authorize_target_1,
                         )
                         .bind(&tenant)
                         .bind(*device)
@@ -197,7 +199,8 @@ impl Service {
                             return Err(Error::Conflict);
                         }
                         sqlx::query(
-                            crate::storage_profile::sql(profile).agent_grants_authorize_target_2,
+                            crate::storage_profile::sql(profile)
+                                .certificate_grants_authorize_target_2,
                         )
                         .bind(&tenant)
                         .bind(*id)
@@ -208,7 +211,7 @@ impl Service {
                     }
                     p.check_live()?;
                     sqlx::query(
-                        crate::storage_profile::sql(profile).agent_grants_authorize_target_3,
+                        crate::storage_profile::sql(profile).certificate_grants_authorize_target_3,
                     )
                     .bind(&tenant)
                     .bind(*id)
@@ -287,19 +290,20 @@ impl Service {
                     return Err(Error::Forbidden);
                 }
                 owned(p, &row)?;
-                sqlx::query(crate::storage_profile::sql(profile).agent_grants_revoke_2)
+                sqlx::query(crate::storage_profile::sql(profile).certificate_grants_revoke_2)
                     .bind(&tenant)
                     .bind(*id)
                     .execute(&mut *c)
                     .await
                     .map_err(db)?;
-                let attempts: Vec<Uuid> =
-                    sqlx::query_scalar(crate::storage_profile::sql(profile).agent_grants_revoke_1)
-                        .bind(&tenant)
-                        .bind(*id)
-                        .fetch_all(&mut *c)
-                        .await
-                        .map_err(db)?;
+                let attempts: Vec<Uuid> = sqlx::query_scalar(
+                    crate::storage_profile::sql(profile).certificate_grants_revoke_1,
+                )
+                .bind(&tenant)
+                .bind(*id)
+                .fetch_all(&mut *c)
+                .await
+                .map_err(db)?;
                 for attempt in attempts {
                     rss_mdm_pki_service::certificates::revoke_attempt_in(
                         profile, c, &tenant, attempt,
@@ -352,13 +356,14 @@ impl Service {
         version(input.wire_version, input.operation_id)?;
         let tenant = self.tenant.to_string();
         let mut tx = self.store.begin(&tenant).await?;
-        let row = sqlx::query(crate::storage_profile::sql(profile).agent_grants_renewal_status_1)
-            .bind(&tenant)
-            .bind(input.operation_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(Error::Unauthorized)?;
+        let row =
+            sqlx::query(crate::storage_profile::sql(profile).certificate_grants_renewal_status_1)
+                .bind(&tenant)
+                .bind(input.operation_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?
+                .ok_or(Error::Unauthorized)?;
         check_secret(&tenant, &row, &input.secret)?;
         let out = receipt(&row)?;
         tx.commit().await.map_err(db)?;
@@ -389,14 +394,15 @@ impl Service {
                 Box::pin(async move {
                     let (service, p, registration, input, a, bound, digest) = ctx;
                     let tenant = service.tenant.to_string();
-                    let row =
-                        sqlx::query(crate::storage_profile::sql(profile).agent_grants_recovery_1)
-                            .bind(&tenant)
-                            .bind(*registration)
-                            .fetch_optional(&mut *c)
-                            .await
-                            .map_err(db)?
-                            .ok_or(Error::Forbidden)?;
+                    let row = sqlx::query(
+                        crate::storage_profile::sql(profile).certificate_grants_recovery_1,
+                    )
+                    .bind(&tenant)
+                    .bind(*registration)
+                    .fetch_optional(&mut *c)
+                    .await
+                    .map_err(db)?
+                    .ok_or(Error::Forbidden)?;
                     let device: String = row.try_get("device").map_err(db)?;
                     p.credentials(&device)?;
                     if row.try_get::<String, _>("state").map_err(db)? != "active" {
@@ -404,7 +410,7 @@ impl Service {
                     }
                     a.target(&device);
                     if let Some(id) = sqlx::query_scalar::<_, Uuid>(
-                        crate::storage_profile::sql(profile).agent_grants_recovery_2,
+                        crate::storage_profile::sql(profile).certificate_grants_recovery_2,
                     )
                     .bind(&tenant)
                     .bind(input.operation_id)
@@ -426,7 +432,7 @@ impl Service {
                         .await?
                         .grant_seconds;
                     let id = Uuid::new_v4();
-                    sqlx::query(crate::storage_profile::sql(profile).agent_grants_recovery_3)
+                    sqlx::query(crate::storage_profile::sql(profile).certificate_grants_recovery_3)
                         .bind(&tenant)
                         .bind(id)
                         .bind(input.operation_id)
@@ -478,7 +484,7 @@ async fn progress(
     tenant: &str,
     row: &PgRow,
 ) -> Result<wire::Progress, Error> {
-    let issuance = sqlx::query(crate::storage_profile::sql(profile).agent_grants_progress_1)
+    let issuance = sqlx::query(crate::storage_profile::sql(profile).certificate_grants_progress_1)
         .bind(tenant)
         .bind(row.try_get::<Uuid, _>("id").map_err(db)?)
         .fetch_optional(c)
@@ -490,7 +496,11 @@ async fn progress(
             i.try_get::<String, _>("state").map_err(db)? != "issued",
             i.try_get::<Option<serde_json::Value>, _>("activation_result")
                 .map_err(db)?
-                .map(serde_json::from_value)
+                .map(|v| {
+                    serde_json::from_value::<ActivationResult>(v)
+                        .map_err(|_| Error::Corrupt)?
+                        .agent()
+                })
                 .transpose()
                 .map_err(|_| Error::Corrupt)?,
         ),
@@ -536,17 +546,18 @@ impl Service {
                     rss_mdm_inventory::ReportSource::AgentBuiltin,
                 )
                 .await?;
-                let row = sqlx::query(crate::storage_profile::sql(profile).agent_grants_renew_1)
-                    .bind(&tenant)
-                    .bind(p.registration())
-                    .fetch_one(&mut *c)
-                    .await
-                    .map_err(db)?;
+                let row =
+                    sqlx::query(crate::storage_profile::sql(profile).certificate_grants_renew_1)
+                        .bind(&tenant)
+                        .bind(p.registration())
+                        .fetch_one(&mut *c)
+                        .await
+                        .map_err(db)?;
                 if row.try_get::<String, _>("platform").map_err(db)? != platform(input.platform) {
                     return Err(Error::Forbidden);
                 }
                 if let Some(id) = sqlx::query_scalar::<_, Uuid>(
-                    crate::storage_profile::sql(profile).agent_grants_renew_2,
+                    crate::storage_profile::sql(profile).certificate_grants_renew_2,
                 )
                 .bind(&tenant)
                 .bind(input.operation_id)
@@ -568,7 +579,7 @@ impl Service {
                     .await?
                     .grant_seconds;
                 let id = Uuid::new_v4();
-                sqlx::query(crate::storage_profile::sql(profile).agent_grants_renew_3)
+                sqlx::query(crate::storage_profile::sql(profile).certificate_grants_renew_3)
                     .bind(&tenant)
                     .bind(id)
                     .bind(input.operation_id)

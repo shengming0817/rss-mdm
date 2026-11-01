@@ -1,6 +1,6 @@
 //! Task signing authority, independently configured from artifact storage.
 use crate::{ConfigIssue, Error};
-use crate::{Signing, trust};
+use crate::{Signing, Use, trust};
 use base64::Engine;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use rss_mdm_agent_wire::runtime::{SignedTask, TaskPayload};
@@ -72,6 +72,20 @@ impl Signer {
                 .encode(self.key.sign(&bytes).as_ref()),
         })
     }
+    pub fn sign_configuration(
+        &self,
+        configuration: rss_mdm_agent_wire::da::Configuration,
+    ) -> Result<rss_mdm_agent_wire::da::SignedConfiguration, Error> {
+        let bytes = configuration
+            .signing_bytes(&self.key_id)
+            .map_err(|_| Error::Malformed)?;
+        Ok(rss_mdm_agent_wire::da::SignedConfiguration {
+            configuration,
+            key_id: self.key_id.clone(),
+            signature: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(self.key.sign(&bytes).as_ref()),
+        })
+    }
     pub fn sign(&self, payload: TaskPayload) -> Result<SignedTask, Error> {
         let bytes = payload
             .signing_bytes(&self.key_id)
@@ -93,8 +107,9 @@ impl Signing {
         p: &rss_mdm_registration_service::device::DevicePrincipal,
         configuration: rss_mdm_agent_wire::runtime::TelemetryConfiguration,
     ) -> Result<rss_mdm_agent_wire::runtime::SignedTelemetryConfiguration, Error> {
-        if p.tenant() != self.tenant
-            || p.channel() != rss_mdm_inventory::Channel::Agent
+        if self.usage != Use::AgentTask
+            || p.tenant() != self.tenant
+            || p.channel() != Some(rss_mdm_inventory::Channel::Agent)
             || p.purpose() != rss_mdm_registration_service::device::Purpose::Primary
             || configuration.tenant_id.to_string() != p.tenant().to_string()
             || configuration.device_id != p.device()
@@ -105,8 +120,22 @@ impl Signing {
         }
         let signer = self.signer.as_ref().ok_or(Error::Unsupported)?;
         self.revalidate(c, p).await?;
-        trust::require_issue(self.profile, c, p, signer.key_id()).await?;
-        signer.sign_telemetry(configuration)
+        trust::require_issue(self.profile, self.usage, c, p, signer.key_id()).await?;
+        let until = configuration
+            .expires_at
+            .checked_add(i64::from(configuration.backfill_seconds))
+            .ok_or(Error::Malformed)?;
+        let signed = signer.sign_telemetry(configuration)?;
+        trust::retain_until(
+            self.profile,
+            self.usage,
+            c,
+            self.tenant,
+            signer.key_id(),
+            until,
+        )
+        .await?;
+        Ok(signed)
     }
 }
 
@@ -120,7 +149,8 @@ impl Signing {
     ) -> Result<(), Error> {
         use rss_mdm_agent_wire::task_trust::KeyState;
         let configuration = &signed.configuration;
-        if p.tenant() != self.tenant
+        if self.usage != Use::AgentTask
+            || p.tenant() != self.tenant
             || configuration.tenant_id.to_string() != p.tenant().to_string()
             || configuration.device_id != p.device()
             || configuration.registration_id != p.registration()
@@ -129,7 +159,7 @@ impl Signing {
             return Err(Error::Forbidden);
         }
         self.revalidate(c, p).await?;
-        let trust = trust::current(self.profile, c, self.tenant).await?;
+        let trust = trust::current(self.profile, self.usage, c, self.tenant).await?;
         let key = trust
             .keys
             .iter()

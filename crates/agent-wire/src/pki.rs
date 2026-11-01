@@ -9,7 +9,7 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/pki/manifest.json");
 /// SHA-256 of the ordered schema file bytes named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "4cdfbaa90da88f79d70ed5dcedce67839e686374f975372e0ec2de0287d1f7d8";
+    "87de582dd80a3f04231af58453b9772764a65d8ec9d88d788559585ecfb133d7";
 
 const MAX_REVISION: u64 = i64::MAX as u64;
 const MAX_ISSUERS: usize = 16;
@@ -27,6 +27,9 @@ pub enum Purpose {
     Agent,
     /// Short-lived native installation bootstrap, excluded from runtime identity.
     AgentBootstrap,
+    /// Independent Device Access device identity.
+    /// Independent Device Access endpoint identity; never an Agent or MDM credential.
+    DaDevice,
 }
 /// Approved issuer lifecycle. Retired issuers are excluded from distributed trust.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

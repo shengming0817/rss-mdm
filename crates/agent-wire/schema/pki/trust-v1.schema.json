@@ -94,6 +94,11 @@
           "const": "agent_bootstrap",
           "description": "Short-lived native installation bootstrap, excluded from runtime identity.",
           "type": "string"
+        },
+        {
+          "const": "da_device",
+          "description": "Independent Device Access device identity.\nIndependent Device Access endpoint identity; never an Agent or MDM credential.",
+          "type": "string"
         }
       ]
     }

@@ -510,7 +510,7 @@ async fn task_trust(
         let p =
             authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
         app.task_trust
-            .agent_task_trust(&p, &audit)
+            .device_trust(&p, &audit)
             .await
             .map(Json)
             .map_err(task_error)

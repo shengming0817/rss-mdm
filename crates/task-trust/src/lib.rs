@@ -1,10 +1,12 @@
 //! Task signing, durable trust and installation evidence owned independently of execution.
+pub mod configuration;
 mod error;
 pub mod observations;
 pub mod service;
 mod signing;
 pub mod trust;
 pub use error::Error;
+pub use rss_mdm_registration_service::device::ConsumerUse as Use;
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
@@ -32,7 +34,8 @@ use sqlx::PgConnection;
 use std::sync::Arc;
 
 pub const ACCESS_CONTRACT: &str =
-    crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm).access_contract;
+    crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm, Use::AgentTask)
+        .access_contract;
 
 /// The caller supplies the original transaction; implementations never settle it.
 pub trait RetirementGuard: Send + Sync {
@@ -48,6 +51,7 @@ pub trait RetirementGuard: Send + Sync {
 pub struct Signing {
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
+    usage: Use,
     signer: Option<signing::Signer>,
 }
 impl Signing {
@@ -56,18 +60,20 @@ impl Signing {
     }
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
+        usage: Use,
         tenant: TenantId,
         loaded: Option<trust::Loaded>,
     ) -> Result<Self, Error> {
         if loaded
             .as_ref()
-            .is_some_and(|v| v.tenant != tenant || v.profile != profile)
+            .is_some_and(|v| v.tenant != tenant || v.profile != profile || v.usage != usage)
         {
             return Err(Error::Forbidden);
         }
         Ok(Self {
             profile,
             tenant,
+            usage,
             signer: loaded.map(|v| v.task),
         })
     }
@@ -75,20 +81,10 @@ impl Signing {
         self.signer.as_ref().map(|s| s.key_id())
     }
     async fn revalidate(&self, c: &mut PgConnection, p: &DevicePrincipal) -> Result<(), Error> {
-        if p.profile() != self.profile
-            || p.tenant() != self.tenant
-            || p.channel() != rss_mdm_inventory::Channel::Agent
-            || p.purpose() != rss_mdm_registration_service::Purpose::Primary
-        {
+        if p.profile() != self.profile || p.tenant() != self.tenant {
             return Err(Error::Forbidden);
         }
-        rss_mdm_registration_service::device::store::revalidate_source(
-            self.profile,
-            c,
-            p,
-            rss_mdm_inventory::ReportSource::AgentBuiltin,
-        )
-        .await?;
+        rss_mdm_registration_service::device::require_use_in(c, p, self.usage).await?;
         Ok(())
     }
     pub async fn sign_task_on(
@@ -97,6 +93,9 @@ impl Signing {
         p: &DevicePrincipal,
         payload: TaskPayload,
     ) -> Result<SignedTask, Error> {
+        if self.usage != Use::AgentTask {
+            return Err(Error::Forbidden);
+        }
         let (tenant, device, registration, generation) = match &payload {
             TaskPayload::DeviceAccess(v) => (
                 v.tenant_id,
@@ -150,7 +149,7 @@ impl Signing {
         }
         self.revalidate(c, p).await?;
         let signer = self.signer.as_ref().ok_or(Error::Unsupported)?;
-        trust::require_issue(self.profile, c, p, signer.key_id()).await?;
+        trust::require_issue(self.profile, self.usage, c, p, signer.key_id()).await?;
         signer.sign(payload)
     }
 }
@@ -160,7 +159,7 @@ pub struct Service {
     signing: Arc<Signing>,
     protection: Arc<rss_mdm_native_protection::Protector>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
-    retirement: Arc<dyn RetirementGuard>,
+    retirement: Option<Arc<dyn RetirementGuard>>,
 }
 impl Service {
     pub fn new(
@@ -170,7 +169,7 @@ impl Service {
         audit: Arc<rss_mdm_audit_integration::AuditStore>,
         retirement: Arc<dyn RetirementGuard>,
     ) -> Result<Self, Error> {
-        if signing.tenant != tenant {
+        if signing.tenant != tenant || signing.usage != Use::AgentTask {
             return Err(Error::Forbidden);
         }
         Ok(Self {
@@ -178,7 +177,31 @@ impl Service {
             signing,
             protection,
             audit,
-            retirement,
+            retirement: Some(retirement),
+        })
+    }
+}
+
+impl Service {
+    /// Configuration signatures retain their own durable verification horizon; no Agent runtime is assembled.
+    pub fn for_configurations(
+        tenant: TenantId,
+        signing: Arc<Signing>,
+        protection: Arc<rss_mdm_native_protection::Protector>,
+        audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    ) -> Result<Self, Error> {
+        if signing.tenant != tenant
+            || signing.usage != Use::DaConfiguration
+            || signing.profile != rss_mdm_install_support::StorageProfile::Da
+        {
+            return Err(Error::Forbidden);
+        }
+        Ok(Self {
+            tenant,
+            signing,
+            protection,
+            audit,
+            retirement: None,
         })
     }
 }
@@ -187,9 +210,9 @@ mod storage_profile;
 
 /// Shared owner objects, combined by the host for complete schema admission.
 pub const fn object_manifest(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
-    storage_profile::sql(profile).object_manifest
+    storage_profile::sql(profile, Use::AgentTask).object_manifest
 }
 /// Exact access-role contract for this installation.
 pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
-    storage_profile::sql(profile).access_contract
+    storage_profile::sql(profile, Use::AgentTask).access_contract
 }

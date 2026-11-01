@@ -173,7 +173,7 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 
 任务签名信任独立于设备 PKI 的证书信任版本，复用已认证 Agent mTLS 通道。`GET /api/v1/agent/runtime/task-trust` 返回稳定服务身份和租户绑定的完整 Ed25519 公钥集合；Agent 先验证版本单调性、既有 key ID 的公钥不变、唯一 active key，再持久保存并读回。只有完成这些步骤后，才向同一路径 POST 安装 ACK。ACK 固定原 operation、registration、generation、revision 和完整集合摘要；响应未知时重放同一 ACK，不能将收到响应正文等同于本地持久化成功。正式 DTO 与 schema 见 [任务信任](../../crates/agent-wire/src/task_trust.rs) 和 [manifest](../../crates/agent-wire/schema/task_trust/manifest.json)。
 
-租户管理通过 `GET/POST /api/v1/task-signing/trust` 读取、准备或激活密钥，写入使用 `Idempotency-Key`、`expectedRevision` 和近期真实管理员会话。准备新密钥只发布 prepared 公钥；所有当前 Agent 注册世代确认包含该键的准备版本后才能激活。任务发放再次核对当前 active key 和目标设备 ACK，覆盖分发期间新注册的设备。原键转为 verify_only，保留历史验证材料。新激活键由受控重启消费，旧进程不能继续用已退出 active 状态的键签发任务。准备阶段仍有效的旧签名权威可以重启加载。
+租户管理通过 `GET/POST /api/v1/task-signing/trust` 读取、准备或激活密钥，写入使用 `Idempotency-Key`、`expectedRevision` 和近期真实管理员会话。准备新密钥只发布 prepared 公钥；管理员可滚动激活，不等待全体设备在线。任务与 telemetry 配置发放仍逐设备核对当前 active key，以及包含该键 prepared/active 状态的精确 revision/digest 安装 ACK；未确认设备可以获取信任、ACK、续期和恢复，但不能领取新签名内容。原键转为 verify_only，保留历史验证材料。退役仍等待实际当前消费者确认 verify_only，并清空原任务引用及配置验证窗口；telemetry 至少保留到 expires_at + backfill_seconds。新激活键由受控重启消费，旧进程不能继续用已退出 active 状态的键签发任务。准备阶段仍有效的旧签名权威可以重启加载。
 
 `GET /api/v1/task-signing/operations/{id}` 查询原管理操作，后续轮换不会改写其结果。该服务端合同不代表 Agent 已实现持久安装；Agent 消费实现与真实设备资格由对应后续任务验收。
 

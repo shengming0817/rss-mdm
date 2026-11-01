@@ -1,7 +1,7 @@
 //! Channel-neutral registration identity, credential binding and retirement.
 pub mod admission;
 pub mod agent;
-pub mod agent_pki;
+pub mod certificate_issuance;
 mod database;
 pub mod device;
 pub mod device_access;
@@ -117,4 +117,18 @@ pub const fn enrollment_access_contract(
     profile: rss_mdm_install_support::StorageProfile,
 ) -> &'static str {
     storage_profile::sql(profile).enrollment_access_contract
+}
+
+/// Core identity objects installed independently of Agent/native execution participants.
+pub const fn identity_object_manifest(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).identity_object_manifest
+}
+
+/// Privileges of the core identity install without optional execution owners.
+pub const fn identity_access_contract(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).identity_access_contract
 }

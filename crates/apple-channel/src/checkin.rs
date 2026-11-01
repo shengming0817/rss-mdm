@@ -214,7 +214,7 @@ async fn checkin_on(
         tx,
         &tenant,
         principal.device(),
-        principal.channel(),
+        principal.require_channel()?,
     )
     .await?;
     // Recheck under the same registration lock used by revoke/replacement, before every mutation.

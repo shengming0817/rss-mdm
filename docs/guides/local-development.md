@@ -16,7 +16,7 @@ make ci-plan CI_BASE=origin/develop
 
 发现、执行日志、JUnit、资源动作和当前源码状态写入 `artifacts/local-t2`，CI 组合执行写入其自有 `t2` 子目录。显式模块零发现、漏跑、业务失败和清理失败均阻断；合法 affected 空选择记录 `skipped/no-modules-selected`。共享环境按数据库实际代际、schema 清单、角色输入和有效 TLS 材料核对后复用，专属库在 finally 中清理。
 
-当前 `all` 仅表示全部活跃登记的证明：当前授权、授权/Audit 原事务、敏感 HTTP 响应审计门、租户使用屏障、恢复 reservation/资产 epoch 幂等、宿主启停，以及 Task Trust 当前世代 ACK/CAS、真实签名绑定、原操作回放与待用签名退役屏障，以及 Agent 真实认证领取、Windows TLS 会话重启续传和逐字节重放、Apple CommandUUID/UserID 回执与 DDM 同步提交。协议测试不证明真实操作系统效果；Windows 测试直接使用 TLS listener，不覆盖生产网关部署。恢复例不验证 pg_dump/pg_restore、文件/密钥恢复或恢复后启用。完整安装、整包备份恢复、API key 轮换、网络策略、first-use、用户资料和 baseline 恢复尚未重建；其它领域和 T3 独立，不能由该集合宣称产品全覆盖。`script.delivery`、`inventory.collection`、`task.composition`、`task.locking`、`task.recovery` 与 `device.retirement` 分别验证 Script 的 Offer/Start 资格变化、持久 Unknown 与原 attempt 迟到回执、跨 owner 容量和自助回执，以及 Inventory 报告预留／封存与投影分离。`software.deployment` 验证关联端点跨渠道／别名防重、持久 Unknown 屏障和 rollout 同快照计数；`registration.installation` 验证真实 Bootstrap 证书绑定原安装及注册代次后的唯一 grant 准入与回放。纯模型沿用 owner T1；settings 聚合与纯 HTTP 错误适配没有独立持久动作，不新增重复 T2。
+当前 `all` 仅表示全部活跃登记的证明：当前授权、授权/Audit 原事务、敏感 HTTP 响应审计门、租户使用屏障、恢复 reservation/资产 epoch 幂等、宿主启停，以及 Task Trust 滚动激活、逐设备当前世代 ACK/CAS、真实签名绑定、原操作回放与待用签名退役屏障，以及 Agent 真实认证领取、Windows TLS 会话重启续传和逐字节重放、Apple CommandUUID/UserID 回执与 DDM 同步提交。协议测试不证明真实操作系统效果；Windows 测试直接使用 TLS listener，不覆盖生产网关部署。恢复例不验证 pg_dump/pg_restore、文件/密钥恢复或恢复后启用。完整安装、整包备份恢复、API key 轮换、网络策略、first-use、用户资料和 baseline 恢复尚未重建；其它领域和 T3 独立，不能由该集合宣称产品全覆盖。`script.delivery`、`inventory.collection`、`task.composition`、`task.locking`、`task.recovery` 与 `device.retirement` 分别验证 Script 的 Offer/Start 资格变化、持久 Unknown 与原 attempt 迟到回执、跨 owner 容量和自助回执，以及 Inventory 报告预留／封存与投影分离。`software.deployment` 验证关联端点跨渠道／别名防重、持久 Unknown 屏障和 rollout 同快照计数；`registration.installation` 验证真实 Bootstrap 证书绑定原安装及注册代次后的唯一 grant 准入与回放。纯模型沿用 owner T1；settings 聚合与纯 HTTP 错误适配没有独立持久动作，不新增重复 T2。
 
 构建需要 libxml2 开发头文件、pkg-config 和 libclang；Linux 使用 `libxml2-dev clang pkg-config`，macOS 使用 `brew install libxml2 pkg-config llvm`。WSTEP 证书签名验证使用 libxml2 的原始 DOM 规范化，运行镜像需提供 libxml2；[Dockerfile](../../deployment/Dockerfile) 持有镜像依赖。
 
@@ -219,3 +219,5 @@ ListParts 的 SHA-256 是可选的分片提示；缺省明确为未知，不能�
 动态分组、资产查询与合规任务共用元数据快照和分块数组校验。对象展开后的总大小不再受旧 64 MiB 快照限制；字段合法性、规则复杂度与响应大小约束保持有效。任务仅保留冻结对象的扫描进度和规则相关值，不复制数组载荷。
 
 扫描未完成时，外部对象游标和结果不前移；重启从已提交块恢复，终态与结果提交清理进度。规则证据使用 `inventory-manifest-v1` 来源清单摘要，绑定完整数组内容摘要及来源／lastKnown，摘要字符串不兼容旧完整 JSON 算法。查询和展示仍通过列表摘要及条目游标消费数组。
+
+`device_access.foundation` 在独立 `rss_da` 数据库安装共享 owners，通过真实 PostgreSQL、TLS listener 和本地 step-ca 协议签发边界验证 DA 注册、配置导出、逐设备 ACK、滚动激活及凭据更新；不装配 Agent/native runtime。这是服务端 T2 接缝证明，不替代终端客户端或完整 DA 产品 T3。

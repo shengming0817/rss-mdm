@@ -66,7 +66,10 @@ pub async fn authorize_in(
     provider: &StepCa,
     intent: Sign<'_>,
 ) -> Result<(), Error> {
-    if !matches!(purpose, "windows" | "agent") || issuer.len() != 64 || intent.attempt.is_nil() {
+    if !matches!(purpose, "windows" | "agent" | "da_device")
+        || issuer.len() != 64
+        || intent.attempt.is_nil()
+    {
         return Err(Error::Request);
     }
     require_active_in(profile, c, tenant, purpose, issuer).await?;
@@ -200,7 +203,9 @@ impl SigningStore {
         let profile = self.profile();
 
         let (purpose, issuer) = generation;
-        if !matches!(purpose, "windows" | "agent") || issuer.len() != 64 || intent.attempt.is_nil()
+        if !matches!(purpose, "windows" | "agent" | "da_device")
+            || issuer.len() != 64
+            || intent.attempt.is_nil()
         {
             return Err(Error::Request);
         }
