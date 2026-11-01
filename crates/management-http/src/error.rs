@@ -22,7 +22,7 @@ pub enum Error {
     #[error("request body too large")]
     RequestTooLarge,
     #[error(transparent)]
-    Group(#[from] rss_mdm_inventory_service::groups::GroupMissing),
+    Group(#[from] rss_mdm_group_service::GroupMissing),
     #[error("policy not found")]
     PolicyMissing,
     #[error(transparent)]

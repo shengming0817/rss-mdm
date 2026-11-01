@@ -229,6 +229,16 @@ impl ProcessError {
                 owner: "registration",
                 kind: e.into(),
             },
+            Error::Group(e) => Self::Owner {
+                stage,
+                owner: "group",
+                kind: e.into(),
+            },
+            Error::Compliance(e) => Self::Owner {
+                stage,
+                owner: "compliance",
+                kind: e.into(),
+            },
             Error::Inventory(e) => Self::Owner {
                 stage,
                 owner: "inventory",
@@ -312,6 +322,8 @@ pub enum OwnerDiagnostic {
     ExecutionDependency(rss_mdm_device_service::control::Failure),
     WindowsDeclaredEnrollmentNotReady,
     Inventory(rss_mdm_inventory_service::Failure),
+    Compliance(rss_mdm_compliance_service::Failure),
+    Group(rss_mdm_group_service::Failure),
     Resource(rss_mdm_resource_service::Failure),
     Policy(rss_mdm_policy_service::Failure),
     Software(rss_mdm_software_service::management::Failure),
@@ -413,7 +425,7 @@ impl From<rss_mdm_inventory_service::Error> for OwnerDiagnostic {
             E::Conflict => Self::Conflict,
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
-            E::Group(_) | E::NotFound => Self::Missing,
+            E::NotFound => Self::Missing,
             E::Unavailable(f) => Self::Inventory(f),
             E::Audit(e) => Self::Audit(e.class()),
         }
@@ -452,6 +464,40 @@ impl From<rss_mdm_content_service::service::Error> for OwnerDiagnostic {
             E::Invariant => Self::Corrupt,
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
+        }
+    }
+}
+
+impl From<rss_mdm_group_service::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_group_service::Error) -> Self {
+        use rss_mdm_group_service::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Group(_) | E::NotFound => Self::Missing,
+            E::Unavailable(f) => Self::Group(f),
+            E::Audit(e) => Self::Audit(e.class()),
+        }
+    }
+}
+
+impl From<rss_mdm_compliance_service::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_compliance_service::Error) -> Self {
+        use rss_mdm_compliance_service::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::NotFound => Self::Missing,
+            E::Unavailable(f) => Self::Compliance(f),
+            E::Audit(e) => Self::Audit(e.class()),
         }
     }
 }

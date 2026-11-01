@@ -23,6 +23,8 @@ impl From<Error> for Http {
             Error::Authorization(error) => error.into(),
             Error::Registration(error) => error.into(),
             Error::Inventory(error) => error.into(),
+            Error::Group(error) => error.into(),
+            Error::Compliance(error) => error.into(),
             Error::Software(error) => error.into(),
             Error::Content(error) => error.into(),
             Error::ContentRequest(error) => error.into(),

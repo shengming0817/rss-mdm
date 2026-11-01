@@ -82,7 +82,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "software-source-snapshots-v1",
             rss_mdm_software_service::source_snapshots::INSTALL_SQL,
         ),
-        ("compliance-v1", rss_mdm_compliance_postgres::MIGRATION_SQL),
+        (
+            "compliance-service-schema-v1",
+            rss_mdm_compliance_service::INSTALL_SQL,
+        ),
         (
             "authorization-service-schema-v1",
             rss_mdm_authorization_service::INSTALL_SQL,
@@ -90,6 +93,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "inventory-service-schema-v1",
             rss_mdm_inventory_service::INSTALL_SQL,
+        ),
+        (
+            "group-service-schema-v1",
+            rss_mdm_group_service::INSTALL_SQL,
         ),
         (
             "content-service-schema-v1",
@@ -199,6 +206,14 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "inventory-service-relations-v1",
             rss_mdm_inventory_service::RELATIONS_SQL,
+        ),
+        (
+            "group-service-relations-v1",
+            rss_mdm_group_service::RELATIONS_SQL,
+        ),
+        (
+            "compliance-service-relations-v1",
+            rss_mdm_compliance_service::RELATIONS_SQL,
         ),
         (
             "content-service-relations-v1",
@@ -348,10 +363,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "registration-agent-native-v1",
             rss_mdm_registration_service::AGENT_NATIVE_SQL,
         ),
-        (
-            "asset-group-selections-v1",
-            rss_mdm_inventory_service::GROUP_SELECTIONS_SQL,
-        ),
+        ("group-service-tasks-v1", rss_mdm_group_service::TASKS_SQL),
         (
             "inventory-tenant-seed-v1",
             rss_mdm_inventory_postgres::tenant_seed_sql(),

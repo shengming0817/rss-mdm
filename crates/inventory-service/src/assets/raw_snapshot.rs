@@ -31,6 +31,9 @@ pub async fn read_on(
     catalog: &Catalog,
     scope: &CollectionScope,
 ) -> Result<Vec<DeviceSummary>> {
+    if cut.tenant() != Uuid::from_bytes(tenant.octets()) || ids.len() > 1000 {
+        return Err(Error::Forbidden.into());
+    }
     let keys = catalog
         .fields()
         .filter(|f| fields::visible(f))
@@ -209,4 +212,28 @@ pub fn decode(
             })
         })
         .collect()
+}
+
+/// Scalar projection for callers already holding an authorized connection and fixed asset cut.
+pub async fn scalar_devices_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    cut: &AssetCut,
+    ids: &[String],
+    catalog: &Catalog,
+) -> Result<Vec<DeviceView>> {
+    let catalog = stored(Catalog::new(
+        catalog
+            .fields()
+            .filter(|f| !matches!(f.value_type, ValueType::Array { .. }))
+            .cloned()
+            .collect(),
+    ))?;
+    Ok(
+        read_on(c, tenant, cut, ids, &catalog, &CollectionScope::Device)
+            .await?
+            .into_iter()
+            .map(|view| view.scalars)
+            .collect(),
+    )
 }

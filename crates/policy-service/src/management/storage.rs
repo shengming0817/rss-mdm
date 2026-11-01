@@ -62,13 +62,6 @@ pub async fn enqueue_change_in(
         &crate::worker::Work::PolicyReconcile { policy: policy.id },
     )
     .await?;
-    // Software statistics also need this owner before any execution exists.
-    if old.is_some()
-        || policy.definition.action.kind() == rss_mdm_policy::ActionKind::Software
-        || policy.definition.action.assignment_behavior()
-            == rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery
-    {
-        changes.policy_changed_in(tx, policy.id).await?;
-    }
+    changes.policy_changed_in(tx, policy, old).await?;
     Ok(())
 }

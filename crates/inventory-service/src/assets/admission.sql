@@ -1,14 +1,14 @@
 WITH execution_roles AS (SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(session_user,oid,'SET')),
-reachable AS (SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))), tables AS (SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_assets' AND c.relkind='r' AND c.relname NOT IN('group_tasks','group_evaluations','group_evaluation_arrays','group_dispatch'))
+reachable AS (SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))), tables AS (SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_assets' AND c.relkind='r' AND c.relname NOT LIKE 'group_%')
 SELECT
  current_setting('transaction_isolation')='read committed'
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['asset_query_facets','asset_query_results','asset_query_runs','field_layouts','group_fields','group_operations','group_selections','operations','query_evaluation_arrays','query_evaluations','saved_queries'] FROM tables)
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['asset_query_facets','asset_query_results','asset_query_runs','field_layouts','operations','query_evaluation_arrays','query_evaluations','saved_queries'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN(SELECT relowner FROM tables))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE NOT relrowsecurity OR NOT relforcerowsecurity
  OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR NOT has_table_privilege(current_user,t.oid,'INSERT')
  OR has_table_privilege(current_user,t.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
- OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname IN('group_fields','query_evaluation_arrays','query_evaluations'))
+ OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname IN('query_evaluation_arrays','query_evaluations'))
  OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'

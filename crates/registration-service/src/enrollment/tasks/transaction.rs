@@ -105,23 +105,16 @@ pub fn settle<T>(
     audit: &RequestAudit,
     failure: Mutex<Option<Error>>,
 ) -> std::result::Result<T, Error> {
-    attempt.fold(
-        |v| {
-            audit.mark_committed();
-            Ok(v)
-        },
+    audit.observe_attempt(attempt).fold(
+        Ok,
         |_| Err(Error::Unavailable),
         |_| {
-            audit.mark_rolled_back();
             Err(failure
                 .into_inner()
                 .expect("request result")
                 .unwrap_or(Error::Unavailable))
         },
-        |_| {
-            audit.mark_rollback_failed();
-            Err(Error::RollbackFailed)
-        },
+        |_| Err(Error::RollbackFailed),
         |_| Err(Error::CommitUnknown),
         |_| Err(Error::Unavailable),
     )

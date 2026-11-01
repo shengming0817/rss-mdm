@@ -40,7 +40,7 @@ impl Transactions {
         };
         let tenant = tx.tenant_id().to_string();
         Ok(tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 AND input_revision>observed_revision) OR EXISTS(SELECT 1 FROM mdm_planning.configuration_operations o JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND(c.terminal_at IS NULL OR c.version<>o.observed_command_version)) OR EXISTS(SELECT 1 FROM mdm_planning.configuration_recovery WHERE tenant_id=$1::uuid AND device=$2 AND recovery_after IS NOT NULL)").bind(tenant).bind(device).fetch_one(c).await
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 AND input_revision>observed_revision) OR EXISTS(SELECT 1 FROM mdm_planning.configuration_operations o LEFT JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND(c.terminal_at IS NULL OR (c.command_id IS NULL OR c.version<>o.observed_command_version OR c.outbox_domain IS DISTINCT FROM $3 OR c.device_id IS DISTINCT FROM (SELECT a.command_device FROM mdm_access.command_authorities a WHERE a.tenant_id=o.tenant_id AND a.device=o.device)))) OR EXISTS(SELECT 1 FROM mdm_planning.configuration_recovery WHERE tenant_id=$1::uuid AND device=$2 AND recovery_after IS NOT NULL) OR EXISTS(SELECT FROM rss_device_command.commands c JOIN mdm_access.command_authorities a ON(a.tenant_id,a.command_device)=(c.tenant_id,c.device_id) LEFT JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id::text,o.device)=(c.tenant_id,c.command_id,a.device) WHERE c.tenant_id=$1::uuid AND a.device=$2 AND c.outbox_domain=$3 AND o.id IS NULL)").bind(tenant).bind(device).bind(messaging_domain().as_str().to_owned()).fetch_one(c).await
         })).await?)
     }
     pub(crate) async fn prepare_work_in(
@@ -125,20 +125,19 @@ impl Transactions {
             .map(dc::CommandId::parse)
             .transpose()
             .map_err(|_| Error::Unavailable(Failure::CommandInvariant))?;
-        let page = self
-            .store
-            .recover(
-                tx,
-                scope,
-                checked_input(dc::BatchLimit::new(64))?,
-                after.as_ref(),
-            )
-            .await?;
-        for command in &page.commands {
+        let candidates = command_candidates_in(tx, scope, device, after.as_ref()).await?;
+        let mut commands = Vec::with_capacity(candidates.operations.len());
+        for (id, _) in &candidates.operations {
+            let id = stored(dc::CommandId::parse(&id.to_string()))?;
+            commands.push(
+                self.store
+                    .recover_exact(tx, scope, &id)
+                    .await?
+                    .ok_or(Error::Unavailable(Failure::CommandInvariant))?,
+            );
+        }
+        for command in &commands {
             let id = stored(Uuid::parse_str(command.spec().id().as_str()))?;
-            if !storage::owns_in(tx, id).await? {
-                continue;
-            }
             let operation = storage::load(tx, &self.protection, id).await?;
             if !command.status().is_terminal() {
                 let now = storage::now(tx).await?;
@@ -161,14 +160,12 @@ impl Transactions {
                 }
             }
         }
-        // Observe transitions made by RSS recovery regardless of which owner's scan encountered them.
-        let name = device.to_owned();
-        let ids:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query_scalar("SELECT o.id FROM mdm_planning.configuration_operations o JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND c.version<>o.observed_command_version ORDER BY o.id LIMIT 64").bind(tenant.to_string()).bind(name).fetch_all(c).await
-        })).await?;
-        for id in ids {
+        for (id, previous_version) in candidates.operations {
             let operation = storage::load(tx, &self.protection, id).await?;
             let command = self.required_command(tx, &operation).await?;
+            if command.version() == previous_version {
+                continue;
+            }
             let context = audit.transaction_copy();
             context.identify_service("configuration-recovery");
             context.operation(
@@ -199,7 +196,7 @@ impl Transactions {
                 self.wake_devices_in(tx, &[device.into()]).await?;
             }
         }
-        let cursor = page.after.map(|v| v.as_str().to_owned());
+        let cursor = candidates.after;
         let name = device.to_owned();
         tx.with_connection(move|c|Box::pin(async move{
             sqlx::query("INSERT INTO mdm_planning.configuration_recovery(tenant_id,device,authority_epoch,recovery_after) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,device) DO UPDATE SET authority_epoch=excluded.authority_epoch,recovery_after=excluded.recovery_after").bind(tenant.to_string()).bind(name).bind(epoch).bind(cursor).execute(c).await?;Ok(())
@@ -372,4 +369,56 @@ pub(crate) fn activity(
         _ => ActivityDelivery::Unknown,
     });
     activity
+}
+
+struct CommandCandidates {
+    operations: Vec<(Uuid, i64)>,
+    after: Option<String>,
+}
+/// Both directions are bounded in the owner's command-ID order. Missing or mismatched
+/// relationships reject the original transaction; recovery never repairs orphan commands.
+async fn command_candidates_in(
+    tx: &mut PgTransaction<'_>,
+    scope: dc::Scope,
+    device: &str,
+    after: Option<&dc::CommandId>,
+) -> Result<CommandCandidates> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let after = after.map(|id| id.as_str().to_owned());
+    let command_device = scope.device().as_uuid();
+    let domain = messaging_domain().as_str().to_owned();
+    let mut rows: Vec<(String, Option<Uuid>, Option<i64>)> = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_as(r#"WITH candidates AS (
+          (SELECT o.id::text AS command_id, CASE WHEN c.device_id=$4 AND c.outbox_domain=$5 THEN o.id END AS operation, o.observed_command_version AS observed
+           FROM mdm_planning.configuration_operations o LEFT JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text)
+           WHERE o.tenant_id=$1::uuid AND o.device=$2 AND ($3::text IS NULL OR o.id::text COLLATE "C">$3 COLLATE "C")
+             AND (c.terminal_at IS NULL OR c.version<>o.observed_command_version OR c.device_id IS DISTINCT FROM $4 OR c.outbox_domain IS DISTINCT FROM $5)
+           ORDER BY o.id::text COLLATE "C" LIMIT 65)
+          UNION ALL
+          (SELECT c.command_id,NULL::uuid,NULL::bigint FROM rss_device_command.commands c
+           LEFT JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id::text,o.device)=(c.tenant_id,c.command_id,$2)
+           WHERE c.tenant_id=$1::uuid AND c.device_id=$4 AND c.outbox_domain=$5 AND o.id IS NULL
+             AND ($3::text IS NULL OR c.command_id COLLATE "C">$3 COLLATE "C")
+           ORDER BY c.command_id COLLATE "C" LIMIT 65)
+        ) SELECT command_id,operation,observed FROM candidates ORDER BY command_id COLLATE "C" LIMIT 65"#)
+        .bind(tenant).bind(device).bind(after).bind(command_device).bind(domain).fetch_all(c).await
+    })).await?;
+    let more = rows.len() > 64;
+    rows.truncate(64);
+    let after = if more {
+        rows.last().map(|r| r.0.clone())
+    } else {
+        None
+    };
+    let operations = rows
+        .into_iter()
+        .map(|(_, id, observed)| {
+            Ok((
+                id.ok_or(Error::Unavailable(Failure::CommandInvariant))?,
+                observed.ok_or(Error::Unavailable(Failure::CommandInvariant))?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(CommandCandidates { operations, after })
 }

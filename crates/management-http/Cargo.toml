@@ -6,6 +6,8 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-group-service.workspace = true
+rss-mdm-compliance-service.workspace = true
 rss-device-command.workspace = true
 rss-mdm-task-trust.workspace = true
 rss-mdm-policy-service.workspace = true

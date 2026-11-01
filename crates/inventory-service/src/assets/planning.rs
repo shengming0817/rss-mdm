@@ -8,16 +8,33 @@ pub struct AssetPage {
     pub devices: Vec<DeviceSummary>,
     pub next: Option<String>,
 }
+#[derive(Clone)]
 pub struct SnapshotReader {
-    pub tenant: TenantId,
+    pub(super) tenant: TenantId,
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
 }
 impl SnapshotReader {
+    pub fn bind(
+        runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        tenant: TenantId,
+    ) -> Self {
+        Self { runtime, tenant }
+    }
+    fn check_in(&self, tx: &PgTransaction<'_>, cut: &rss_mdm_inventory::AssetCut) -> Result<()> {
+        self.runtime.validate_transaction(tx)?;
+        if tx.tenant_id() != self.tenant || cut.tenant() != Uuid::from_bytes(self.tenant.octets()) {
+            return Err(Error::Forbidden.into());
+        }
+        Ok(())
+    }
+
     pub async fn live_devices_at_in(
         &self,
         tx: &mut PgTransaction<'_>,
         cut: &rss_mdm_inventory::AssetCut,
         devices: &[String],
     ) -> Result<BTreeSet<String>> {
+        self.check_in(tx, cut)?;
         if devices.len() > 1000 {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
@@ -38,7 +55,8 @@ impl SnapshotReader {
         limit: usize,
         scope: &ReadScope,
     ) -> Result<AssetPage> {
-        if cut.tenant().to_string() != self.tenant.to_string() || !(1..=1000).contains(&limit) {
+        self.check_in(tx, cut)?;
+        if !(1..=1000).contains(&limit) {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
         let tenant = self.tenant.to_string();
@@ -90,9 +108,8 @@ impl SnapshotReader {
         catalog: &rss_mdm_inventory::Catalog,
         collection_scope: &rss_mdm_inventory::CollectionScope,
     ) -> Result<Vec<DeviceSummary>> {
-        let reader = SnapshotReader {
-            tenant: self.tenant,
-        };
+        self.check_in(tx, cut)?;
+        let reader = self.clone();
         let ids = ids.to_vec();
         let catalog = catalog.clone();
         let collection_scope = collection_scope.clone();
@@ -106,17 +123,16 @@ impl SnapshotReader {
         .await?
     }
 
-    /// Authoritative endpoint sources borrowed by device views and identity reconciliation.
-    /// Sensitive fields are excluded before field resolution.
-    pub async fn scalar_devices_on(
+    /// Bounded scalar and array summaries borrowed from this runtime's original transaction.
+    pub async fn summary_devices_in(
         &self,
-        c: &mut sqlx::PgConnection,
-        cut: &rss_mdm_inventory::AssetCut,
+        tx: &mut PgTransaction<'_>,
+        cut: &AssetCut,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
-    ) -> Result<Vec<DeviceView>> {
-        self.scoped_scalar_devices_on(
-            c,
+    ) -> Result<Vec<DeviceSummary>> {
+        self.summary_devices_at_in(
+            tx,
             cut,
             ids,
             catalog,
@@ -124,68 +140,39 @@ impl SnapshotReader {
         )
         .await
     }
-
-    pub(super) async fn scoped_scalar_devices_on(
-        &self,
-        c: &mut sqlx::PgConnection,
-        cut: &rss_mdm_inventory::AssetCut,
-        ids: &[String],
-        catalog: &rss_mdm_inventory::Catalog,
-
-        collection_scope: &rss_mdm_inventory::CollectionScope,
-    ) -> Result<Vec<DeviceView>> {
-        let scalar_catalog = stored(rss_mdm_inventory::Catalog::new(
-            catalog
-                .fields()
-                .filter(|f| !matches!(f.value_type, rss_mdm_inventory::ValueType::Array { .. }))
-                .cloned()
-                .collect(),
-        ))?;
-        Ok(super::raw_snapshot::read_on(
-            c,
-            self.tenant,
-            cut,
-            ids,
-            &scalar_catalog,
-            collection_scope,
-        )
-        .await?
-        .into_iter()
-        .map(|v| v.scalars)
-        .collect())
-    }
 }
 
 /// Frozen rule input and caller authorization for one bounded asset page.
-pub struct ConditionRequest<'a, C = Criteria> {
+pub struct ConditionRequest<'a> {
     pub cut: &'a rss_mdm_inventory::AssetCut,
     pub devices: &'a [DeviceSummary],
     pub catalog: &'a rss_mdm_inventory::Catalog,
     pub authorization: &'a ReadScope,
-    pub condition: &'a InventoryCondition<C>,
-    pub rule: &'a rss_mdm_group_postgres::core::Rule,
+    pub selection: ConditionSelection<'a>,
+    pub rule: &'a rss_mdm_group::Rule,
     pub associated: Option<&'a [crate::objects::DeviceObject]>,
 }
 impl SnapshotReader {
     /// Supply isolated contexts; the Group core owns complete predicate evaluation.
-    pub async fn condition_inputs_in<C: serde::Serialize>(
+    pub async fn condition_inputs_in(
         &self,
         tx: &mut PgTransaction<'_>,
         progress: Option<evaluation::EvaluationProgress>,
-        request: ConditionRequest<'_, C>,
+        request: ConditionRequest<'_>,
     ) -> Result<evaluation::EvaluationStep> {
         let ConditionRequest {
             cut,
             devices,
             catalog,
             authorization,
-            condition,
+            selection,
             rule,
             associated,
         } = request;
-        use rss_mdm_group_postgres::core as g;
+        use rss_mdm_group as g;
         use rss_mdm_inventory::CollectionScope as S;
-        condition.validate()?;
+        self.check_in(tx, cut)?;
+        selection.validate()?;
         let ids: Vec<_> = devices.iter().map(|d| d.scalars.device.clone()).collect();
         if authorization
             .devices
@@ -198,13 +185,13 @@ impl SnapshotReader {
         let scopes = if rule.view().fields.is_empty() {
             vec![S::Device]
         } else {
-            match &condition.selector {
+            match selection.selector {
                 ScopeSelector::Device => vec![S::Device],
                 ScopeSelector::Exact { scope } => vec![scope.as_ref().clone()],
                 ScopeSelector::LocalUser { .. } | ScopeSelector::AllAuthorized => {
                     let tenant = self.tenant.to_string();
                     let selected = ids.clone();
-                    let (identity, platform) = match &condition.selector {
+                    let (identity, platform) = match selection.selector {
                         ScopeSelector::LocalUser { platform, identity } => (
                             Some(identity.clone()),
                             Some(match platform {
@@ -241,7 +228,7 @@ impl SnapshotReader {
         let quantifier = if rule.view().fields.is_empty() {
             g::Quantifier::One
         } else {
-            match condition.quantifier {
+            match selection.quantifier {
                 ScopeQuantifier::One => g::Quantifier::One,
                 ScopeQuantifier::Any => g::Quantifier::Any,
                 ScopeQuantifier::All => g::Quantifier::All,
@@ -282,7 +269,7 @@ impl SnapshotReader {
             self.tenant.to_string(),
             cut,
             &ids,
-            condition,
+            selection,
             rule.view().version,
             associated,
             &prepared,
@@ -380,8 +367,8 @@ pub(super) struct SelectedSources {
 }
 impl SnapshotReader {
     pub(super) async fn select_sources_on(
-        &self,
         c: &mut sqlx::PgConnection,
+        tenant: TenantId,
         rows: Vec<sqlx::postgres::PgRow>,
         collection_scope: &rss_mdm_inventory::CollectionScope,
         fields: &[FieldKey],
@@ -389,10 +376,9 @@ impl SnapshotReader {
         if rows.len() > 2000 {
             return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }
-        let datasets =
-            rss_mdm_inventory_postgres::datasets_in(c, self.tenant, collection_scope, fields)
-                .await
-                .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
+        let datasets = rss_mdm_inventory_postgres::datasets_in(c, tenant, collection_scope, fields)
+            .await
+            .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
         let mut subjects = BTreeMap::new();
         for row in rows {
             let device: String = row.try_get("device")?;
@@ -403,7 +389,7 @@ impl SnapshotReader {
             }
             for dataset in datasets.get(&source).into_iter().flatten() {
                 let scope = crate::device::scope_dataset(
-                    self.tenant,
+                    tenant,
                     stored(Uuid::parse_str(row.try_get("registration")?))?,
                     source.as_str(),
                     stored(Uuid::parse_str(row.try_get("epoch")?))?,
@@ -414,5 +400,92 @@ impl SnapshotReader {
             }
         }
         Ok(SelectedSources { subjects })
+    }
+}
+
+/// One committed change in a fixed asset window. Interpretation belongs to the consuming owner.
+pub struct AssetChange {
+    pub revision: i64,
+    pub kind: ChangeKind,
+    pub device: Option<String>,
+    pub fields: Vec<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    Inventory,
+    Manual,
+    Device,
+    Registration,
+    Source,
+    Credential,
+    Collection,
+    Catalog,
+}
+impl ChangeKind {
+    pub fn changes_authority(self) -> bool {
+        matches!(
+            self,
+            Self::Device | Self::Registration | Self::Source | Self::Credential
+        )
+    }
+}
+impl SnapshotReader {
+    /// Read at most one page; both cuts are from this reader's tenant.
+    pub async fn changes_page_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        from: Option<&AssetCut>,
+        to: &AssetCut,
+        after: i64,
+        through: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<AssetChange>> {
+        self.check_in(tx, to)?;
+        if let Some(from) = from {
+            self.check_in(tx, from)?;
+        }
+        if after < 0 || !(1..=1000).contains(&limit) || through.is_some_and(|v| v < after) {
+            return Err(Error::Malformed.into());
+        }
+        let tenant = self.tenant.to_string();
+        let from = from.map(AssetCut::to_json);
+        let to = to.to_json();
+        let rows = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("SELECT revision,kind,identity->>'device' AS device,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible($2,revision) AND mdm.asset_visible($3,revision) AND revision>$4 AND ($5::bigint IS NULL OR revision<=$5) ORDER BY revision LIMIT $6")
+                .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(limit as i64).fetch_all(c).await
+        })).await?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(AssetChange {
+                    revision: r.try_get("revision")?,
+                    kind: stored(serde_json::from_value(Value::String(r.try_get("kind")?)))?,
+                    device: r.try_get("device")?,
+                    fields: r.try_get("fields")?,
+                })
+            })
+            .collect()
+    }
+    /// Check committed facts after an optional cut, optionally within a fixed upper cut.
+    pub async fn changes_exist_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        from: Option<&AssetCut>,
+        to: Option<&AssetCut>,
+    ) -> Result<bool> {
+        self.runtime.validate_transaction(tx)?;
+        if tx.tenant_id() != self.tenant {
+            return Err(Error::Forbidden.into());
+        }
+        for cut in [from, to].into_iter().flatten() {
+            self.check_in(tx, cut)?;
+        }
+        let tenant = self.tenant.to_string();
+        let from = from.map(AssetCut::to_json);
+        let to = to.map(AssetCut::to_json);
+        Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible($2,revision) AND ($3::jsonb IS NULL OR mdm.asset_visible($3,revision)))")
+                .bind(tenant).bind(from).bind(to).fetch_one(c).await
+        })).await?)
     }
 }

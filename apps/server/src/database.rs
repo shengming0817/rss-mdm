@@ -167,6 +167,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_policy_service::configuration::ACCESS_CONTRACT,
         rss_mdm_task_trust::ACCESS_CONTRACT,
         rss_mdm_inventory_service::ACCESS_CONTRACT,
+        rss_mdm_group_service::ACCESS_CONTRACT,
         rss_mdm_agent_channel::ACCESS_CONTRACT,
         rss_mdm_windows_channel::ACCESS_CONTRACT,
         rss_mdm_pki_service::ACCESS_CONTRACT,

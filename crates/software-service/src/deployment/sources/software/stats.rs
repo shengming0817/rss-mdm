@@ -405,6 +405,12 @@ impl SoftwareAssignment {
             let changed:Option<bool>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("UPDATE mdm_software_deployment.software_stage_stats SET gate_open=$4 WHERE tenant_id=$1::uuid AND version=$2 AND stage=$3 AND gate_open IS DISTINCT FROM $4 RETURNING gate_open").bind(tenant).bind(version).bind(index as i32).bind(open).fetch_optional(c).await})).await?;
             released |= changed == Some(true);
         }
+        if released {
+            let tenant = tx.tenant_id().to_string();
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query("UPDATE mdm_software_deployment.policy_recovery r SET dispatch_revision=r.dispatch_revision+1 FROM mdm_policy.versions v WHERE r.tenant_id=$1::uuid AND v.tenant_id=r.tenant_id AND v.id=$2 AND r.policy=v.policy").bind(tenant).bind(version).execute(c).await?; Ok(())
+            })).await?;
+        }
         Ok(released)
     }
 }

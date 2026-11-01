@@ -400,38 +400,8 @@ async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Re
 #[tokio::test]
 #[ignore = "T2: retirement checkpoints one bounded history page per claim and preserves sent blockers after restart"]
 async fn cleanup_history_is_bounded_and_resumes() -> Result<()> {
-    use rss_mdm_authorization_service::Permission;
-    use rss_mdm_device_service::control::device_control::{Action, Input};
     let mut h = Harness::open().await?;
-    let native = crate::native_identity_t2_support::seed(&h.c, "windows").await?;
-    h.object = serde_json::from_value(
-        json!({"object":{"kind":"endpoint","id":native.device},"associationVersion":null,"verified":true,"members":[{"device":native.device,"channel":"mdm","registrationId":native.registration,"generation":1}]}),
-    )?;
-    h.scope = planning::published(&h.c, &h.object).await?.scope;
-    let account = h.c.account(&[Permission::DeviceWipe]).await?;
-    let proof = h.c.authenticate(&account).await?;
-    let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) VALUES($1::uuid,$2,1,'10.0.22631.0',4,1,extract(epoch FROM clock_timestamp())::bigint)")
-        .bind(h.c.tenant.to_string()).bind(native.registration).execute(&mut *tx).await?;
-    tx.commit().await?;
-    for n in 1..=65 {
-        h.a.service
-            .create_control(
-                &proof,
-                &native.device,
-                &Input {
-                    operation_id: Uuid::from_u128(n),
-                    deadline: now() + 300,
-                    action: Action::Wipe {
-                        confirmed: true,
-                        expected_registration_id: native.registration,
-                        expected_generation: 1,
-                    },
-                },
-                &h.c.request(&proof)?,
-            )
-            .await?;
-    }
+    let native = native_controls(&mut h, 65).await?;
     // Legal terminal history: cancellation alone does not confirm remote stop.
     let blocked = Uuid::from_u128(65);
     let mut tx = command::seed_transaction(&h.c).await?;
@@ -467,4 +437,43 @@ async fn cleanup_history_is_bounded_and_resumes() -> Result<()> {
     .await?;
     assert_eq!(resumed, checkpoint);
     h.close().await
+}
+
+/// Legal native controls shared by the two independently bounded owner consumers.
+pub(super) async fn native_controls(
+    h: &mut Harness,
+    count: u128,
+) -> Result<crate::native_identity_t2_support::Native> {
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_device_service::control::device_control::{Action, Input};
+    let native = crate::native_identity_t2_support::seed(&h.c, "windows").await?;
+    h.object = serde_json::from_value(
+        json!({"object":{"kind":"endpoint","id":native.device},"associationVersion":null,"verified":true,"members":[{"device":native.device,"channel":"mdm","registrationId":native.registration,"generation":1}]}),
+    )?;
+    h.scope = planning::published(&h.c, &h.object).await?.scope;
+    let account = h.c.account(&[Permission::DeviceWipe]).await?;
+    let proof = h.c.authenticate(&account).await?;
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) VALUES($1::uuid,$2,1,'10.0.22631.0',4,1,extract(epoch FROM clock_timestamp())::bigint)")
+        .bind(h.c.tenant.to_string()).bind(native.registration).execute(&mut *tx).await?;
+    tx.commit().await?;
+    for n in 1..=count {
+        h.a.service
+            .create_control(
+                &proof,
+                &native.device,
+                &Input {
+                    operation_id: Uuid::from_u128(n),
+                    deadline: now() + 300,
+                    action: Action::Wipe {
+                        confirmed: true,
+                        expected_registration_id: native.registration,
+                        expected_generation: 1,
+                    },
+                },
+                &h.c.request(&proof)?,
+            )
+            .await?;
+    }
+    Ok(native)
 }

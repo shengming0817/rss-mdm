@@ -152,66 +152,121 @@ pub async fn profile_references_in(
     u64::try_from(count).map_err(|_| STORAGE.fault("profile_refs::count"))
 }
 
-/// Active references block retirement; archived references explain retained definitions only.
-pub async fn field_reference_details_in(
-    tx: &mut PgTransaction<'_>,
-    field: &str,
-) -> Result<(i64, i64, i64), PgError> {
-    let tenant = tx.tenant_id().to_string();
-    let field = field.to_owned();
-    tx.with_connection(move|c|Box::pin(async move {
+/// Counts of active and retained field references owned by Resource.
+pub struct FieldReferenceCounts {
+    /// Active collection mappings.
+    pub collections: i64,
+    /// Active telemetry mappings.
+    pub telemetry: i64,
+    /// Archived mappings retained for explanation.
+    pub archived: i64,
+}
+/// One exact mapping and the authoritative lifecycle of its immutable version.
+pub struct FieldMappingReference {
+    /// Resource identity.
+    pub resource: String,
+    /// Immutable version label.
+    pub version: String,
+    /// Whether this mapping belongs to telemetry.
+    pub telemetry: bool,
+    /// Current version lifecycle.
+    pub state: State,
+}
+/// Narrow Resource reference reader. It cannot cross runtime or tenant boundaries.
+pub struct FieldReferences {
+    runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    tenant: rss_request_context::TenantId,
+}
+impl FieldReferences {
+    /// Bind the reader once to the consumer's original transaction authority.
+    pub fn bind(
+        runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        tenant: rss_request_context::TenantId,
+    ) -> Self {
+        Self { runtime, tenant }
+    }
+    fn check(&self, tx: &PgTransaction<'_>) -> Result<(), PgError> {
+        self.runtime.validate_transaction(tx)?;
+        if tx.tenant_id() != self.tenant {
+            return Err(STORAGE.fault("field_refs::tenant"));
+        }
+        Ok(())
+    }
+    /// Active references block retirement; archived references explain retained definitions only.
+    pub async fn counts_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        field: &str,
+    ) -> Result<FieldReferenceCounts, PgError> {
+        self.check(tx)?;
+        let tenant = self.tenant.to_string();
+        let field = field.to_owned();
+        let (collections, telemetry, archived) = tx.with_connection(move|c|Box::pin(async move {
         sqlx::query_as("SELECT count(*) FILTER(WHERE NOT archived AND NOT telemetry),count(*) FILTER(WHERE NOT archived AND telemetry),count(*) FILTER(WHERE archived) FROM mdm_resource.field_refs WHERE tenant_id=$1::uuid AND field=$2")
             .bind(tenant).bind(field).fetch_one(c).await
-    })).await
-}
-
-/// Bounded keyset page of exact field references; lifecycle is read from the resource owner.
-pub async fn field_mapping_references_in(
-    tx: &mut PgTransaction<'_>,
-    field: &str,
-    after: Option<(String, String)>,
-    limit: u16,
-) -> Result<Vec<(String, String, bool, State)>, PgError> {
-    use sqlx::Row;
-    if !(1..=rss_mdm_query::MAX_PAGE_LIMIT + 1).contains(&limit) {
-        return Err(STORAGE.fault("field_refs::limit"));
+    })).await?;
+        Ok(FieldReferenceCounts {
+            collections,
+            telemetry,
+            archived,
+        })
     }
-    let tenant = tx.tenant_id();
-    let field = field.to_owned();
-    let (owner, version) = after.unwrap_or_default();
-    let rows: Vec<(String,String,bool)> = tx.with_connection(move |c| Box::pin(async move {
+
+    /// Bounded keyset page of exact field references; lifecycle is read from the resource owner.
+    pub async fn mappings_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        field: &str,
+        after: Option<(String, String)>,
+        limit: u16,
+    ) -> Result<Vec<FieldMappingReference>, PgError> {
+        use sqlx::Row;
+        self.check(tx)?;
+        if !(1..=rss_mdm_query::MAX_PAGE_LIMIT + 1).contains(&limit) {
+            return Err(STORAGE.fault("field_refs::limit"));
+        }
+        let tenant = self.tenant;
+        let field = field.to_owned();
+        let (owner, version) = after.unwrap_or_default();
+        let rows: Vec<(String,String,bool)> = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_as("SELECT owner,version,telemetry FROM mdm_resource.field_refs WHERE tenant_id=$1::uuid AND field=$2 AND (owner COLLATE \"C\",version COLLATE \"C\")>($3,$4) ORDER BY owner COLLATE \"C\",version COLLATE \"C\" LIMIT $5")
             .bind(tenant.to_string()).bind(field).bind(owner).bind(version).bind(i64::from(limit)).fetch_all(c).await
     })).await?;
-    let owners: Vec<_> = rows
-        .iter()
-        .map(|r| r.0.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    // Read each canonical header once, without lifecycle/advisory locks or immutable materials.
-    // SQL bounds the total transferred documents; over-budget pages fail instead of truncating.
-    let headers = tx.with_connection(move |c| Box::pin(async move {
+        let owners: Vec<_> = rows
+            .iter()
+            .map(|r| r.0.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        // Read each canonical header once, without lifecycle/advisory locks or immutable materials.
+        // SQL bounds the total transferred documents; over-budget pages fail instead of truncating.
+        let headers = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("SELECT id,revision,digest,CASE WHEN sum(octet_length(document)) OVER () <= $3 THEN document ELSE NULL END AS document FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id=ANY($2)")
             .bind(tenant.to_string()).bind(owners).bind(rss_mdm_backend_postgres_support::MAX_DOCUMENT as i64).fetch_all(c).await
     })).await?;
-    let mut states = std::collections::BTreeMap::new();
-    for row in headers {
-        let owner: String = row.try_get("id")?;
-        let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
-        states.insert(
-            owner.clone(),
-            crate::codec::header_states(&bytes, tenant, &owner, row.try_get("revision")?)?,
-        );
+        let mut states = std::collections::BTreeMap::new();
+        for row in headers {
+            let owner: String = row.try_get("id")?;
+            let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
+            states.insert(
+                owner.clone(),
+                crate::codec::header_states(&bytes, tenant, &owner, row.try_get("revision")?)?,
+            );
+        }
+        rows.into_iter()
+            .map(|(owner, version, telemetry)| {
+                let key = crate::error::decode_domain("field_refs::version", Id::new(&version))?;
+                let state = *states
+                    .get(&owner)
+                    .and_then(|s| s.get(&key))
+                    .ok_or_else(|| STORAGE.fault("field_refs::header"))?;
+                Ok(FieldMappingReference {
+                    resource: owner,
+                    version,
+                    telemetry,
+                    state,
+                })
+            })
+            .collect()
     }
-    rows.into_iter()
-        .map(|(owner, version, telemetry)| {
-            let key = crate::error::decode_domain("field_refs::version", Id::new(&version))?;
-            let state = *states
-                .get(&owner)
-                .and_then(|s| s.get(&key))
-                .ok_or_else(|| STORAGE.fault("field_refs::header"))?;
-            Ok((owner, version, telemetry, state))
-        })
-        .collect()
 }

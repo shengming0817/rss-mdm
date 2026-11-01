@@ -10,6 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 pub struct Worker {
+    readiness: rss_mdm_recovery_observation::Readiness,
     service: Arc<ScriptService>,
     store: rss_reconcile_postgres::PgStore,
     outbox: Arc<PgOutboxStore<()>>,
@@ -38,7 +39,13 @@ impl Worker {
             )
             .map_err(|_| Error::Unavailable)?,
         );
+        let readiness = rss_mdm_recovery_observation::Readiness::new(
+            crate::wake::scope(service.transactions.tenant),
+            true,
+            false,
+        );
         Ok(Self {
+            readiness,
             service,
             store,
             outbox,
@@ -50,8 +57,9 @@ impl Worker {
         self: Arc<Self>,
         notify: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
-        let (task, _) =
+        let (task, status) =
             rss_runtime::ManagedTask::prepare("mdm-script-recovery", Duration::from_secs(20));
+        self.readiness.bind(status);
         task.into_registration(move|stop|async move {
             let timer=Timer::new();let force=tokio_util::sync::CancellationToken::new();
             let control=rss_reconcile::Control::new(&timer,Duration::MAX,&force);
@@ -59,10 +67,30 @@ impl Worker {
                 concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),
                 scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),initial_backoff:Duration::from_secs(5),max_backoff:Duration::from_secs(60),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
-            rss_reconcile::run_with_notify(&self.store,self.as_ref(),&crate::wake::scope(self.service.transactions.tenant),policy,&control,&stop,&notify,|event| {
+            let result = rss_reconcile::run_with_notify(&self.recovery_store(),self.as_ref(),&crate::wake::scope(self.service.transactions.tenant),policy,&control,&stop,&notify,|event| {
+                self.readiness.observe(&event);
+                if let rss_reconcile::Observation::ScanFailed { scope, error } = &event { eprintln!("{}",serde_json::json!({"event":"mdm_script_recovery_failure","phase":"scan","scope":scope.reconciler(),"reason":format!("{:?}",error.kind())})); }
                 if let rss_reconcile::Observation::AttemptFailed{target,error,..}=event {eprintln!("{}",serde_json::json!({"event":"mdm_script_recovery_failure","target":target.entity(),"reason":format!("{:?}",error.kind())}));}
-            }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
+            }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new);
+            self.readiness.stop();
+            result
         })
+    }
+    pub fn health(&self) -> rss_mdm_recovery_observation::Health {
+        self.readiness.health()
+    }
+    pub fn recovery_store(
+        &self,
+    ) -> impl rss_reconcile::DurableStore<Claim = rss_reconcile_postgres::PgClaim> + '_ {
+        rss_mdm_recovery_observation::ObservedStore::new(&self.store, &self.readiness)
+    }
+    pub fn record_relay_health(&self, result: &std::result::Result<usize, Error>) {
+        self.readiness.relay(
+            result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|e| failure(e.clone()).kind()),
+        );
     }
     /// Host polls each concrete owner once in the single existing relay loop.
     pub async fn relay_once(&self) -> std::result::Result<usize, Error> {

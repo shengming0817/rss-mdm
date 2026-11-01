@@ -118,7 +118,7 @@ pub fn service(
         binding: Arc::new(rss_mdm_agent_channel::Bindings),
         native: authority,
         bootstrap: Some(Arc::new(bootstrap)),
-        protection: protection,
+        protection,
         installations: Arc::new(crate::agent_configurations::Installations),
     })?)
 }

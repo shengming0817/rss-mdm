@@ -16,7 +16,7 @@ GRANT SELECT ON mdm_inventory.collection_tasks TO mdm_access;
 GRANT SELECT,INSERT ON mdm_inventory.collection_admission,mdm_inventory.collection_output_chunks TO mdm_command_runtime;
 GRANT UPDATE(policy_after) ON mdm_inventory.collection_admission TO mdm_command_runtime;
 GRANT SELECT,INSERT ON mdm_inventory.collection_policy_recovery TO mdm_command_runtime,mdm_policy_runtime;
-GRANT UPDATE(input_revision,input_consumed,input_window,target_after,recovery_after,targets_done,runs_done) ON mdm_inventory.collection_policy_recovery TO mdm_command_runtime;
+GRANT UPDATE(input_revision,input_consumed,input_window,recovery_after,runs_done) ON mdm_inventory.collection_policy_recovery TO mdm_command_runtime;
 GRANT UPDATE(input_revision) ON mdm_inventory.collection_policy_recovery TO mdm_policy_runtime;
 GRANT SELECT,INSERT ON mdm_inventory.collection_native_checkins TO mdm_command_runtime;
 GRANT UPDATE(active_event,active_at,policy_after,pending_event,pending_at) ON mdm_inventory.collection_native_checkins TO mdm_command_runtime;

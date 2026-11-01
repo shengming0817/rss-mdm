@@ -176,6 +176,7 @@ impl ExecutionPublication for Publication {
     }
 }
 pub(super) struct Changes {
+    pub reader: rss_mdm_policy_postgres::PolicyReader,
     pub messaging: rss_reconcile_postgres::PgMessagingStore,
     pub targets: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
 }
@@ -183,45 +184,71 @@ impl ExecutionChanges for Changes {
     fn policy_changed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        policy: Uuid,
+        policy: &'a Policy,
+        previous: Option<&'a Policy>,
     ) -> Pending<'a, (), Fault> {
         Box::pin(async move {
-            rss_mdm_software_service::deployment::sources::storage::wake_execution_in(
-                &self.messaging,
-                tx,
-                policy,
-            )
-            .await
-            .map_err(software_fault)?;
-            rss_mdm_registration_service::enrollment::tasks::wake::policy_in(
-                &self.messaging,
-                tx,
-                policy,
-            )
-            .await
-            .map_err(enrollment_fault)?;
-            rss_mdm_registration_service::device_access::execution::wake::policy_in(
-                &self.messaging,
-                tx,
-                policy,
-            )
-            .await?;
-            rss_mdm_recovery_credentials::tasks::wake::policy_in(&self.messaging, tx, policy)
+            use rss_mdm_policy::ActionKind as K;
+            if previous.is_some_and(|p| p.id != policy.id) {
+                return Err(Error::Malformed.into());
+            }
+            let mut kinds = rss_mdm_policy_service::transaction::checked(
+                self.reader.action_kinds_in(tx, policy.id).await?,
+            )?;
+            kinds.push(policy.definition.action.kind());
+            kinds.extend(previous.map(|p| p.definition.action.kind()));
+            let id = policy.id;
+            if kinds.contains(&K::Software) || kinds.contains(&K::EnsureAgentInstalled) {
+                rss_mdm_software_service::deployment::sources::storage::wake_execution_in(
+                    &self.messaging,
+                    tx,
+                    id,
+                )
+                .await
+                .map_err(software_fault)?;
+            }
+            if kinds.contains(&K::RequestMdmEnrollment) {
+                rss_mdm_registration_service::enrollment::tasks::wake::policy_in(
+                    &self.messaging,
+                    tx,
+                    id,
+                )
+                .await
+                .map_err(enrollment_fault)?;
+            }
+            if kinds.contains(&K::DeviceAccess) {
+                rss_mdm_registration_service::device_access::execution::wake::policy_in(
+                    &self.messaging,
+                    tx,
+                    id,
+                )
                 .await?;
-            rss_mdm_script_service::wake::policy_in(&self.messaging, tx, policy).await?;
-            rss_mdm_inventory_service::collection::execution::wake::policy_in(
-                &self.messaging,
-                tx,
-                policy,
-            )
-            .await?;
-            rss_mdm_device_service::control::sources::storage::wake_execution_in(
-                &self.messaging,
-                tx,
-                policy,
-            )
-            .await
-            .map_err(fault)
+            }
+            if kinds.contains(&K::Credential) {
+                rss_mdm_recovery_credentials::tasks::wake::policy_in(&self.messaging, tx, id)
+                    .await?;
+            }
+            if kinds.contains(&K::Execution) {
+                rss_mdm_script_service::wake::policy_in(&self.messaging, tx, id).await?;
+            }
+            if kinds.contains(&K::NativeCollection) || kinds.contains(&K::AgentCollection) {
+                rss_mdm_inventory_service::collection::execution::wake::policy_in(
+                    &self.messaging,
+                    tx,
+                    id,
+                )
+                .await?;
+            }
+            if kinds.contains(&K::UnmanageDevice) {
+                rss_mdm_device_service::control::sources::storage::wake_execution_in(
+                    &self.messaging,
+                    tx,
+                    id,
+                )
+                .await
+                .map_err(fault)?;
+            }
+            Ok(())
         })
     }
     fn assignment_changed_in<'a>(
@@ -229,25 +256,37 @@ impl ExecutionChanges for Changes {
         tx: &'a mut PgTransaction<'_>,
         version: Uuid,
         target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
+        available: bool,
     ) -> Pending<'a, (), Fault> {
         Box::pin(async move {
-            rss_mdm_inventory_service::collection::execution::scheduled::wake_assignment_in(
-                &self.messaging,
-                tx,
-                version,
-                target,
-            )
-            .await?;
-            rss_mdm_software_service::deployment::wake::wake_policy_device_in(
-                &self.messaging,
-                tx,
-                version,
-                target,
-            )
-            .await
-            .map_err(software_fault)
+            use rss_mdm_policy::ActionKind;
+            let persisted = rss_mdm_policy_service::transaction::checked(
+                self.reader.version_in(tx, version).await?,
+            )?
+            .ok_or(Error::NotFound)?;
+            match persisted.action_kind {
+                ActionKind::NativeCollection if !available => {
+                    rss_mdm_inventory_service::collection::execution::wake::policy_in(&self.messaging, tx, persisted.policy).await?;
+                }
+                ActionKind::Software if !available => {
+                    rss_mdm_software_service::deployment::sources::storage::wake_execution_in(&self.messaging, tx, persisted.policy).await.map_err(software_fault)?;
+                }
+                ActionKind::NativeCollection => {
+                    if let Some(verified) = rss_mdm_inventory_service::collection::execution::scheduled::VerifiedNativeCollectionVersion::verify_in(&self.reader, tx, version).await? {
+                        verified.wake_assignment_in(&self.messaging, tx, target).await?;
+                    }
+                }
+                ActionKind::Software => {
+                    if let Some(verified) = rss_mdm_software_service::deployment::actions::scheduled::VerifiedSoftwareVersion::verify_in(&self.reader, tx, version).await.map_err(software_fault)? {
+                        verified.wake_assignment_in(&self.messaging, tx, target).await.map_err(software_fault)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
         })
     }
+
     fn devices_changed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,

@@ -64,7 +64,6 @@ impl From<rss_mdm_inventory_service::Error> for Error {
     fn from(e: rss_mdm_inventory_service::Error) -> Self {
         use rss_mdm_inventory_service::Error as I;
         match e {
-            I::Group(_) => Self::NotFound,
             I::Malformed => Self::Malformed,
             I::Unauthorized => Self::Unauthorized,
             I::Forbidden => Self::Forbidden,

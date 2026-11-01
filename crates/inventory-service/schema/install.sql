@@ -178,25 +178,13 @@ CREATE POLICY tenant ON mdm_assets.field_layouts
     USING (tenant_id = nullif(current_setting('rss.tenant_id',true),'')::uuid)
     WITH CHECK (tenant_id = nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
-CREATE TABLE mdm_assets.group_fields (
-    tenant_id uuid NOT NULL,
-    group_id uuid NOT NULL,
-    field text NOT NULL
-);
 
-ALTER TABLE ONLY mdm_assets.group_fields FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_assets.group_operations (
-    tenant_id uuid NOT NULL,
-    actor text NOT NULL,
-    id uuid NOT NULL,
-    fingerprint bytea NOT NULL,
-    response jsonb NOT NULL,
-    CONSTRAINT group_operations_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
-    CONSTRAINT group_operations_response_check CHECK ((octet_length((response)::text) <= 8388608))
-);
 
-ALTER TABLE ONLY mdm_assets.group_operations FORCE ROW LEVEL SECURITY;
+
+
+
+
 
 CREATE TABLE mdm_assets.operations (
     tenant_id uuid NOT NULL,
@@ -252,11 +240,9 @@ ALTER TABLE ONLY mdm_assets.asset_query_results
 ALTER TABLE ONLY mdm_assets.asset_query_runs
     ADD CONSTRAINT asset_query_runs_pkey PRIMARY KEY (tenant_id, id);
 
-ALTER TABLE ONLY mdm_assets.group_fields
-    ADD CONSTRAINT group_fields_pkey PRIMARY KEY (tenant_id, group_id, field);
 
-ALTER TABLE ONLY mdm_assets.group_operations
-    ADD CONSTRAINT group_operations_pkey PRIMARY KEY (tenant_id, actor, id);
+
+
 
 ALTER TABLE ONLY mdm_assets.operations
     ADD CONSTRAINT operations_pkey PRIMARY KEY (tenant_id, actor, id);
@@ -287,7 +273,7 @@ CREATE UNIQUE INDEX collection_windows_sequence ON mdm_access.collection_runs US
 
 CREATE INDEX asset_query_results_order ON mdm_assets.asset_query_results USING btree (tenant_id, run, sort_key, device);
 
-CREATE INDEX group_fields_field ON mdm_assets.group_fields USING btree (tenant_id, field, group_id);
+
 
 ALTER TABLE mdm_access.collection_history ENABLE ROW LEVEL SECURITY;
 
@@ -303,9 +289,9 @@ ALTER TABLE mdm_assets.asset_query_results ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_assets.asset_query_runs ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_assets.group_fields ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_assets.group_operations ENABLE ROW LEVEL SECURITY;
+
+
 
 ALTER TABLE mdm_assets.operations ENABLE ROW LEVEL SECURITY;
 
@@ -317,9 +303,9 @@ CREATE POLICY tenant ON mdm_assets.asset_query_results USING ((tenant_id = (NULL
 
 CREATE POLICY tenant ON mdm_assets.asset_query_runs USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-CREATE POLICY tenant ON mdm_assets.group_fields USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-CREATE POLICY tenant ON mdm_assets.group_operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+
 
 CREATE POLICY tenant ON mdm_assets.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 

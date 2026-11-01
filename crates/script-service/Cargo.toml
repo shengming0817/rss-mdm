@@ -7,6 +7,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+rss-mdm-recovery-observation.workspace = true
 tokio-util.workspace = true
 rss-runtime.workspace = true
 rss-mdm-resource-postgres.workspace = true

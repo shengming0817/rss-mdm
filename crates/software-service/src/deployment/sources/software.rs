@@ -51,6 +51,7 @@ pub async fn read_in(
         Action::Software { rollout, .. } => Some(rollout),
         _ => None,
     };
+    let active = policy.state.is_enabled() && rollout.is_some();
     Ok(SoftwareExecutionPolicy {
         id,
         owner: policy.id,
@@ -59,7 +60,7 @@ pub async fn read_in(
             rollout,
             *action,
             id,
-            policy.state.is_enabled(),
+            active,
         ),
     })
 }
@@ -76,6 +77,7 @@ pub async fn read_on(
         Action::Software { rollout, .. } => Some(rollout),
         _ => None,
     };
+    let active = policy.state.is_enabled() && rollout.is_some();
     Ok(SoftwareExecutionPolicy {
         id,
         owner: policy.id,
@@ -84,7 +86,7 @@ pub async fn read_on(
             rollout,
             *action,
             id,
-            policy.state.is_enabled(),
+            active,
         ),
     })
 }

@@ -1,0 +1,117 @@
+use super::*;
+use rss_mdm_compliance::Platform;
+use serde_json::json;
+fn input() -> Input {
+    Input{rule:Uuid::new_v4(),revision:1,definition:serde_json::from_value(json!({"presentation":{"name":"rule"},"severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}}})).unwrap(),asset_cut:rss_mdm_inventory::AssetCut::from_json(json!({"tenant":"11111111-1111-4111-8111-111111111111","epoch":"22222222-2222-4222-8222-222222222222","snapshot":"1:2:"})).unwrap(),evaluated_at:1,groups:vec![]}
+}
+#[test]
+fn unknown_causes_and_absent_platform_are_not_compliance() {
+    let mut input = input();
+    let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+    let device = rss_mdm_inventory_service::assets::DeviceView {
+        collection_scope: rss_mdm_inventory::CollectionScope::Device,
+        lists: Default::default(),
+        device: "device".into(),
+        channels: Default::default(),
+        fields: Default::default(),
+        quality: vec![],
+        revisions: Default::default(),
+    };
+    let mut result = rss_mdm_group::ObjectEvaluation {
+        key: rss_mdm_group::ObjectKey::new(tenant, "device").unwrap(),
+        decision: rss_mdm_group::Decision::Unknown,
+        contexts: [(
+            "scope".into(),
+            rss_mdm_group::ContextEvaluation {
+                decision: rss_mdm_group::Decision::Unknown,
+                explanations: vec![],
+                provenance: Default::default(),
+            },
+        )]
+        .into(),
+    };
+    result.contexts.get_mut("scope").unwrap().explanations = vec![rss_mdm_group::Explanation {
+        path: vec![],
+        outcome: rss_mdm_group::Outcome::Unknown(rss_mdm_group::UnknownReason::Missing),
+    }];
+    let unknown = assessment(
+        &input,
+        &device,
+        &BTreeMap::new(),
+        result.clone(),
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(unknown.status, rss_mdm_compliance::Status::Unknown);
+    assert_eq!(unknown.reason, rss_mdm_compliance::Reason::FactsUnknown);
+    assert!(matches!(
+        unknown.explanations[0].outcome,
+        rss_mdm_compliance::Outcome::Missing
+    ));
+    result.decision = rss_mdm_group::Decision::Match;
+    input.definition.platform = Platform::Windows;
+    let source = |s: &str| SourceReference {
+        source: s.into(),
+        registration: "registration".into(),
+        generation: "1".into(),
+        epoch: "epoch".into(),
+    };
+    let value = assessment(
+        &input,
+        &device,
+        &BTreeMap::new(),
+        result.clone(),
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(value.reason, rss_mdm_compliance::Reason::PlatformUnknown);
+    let value = assessment(
+        &input,
+        &device,
+        &BTreeMap::new(),
+        result.clone(),
+        vec![],
+        vec![source("mdm.apple")],
+    )
+    .unwrap();
+    assert_eq!(
+        value.reason,
+        rss_mdm_compliance::Reason::PlatformNotApplicable
+    );
+    assert_eq!(value.applicability.sources[0].source, "mdm.apple");
+    assert_eq!(
+        assessment(
+            &input,
+            &device,
+            &BTreeMap::new(),
+            result,
+            vec![],
+            vec![source("mdm.windows")]
+        )
+        .unwrap()
+        .status,
+        rss_mdm_compliance::Status::Compliant
+    );
+}
+#[test]
+fn boolean_criteria_reject_string_values() {
+    let definition = serde_json::to_value(input().definition).unwrap();
+    let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+    let rule_id = Uuid::new_v4();
+    let catalog = rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
+    assert!(validate_definition(&input().definition, tenant, rule_id, &catalog).is_ok());
+    let mut value = definition;
+    value["criteria"]["criteria"]["value"] = json!({"kind":"string","value":"false"});
+    let rule: Definition = serde_json::from_value(value).unwrap();
+    assert!(
+        validate_definition(
+            &rule,
+            TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap(),
+            Uuid::new_v4(),
+            &rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap(),
+        )
+        .is_err()
+    );
+}

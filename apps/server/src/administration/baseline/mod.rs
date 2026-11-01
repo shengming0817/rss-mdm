@@ -15,7 +15,7 @@ pub(crate) struct Service {
     pub instance: rss_identity_core::InstanceId,
     pub pool: sqlx::PgPool,
     pub authorization: std::sync::Arc<rss_mdm_authorization_service::Store>,
-    pub groups: std::sync::Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub groups: std::sync::Arc<rss_mdm_group_service::Groups>,
     pub scopes: std::sync::Arc<rss_mdm_scope_service::Scopes>,
     pub resources: std::sync::Arc<rss_mdm_resource_service::ResourceCatalog>,
     pub content_access: Option<std::sync::Arc<rss_mdm_content_service::service::Access>>,
@@ -140,6 +140,9 @@ fn blocked_reason(error: &Error) -> &'static str {
         )
         | Error::Resource(R::Forbidden | R::Unauthorized)
         | Error::Inventory(I::Forbidden | I::Unauthorized)
+        | Error::Group(
+            rss_mdm_group_service::Error::Forbidden | rss_mdm_group_service::Error::Unauthorized,
+        )
         | Error::ContentRequest(U::Forbidden | U::Authorization(A::Forbidden | A::Unauthorized)) => {
             "authorization"
         }
@@ -151,9 +154,14 @@ fn blocked_reason(error: &Error) -> &'static str {
         )
         | Error::Resource(R::Conflict | R::Resource(_))
         | Error::Inventory(I::Conflict)
+        | Error::Group(
+            rss_mdm_group_service::Error::Conflict
+            | rss_mdm_group_service::Error::NotFound
+            | rss_mdm_group_service::Error::Group(_),
+        )
         | Error::Content(C::Conflict)
         | Error::ContentRequest(U::Conflict | U::Missing | U::Content(C::Conflict))
-        | Error::Inventory(I::NotFound | I::Group(_)) => "conflict",
+        | Error::Inventory(I::NotFound) => "conflict",
         Error::Unsupported
         | Error::Policy(P::Unsupported)
         | Error::Scope(rss_mdm_scope_service::Error::Unsupported)
@@ -169,6 +177,10 @@ fn blocked_reason(error: &Error) -> &'static str {
         )
         | Error::Resource(R::CommitUnknown | R::RollbackFailed)
         | Error::Inventory(I::CommitUnknown | I::RollbackFailed)
+        | Error::Group(
+            rss_mdm_group_service::Error::CommitUnknown
+            | rss_mdm_group_service::Error::RollbackFailed,
+        )
         | Error::Content(C::CommitUnknown)
         | Error::ContentRequest(
             U::CommitUnknown | U::RollbackFailed | U::Content(C::CommitUnknown),
@@ -216,12 +228,12 @@ async fn execute_owned(
     let target = || Uuid::parse_str(&step.target).map_err(|_| Error::Malformed);
     match &step.action {
         Action::Group { selector, name } => {
-            let command = rss_mdm_inventory_service::groups::Command::Group {
+            let command = rss_mdm_group_service::Command::Group {
                 id: target()?,
-                change: Box::new(rss_mdm_inventory_service::operation::Operation {
+                change: Box::new(rss_mdm_group_service::operation::Operation {
                     operation_id: operation,
                     expected_revision: 0,
-                    input: rss_mdm_inventory_service::groups::GroupChange::CreateSystem {
+                    input: rss_mdm_group_service::GroupChange::CreateSystem {
                         selector: *selector,
                         presentation: serde_json::Map::from_iter([
                             ("name".into(), json!(name)),

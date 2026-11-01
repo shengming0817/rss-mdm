@@ -150,12 +150,6 @@ pub async fn owns_on(
 ) -> std::result::Result<bool, sqlx::Error> {
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant.to_string()).bind(id).fetch_one(c).await
 }
-pub async fn owns_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
-    let tenant = tx.tenant_id();
-    Ok(tx
-        .with_connection(move |c| Box::pin(owns_on(c, tenant, id)))
-        .await?)
-}
 
 pub use crate::action_admission::now;
 pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {

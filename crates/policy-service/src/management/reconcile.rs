@@ -130,16 +130,14 @@ impl crate::application::Application {
             if changed {
                 self.assignment_fact_in(tx, &fact_key, &p, assignment.target.as_ref(), available)
                     .await?;
-                if available
-                    && matches!(
-                        p.definition.action.kind(),
-                        rss_mdm_policy::ActionKind::NativeCollection
-                            | rss_mdm_policy::ActionKind::Software
-                    )
-                    && let Some(target) = &assignment.target
+                if matches!(
+                    p.definition.action.kind(),
+                    rss_mdm_policy::ActionKind::NativeCollection
+                        | rss_mdm_policy::ActionKind::Software
+                ) && let Some(target) = &assignment.target
                 {
                     self.changes
-                        .assignment_changed_in(tx, version, target)
+                        .assignment_changed_in(tx, version, target, available)
                         .await?;
                 }
             }
@@ -189,6 +187,9 @@ impl crate::application::Application {
             let Some(target) = target else {
                 continue;
             };
+            self.changes
+                .assignment_changed_in(tx, version, &target, false)
+                .await?;
             let device = target.device;
             self.configuration
                 .wake_devices_in(tx, std::slice::from_ref(&device))

@@ -3,10 +3,6 @@ use super::host_storage::Storage;
 use crate::Error;
 use rss_mdm_device_service::control::{Service, deadline};
 use std::sync::Arc;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "explicit owner participants borrow shared host resources"
-)]
 pub(crate) async fn assemble(
     config: &crate::config::Config,
     storage: &Storage,

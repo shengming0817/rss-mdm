@@ -48,11 +48,9 @@ impl IntoResponse for Error {
                 Failure::AuditIsolation | Failure::AuditContract | Failure::AuditAdmission,
             ) => Code::AuditContractError,
             Error::Group(m) => match m {
-                rss_mdm_inventory_service::groups::GroupMissing::Group => Code::GroupNotFound,
-                rss_mdm_inventory_service::groups::GroupMissing::Rule => Code::GroupRuleNotFound,
-                rss_mdm_inventory_service::groups::GroupMissing::Device => {
-                    Code::PlanningDeviceNotFound
-                }
+                rss_mdm_group_service::GroupMissing::Group => Code::GroupNotFound,
+                rss_mdm_group_service::GroupMissing::Rule => Code::GroupRuleNotFound,
+                rss_mdm_group_service::GroupMissing::Device => Code::PlanningDeviceNotFound,
             },
             Error::ScopeNotFound => Code::ScopeNotFound,
             Error::PolicyMissing => Code::PolicyNotFound,

@@ -8,7 +8,7 @@ from ci import verify_capability_boundaries
 
 class CapabilityBoundaries(unittest.TestCase):
     def test_target_optional_renamed_and_build_edges_cannot_hide_forbidden_packages(self):
-        names = ('certificate apple-mdm inventory-service software-service authorization-service '
+        names = ('group-service compliance-service recovery-observation certificate apple-mdm inventory-service software-service authorization-service '
                  'registration-service script-service device-service content-service webhook-service management-http '
                  'task-state task-trust agent-channel windows-channel apple-channel query http-contract resource resource-postgres group group-postgres scope policy scope-postgres scope-service policy-service resource-service').split()
         packages = [dict(id=n, name='rss-mdm-' + n, dependencies=[]) for n in names]
@@ -41,6 +41,11 @@ class CapabilityBoundaries(unittest.TestCase):
                             ('group', 'reqwest'),
                             ('scope-postgres', 'rss-mdm-resource-service'),
                             ('inventory-service', 'rss-mdm-policy-service'),
+                            ('inventory-service','rss-mdm-group-service'),
+                            ('group-service','rss-mdm-compliance-service'),
+                            ('compliance-service','rss-mdm-group-service'),
+                            ('recovery-observation','rss-mdm-group-service'),
+                            ('recovery-observation','sqlx'),
                             ('resource-service', 'rss-mdm-policy-service')):
             package = next(p for p in packages if p['id'] == owner)
             for kind, target, rename, optional in ((None, None, None, False),

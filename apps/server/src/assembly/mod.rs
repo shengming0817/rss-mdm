@@ -33,6 +33,9 @@ pub(crate) mod software;
 pub(crate) mod task_trust;
 pub(crate) mod webhooks;
 pub(crate) struct Assembly {
+    pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
+    pub(crate) collection_work:
+        Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
     pub(crate) operation_reads: Arc<operation_reads::Operations>,
     pub(crate) software: software::Assembly,
     pub(crate) registration: registration::Assembly,
@@ -65,7 +68,7 @@ pub(crate) struct Assembly {
     pub(crate) task_reads: Arc<task_reads::Reads>,
     pub(crate) queries: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub(crate) groups: Arc<rss_mdm_group_service::Groups>,
     pub(crate) policy_application: Arc<rss_mdm_policy_service::application::Application>,
     pub(crate) policies: Arc<rss_mdm_policy_service::management::Policies>,
     pub(crate) publications:
@@ -81,7 +84,7 @@ pub(crate) struct Assembly {
 
     pub(crate) scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
-    pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
+    pub(crate) compliance: Arc<rss_mdm_compliance_service::Compliance>,
     pub(crate) identity: Arc<Identity>,
     pub(crate) credentials: Arc<Credentials>,
     pub(crate) clock: Arc<dyn Clock>,
@@ -97,6 +100,9 @@ pub(crate) struct Assembly {
 }
 
 pub(crate) struct AssemblyDependencies {
+    pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
+    pub(crate) collection_work:
+        Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
     pub(crate) telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
@@ -130,7 +136,7 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
     pub(crate) access: Arc<Database>,
     pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
-    pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub(crate) groups: Arc<rss_mdm_group_service::Groups>,
     pub(crate) policy_application: Arc<rss_mdm_policy_service::application::Application>,
     pub(crate) policies: Arc<rss_mdm_policy_service::management::Policies>,
     pub(crate) publications:
@@ -146,7 +152,7 @@ pub(crate) struct AssemblyDependencies {
 
     pub(crate) scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
-    pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
+    pub(crate) compliance: Arc<rss_mdm_compliance_service::Compliance>,
     pub(crate) identity: Identity,
     pub(crate) resources: Arc<rss_mdm_resource_service::ResourceCatalog>,
     pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
@@ -177,6 +183,8 @@ pub(crate) async fn from_compiled(
         identity_management,
     } = compiled;
     let AssemblyDependencies {
+        script_work,
+        collection_work,
         telemetry,
         certificate_archive,
         timeline,
@@ -566,6 +574,8 @@ pub(crate) async fn from_compiled(
         execution: execution.clone(),
     });
     let state = Arc::new(Assembly {
+        script_work,
+        collection_work,
         access_execution,
         credential_execution,
         operation_reads,
@@ -861,3 +871,7 @@ mod device_materials;
 #[cfg(test)]
 #[path = "../../tests/device/mod.rs"]
 mod device_t2;
+
+#[cfg(test)]
+#[path = "../../tests/owner_boundaries/mod.rs"]
+mod owner_boundaries_t2;

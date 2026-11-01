@@ -59,7 +59,7 @@ GRANT UPDATE(gateway_accepted,dispatch_failure) ON TABLE mdm_software_deployment
 
 GRANT SELECT,INSERT ON TABLE mdm_software_deployment.policy_recovery TO mdm_command_runtime;
 
-GRANT UPDATE(recovery_after,target_after,input_revision,input_consumed,input_window) ON TABLE mdm_software_deployment.policy_recovery TO mdm_command_runtime;
+GRANT UPDATE(recovery_after,input_revision,input_consumed,input_window,dispatch_revision,dispatch_consumed,dispatch_window,dispatch_after) ON TABLE mdm_software_deployment.policy_recovery TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_software_deployment.requests TO mdm_command_runtime;
 

@@ -80,6 +80,8 @@ impl IntoResponse for crate::Error {
             Self::Authorization(e) => H::from(e),
             Self::Registration(e) => H::from(e),
             Self::Inventory(e) => H::from(e),
+            Self::Group(e) => H::from(e),
+            Self::Compliance(e) => H::from(e),
             Self::Software(e) => H::from(e),
             Self::Content(e) => H::from(e),
             Self::ContentRequest(e) => H::from(e),

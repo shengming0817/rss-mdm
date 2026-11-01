@@ -1,4 +1,4 @@
-//! Inventory application ownership: durable intake, observations, assets and assessments.
+//! Inventory application ownership: durable intake, observations, assets.
 pub mod collection;
 mod database;
 mod error;
@@ -14,12 +14,10 @@ pub use worker_health::{WorkerAttempt, WorkerScan, WorkerStatus};
 
 pub mod assets;
 pub mod clock;
-pub mod compliance;
 pub mod operation;
 pub mod tasks;
 pub mod transaction;
 
-pub mod groups;
 pub mod objects;
 
 pub mod apple_collection;
@@ -41,17 +39,16 @@ pub const RELATIONS_SQL: &str = concat!(
     include_str!("../schema/collection-task-relations.sql")
 );
 
-/// Verify the inventory and compliance storage contracts on the caller's transaction.
+/// Verify the inventory storage contracts on the caller's transaction.
 pub async fn admit_storage_in(
     c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
+    _tenant: rss_request_context::TenantId,
 ) -> Result<(), sqlx::Error> {
     verify_authority(c).await?;
     rss_mdm_inventory_postgres::verify_collections(c)
         .await
         .map_err(|error| sqlx::Error::Protocol(format!("collection storage admission: {error}")))?;
     rss_mdm_inventory_postgres::verify_asset_history(c).await?;
-    rss_mdm_compliance_postgres::admit(c, tenant).await?;
     if !sqlx::query_scalar::<_, bool>(assets::ADMISSION_SQL)
         .fetch_one(c)
         .await?
@@ -65,8 +62,6 @@ pub async fn admit_storage_in(
 
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
-
-pub const GROUP_SELECTIONS_SQL: &str = include_str!("../schema/group-selections.sql");
 
 /// Current scalar sources and hardware-key qualification used by association writers.
 pub const SOURCE_FACTS_SQL: &str = include_str!("../schema/source-facts.sql");

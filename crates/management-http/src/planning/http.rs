@@ -7,13 +7,11 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use rss_mdm_group_service::{Command as GroupCommand, GroupChange, response as group_response};
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
-};
-use rss_mdm_inventory_service::groups::{
-    Command as GroupCommand, GroupChange, response as group_response,
 };
 use rss_mdm_scope::Reference;
 use rss_mdm_scope_service::ScopeChange;
@@ -216,9 +214,7 @@ async fn group_directory(
     rss_mdm_http_contract::CollectionResponse<
         Json<
             rss_mdm_query::Page<
-                rss_mdm_query::directory::Projection<
-                    rss_mdm_inventory_service::groups::directory::Row,
-                >,
+                rss_mdm_query::directory::Projection<rss_mdm_group_service::directory::Row>,
             >,
         >,
     >,
@@ -286,7 +282,7 @@ async fn group_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    payload: BodyInput<rss_mdm_inventory_service::operation::Operation<GroupChange>>,
+    payload: BodyInput<rss_mdm_group_service::operation::Operation<GroupChange>>,
 ) -> std::result::Result<GroupResponse, Error> {
     let change = body(payload)?;
     let permission = if matches!(change.input, GroupChange::Recompute {}) {
@@ -386,11 +382,7 @@ async fn group_page(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((group, result, kind)): Path<(
-        Uuid,
-        Uuid,
-        rss_mdm_inventory_service::groups::pages::GroupPageKind,
-    )>,
+    Path((group, result, kind)): Path<(Uuid, Uuid, rss_mdm_group_service::pages::GroupPageKind)>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<GroupPageQuery>,
     >,
@@ -445,7 +437,7 @@ async fn scope_page(
 
 pub struct HttpState {
     pub scopes: std::sync::Arc<rss_mdm_scope_service::Scopes>,
-    pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub groups: Arc<rss_mdm_group_service::Groups>,
 }
 
 async fn run_group(
@@ -518,7 +510,7 @@ async fn device_groups(
     >,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<
-        Json<rss_mdm_inventory_service::groups::memberships::Memberships>,
+        Json<rss_mdm_group_service::memberships::Memberships>,
     >,
     Error,
 > {
@@ -541,9 +533,7 @@ async fn group_references(
     Path(id): Path<Uuid>,
     params: rss_mdm_http_contract::query::OwnedQuery<GroupReferencesQuery>,
 ) -> Result<
-    rss_mdm_http_contract::CollectionResponse<
-        Json<rss_mdm_inventory_service::groups::references::References>,
-    >,
+    rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_group_service::references::References>>,
     Error,
 > {
     (async {
@@ -563,14 +553,14 @@ async fn group_references(
 struct GroupPageQuery;
 impl rss_mdm_http_contract::query::WindowOwner for GroupPageQuery {
     fn schema() -> &'static rss_mdm_query::window::Schema {
-        &rss_mdm_inventory_service::groups::pages::SCHEMA
+        &rss_mdm_group_service::pages::SCHEMA
     }
 }
 
 struct DeviceGroupsQuery;
 impl rss_mdm_http_contract::query::WindowOwner for DeviceGroupsQuery {
     fn schema() -> &'static rss_mdm_query::window::Schema {
-        &rss_mdm_inventory_service::groups::memberships::SCHEMA
+        &rss_mdm_group_service::memberships::SCHEMA
     }
 }
 
@@ -624,15 +614,15 @@ fn planning_responses<T: schemars::JsonSchema>() -> Vec<rss_mdm_http_contract::s
 
 struct GroupDirectoryQuery;
 impl rss_mdm_http_contract::query::QueryOwner for GroupDirectoryQuery {
-    type Parsed = rss_mdm_inventory_service::groups::directory::DirectoryQuery;
+    type Parsed = rss_mdm_group_service::directory::DirectoryQuery;
     type Error = rss_mdm_query::Error;
     fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
         Some(rss_mdm_http_contract::QueryDeclaration::Directory(
-            rss_mdm_inventory_service::groups::directory::schema(),
+            rss_mdm_group_service::directory::schema(),
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {
-        let owner = rss_mdm_inventory_service::groups::directory::schema();
+        let owner = rss_mdm_group_service::directory::schema();
         let mut schema = rss_mdm_http_contract::query::directory_parameters(
             owner.default_limit,
             owner.max_limit,
@@ -641,7 +631,7 @@ impl rss_mdm_http_contract::query::QueryOwner for GroupDirectoryQuery {
         schema
     }
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
-        rss_mdm_inventory_service::groups::directory::parse(raw)
+        rss_mdm_group_service::directory::parse(raw)
     }
 }
 
@@ -678,19 +668,19 @@ impl rss_mdm_http_contract::query::QueryOwner for ScopeResultQuery {
 
 struct GroupReferencesQuery;
 impl rss_mdm_http_contract::query::QueryOwner for GroupReferencesQuery {
-    type Parsed = rss_mdm_inventory_service::groups::references::Query;
-    type Error = rss_mdm_inventory_service::Error;
+    type Parsed = rss_mdm_group_service::references::Query;
+    type Error = rss_mdm_group_service::Error;
     fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
         Some(rss_mdm_http_contract::QueryDeclaration::Window(
-            &rss_mdm_inventory_service::groups::references::SCHEMA,
+            &rss_mdm_group_service::references::SCHEMA,
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {
         let mut schema = rss_mdm_http_contract::query::window_parameters(
-            &rss_mdm_inventory_service::groups::references::SCHEMA,
+            &rss_mdm_group_service::references::SCHEMA,
         );
         schema.value["properties"]["kind"] = rss_mdm_http_contract::signature::Schema::request::<
-            rss_mdm_inventory_service::groups::references::Kind,
+            rss_mdm_group_service::references::Kind,
         >()
         .value;
         schema.value["properties"]["relation"] =
@@ -698,7 +688,7 @@ impl rss_mdm_http_contract::query::QueryOwner for GroupReferencesQuery {
         schema
     }
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
-        rss_mdm_inventory_service::groups::references::Query::parse(raw)
+        rss_mdm_group_service::references::Query::parse(raw)
     }
 }
 

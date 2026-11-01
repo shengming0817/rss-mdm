@@ -1,112 +1,5 @@
-//! Execution owner observations; RSS remains the task and durable claim authority.
-//! ref: rss crates/runtime/src/resource.rs, crates/reconcile/src/ports.rs
+//! Owner-specific settlement policy; common observations live in recovery-observation.
 use rss_reconcile::ErrorKind;
-use rss_runtime::{TaskState, TaskStatus};
-use std::sync::{
-    Mutex, OnceLock,
-    atomic::{AtomicBool, Ordering},
-};
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Phase {
-    #[default]
-    Initializing,
-    Healthy,
-    Failed(ErrorKind),
-}
-#[derive(Clone, Copy, Debug)]
-pub struct Health {
-    pub task: Option<TaskState>,
-    pub stopping: bool,
-    pub recovery: Phase,
-    pub relay: Phase,
-    pub inputs: Phase,
-}
-impl Health {
-    pub fn is_ready(&self) -> bool {
-        self.task == Some(TaskState::Running)
-            && !self.stopping
-            && self.recovery == Phase::Healthy
-            && self.relay == Phase::Healthy
-            && self.inputs == Phase::Healthy
-    }
-}
-#[derive(Default)]
-pub struct Readiness {
-    task: OnceLock<TaskStatus>,
-    stopping: AtomicBool,
-    rounds: Mutex<(Phase, Phase)>,
-    inputs: Mutex<Phase>,
-    attempts: Mutex<std::collections::BTreeMap<String, ErrorKind>>,
-}
-impl Readiness {
-    pub fn health(&self) -> Health {
-        let (recovery, relay) = self.rounds.lock().map(|s| *s).unwrap_or((
-            Phase::Failed(ErrorKind::Invariant),
-            Phase::Failed(ErrorKind::Invariant),
-        ));
-        Health {
-            task: self.task.get().map(TaskStatus::current),
-            stopping: self.stopping.load(Ordering::Acquire),
-            recovery: self
-                .attempts
-                .lock()
-                .ok()
-                .and_then(|s| s.values().next().copied())
-                .map_or(recovery, Phase::Failed),
-            relay,
-            inputs: self
-                .inputs
-                .lock()
-                .map(|p| *p)
-                .unwrap_or(Phase::Failed(ErrorKind::Invariant)),
-        }
-    }
-    pub(crate) fn bind(&self, task: TaskStatus) {
-        if self.task.set(task).is_err() {
-            self.stop();
-        }
-    }
-    pub(crate) fn scan(&self, outcome: Result<(), ErrorKind>) {
-        if let Ok(mut rounds) = self.rounds.lock() {
-            rounds.0 = phase(outcome);
-        }
-    }
-    pub(crate) fn relay(&self, outcome: Result<(), ErrorKind>) {
-        if let Ok(mut rounds) = self.rounds.lock() {
-            rounds.1 = phase(outcome);
-        }
-    }
-    pub(crate) fn inputs(&self, outcome: Result<(), ErrorKind>) {
-        if let Ok(mut value) = self.inputs.lock() {
-            *value = phase(outcome);
-        }
-    }
-    pub(crate) fn failed_attempt(&self, target: &rss_reconcile::Target, kind: ErrorKind) {
-        if let Ok(mut attempts) = self.attempts.lock() {
-            if attempts.len() < 1000 || attempts.contains_key(target.entity()) {
-                attempts.insert(target.entity().to_owned(), kind);
-            } else {
-                attempts.insert("!truncated".into(), ErrorKind::Invariant);
-            }
-        }
-    }
-    fn settled(&self, target: &rss_reconcile::Target) {
-        if let Ok(mut attempts) = self.attempts.lock() {
-            attempts.remove(target.entity());
-        }
-    }
-    pub(crate) fn stop(&self) {
-        self.stopping.store(true, Ordering::Release);
-    }
-}
-fn phase(outcome: Result<(), ErrorKind>) -> Phase {
-    match outcome {
-        Ok(()) => Phase::Healthy,
-        Err(kind) => Phase::Failed(kind),
-    }
-}
-
 // Transparent observations of real claim results, including confirmed empty scans.
 pub(super) struct ObservedStore<'a>(pub &'a super::Service);
 impl rss_reconcile::DurableStore for ObservedStore<'_> {
@@ -137,15 +30,9 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         lease: std::time::Duration,
         control: &rss_reconcile::Control<'_, T>,
     ) -> Result<rss_reconcile::ClaimBatch<Self::Claim>, rss_reconcile::Error> {
-        let result = self
-            .0
-            .reconcile
+        rss_mdm_recovery_observation::ObservedStore::new(&self.0.reconcile, &self.0.readiness)
             .claim_due(scope, limit, lease, control)
-            .await;
-        if result.is_ok() {
-            self.0.readiness.scan(Ok(()));
-        }
-        result
+            .await
     }
     async fn renew<T: rss_reconcile::Timer>(
         &self,
@@ -189,11 +76,8 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         } else {
             completion
         };
-        let result = self.0.reconcile.finish(claim, scheduled, &settlement).await;
-        if result.is_ok() && matches!(completion, Completion::Converged | Completion::Reobserve(_))
-        {
-            self.0.readiness.settled(claim.target());
-        }
-        result
+        rss_mdm_recovery_observation::ObservedStore::new(&self.0.reconcile, &self.0.readiness)
+            .finish(claim, scheduled, &settlement)
+            .await
     }
 }

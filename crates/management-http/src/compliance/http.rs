@@ -145,7 +145,7 @@ async fn remove(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: std::result::Result<
-        Json<rss_mdm_inventory_service::operation::Operation<Empty>>,
+        Json<rss_mdm_compliance_service::operation::Operation<Empty>>,
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<Deleted>, Error> {
@@ -179,7 +179,7 @@ async fn put(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: std::result::Result<
-        Json<rss_mdm_inventory_service::operation::Operation<Definition>>,
+        Json<rss_mdm_compliance_service::operation::Operation<Definition>>,
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<Changed>, Error> {
@@ -202,7 +202,7 @@ async fn recompute(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: std::result::Result<
-        Json<rss_mdm_inventory_service::operation::Operation<Empty>>,
+        Json<rss_mdm_compliance_service::operation::Operation<Empty>>,
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<Accepted>, Error> {
@@ -282,10 +282,10 @@ async fn version(
 struct ComplianceDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ComplianceDirectoryQuery {
     fn schema() -> &'static rss_mdm_query::directory::Schema {
-        rss_mdm_inventory_service::compliance::directory::schema()
+        rss_mdm_compliance_service::directory::schema()
     }
     fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
-        rss_mdm_inventory_service::compliance::directory::parse(raw)
+        rss_mdm_compliance_service::directory::parse(raw)
     }
 }
 

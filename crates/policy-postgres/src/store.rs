@@ -35,6 +35,8 @@ pub struct Version {
     pub id: Uuid,
     /// Checked Policy aggregate or immutable owning Policy identity.
     pub policy: Uuid,
+    /// Immutable authored action identity; decoded by the Policy owner.
+    pub action_kind: crate::core::ActionKind,
     /// Monotonic semantic version number.
     pub number: i64,
     /// Opaque host content, present on publication only for a new semantic version.
@@ -294,7 +296,7 @@ async fn version_snapshot_on(
     id: Uuid,
 ) -> Result<Option<Version>, PgError> {
     let row = sqlx::query(
-        "SELECT policy,number,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2",
+        "SELECT policy,number,action_kind,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(tenant.to_string())
     .bind(id)
@@ -305,6 +307,10 @@ async fn version_snapshot_on(
             id,
             policy: r.try_get("policy")?,
             number: r.try_get("number")?,
+            action_kind: STORAGE.json(
+                "version.action_kind",
+                serde_json::from_value(serde_json::json!(r.try_get::<String, _>("action_kind")?)),
+            )?,
             frozen: r.try_get("frozen")?,
         })
     })
@@ -434,6 +440,28 @@ impl PolicyReader {
     ) -> InTransaction<Option<Policy>> {
         input!(self.check(tx)?);
         Ok(Ok(read_snapshot(tx, id).await?))
+    }
+    /// Historical action identities remain relevant when an authored action changes owners.
+    pub async fn action_kinds_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        policy: Uuid,
+    ) -> InTransaction<Vec<crate::core::ActionKind>> {
+        input!(self.check(tx)?);
+        let tenant = self.tenant.to_string();
+        let values: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT DISTINCT action_kind FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2 ORDER BY action_kind").bind(tenant).bind(policy).fetch_all(c).await
+        })).await?;
+        let values = values
+            .into_iter()
+            .map(|value| {
+                STORAGE.json(
+                    "version.action_kind",
+                    serde_json::from_value(serde_json::json!(value)),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Ok(values))
     }
     /// Read immutable version content through this capability's runtime and tenant.
     pub async fn version_in(

@@ -5,6 +5,7 @@ mod intent;
 pub use intent::{AuditIntent, SensitiveAction};
 
 mod context;
+mod settlement;
 pub use context::{
     AuthenticationKind, FailureReason, ManagementResult, RequestAudit, Snapshot, SoftwareFact,
     TargetKind, WriteOutcome,

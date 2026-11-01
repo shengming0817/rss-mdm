@@ -397,9 +397,9 @@ pub(crate) fn encode_page(s: &PageInput<'_>) -> Result<Vec<u8>> {
                 .collect(),
             id: o.key.id().into(),
             quantifier: match o.quantifier {
-                crate::core::Quantifier::One => "one",
-                crate::core::Quantifier::Any => "any",
-                crate::core::Quantifier::All => "all",
+                rss_mdm_group::Quantifier::One => "one",
+                rss_mdm_group::Quantifier::Any => "any",
+                rss_mdm_group::Quantifier::All => "all",
             }
             .into(),
             complete: o.complete,

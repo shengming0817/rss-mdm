@@ -120,7 +120,6 @@ impl From<rss_mdm_inventory_service::Error> for Error {
     fn from(e: rss_mdm_inventory_service::Error) -> Self {
         use rss_mdm_inventory_service::{Error as I, Failure as F};
         match e {
-            I::Group(_) => Self::NotFound,
             I::Malformed => Self::Malformed,
             I::Unauthorized => Self::Unauthorized,
             I::Forbidden => Self::Forbidden,
@@ -138,7 +137,7 @@ impl From<rss_mdm_inventory_service::Error> for Error {
                 F::AssetsStorage => crate::control::Failure::AssetsStorage,
                 F::Clock => crate::control::Failure::Clock,
                 F::CollectionQuery => crate::control::Failure::CollectionQuery,
-                F::ComplianceStorage => crate::control::Failure::ComplianceStorage,
+
                 F::PlanningStorage => crate::control::Failure::PlanningStorage,
                 F::InventoryQuery => crate::control::Failure::InventoryQuery,
                 F::ManualQuery => crate::control::Failure::ManualQuery,

@@ -24,14 +24,31 @@ pub enum ScopeQuantifier {
 }
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct InventoryCondition<C = Criteria> {
+pub struct InventoryCondition {
     pub selector: ScopeSelector,
     pub quantifier: ScopeQuantifier,
-    pub criteria: C,
+    pub criteria: Criteria,
 }
-impl<C> InventoryCondition<C> {
+impl InventoryCondition {
+    pub fn selection(&self) -> ConditionSelection<'_> {
+        ConditionSelection {
+            selector: &self.selector,
+            quantifier: self.quantifier,
+        }
+    }
     pub fn validate(&self) -> Result<()> {
-        match &self.selector {
+        self.selection().validate()
+    }
+}
+/// Frozen collection selection, independent of the expression owner.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct ConditionSelection<'a> {
+    pub selector: &'a ScopeSelector,
+    pub quantifier: ScopeQuantifier,
+}
+impl ConditionSelection<'_> {
+    pub fn validate(&self) -> Result<()> {
+        match self.selector {
             ScopeSelector::Device => {
                 if self.quantifier != ScopeQuantifier::One {
                     return Err(Error::Malformed.into());
