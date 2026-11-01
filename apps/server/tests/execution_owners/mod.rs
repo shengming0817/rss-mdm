@@ -1,4 +1,6 @@
 //! Real owner composition seams; state reduction and protocol matrices remain in their owners.
+mod fixture;
+use fixture::Fixture;
 mod composition;
 mod inventory;
 mod locking;
@@ -31,7 +33,7 @@ fn request(c: &Context) -> RequestAudit {
 }
 struct Harness {
     c: Context,
-    a: super::execution::Assembly,
+    a: Fixture,
     audit: Arc<AuditStore>,
     delivery: rss_mdm_agent_channel::delivery::Delivery,
     p: rss_mdm_registration_service::DevicePrincipal,
@@ -40,12 +42,12 @@ struct Harness {
 }
 async fn delivery(
     c: &Context,
-    a: &super::execution::Assembly,
+    a: &Fixture,
 ) -> Result<(Arc<AuditStore>, rss_mdm_agent_channel::delivery::Delivery)> {
     let audit = Arc::new(
         c.audit
             .on_runtime(
-                a.runtime.clone(),
+                a.resources.storage.runtime.clone(),
                 c.tenant,
                 &rss_mdm_audit_integration::budget::AuditBudget::new(
                     std::time::Duration::from_secs(5),
@@ -57,16 +59,16 @@ async fn delivery(
     Ok((
         audit.clone(),
         rss_mdm_agent_channel::delivery::Delivery {
-            runtime: a.runtime.clone(),
+            runtime: a.resources.storage.runtime.clone(),
             tenant: c.tenant,
             audit,
-            signing: a.signing.clone(),
+            signing: a.resources.signing.clone(),
             tasks: Arc::new(super::agent_tasks::AgentTasks {
                 access: a.access_execution.service.clone(),
-                credentials: a.credential_execution.as_ref().map(|v| v.tasks.clone()),
+                credentials: None,
                 software: a.software.service.clone(),
                 registration: a.registration.enrollment.clone(),
-                content: a.content.clone(),
+                content: None,
                 requests: a.self_service.clone(),
                 execution: a.service.clone(),
                 scripts: a.scripts.clone(),
@@ -104,7 +106,7 @@ impl Harness {
             json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent","registrationId":registration,"generation":2}]}),
         )?;
         let scope = planning::published(&c, &object).await?.scope;
-        let a = command::open(&c, true).await?;
+        let a = Fixture::open(&c, true).await?;
         let (audit, delivery) = delivery(&c, &a).await?;
         Ok(Self {
             c,
@@ -119,7 +121,7 @@ impl Harness {
     async fn close(self) -> Result<()> {
         drop(self.delivery);
         drop(self.audit);
-        command::close(self.a).await?;
+        Fixture::close(self.a).await?;
         self.c.close().await;
         Ok(())
     }
@@ -212,7 +214,7 @@ impl Harness {
     }
     async fn admit(&self, version: Uuid, id: Uuid) -> Result<w::PolicyEventDecision> {
         let transactions = script::Transactions::bind(
-            self.a.runtime.clone(),
+            self.a.resources.storage.runtime.clone(),
             self.c.tenant,
             self.audit.clone(),
             Arc::new(script::Materials {
@@ -232,7 +234,7 @@ impl Harness {
         };
         Ok(script::transaction::run(
             &self.audit,
-            &self.a.runtime,
+            &self.a.resources.storage.runtime,
             self.c.tenant,
             &request(&self.c),
             (transactions, target),

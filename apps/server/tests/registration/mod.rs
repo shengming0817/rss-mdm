@@ -26,9 +26,36 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
     let installation = Uuid::new_v4();
     let bootstrap = Uuid::new_v4();
     let materials = support::materials(&c, &n, installation, bootstrap).await?;
-    let a = command::open(&c, false).await?;
-    support::installation(&c, &n, &a.protection, installation, bootstrap, &materials).await?;
-    let service = support::service(&c, &n, &a, &materials)?;
+    let resources = command::Prepared::open(&c, false, |_| {}).await?;
+    let authority = Arc::new(
+        rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
+            tenant: c.tenant,
+            instance: resources.config.identity.instance_id.clone(),
+            source: Arc::new(crate::assembly::software_sources::Source(
+                resources.source.clone(),
+            )),
+            inventory: Arc::new(crate::assembly::software_sources::Inventory),
+            lifecycle: Arc::new(crate::assembly::software_sources::Lifecycle),
+            protection: resources.protection.clone(),
+            software_distribution: resources.config.software_distribution,
+        },
+    );
+    support::installation(
+        &c,
+        &n,
+        &resources.protection,
+        installation,
+        bootstrap,
+        &materials,
+    )
+    .await?;
+    let service = support::service(
+        &c,
+        &n,
+        authority.clone(),
+        resources.protection.clone(),
+        &materials,
+    )?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let _client = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
     let (server, _) = listener.accept().await?;
@@ -143,7 +170,7 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
     assert!(hidden.bootstrap.is_none() && hidden.registration.is_none());
     snapshot.rollback().await?;
     pool.close().await;
-    command::close(a).await?;
+    resources.close().await?;
     c.close().await;
     Ok(())
 }

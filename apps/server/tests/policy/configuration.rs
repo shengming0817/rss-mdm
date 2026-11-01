@@ -1,5 +1,8 @@
-use crate::{authority_t2_support::Context, planning_t2_support as fixture};
+#[path = "fixture.rs"]
+mod fixture;
+use crate::{authority_t2_support::Context, planning_t2_support as planning};
 use anyhow::Result;
+use fixture::Fixture;
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use rss_mdm_policy_service::{
     configuration::{Configuration, Owner, Protected, frozen::Frozen},
@@ -100,14 +103,14 @@ async fn step(
 #[ignore = "T2: Policy configuration atomic command participation, rollback and restart"]
 async fn configuration_claims_and_commands_share_commit_and_replay_identity() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let object = fixture::endpoint(&c).await?;
-    let sentinel = fixture::endpoint(&c).await?;
-    let published = fixture::published(&c, &object).await?;
+    let object = planning::endpoint(&c).await?;
+    let sentinel = planning::endpoint(&c).await?;
+    let published = planning::published(&c, &object).await?;
     let key = crate::device_material_support::protection(&c)?;
     let policy = seed(&c, published.scope, &object, &key).await?;
     let device = &object.members[0].device;
-    let command = crate::command_runtime_t2_support::open(&c, false).await?;
-    let owner = fixture::owner(&c, "mdm_policy_runtime").await?;
+    let command = Fixture::open(&c, false).await?;
+    let owner = planning::owner(&c, "mdm_policy_runtime").await?;
     let app = crate::assembly::policy::application(
         &owner,
         c.tenant,
@@ -166,10 +169,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         command.software.materials.clone(),
         command.registration.materials.clone(),
         command.access_execution.materials.clone(),
-        command
-            .credential_execution
-            .as_ref()
-            .map(|v| v.materials.clone()),
+        None,
     )
     .await?;
     let worker = rss_mdm_policy_service::worker::PolicyWork::new(
@@ -186,7 +186,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     drop(worker);
     drop(app);
     drop(owner);
-    let owner = fixture::owner(&c, "mdm_policy_runtime").await?;
+    let owner = planning::owner(&c, "mdm_policy_runtime").await?;
     let app = crate::assembly::policy::application(
         &owner,
         c.tenant,
@@ -202,10 +202,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         command.software.materials.clone(),
         command.registration.materials.clone(),
         command.access_execution.materials.clone(),
-        command
-            .credential_execution
-            .as_ref()
-            .map(|v| v.materials.clone()),
+        None,
     )
     .await?;
     let worker = rss_mdm_policy_service::worker::PolicyWork::new(
@@ -223,13 +220,20 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     assert_eq!(foreign, 0);
     let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm.policy.configuration.v1'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(outbox, 1);
-    query::prove_batch(&c, &app, &command, &key, identity.0).await?;
+    query::prove_batch(
+        &c,
+        &app,
+        &command.resources.storage.read_pool,
+        &key,
+        identity.0,
+    )
+    .await?;
     drop(worker);
     drop(app);
     drop(owner);
     use rss_runtime::ManagedResource;
     scheduler.shutdown().await?;
-    crate::command_runtime_t2_support::close(command).await?;
+    Fixture::close(command).await?;
     c.close().await;
     Ok(())
 }

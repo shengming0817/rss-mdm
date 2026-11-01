@@ -116,7 +116,9 @@ async fn claim_policy<T: rss_reconcile::Timer>(
     rss_reconcile_postgres::PgClaim,
     rss_reconcile::ReconcileDiff<bool>,
 )> {
-    let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), control).await?;
+    let store =
+        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), control)
+            .await?;
     let scope = if collection {
         collection::wake::scope(h.c.tenant)
     } else {

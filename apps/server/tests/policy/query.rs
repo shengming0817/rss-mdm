@@ -105,7 +105,7 @@ async fn historical(c: &Context, key: &Protector, original: Uuid) -> Result<Vec<
 pub async fn prove_batch(
     c: &Context,
     app: &Application,
-    command: &crate::assembly::execution::Assembly,
+    read_pool: &sqlx::PgPool,
     key: &Protector,
     id: Uuid,
 ) -> Result<()> {
@@ -116,7 +116,7 @@ pub async fn prove_batch(
     let proof = c.authenticate(&account).await?;
     let measurements = Reads::default();
     let subscriber = tracing_subscriber::registry().with(measurements.clone());
-    let mut tx = command.read_pool.begin().await?;
+    let mut tx = read_pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
         .await?;

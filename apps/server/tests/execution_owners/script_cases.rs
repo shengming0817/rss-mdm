@@ -49,7 +49,7 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
     .await;
     script::transaction::run(
         &h.audit,
-        &h.a.runtime,
+        &h.a.resources.storage.runtime,
         h.c.tenant,
         &request(&h.c),
         (&h.a.scripts, id),
@@ -57,11 +57,11 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
     )
     .await?;
     assert_eq!(h.state(id).await?["execution"], "unknown");
-    let a = command::open(&h.c, true).await?;
+    let a = Fixture::open(&h.c, true).await?;
     let (audit, delivery) = delivery(&h.c, &a).await?;
     drop(std::mem::replace(&mut h.delivery, delivery));
     drop(std::mem::replace(&mut h.audit, audit));
-    command::close(std::mem::replace(&mut h.a, a)).await?;
+    Fixture::close(std::mem::replace(&mut h.a, a)).await?;
     let (other_policy, other_version) = h.policy("script-unknown").await?;
     let target = script::Target {
         device: h.p.device().into(),
@@ -72,7 +72,7 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
         let resource = resource.to_owned();
         let target = target.clone();
         script::transaction::inspect(
-            &h.a.runtime,
+            &h.a.resources.storage.runtime,
             h.c.tenant,
             (target, resource),
             move |ctx, tx| {

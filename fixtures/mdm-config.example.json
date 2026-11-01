@@ -71,15 +71,13 @@
   "audit": {
     "mode": "plain"
   },
-  "execution": {
-    "database": {
-      "host": "postgres.example.test",
-      "port": 5432,
-      "name": "mdm",
-      "user": "mdm_command_runtime",
-      "password_file": "/run/secrets/command-password",
-      "ca_file": "/run/mdm/database-ca.pem"
-    }
+  "command_database": {
+    "host": "postgres.example.test",
+    "port": 5432,
+    "name": "mdm",
+    "user": "mdm_command_runtime",
+    "password_file": "/run/secrets/command-password",
+    "ca_file": "/run/mdm/database-ca.pem"
   },
   "content": null,
   "task_signing": null,

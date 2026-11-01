@@ -269,7 +269,7 @@ def verify_capability_boundaries(data):
         'software-service': {'rss-mdm-app',  'rss-mdm-content-service', 'rss-mdm-management-http'},
     }
     for owner in ('authorization-service', 'registration-service', 'inventory-service',
-                  'device-service', 'script-service', 'content-service'):
+                  'device-service', 'script-service', 'software-service', 'content-service'):
         forbidden.setdefault(owner, set()).update(ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'})
     # F01 (#3040): consumer-owned ports, no replacement Flow service.
     services = {'scope-service', 'policy-service', 'resource-service'}
@@ -286,8 +286,11 @@ def verify_capability_boundaries(data):
         forbidden.setdefault(owner, set()).update(
             ingress | {'sqlx', 'axum', 'rss-mdm-app', 'rss-mdm-http-contract'} |
             {name for name in packages if name.endswith(('-service', '-postgres'))})
-    forbidden['task-state'] = { 'rss-mdm-policy', 'rss-mdm-registration-service', 'sqlx', 'tokio'}
-    forbidden['task-trust'] = ingress | {'rss-mdm-app',  'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-software-service'}
+    forbidden['task-state'] = set()  # Pure transition values have a closed dependency set below.
+    # Registration and authorization are the real signing/ACK authority participants.
+    forbidden['task-trust'] = ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'} | {
+        name for name in packages if name.endswith('-service') and
+        name not in {'rss-mdm-registration-service', 'rss-mdm-authorization-service'}}
     forbidden['webhook-service'] = ingress | {'rss-mdm-app','axum','rss-mdm-http-contract','rss-mdm-inventory-service','rss-mdm-registration-service','rss-mdm-device-service'}
     forbidden['inventory-service'].update({'rss-mdm-policy-service','rss-mdm-script-service'})
     forbidden['script-service'].update({'rss-mdm-policy-service','rss-mdm-windows-mdm','rss-mdm-apple-mdm','plist'})
@@ -304,6 +307,8 @@ def verify_capability_boundaries(data):
         require(package is not None, 'missing capability owner: ' + owner)
         dependencies = {d['name'] for d in package['dependencies'] if d['kind'] != 'dev'}
         invalid = dependencies & denied
+        if owner == 'task-state':
+            invalid |= dependencies - {'serde', 'schemars', 'uuid', 'thiserror'}
         if owner in {'group', 'scope', 'policy', 'resource'}:
             # Include external RSS providers, not only workspace package names.
             invalid |= {name for name in dependencies

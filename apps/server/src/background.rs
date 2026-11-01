@@ -23,7 +23,7 @@ impl BackgroundConfig {
         self.device_concurrency as u32 + 8
     }
     /// Execution shares its runtime with Command workers, relay and foreground requests.
-    pub(crate) fn execution_connections(&self) -> u32 {
+    pub(crate) fn command_connections(&self) -> u32 {
         self.device_concurrency as u32 + 8
     }
     pub(crate) fn inventory_connections(&self) -> u32 {
@@ -61,7 +61,7 @@ impl BackgroundConfig {
             ("policy-owner", self.policy_connections()),
             ("resource-owner", 2),
             ("software-owner", 2),
-            ("execution", self.execution_connections()),
+            ("command", self.command_connections()),
             ("execution-scheduler", SCHEDULER_CONNECTIONS),
             ("business-scheduler", SCHEDULER_CONNECTIONS),
             ("notifications", 1),

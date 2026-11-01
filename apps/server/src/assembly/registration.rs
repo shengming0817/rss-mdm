@@ -25,6 +25,7 @@ pub(crate) async fn assemble(
     reconcile: rss_reconcile_postgres::PgStore,
     budget: Arc<tokio::sync::Semaphore>,
 ) -> Result<Assembly, crate::Error> {
+    config.enrollment_entries.validate()?;
     let apple = Arc::new(super::registration_apple_facts::AppleFacts(
         rss_mdm_apple_channel::flow_store::Store {
             protection: protection.clone(),

@@ -40,7 +40,7 @@ Remote 与旧通用直接命令无部署升级义务，已完整退出。当前�
 筛选在服务端按排序分批遍历，满足完整过滤条件后才组成页面；统计计算同一过滤全集。1000 条／16 MiB 是单批受保护读取限制，不是队列总规模上限。事务沿用 6 秒保护；预算或时限不足时返回失败，不返回部分总数。只选择元数据且不按授权过滤时不读取授权材料。每次请求在只读 RR 快照中使用固定判定时点，按当时的来源、能力、注册、生命周期、截止时间和执行事实分类；后续页重新计算，数据变化或任务过期不作废续页。独立统计请求的 asOf 不代表与另一次列表请求原子一致。单条详情复用同一快照，退出快照并释放连接后复验当前授权及 runtime，DDM 同时复验当前注册。受保护来源先按唯一版本去重，再按实际字节拆批与解密，同一配置的多个移除命令不重复计费。
 
 
-命令连接 execution.database 使用 mdm_command_runtime。完整运行配置见 fixtures/mdm-config.example.json；恢复和安装要求见[运维](../deployment/operations.md)。
+命令连接 command_database 使用 mdm_command_runtime。完整运行配置见 fixtures/mdm-config.example.json；恢复和安装要求见[运维](../deployment/operations.md)。
 
 ## Windows 原生操作
 

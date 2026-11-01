@@ -65,7 +65,7 @@ fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
     for pointer in [
         "/access_database",
         "/runtime_database",
-        "/execution/database",
+        "/command_database",
         "/business_databases/inventory",
         "/business_databases/scope",
         "/business_databases/policy",
@@ -123,24 +123,24 @@ fn startup_configuration_diagnostics_identify_safe_fields() {
     for (pointer, value, field) in [
         ("/listen", serde_json::json!("0.0.0.0:8080"), "Listen"),
         (
-            "/execution/database/user",
+            "/command_database/user",
             serde_json::json!("mdm_access"),
-            "Execution",
+            "CommandStorage",
         ),
         (
-            "/execution/database/host",
+            "/command_database/host",
             serde_json::json!("other-host"),
-            "Execution",
+            "CommandStorage",
         ),
         (
-            "/execution/database/port",
+            "/command_database/port",
             serde_json::json!(5433),
-            "Execution",
+            "CommandStorage",
         ),
         (
-            "/execution/database/name",
+            "/command_database/name",
             serde_json::json!("other-db"),
-            "Execution",
+            "CommandStorage",
         ),
         (
             "/access_database/user",

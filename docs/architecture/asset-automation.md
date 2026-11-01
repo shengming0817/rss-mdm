@@ -20,7 +20,7 @@ Agent 在签入时受理自己的 Run，配置型仅对必要差分入队；发�
 - AssetCut 绑定租户、历史代次和 PostgreSQL snapshot。通过既有只读入口捕获已提交事实，
   释放读取连接后才进入业务写事务。历史读取先按切面过滤，再选同对象最新版本；
   同对象业务锁保证版本顺序。自身未提交写入不进入切面，需要新事实的计算由原事务登记持久任务，提交后捕获输入。
-- Inventory 的 Group、资产查询、Compliance 任务和独立 Scope 任务直接通过 RSS 公共 messaging 能力原子保存并唤醒；Execution 直接拥有设备来源变化扫描。
+- Inventory 的 Group、资产查询、Compliance 任务和独立 Scope 任务直接通过 RSS 公共 messaging 能力原子保存并唤醒；Device 与 Software 分别拥有所属设备来源变化扫描。
   RSS 独占 claim、lease、重试及恢复；产品不直接调用组件私有 SQL。
   新输入通过各 owner 的持久检查点合并；已运行的计算保留检查点，完成后追赶较新输入。
   Scope 计算冲突自动产生可查询的替代任务；临时未完成的来源不能授权新执行。
@@ -40,7 +40,7 @@ Group 的规则、唯一图边索引、图版本、定义遍历和来源坐标�
 Inventory 持有定义编辑、正式计算、预览任务及求值检查点。`mdm.groups` reconciler 与
 Scope 的 `mdm.scopes` 任务独立，资产及关联关系各有 Group 消费进度，不使用共享 forwarded 标记。
 
-Inventory Group、Compliance、Scope、Execution、Device 各自复用原检查点保存
+Inventory Group、Compliance、Scope、Software、Device 各自复用原检查点保存
 `from_cut / to_cut / event_after` 和必要的 fanout 游标。一次窗口仅处理
 `visible(to_cut) && !visible(from_cut)`，每次有界扫描事件和目标；下游效果、持久待办与游标原子提交。
 差集耗尽才将 from_cut 推进至 to_cut，中断继续原窗口；低编号晚提交事件进入后续差集。
@@ -63,9 +63,9 @@ Group 内部依赖传播和 Compliance 唤醒仍各自在业务事务中完成�
 
 Scope 的定义、来源快照、运行、集合结果、任务与消费进度归 `scope-postgres` 的 `mdm_scope`。
 定义与结果版本直接读取权威记录，设备 authority 读取 Registration，不维护通用 `source_heads` 副本。
-Scope 独立消费 Group 通知及设备来源变化，使用自己的检查点；Execution 持有 device_source_dispatch 与设备唤醒处理。两者各自推进，设备执行唤醒的进度不会阻塞 Scope。
+Scope 独立消费 Group 通知及设备来源变化，使用自己的检查点；Device 与 Software 各自持有 device_source_dispatch 与设备唤醒处理。两者各自推进，设备执行唤醒的进度不会阻塞 Scope。
 
-Execution 拥有按 run 绑定的通道投影、分页进度、通道语义版本及 entry 连续性。两侧可分批暂存，
+Scope 拥有按 run 绑定的通道投影、分页进度、通道语义版本及 entry 连续性。两侧可分批暂存，
 最终在同一实际事务重验定义和前一结果，发布 Scope head 与完整通道投影，并登记一项 Policy 后续任务。
 Scope 任务随后完成；Policy 自己持有传播游标、重试和分配任务，不反向阻塞 Scope 的完成或恢复。
 唯一有效结果指针由 Scope 持有，尚未发布的投影不能参与准入。

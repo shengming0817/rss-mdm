@@ -12,14 +12,19 @@ async fn shared_capacity_counts_each_owner_and_isolates_other_devices() -> Resul
     sqlx::query("INSERT INTO mdm_inventory.collection_tasks(tenant_id,id,policy_version,channel,origin,source_objects,device,registration,generation,occurrence,created_at,available_at,deadline,agent_state,dispatch_fingerprint) SELECT tenant_id,gen_random_uuid(),policy_version,'agent',origin,source_objects,device,registration,generation,'capacity:'||n,created_at,available_at,deadline,state,dispatch_fingerprint FROM mdm_script.runs CROSS JOIN generate_series(1,63) n WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     let capacity = |device: String| {
-        script::transaction::inspect(&h.a.runtime, h.c.tenant, device, |device, tx| {
-            Box::pin(async move {
-                script::storage::lock_device(tx, device).await?;
-                super::super::capacity::Capacity
-                    .available_in(tx, device, now())
-                    .await
-            })
-        })
+        script::transaction::inspect(
+            &h.a.resources.storage.runtime,
+            h.c.tenant,
+            device,
+            |device, tx| {
+                Box::pin(async move {
+                    script::storage::lock_device(tx, device).await?;
+                    super::super::capacity::Capacity
+                        .available_in(tx, device, now())
+                        .await
+                })
+            },
+        )
     };
     assert!(capacity(h.p.device().into()).await?);
     h.run(version, "capacity", now() + 300).await?;
@@ -62,10 +67,10 @@ async fn original_self_service_receipt_replays_after_policy_kind_changes() -> Re
     tx.commit().await?;
     let tasks = super::super::agent_tasks::AgentTasks {
         access: h.a.access_execution.service.clone(),
-        credentials: h.a.credential_execution.as_ref().map(|v| v.tasks.clone()),
+        credentials: None,
         software: h.a.software.service.clone(),
         registration: h.a.registration.enrollment.clone(),
-        content: h.a.content.clone(),
+        content: None,
         requests: h.a.self_service.clone(),
         execution: h.a.service.clone(),
         scripts: h.a.scripts.clone(),

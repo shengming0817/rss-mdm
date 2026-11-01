@@ -16,6 +16,8 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 Policy 发布分别消费各 owner 的 `Inputs`，事件批次通过 App 定向受理并读取原操作事实。参与者借入发起方 runtime 的同一事务，成员决定、执行意图、审计和持久 wake 在原 claim 保护事务内提交。各业务 owner 共用设备 fence、128 个活动任务上限、原连接池及恢复并发预算；一个宿主 relay 循环调度所属 outbox。各 owner 持有自己的持久恢复检查点，通知丢失与进程重启不会丢掉工作。
 
+App 生命周期显式装配各 owner，宿主只统一持有 `command_database` 对应的共享事务 runtime、读池和恢复并发预算。资源获取后立即登记到同一 RSS startup/shutdown 栈，后续装配失败也能回收；业务服务借用资源，不负责关闭共享连接。Script、Collection、Device、Task Trust 分别有独立装配入口；Content 的资源获取与关闭归 Content 装配。测试共享资源与材料准备，各真实消费者显式连接其所需业务 owner。
+
 Agent 在同一个有界候选页中按 `(available_at,id)` 排序检查，协议表保存唯一 offer 游标。自助服务先在同一请求锁和事务内检索各 owner 的原回执，只有全部缺席才按当前 Policy 分类；Policy 改类不会改变旧请求归属。Policy 历史由 App 在一个只读快照内合并各 owner 的有界页面，并在返回前复验当前授权。
 
 `task-state` 单源持有 Run/Attempt 的纯转换，业务 owner 持有实例与结果。`task-trust` 持有受保护签名密钥、信任版本、ACK、观察和操作回执；签发在消费者原事务复验 Registration 与安装资格。Agent 通道持有未过期签名引用查询，通过退役窄接口参与同一事务，不拥有信任状态。Telemetry 与信任 HTTP 入口直接消费 task-trust。
@@ -43,7 +45,7 @@ Scope 是目标计算的唯一 owner。成员三值结果与定义版本决定�
 
 Content 持有内容流及其锁、permit 与截止时间；Agent 通道持有 Offer、Start permit 签名、领取、事件去重、取消分页与内容交付资格。各业务 owner 持有自己的命令提交、准入与结果归档。事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
 
-通道交付借入宿主现有的 `mdm_command_runtime` 与同一 PostgreSQL 事务，业务参与端口只接收原事务或原连接。通道不反向依赖 Execution，也不新增池、角色或统一交付框架。Registration 是注册身份与世代的唯一权威；原业务 command/outbox/audit 原子性、当前来源授权、fencing、提交未知和回滚失败均保持。
+通道交付借入宿主现有的 `mdm_command_runtime` 与同一 PostgreSQL 事务，业务参与端口只接收原事务或原连接。通道通过自身定义的业务参与端口调用具体 owner，也不新增池、角色或统一交付框架。Registration 是注册身份与世代的唯一权威；原业务 command/outbox/audit 原子性、当前来源授权、fencing、提交未知和回滚失败均保持。
 
 Agent 的原始 Offer/permit 是唯一已交付材料，不另存 execution material；历史读取只解码并核对任务身份，当前下载、启动和事件仍重验当前授权。绑定的原始能力公告单源存储，缺失表示 Unknown。Windows 持有会话、attempt/item/frame、能力查询与逐字节重放；Apple 持有命令、DDM publication、资产交付、用户通道和 APNs。业务查询可读取通道事实，协议写入仅由所属通道完成。当前安装直接建立最终 owner 结构，不提供旧结构兼容层。
 

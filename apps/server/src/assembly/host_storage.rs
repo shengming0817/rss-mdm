@@ -87,83 +87,127 @@ use crate::Error;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxStore, PgRuntime};
 use std::{sync::Arc, time::Duration};
-/// Admit the shared host resources; business owners bind only their required capabilities.
-pub(crate) async fn open(
-    runtime: Arc<PgRuntime>,
-    options: sqlx::postgres::PgConnectOptions,
-    tenant: TenantId,
-    protection: &rss_mdm_native_protection::Protector,
-    command_clock: rss_device_command_postgres::CommandClock,
-    domain: rss_transactional_messaging::message::MessagingDomain,
-) -> Result<
-    (
-        Arc<PgOutboxStore<()>>,
-        rss_device_command_postgres::PgStore<()>,
-        rss_reconcile_postgres::PgStore,
-        sqlx::PgPool,
-    ),
-    Error,
-> {
-    let bad = || Error::Configuration(crate::ConfigIssue::Execution);
-    bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
-    let caller = runtime.clone();
-    let (outbox, store) = runtime
-        .local_tx(tenant, deadline(), move |tx| {
-            Box::pin(async move {
-                tx.with_connection(|c| {
-                    Box::pin(async move {
-                        rss_mdm_policy_postgres::verify_authority(c).await?;
-                        rss_mdm_scope_postgres::verify_authority(c).await?;
-                        rss_mdm_inventory_service::verify_authority(c).await?;
-                        rss_mdm_agent_channel::signature_retirement::verify_authority(c).await?;
-                        rss_mdm_apple_channel::verify_authority(c).await
-                    })
-                })
-                .await?;
-                admit(tx).await.map_err(|_| {
-                    PgError::from(sqlx::Error::Protocol("command admission".into()))
-                })?;
-                bind_command_in(caller, tx, command_clock, domain)
-                    .await
-                    .inspect_err(|_| eprintln!("command startup: device-command admission failed"))
-            })
-        })
-        .await
-        .fold(
-            Ok,
-            |_| {
-                eprintln!("command startup: transaction failed");
-                Err(bad())
-            },
-            |_| {
-                eprintln!("command startup: transaction failed");
-                Err(bad())
-            },
-            |_| Err(Error::RollbackFailed),
-            |_| Err(Error::CommitUnknown),
-            |_| {
-                eprintln!("command startup: transaction failed");
-                Err(bad())
-            },
+/// Shared physical command resources; no business service is retained here.
+pub(crate) struct Storage {
+    pub runtime: Arc<PgRuntime>,
+    pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub tenant: TenantId,
+    pub reconcile: rss_reconcile_postgres::PgStore,
+    pub read_pool: sqlx::PgPool,
+    pub worker_budget: Arc<tokio::sync::Semaphore>,
+}
+impl Storage {
+    pub(crate) async fn open(
+        config: &crate::config::Config,
+        audit: Arc<rss_mdm_audit_integration::AuditStore>,
+        protection: &rss_mdm_native_protection::Protector,
+        mut acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
+    ) -> Result<Self, Error> {
+        let bad = || Error::Configuration(crate::ConfigIssue::CommandStorage);
+        let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| bad())?;
+        let (pg, binding) = crate::identity::runtime_inputs(
+            &config.command_database,
+            &config.storage_binding.target,
+            &config.storage_binding.lineage,
+            &[(tenant, config.storage_binding.epoch)],
         )?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(crate::background::SCHEDULER_CONNECTIONS)
-        .acquire_timeout(Duration::from_secs(5))
-        .connect_with(options)
-        .await
-        .map_err(|_| bad())?;
-    let timer = Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    let reconcile = match rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await {
-        Ok(s) => s,
-        Err(_) => {
-            eprintln!("command startup: reconcile admission failed");
-            pool.close().await;
-            return Err(bad());
-        }
-    };
-    Ok((outbox, store, reconcile, pool))
+        let runtime = Arc::new(
+            PgRuntime::connect(
+                pg.with_pool_limits(0, config.background.command_connections()),
+                crate::lifecycle::RuntimeTimer,
+                binding,
+            )
+            .await
+            .map_err(|_| Error::Unavailable(crate::Failure::CommandStorage))?,
+        );
+        acquire(rss_runtime::DynManagedResource::new_box(
+            crate::owner_storage::Resource::new(runtime.clone(), "command-runtime-postgres"),
+        ));
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit = Arc::new(
+            audit
+                .on_runtime(runtime.clone(), tenant, &budget.control())
+                .await?,
+        );
+        bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
+        runtime
+            .local_tx(tenant, deadline(), move |tx| {
+                Box::pin(async move {
+                    tx.with_connection(|c| {
+                        Box::pin(async move {
+                            rss_mdm_policy_postgres::verify_authority(c).await?;
+                            rss_mdm_scope_postgres::verify_authority(c).await?;
+                            rss_mdm_inventory_service::verify_authority(c).await?;
+                            rss_mdm_agent_channel::signature_retirement::verify_authority(c)
+                                .await?;
+                            rss_mdm_apple_channel::verify_authority(c).await
+                        })
+                    })
+                    .await?;
+                    admit(tx).await.map_err(|_| {
+                        PgError::from(sqlx::Error::Protocol("command admission".into()))
+                    })?;
+                    Ok(())
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |_| {
+                    eprintln!("command startup: transaction failed");
+                    Err(bad())
+                },
+                |_| {
+                    eprintln!("command startup: transaction failed");
+                    Err(bad())
+                },
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |_| {
+                    eprintln!("command startup: transaction failed");
+                    Err(bad())
+                },
+            )?;
+
+        let read_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(crate::background::SCHEDULER_CONNECTIONS)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(config.command_database.options()?)
+            .await
+            .map_err(|_| bad())?;
+        acquire(rss_runtime::DynManagedResource::new_box(ReadPool(
+            read_pool.clone(),
+        )));
+        let timer = Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        let reconcile = rss_reconcile_postgres::PgStore::new(read_pool.clone(), &control)
+            .await
+            .map_err(|_| bad())?;
+        Ok(Self {
+            runtime,
+            audit,
+            tenant,
+            reconcile,
+            read_pool,
+            worker_budget: Arc::new(tokio::sync::Semaphore::new(
+                config.background.device_concurrency,
+            )),
+        })
+    }
+}
+struct ReadPool(sqlx::PgPool);
+impl rss_runtime::ManagedResource for ReadPool {
+    fn name(&self) -> &str {
+        "command-scheduler-postgres"
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(8)
+    }
+    async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
 }
 
 pub async fn bind_command_in(

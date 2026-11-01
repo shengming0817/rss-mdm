@@ -160,3 +160,54 @@ pub(super) fn configuration_fault(e: rss_mdm_policy_service::transaction::Fault)
         }
     }
 }
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HTTP reads compose explicit owner query ports"
+)]
+pub(crate) fn assemble(
+    config: &crate::config::Config,
+    storage: &super::host_storage::Storage,
+    protection: std::sync::Arc<rss_mdm_native_protection::Protector>,
+    content: Option<std::sync::Arc<rss_mdm_content_service::Store>>,
+    signed: bool,
+    recovery_enabled: bool,
+    source: std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
+    configuration: std::sync::Arc<rss_mdm_policy_service::configuration::Transactions>,
+    software: std::sync::Arc<rss_mdm_software_service::deployment::queries::Queries>,
+    enrollment: std::sync::Arc<rss_mdm_registration_service::enrollment::tasks::Materials>,
+    queries: std::sync::Arc<rss_mdm_device_service::control::queries::Queries>,
+) -> std::sync::Arc<Reads> {
+    Arc::new(Reads {
+        content_available: config.content.is_some(),
+        configuration,
+        software,
+        enrollment,
+        entries: config.enrollment_entries.clone(),
+        signing_enabled: signed,
+        recovery_enabled,
+        clock: Arc::new(crate::lifecycle::RuntimeTimer),
+        policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+            storage.runtime.clone(),
+            storage.tenant,
+        ),
+        tenant: storage.tenant,
+        read_pool: storage.read_pool.clone(),
+        source,
+        scripts: rss_mdm_script_service::inputs::Inputs::bind(
+            storage.runtime.clone(),
+            storage.tenant,
+            content.clone(),
+            signed,
+        ),
+        collections: rss_mdm_inventory_service::collection::execution::inputs::Inputs::bind(
+            storage.runtime.clone(),
+            storage.tenant,
+            content.clone(),
+            Arc::new(super::collection_ports::Delivery {
+                protection: protection.clone(),
+            }),
+        ),
+        execution: queries,
+    })
+}

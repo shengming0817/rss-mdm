@@ -1,9 +1,11 @@
 //! Software's surviving transaction risks: alias/channel exclusion, durable Unknown, rollout snapshot.
+mod fixture;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     device_material_support as material, planning_t2_support as planning,
 };
 use anyhow::Result;
+use fixture::Fixture;
 use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use rss_mdm_software_service::deployment as owner;
@@ -13,7 +15,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 pub(super) mod support;
 use support::*;
-async fn open(c: &Context) -> Result<super::execution::Assembly> {
+async fn open(c: &Context) -> Result<Fixture> {
     let protection = material::protection(c)?;
     material::seed_trust(
         c,
@@ -21,7 +23,7 @@ async fn open(c: &Context) -> Result<super::execution::Assembly> {
         &[rss_mdm_agent_wire::task_trust::KeyState::Active],
     )
     .await?;
-    command::open_with(c, true, |config| {
+    Fixture::open_with(c, true, |config| {
         config["software_distribution"]["mdm_enabled"] = json!(true)
     })
     .await
@@ -42,17 +44,21 @@ async fn count(c: &Context) -> Result<i64> {
 #[ignore = "T2: independent input owners commit their first suspension and distinct audit facts in the same tenant"]
 async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let a = command::open(&c, false).await?;
+    let a = Fixture::open(&c, false).await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let store = c
         .audit
-        .on_runtime(a.runtime.clone(), c.tenant, &budget.control())
+        .on_runtime(
+            a.resources.storage.runtime.clone(),
+            c.tenant,
+            &budget.control(),
+        )
         .await?;
     let request = audit(&c);
     rss_mdm_device_service::control::transaction::run(
         &store,
-        &a.runtime,
+        &a.resources.storage.runtime,
         c.tenant,
         &request,
         &store,
@@ -68,7 +74,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         let request = audit(&c);
         owner::transaction::run(
             &store,
-            &a.runtime,
+            &a.resources.storage.runtime,
             c.tenant,
             &request,
             &store,
@@ -85,7 +91,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         "SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business'",
     ).bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(facts, 2);
-    command::close(a).await?;
+    Fixture::close(a).await?;
     c.close().await;
     Ok(())
 }
@@ -161,7 +167,7 @@ async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result
     assert_eq!(count(&c).await?, 1);
     let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id LIKE 'action.%'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(outbox, 1);
-    command::close(a).await?;
+    Fixture::close(a).await?;
     c.close().await;
     Ok(())
 }
@@ -204,8 +210,8 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm_software_deployment.action_runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(&state)?).execute(&mut *tx).await?;
     tx.commit().await?;
-    command::close(a).await?;
-    let a = command::open_with(&c, true, |v| {
+    Fixture::close(a).await?;
+    let a = Fixture::open_with(&c, true, |v| {
         v["software_distribution"]["mdm_enabled"] = json!(true)
     })
     .await?;
@@ -235,7 +241,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(stored, serde_json::to_value(state)?);
-    command::close(a).await?;
+    Fixture::close(a).await?;
     c.close().await;
     Ok(())
 }
@@ -334,26 +340,28 @@ async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Resu
     assert_eq!(stale["stages"][0]["ready"], false);
     assert_eq!(stale["stages"][0]["verifiedSuccess"], 0);
     assert_eq!(stale["stages"][1]["open"], false);
-    command::close(a).await?;
+    Fixture::close(a).await?;
     c.close().await;
     Ok(())
 }
-async fn reduce(
-    c: &Context,
-    a: &super::execution::Assembly,
-    policy_id: Uuid,
-    version: Uuid,
-) -> Result<()> {
+async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Result<()> {
     use std::time::Duration;
     let messaging = rss_reconcile_postgres::PgMessagingStore::new(
-        a.runtime.clone(),
+        a.resources.storage.runtime.clone(),
         c.tenant,
         owner::deadline(),
     )
     .await?;
-    owner::transaction::inspect(&a.runtime, c.tenant, messaging, move |m, tx| {
-        Box::pin(async move { owner::sources::storage::wake_execution_in(m, tx, policy_id).await })
-    })
+    owner::transaction::inspect(
+        &a.resources.storage.runtime,
+        c.tenant,
+        messaging,
+        move |m, tx| {
+            Box::pin(
+                async move { owner::sources::storage::wake_execution_in(m, tx, policy_id).await },
+            )
+        },
+    )
     .await?;
     let timer = owner::recovery::Timer::new();
     let force = tokio_util::sync::CancellationToken::new();

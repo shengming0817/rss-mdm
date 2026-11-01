@@ -206,8 +206,8 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     };
     drop(h.delivery);
     drop(h.audit);
-    command::close(h.a).await?;
-    h.a = command::open(&h.c, true).await?;
+    Fixture::close(h.a).await?;
+    h.a = Fixture::open(&h.c, true).await?;
     (h.audit, h.delivery) = delivery(&h.c, &h.a).await?;
     assert!(
         h.a.service
@@ -451,8 +451,8 @@ async fn cleanup_history_is_bounded_and_resumes() -> Result<()> {
     .fetch_one(&h.c.operator)
     .await?;
     assert_eq!(checkpoint, Some(Uuid::from_u128(64)));
-    let replacement = command::open(&h.c, true).await?;
-    command::close(std::mem::replace(&mut h.a, replacement)).await?;
+    let replacement = Fixture::open(&h.c, true).await?;
+    Fixture::close(std::mem::replace(&mut h.a, replacement)).await?;
     step(&h, retirement).await?;
     assert_eq!(
         state(&h, retirement).await?,
