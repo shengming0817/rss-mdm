@@ -67,6 +67,7 @@ pub(crate) struct Statements {
     pub operation_lock: &'static str,
     pub operation_replay: &'static str,
     pub operation_receipt: &'static str,
+    pub queue_counts: &'static str,
 }
 macro_rules! define_storage {
     ($module:ident, $schema:literal, $schema_decl:literal, $schema_name:literal, $access_schema:literal, $access:literal, $tasks:literal, $tasks_name:literal, $asset_dispatch:literal, $asset_dispatch_name:literal, $group_changes:literal, $group_changes_name:literal, $owner:literal, $command_runtime:literal, $inventory_runtime:literal, $scope_runtime:literal, $policy_runtime:literal, $telemetry_runtime:literal, $scope_admission_header:literal, $scope_state_header:literal, $lock_reference_target_header:literal, $channel_admission_header:literal, $create_mdm_scope:literal, $role_mdm_identity_runtime:literal, $role_mdm_resource_runtime:literal, $role_mdm_software_runtime:literal, $object_qualification:literal, $index_26:literal, $index_27:literal, $index_28:literal, $index_29:literal, $index_30:literal, $index_31:literal, $index_32:literal, $index_33:literal, $index_34:literal, $index_35:literal, $index_36:literal, $index_37:literal, $index_38:literal, $index_39:literal, $index_40:literal, $index_41:literal, $index_42:literal, $index_43:literal, $index_44:literal, $access_contract_external_relations:literal, $operations:literal, $operations_name:literal) => {
@@ -776,6 +777,12 @@ SELECT EXISTS(SELECT FROM pg_class c WHERE c.oid='"###, $group_changes, r###"'::
                 operation_lock: concat!("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,'", $operations, "',$2::text,$3::text)::text,2889))"),
                 operation_replay: concat!("SELECT fingerprint,response FROM ", $operations, " WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3"),
                 operation_receipt: concat!("INSERT INTO ", $operations, "(tenant_id,actor,id,fingerprint,response) VALUES($1::uuid,$2,$3,$4,$5)"),
+                queue_counts: concat!(r###"SELECT
+            (SELECT count(*) FROM (SELECT 1 FROM "###, $tasks, " t WHERE t.tenant_id=$1::uuid AND NOT completed AND NOT EXISTS(SELECT 1 FROM ", $schema, r###"scope_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.id)) LIMIT 1001) q),
+            (SELECT count(*) FROM (SELECT 1 FROM "###, $tasks, " t WHERE t.tenant_id=$1::uuid AND NOT completed AND EXISTS(SELECT 1 FROM ", $schema, r###"scope_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.id)) LIMIT 1001) q),
+            (SELECT count(*) FROM (SELECT 1 FROM "###, $tasks, r###" WHERE tenant_id=$1::uuid AND completed AND failure IS NULL LIMIT 1001) q),
+            (SELECT count(*) FROM (SELECT 1 FROM "###, $tasks, r###" WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),
+            (SELECT count(*) FROM (SELECT 1 FROM "###, $tasks, " WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q)"),
             };
         }
     };
@@ -878,7 +885,7 @@ define_storage!(
     "ADD CONSTRAINT scope_scopes_tenant_id_resolution_fkey",
     "CREATE INDEX scope_group_changes_pending",
     "CREATE INDEX scope_scope_channel_results_cursor",
-    "",
+    r###""rss_da.scopes","rss_da.scope_runs","rss_da.scope_source_members","rss_da.scope_projection_runs","rss_da.scope_channel_results""###,
     "rss_da.scope_operations",
     "'scope_operations'"
 );

@@ -144,15 +144,13 @@ fn product_source_survives_context_projection() {
         ] {
             assert_eq!(copy.profile(), profile);
             assert_eq!(
-                Fact::business(&copy, "same-operation", 200, "success", None)
-                    .unwrap()
-                    .identity(),
-                fact.identity()
+                canonical(&Fact::business(&copy, "same-operation", 200, "success", None).unwrap()),
+                canonical(&fact)
             );
             copy.finalize(None);
         }
-        identities.push(fact.identity().clone());
+        identities.push(fact.identity().source().source_id().as_str().to_owned());
         context.finalize(None);
     }
-    assert_ne!(identities[0], identities[1]);
+    assert_eq!(identities, ["mdm.business", "da.business"]);
 }

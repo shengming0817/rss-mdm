@@ -1105,7 +1105,7 @@ async fn authorize_write(
     p: &AuthorizedPrincipal,
 ) -> Result<(), Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     super::authorize_on(profile, c, p, Permission::RegistrationConfigurationWrite).await?;

@@ -838,16 +838,21 @@ impl ScopeBinding {
         &self,
         tx: &mut PgTransaction<'_>,
     ) -> Result<[u64; 5], BindingError> {
+        let profile = self.profile();
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
-        let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_as::<_,(i64,i64,i64,i64,i64)>("SELECT
-            (SELECT count(*) FROM (SELECT 1 FROM mdm_scope.tasks t WHERE t.tenant_id=$1::uuid AND NOT completed AND NOT EXISTS(SELECT 1 FROM mdm_scope.scope_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.id)) LIMIT 1001) q),
-            (SELECT count(*) FROM (SELECT 1 FROM mdm_scope.tasks t WHERE t.tenant_id=$1::uuid AND NOT completed AND EXISTS(SELECT 1 FROM mdm_scope.scope_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.id)) LIMIT 1001) q),
-            (SELECT count(*) FROM (SELECT 1 FROM mdm_scope.tasks WHERE tenant_id=$1::uuid AND completed AND failure IS NULL LIMIT 1001) q),
-            (SELECT count(*) FROM (SELECT 1 FROM mdm_scope.tasks WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),
-            (SELECT count(*) FROM (SELECT 1 FROM mdm_scope.tasks WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q)").bind(tenant).fetch_one(c).await
-        })).await?;
+        let row = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
+                        crate::storage_profile::sql(profile).queue_counts,
+                    )
+                    .bind(tenant)
+                    .fetch_one(c)
+                    .await
+                })
+            })
+            .await?;
         Ok([
             row.0 as u64,
             row.1 as u64,

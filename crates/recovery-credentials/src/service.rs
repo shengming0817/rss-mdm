@@ -191,7 +191,7 @@ impl Credentials {
                                     if matches!(material.binding.subject,Subject::RssLogin{..})!=access.is_some(){return Err(Error::Forbidden);}
                                     if matches!(material.binding.subject, Subject::RssLogin { .. }) {
                                         let eligibility=service.eligibility.as_ref().ok_or(Error::Unsupported)?;
-                                        if eligibility.storage_profile()!=profile { return Err(Error::Forbidden.into()); }
+                                        if eligibility.storage_profile()!=profile { return Err(Error::Forbidden); }
                                         eligibility.disclose(c, principal, &material.binding).await?;
                                     }
                                     let coordinates = Coordinates { profile,

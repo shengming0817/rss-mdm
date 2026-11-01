@@ -339,6 +339,7 @@ impl ScopeProjection {
 fn source_error(e: crate::channels::SourceError) -> Fault {
     use crate::channels::SourceError as E;
     match e {
+        E::Unsupported => Error::Unsupported.into(),
         E::Storage(e) => Fault::Sql(e),
         E::Missing => Error::NotFound.into(),
         E::Conflict => Error::Conflict.into(),

@@ -61,6 +61,7 @@ pub const fn admission_sql(profile: rss_mdm_install_support::StorageProfile) -> 
 }
 
 mod webhook;
+pub use webhook::{EventSink, WebhookEvents};
 
 /// Fixed read relation used by authorized same-database directory queries.
 pub const fn directory_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {

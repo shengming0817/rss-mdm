@@ -281,7 +281,7 @@ pub async fn enrollment_target(
     id: Uuid,
 ) -> Result<String, Error> {
     if profile != proof.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     let mut tx = database.begin(proof.tenant_id()).await?;
@@ -588,7 +588,7 @@ pub async fn owned_permission<'a>(
     id: Uuid,
 ) -> Result<EnrollmentPermission<'a>, Error> {
     if profile != proof.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     proof.check_live()?;

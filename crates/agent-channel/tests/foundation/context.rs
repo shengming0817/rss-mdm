@@ -65,8 +65,13 @@ impl Inputs {
             StorageIdentity::new(self.installation.target, self.installation.lineage)?,
             vec![(tenant, Epoch::new(1)?)],
         )?;
+        let runtime = if role == "da_command_runtime" {
+            PgRuntime::connect(config, Timer, binding).await
+        } else {
+            PgRuntime::connect_producer(config, Timer, binding).await
+        };
         Ok(Arc::new(
-            PgRuntime::connect_producer(config, Timer, binding).await?,
+            runtime.map_err(|e| anyhow::anyhow!("DA runtime {role}: {e}"))?,
         ))
     }
 }

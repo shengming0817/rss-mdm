@@ -21,6 +21,10 @@ pub enum TriggerInput {
         deadline: i64,
     },
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Enrollment acceptance borrows the original transaction and distinct authority and signing facts"
+)]
 pub async fn accept_for_device(
     profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,

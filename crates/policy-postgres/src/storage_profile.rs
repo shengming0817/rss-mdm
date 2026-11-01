@@ -62,6 +62,7 @@ pub(crate) struct Statements {
     pub assignments_withdraw_in_1: &'static str,
     pub object_manifest: &'static str,
     pub access_contract: &'static str,
+    pub directory_event_batches: &'static str,
 }
 macro_rules! define_storage {
     ($module:ident, $policies:literal, $versions:literal, $assignments:literal, $triggers:literal, $requests:literal, $work:literal, $schedule_scan:literal, $event_batches:literal, $event_members:literal, $policy_schema:literal, $policy_schema_decl:literal, $policy_role:literal, $access:literal, $owner:literal, $command:literal, $telemetry:literal, $scope:literal, $create_mdm_policy:literal, $role_mdm_identity_runtime:literal, $role_mdm_inventory_runtime:literal, $role_mdm_scope_runtime:literal, $role_mdm_resource_runtime:literal, $role_mdm_software_runtime:literal, $index_23:literal, $index_24:literal, $index_25:literal, $index_26:literal, $index_27:literal, $index_28:literal, $index_29:literal, $index_30:literal, $index_31:literal, $access_contract_external_relations:literal, $tenant_reference:literal) => {
@@ -362,6 +363,7 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 assignments_withdraw_in_1: concat!("UPDATE ", $assignments, r###" SET input=jsonb_set(jsonb_set(jsonb_set(input,'{availability}','"unavailable"'),'{reason}','"source_removed"'),'{admission}','{"state":"excluded"}'),availability='unavailable',reason='source_removed',entry_revision=0 WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND object=ANY($4::text[]) AND reason IS DISTINCT FROM 'source_removed' RETURNING object,target"###),
                 object_manifest: concat!(r###"{"tables":[""###, $assignments, r###"",""###, $event_batches, r###"",""###, $event_members, r###"",""###, $policies, r###"",""###, $requests, r###"",""###, $schedule_scan, r###"",""###, $triggers, r###"",""###, $versions, r###"",""###, $work, r###""],"functions":[""###, $policy_schema, r###"lock_policy"],"views":[]}"###),
                 access_contract: concat!(r###"{"tables":[],"functions":[{"name":""###, $policy_schema, r###"lock_policy","search_path":"search_path=pg_catalog"}],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
+                directory_event_batches: concat!("SELECT jsonb_build_object('request',b.input,'id',b.id,'operationId',b.request,'event',b.input->>'event','createdAt',b.created_at,'deadline',b.deadline,'processingFailure',(SELECT failure FROM ", $work, " WHERE tenant_id=b.tenant_id AND id=b.id),'members',(SELECT count(*) FROM ", $event_members, " m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)),'admission',(SELECT coalesce(jsonb_object_agg(state,n),'{}'::jsonb) FROM(SELECT decision->>'state' state,count(*) n FROM ", $event_members, " WHERE tenant_id=b.tenant_id AND batch=b.id GROUP BY decision->>'state') counts)) FROM ", $event_batches, " b WHERE b.tenant_id="),
             };
         }
     };
@@ -437,7 +439,7 @@ define_storage!(
     "CREATE INDEX policy_event_members_pending",
     "CREATE INDEX policy_event_batches_device",
     "CREATE INDEX policy_assignment_device_interest",
-    "",
+    r###""rss_da.policies","rss_da.policy_versions""###,
     "REFERENCES rss_transactional_messaging.tenant_epoch(tenant_id)"
 );
 pub(crate) const fn sql(profile: StorageProfile) -> &'static Statements {

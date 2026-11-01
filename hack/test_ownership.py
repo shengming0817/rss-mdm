@@ -18,7 +18,7 @@ def validate_listing(document, package):
     suites = [suite for suite in document['rust-suites'].values() if suite['package-name'] == package]
     require(bool(suites), 'missing target discovery: ' + package)
     from t2_registry import MODULES, PACKAGE, discover
-    owned = list(MODULES) if package == PACKAGE else []
+    owned = [name for name, module in MODULES.items() if module.get('package', PACKAGE) == package]
     # One discovery is the authority for both T1 and active ignored T2.
     if owned:
         discover(document, owned, package=package)

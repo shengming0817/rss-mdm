@@ -110,6 +110,10 @@ fn error(e: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
         }
     }
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "receipt replay requires separate product, tenant, actor, instance and operation evidence"
+)]
 pub async fn replay(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
@@ -182,6 +186,10 @@ pub(crate) async fn save_signing_recovery(
     )
     .await
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "receipt storage retains separate replay identity, payload and optional signing attempt"
+)]
 async fn save_result(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,

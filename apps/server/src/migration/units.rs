@@ -294,12 +294,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             ),
         ),
         (
-            "recovery-agent-task-relations-v1",
-            rss_mdm_recovery_credentials::task_relations_sql(
-                rss_mdm_install_support::StorageProfile::Mdm,
-            ),
-        ),
-        (
             "registration-tasks-relations-v1",
             rss_mdm_registration_service::TASKS_RELATIONS_SQL,
         ),
@@ -395,6 +389,12 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "recovery-tasks-v1",
             rss_mdm_recovery_credentials::tasks_sql(rss_mdm_install_support::StorageProfile::Mdm),
+        ),
+        (
+            "recovery-agent-task-relations-v1",
+            rss_mdm_recovery_credentials::task_relations_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "recovery-native-v1",

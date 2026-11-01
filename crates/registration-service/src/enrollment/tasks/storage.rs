@@ -131,33 +131,34 @@ pub async fn save_run(
         _ if run.state.cancellation == Cancellation::Confirmed => Some("cancelled"),
         _ => None,
     };
-    if let Some(status) = terminal {
+    if let Some(status) = terminal
+        && let Some(sink) = &service.events
+    {
         let cancelled = previous.get("cancellation").and_then(Value::as_str) == Some("confirmed");
         if previous.get("execution").and_then(Value::as_str) != Some(status)
             && !(status == "cancelled" && cancelled)
         {
             use rss_mdm_webhook_service::{events, model::*};
             let occurred_at = now(tx).await?;
-            events::emit_in(
-                tx,
-                Event {
-                    event_id: events::identity(run.id, &format!("terminal:{status}")),
-                    event_type: EventType::PolicyTerminal,
-                    version: 1,
-                    occurred_at,
-                    tenant_id: stored(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                    device_id: run.target.device.clone(),
-                    data: EventData::Policy {
-                        run_id: run.id,
-                        policy_version: run.policy_version,
-                        registration_id: run.target.registration,
-                        generation: run.target.generation,
-                        status: status.into(),
-                    },
+            let event = Event {
+                event_id: events::identity(run.id, &format!("terminal:{status}")),
+                event_type: EventType::PolicyTerminal,
+                version: 1,
+                occurred_at,
+                tenant_id: stored(Uuid::parse_str(&tx.tenant_id().to_string()))?,
+                device_id: run.target.device.clone(),
+                data: EventData::Policy {
+                    run_id: run.id,
+                    policy_version: run.policy_version,
+                    registration_id: run.target.registration,
+                    generation: run.target.generation,
+                    status: status.into(),
                 },
-            )
-            .await
-            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+            };
+            tx.with_connection_context(&mut (sink, &event), |(sink, event), c| {
+                Box::pin(async move { Ok(sink.emit(c, event).await) })
+            })
+            .await??;
         }
     }
     Ok(())

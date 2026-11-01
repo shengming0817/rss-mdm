@@ -697,7 +697,7 @@ pub(crate) async fn retention_in(
     let current: Option<i64> = row.try_get("current_version")?;
     let material = decode(&row)?;
     if matches!(material.binding.subject, Subject::RssLogin { .. })
-        && !current.is_some_and(|v| v != material.version)
+        && current.is_none_or(|v| v == material.version)
     {
         let Some(retention) = retention else {
             return Ok(None);
@@ -1145,6 +1145,10 @@ pub async fn reconcile_in(
 }
 /// An independent recovery query can receive a previously unreported candidate, or match a
 /// retained predecessor. It cannot replace unrelated pending operations or overwrite ciphertext.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "credential authorization and persisted recovery identity remain explicit in the borrowed transaction"
+)]
 pub async fn recovery_secret_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,

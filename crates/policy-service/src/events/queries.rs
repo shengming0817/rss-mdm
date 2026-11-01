@@ -122,9 +122,11 @@ impl Events {
                         tx,
                         q,
                         after.as_ref(),
-                        device,
-                        batch,
-                        agent.map(|t| t.registration),
+                        rss_mdm_policy_postgres::directory::EventTarget {
+                            device,
+                            batch,
+                            registration: agent.map(|t| t.registration),
+                        },
                         members,
                     )
                     .await?;

@@ -66,6 +66,7 @@ mod assignments;
 fn source(error: rss_mdm_scope_service::channels::SourceError) -> Error {
     use rss_mdm_scope_service::channels::SourceError as S;
     match error {
+        S::Unsupported => Error::Unsupported,
         S::Capacity => Error::Unavailable(Failure::Capacity),
         S::Missing => Error::ScopeNotFound,
         S::Conflict => Error::QueryReadConflict,

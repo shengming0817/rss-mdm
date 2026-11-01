@@ -2,6 +2,9 @@
 
 pub(crate) struct Bridge;
 impl rss_mdm_registration_service::Retirement for Bridge {
+    fn events(&self) -> Option<&dyn rss_mdm_registration_service::EventSink> {
+        Some(&rss_mdm_registration_service::WebhookEvents)
+    }
     fn retire<'a>(
         &'a self,
         tx: &'a mut sqlx::PgConnection,

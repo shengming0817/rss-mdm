@@ -18,9 +18,9 @@ pub const fn tasks_sql(profile: rss_mdm_install_support::StorageProfile) -> &'st
     storage_profile::sql(profile).tasks
 }
 pub const NATIVE_SQL: &str = concat!(
-    include_str!("../schema/filevault.sql"),
-    "\n",
     include_str!("../schema/native.sql"),
+    "\n",
+    include_str!("../schema/filevault.sql"),
     "\n",
     include_str!("../schema/task-relations.sql")
 );

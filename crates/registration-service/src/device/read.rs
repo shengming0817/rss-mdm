@@ -53,6 +53,10 @@ pub async fn live_at(
         .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "directory projection retains product, tenant, fact time and signed cursor coordinates"
+)]
 pub async fn page_at(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,

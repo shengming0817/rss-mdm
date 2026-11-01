@@ -184,7 +184,7 @@ async fn authorize(
     device: &str,
 ) -> Result<String, Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     p.credentials(device)?;

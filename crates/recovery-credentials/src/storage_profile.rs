@@ -118,7 +118,7 @@ pub(crate) struct Statements {
     pub agent_authority_header: &'static str,
 }
 macro_rules! define_storage {
-    ($module:ident, $schema:literal, $schema_decl:literal, $access_schema:literal, $access:literal, $entries:literal, $versions:literal, $agent_guards:literal, $agent_materials:literal, $rss_login_uses:literal, $disclosures:literal, $tasks_runs:literal, $tasks_operations:literal, $tasks_requests:literal, $tasks_receipts:literal, $tasks_policy_recovery:literal, $tasks_agent_admission:literal, $task_schema:literal, $task_schema_decl:literal, $policy_policies:literal, $policy_versions:literal, $policy_assignments:literal, $policy_triggers:literal, $policy_requests:literal, $policy_work:literal, $policy_schedule_scan:literal, $policy_event_batches:literal, $policy_event_members:literal, $scope:literal, $filevault_access_e:literal, $filevault_access_b:literal, $owner:literal, $command_runtime:literal, $policy_runtime:literal, $identity_runtime:literal, $create_mdm_recovery:literal, $create_mdm_recovery_tasks:literal, $role_mdm_inventory_runtime:literal, $role_mdm_scope_runtime:literal, $role_mdm_resource_runtime:literal, $role_mdm_software_runtime:literal, $role_mdm_telemetry_runtime:literal, $save_retired_run:literal, $native_retirement_clear:literal, $index_43:literal, $index_44:literal, $index_45:literal, $index_46:literal, $contract_table_47:literal, $contract_table_48:literal, $contract_table_49:literal, $contract_table_50:literal, $contract_table_51:literal, $contract_table_52:literal, $contract_table_53:literal, $contract_table_54:literal, $contract_table_55:literal, $access_contract_tables:literal, $access_contract_functions:literal) => {
+    ($module:ident, $schema:literal, $schema_decl:literal, $access_schema:literal, $access:literal, $entries:literal, $versions:literal, $agent_guards:literal, $agent_materials:literal, $rss_login_uses:literal, $disclosures:literal, $tasks_runs:literal, $tasks_operations:literal, $tasks_requests:literal, $tasks_receipts:literal, $tasks_policy_recovery:literal, $tasks_agent_admission:literal, $task_schema:literal, $task_schema_decl:literal, $policy_policies:literal, $policy_versions:literal, $policy_assignments:literal, $policy_triggers:literal, $policy_requests:literal, $policy_work:literal, $policy_schedule_scan:literal, $policy_event_batches:literal, $policy_event_members:literal, $scope:literal, $filevault_access_e:literal, $filevault_access_b:literal, $owner:literal, $command_runtime:literal, $policy_runtime:literal, $identity_runtime:literal, $create_mdm_recovery:literal, $create_mdm_recovery_tasks:literal, $role_mdm_inventory_runtime:literal, $role_mdm_scope_runtime:literal, $role_mdm_resource_runtime:literal, $role_mdm_software_runtime:literal, $role_mdm_telemetry_runtime:literal, $save_retired_run:literal, $native_retirement_clear:literal, $index_43:literal, $index_44:literal, $index_45:literal, $index_46:literal, $contract_table_47:literal, $contract_table_48:literal, $contract_table_49:literal, $contract_table_50:literal, $contract_table_51:literal, $contract_table_52:literal, $contract_table_53:literal, $contract_table_54:literal, $contract_table_55:literal, $access_contract_tables:literal, $access_contract_functions:literal, $host_tenant_fk:literal) => {
         mod $module {
             pub(super) const SQL: super::Statements = super::Statements {
                 retention_material: concat!("SELECT e.current_version,e.id,e.device,e.registration,e.generation,e.subject,v.version,v.validity,v.operation,v.created_at,v.invalidated_at,v.key_id,v.sealed,v.pending FROM ", $entries, " e JOIN ", $versions, " v ON(v.tenant_id,v.entry)=(e.tenant_id,e.id) WHERE e.tenant_id=$1 AND e.id=$2 AND v.version=$3"),
@@ -126,7 +126,7 @@ macro_rules! define_storage {
 "###, $create_mdm_recovery, r###";
 REVOKE ALL ON "###, $schema_decl, r###" FROM PUBLIC;
 CREATE TABLE "###, $entries, r###" (
- tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id), id uuid NOT NULL,
+ tenant_id uuid NOT NULL"###, $host_tenant_fk, r###", id uuid NOT NULL,
  device text NOT NULL, registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
  subject jsonb NOT NULL CHECK(octet_length(subject::text)<=2048),
  revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0), current_version bigint,
@@ -166,6 +166,12 @@ ALTER TABLE "###, $agent_materials, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $agent_materials, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $agent_materials, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 "###, $index_44, " ON ", $versions, r###"(tenant_id,invalidated_at) WHERE sealed IS NOT NULL AND NOT pending;
+ALTER TABLE "###, $entries, r###" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "###, $entries, r###" FORCE ROW LEVEL SECURITY;
+ALTER TABLE "###, $versions, r###" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "###, $versions, r###" FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON "###, $entries, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON "###, $versions, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE TABLE "###, $rss_login_uses, r###" (
  tenant_id uuid NOT NULL, operation uuid NOT NULL, entry uuid NOT NULL, version bigint NOT NULL,
  used_at bigint NOT NULL CHECK(used_at>0), received_at bigint NOT NULL CHECK(received_at>0),
@@ -176,7 +182,7 @@ ALTER TABLE "###, $rss_login_uses, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $rss_login_uses, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $rss_login_uses, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE TABLE "###, $disclosures, r###" (
- tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id),actor text NOT NULL,operation uuid NOT NULL,
+ tenant_id uuid NOT NULL"###, $host_tenant_fk, r###",actor text NOT NULL,operation uuid NOT NULL,
  device text NOT NULL,entry uuid NOT NULL,version bigint NOT NULL,
  PRIMARY KEY(tenant_id,actor,operation),
  FOREIGN KEY(tenant_id,entry,version) REFERENCES "###, $versions, r###"(tenant_id,entry,version)
@@ -522,7 +528,8 @@ define_storage!(
     r###""schema":"mdm_recovery_tasks","table":"agent_admission""###,
     r###""schema":"mdm_recovery_tasks","table":"policy_recovery""###,
     r###",{"schema":"mdm_recovery","table":"native_actions","read_write":true,"updates":[],"delete_policy":null},{"schema":"mdm_recovery","table":"filevault_custodies","read_write":true,"updates":["active","revision","enabled","recipient"],"delete_policy":null},{"schema":"mdm_recovery","table":"filevault_sources","read_write":true,"updates":["custody","epoch","active","association","association_version"],"delete_policy":null},{"schema":"mdm_recovery","table":"filevault_receipts","read_write":true,"updates":[],"delete_policy":null},{"schema":"mdm_recovery_tasks","table":"operations","read_write":false,"updates":[],"delete_policy":null,"read_only":true},{"schema":"mdm_recovery_tasks","table":"requests","read_write":false,"updates":[],"delete_policy":null},{"schema":"mdm_recovery_tasks","table":"device_recovery","read_write":false,"updates":[],"delete_policy":null}"###,
-    r###",{"name":"mdm_recovery.filevault_accessible","search_path":"search_path=pg_catalog"},{"name":"mdm_recovery_tasks.native_status","search_path":"search_path=pg_catalog"},{"name":"mdm_recovery_tasks.retirement_commands","search_path":"search_path=pg_catalog"},{"name":"mdm_recovery_tasks.save_retired_command","search_path":"search_path=pg_catalog"},{"name":"mdm_recovery_tasks.recovery_key","search_path":"search_path=pg_catalog","security_definer":false}"###
+    r###",{"name":"mdm_recovery.filevault_accessible","search_path":"search_path=pg_catalog"},{"name":"mdm_recovery_tasks.native_status","search_path":"search_path=pg_catalog"},{"name":"mdm_recovery_tasks.retirement_commands","search_path":"search_path=pg_catalog"},{"name":"mdm_recovery_tasks.save_retired_command","search_path":"search_path=pg_catalog"},{"name":"mdm_recovery_tasks.recovery_key","search_path":"search_path=pg_catalog","security_definer":false}"###,
+    " REFERENCES public.mdm_tenants(tenant_id)"
 );
 define_storage!(
     da,
@@ -582,6 +589,7 @@ define_storage!(
     r###""schema":"rss_da","table":"credential_runs""###,
     r###""schema":"rss_da","table":"credential_agent_admission""###,
     r###""schema":"rss_da","table":"credential_policy_recovery""###,
+    "",
     "",
     ""
 );

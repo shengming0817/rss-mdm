@@ -39,6 +39,10 @@ struct Prepared {
     task: Option<wire::SelfServiceTask>,
     slot: InvocationSlot,
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "self-service preparation retains distinct product, authority, target and request evidence"
+)]
 async fn prepare_in(
     profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
@@ -411,6 +415,10 @@ struct InvocationSlot {
     deadline: i64,
 }
 // A directory probe only reads the same facts rechecked atomically by invocation.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "invocation admission keeps product, registration, request and capacity facts explicit"
+)]
 async fn invocation_slot_in(
     profile: rss_mdm_install_support::StorageProfile,
     service: &crate::enrollment::tasks::Transactions,

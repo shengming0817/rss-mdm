@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub struct EnrollmentSources(pub std::sync::Arc<channels::ChannelTargets>);
 fn error(value: channels::SourceError) -> SourceError {
     match value {
+        channels::SourceError::Unsupported => SourceError::Unsupported,
         channels::SourceError::Storage(e) => SourceError::Storage(e),
         channels::SourceError::Missing => SourceError::Missing,
         channels::SourceError::Conflict => SourceError::Conflict,

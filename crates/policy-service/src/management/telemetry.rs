@@ -105,6 +105,10 @@ pub async fn prepare_in(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "frozen telemetry acceptance retains product binding and independent authority and execution facts"
+)]
 pub(super) async fn freeze(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,

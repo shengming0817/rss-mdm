@@ -44,7 +44,7 @@ def prepared(root, modules, binary, command, resources):
                          'da_software_driver', 'da_runtime', 'da_api'):
                 if environment.sql("SELECT count(*) FROM pg_roles WHERE rolname='" + role + "'") == '0':
                     environment.sql("CREATE ROLE " + role + " LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD 'runtime-fixture'")
-            environment.sql('GRANT rss_tmsg_relay TO da_owner WITH INHERIT TRUE, SET TRUE;')
+            environment.sql('GRANT rss_tmsg_relay,mdm_audit_owner TO da_owner WITH INHERIT TRUE, SET TRUE;')
         system = environment.sql('SELECT system_identifier FROM pg_control_system()')
         installation = dict(audit_mode='plain', instance_id='33333333-3333-4333-8333-333333333333',
                             target=[1] * 16, lineage=[2] * 16)
@@ -109,7 +109,7 @@ def prepared(root, modules, binary, command, resources):
                     'mdm_content_runtime', 'mdm_telemetry_runtime', 'mdm_scheduler_runtime',
                     'mdm_scope_group_consumer', 'mdm_webhook_operator', 'mdm_software_driver')}
                 if profile == 'agent_foundation':
-                    environment.sql('ALTER DATABASE ' + name + ' OWNER TO da_owner; GRANT CREATE ON SCHEMA public TO da_owner;', name)
+                    environment.sql('ALTER DATABASE ' + name + ' OWNER TO da_owner; GRANT CREATE ON DATABASE ' + name + ' TO mdm_owner; GRANT CREATE ON SCHEMA public TO da_owner;', name)
                     values[profile].update({role: database(name, role) for role in ('da_owner','da_access',
                         'da_command_runtime','da_policy_runtime','da_scope_runtime','da_inventory_runtime',
                         'da_identity_runtime','da_identity_maintenance','da_identity_provisioning','da_runtime')})

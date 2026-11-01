@@ -8,6 +8,7 @@ mod observation;
 mod registration_owner;
 mod scope_seed;
 mod shared_state;
+mod storage_reads;
 use anyhow::Result;
 use context::{Context, Inputs};
 use rss_mdm_agent_wire::runtime as w;
@@ -97,16 +98,18 @@ async fn accepted(c: &Context, p: &registration::DevicePrincipal) -> Result<Uuid
     let rss_mdm_policy::Action::RequestMdmEnrollment { schedule, .. } = &definition.action else {
         unreachable!()
     };
+    let entries = registration::enrollment::task::Entries {
+        windows: Some("https://mdm.example.test".into()),
+        macos: None,
+    };
+    entries.validate()?;
     let frozen = serde_json::to_value(
         registration::enrollment::tasks::policy::Published::Enrollment {
             action: Box::new(registration::enrollment::task::FrozenEnrollment {
                 organization: Uuid::parse_str(&c.tenant.to_string())?,
                 schedule: schedule.clone(),
                 run_lifetime_seconds: 300,
-                entries: registration::enrollment::task::Entries {
-                    windows: Some("mdm.example.test".into()),
-                    macos: None,
-                },
+                entries,
                 actor: actor.clone(),
             }),
         },
@@ -128,22 +131,23 @@ async fn independent_enrollment_delivery() -> Result<()> {
 }
 async fn exercise(c: &Context) -> Result<()> {
     admission::access(c).await?;
-    let protection = material::protection(&c)?;
+    storage_reads::verify(c).await?;
+    let protection = material::protection(c)?;
     let trust = material::seed_trust(
-        &c,
+        c,
         &protection,
         &[rss_mdm_agent_wire::task_trust::KeyState::Active],
     )
     .await?;
-    let (registration, grant, device) = material::seed_registration(&c).await?;
+    let (registration, grant, device) = material::seed_registration(c).await?;
     let capabilities = vec![
         w::Capability::InventoryCollectionV1,
         w::Capability::MdmEnrollmentV1,
     ];
     let (p, pki_trust) =
-        material::authenticated_agent(&c, registration, grant, &device, capabilities.clone())
+        material::authenticated_agent(c, registration, grant, &device, capabilities.clone())
             .await?;
-    material::seed_ack(&c, &trust, registration, p.generation()).await?;
+    material::seed_ack(c, &trust, registration, p.generation()).await?;
     let context = execution_context();
     let mut tx = c.seed().await?;
     use registration::agent::RuntimeBinding;
@@ -180,8 +184,8 @@ async fn exercise(c: &Context) -> Result<()> {
         rss_mdm_task_trust::Signing::new(StorageProfile::Mdm, c.tenant, Some(mismatch)).is_err()
     );
     tx.commit().await?;
-    observation::enrollment(&c, &p).await?;
-    let target = accepted(&c, &p).await?;
+    observation::enrollment(c, &p).await?;
+    let target = accepted(c, &p).await?;
     let source = Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
         DA, None,
     ));
@@ -194,6 +198,7 @@ async fn exercise(c: &Context) -> Result<()> {
             source,
         )),
         capacity: Arc::new(Capacity),
+        events: None,
         instance: c.inputs.installation.instance_id.clone(),
     });
     let transactions = registration::enrollment::tasks::Transactions::bind(
@@ -230,10 +235,15 @@ async fn exercise(c: &Context) -> Result<()> {
     use rss_transactional_messaging_postgres::PgTransactionFault;
     c.runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
-    assert!(matches!(
-        delivery.claim(&p, &input, &audit()).await,
-        Err(rss_mdm_agent_channel::Error::CommitUnknown)
-    ));
+    let unconfirmed = delivery.claim(&p, &input, &audit()).await;
+    assert!(
+        matches!(
+            unconfirmed,
+            Err(rss_mdm_agent_channel::Error::CommitUnknown)
+        ),
+        "expected unconfirmed claim, got {:?}",
+        unconfirmed.err()
+    );
     let response = delivery.claim(&p, &input, &audit()).await?;
     let signed = response.task().expect("Enrollment offer").clone();
     assert_eq!(signed.payload.task_id(), target);
@@ -301,7 +311,7 @@ async fn exercise(c: &Context) -> Result<()> {
     );
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm'").bind(c.tenant.to_string()).bind(&device).fetch_one(&c.operator).await?;
     assert_eq!(count, 0, "Opened is UI evidence only");
-    let forbidden:Vec<String>=sqlx::query_scalar("SELECT nspname::text FROM pg_namespace WHERE nspname IN('mdm_devices','mdm_apple','mdm_windows','mdm_access','mdm_agent','mdm_policy','mdm_scope','mdm_recovery')").fetch_all(&c.operator).await?;
+    let forbidden:Vec<String>=sqlx::query_scalar("SELECT nspname::text FROM pg_namespace WHERE nspname IN('mdm_devices','mdm_apple','mdm_windows','mdm_access','mdm_agent','mdm_policy','mdm_scope','mdm_recovery','mdm_webhook')").fetch_all(&c.operator).await?;
     assert!(
         forbidden.is_empty(),
         "MDM private schema unexpectedly installed: {forbidden:?}"
@@ -323,7 +333,7 @@ async fn exercise(c: &Context) -> Result<()> {
     // A revocation that wins the registration row lock invalidates the old principal.
     let mut revoke = c.seed().await?;
     sqlx::query(
-        "UPDATE rss_da.registrations SET state='retired' WHERE tenant_id=$1::uuid AND id=$2",
+        "UPDATE rss_da.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(c.tenant.to_string())
     .bind(registration)

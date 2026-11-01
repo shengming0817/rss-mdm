@@ -111,6 +111,10 @@ pub async fn historical_on(
 }
 
 /// A bounded page of devices represented by frozen Scope sources; Execution selects eligibility.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "source projection retains explicit product, scope, publication and result coordinates"
+)]
 pub async fn source_devices_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
@@ -165,10 +169,3 @@ pub async fn source_objects_on(
         })
         .collect()
 }
-
-/// Tenant-bound published heads for one-statement composition with caller-owned facts.
-/// Parameters: $1 tenant, $2 scope; no channel or execution judgment is embedded here.
-
-/// Frozen source facts for bounded caller-owned object qualification and pagination.
-/// Parameters: $1 tenant, $2 run, $3 source indexes. The caller supplies its page bound.
-pub const SOURCE_MEMBER_FACTS_SQL: &str = "SELECT tenant_id,input,unknown FROM mdm_scope.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3)";

@@ -71,6 +71,10 @@ pub(crate) async fn require(
         Ok(())
     }
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "bounded blocker read retains product, key, fact time and signed cursor coordinates"
+)]
 pub(super) async fn page(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,

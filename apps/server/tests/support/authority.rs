@@ -76,7 +76,8 @@ impl Context {
             inputs.database(profile, "mdm_access").options()?,
             &config::AuditConfig::Plain {},
         )
-        .await?;
+        .await
+        .map_err(|e| anyhow::anyhow!("MDM connection admission: {e:?}"))?;
         let runtime = identity::open_runtime(
             &inputs.database(profile, "mdm_access"),
             &inputs.installation.target,
@@ -84,7 +85,8 @@ impl Context {
             &[(tenant, 1)],
             4,
         )
-        .await?;
+        .await
+        .map_err(|e| anyhow::anyhow!("MDM messaging runtime: {e:?}"))?;
         let audit = database
             .audit_store(&config::AuditConfig::Plain {}, runtime.clone(), tenant)
             .await?;

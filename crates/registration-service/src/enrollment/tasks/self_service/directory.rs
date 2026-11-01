@@ -1,5 +1,9 @@
 //! Current self-service qualification belongs to the business owner.
 use super::*;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "self-service directory description borrows explicit product and current authorization facts"
+)]
 pub async fn describe_in(
     profile: rss_mdm_install_support::StorageProfile,
     service: &Service,

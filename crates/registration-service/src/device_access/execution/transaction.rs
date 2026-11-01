@@ -48,6 +48,7 @@ impl From<crate::participants::scope::SourceError> for Fault {
     fn from(e: crate::participants::scope::SourceError) -> Self {
         use crate::participants::scope::SourceError as S;
         match e {
+            S::Unsupported => Error::Unsupported.into(),
             S::Missing => Error::NotFound.into(),
             S::Conflict => Error::Conflict.into(),
             S::Invariant => Error::Invariant.into(),

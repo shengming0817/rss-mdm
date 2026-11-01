@@ -66,7 +66,7 @@ async fn authority(
     p: &AuthorizedPrincipal,
 ) -> Result<Snapshot, Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())

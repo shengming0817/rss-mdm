@@ -131,6 +131,10 @@ pub async fn channel_state_on(
         _ => Err(SourceError::Invariant),
     }
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "channel explanation keeps product, source, run and target identity explicit"
+)]
 pub(crate) async fn explanation_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
@@ -314,6 +318,10 @@ pub async fn devices_page(
         devices,
     })
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "channel projection uses explicit product, source, run and result coordinates"
+)]
 pub async fn objects_on(
     profile: rss_mdm_install_support::StorageProfile,
     reader: Option<&dyn rss_mdm_inventory_service::objects::ObjectReader>,
@@ -494,6 +502,10 @@ pub async fn result_admission_on(
         _ => ScopeAdmission::Excluded,
     })
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "availability joins independent product, source, result and channel facts"
+)]
 pub async fn result_available_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
@@ -511,6 +523,10 @@ pub async fn result_available_on(
             .is_some_and(|result| result.reasons.is_empty()),
     )
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "device projection joins independent product, source, result and channel facts"
+)]
 pub async fn result_devices_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
@@ -594,6 +610,11 @@ pub async fn lifecycle_objects_on(
     after: Option<&str>,
     limit: usize,
 ) -> Result<Vec<DeviceAssignment>, SourceError> {
+    if profile != rss_mdm_install_support::StorageProfile::Mdm || reader.is_none() {
+        return Err(SourceError::Unsupported);
+    }
+    // Device lifecycle requires MDM's complete endpoint/association owner.
+    const SOURCE_MEMBER_FACTS: &str = "SELECT tenant_id,input,unknown FROM mdm_scope.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3)";
     let Some((run, revision, frozen, fresh)) =
         crate::results::read_resolution_on(profile, c, tenant, scope).await?
     else {
@@ -607,10 +628,7 @@ pub async fn lifecycle_objects_on(
         .map(|(i, _)| i as i32)
         .collect();
     let rows = sqlx::query(sqlx::AssertSqlSafe(
-        rss_mdm_device_service::planning::complete_source_objects_sql(
-            crate::results::SOURCE_MEMBER_FACTS_SQL,
-        )
-        .as_str(),
+        rss_mdm_device_service::planning::complete_source_objects_sql(SOURCE_MEMBER_FACTS).as_str(),
     ))
     .bind(tenant.to_string())
     .bind(run)

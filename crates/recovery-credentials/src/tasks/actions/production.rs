@@ -66,6 +66,10 @@ impl AdmissionTrigger {
 }
 
 /// Only the authenticated device can cause its own recurring execution to be admitted.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "task acceptance keeps independent authorization, target, deadline and signing evidence"
+)]
 pub(crate) async fn accept_for_device(
     profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,

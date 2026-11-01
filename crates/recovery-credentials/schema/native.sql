@@ -12,12 +12,7 @@ CREATE TABLE mdm_recovery.native_actions (
 ALTER TABLE mdm_recovery.native_actions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_recovery.native_actions FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_recovery.native_actions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-ALTER TABLE mdm_recovery.entries ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_recovery.entries FORCE ROW LEVEL SECURITY;
-ALTER TABLE mdm_recovery.versions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_recovery.versions FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_recovery.entries USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-CREATE POLICY tenant ON mdm_recovery.versions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+
 
 REVOKE ALL ON mdm_recovery.native_actions FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_recovery.native_actions TO mdm_access,mdm_command_runtime;

@@ -62,7 +62,7 @@ pub async fn record_communication_in(
     principal: &DevicePrincipal,
 ) -> Result<(), Error> {
     if profile != principal.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     revalidate_management(profile, c, principal).await?;
@@ -304,6 +304,7 @@ pub async fn retire_state_in(
     tenant: &str,
     registration: Uuid,
     state: &str,
+    events: Option<&dyn crate::EventSink>,
 ) -> Result<(), Error> {
     let previous = sqlx::query(crate::storage_profile::sql(profile).device_store_retire_state_in_1)
         .bind(tenant)
@@ -336,6 +337,7 @@ pub async fn retire_state_in(
         && matches!(state, "retired" | "revoked" | "superseded")
     {
         crate::webhook::registration(
+            events,
             tx,
             tenant,
             &row.try_get::<String, _>("device").map_err(db)?,
@@ -366,11 +368,11 @@ pub async fn bind_in(
     retirement: &dyn crate::Retirement,
 ) -> Result<RegistrationReceipt, Error> {
     if profile != admin.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     if profile != credential.profile {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     bind_authorized_in(
@@ -402,7 +404,7 @@ pub(crate) async fn bind_authorized_in(
     retirement: Option<&dyn crate::Retirement>,
 ) -> Result<RegistrationReceipt, Error> {
     if profile != credential.profile {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     if credential.purpose != Purpose::Primary || credential.tenant.to_string() != tenant {
@@ -529,6 +531,7 @@ pub(crate) async fn bind_authorized_in(
         .map_err(db)?;
 
     crate::webhook::registration(
+        Some(&crate::WebhookEvents),
         tx,
         tenant,
         &receipt.device,
@@ -585,7 +588,7 @@ pub async fn revalidate_source(
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<Scope, Error> {
     if profile != principal.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     if principal.purpose() != Purpose::Primary || principal.channel() != source.channel() {
@@ -807,6 +810,10 @@ pub async fn source_current_in(
 }
 
 /// Allocate a report sequence and contiguous correlation IDs on an already locked source.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "report allocation borrows the transaction and explicit product and registration evidence"
+)]
 pub async fn allocate_report_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
@@ -862,7 +869,7 @@ pub async fn allocate_commands_in(
     count: i64,
 ) -> Result<u32, Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     if count < 1 || count > i64::from(u32::MAX) {
@@ -883,6 +890,10 @@ pub async fn allocate_commands_in(
     first.try_into().map_err(|_| Error::Storage)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "native renewal keeps independent registration, generation and credential evidence"
+)]
 pub async fn activate_renewed_mdm_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
@@ -894,7 +905,7 @@ pub async fn activate_renewed_mdm_in(
     credential: &super::VerifiedChannelCredential,
 ) -> Result<(), Error> {
     if profile != credential.profile {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     if credential.tenant.to_string() != tenant
@@ -936,7 +947,7 @@ pub async fn management_in(
     credential: &VerifiedChannelCredential,
 ) -> Result<DevicePrincipal, Error> {
     if profile != credential.profile {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     super::management::authenticate(profile, c, credential).await
@@ -948,7 +959,7 @@ pub async fn read_management_in(
     p: &DevicePrincipal,
 ) -> Result<(), Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     super::management::validate(profile, c, p).await
@@ -960,7 +971,7 @@ pub async fn revalidate_management(
     p: &DevicePrincipal,
 ) -> Result<(), Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     super::management::revalidate(profile, c, p).await
@@ -981,7 +992,7 @@ pub async fn bind_native_in(
     retirement: &dyn crate::Retirement,
 ) -> Result<RegistrationReceipt, Error> {
     if profile != credential.profile {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     admission.current(tx).await?;
@@ -1014,7 +1025,7 @@ pub async fn revalidate_collection_source(
     source: rss_mdm_inventory::Source,
 ) -> Result<Scope, Error> {
     if profile != principal.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     use rss_mdm_inventory::Source;

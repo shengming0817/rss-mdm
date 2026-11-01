@@ -314,7 +314,7 @@ pub async fn record_authenticated_in(
     principal: &crate::DevicePrincipal,
 ) -> Result<(), Error> {
     if profile != principal.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     crate::admission::require_windows_in(profile, c, principal).await?;

@@ -51,6 +51,7 @@ pub(crate) async fn assemble(
         )),
         source: Arc::new(super::registration_sources::Source(source)),
         capacity: Arc::new(super::capacity::Capacity),
+        events: Some(Arc::new(rss_mdm_registration_service::WebhookEvents)),
         instance: config.identity.instance_id.clone(),
     });
     let enrollment = Arc::new(tasks::Service::new(

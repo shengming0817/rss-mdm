@@ -47,7 +47,7 @@ pub async fn list(
     codec: &CursorCodec,
 ) -> Result<Page<rss_mdm_query::directory::Projection<Row>>, Error> {
     if profile != proof.profile() || profile != database.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     query.require_schema(&SCHEMA).map_err(error)?;
@@ -64,9 +64,7 @@ pub async fn list(
     current
         .require(proof, Permission::Credentials, Some(device))
         .map_err(rss_mdm_authorization_service::Error::from)?;
-    let before = current
-        .query_binding(proof)
-        .map_err(rss_mdm_authorization_service::Error::from)?;
+    let before = current.query_binding(proof)?;
     let binding = query
         .binding(&(
             proof.tenant_id(),

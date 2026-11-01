@@ -24,6 +24,10 @@ impl Maintenance {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "maintenance binds the product profile and distinct runtime, policy, protection and identity owners"
+    )]
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,

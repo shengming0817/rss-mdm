@@ -274,7 +274,7 @@ pub async fn require_windows_in(
     p: &crate::DevicePrincipal,
 ) -> Result<(), Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     let tenant = p.tenant().to_string();

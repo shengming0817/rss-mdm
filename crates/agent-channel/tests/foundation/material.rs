@@ -203,14 +203,19 @@ pub async fn authenticated_agent(
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
     let (peer, certificate, csr, trust) = agent_material(c, device).await?;
-    let pki_trust = trust.trust.clone();
+    let pki_trust = trust.trust.public()?;
     super::registration_owner::assemble(c, trust).await?;
     let meta = peer.metadata();
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
     let credential = Uuid::new_v4();
     let issuance = Uuid::new_v4();
     let operation = Uuid::new_v4();
-    let epoch = Uuid::new_v4();
+    let epoch: Uuid =
+        sqlx::query_scalar("SELECT epoch FROM rss_da.registrations WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant)
+            .bind(registration)
+            .fetch_one(&c.operator)
+            .await?;
     use rss_mdm_agent_wire::{enroll, runtime as w};
     let profile = enroll::RuntimeProfile {
         capabilities,

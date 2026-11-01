@@ -4,7 +4,7 @@ GRANT SELECT(instance_id,target,lineage) ON rss_da.installation_binding TO da_ac
 GRANT SELECT ON rss_da.installation_units TO da_access;
 GRANT SELECT(instance_id,management_tenant_id) ON rss_da.authorization_installation TO da_command_runtime,da_policy_runtime,da_scope_runtime,da_inventory_runtime;
 GRANT USAGE ON SCHEMA mdm,mdm_group TO da_access,da_command_runtime,da_scope_runtime,da_policy_runtime,da_inventory_runtime;
-GRANT SELECT ON mdm.asset_epochs,mdm.asset_changes,mdm.inventory_history,mdm.inventory,mdm.field_versions,mdm.collection_definitions,mdm.collection_results,mdm.manual_assignments TO da_access,da_command_runtime,da_scope_runtime,da_policy_runtime,da_inventory_runtime;
+GRANT SELECT ON mdm.asset_epochs,mdm.asset_changes,mdm.inventory_history,mdm.inventory,mdm.field_versions,mdm.array_versions,mdm.array_items,mdm.collection_definitions,mdm.collection_results,mdm.manual_assignments TO da_access,da_command_runtime,da_scope_runtime,da_policy_runtime,da_inventory_runtime;
 GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO da_access,da_command_runtime,da_inventory_runtime;
 GRANT EXECUTE ON FUNCTION mdm_group.scope_dependencies(uuid),mdm_group.lock_scope_dependencies(uuid[]),mdm_group.scope_source(uuid) TO da_owner;
 GRANT USAGE ON SCHEMA rss_audit TO da_access,da_command_runtime,da_policy_runtime,da_scope_runtime,da_identity_runtime,da_identity_maintenance,da_identity_provisioning;

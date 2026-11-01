@@ -13,7 +13,7 @@ pub async fn request_in(
     operation: Uuid,
 ) -> Result<(), Error> {
     if profile != parent.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     if parent.purpose() != Purpose::Primary
@@ -71,11 +71,11 @@ pub async fn bind_in(
     retirement: &dyn crate::Retirement,
 ) -> Result<RegistrationReceipt, Error> {
     if profile != credential.profile {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     if profile != parent.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     if credential.tenant != parent.tenant()
@@ -151,6 +151,7 @@ pub async fn bind_in(
         .await
         .map_err(db)?;
     crate::webhook::registration(
+        Some(&crate::WebhookEvents),
         c,
         &tenant,
         parent.device(),
@@ -178,7 +179,7 @@ pub async fn ready_in(
     p: &DevicePrincipal,
 ) -> Result<bool, Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     store::revalidate_management(profile, c, p).await?;

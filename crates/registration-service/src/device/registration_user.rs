@@ -116,7 +116,7 @@ async fn target_on(
     device: &str,
 ) -> Result<(), Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     p.enrollment(device)?;

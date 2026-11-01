@@ -384,7 +384,7 @@ async fn authorize_on(
     permission: rss_mdm_authorization_service::Permission,
 ) -> Result<(), Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     p.check_live()?;

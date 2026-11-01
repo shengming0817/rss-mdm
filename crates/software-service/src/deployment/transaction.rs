@@ -275,6 +275,7 @@ impl From<crate::deployment::scope::SourceError> for Fault {
     fn from(e: crate::deployment::scope::SourceError) -> Self {
         use crate::deployment::scope::SourceError as S;
         match e {
+            S::Unsupported => Error::Unsupported.into(),
             S::Missing => Error::NotFound.into(),
             S::Capacity => Error::Unavailable(Failure::Capacity).into(),
             S::Conflict => Error::Conflict.into(),

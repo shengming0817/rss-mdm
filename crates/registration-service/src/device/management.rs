@@ -11,7 +11,7 @@ pub(super) async fn authenticate(
     credential: &VerifiedChannelCredential,
 ) -> Result<DevicePrincipal, Error> {
     if profile != credential.profile {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     let principal = read(profile, c, credential).await?;
@@ -27,7 +27,7 @@ pub(super) async fn read(
     credential: &VerifiedChannelCredential,
 ) -> Result<DevicePrincipal, Error> {
     if profile != credential.profile {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     let tenant = credential.tenant.to_string();
@@ -81,7 +81,7 @@ pub(super) async fn revalidate(
     p: &DevicePrincipal,
 ) -> Result<(), Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     let tenant = p.tenant().to_string();
@@ -95,7 +95,7 @@ pub(super) async fn validate(
     p: &DevicePrincipal,
 ) -> Result<(), Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     let tenant = p.tenant().to_string();

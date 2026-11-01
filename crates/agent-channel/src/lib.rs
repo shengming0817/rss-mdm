@@ -538,7 +538,7 @@ pub fn report_batch(input: &wire::ReportRequest) -> Result<Batch, Error> {
         definition.coverage().map_err(|_| Error::Malformed)?,
         body,
     )
-    .map_err(|_| Error::Malformed.into())
+    .map_err(|_| Error::Malformed)
 }
 
 fn ack(report_id: Uuid, received_at: i64) -> wire::ReportAck {

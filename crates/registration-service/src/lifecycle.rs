@@ -2,6 +2,8 @@ use crate::Error;
 use std::{future::Future, pin::Pin};
 /// Participate after registration state is retired, using the same borrowed transaction.
 pub trait Retirement: Send + Sync {
+    /// The host's optional event destination, fixed with this lifecycle participant.
+    fn events(&self) -> Option<&dyn crate::EventSink>;
     fn retire<'a>(
         &'a self,
         tx: &'a mut sqlx::PgConnection,
@@ -44,9 +46,25 @@ pub async fn retire(
     .fetch_all(&mut *tx)
     .await
     .map_err(crate::database::db)?;
-    crate::device::store::retire_state_in(profile, tx, tenant, registration, state).await?;
+    crate::device::store::retire_state_in(
+        profile,
+        tx,
+        tenant,
+        registration,
+        state,
+        participant.events(),
+    )
+    .await?;
     for child in children {
-        crate::device::store::retire_state_in(profile, tx, tenant, child, state).await?;
+        crate::device::store::retire_state_in(
+            profile,
+            tx,
+            tenant,
+            child,
+            state,
+            participant.events(),
+        )
+        .await?;
         participant.retire(tx, facts, tenant, child, state).await?;
     }
     participant
@@ -190,7 +208,7 @@ pub(crate) async fn authorize_reenrollment_in(
     device: &str,
 ) -> Result<(), Error> {
     if profile != proof.profile() {
-        return Err(crate::Error::Forbidden.into());
+        return Err(crate::Error::Forbidden);
     }
 
     use rss_mdm_authorization_service as auth;

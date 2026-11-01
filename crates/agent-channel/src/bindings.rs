@@ -165,6 +165,10 @@ pub(crate) async fn inventory_in(
     }
     Ok(())
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "original enrollment transaction persists explicit product, registration and negotiated Agent facts"
+)]
 pub(crate) async fn bind_agent_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,

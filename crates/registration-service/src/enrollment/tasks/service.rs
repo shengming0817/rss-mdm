@@ -10,6 +10,7 @@ pub struct Materials {
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub source: Arc<dyn crate::participants::scope::Sources>,
     pub capacity: Arc<dyn DeviceCapacity>,
+    pub events: Option<Arc<dyn crate::EventSink>>,
     pub instance: String,
 }
 pub struct Transactions {
@@ -22,6 +23,7 @@ pub struct Transactions {
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
     pub(crate) source: Arc<dyn crate::participants::scope::Sources>,
     pub(crate) capacity: Arc<dyn DeviceCapacity>,
+    pub(crate) events: Option<Arc<dyn crate::EventSink>>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
 }
@@ -89,6 +91,7 @@ impl Transactions {
             agent_store: materials.agent_store.clone(),
             source: materials.source.clone(),
             capacity: materials.capacity.clone(),
+            events: materials.events.clone(),
         })
     }
     pub fn validate_in(&self, tx: &PgTransaction<'_>) -> crate::enrollment::tasks::Result<()> {

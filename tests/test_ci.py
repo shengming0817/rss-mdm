@@ -63,6 +63,21 @@ class DependencyPolicy(unittest.TestCase):
         for kind in ('policy', 'resource', 'software-release'):
             next((n for n in data['resolve']['nodes'] if n['id'] == f'rss-mdm-{kind}-postgres'))['deps'].append({'pkg': 'rss-mdm-backend-postgres-support'})
         ci.verify_metadata(data, root, 'normal', pin)
+        agent = next(n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-agent-channel')
+        edge = {'pkg': 'rss-mdm-backend-postgres-support', 'dep_kinds': [{'kind': 'dev'}]}
+        agent['deps'].append(edge)
+        ci.verify_backend_support(data)
+        for kinds in ([], [{'kind': None}], [{'kind': 'dev'}, {'kind': 'build'}]):
+            edge['dep_kinds'] = kinds
+            with self.subTest(backend_support_kinds=kinds):
+                with self.assertRaisesRegex(RuntimeError, 'only in tests'):
+                    ci.verify_backend_support(data)
+        agent['deps'].pop()
+        other = next(n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-task-trust')
+        other['deps'].append({'pkg': edge['pkg'], 'dep_kinds': [{'kind': 'dev'}]})
+        with self.assertRaisesRegex(RuntimeError, 'only backend adapters'):
+            ci.verify_backend_support(data)
+        other['deps'].pop()
         audit_node = next((n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-audit-integration'))
         audit_node['deps'].append({'pkg': 'rss-mdm-agent-wire'})
         ci.verify_metadata(data, root, 'normal', pin)

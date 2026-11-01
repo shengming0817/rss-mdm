@@ -56,6 +56,24 @@ class Selection(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'incomplete'):validate_listing(document,'owner')
         with self.assertRaisesRegex(RuntimeError,'missing'):validate_listing({'rust-suites':{}},'owner')
 
+    def test_listing_requires_only_modules_owned_by_each_package(self):
+        modules = {
+            'app.proof': dict(prefix='app::', profiles=('shared',), inputs=()),
+            'agent.proof': dict(package='agent', target='foundation', prefix='agent::', profiles=('agent',), inputs=()),
+        }
+        document = {'rust-suites': {
+            'app': {'package-name': 'rss-mdm-app', 'binary-name': 'rss_mdm_app', 'status': 'listed',
+                    'testcases': {'app::case': {'ignored': True}}},
+            'agent': {'package-name': 'agent', 'binary-name': 'foundation', 'status': 'listed',
+                      'testcases': {'agent::case': {'ignored': True}}},
+        }}
+        with patch('t2_registry.MODULES', modules):
+            for package in ('rss-mdm-app', 'agent'):
+                validate_listing(document, package)
+            document['rust-suites']['agent']['testcases'] = {}
+            with self.assertRaisesRegex(RuntimeError, 'zero T2 discovery: agent.proof'):
+                validate_listing(document, 'agent')
+
     def run_ci(self, out, *, full=False, failed_gate=False, failed_owner=False, plan=False, failed_t2=False):
         selection=selected(['rss-mdm-app'], ownership_packages=['rss-mdm-app'])
         with (patch.object(ci,'require_lease'),patch.object(ci,'OUT',out),

@@ -3,6 +3,9 @@ use super::*;
 use registration::agent;
 struct Retire;
 impl registration::Retirement for Retire {
+    fn events(&self) -> Option<&dyn registration::EventSink> {
+        None
+    }
     fn retire<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,

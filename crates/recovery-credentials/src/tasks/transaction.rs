@@ -48,6 +48,7 @@ impl From<rss_mdm_registration_service::participants::scope::SourceError> for Fa
     fn from(e: rss_mdm_registration_service::participants::scope::SourceError) -> Self {
         use rss_mdm_registration_service::participants::scope::SourceError as S;
         match e {
+            S::Unsupported => Error::Unsupported.into(),
             S::Missing => Error::NotFound.into(),
             S::Conflict => Error::Conflict.into(),
             S::Invariant => Error::Invariant.into(),

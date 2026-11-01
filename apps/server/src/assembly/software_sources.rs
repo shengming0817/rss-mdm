@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub(crate) struct Source(pub std::sync::Arc<channels::ChannelTargets>);
 fn error(value: channels::SourceError) -> SourceError {
     match value {
+        channels::SourceError::Unsupported => SourceError::Unsupported,
         channels::SourceError::Storage(e) => SourceError::Storage(e),
         channels::SourceError::Missing => SourceError::Missing,
         channels::SourceError::Conflict => SourceError::Conflict,
@@ -436,6 +437,10 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
             .map_err(device_error)
         })
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "source eligibility uses the original transaction and explicit registration and observation coordinates"
+    )]
     fn blocked_on<'a>(
         &'a self,
         c: &'a mut PgConnection,

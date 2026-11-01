@@ -196,7 +196,18 @@ def verify_backend_support(data):
     require(len(ids) == 1, "exactly one MDM backend support package required")
     ident = ids[0]
     require(nodes[ident]['features'] == [], "backend support has no feature surface")
-    parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == ident for d in n['deps'])}
+    parents = set()
+    for node in nodes.values():
+        for dependency in node['deps']:
+            if dependency['pkg'] != ident:
+                continue
+            owner = packages[node['id']]
+            # The independent DA host fixture exercises the real admission contract.
+            if owner == 'rss-mdm-agent-channel':
+                require(dependency.get('dep_kinds') and all(kind.get('kind') == 'dev' for kind in dependency['dep_kinds']),
+                        'Agent foundation may consume backend support only in tests')
+            else:
+                parents.add(owner)
     require(parents == adapters | {"rss-mdm-app"}, "only backend adapters and App admission may directly consume support")
     visited, pending = set(), [ident]
     while pending:

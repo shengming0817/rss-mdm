@@ -214,6 +214,7 @@ impl Service {
                         .await
                         .map_err(db)?;
                         crate::webhook::registration(
+                            service.store.retirement.events(),
                             c,
                             &tenant,
                             &device,

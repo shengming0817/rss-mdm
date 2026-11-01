@@ -49,7 +49,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
         w::Source::AgentBuiltin,
         definition
             .fields()
-            .map(|f| rss_mdm_inventory_service::collection::wire::to_wire_field(f))
+            .map(rss_mdm_inventory_service::collection::wire::to_wire_field)
             .collect::<std::result::Result<Vec<_>, _>>()?,
     )?;
     let report = w::ReportRequest::new(

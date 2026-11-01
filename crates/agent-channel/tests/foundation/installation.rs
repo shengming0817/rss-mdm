@@ -155,7 +155,17 @@ impl Host for Installation<'_> {
                     "injected interruption before unit",
                 ));
             }
-            if name == "identity" {
+            if name == "audit" {
+                sqlx::query("SET LOCAL ROLE mdm_audit_owner")
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|_| rss_mdm_install_support::Error::at(name, "Audit owner"))?;
+                execute_schema(tx, name, sql, "schema").await?;
+                sqlx::query("RESET ROLE")
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|_| rss_mdm_install_support::Error::at(name, "restore installer"))?;
+            } else if name == "identity" {
                 rss_identity_postgres::install(
                     tx,
                     rss_identity_core::InstanceId::parse(&self.inputs.installation.instance_id)
