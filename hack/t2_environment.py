@@ -59,7 +59,7 @@ def prepared(root, modules, binary, command, resources):
                 path.write_bytes(bytes([value]) * 32)
                 path.chmod(0o600)
 
-        if set(modules) & {'registration.device_access', 'recovery.credentials', 'software.deployment', 'registration.installation', 'execution.owners', 'task_trust', 'agent.delivery', 'windows.protocol', 'apple.protocol'}:
+        if set(modules) & {'registration.device_access', 'recovery.credentials', 'software.deployment', 'registration.installation', 'device.control', 'device.retirement', 'script.delivery', 'inventory.collection', 'inventory.preview', 'task.composition', 'task.locking', 'task.recovery', 'task_trust', 'agent.delivery', 'windows.protocol', 'apple.protocol'}:
             from task_trust_materials import prepare
             material = directory / 'task-trust-ca'
             existed = material.exists()

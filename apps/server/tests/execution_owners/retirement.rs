@@ -13,7 +13,7 @@ async fn accept(
     let actor = rss_mdm_authorization_service::Actor::Account {
         user: h.c.user(Uuid::new_v4()),
     };
-    let frozen = rss_mdm_execution_service::frozen::Frozen::UnmanageDevice {
+    let frozen = rss_mdm_device_service::control::frozen::Frozen::UnmanageDevice {
         schedule: super::mixed::manual(),
         run_lifetime_seconds: 300,
         actor: actor.clone(),
@@ -21,28 +21,32 @@ async fn accept(
     let policy = Uuid::new_v4();
     let version =
         super::mixed::publish(h, policy, 1, definition, serde_json::to_value(frozen)?).await?;
-    let id = Uuid::new_v4();
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES($1::uuid,$2,$3,$4,$5,'manual',$6,$7,300,$8,'\"policy\"')").bind(h.c.tenant.to_string()).bind(id).bind(policy).bind(version).bind(object.object.key()).bind(serde_json::to_value(object)?).bind(serde_json::to_value(actor)?).bind(now()).execute(&mut *tx).await?;
-    for member in &object.members {
-        sqlx::query("INSERT INTO mdm_devices.retirement_channels(tenant_id,operation,device,channel,registration,generation,stage,effect) VALUES($1::uuid,$2,$3,$4,$5,$6,'cleanup','pending')").bind(h.c.tenant.to_string()).bind(id).bind(&member.device).bind(match member.channel {rss_mdm_inventory::Channel::Mdm=>"mdm",rss_mdm_inventory::Channel::Agent=>"agent"}).bind(member.registration_id).bind(member.generation).execute(&mut *tx).await?;
-        sqlx::query(
-            "UPDATE mdm_access.devices SET retirement=$3 WHERE tenant_id=$1::uuid AND id=$2",
-        )
-        .bind(h.c.tenant.to_string())
-        .bind(&member.device)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    }
+    let (id, replay) = rss_mdm_device_service::lifecycle::accept_in(
+        &mut tx,
+        h.c.tenant,
+        &rss_mdm_device_service::planning::PlanningObjects,
+        &rss_mdm_device_service::lifecycle::Acceptance {
+            origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+            policy,
+            version,
+            occurrence: "manual",
+            target: object,
+            actor: &actor,
+            delivery_seconds: 300,
+            now: now(),
+        },
+    )
+    .await?;
+    assert!(!replay);
     tx.commit().await?;
     Ok(id)
 }
 async fn step(h: &Harness, id: Uuid) -> Result<()> {
-    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
-    let scope = rss_mdm_execution_service::recovery_scope(h.c.tenant);
+    let scope = rss_mdm_device_service::control::recovery_scope(h.c.tenant);
     let target = rss_reconcile::Target::new(scope.clone(), format!("retirement:{id}"))?;
     let store = h.a.service.recovery_store();
     store
@@ -75,7 +79,7 @@ async fn state(h: &Harness, id: Uuid) -> Result<(String, String, Option<Uuid>)> 
 #[tokio::test]
 #[ignore = "T2: cleanup cancels both owners and waits for Running and Unknown evidence before unenrollment"]
 async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
-    let h = Harness::open().await?;
+    let mut h = Harness::open().await?;
     let (_, v) = h.policy("retiring").await?;
     let script = h.run(v, "retiring", now() + 300).await?;
     let (d, f, _) = super::mixed::agent(&h)?;
@@ -139,6 +143,100 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     tx.commit().await?;
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
+    let scope = rss_mdm_device_service::control::recovery_scope(h.c.tenant);
+    let target = rss_reconcile::Target::new(scope.clone(), format!("retirement:{retirement}"))?;
+    let (old_claim, old_diff) = {
+        let store = h.a.service.recovery_store();
+        store
+            .wake(
+                &target,
+                &rss_reconcile::ResourceSet::empty(h.c.tenant),
+                &control,
+            )
+            .await?;
+        let mut batch = store
+            .claim_due(&scope, 64, Duration::from_secs(30), &control)
+            .await?;
+        let index = batch
+            .claims
+            .iter()
+            .position(|c| c.target() == &target)
+            .unwrap();
+        let claim = batch.claims.remove(index);
+        let ReconcileStep::Ready(diff) = h.a.service.observe(&claim, &control).await? else {
+            anyhow::bail!("retirement not observed")
+        };
+        store.release(&claim, &control).await?;
+        for other in batch.claims {
+            store.release(&other, &control).await?;
+        }
+        (claim, diff)
+    };
+    drop(h.delivery);
+    drop(h.audit);
+    command::close(h.a).await?;
+    h.a = command::open(&h.c, true).await?;
+    (h.audit, h.delivery) = delivery(&h.c, &h.a).await?;
+    assert!(
+        h.a.service
+            .apply(&old_claim, old_diff, &control)
+            .await
+            .is_err()
+    );
+    step(&h, retirement).await?;
+    assert_eq!(state(&h, retirement).await?.0, "unenroll");
+    let offer = h.claim().await?;
+    assert!(matches!(offer.payload, w::TaskPayload::Unmanage(_)));
+    h.event(&offer, w::TaskEvent::Received).await?;
+    h.event(&offer, w::TaskEvent::Start).await?;
+    h.event(
+        &offer,
+        w::TaskEvent::UnmanageResult {
+            outcome: w::UnmanageOutcome::Completed,
+        },
+    )
+    .await?;
+    step(&h, retirement).await?;
+    assert_eq!(state(&h, retirement).await?.0, "complete");
+    let before: serde_json::Value = sqlx::query_scalar(
+        "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(offer.payload.task_id())
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert!(h.event(&offer, w::TaskEvent::Start).await.is_err());
+    let _ = h
+        .event(
+            &offer,
+            w::TaskEvent::UnmanageResult {
+                outcome: w::UnmanageOutcome::Completed,
+            },
+        )
+        .await;
+    let after: serde_json::Value = sqlx::query_scalar(
+        "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(offer.payload.task_id())
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert_eq!(before, after);
+    assert_eq!(state(&h, retirement).await?.0, "complete");
+    // An old, completed Script receipt must never restore ordinary work eligibility.
+    let mut tx = command::seed_transaction(&h.c).await?;
+    assert!(
+        !rss_mdm_registration_service::lifecycle::work_allowed_in(
+            &mut tx,
+            &h.c.tenant.to_string(),
+            h.p.device()
+        )
+        .await?
+    );
+    tx.rollback().await?;
     h.close().await
 }
 pub(super) async fn native(
@@ -215,68 +313,6 @@ pub(super) async fn native(
     sqlx::query("INSERT INTO mdm_inventory.collection_tasks(tenant_id,id,policy_version,channel,origin,source_objects,device,registration,generation,occurrence,created_at,available_at,deadline,native_delivery,collection_run,started_at,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'mdm','\"policy\"',$4,$5,$6,1,$7,$8,$8,$8+300,'sent',$9,$8,$10,true)").bind(h.c.tenant.to_string()).bind(task).bind(version).bind(json!([object])).bind(&target.device).bind(target.registration_id).bind(task.to_string()).bind(at).bind(report).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((policy, task, object))
-}
-#[tokio::test]
-#[ignore = "T2: native cleanup derives sent task certainty from Inventory reports without a second terminal state"]
-async fn native_cleanup_distinguishes_complete_failure_from_unconfirmed_report() -> Result<()> {
-    for reason in ["complete", "timeout", "revoked"] {
-        let h = Harness::open().await?;
-        let (_, task, object) = native(&h, Some(reason)).await?;
-        let retirement = accept(&h, &object).await?;
-        step(&h, retirement).await?;
-        let state = state(&h, retirement).await?;
-        if reason == "complete" {
-            assert_eq!(state.0, "unenroll");
-        } else {
-            assert_eq!(state, ("cleanup".into(), "unknown".into(), Some(task)));
-        }
-        h.close().await?;
-    }
-    Ok(())
-}
-#[tokio::test]
-#[ignore = "T2: native metadata detail needs InventoryRead while Agent raw detail retains sensitive authorization"]
-async fn native_detail_does_not_require_raw_evidence_permission() -> Result<()> {
-    use rss_mdm_authorization_service::Permission;
-    use rss_mdm_management_http::execution::task_reads::Reads;
-    let h = Harness::open().await?;
-    let (policy, task, _) = native(&h, Some("complete")).await?;
-    let account =
-        h.c.account(&[
-            Permission::PolicyRead,
-            Permission::OperationRead,
-            Permission::InventoryRead,
-        ])
-        .await?;
-    let proof = h.c.authenticate(&account).await?;
-    let detail = Reads::run(
-        h.a.task_reads.as_ref(),
-        &proof,
-        &h.c.request(&proof)?,
-        policy,
-        task,
-    )
-    .await?;
-    let detail = serde_json::to_value(detail)?;
-    assert_eq!(detail["channel"], "mdm");
-    assert_eq!(detail["report"]["reason"], "complete");
-    assert!(detail.get("native").is_none());
-    let (d, f, _) = super::mixed::agent(&h)?;
-    let policy = Uuid::new_v4();
-    let v = super::mixed::publish(&h, policy, 1, d, f).await?;
-    let task = super::mixed::run(&h, v, now()).await?;
-    assert!(matches!(
-        Reads::run(
-            h.a.task_reads.as_ref(),
-            &proof,
-            &h.c.request(&proof)?,
-            policy,
-            task
-        )
-        .await,
-        Err(rss_mdm_management_http::Error::Forbidden)
-    ));
-    h.close().await
 }
 
 async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Result<Uuid> {

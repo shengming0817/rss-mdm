@@ -16,7 +16,7 @@
 | `policy-service` | Policy 管理、发布、重跑、分配核对、事件接受与成员决定、业务审计、事务结算及所属 worker |
 | `resource-service` | 资源目录、不可变版本发布、启用和归档用例 |
 | `script-service` | 脚本冻结参数、Run、执行结果、自助服务、Unknown 屏障及恢复 |
-| `execution-service` | 剩余软件、凭据、注册和设备控制执行；独立 Queries 提供其类型化读事实 |
+| `device-service::control` | 固定设备控制、退管任务与完整生命周期；独立 Queries 只提供 Device 事实 |
 | `content-service` | 内容授权、上传/镜像/回执用例、不可变文件与回收 |
 | `management-http` | 浏览器管理 HTTP、会话与错误投影 |
 | `agent-channel` | Agent 注册、报告、任务和内容协议；事件入口直接消费 Policy 批次服务 |
@@ -36,7 +36,7 @@ Policy 普通持久工作使用 `mdm.policy`，事件使用 `mdm.policy-events`�
 
 共享连接的准入由各能力 `access-contract.json` 声明自身表、列权限、函数和策略；App 只组合合同，Postgres support 检查合同并集及额外权限，Apple 的协议存储结构由 Apple 自检。入口只公开装配与 HTTP 类型，领域类型从原能力导入。入口错误保留服务来源，在响应边界映射；App 只拥有启动与生命周期错误。
 
-Policy 管理直接消费 PolicyStore、资源版本读取和 Inputs。软件准备只借用目录与原生导出读取能力；已验证的导出描述不携带发布驱动、凭据或仓库写能力。App 先装配 Policy 来源读取，再装配独立 Inputs/Queries 与执行服务，最后为 Policy 事件服务构造绑定 Policy runtime 的 PolicyEvents；它与 ExecutionService 共享材料，分别持有各自事务资源。
+Policy 管理直接消费 PolicyStore、资源版本读取和 Inputs。软件准备只借用目录与原生导出读取能力；已验证的导出描述不携带发布驱动、凭据或仓库写能力。App 按业务 owner 装配具体写入与查询参与者；Policy 事件读取原始 owner 的任务进度，不构造通用执行服务。
 
 各入口直接投影实际 owner 错误，Audit 的闭合诊断分类由 audit-integration 持有，事务结算仍由原发起方借用 RSS 完成。各 owner 的独立运行身份在实际能力装配时完成最小权限准入；Policy、Scope、Resource 和 Execution 分别核验自身事务所需合同，不扩张中央业务 owner 分类。
 
@@ -45,7 +45,7 @@ management-http 与 windows-channel 直接消费该应用边界；Windows 通道
 回执 API 借用原事务 connection，策略更新与原生 issuance 保留各自事务结算；HTTP 错误由管理入口投影。
 当前安装定义按该归属重新组成，只支持空库安装与精确当前 manifest 重放，不提供旧安装兼容路径。
 
-Policy Events 使用绑定 Policy runtime 的 `PolicyEvents`；它与 Command-bound ExecutionService 共享不可变材料，各自构造事务资源。Inputs 同样绑定实际发起者，所有借用方法在访问前核验 runtime 和 tenant。Scope 仅通过 GroupSources 读取 Group 来源并调用限定目标的锁函数，不能写 Group 表。借用 participant 不结算事务，审计与效果仍由原发起者原子提交。
+Policy Events 通过 App 的静态参与组合，在 Policy 发起的事务中读取各业务 owner 的事件与进度。所有借用方法核验实际发起者的 runtime 和 tenant。Scope 仅通过 GroupSources 读取 Group 来源并调用限定目标的锁函数，不能写 Group 表。借用 participant 不结算事务，审计与效果仍由原发起者原子提交。
 
 Group 图编辑与最终发布使用同一图屏障复核 graph revision，普通属性和成员计算不取得图锁。Scope 的缺失聚合也受身份锁保护。非等待竞争使整笔事务回滚并重试原任务，不能当成业务版本过期终止任务。
 

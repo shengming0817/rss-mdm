@@ -92,7 +92,7 @@ async fn first_page(
     policy: Uuid,
     ids: &[Uuid],
 ) -> Result<rss_reconcile::Scope> {
-    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let force = CancellationToken::new();
     let stop = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
@@ -171,7 +171,7 @@ async fn resume(
     );
     let settled:bool=sqlx::query_scalar(if collection {"SELECT input_consumed=input_revision AND runs_done FROM mdm_inventory.collection_policy_recovery WHERE tenant_id=$1::uuid AND policy=$2"} else {"SELECT input_consumed=input_revision AND runs_done FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2"}).bind(h.c.tenant.to_string()).bind(policy).fetch_one(&h.c.operator).await?;
     assert!(settled);
-    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
     let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), &control).await?;
@@ -216,7 +216,7 @@ async fn native_notifications(h: &Harness, task: Uuid) -> Result<(bool, i64, i64
         .bind(h.c.tenant.to_string()).bind(task).bind(event).bind(event.to_string()).fetch_one(&h.c.operator).await?)
 }
 async fn drain_native(h: &Harness, task: Uuid) -> Result<()> {
-    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let stop = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);

@@ -50,16 +50,16 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         .on_runtime(a.runtime.clone(), c.tenant, &budget.control())
         .await?;
     let request = audit(&c);
-    rss_mdm_execution_service::transaction::run(
+    rss_mdm_device_service::control::transaction::run(
         &store,
         &a.runtime,
         c.tenant,
         &request,
         &store,
         |store, tx| {
-            Box::pin(
-                async move { rss_mdm_execution_service::source_changes::fail_in(tx, store).await },
-            )
+            Box::pin(async move {
+                rss_mdm_device_service::control::source_changes::fail_in(tx, store).await
+            })
         },
     )
     .await?;
@@ -78,7 +78,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
         request.finalize(None);
     }
     let states: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT failure,failure_generation FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid UNION ALL SELECT failure,failure_generation FROM mdm_software_deployment.device_source_dispatch WHERE tenant_id=$1::uuid",
+        "SELECT failure,failure_generation FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid UNION ALL SELECT failure,failure_generation FROM mdm_software_deployment.device_source_dispatch WHERE tenant_id=$1::uuid",
     ).bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
     assert_eq!(states, vec![("automation_suspended".into(), 1); 2]);
     let facts: i64 = sqlx::query_scalar(

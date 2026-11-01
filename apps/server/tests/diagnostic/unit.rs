@@ -111,8 +111,8 @@ fn actual_owner_diagnostics_retain_closed_failure_categories() {
             "Deadline",
         ),
         (
-            Error::Execution(rss_mdm_execution_service::Error::Unavailable(
-                rss_mdm_execution_service::Failure::NativeInputIntegrity,
+            Error::Execution(rss_mdm_device_service::control::Error::Unavailable(
+                rss_mdm_device_service::control::Failure::NativeInputIntegrity,
             )),
             "ExecutionDependency(NativeInputIntegrity)",
         ),

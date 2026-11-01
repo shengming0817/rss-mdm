@@ -53,7 +53,7 @@ pub async fn open_with(
 }
 pub async fn close(a: crate::assembly::execution::Assembly) -> Result<()> {
     use rss_runtime::ManagedResource;
-    rss_mdm_execution_service::Resource(a.service.clone())
+    rss_mdm_device_service::control::Resource(a.service.clone())
         .shutdown()
         .await?;
     drop(a);

@@ -26,11 +26,13 @@ async fn accepted(c: &Context, registration: Uuid, device: &str) -> Result<Uuid>
     let rss_mdm_policy::Action::UnmanageDevice { schedule, .. } = &definition.action else {
         unreachable!()
     };
-    let frozen = serde_json::to_value(rss_mdm_execution_service::frozen::Frozen::UnmanageDevice {
-        schedule: schedule.clone(),
-        run_lifetime_seconds: 300,
-        actor: actor.clone(),
-    })?;
+    let frozen = serde_json::to_value(
+        rss_mdm_device_service::control::frozen::Frozen::UnmanageDevice {
+            schedule: schedule.clone(),
+            run_lifetime_seconds: 300,
+            actor: actor.clone(),
+        },
+    )?;
     let fingerprint = Sha256::digest(serde_json::to_vec(&frozen)?).to_vec();
     let target = json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent","registrationId":registration,"generation":2}]});
     let object = rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device.into()).key();
@@ -46,7 +48,7 @@ async fn accepted(c: &Context, registration: Uuid, device: &str) -> Result<Uuid>
         .bind(retirement)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,origin,source_objects,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,'\"policy\"','[]',$3,$4,$5,2,'once',$6,$6,$7,$8,$9,true)").bind(c.tenant.to_string()).bind(run).bind(version).bind(device).bind(registration).bind(now).bind(now+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(now+300,now)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.unmanage_runs(tenant_id,id,origin,source_objects,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,'\"policy\"','[]',$3,$4,$5,2,'once',$6,$6,$7,$8,$9,true)").bind(c.tenant.to_string()).bind(run).bind(version).bind(device).bind(registration).bind(now).bind(now+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(now+300,now)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(run)
 }
@@ -87,7 +89,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
     let sentinel = accepted(&c, other, &other_device).await?;
     let state = |id| {
         sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
+            "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
         )
         .bind(c.tenant.to_string())
         .bind(id)
@@ -141,7 +143,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
     .fetch_one(&c.operator)
     .await?;
     let expected: i64 = sqlx::query_scalar(
-        "SELECT deadline FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
+        "SELECT deadline FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(c.tenant.to_string())
     .bind(target)

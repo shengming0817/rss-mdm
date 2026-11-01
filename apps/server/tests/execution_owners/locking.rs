@@ -142,7 +142,7 @@ async fn policy_change_race(collection: bool) -> Result<()> {
         2,
     )
     .await?;
-    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
     let (store, claim, diff) = claim_policy(&h, collection, &control).await?;
