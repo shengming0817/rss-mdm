@@ -102,7 +102,7 @@ pub async fn fail_in(
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let generation=tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query_scalar::<_,i64>("INSERT INTO mdm_devices.control_source_dispatch(tenant_id,failure,failure_generation) VALUES($1::uuid,'automation_suspended',1) ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure,failure_generation=device_source_dispatch.failure_generation+1 WHERE device_source_dispatch.failure IS NULL RETURNING failure_generation").bind(tenant).fetch_optional(c).await
+        sqlx::query_scalar::<_,i64>("INSERT INTO mdm_devices.control_source_dispatch(tenant_id,failure,failure_generation) VALUES($1::uuid,'automation_suspended',1) ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure,failure_generation=control_source_dispatch.failure_generation+1 WHERE control_source_dispatch.failure IS NULL RETURNING failure_generation").bind(tenant).fetch_optional(c).await
     })).await?;
     if let Some(generation) = generation {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
@@ -130,7 +130,7 @@ pub async fn verify_storage(c: &mut sqlx::PgConnection) -> std::result::Result<(
         .await?;
     if !valid {
         return Err(sqlx::Error::Protocol(
-            "Execution input checkpoint rejected".into(),
+            "Device input checkpoint rejected".into(),
         ));
     }
     Ok(())

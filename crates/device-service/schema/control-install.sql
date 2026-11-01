@@ -250,7 +250,7 @@ $$;
 REVOKE ALL ON FUNCTION mdm_devices.windows_pending_operations(uuid,bigint,uuid) FROM PUBLIC;
 
 -- Discovery starts with work, never with every installed push channel. Authority
--- is still rechecked by ExecutionService in the eventual claimant's transaction.
+-- is still rechecked by the Device service in the eventual claimant's transaction.
 CREATE FUNCTION mdm_devices.windows_wake_candidates(p_after uuid) RETURNS TABLE(registration uuid)
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$

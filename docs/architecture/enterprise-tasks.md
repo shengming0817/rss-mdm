@@ -22,7 +22,7 @@ Agent 在同一个有界候选页中按 `(available_at,id)` 排序检查，协�
 
 Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签和目录解析；完整 `Action` 根据显式 channel 决定 AssignmentBehavior，软件候选 SQL 同时限定 action kind 和 channel。显式重跑只支持已有消费者的脚本和 Enrollment。
 
-Script 和 Inventory 的资源准备分别核对参数、采集字段、平台能力与原生权限，Content 单源验证实际制品。预览仅在只读快照内校验资源和当前目录；发布在调用方原事务中冻结业务输入与必要 collection 定义。Execution 的准备接口只接受其剩余能力。
+Script 和 Inventory 的资源准备分别核对参数、采集字段、平台能力与原生权限，Content 单源验证实际制品。预览仅在只读快照内校验资源和当前目录；发布在调用方原事务中冻结业务输入与必要 collection 定义。Device 授权入口只接受固定控制与退管权限。
 
 预览复用资源和内容校验，但不登记采集定义、不封存配置、不发布版本或执行任务。软件草稿只持有 Scope、rollout 和冻结内容，历史版本为 `None`；阶段分母仍读取当前真实 Scope，成功事实为零。持久软件分配使用真实版本并共享准入计算。
 
@@ -30,7 +30,7 @@ Script 和 Inventory 的资源准备分别核对参数、采集字段、平台�
 
 当前软件定义要求持久化显式 channel；仅管理输入省略 channel 时规范化为 Agent。Action 自身持有指纹材料；软件指纹包含 channel 和完整变体选择而排除 rollout，Scope 变化也不产生新执行版本。固定的六类身份 fixture 验证此约束，不保留旧 ResourceBinding 或冻结接口。
 
-Execution 不依赖 Flow。App 为 Execution 的 `SourceAuthority` 组合 Scope/Device 事实与 Policy 候选读取，在执行方原事务连接上读取类型化 Scope 准入、预览和分配设备页及 Policy 候选；不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、世代和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。
+各业务 owner 不依赖 Flow。App 为各业务装配所需的 Scope 准入、Device 关联事实与 Policy 候选读取；查询消费方组合预览和分配设备页。读取借用调用方原事务，不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、世代和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。
 
 `Queries` 独立持有所需读依赖，不持有完整执行服务、outbox、reconcile 或签名私钥。目录、统计、复合游标、摘要、详情、能力及观察以类型化事实返回。摘要结果与完整详情分离，摘要移除输出和诊断流；详情与能力在事务内检查当前授权。目录先过滤可见设备，再统计和分页。HTTP 装配读写入口统一使用 `/api/v1`，实际路由由 [Management HTTP 装配](../../crates/management-http/src/router.rs) 单源定义。
 

@@ -184,7 +184,7 @@ mod storage_authority;
 pub use storage_authority::verify_authority;
 
 pub mod source_changes;
-/// Execution-owned input checkpoint and privileges.
+/// Device-owned input checkpoint and privileges.
 pub const SOURCE_CHANGES_SQL: &str = include_str!("../../schema/control-source-changes.sql");
 
 impl crate::control::transactions::Transactions {
@@ -200,7 +200,7 @@ impl crate::control::transactions::Transactions {
     }
 }
 
-/// Native registration reads frozen Execution authority through this narrow profile.
+/// Native registration reads frozen Device authority through this narrow profile.
 pub mod configuration_cleanup;
 
 pub mod task_cleanup;

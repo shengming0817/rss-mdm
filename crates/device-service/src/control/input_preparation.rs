@@ -1,4 +1,4 @@
-//! Current permission required by the remaining Execution action.
+//! Current permission required by fixed Device controls and unmanage.
 use crate::control::Error;
 use crate::control::authorization::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_policy::Action;

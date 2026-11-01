@@ -133,6 +133,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_software_service::deployment::SOURCE_CHANGES_SQL,
         ),
         (
+            "device-associations-v1",
+            rss_mdm_device_service::INSTALL_SQL,
+        ),
+        (
             "device-control-schema-v1",
             rss_mdm_device_service::control::INSTALL_SQL,
         ),
@@ -293,10 +297,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "timeline-service-schema-v1",
             rss_mdm_timeline_service::INSTALL_SQL,
-        ),
-        (
-            "device-associations-v1",
-            rss_mdm_device_service::INSTALL_SQL,
         ),
         (
             "recovery-credentials-schema-v1",

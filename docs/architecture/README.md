@@ -38,7 +38,7 @@ Policy 普通持久工作使用 `mdm.policy`，事件使用 `mdm.policy-events`�
 
 Policy 管理直接消费 PolicyStore、资源版本读取和 Inputs。软件准备只借用目录与原生导出读取能力；已验证的导出描述不携带发布驱动、凭据或仓库写能力。App 按业务 owner 装配具体写入与查询参与者；Policy 事件读取原始 owner 的任务进度，不构造通用执行服务。
 
-各入口直接投影实际 owner 错误，Audit 的闭合诊断分类由 audit-integration 持有，事务结算仍由原发起方借用 RSS 完成。各 owner 的独立运行身份在实际能力装配时完成最小权限准入；Policy、Scope、Resource 和 Execution 分别核验自身事务所需合同，不扩张中央业务 owner 分类。
+各入口直接投影实际 owner 错误，Audit 的闭合诊断分类由 audit-integration 持有，事务结算仍由原发起方借用 RSS 完成。各 owner 的独立运行身份在实际能力装配时完成最小权限准入；Policy、Scope、Resource、Device 及其他业务 owner 分别核验自身事务所需合同，不扩张中央业务 owner 分类。
 
 Entra 注册策略的管理用例、模型、策略表和 Windows 注册操作回执由 registration-service 唯一持有。
 management-http 与 windows-channel 直接消费该应用边界；Windows 通道持有 token、TOU、consent 和原生协议。
