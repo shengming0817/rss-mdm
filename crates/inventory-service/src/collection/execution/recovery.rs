@@ -217,6 +217,7 @@ async fn stale_in(tx: &mut PgTransaction<'_>, target: &super::model::Target) -> 
         .with_connection(move |c| {
             Box::pin(
                 rss_mdm_registration_service::device::read::stale_registration_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     tenant,
                     target.registration,

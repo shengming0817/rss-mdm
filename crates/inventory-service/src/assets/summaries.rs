@@ -17,6 +17,6 @@ impl planning::SnapshotReader {
 
         scope: &CollectionScope,
     ) -> Result<Vec<DeviceSummary>> {
-        super::raw_snapshot::read_on(c, self.tenant, cut, ids, catalog, scope).await
+        super::raw_snapshot::read_on(self.profile, c, self.tenant, cut, ids, catalog, scope).await
     }
 }

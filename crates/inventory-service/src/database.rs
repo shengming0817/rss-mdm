@@ -2,11 +2,15 @@ use crate::{Error, Failure};
 use sqlx::{PgPool, Postgres, Transaction};
 #[derive(Clone)]
 pub struct Store {
+    profile: rss_mdm_install_support::StorageProfile,
     pool: PgPool,
 }
 impl Store {
-    pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
+    pub fn from_pool(profile: rss_mdm_install_support::StorageProfile, pool: PgPool) -> Self {
+        Self { profile, pool }
     }
     pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         self.begin_delivery(tenant).await.map_err(db)

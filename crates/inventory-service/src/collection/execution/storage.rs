@@ -77,10 +77,13 @@ pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()>
     let devices = vec![device.to_owned()];
     tx.with_connection(move |c| {
         Box::pin(async move {
-            Ok(
-                rss_mdm_registration_service::lifecycle::lock_devices_in(c, &tenant, &devices)
-                    .await,
+            Ok(rss_mdm_registration_service::lifecycle::lock_devices_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &tenant,
+                &devices,
             )
+            .await)
         })
     })
     .await??;

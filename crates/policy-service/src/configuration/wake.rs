@@ -35,6 +35,7 @@ impl Transactions {
                 .with_connection(move |c| {
                     Box::pin(async move {
                         rss_mdm_policy_postgres::candidates::native_interests_on(
+                            rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             tenant,
                             &missing,

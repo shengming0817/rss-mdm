@@ -84,6 +84,7 @@ pub async fn current_registration(
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(rss_mdm_registration_service::device::store::lock_channel(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &t,
                 &d,
@@ -97,6 +98,7 @@ pub async fn current_registration(
         .with_connection(move |c| {
             Box::pin(
                 rss_mdm_registration_service::device::read::active_channel_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     tenant,
                     vec![device],
@@ -129,6 +131,7 @@ pub async fn require_source(
         .with_connection(move |c| {
             Box::pin(
                 rss_mdm_registration_service::device::read::enabled_source_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     tenant,
                     registration,
@@ -158,6 +161,7 @@ pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()>
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(rss_mdm_registration_service::device::store::lock_channel(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &tenant,
                 &device,

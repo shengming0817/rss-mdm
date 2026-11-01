@@ -137,7 +137,7 @@ async fn desired_in(
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(super::candidates::PolicyCandidates {
-                        objects: source.objects.clone(),
+                        objects: source.required_objects()?.clone(),
                     }
                     .candidates_on(
                         c,

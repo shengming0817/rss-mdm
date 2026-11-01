@@ -142,7 +142,7 @@ pub(crate) async fn many(
             let mut after = None;
             loop {
                 let page = super::super::candidates::PolicyCandidates {
-                    objects: source.objects.clone(),
+                    objects: source.objects.clone().ok_or(Error::Unsupported)?,
                 }
                 .configuration_candidates_batch_on(c, tenant_id, &devices, after.as_ref())
                 .await?;

@@ -177,7 +177,7 @@ CREATE TABLE mdm.collection_results (
  scope text NOT NULL,coverage text NOT NULL,sequence bigint NOT NULL CHECK(sequence>=0),
  observed_at bigint NOT NULL,digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),
  document bytea NOT NULL CHECK(octet_length(document)<=33554432),
- PRIMARY KEY(tenant_id,run)
+ PRIMARY KEY(tenant_id,scope,run)
 );
 DO $$ DECLARE t text; BEGIN
  FOREACH t IN ARRAY ARRAY['field_versions','collection_definitions','collection_results'] LOOP

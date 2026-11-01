@@ -34,8 +34,12 @@ impl Groups {
         self.check_task_transaction(tx)?;
         let query = format!(
             "WITH RECURSIVE scope_facts AS ({}), policy_facts AS ({}), compliance_facts AS ({}), {}",
-            rss_mdm_scope_postgres::GROUP_REFERENCE_FACTS_SQL,
-            rss_mdm_policy_postgres::GROUP_REFERENCE_FACTS_SQL,
+            rss_mdm_scope_postgres::group_reference_facts_sql(
+                rss_mdm_install_support::StorageProfile::Mdm
+            ),
+            rss_mdm_policy_postgres::group_reference_facts_sql(
+                rss_mdm_install_support::StorageProfile::Mdm
+            ),
             rss_mdm_compliance_postgres::GROUP_REFERENCE_FACTS_SQL,
             include_str!("references.sql")
         );

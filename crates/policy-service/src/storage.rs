@@ -3,6 +3,7 @@ use crate::{Error, Failure, transaction::*};
 use rss_transactional_messaging_postgres::PgTransaction;
 /// Verify the capability's runtime authority on the borrowed transaction.
 pub(crate) async fn verify_contract(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     admission: &'static str,
     failure: Failure,
@@ -10,8 +11,8 @@ pub(crate) async fn verify_contract(
     let valid = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                rss_mdm_policy_postgres::verify_authority(c).await?;
-                rss_mdm_scope_postgres::verify_authority(c).await?;
+                rss_mdm_policy_postgres::verify_authority(profile, c).await?;
+                rss_mdm_scope_postgres::verify_authority(profile, c).await?;
                 sqlx::query_scalar::<_, bool>(admission).fetch_one(c).await
             })
         })

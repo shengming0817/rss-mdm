@@ -19,7 +19,9 @@ pub use diagnostic::Failure;
 pub use error::Error;
 use rss_mdm_authorization_service as authorization;
 /// Policy application admission in an existing transaction.
-pub const ADMISSION_SQL: &str = include_str!("admission.sql");
+pub const fn admission_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).admission
+}
 pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
     match error {
         rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
@@ -32,3 +34,5 @@ pub mod configuration;
 #[cfg(test)]
 #[path = "../tests/configuration_unit.rs"]
 mod configuration_unit;
+
+mod storage_profile;

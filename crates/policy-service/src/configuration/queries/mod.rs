@@ -45,6 +45,7 @@ impl Transactions {
                 continue;
             }
             let rows = rss_mdm_registration_service::device::read::active_channel_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 self.tenant.to_string(),
                 devices,

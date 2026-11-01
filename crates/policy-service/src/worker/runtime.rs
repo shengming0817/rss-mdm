@@ -29,6 +29,9 @@ impl std::ops::Deref for Automation {
     }
 }
 impl PolicyWork {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.service.profile()
+    }
     pub fn new(
         service: Arc<Application>,
         events: Arc<crate::events::Events>,
@@ -217,6 +220,8 @@ impl PolicyWork {
     ) -> impl std::future::Future<
         Output = std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error>,
     > + Send {
+        let profile = self.profile();
+
         Box::pin(async move {
             self.check_claim(claim)?;
             control.check()?;
@@ -243,9 +248,9 @@ impl PolicyWork {
                             let result = match jobs::target_job(ctx.1)
                                 .and_then(|s| Uuid::parse_str(s).ok())
                             {
-                                Some(id) => {
-                                    jobs::read_in(tx, id).await.map(|(_, done, _, _, _)| !done)
-                                }
+                                Some(id) => jobs::read_in(profile, tx, id)
+                                    .await
+                                    .map(|(_, done, _, _, _)| !done),
                                 None => Err(Error::Malformed.into()),
                             };
                             result.map_err(|e| fault(e, ctx.2))
@@ -290,6 +295,8 @@ impl PolicyWork {
     ) -> impl std::future::Future<
         Output = std::result::Result<ReconcileStep<()>, rss_reconcile::Error>,
     > + Send {
+        let profile = self.profile();
+
         Box::pin(async move {
             self.check_claim(claim)?;
             if crate::configuration::recovery::owns_entity(claim.target().entity()) {
@@ -328,7 +335,7 @@ impl PolicyWork {
                                     )
                                     .map_err(|_| Error::Malformed)?;
                                     let (job, done, _, cursor, _) =
-                                        crate::worker::jobs::read_in(tx, id).await?;
+                                        crate::worker::jobs::read_in(profile, tx, id).await?;
                                     let assignment = if done {
                                         None
                                     } else if let Work::PolicyReconcile { policy } = &job {
@@ -361,7 +368,7 @@ impl PolicyWork {
                                                     }
                                                     match job {
                                                         ref input @ Work::Lifecycle{..}=>ctx.0.advance_lifecycle_work_in(tx,id,input).await,
-                                                        Work::PolicyScope { scope, .. } => crate::management::scope_changes::advance_in(tx,&ctx.0.audit_store,id,scope,cursor).await,
+                                                        Work::PolicyScope { scope, .. } => crate::management::scope_changes::advance_in(profile, tx,&ctx.0.audit_store,id,scope,cursor).await,
                                                         Work::PolicyEvent { batch } => ctx
                                                             .0
                                                             .advance_event_in(
@@ -462,7 +469,7 @@ impl PolicyWork {
                                     |(service, audit_store), tx| {
                                         Box::pin(async move {
                                             if matches!(
-                                                crate::worker::jobs::read_in(tx, id)
+                                                crate::worker::jobs::read_in(profile, tx, id)
                                                     .await
                                                     .map_err(|e| fault(e, &Mutex::new(None)))?
                                                     .0,
@@ -480,6 +487,7 @@ impl PolicyWork {
                                                     .map_err(|e| fault(e, &Mutex::new(None)));
                                             }
                                             crate::worker::jobs::finish_job_in(
+                                                profile,
                                                 tx,
                                                 audit_store,
                                                 id,
@@ -545,6 +553,8 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
+        let profile = self.profile();
+
         let now = self.service.clock.unix_seconds().map_err(reconcile_error)?;
         let schedules = claim.target().entity() == "schedules";
         let pending = self
@@ -559,9 +569,9 @@ impl PolicyWork {
                 |_, tx| {
                     Box::pin(async move {
                         if schedules {
-                            rss_mdm_policy_postgres::schedules::scan_due_in(tx, now).await
+                            rss_mdm_policy_postgres::schedules::scan_due_in(profile, tx, now).await
                         } else {
-                            rss_mdm_policy_postgres::work::inputs_pending_in(tx).await
+                            rss_mdm_policy_postgres::work::inputs_pending_in(profile, tx).await
                         }
                     })
                 },
@@ -585,6 +595,8 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
+        let profile = self.profile();
+
         self.service
             .runtime
             .local_tx_with_context(
@@ -607,7 +619,12 @@ impl PolicyWork {
                                         let result = if *entity == "schedules" {
                                             s.advance_lifecycle_schedules_in(tx).await
                                         } else {
-                                            jobs::forward_jobs_in(&s.reconcile_messaging, tx).await
+                                            jobs::forward_jobs_in(
+                                                profile,
+                                                &s.reconcile_messaging,
+                                                tx,
+                                            )
+                                            .await
                                         };
                                         result
                                             .map(ProtectedStep::Ready)

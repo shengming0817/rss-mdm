@@ -46,6 +46,7 @@ impl CollectionService {
             Box::pin(async move {
                 Ok(
                     rss_mdm_registration_service::device::store::revalidate_source(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &checked,
                         rss_mdm_inventory::ReportSource::AgentBuiltin,

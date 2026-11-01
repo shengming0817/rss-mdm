@@ -35,14 +35,6 @@ impl RequestRecord {
     }
 }
 impl BackendStorage {
-    // Only the closed enum supplies an SQL identifier; all other values are bound.
-    fn query(self, template: &'static str) -> sqlx::SqlStr {
-        // Audited: every template is a source literal; schema is a closed enum
-        // of three ASCII identifiers. Request values only enter bind parameters.
-        sqlx::SqlSafeStr::into_sql_str(sqlx::AssertSqlSafe(
-            template.replace("{schema}", self.kind.schema()),
-        ))
-    }
     /// Acquire the existing tenant/domain transaction advisory lock.
     /// `kind` and `key` are adapter-selected lock coordinates, scoped by backend and
     /// transaction tenant. May wait under the transaction budget; SQL/timeout failures
@@ -142,7 +134,7 @@ impl BackendStorage {
         id: &str,
     ) -> Result<Option<AggregateRecord>, PgError> {
         self.check_tenant_on(c, tenant).await?;
-        let query=self.query("SELECT revision,document,digest FROM {schema}.aggregates WHERE tenant_id=$1::uuid AND id=$2");
+        let query = self.kind.statements().statement_0;
         let row = sqlx::query(query)
             .bind(tenant.to_string())
             .bind(id)
@@ -172,11 +164,11 @@ impl BackendStorage {
         let (tenant, id, hash) = (tx.tenant_id().to_string(), id.to_owned(), digest(&document));
         let revision = self.integer("db::write", i64::try_from(revision))?;
         let old = self.integer("db::write-old-revision", old.map(i64::try_from).transpose())?;
-        let query=self.query(if old.is_some() {
-            "UPDATE {schema}.aggregates SET revision=$3,document=$4,digest=$5 WHERE tenant_id=$1::uuid AND id=$2 AND revision=$6"
+        let query = if old.is_some() {
+            self.kind.statements().statement_1
         } else {
-            "INSERT INTO {schema}.aggregates(tenant_id,id,revision,document,digest) SELECT $1::uuid,$2,$3,$4,$5 WHERE $6::bigint IS NULL"
-        });
+            self.kind.statements().statement_2
+        };
         let rows = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -207,7 +199,7 @@ impl BackendStorage {
         id: &str,
     ) -> Result<Option<RequestRecord>, PgError> {
         let (tenant, id) = (tx.tenant_id().to_string(), id.to_owned());
-        let query=self.query("SELECT owner,fingerprint,request,receipt,digest FROM {schema}.requests WHERE tenant_id=$1::uuid AND id=$2");
+        let query = self.kind.statements().statement_3;
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -248,7 +240,7 @@ impl BackendStorage {
             id.to_owned(),
             digest(&record.receipt),
         );
-        let query=self.query("INSERT INTO {schema}.requests(tenant_id,id,owner,fingerprint,request,receipt,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)");
+        let query = self.kind.statements().statement_4;
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(query)
@@ -282,7 +274,7 @@ impl BackendStorage {
             kind.to_owned(),
             key.to_owned(),
         );
-        let query=self.query("SELECT document,digest FROM {schema}.immutable WHERE tenant_id=$1::uuid AND owner=$2 AND kind=$3 AND key=$4");
+        let query = self.kind.statements().statement_5;
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -317,8 +309,8 @@ impl BackendStorage {
             key.to_owned(),
             digest(&document),
         );
-        let insert=self.query("INSERT INTO {schema}.immutable(tenant_id,owner,kind,key,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING");
-        let select=self.query("SELECT document FROM {schema}.immutable WHERE tenant_id=$1::uuid AND owner=$2 AND kind=$3 AND key=$4");
+        let insert = self.kind.statements().statement_6;
+        let select = self.kind.statements().statement_7;
         tx.with_connection(move |c| {
             Box::pin(async move {
                 sqlx::query(insert)
@@ -363,6 +355,7 @@ impl BackendStorage {
                         .bind(policy.update_columns)
                         .bind(serde_json::json!(policy.required_keys))
                         .bind(policy.functions)
+                        .bind(!matches!(self.kind, crate::BackendKind::DaPolicy))
                         .fetch_one(c)
                         .await
                 })

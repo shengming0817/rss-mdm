@@ -270,6 +270,7 @@ async fn prepare_in(
                 Box::pin(async move {
                     Ok(
                         rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                            rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             &tenant,
                             &[device],

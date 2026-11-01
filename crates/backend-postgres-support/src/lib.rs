@@ -10,6 +10,8 @@ pub use storage::*;
 pub enum BackendKind {
     /// Policy aggregates, targets and execution facts.
     Policy,
+    /// Policy storage belonging to a DA installation.
+    DaPolicy,
     /// Immutable resource definitions.
     Resource,
     /// Software release candidates and attempts.
@@ -19,6 +21,7 @@ impl BackendKind {
     fn schema(self) -> &'static str {
         match self {
             Self::Policy => "mdm_policy",
+            Self::DaPolicy => "rss_da",
             Self::Resource => "mdm_resource",
             Self::SoftwareRelease => "mdm_software_release",
         }
@@ -26,6 +29,7 @@ impl BackendKind {
     fn domain(self) -> &'static str {
         match self {
             Self::Policy => "policy",
+            Self::DaPolicy => "da-policy",
             Self::Resource => "resource",
             Self::SoftwareRelease => "software-release",
         }
@@ -63,3 +67,5 @@ impl BackendStorage {
 
 /// Composition of capability-owned access-role contracts.
 pub mod access_admission;
+
+mod statements;

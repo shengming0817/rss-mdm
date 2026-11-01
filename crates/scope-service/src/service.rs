@@ -36,15 +36,19 @@ pub struct Dependencies {
     pub cursor_key: Vec<u8>,
 }
 impl Scopes {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.store.profile()
+    }
     pub async fn new(
+        profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         clock: Arc<dyn clock::Clock>,
         dependencies: Dependencies,
     ) -> std::result::Result<Self, Error> {
-        let store = rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant);
+        let store = rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime.clone(), tenant);
         let s = Self {
-            projection: crate::projection::ScopeProjection::new(runtime.clone(), tenant),
+            projection: crate::projection::ScopeProjection::new(profile, runtime.clone(), tenant),
             runtime,
             tenant,
             clock,

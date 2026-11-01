@@ -29,6 +29,8 @@ impl Scopes {
         tx: &mut PgTransaction<'_>,
         definition: &ScopeDefinition,
     ) -> transaction::Result<()> {
+        let profile = self.profile();
+
         if definition.references().len() > 1000 {
             return Err(Error::Malformed.into());
         }
@@ -50,7 +52,7 @@ impl Scopes {
                     if !tx
                         .with_connection(move |c| {
                             Box::pin(rss_mdm_registration_service::device::read::registered(
-                                c, tenant, id,
+                                profile, c, tenant, id,
                             ))
                         })
                         .await?

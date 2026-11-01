@@ -41,7 +41,7 @@ impl Groups {
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true)")
                 .bind(self.tenant.to_string()).bind(budget.control().total_remaining().as_millis().max(1).to_string()).execute(&mut *tx).await?;
-            let current=rss_mdm_authorization_service::snapshot_on(&mut tx,proof.tenant_id(),proof.instance_id()).await?;
+            let current=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
             current.require(proof,Permission::GroupRead,None)?;
             current.require_all_devices(proof,Permission::InventoryRead)?;
             if current.query_binding(proof)?!=authority {return Err(Error::Conflict.into());}
@@ -74,6 +74,7 @@ impl Groups {
                             |(proof, expected), c| {
                                 Box::pin(async move {
                                     let current = rss_mdm_authorization_service::snapshot_on(
+                                        rss_mdm_install_support::StorageProfile::Mdm,
                                         c,
                                         proof.tenant_id(),
                                         proof.instance_id(),
@@ -118,7 +119,14 @@ impl Groups {
         if device.is_empty() || device.len() > 255 {
             return Err(Error::Malformed.into());
         }
-        if !crate::device::read::registered(c, self.tenant.to_string(), device.to_owned()).await? {
+        if !crate::device::read::registered(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            self.tenant.to_string(),
+            device.to_owned(),
+        )
+        .await?
+        {
             return Err(Error::Group(GroupMissing::Device).into());
         }
         let resolved = self.objects.memberships(c, self.tenant, device).await?;

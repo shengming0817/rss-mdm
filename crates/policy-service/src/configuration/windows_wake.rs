@@ -22,6 +22,7 @@ impl Transactions {
     ) -> std::result::Result<bool, Error> {
         let tenant = self.tenant.to_string();
         rss_mdm_registration_service::device::store::lock_channel(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             &tenant,
             device,
@@ -32,6 +33,7 @@ impl Transactions {
             .bind(&tenant).bind(registration).bind(device).bind(generation).fetch_optional(&mut *c).await.map_err(db)?;
         let Some(row) = row else { return Ok(false) };
         if !rss_mdm_registration_service::device::store::active_source_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             &tenant,
             registration,

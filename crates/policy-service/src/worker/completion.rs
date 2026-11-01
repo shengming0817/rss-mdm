@@ -71,6 +71,8 @@ impl DurableStore for PolicyWork {
         completion: Completion,
         control: &Control<'_, T>,
     ) -> impl std::future::Future<Output = std::result::Result<(), ReconcileError>> + Send {
+        let profile = self.profile();
+
         Box::pin(async move {
             self.check_claim(claim)?;
             // RSS settles with the runner's lifetime control, not the attempt control.
@@ -163,6 +165,7 @@ impl DurableStore for PolicyWork {
                                                 let result = match id {
                                                     Some(id) => {
                                                         crate::worker::jobs::finish_job_in(
+                                                            profile,
                                                             tx,
                                                             audit_store,
                                                             id,

@@ -51,6 +51,9 @@ struct Dispatch<'a> {
 }
 const MAX_MEMBERS: usize = 1000;
 impl Events {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.application.profile()
+    }
     pub async fn invoke_management(
         &self,
         proof: &AuthorizedPrincipal,
@@ -91,6 +94,8 @@ impl Events {
         input: &wire::PolicyEventRequest,
         audit: &RequestAudit,
     ) -> std::result::Result<wire::PolicyEventAccepted, Error> {
+        let profile = self.profile();
+
         if input.operation_id.is_nil() {
             return Err(Error::Malformed);
         }
@@ -146,7 +151,7 @@ impl Events {
                     let audit_store = &s.application.audit_store;
                     audit_store.prepare_in(tx, audit, &[]).await?;
                     if let Caller::Agent { target } = caller
-                        && !event_device_current_in(tx, target).await?
+                        && !event_device_current_in(profile, tx, target).await?
                     {
                         return Err(Error::Forbidden.into());
                     }
@@ -155,8 +160,13 @@ impl Events {
                     let operation = input.operation_id;
                     let actor_query = actor.clone();
                     let old: Option<(Vec<u8>, Uuid, i64)> =
-                        rss_mdm_policy_postgres::events::replay_in(tx, actor_query, operation)
-                            .await?;
+                        rss_mdm_policy_postgres::events::replay_in(
+                            profile,
+                            tx,
+                            actor_query,
+                            operation,
+                        )
+                        .await?;
                     if let Some((prior, batch, members)) = old {
                         if prior != hash {
                             return Err(Error::Conflict.into());
@@ -186,7 +196,8 @@ impl Events {
                     }
                     let name = input.event.as_str().to_owned();
                     let ids: Vec<Uuid> =
-                        rss_mdm_policy_postgres::events::matching_policies_in(tx, name).await?;
+                        rss_mdm_policy_postgres::events::matching_policies_in(profile, tx, name)
+                            .await?;
                     if ids.len() > MAX_MEMBERS {
                         return Err(Error::Malformed.into());
                     }
@@ -197,6 +208,7 @@ impl Events {
                     let caller_document = json(caller)?;
                     let device_owned = device.to_owned();
                     rss_mdm_policy_postgres::events::insert_batch_in(
+                        profile,
                         tx,
                         rss_mdm_policy_postgres::events::Batch {
                             id: batch,
@@ -212,6 +224,7 @@ impl Events {
                     )
                     .await?;
                     let management_reader = rss_mdm_policy_postgres::PolicyReader::bind(
+                        profile,
                         s.application.runtime.clone(),
                         s.application.tenant,
                     );
@@ -287,14 +300,14 @@ impl Events {
                                 rss_mdm_policy::SoftwareChannel::Mdm => "mdm",
                             },
                         );
-                        let mut target = target_in(tx, device, channel).await?;
+                        let mut target = target_in(profile, tx, device, channel).await?;
                         if target.is_none()
                             && matches!(
                                 policy.definition.action,
                                 rss_mdm_policy::Action::UnmanageDevice { .. }
                             )
                         {
-                            target = target_in(tx, device, "mdm").await?;
+                            target = target_in(profile, tx, device, "mdm").await?;
                         }
                         if matches!(caller, Caller::Agent { .. }) {
                             let Some(ref target) = target else {
@@ -320,7 +333,7 @@ impl Events {
                                 Some(t) => Some(t.clone()),
                                 None => match caller {
                                     Caller::Agent { target } => Some(target.clone()),
-                                    _ => target_in(tx, device, "mdm").await?,
+                                    _ => target_in(profile, tx, device, "mdm").await?,
                                 },
                             };
                             activity.target = visible_target.map(|t| {
@@ -362,6 +375,7 @@ impl Events {
                         })?;
                         let decision = json(&decision)?;
                         rss_mdm_policy_postgres::events::insert_member_in(
+                            profile,
                             tx,
                             rss_mdm_policy_postgres::events::Member {
                                 batch,
@@ -377,6 +391,7 @@ impl Events {
                         .await?;
                     }
                     crate::worker::jobs::enqueue_job_in(
+                        profile,
                         tx,
                         batch,
                         &crate::worker::Work::PolicyEvent { batch },
@@ -396,11 +411,11 @@ impl Events {
                     let target = if let Caller::Agent { target } = caller {
                         Some(target.clone())
                     } else {
-                        target_in(tx, device, "agent").await?
+                        target_in(profile, tx, device, "agent").await?
                     };
                     let target = match target {
                         Some(t) => Some(t),
-                        None => target_in(tx, device, "mdm").await?,
+                        None => target_in(profile, tx, device, "mdm").await?,
                     };
                     activity.target =
                         target.map(|t| rss_mdm_audit_integration::activity::ActivityTarget {
@@ -443,11 +458,13 @@ impl Application {
         tx: &mut PgTransaction<'_>,
         batch: Uuid,
     ) -> Result<()> {
+        let profile = self.profile();
+
         self.runtime.validate_transaction(tx)?;
         let audit_store = &self.audit_store;
-        let row = rss_mdm_policy_postgres::events::pending_member_in(tx, batch).await?;
+        let row = rss_mdm_policy_postgres::events::pending_member_in(profile, tx, batch).await?;
         let Some(row) = row else {
-            return crate::worker::jobs::finish_job_in(tx, audit_store, batch, None).await;
+            return crate::worker::jobs::finish_job_in(profile, tx, audit_store, batch, None).await;
         };
         let member: Uuid = row.try_get("id")?;
         let id: Uuid = row.try_get("policy")?;
@@ -473,18 +490,19 @@ impl Application {
         audit.target(&target.device);
         audit_store.prepare_in(tx, &audit, &[]).await?;
         let now = crate::action_admission::now(tx).await?;
-        let reader = rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant);
+        let reader =
+            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone(), self.tenant);
         let policy = policies::storage::read_in(&reader, tx, id).await?;
-        let mut valid = event_device_current_in(tx, &target).await?;
+        let mut valid = event_device_current_in(profile, tx, &target).await?;
         for (permission, proof) in authority.permissions {
             valid &= tx
                 .with_connection(move |c| {
-                    Box::pin(async move { Ok(proof.valid(c, permission, now).await) })
+                    Box::pin(async move { Ok(proof.valid(profile, c, permission, now).await) })
                 })
                 .await??;
         }
         if let Caller::Agent { target: ref origin } = caller {
-            valid &= event_device_current_in(tx, origin).await?;
+            valid &= event_device_current_in(profile, tx, origin).await?;
         }
         let decision = if now >= deadline {
             wire::PolicyEventDecision::Expired
@@ -552,7 +570,7 @@ impl Application {
                 .collect();
         }
         let decision = json(&decision)?;
-        rss_mdm_policy_postgres::events::decide_member_in(tx, member, decision).await?;
+        rss_mdm_policy_postgres::events::decide_member_in(profile, tx, member, decision).await?;
         audit_store
             .append_in(
                 tx,
@@ -575,6 +593,8 @@ impl Application {
         tx: &mut PgTransaction<'_>,
         dispatch: Dispatch<'_>,
     ) -> Result<wire::PolicyEventDecision> {
+        let profile = self.profile();
+
         let Dispatch {
             policy,
             target,
@@ -601,6 +621,8 @@ impl Application {
         match &policy.definition.action {
             Action::Configuration { .. } => {
                 self.configuration
+                    .as_ref()
+                    .ok_or(Error::Unsupported)?
                     .accept_event_in(tx, policy, target, (member, origin), deadline, audit)
                     .await
             }
@@ -614,7 +636,7 @@ impl Application {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             Ok(crate::telemetry::current_on(
-                                tenant, objects, c, &device, id, version,
+                                profile, tenant, objects, c, &device, id, version,
                             )
                             .await)
                         })
@@ -650,6 +672,8 @@ impl Application {
         cause: (Uuid, ActivityOrigin),
         frozen_target: &rss_mdm_inventory_service::objects::DeviceObject,
     ) -> Result<wire::PolicyEventDecision> {
+        let profile = self.profile();
+
         let (member, origin) = cause;
         let tenant = tx.tenant_id();
         let reader = self.objects.clone();
@@ -676,7 +700,10 @@ impl Application {
             return Ok(rejected("target_changed"));
         }
         for member in &object.members {
-            let source = rss_mdm_scope_service::channels::ChannelTargets::new(self.objects.clone());
+            let source = rss_mdm_scope_service::channels::ChannelTargets::new(
+                self.profile(),
+                Some(self.objects.clone()),
+            );
             let member = member.clone();
             let eligible = tx
                 .with_connection(move |c| {
@@ -696,7 +723,7 @@ impl Application {
             }
         }
         let published = checked(
-            rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant)
+            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone(), self.tenant)
                 .version_in(tx, policy.version)
                 .await?,
         )?
@@ -754,6 +781,8 @@ impl Application {
         batch: Uuid,
         reason: &str,
     ) -> Result<()> {
+        let profile = self.profile();
+
         let audit = RequestAudit::new(
             self.tenant.to_string(),
             "policy_event_member",
@@ -763,9 +792,9 @@ impl Application {
         audit_store.prepare_in(tx, &audit, &[]).await?;
         let decision = json!({"state":"rejected","reason":reason});
         let member: Option<Uuid> =
-            rss_mdm_policy_postgres::events::reject_next_in(tx, batch, decision).await?;
+            rss_mdm_policy_postgres::events::reject_next_in(profile, tx, batch, decision).await?;
         if let Some(member) = member {
-            let row = rss_mdm_policy_postgres::events::member_fact_in(tx, member).await?;
+            let row = rss_mdm_policy_postgres::events::member_fact_in(profile, tx, member).await?;
             let target: Target = stored(serde_json::from_value(row.try_get("target")?))?;
             let input: wire::PolicyEventRequest =
                 stored(serde_json::from_value(row.try_get("input")?))?;
@@ -816,6 +845,7 @@ impl Application {
 }
 
 pub async fn target_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     device: &str,
     channel: &str,
@@ -831,7 +861,7 @@ pub async fn target_in(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(rss_mdm_registration_service::device::endpoints::current_in(
-                    c, &tenant, &device, channel,
+                    profile, c, &tenant, &device, channel,
                 )
                 .await)
             })
@@ -843,10 +873,28 @@ pub async fn target_in(
         generation: p.generation,
     }))
 }
-pub async fn event_device_current_in(tx: &mut PgTransaction<'_>, target: &Target) -> Result<bool> {
+pub async fn event_device_current_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    target: &Target,
+) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let target = target.clone();
-    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(tenant).bind(target.registration).bind(target.device).bind(target.generation).fetch_one(c).await})).await?)
+    Ok(tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar(
+                    crate::storage_profile::sql(profile).events_event_device_current_in_1,
+                )
+                .bind(tenant)
+                .bind(target.registration)
+                .bind(target.device)
+                .bind(target.generation)
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?)
 }
 
 pub(crate) fn rejected(reason: &str) -> wire::PolicyEventDecision {
@@ -861,8 +909,13 @@ impl Application {
         policy: &rss_mdm_policy::Policy,
         target: &Target,
     ) -> Result<bool> {
+        let profile = self.profile();
+
         let tenant = tx.tenant_id();
-        let source = rss_mdm_scope_service::channels::ChannelTargets::new(self.objects.clone());
+        let source = rss_mdm_scope_service::channels::ChannelTargets::new(
+            self.profile(),
+            Some(self.objects.clone()),
+        );
         let scope = policy.definition.scope;
         let device = target.device.clone();
         let channel = match policy.definition.action.target_channel() {
@@ -870,7 +923,19 @@ impl Application {
             Some(rss_mdm_policy::SoftwareChannel::Mdm) => rss_mdm_inventory::Channel::Mdm,
             None => {
                 let registration = target.registration;
-                let name:String=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(registration).fetch_one(c).await})).await?;
+                let name: String = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            sqlx::query_scalar(
+                                crate::storage_profile::sql(profile).events_event_scope_in_1,
+                            )
+                            .bind(tenant.to_string())
+                            .bind(registration)
+                            .fetch_one(c)
+                            .await
+                        })
+                    })
+                    .await?;
                 match name.as_str() {
                     "agent" => rss_mdm_inventory::Channel::Agent,
                     "mdm" => rss_mdm_inventory::Channel::Mdm,

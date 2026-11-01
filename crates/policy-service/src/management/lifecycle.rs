@@ -20,11 +20,13 @@ impl crate::application::Application {
         policy: &Policy,
         after: Option<String>,
     ) -> Result<Option<PreparedLifecycle>> {
+        let profile = self.profile();
+
         if !policy.state.is_enabled() {
             return Ok(None);
         }
         let published = checked(
-            rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant)
+            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone(), self.tenant)
                 .version_in(tx, policy.version)
                 .await?,
         )?
@@ -38,16 +40,18 @@ impl crate::application::Application {
         let tenant = tx.tenant_id();
         let version = policy.version;
         let now = crate::action_admission::now(tx).await?;
-        let triggers = rss_mdm_policy_postgres::schedules::triggers_in(tx, version, now).await?;
+        let triggers =
+            rss_mdm_policy_postgres::schedules::triggers_in(profile, tx, version, now).await?;
         let reader = self.objects.clone();
         let scope = policy.definition.scope;
         let mut objects = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    rss_mdm_scope_postgres::admission_on(c, tenant, scope).await?;
+                    rss_mdm_scope_postgres::admission_on(profile, c, tenant, scope).await?;
                     Ok(
                         rss_mdm_scope_service::channels::targets::lifecycle_objects_on(
-                            reader.as_ref(),
+                            profile,
+                            Some(reader.as_ref()),
                             c,
                             tenant,
                             scope,
@@ -83,6 +87,8 @@ impl crate::application::Application {
         task: Uuid,
         prepared: PreparedLifecycle,
     ) -> Result<()> {
+        let profile = self.profile();
+
         let PreparedLifecycle {
             policy,
             frozen,
@@ -142,7 +148,7 @@ impl crate::application::Application {
                 let mut id = [0; 16];
                 id.copy_from_slice(&digest[..16]);
                 let id = Uuid::from_bytes(id);
-                if rss_mdm_policy_postgres::work::exists_in(tx, id, false).await? {
+                if rss_mdm_policy_postgres::work::exists_in(profile, tx, id, false).await? {
                     continue;
                 }
                 let input = crate::worker::Work::Lifecycle {
@@ -152,7 +158,7 @@ impl crate::application::Application {
                     occurrence,
                     deadline: end.min(now.saturating_add(i64::from(run_lifetime_seconds))),
                 };
-                crate::worker::jobs::enqueue_job_in(tx, id, &input).await?;
+                crate::worker::jobs::enqueue_job_in(profile, tx, id, &input).await?;
                 self.reconcile_messaging
                     .wake_in(
                         tx,
@@ -161,7 +167,8 @@ impl crate::application::Application {
                         (),
                         move |_, tx| {
                             Box::pin(async move {
-                                rss_mdm_policy_postgres::work::forwarded_in(tx, id).await?;
+                                rss_mdm_policy_postgres::work::forwarded_in(profile, tx, id)
+                                    .await?;
                                 Ok(())
                             })
                         },
@@ -170,10 +177,10 @@ impl crate::application::Application {
             }
         }
         if more {
-            rss_mdm_policy_postgres::work::cursor_in(tx, task, next).await?;
+            rss_mdm_policy_postgres::work::cursor_in(profile, tx, task, next).await?;
             Ok(())
         } else {
-            crate::worker::jobs::finish_job_in(tx, &self.audit_store, task, None).await
+            crate::worker::jobs::finish_job_in(profile, tx, &self.audit_store, task, None).await
         }
     }
 }
@@ -185,6 +192,8 @@ impl crate::application::Application {
         task: Uuid,
         input: &crate::worker::Work,
     ) -> Result<()> {
+        let profile = self.profile();
+
         let crate::worker::Work::Lifecycle {
             policy,
             version,
@@ -199,16 +208,23 @@ impl crate::application::Application {
         let tenant = tx.tenant_id();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                sqlx::query("SELECT mdm_policy.lock_policy($1)")
-                    .bind(policy_id)
-                    .execute(c)
-                    .await?;
+                sqlx::query(
+                    crate::storage_profile::sql(profile)
+                        .management_lifecycle_advance_lifecycle_work_in_1,
+                )
+                .bind(policy_id)
+                .execute(c)
+                .await?;
                 Ok(())
             })
         })
         .await?;
         let current = storage::read_in(
-            &rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant),
+            &rss_mdm_policy_postgres::PolicyReader::bind(
+                profile,
+                self.runtime.clone(),
+                self.tenant,
+            ),
             tx,
             *policy,
         )
@@ -220,6 +236,7 @@ impl crate::application::Application {
             || now >= *deadline
         {
             return crate::worker::jobs::finish_job_in(
+                profile,
                 tx,
                 &self.audit_store,
                 task,
@@ -228,7 +245,7 @@ impl crate::application::Application {
             .await;
         }
         let published = checked(
-            rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant)
+            rss_mdm_policy_postgres::PolicyReader::bind(profile, self.runtime.clone(), self.tenant)
                 .version_in(tx, *version)
                 .await?,
         )?
@@ -297,7 +314,7 @@ impl crate::application::Application {
                 .map_err(Error::from)?;
             audit.finalize(None);
         }
-        crate::worker::jobs::finish_job_in(tx, &self.audit_store, task, None).await
+        crate::worker::jobs::finish_job_in(profile, tx, &self.audit_store, task, None).await
     }
 }
 
@@ -307,10 +324,12 @@ impl crate::application::Application {
         &self,
         tx: &mut PgTransaction<'_>,
     ) -> Result<()> {
+        let profile = self.profile();
+
         use sha2::{Digest, Sha256};
-        let after = rss_mdm_policy_postgres::schedules::scan_cursor_in(tx).await?;
+        let after = rss_mdm_policy_postgres::schedules::scan_cursor_in(profile, tx).await?;
         let now = crate::action_admission::now(tx).await?;
-        let rows = rss_mdm_policy_postgres::schedules::retirement_in(tx, after).await?;
+        let rows = rss_mdm_policy_postgres::schedules::retirement_in(profile, tx, after).await?;
         let next = if rows.len() == 64 {
             rows.last().map(|r| r.0)
         } else {
@@ -325,7 +344,7 @@ impl crate::application::Application {
                 occurrences.push(format!("calendar:{}", slot.coordinate));
             }
             let triggers =
-                rss_mdm_policy_postgres::schedules::triggers_in(tx, version, now).await?;
+                rss_mdm_policy_postgres::schedules::triggers_in(profile, tx, version, now).await?;
             for (trigger, at) in triggers {
                 if let Some(slot) = schedule.occurrence(at, version.as_bytes())?
                     && slot.available_at <= now
@@ -348,9 +367,11 @@ impl crate::application::Application {
                 bytes.copy_from_slice(&digest[..16]);
                 let id = Uuid::from_bytes(bytes);
 
-                let exists = rss_mdm_policy_postgres::work::exists_in(tx, id, false).await?;
+                let exists =
+                    rss_mdm_policy_postgres::work::exists_in(profile, tx, id, false).await?;
                 if !exists {
                     crate::worker::jobs::enqueue_job_in(
+                        profile,
                         tx,
                         id,
                         &crate::worker::Work::PolicyReconcile { policy },
@@ -361,6 +382,7 @@ impl crate::application::Application {
         }
         // Finishing a cycle yields to ordinary work; an unfinished cycle resumes promptly.
         rss_mdm_policy_postgres::schedules::complete_scan_in(
+            profile,
             tx,
             next,
             if next.is_some() {

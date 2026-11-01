@@ -41,7 +41,14 @@ impl AssetService {
         let tenant = self.tenant.to_string();
         let target = device.to_owned();
         if !tx
-            .with_connection(move |c| Box::pin(crate::device::read::exists(c, tenant, target)))
+            .with_connection(move |c| {
+                Box::pin(crate::device::read::exists(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    tenant,
+                    target,
+                ))
+            })
             .await?
         {
             return Err(Error::NotFound.into());
@@ -52,7 +59,14 @@ impl AssetService {
         let sources = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    crate::device::read::sources_at(c, tenant, targets, &current).await
+                    crate::device::read::sources_at(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        tenant,
+                        targets,
+                        &current,
+                    )
+                    .await
                 })
             })
             .await?;

@@ -45,7 +45,11 @@ impl PolicyCandidates {
     ) -> Pending<'a, ConfigurationCandidates> {
         Box::pin(async move {
             let rows = rss_mdm_policy_postgres::candidates::configuration_candidates_on(
-                c, tenant, devices, after,
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                devices,
+                after,
             )
             .await?;
             let has_more = rows.len() > 1000;
@@ -83,9 +87,14 @@ impl PolicyCandidates {
         after: Uuid,
     ) -> Pending<'a, CandidatePage> {
         Box::pin(async move {
-            let rows =
-                rss_mdm_policy_postgres::candidates::candidates_on(c, tenant, after, kind.as_str())
-                    .await?;
+            let rows = rss_mdm_policy_postgres::candidates::candidates_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                after,
+                kind.as_str(),
+            )
+            .await?;
             let has_more = rows.len() > 16;
             let mut scanned_after = after;
             let mut items = Vec::new();
@@ -95,7 +104,8 @@ impl PolicyCandidates {
                 let scope = row.try_get("scope")?;
                 let admission = {
                     rss_mdm_scope_service::channels::targets::admission_on(
-                        self.objects.as_ref(),
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        Some(self.objects.as_ref()),
                         c,
                         tenant,
                         scope,

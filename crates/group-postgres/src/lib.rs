@@ -46,3 +46,6 @@ pub mod sources;
 pub const RELATIONS_SQL: &str = include_str!("../migrations/relations.sql");
 /// Closed privileged functions exported to the product access role.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+/// Narrow Group facts and fences used by Scope installations.
+pub const SCOPE_FACTS_SQL: &str = include_str!("../migrations/scope-facts.sql");

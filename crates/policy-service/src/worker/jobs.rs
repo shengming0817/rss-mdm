@@ -7,11 +7,12 @@ pub fn job_target(tenant: TenantId, id: Uuid) -> rss_reconcile::Target {
     .expect("UUID entity")
 }
 pub(super) async fn forward_jobs_in(
+    profile: rss_mdm_install_support::StorageProfile,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
 ) -> Result<()> {
     let tenant = tx.tenant_id();
-    for (id, kind) in rss_mdm_policy_postgres::work::pending_in(tx).await? {
+    for (id, kind) in rss_mdm_policy_postgres::work::pending_in(profile, tx).await? {
         let id =
             Uuid::parse_str(&id).map_err(|_| Error::Unavailable(Failure::AutomationStorage))?;
         let event = kind == "policy_event";
@@ -28,7 +29,7 @@ pub(super) async fn forward_jobs_in(
                 event,
                 |event, tx| {
                     Box::pin(async move {
-                        rss_mdm_policy_postgres::work::forwarded_in(tx, id).await?;
+                        rss_mdm_policy_postgres::work::forwarded_in(profile, tx, id).await?;
                         crate::worker_wake::notify_in(
                             tx,
                             if *event {
@@ -47,10 +48,11 @@ pub(super) async fn forward_jobs_in(
 }
 
 pub async fn read_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<(Work, bool, Option<String>, Option<String>, bool)> {
-    let row = rss_mdm_policy_postgres::work::read_in(tx, id)
+    let row = rss_mdm_policy_postgres::work::read_in(profile, tx, id)
         .await?
         .ok_or(Error::NotFound)?;
     Ok((
@@ -61,8 +63,13 @@ pub async fn read_in(
         row.forwarded,
     ))
 }
-pub async fn enqueue_job_in(tx: &mut PgTransaction<'_>, id: Uuid, input: &Work) -> Result<Value> {
-    rss_mdm_policy_postgres::work::enqueue_in(tx, id, input).await?;
+pub async fn enqueue_job_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+    input: &Work,
+) -> Result<Value> {
+    rss_mdm_policy_postgres::work::enqueue_in(profile, tx, id, input).await?;
     Ok(accepted(id, input))
 }
 pub fn accepted(id: Uuid, input: &Work) -> Value {
@@ -75,6 +82,7 @@ pub fn accepted(id: Uuid, input: &Work) -> Value {
     serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"statusUrl":status_url})
 }
 pub async fn finish_job_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     store: &rss_mdm_audit_integration::AuditStore,
     id: Uuid,
@@ -91,9 +99,9 @@ pub async fn finish_job_in(
         "success"
     };
     let failure_owned = failure.map(str::to_owned);
-    let target = rss_mdm_policy_postgres::work::finish_in(tx, id, failure_owned).await?;
+    let target = rss_mdm_policy_postgres::work::finish_in(profile, tx, id, failure_owned).await?;
     if target.is_none() {
-        let exists = rss_mdm_policy_postgres::work::exists_in(tx, id, true).await?;
+        let exists = rss_mdm_policy_postgres::work::exists_in(profile, tx, id, true).await?;
         if !exists {
             return Err(Error::NotFound.into());
         }
@@ -140,8 +148,13 @@ pub async fn finish_job_in(
     Ok(())
 }
 
-pub async fn replacement_in(tx: &mut PgTransaction<'_>, old: Uuid, new: Uuid) -> Result<()> {
-    rss_mdm_policy_postgres::work::replacement_in(tx, old, new).await?;
+pub async fn replacement_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    old: Uuid,
+    new: Uuid,
+) -> Result<()> {
+    rss_mdm_policy_postgres::work::replacement_in(profile, tx, old, new).await?;
     Ok(())
 }
 

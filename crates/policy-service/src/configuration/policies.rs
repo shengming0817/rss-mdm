@@ -73,6 +73,7 @@ pub async fn execution_eligible_in(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(rss_mdm_registration_service::lifecycle::work_allowed_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &tenant_name,
                     &device_name,

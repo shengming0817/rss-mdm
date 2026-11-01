@@ -10,7 +10,12 @@ pub async fn pending_in(
     let source_tenant = tx.tenant_id();
     let revision = tx
         .with_connection(move |c| {
-            Box::pin(async move { Ok(source.objects.change_head(c, source_tenant).await) })
+            Box::pin(async move {
+                Ok(source
+                    .required_objects()?
+                    .change_head(c, source_tenant)
+                    .await)
+            })
         })
         .await??;
     let tenant = tx.tenant_id().to_string();
@@ -140,7 +145,7 @@ async fn relation_page_in(
         let reader = source.clone();
         watermark = tx
             .with_connection(move |c| {
-                Box::pin(async move { Ok(reader.objects.change_head(c, tenant).await) })
+                Box::pin(async move { Ok(reader.required_objects()?.change_head(c, tenant).await) })
             })
             .await??;
         cursor = None;
@@ -157,7 +162,7 @@ async fn relation_page_in(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(reader
-                    .objects
+                    .required_objects()?
                     .changes(c, tenant, after, watermark, 64)
                     .await)
             })

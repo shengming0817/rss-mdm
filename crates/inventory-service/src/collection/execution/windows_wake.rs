@@ -18,8 +18,13 @@ impl CollectionService {
         generation: i64,
     ) -> Result<bool> {
         let tenant = self.transactions.tenant;
-        if !rss_mdm_registration_service::lifecycle::work_allowed_on(c, &tenant.to_string(), device)
-            .await?
+        if !rss_mdm_registration_service::lifecycle::work_allowed_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &tenant.to_string(),
+            device,
+        )
+        .await?
         {
             return Ok(false);
         }

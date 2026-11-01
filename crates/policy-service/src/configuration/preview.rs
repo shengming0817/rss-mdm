@@ -96,7 +96,7 @@ impl Previews {
    let mut tx=connection.begin().await?;
    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.publications.tenant.to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await?;
-   let grant=rss_mdm_authorization_service::snapshot_on(&mut tx,proof.tenant_id(),proof.instance_id()).await?;authorize(&grant,proof,input)?;
+   let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;authorize(&grant,proof,input)?;
    let authority=grant.query_binding(proof)?;
    let mut facts=rss_mdm_resource_postgres::version_facts_on(&mut tx,self.publications.tenant,&[(expected.resource().as_str().into(),expected.label().as_str().into())]).await?;
    let(version,state)=facts.versions.pop().flatten().ok_or(Error::Conflict)?;

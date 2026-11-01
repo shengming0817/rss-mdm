@@ -314,7 +314,15 @@ impl Groups {
                         )
                         .fetch_one(&mut *c)
                         .await?;
-                        Ok(required.evidence.valid(c, required.permission, now).await)
+                        Ok(required
+                            .evidence
+                            .valid(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                required.permission,
+                                now,
+                            )
+                            .await)
                     })
                 })
                 .await??;

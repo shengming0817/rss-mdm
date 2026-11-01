@@ -103,41 +103,47 @@ impl AssetService {
             .transpose()?;
         let mut limit = 128;
         let (page, decisions) = loop {
-            let page =
-                match (super::planning::SnapshotReader::bind(self.runtime.clone(), self.tenant))
-                    .asset_page_in(tx, cut, after.clone(), limit, scope)
-                    .await
-                {
-                    Err(crate::transaction::Fault::Request(Error::Unavailable(
-                        Failure::AssetBytesLimit | Failure::AssetSourceLimit,
-                    ))) if limit > 1 => {
-                        limit = (limit / 2).max(1);
-                        continue;
-                    }
-                    result => result?,
-                };
+            let page = match (super::planning::SnapshotReader::bind(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                self.runtime.clone(),
+                self.tenant,
+            ))
+            .asset_page_in(tx, cut, after.clone(), limit, scope)
+            .await
+            {
+                Err(crate::transaction::Fault::Request(Error::Unavailable(
+                    Failure::AssetBytesLimit | Failure::AssetSourceLimit,
+                ))) if limit > 1 => {
+                    limit = (limit / 2).max(1);
+                    continue;
+                }
+                result => result?,
+            };
             let key = after
                 .as_ref()
                 .map(|s| stored(g::ObjectKey::new(self.tenant, s)))
                 .transpose()?;
             let decisions = if let Some(rule) = &rule {
                 let evaluation_progress = self.evaluation(tx, task).await?;
-                let snapshot =
-                    super::planning::SnapshotReader::bind(self.runtime.clone(), self.tenant)
-                        .condition_inputs_in(
-                            tx,
-                            evaluation_progress,
-                            crate::assets::planning::ConditionRequest {
-                                cut,
-                                devices: &page.devices,
-                                catalog: &page.catalog,
-                                authorization: scope,
-                                selection: q.criteria.as_ref().expect("condition").selection(),
-                                rule,
-                                associated: None,
-                            },
-                        )
-                        .await;
+                let snapshot = super::planning::SnapshotReader::bind(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    self.runtime.clone(),
+                    self.tenant,
+                )
+                .condition_inputs_in(
+                    tx,
+                    evaluation_progress,
+                    crate::assets::planning::ConditionRequest {
+                        cut,
+                        devices: &page.devices,
+                        catalog: &page.catalog,
+                        authorization: scope,
+                        selection: q.criteria.as_ref().expect("condition").selection(),
+                        rule,
+                        associated: None,
+                    },
+                )
+                .await;
                 let snapshot = match snapshot {
                     Err(crate::transaction::Fault::Request(Error::Unavailable(
                         Failure::AssetSourceLimit,

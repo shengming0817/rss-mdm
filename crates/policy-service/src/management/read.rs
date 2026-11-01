@@ -41,6 +41,7 @@ pub async fn read(
 }
 
 pub async fn list(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Policies,
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
@@ -67,7 +68,8 @@ pub async fn list(
                 let codec = CursorCodec::from_key(s.cursor_key.clone());
                 let after = q.after(&codec, &binding).map_err(crate::query_error)?;
                 let items =
-                    rss_mdm_policy_postgres::directory::policies_in(tx, q, after.as_ref()).await?;
+                    rss_mdm_policy_postgres::directory::policies_in(profile, tx, q, after.as_ref())
+                        .await?;
                 let items: Vec<Row> = stored(serde_json::from_value(json!(items)))?;
                 for item in &items {
                     item.definition.validate()?;
