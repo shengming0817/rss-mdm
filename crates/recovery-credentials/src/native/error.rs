@@ -2,16 +2,12 @@ use crate::native::{ConfigIssue, Failure};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
-    #[error("MDM software distribution is disabled")]
-    MdmSoftwareDisabled,
     #[error("invalid product configuration")]
     Configuration(ConfigIssue),
     #[error("invalid request")]
     Malformed,
-    #[error(transparent)]
-    Resource(#[from] ResourceError),
-    #[error(transparent)]
-    Execution(#[from] crate::native::missing::ExecutionError),
+    #[error("operation not found")]
+    OperationNotFound,
     #[error("certificate request rejected")]
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
@@ -22,8 +18,6 @@ pub enum Error {
     CursorInvalidated,
     #[error("new registration admission paused")]
     EnrollmentPaused,
-    #[error("Windows declared enrollment is not ready")]
-    WindowsDeclaredEnrollmentNotReady,
     #[error("commit outcome unknown; retry the same operation")]
     CommitUnknown,
     #[error("rollback not acknowledged; original attempt remains unresolved")]
@@ -41,18 +35,9 @@ pub enum Error {
 }
 impl Error {
     pub fn is_not_found(&self) -> bool {
-        matches!(
-            self,
-            Self::NotFound | Self::Resource(_) | Self::Execution(_)
-        )
+        matches!(self, Self::NotFound | Self::OperationNotFound)
     }
 }
-#[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
-pub enum ResourceError {
-    #[error("resource_not_found")]
-    Missing,
-}
-
 impl From<rss_mdm_task_state::Error> for Error {
     fn from(error: rss_mdm_task_state::Error) -> Self {
         match error {

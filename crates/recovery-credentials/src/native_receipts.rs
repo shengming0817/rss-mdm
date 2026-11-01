@@ -64,12 +64,12 @@ impl NativeReceipts {
                     vault::unknown_in(c, tenant, operation).await?;
                     return Ok(());
                 };
-                let operation = vault::source_operation_in(c, &coordinates).await?;
+                let source_operation = vault::source_operation_in(c, &coordinates).await?;
                 let value = crate::filevault::receive_reserved_cms(
                     c,
                     &self.protection,
                     &coordinates,
-                    operation,
+                    source_operation,
                     &action.recipient,
                     cms,
                 )

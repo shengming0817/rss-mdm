@@ -95,6 +95,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    let credential = credential_run(&h, &running).await?;
     let retirement = accept(&h, &h.object).await?;
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "cleanup");
@@ -121,6 +122,17 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     sqlx::query("UPDATE mdm_script.runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(h.c.tenant.to_string())
         .bind(script)
+        .bind(serde_json::to_value(&running)?)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    step(&h, retirement).await?;
+    // Other owners are settled: this credential is the sole remaining cleanup barrier.
+    assert_eq!(state(&h, retirement).await?.0, "cleanup");
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("UPDATE mdm_recovery_tasks.runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(h.c.tenant.to_string())
+        .bind(credential)
         .bind(serde_json::to_value(&running)?)
         .execute(&mut *tx)
         .await?;
@@ -265,4 +277,50 @@ async fn native_detail_does_not_require_raw_evidence_permission() -> Result<()> 
         Err(rss_mdm_management_http::Error::Forbidden)
     ));
     h.close().await
+}
+
+async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Result<Uuid> {
+    use rss_mdm_recovery_credentials::tasks::{
+        credential_tasks::FrozenCredential,
+        policy::{ExecutionInput, Frozen},
+    };
+    let operation = rss_mdm_policy::CredentialOperation::CollectBitlocker;
+    let schedule = super::mixed::manual();
+    let definition = rss_mdm_policy::Definition {
+        scope: h.scope,
+        action: rss_mdm_policy::Action::Credential {
+            operation: operation.clone(),
+            architecture: rss_mdm_policy::Architecture::X86_64,
+            schedule: schedule.clone(),
+            frequency: rss_mdm_policy::Frequency::EveryTrigger,
+            run_lifetime_seconds: 300,
+        },
+    };
+    definition.validate()?;
+    let frozen = Frozen::Credential {
+        action: Box::new(FrozenCredential {
+            operation,
+            input: ExecutionInput {
+                platform: rss_mdm_policy::Platform::Windows,
+                architecture: rss_mdm_policy::Architecture::X86_64,
+                schedule,
+                run_lifetime_seconds: 300,
+            },
+        }),
+        frequency: rss_mdm_policy::Frequency::EveryTrigger,
+    };
+    let version = super::mixed::publish(
+        h,
+        Uuid::new_v4(),
+        1,
+        definition,
+        serde_json::to_value(frozen)?,
+    )
+    .await?;
+    let id = Uuid::new_v4();
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_recovery_tasks.runs(tenant_id,id,policy_version,origin,source_objects,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'\"policy\"',$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,true)")
+        .bind(h.c.tenant.to_string()).bind(id).bind(version).bind(json!([h.object])).bind(h.p.device()).bind(h.p.registration()).bind(h.p.generation()).bind(id.to_string()).bind(now()).bind(now()+300).bind(serde_json::to_value(state)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(id)
 }

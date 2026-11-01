@@ -72,7 +72,7 @@ pub async fn load_on(
     protection: &rss_mdm_native_protection::Protector,
     id: Uuid,
 ) -> Result<Operation> {
-    let row={ let c = &mut *c; sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_recovery_tasks.operations o JOIN mdm_access.command_authorities d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await }?.ok_or(Error::Execution(crate::native::missing::ExecutionError::MissingOperation))?;
+    let row={ let c = &mut *c; sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_recovery_tasks.operations o JOIN mdm_access.command_authorities d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await }?.ok_or(Error::OperationNotFound)?;
     decode_operation(protection, tenant, id, &row)
 }
 fn decode_operation(
@@ -165,11 +165,7 @@ pub async fn execution_started(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<b
     })).await?)
 }
 
-pub async fn current_registration(
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-    purpose: rss_mdm_registration_service::Purpose,
-) -> Result<(Uuid, i64)> {
+pub async fn current_registration(tx: &mut PgTransaction<'_>, device: &str) -> Result<(Uuid, i64)> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let t = tenant.clone();
@@ -193,19 +189,12 @@ pub async fn current_registration(
                 tenant,
                 vec![device],
                 rss_mdm_inventory::Channel::Mdm,
-                purpose,
+                rss_mdm_registration_service::Purpose::Primary,
             ))
         })
         .await?;
     if rows.len() != 1 {
-        return Err(
-            if purpose == rss_mdm_registration_service::Purpose::WindowsDeclared {
-                Error::WindowsDeclaredEnrollmentNotReady
-            } else {
-                Error::Conflict
-            }
-            .into(),
-        );
+        return Err(Error::Conflict.into());
     }
     Ok((rows[0].1, rows[0].2))
 }
@@ -317,15 +306,11 @@ pub async fn authority_valid(
         .await??)
 }
 pub async fn receipt_valid(tx: &mut PgTransaction<'_>, op: &Operation) -> Result<bool> {
-    Ok(
-        match current_registration(tx, &op.device, op.request.task.purpose()?).await {
-            Ok(current) => current == (op.registration, op.registration_generation),
-            Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => {
-                false
-            }
-            Err(e) => return Err(e),
-        },
-    )
+    Ok(match current_registration(tx, &op.device).await {
+        Ok(current) => current == (op.registration, op.registration_generation),
+        Err(Fault::Request(Error::Conflict)) => false,
+        Err(e) => return Err(e),
+    })
 }
 
 /// Count commands whose provider state still consumes device capacity.

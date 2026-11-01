@@ -43,9 +43,6 @@ pub enum Task {
     },
 }
 impl Task {
-    pub fn purpose(&self) -> Result<rss_mdm_registration_service::Purpose, Error> {
-        Ok(rss_mdm_registration_service::Purpose::Primary)
-    }
     pub fn source(&self) -> rss_mdm_inventory::ReportSource {
         match self {
             Self::Macos { .. } => rss_mdm_inventory::ReportSource::MdmApple,

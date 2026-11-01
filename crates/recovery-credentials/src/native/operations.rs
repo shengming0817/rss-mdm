@@ -158,12 +158,8 @@ impl Service {
                         return super::transaction::stored(serde_json::from_value(value));
                     }
                     super::service::reject_existing_operation(tx, input.operation_id).await?;
-                    let (registration, generation) = storage::current_registration(
-                        tx,
-                        device,
-                        rss_mdm_registration_service::Purpose::Primary,
-                    )
-                    .await?;
+                    let (registration, generation) =
+                        storage::current_registration(tx, device).await?;
                     if (registration, generation) != (input.registration, input.generation) {
                         return Err(Error::Conflict.into());
                     }

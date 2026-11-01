@@ -163,12 +163,8 @@ impl Transactions {
         if device != authority.device || input.target != NativeTarget::Device {
             return Err(Error::Forbidden.into());
         }
-        let (registration, registration_generation) = storage::current_registration(
-            tx,
-            device,
-            rss_mdm_registration_service::Purpose::Primary,
-        )
-        .await?;
+        let (registration, registration_generation) =
+            storage::current_registration(tx, device).await?;
         if (registration, registration_generation) != (authority.registration, authority.generation)
         {
             return Err(Error::Conflict.into());

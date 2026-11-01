@@ -100,6 +100,9 @@ impl From<rss_mdm_recovery_credentials::native::Error> for Error {
             E::Forbidden => Self::Forbidden,
             E::Unauthorized => Self::Unauthorized,
             E::NotFound => Self::NotFound,
+            E::OperationNotFound => Self::Execution(
+                rss_mdm_execution_service::missing::ExecutionError::MissingOperation,
+            ),
             E::Conflict => Self::Conflict,
             E::ReadConflict => Self::QueryReadConflict,
             E::CursorInvalidated => Self::QueryCursorInvalidated,

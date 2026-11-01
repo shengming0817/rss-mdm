@@ -22,6 +22,7 @@ pub(crate) struct RuntimeDiagnostics {
     pub scope_group_health: Arc<crate::scope_group_changes::Health>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
+    pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
     pub installation: Arc<rss_mdm_registration_service::installation::Service>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
@@ -90,7 +91,7 @@ impl RuntimeDiagnostics {
         let execution = self.execution.health();
         let software = self.software.health();
         let installation = self.installation.health();
-        let statuses = [
+        let mut statuses = vec![
             RecoveryStatus {
                 task: execution.task,
                 stopping: execution.stopping,
@@ -124,6 +125,19 @@ impl RuntimeDiagnostics {
                 }),
             },
         ];
+        if let Some(recovery) = &self.recovery {
+            use rss_mdm_recovery_credentials::native::health::Phase as C;
+            let health = recovery.health();
+            statuses.push(RecoveryStatus {
+                task: health.task,
+                stopping: health.stopping,
+                phases: [health.recovery, health.relay, health.inputs].map(|p| match p {
+                    C::Initializing => None,
+                    C::Healthy => Some(Ok(())),
+                    C::Failed(e) => Some(Err(e)),
+                }),
+            });
+        }
         recovery_component(&statuses)
     }
     #[expect(

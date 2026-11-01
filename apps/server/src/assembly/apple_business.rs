@@ -986,30 +986,17 @@ pub(super) fn recovery_error(
     use rss_mdm_apple_channel::{Error as A, Failure};
     use rss_mdm_recovery_credentials::native::Error as E;
     match e {
-        E::MdmSoftwareDisabled => A::Forbidden,
         E::Malformed => A::Malformed,
         E::CertificateRequest => A::CertificateRequest,
         E::Unauthorized => A::Unauthorized,
         E::Forbidden => A::Forbidden,
-        E::ReadConflict
-        | E::CursorInvalidated
-        | E::Conflict
-        | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+        E::ReadConflict | E::CursorInvalidated | E::Conflict => A::Conflict,
         E::EnrollmentPaused => A::EnrollmentPaused,
         E::CommitUnknown => A::CommitUnknown,
         E::RollbackFailed => A::RollbackFailed,
         E::Unsupported => A::Unsupported,
         E::NotFound => A::NotFound,
-        E::Resource(_) => A::Missing(Missing::Resource),
-        E::Execution(e) => A::Missing(match e {
-            rss_mdm_recovery_credentials::native::missing::ExecutionError::MissingOperation => {
-                Missing::Operation
-            }
-            rss_mdm_recovery_credentials::native::missing::ExecutionError::MissingTask => {
-                Missing::Task
-            }
-        }),
-
+        E::OperationNotFound => A::Missing(Missing::Operation),
         E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
         E::Unavailable(f) => A::Unavailable(match f {
             rss_mdm_recovery_credentials::native::Failure::RequestDeadline => {

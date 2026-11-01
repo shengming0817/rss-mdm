@@ -138,6 +138,10 @@ pub(crate) fn from_state(
         execution: state.execution.clone(),
         software: state.software.service.clone(),
         installation: state.registration.native.clone(),
+        recovery: state
+            .credential_execution
+            .as_ref()
+            .map(|v| v.native.clone()),
         inventory: state.inventory.clone(),
         apple: state.apple.clone(),
         clock: state.clock.clone(),

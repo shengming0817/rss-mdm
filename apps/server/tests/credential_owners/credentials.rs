@@ -106,6 +106,7 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
         Err(recovery::Error::Conflict)
     ));
     tx.rollback().await?;
+    filevault_receipt(&c, &protection, &first.binding).await?;
     c.close().await;
     Ok(())
 }
@@ -205,6 +206,7 @@ async fn expiry_preserves_unresolved_material_then_resumes() -> Result<()> {
     .fetch_one(&mut *tx)
     .await?;
     assert!(!purged);
+    input_secrets(&c, &coordinate, operation, attempt, true).await?;
     sqlx::query("UPDATE rss_device_command.commands SET status='applied',received_at=$3,terminal_at=$3,version=version+1 WHERE tenant_id=$1 AND command_id=$2").bind(coordinate.tenant).bind(operation.to_string()).bind(now()*1_000_000).execute(&mut *tx).await?;
     tx.commit().await?;
     owner.maintenance.run_once().await?;
@@ -216,32 +218,7 @@ async fn expiry_preserves_unresolved_material_then_resumes() -> Result<()> {
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(row, (None, None));
-    let mut tx = seed(&c).await?;
-    let key = material::protection(&c)?;
-    let op = recovery::native::storage::load_on(&mut tx, c.tenant, &key, operation).await?;
-    let recovery::native::Task::Macos {
-        request: rss_mdm_apple_mdm::native::request::Request::Command { command },
-    } = op.request.task
-    else {
-        anyhow::bail!("expected command")
-    };
-    assert!(!command.fields.0.contains_key("NewPassword"));
-    let bytes: Vec<u8> =
-        sqlx::query_scalar("SELECT request FROM mdm_apple.attempts WHERE tenant_id=$1 AND id=$2")
-            .bind(coordinate.tenant)
-            .bind(attempt)
-            .fetch_one(&mut *tx)
-            .await?;
-    let aad = rss_mdm_native_protection::ProtectionContext::new(
-        c.tenant,
-        &serde_json::to_string(&(coordinate.binding.registration, 1i64, attempt))?,
-        "apple.attempt.request",
-        1,
-    )?
-    .derive();
-    let plain = key.open_bytes(&bytes, &aad)?;
-    assert!(!String::from_utf8_lossy(plain.expose()).contains("Owner-test-Password!42"));
-    tx.rollback().await?;
+    input_secrets(&c, &coordinate, operation, attempt, false).await?;
     owner.close().await;
     c.close().await;
     Ok(())
@@ -315,5 +292,166 @@ async fn sensitive_disclosure_requires_confirmed_audit_commit() -> Result<()> {
     ));
     owner.close().await;
     c.close().await;
+    Ok(())
+}
+
+async fn input_secrets(
+    c: &Context,
+    coordinate: &recovery::Coordinates,
+    operation: Uuid,
+    attempt: Uuid,
+    retained: bool,
+) -> Result<()> {
+    let mut tx = seed(c).await?;
+    let key = material::protection(c)?;
+    let op = recovery::native::storage::load_on(&mut tx, c.tenant, &key, operation).await?;
+    let recovery::native::Task::Macos {
+        request: rss_mdm_apple_mdm::native::request::Request::Command { command },
+    } = op.request.task
+    else {
+        anyhow::bail!("expected command")
+    };
+    assert_eq!(
+        serde_json::to_value(command.fields.0.get("NewPassword"))?,
+        if retained {
+            serde_json::json!({"type":"string","value":"Owner-test-Password!42"})
+        } else {
+            serde_json::Value::Null
+        }
+    );
+    let bytes: Vec<u8> =
+        sqlx::query_scalar("SELECT request FROM mdm_apple.attempts WHERE tenant_id=$1 AND id=$2")
+            .bind(coordinate.tenant)
+            .bind(attempt)
+            .fetch_one(&mut *tx)
+            .await?;
+    let aad = rss_mdm_native_protection::ProtectionContext::new(
+        c.tenant,
+        &serde_json::to_string(&(coordinate.binding.registration, 1i64, attempt))?,
+        "apple.attempt.request",
+        1,
+    )?
+    .derive();
+    let plain = key.open_bytes(&bytes, &aad)?;
+    assert_eq!(
+        String::from_utf8_lossy(plain.expose()).contains("Owner-test-Password!42"),
+        retained
+    );
+    tx.rollback().await?;
+    Ok(())
+}
+
+// A reconcile receipt belongs to its own operation even when its CMS deduplicates an older candidate.
+async fn filevault_receipt(
+    c: &Context,
+    protection: &Arc<recovery::Protection>,
+    source: &recovery::Binding,
+) -> Result<()> {
+    use openssl::{
+        cms::{CMSOptions, CmsContentInfo},
+        stack::Stack,
+        symm::Cipher,
+        x509::X509,
+    };
+    let tenant = Uuid::parse_str(&c.tenant.to_string())?;
+    let custody = Uuid::new_v4();
+    let binding = recovery::Binding {
+        subject: recovery::Subject::Filevault { custody, epoch: 1 },
+        ..source.clone()
+    };
+    let mut tx = seed(c).await?;
+    sqlx::query("INSERT INTO mdm_recovery.filevault_custodies(tenant_id,id,origin_device,origin_registration,origin_generation) VALUES($1,$2,$3,$4,$5)")
+        .bind(tenant).bind(custody).bind(&binding.device).bind(binding.registration).bind(binding.generation).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_recovery.filevault_sources(tenant_id,registration,generation,custody,epoch) VALUES($1,$2,$3,$4,1)")
+        .bind(tenant).bind(binding.registration).bind(binding.generation).bind(custody).execute(&mut *tx).await?;
+    let original = Uuid::new_v4();
+    let existing_op = Uuid::new_v4();
+    let reconcile = Uuid::new_v4();
+    let secret = b"ABCD-EFGH-IJKL-MNOP-QRST-UVWX";
+    let existing = vault::reserve_in(&mut tx, tenant, &binding, existing_op, 0).await?;
+    vault::ingest_in(&mut tx, &protection.keys, &existing, existing_op, secret).await?;
+    vault::settled_in(&mut tx, &existing, existing_op).await?;
+    let pending = vault::reserve_in(&mut tx, tenant, &binding, original, 1).await?;
+    for operation in [original, reconcile] {
+        vault::link_native_in(
+            &mut tx,
+            tenant,
+            operation,
+            &binding,
+            &vault::NativeAction {
+                action: "collect_filevault".into(),
+                coordinates: Some(pending.clone()),
+                recipient: protection.active_recipient().id().into(),
+                reconciles: None,
+            },
+        )
+        .await?;
+    }
+    let mut recipients = Stack::new()?;
+    recipients.push(X509::from_der(
+        &protection.active_recipient().certificate_der()?,
+    )?)?;
+    let cms = CmsContentInfo::encrypt(
+        &recipients,
+        secret,
+        Cipher::aes_256_cbc(),
+        CMSOptions::BINARY,
+    )?
+    .to_der()?;
+    let report = plist::Dictionary::from_iter([(
+        "SecurityInfo",
+        plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            "FDE_PersonalRecoveryKeyCMS",
+            plist::Value::Data(cms),
+        )])),
+    )]);
+    let receipts = recovery::native_receipts::NativeReceipts::new(protection.clone());
+    receipts
+        .receive_in(
+            &mut tx,
+            tenant,
+            reconcile,
+            &binding.device,
+            binding.registration,
+            binding.generation,
+            &report,
+            recovery::native_receipts::ReceiptStatus::Acknowledged,
+        )
+        .await?;
+    let action = vault::native_action_in(
+        &mut tx,
+        tenant,
+        reconcile,
+        &binding.device,
+        binding.registration,
+        binding.generation,
+    )
+    .await?
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(action.coordinates)?,
+        serde_json::to_value(Some(&existing))?
+    );
+    let original_action = vault::native_action_in(
+        &mut tx,
+        tenant,
+        original,
+        &binding.device,
+        binding.registration,
+        binding.generation,
+    )
+    .await?
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(original_action.coordinates)?,
+        serde_json::to_value(Some(&pending))?
+    );
+    assert_eq!(
+        vault::secret_in(&mut tx, &protection.keys, &existing)
+            .await?
+            .expose(),
+        secret
+    );
+    tx.commit().await?;
     Ok(())
 }

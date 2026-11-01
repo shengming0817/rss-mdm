@@ -350,12 +350,7 @@ pub(crate) async fn apply_prepared(
         PreparedRecovery::Device(name) => {
             let tenant = service.transactions.tenant.to_string();
             let key = name.clone();
-            let registration = storage::current_registration(
-                tx,
-                &name,
-                rss_mdm_registration_service::Purpose::Primary,
-            )
-            .await;
+            let registration = storage::current_registration(tx, &name).await;
             if let Ok((id, generation)) = registration {
                 rss_mdm_registration_service::command_authority::resolve_in(
                     &service.transactions.store,

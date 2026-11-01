@@ -8,7 +8,6 @@ mod database;
 mod diagnostic;
 pub mod error;
 mod input_storage;
-pub mod missing;
 pub mod model;
 mod protection;
 mod protocol;

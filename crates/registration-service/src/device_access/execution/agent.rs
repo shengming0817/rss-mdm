@@ -139,14 +139,11 @@ impl Service {
         let previous = run.state.clone();
         run.state.expire(now);
         let capable = admission::capable(&binding, &plan.binding.configuration.windows);
-        let allowed = capable
-            && plan
-                .allowed_in(&service.transactions, tx, &run.target)
-                .await?;
-        if !plan
+        let authorized = plan
             .allowed_in(&service.transactions, tx, &run.target)
-            .await?
-        {
+            .await?;
+        let allowed = capable && authorized;
+        if !authorized {
             run.state.cancel();
         }
         super::recovery::audit_recovery(service, tx, &run, &previous).await?;
@@ -235,9 +232,7 @@ impl Service {
             {
                 return Err(Error::Conflict.into());
             }
-            if !plan.allowed_in(&self.transactions, tx, &run.target).await?
-                || !plan.allowed_in(&self.transactions, tx, &run.target).await?
-            {
+            if !plan.allowed_in(&self.transactions, tx, &run.target).await? {
                 return Err(Error::Forbidden.into());
             }
         }
@@ -265,17 +260,9 @@ impl Service {
             p.registration(),
             input.operation_id()
         );
-        let requires_start_authority = matches!(
-            input.event(),
-            wire::TaskEvent::Start | wire::TaskEvent::Received
-        ) || run.state.started_at.is_none();
-        let allowed = if requires_start_authority {
-            plan.allowed_in(&service.transactions, tx, &run.target)
-                .await?
-        } else {
-            plan.allowed_in(&service.transactions, tx, &run.target)
-                .await?
-        };
+        let allowed = plan
+            .allowed_in(&service.transactions, tx, &run.target)
+            .await?;
         let effect_allowed = allowed && run.state.cancellation == Cancellation::None;
         if matches!(
             input.event(),
