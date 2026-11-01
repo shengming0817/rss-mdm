@@ -96,8 +96,15 @@ pub struct Item {
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(tag = "owner", rename_all = "snake_case")]
 pub enum Detail {
-    Execution(
-        rss_mdm_execution_service::queries::records::CommandDetail<super::projection::Observation>,
+    Configuration(
+        rss_mdm_policy_service::configuration::queries::records::Detail<
+            super::projection::Observation,
+        >,
+    ),
+    Device(
+        rss_mdm_device_service::control::queries::records::CommandDetail<
+            super::projection::Observation,
+        >,
     ),
     Software(
         Box<
@@ -115,7 +122,7 @@ pub enum Detail {
 #[serde(tag = "owner", rename_all = "snake_case")]
 pub enum Evidence {
     Native(Box<Detail>),
-    Execution(rss_mdm_execution_service::queries::records::RunEvidence),
+    Device(rss_mdm_device_service::control::queries::records::RunEvidence),
     Software(rss_mdm_software_service::deployment::queries::records::RunEvidence),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
     Access(rss_mdm_registration_service::device_access::execution::queries::Record),
@@ -166,6 +173,15 @@ pub enum Reauthorization {
 }
 
 pub trait Reads: Send + Sync {
+    fn declarations<'a>(
+        &'a self,
+        proof: &'a AuthorizedPrincipal,
+        device: &'a str,
+        query: &'a rss_mdm_query::window::Query,
+        audit: &'a RequestAudit,
+        codec: &'a CursorCodec,
+    ) -> Pending<'a, super::declarations::Page>;
+
     fn directory<'a>(
         &'a self,
         proof: &'a AuthorizedPrincipal,
@@ -191,8 +207,10 @@ pub trait Reads: Send + Sync {
         proof: &'a AuthorizedPrincipal,
         device: &'a str,
         id: Uuid,
-        change: &'a rss_mdm_execution_service::Change,
-        reauthorization: Option<&'a rss_mdm_execution_service::device_control::Reauthorization>,
+        change: &'a rss_mdm_device_service::control::Change,
+        reauthorization: Option<
+            &'a rss_mdm_device_service::control::device_control::Reauthorization,
+        >,
         audit: &'a RequestAudit,
-    ) -> Pending<'a, rss_mdm_execution_service::ChangedReceipt>;
+    ) -> Pending<'a, rss_mdm_device_service::control::ChangedReceipt>;
 }

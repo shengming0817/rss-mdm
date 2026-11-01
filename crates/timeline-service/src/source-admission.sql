@@ -1,7 +1,7 @@
 -- Only immutable association reads are granted to the application role.
 WITH expected(name) AS (VALUES
- ('mdm_commands.action_runs'),('mdm_script.runs'),('mdm_inventory.collection_tasks'),('mdm_planning.configuration_operations'),
- ('mdm_assets.operations'),('mdm_commands.requests'),('mdm_commands.operations'),('mdm_policy.versions')
+ ('mdm_devices.unmanage_runs'),('mdm_script.runs'),('mdm_inventory.collection_tasks'),('mdm_planning.configuration_operations'),
+ ('mdm_assets.operations'),('mdm_devices.control_requests'),('mdm_devices.control_operations'),('mdm_policy.versions')
 ), relations AS (
  SELECT c.* FROM expected e JOIN pg_class c ON c.oid=to_regclass(e.name)
 )

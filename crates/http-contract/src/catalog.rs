@@ -900,7 +900,7 @@ pub static APPLE_MATERIAL_VERSIONS: Resource = Resource {
 pub static POLICY_ASSIGNMENTS: Resource = Resource {
     id: "policy_assignments",
     category: Category::Facts,
-    owner: "execution-service",
+    owner: "device-control",
     proof: "planning.http",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
@@ -909,7 +909,7 @@ pub static POLICY_ASSIGNMENTS: Resource = Resource {
 pub static POLICY_RUNS: Resource = Resource {
     id: "policy_runs",
     category: Category::Facts,
-    owner: "execution-service",
+    owner: "device-control",
     proof: "execution.agent.history",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
@@ -918,7 +918,7 @@ pub static POLICY_RUNS: Resource = Resource {
 pub static POLICY_PREVIEWS: Resource = Resource {
     id: "policy_previews",
     category: Category::Facts,
-    owner: "execution-service",
+    owner: "device-control",
     proof: "planning.http",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),

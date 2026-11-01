@@ -28,7 +28,7 @@ pub enum Error {
     #[error(transparent)]
     Resource(#[from] resource_catalog::error::ResourceError),
     #[error(transparent)]
-    Execution(#[from] rss_mdm_execution_service::missing::ExecutionError),
+    Execution(#[from] rss_mdm_device_service::control::missing::ExecutionError),
     #[error(transparent)]
     Publication(#[from] rss_mdm_software_service::management::publication::error::PublicationError),
     #[error("certificate request rejected")]
@@ -101,7 +101,7 @@ impl From<rss_mdm_recovery_credentials::native::Error> for Error {
             E::Unauthorized => Self::Unauthorized,
             E::NotFound => Self::NotFound,
             E::OperationNotFound => Self::Execution(
-                rss_mdm_execution_service::missing::ExecutionError::MissingOperation,
+                rss_mdm_device_service::control::missing::ExecutionError::MissingOperation,
             ),
             E::Conflict => Self::Conflict,
             E::ReadConflict => Self::QueryReadConflict,

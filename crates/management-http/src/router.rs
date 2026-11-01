@@ -41,14 +41,14 @@ pub struct Services {
     pub scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
-    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub execution: Arc<rss_mdm_device_service::control::Service>,
     pub device_reads: Arc<dyn crate::enrollment::directory::DeviceReads>,
     pub operation_reads: Arc<dyn crate::execution::operations::Reads>,
     pub software_queries: Arc<rss_mdm_software_service::deployment::queries::Queries>,
     pub software_downloads: Arc<dyn crate::software_content::Packages>,
     pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub task_reads: Arc<dyn crate::execution::task_reads::Reads>,
-    pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    pub queries: Arc<rss_mdm_device_service::control::queries::Queries>,
     pub configuration_preview: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     pub policies: Arc<rss_mdm_policy_service::management::Policies>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
@@ -249,7 +249,6 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             windows_entra_register: crate::windows_entra::register()
                 .bind_with(context, |(s, _)| Arc::new(s.windows_entra.clone())),
             http_register: crate::execution::http::register(
-                runtime.map(|(s, _)| s.queries.clone()),
                 runtime.map(|(s, _)| s.operation_reads.clone()),
                 cursor(),
             )

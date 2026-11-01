@@ -754,3 +754,19 @@ impl rss_mdm_recovery_credentials::cleanup::ChannelCopies for Store {
         })
     }
 }
+
+impl Store {
+    /// Operations with durable execute delivery evidence; a terminal timeout is not a stop acknowledgement.
+    pub async fn sent_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        ids: Vec<Uuid>,
+    ) -> std::result::Result<std::collections::BTreeSet<Uuid>, Error> {
+        if ids.len() > 1000 {
+            return Err(Error::Malformed);
+        }
+        let ids:Vec<Uuid>=sqlx::query_scalar("SELECT DISTINCT operation FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2) AND phase='execute' AND state<>'pending'").bind(tenant.to_string()).bind(ids).fetch_all(c).await.map_err(storage)?;
+        Ok(ids.into_iter().collect())
+    }
+}

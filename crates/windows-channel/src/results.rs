@@ -413,3 +413,56 @@ WITH selected AS MATERIALIZED (
 ), budget AS (SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
 SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok
 "#;
+
+impl Results {
+    /// Operations with durable execute delivery evidence; a terminal timeout is not a stop acknowledgement.
+    pub async fn sent_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        ids: Vec<Uuid>,
+    ) -> std::result::Result<std::collections::BTreeSet<Uuid>, Error> {
+        if ids.len() > 1000 {
+            return Err(Error::Malformed);
+        }
+        let ids:Vec<Uuid>=sqlx::query_scalar("SELECT DISTINCT operation FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2) AND phase='execute'").bind(tenant.to_string()).bind(ids).fetch_all(c).await.map_err(crate::database::db)?;
+        Ok(ids.into_iter().collect())
+    }
+}
+
+impl Results {
+    pub async fn control_support_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: TenantId,
+        checks: Vec<(Uuid, Uuid, i64, rss_mdm_windows_mdm::native::Request)>,
+    ) -> Result<BTreeMap<Uuid, bool>> {
+        if checks.len() > 1000 {
+            return Err(Error::Malformed);
+        }
+        let registrations = checks.iter().map(|v| v.1).collect::<Vec<_>>();
+        let rows:Vec<(Uuid,i64,String,i32)>=sqlx::query_as("SELECT registration,generation,os_version,edition FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=ANY($2)").bind(tenant.to_string()).bind(registrations).fetch_all(c).await.map_err(crate::database::db)?;
+        let capabilities = rows
+            .into_iter()
+            .map(|(id, g, v, e)| ((id, g), (v, e)))
+            .collect::<BTreeMap<_, _>>();
+        Ok(checks
+            .into_iter()
+            .map(|(id, registration, generation, request)| {
+                let supported =
+                    capabilities
+                        .get(&(registration, generation))
+                        .is_some_and(|(v, e)| {
+                            rss_mdm_windows_mdm::native::Context::from_capabilities(
+                                v,
+                                *e as u32,
+                                rss_mdm_windows_mdm::native::Scope::Device,
+                                rss_mdm_windows_mdm::native::Enrollment::Primary,
+                            )
+                            .is_ok_and(|ctx| request.compile(ctx, 1).is_ok())
+                        });
+                (id, supported)
+            })
+            .collect())
+    }
+}

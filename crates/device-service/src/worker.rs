@@ -1,5 +1,5 @@
 //! A single Device owner runner. RSS is the only claim, retry and lease authority.
-use crate::{Associations, identity_projection, lifecycle, reconcile};
+use crate::{Associations, identity_projection, reconcile};
 use rss_reconcile::{
     ActualState, ClaimBatch, Completion, Control, DesiredState, DurableStore, Error, ErrorKind,
     ReconcileDiff, ReconcileStep, Reconciler, ResourceSet, Scope, Target, Timer,
@@ -14,7 +14,6 @@ pub struct DeviceWork {
     runtime: Arc<PgRuntime>,
     schedule: PgStore,
     messaging: PgMessagingStore,
-    retirement: Arc<dyn rss_mdm_registration_service::Retirement>,
     concurrency: usize,
 }
 impl DeviceWork {
@@ -22,7 +21,6 @@ impl DeviceWork {
         owner: Arc<Associations>,
         runtime: Arc<PgRuntime>,
         schedule: PgStore,
-        retirement: Arc<dyn rss_mdm_registration_service::Retirement>,
         concurrency: usize,
         deadline: OperationDeadline,
     ) -> Result<Self, PgError> {
@@ -54,7 +52,6 @@ impl DeviceWork {
             runtime,
             schedule,
             messaging,
-            retirement,
             concurrency,
         })
     }
@@ -67,7 +64,6 @@ impl DeviceWork {
         }
         match claim.target().entity() {
             "inputs" => Ok(Task::Inputs),
-            "retirements" => Ok(Task::Retirements),
             value => value
                 .strip_prefix("work:")
                 .and_then(|id| Uuid::parse_str(id).ok())
@@ -98,20 +94,6 @@ impl DeviceWork {
                 .await?,
                 vec![],
             ),
-            Task::Retirements => {
-                let participant = self.retirement.clone();
-                (
-                    vec![],
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            lifecycle::settle_one_in(c, tenant, participant.as_ref())
-                                .await
-                                .map_err(sql_error)
-                        })
-                    })
-                    .await?,
-                )
-            }
             Task::Work(id) => {
                 let (device, wake) = tx
                     .with_connection(move |c| {
@@ -192,7 +174,7 @@ impl DeviceWork {
             let force=tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(8),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(2),initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
-            for entity in ["inputs","retirements"] {self.schedule.wake(&Target::new(self.scope(),entity).expect("owner input"), &rss_reconcile::ResourceSet::empty(self.scope().tenant()),&control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;}
+            for entity in ["inputs"] {self.schedule.wake(&Target::new(self.scope(),entity).expect("owner input"), &rss_reconcile::ResourceSet::empty(self.scope().tenant()),&control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;}
             rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&self.scope(),policy,&control,&stop,&notify,|event|{
                 if let Ok(mut failures)=self.owner.worker_failures.lock() {
                     let (key,kind)=match &event {
@@ -210,7 +192,6 @@ impl DeviceWork {
 #[derive(Clone, Copy)]
 enum Task {
     Inputs,
-    Retirements,
     Work(Uuid),
 }
 fn sql_error(_: crate::Error) -> sqlx::Error {
@@ -245,9 +226,6 @@ impl Reconciler<PgClaim> for DeviceWork {
                             Box::pin(async move {
                                 match task {
                                     Task::Inputs => identity_projection::pending(c, tenant).await,
-                                    Task::Retirements => {
-                                        lifecycle::settlement_pending(c, tenant).await
-                                    }
                                     Task::Work(id) => {
                                         identity_projection::work_pending(c, tenant, id).await
                                     }
@@ -389,9 +367,7 @@ impl DurableStore for DeviceWork {
         c: &Control<'_, T>,
     ) -> Result<(), Error> {
         let task = self.task(claim)?;
-        let scheduled = if matches!(task, Task::Inputs | Task::Retirements)
-            && completion == Completion::Converged
-        {
+        let scheduled = if matches!(task, Task::Inputs) && completion == Completion::Converged {
             Completion::Reobserve(Duration::from_secs(2))
         } else {
             completion

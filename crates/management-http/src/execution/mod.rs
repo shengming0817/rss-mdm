@@ -11,3 +11,5 @@ pub mod projection;
 pub mod task_reads;
 
 pub mod operations;
+
+pub mod declarations;

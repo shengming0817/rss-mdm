@@ -23,7 +23,7 @@ REVOKE ALL ON mdm_timeline.facts FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_timeline.facts TO mdm_access;
 GRANT USAGE ON SCHEMA mdm_timeline,mdm_planning,mdm_assets TO mdm_access;
 -- Read-only correlation belongs to Flow and remains tenant-filtered by RLS.
-GRANT SELECT ON mdm_commands.action_runs,mdm_assets.operations,mdm_commands.requests,mdm_commands.operations,mdm_policy.versions TO mdm_access;
+GRANT SELECT ON mdm_devices.unmanage_runs,mdm_assets.operations,mdm_devices.control_requests,mdm_devices.control_operations,mdm_policy.versions TO mdm_access;
 CREATE TABLE mdm_timeline.activity_streams (
  tenant_id uuid NOT NULL, device text NOT NULL, generation uuid NOT NULL, revision bigint NOT NULL DEFAULT 0 CHECK(revision>=0),
  PRIMARY KEY(tenant_id,device)

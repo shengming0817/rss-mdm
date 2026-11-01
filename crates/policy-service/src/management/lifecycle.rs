@@ -375,12 +375,4 @@ impl crate::application::Application {
 }
 
 /// The exact frozen lifecycle publication consumed by Policy.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Frozen {
-    UnmanageDevice {
-        schedule: rss_mdm_policy::schedule::Schedule,
-        run_lifetime_seconds: u32,
-        actor: crate::authorization::Actor,
-    },
-}
+use rss_mdm_device_service::control::frozen::Frozen;

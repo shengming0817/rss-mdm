@@ -83,3 +83,6 @@ pub const DIRECTORY_SQL: &str = concat!(
 
 mod storage_authority;
 pub use storage_authority::verify_authority;
+
+/// Fixed device controls and management retirement.
+pub mod control;
