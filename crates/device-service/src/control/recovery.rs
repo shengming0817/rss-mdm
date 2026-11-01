@@ -185,10 +185,10 @@ impl Service {
             |event| {
                 // The runner can expire and drop the claim future before the store returns.
                 self.readiness.observe(&event);
-                if let rss_reconcile::Observation::AttemptFailed { target, error, .. } = &event {
-                    if target == &crate::control::source_changes::target(self.transactions.tenant) {
-                        self.readiness.inputs(Err(error.kind()));
-                    }
+                if let rss_reconcile::Observation::AttemptFailed { target, error, .. } = &event
+                    && target == &crate::control::source_changes::target(self.transactions.tenant)
+                {
+                    self.readiness.inputs(Err(error.kind()));
                 }
                 diagnostic(event);
             },

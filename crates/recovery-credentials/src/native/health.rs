@@ -76,10 +76,8 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         } else {
             completion
         };
-        let result =
-            rss_mdm_recovery_observation::ObservedStore::new(&self.0.reconcile, &self.0.readiness)
-                .finish(claim, scheduled, &settlement)
-                .await;
-        result
+        rss_mdm_recovery_observation::ObservedStore::new(&self.0.reconcile, &self.0.readiness)
+            .finish(claim, scheduled, &settlement)
+            .await
     }
 }

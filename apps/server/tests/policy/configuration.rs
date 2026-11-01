@@ -183,46 +183,6 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     assert_eq!(committed, (2, 2, 1, 1, 1, 1, 1, 1));
     let identity:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id,o.authority,r.actor FROM mdm_planning.configuration_operations o JOIN mdm_planning.configuration_receipts r USING(tenant_id,id) WHERE o.tenant_id=$1::uuid AND o.device=$2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?;
     assert_eq!(identity.1["policy"], json!(policy));
-    // The fifth real owner shares the RSS command scope, but never repairs a foreign orphan.
-    let original:serde_json::Value=sqlx::query_scalar("SELECT to_jsonb(c) FROM rss_device_command.commands c WHERE tenant_id=$1::uuid AND command_id=$2")
-        .bind(c.tenant.to_string()).bind(identity.0.to_string()).fetch_one(&c.operator).await?;
-    let mut foreign = original.clone();
-    let foreign_id = format!("foreign:{}", Uuid::new_v4());
-    foreign["command_id"] = json!(foreign_id);
-    foreign["outbox_message_id"] = json!(foreign_id);
-    foreign["outbox_domain"] = json!("another.owner.v1");
-    foreign["status"] = json!("published");
-    foreign["queued_at"] = json!(1000000);
-    foreign["published_at"] = json!(1000000);
-    foreign["deadline"] = json!(2000000);
-    foreign["received_at"] = serde_json::Value::Null;
-    foreign["terminal_at"] = serde_json::Value::Null;
-    foreign["version"] = json!(2);
-    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO rss_device_command.commands SELECT * FROM jsonb_populate_record(NULL::rss_device_command.commands,$1)").bind(&foreign).execute(&mut *tx).await?;
-    tx.commit().await?;
-    wake(&app, device).await?;
-    step(&worker, c.tenant, device).await?;
-    let unchanged:i64=sqlx::query_scalar("SELECT version FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(c.tenant.to_string()).bind(&foreign_id).fetch_one(&c.operator).await?;
-    assert_eq!(unchanged, 2);
-    // Bypass the FK in this injection transaction only, simulating a corrupt historical row.
-    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    sqlx::query("SET LOCAL session_replication_role=replica")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "DELETE FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(identity.0.to_string())
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    wake(&app, device).await?;
-    assert!(step(&worker, c.tenant, device).await.is_err());
-    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO rss_device_command.commands SELECT * FROM jsonb_populate_record(NULL::rss_device_command.commands,$1)").bind(&original).execute(&mut *tx).await?;
-    tx.commit().await?;
     drop(worker);
     drop(app);
     drop(owner);

@@ -17,6 +17,32 @@ async fn candidate(h: &Harness, domain: &str) -> Result<(String, Uuid)> {
     tx.commit().await?;
     Ok((target.device.clone(), id))
 }
+async fn claim_device(
+    h: &Harness,
+    scope: rss_reconcile::Scope,
+    device: &str,
+    control: &rss_reconcile::Control<'_, rss_mdm_device_service::control::recovery::Timer>,
+) -> Result<rss_reconcile_postgres::PgClaim> {
+    let store = &h.a.resources.storage.reconcile;
+    let target =
+        rss_reconcile::Target::new(scope, format!("{:x}", Sha256::digest(device.as_bytes())))?;
+    store
+        .wake(
+            &target,
+            &rss_reconcile::ResourceSet::empty(h.c.tenant),
+            control,
+        )
+        .await?;
+    let mut claims = store
+        .claim_due(target.scope(), 64, Duration::from_secs(30), control)
+        .await?
+        .claims;
+    let index = claims
+        .iter()
+        .position(|c| c.target() == &target)
+        .expect("device claim");
+    Ok(claims.swap_remove(index))
+}
 async fn prove<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
     h: &Harness,
     worker: &R,
@@ -27,27 +53,7 @@ async fn prove<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
-    let store = &h.a.resources.storage.reconcile;
-    let target = rss_reconcile::Target::new(
-        scope.clone(),
-        format!("{:x}", Sha256::digest(device.as_bytes())),
-    )?;
-    store
-        .wake(
-            &target,
-            &rss_reconcile::ResourceSet::empty(h.c.tenant),
-            &control,
-        )
-        .await?;
-    let mut claims = store
-        .claim_due(&scope, 64, Duration::from_secs(30), &control)
-        .await?
-        .claims;
-    let index = claims
-        .iter()
-        .position(|c| c.target() == &target)
-        .expect("device claim");
-    let claim = claims.swap_remove(index);
+    let claim = claim_device(h, scope, &device, &control).await?;
     let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
         anyhow::bail!("unexpected observation deferral")
     };
@@ -58,15 +64,25 @@ async fn prove<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
     ));
     let version:i64=sqlx::query_scalar("SELECT version FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(h.c.tenant.to_string()).bind(format!("foreign:{id}")).fetch_one(&h.c.operator).await?;
     assert_eq!(version, 2);
+    assert_orphan_rejected(h, worker, &claim, &control, id, domain).await
+}
+async fn assert_orphan_rejected<R: Reconciler<rss_reconcile_postgres::PgClaim, State = bool>>(
+    h: &Harness,
+    worker: &R,
+    claim: &rss_reconcile_postgres::PgClaim,
+    control: &rss_reconcile::Control<'_, rss_mdm_device_service::control::recovery::Timer>,
+    id: Uuid,
+    domain: &str,
+) -> Result<()> {
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("INSERT INTO rss_device_command.commands SELECT tenant_id,$3,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,$4,$3,outbox_fingerprint,status,version,published_at,received_at,terminal_at FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2")
         .bind(h.c.tenant.to_string()).bind(format!("foreign:{id}")).bind(format!("orphan:{id}")).bind(domain).execute(&mut *tx).await?;
     tx.commit().await?;
-    let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
+    let ReconcileStep::Ready(diff) = worker.observe(claim, control).await? else {
         anyhow::bail!("unexpected orphan deferral")
     };
     assert_ne!(diff.drift(), rss_reconcile::DriftKind::Converged);
-    assert!(worker.apply(&claim, diff, &control).await.is_err());
+    assert!(worker.apply(claim, diff, control).await.is_err());
     let versions:Vec<i64>=sqlx::query_scalar("SELECT version FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND device_id=$2 ORDER BY command_id COLLATE \"C\"").bind(h.c.tenant.to_string()).bind(id).fetch_all(&h.c.operator).await?;
     assert_eq!(versions, vec![2, 2]);
     Ok(())
@@ -125,27 +141,14 @@ async fn control_page(h: &Harness, device: &str) -> Result<rss_reconcile::DriftK
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
-    let target = rss_reconcile::Target::new(
+    let claim = claim_device(
+        h,
         rss_mdm_device_service::control::recovery_scope(h.c.tenant),
-        format!("{:x}", Sha256::digest(device.as_bytes())),
-    )?;
+        device,
+        &control,
+    )
+    .await?;
     let store = &h.a.resources.storage.reconcile;
-    store
-        .wake(
-            &target,
-            &rss_reconcile::ResourceSet::empty(h.c.tenant),
-            &control,
-        )
-        .await?;
-    let mut batch = store
-        .claim_due(target.scope(), 64, Duration::from_secs(30), &control)
-        .await?;
-    let index = batch
-        .claims
-        .iter()
-        .position(|claim| claim.target() == &target)
-        .expect("native recovery target");
-    let claim = batch.claims.swap_remove(index);
     let ReconcileStep::Ready(diff) = h.a.service.observe(&claim, &control).await? else {
         anyhow::bail!("deferred observation")
     };

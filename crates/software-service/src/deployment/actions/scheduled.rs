@@ -73,12 +73,10 @@ impl<'a> VerifiedSoftwareVersion<'a> {
             registration: target.registration_id,
             generation: target.generation,
         };
-        if let Some(device) = device_in(self.reader, tx, work).await? {
-            if device != target.device {
-                return Err(
-                    Error::Unavailable(crate::deployment::Failure::CommandInvariant).into(),
-                );
-            }
+        if let Some(device) = device_in(self.reader, tx, work).await?
+            && device != target.device
+        {
+            return Err(Error::Unavailable(crate::deployment::Failure::CommandInvariant).into());
         }
         wake_in(
             reconcile,

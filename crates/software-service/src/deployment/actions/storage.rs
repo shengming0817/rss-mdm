@@ -103,22 +103,21 @@ pub async fn save_run(
     let previous=tx.with_connection({let tenant=tenant.clone();let id=id.clone();move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).fetch_one(c).await})}).await?;
     let changed = tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_software_deployment.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)").bind(tenant).bind(id).bind(state).bind(result).execute(c).await})).await?;
     if changed.rows_affected() > 0 {
-        if let Source::Policy { version } = run.source {
-            if let Some(verified) =
+        if let Source::Policy { version } = run.source
+            && let Some(verified) =
                 super::scheduled::VerifiedSoftwareVersion::verify_in(reader, tx, version).await?
-            {
-                super::scheduled::wake_in(
-                    reconcile,
-                    tx,
-                    &verified,
-                    super::scheduled::Work {
-                        version,
-                        registration: run.target.registration,
-                        generation: run.target.generation,
-                    },
-                )
-                .await?;
-            }
+        {
+            super::scheduled::wake_in(
+                reconcile,
+                tx,
+                &verified,
+                super::scheduled::Work {
+                    version,
+                    registration: run.target.registration,
+                    generation: run.target.generation,
+                },
+            )
+            .await?;
         }
         crate::deployment::worker_wake::notify_in(
             tx,

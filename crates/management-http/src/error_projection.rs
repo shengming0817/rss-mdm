@@ -639,39 +639,6 @@ impl From<rss_mdm_task_trust::Error> for Error {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::response::IntoResponse;
-
-    #[test]
-    fn policy_failure_categories_survive_in_the_request_diagnostic_extension() {
-        use rss_mdm_policy_service::{Error as P, Failure as F};
-        for (failure, reason) in [
-            (F::PreparationContract, "native_input_integrity"),
-            (F::SoftwareIntegrity, "software_catalog_invariant"),
-            (F::PolicyAdmission, "planning_admission"),
-            (F::AutomationAdmission, "automation_admission"),
-            (F::Clock, "clock"),
-            (F::PolicyStorage, "planning_storage"),
-        ] {
-            let response = Error::from(P::Unavailable(failure)).into_response();
-            assert_eq!(
-                response.status(),
-                axum::http::StatusCode::SERVICE_UNAVAILABLE
-            );
-            let diagnostic = response
-                .extensions()
-                .get::<Error>()
-                .expect("request diagnostic");
-            assert_eq!(
-                serde_json::to_value(diagnostic).unwrap(),
-                serde_json::json!({"kind":"unavailable","reason":reason})
-            );
-        }
-    }
-}
-
 impl From<rss_mdm_group_service::Error> for Error {
     fn from(value: rss_mdm_group_service::Error) -> Self {
         use rss_mdm_group_service::{Error as E, Failure as F};
@@ -747,6 +714,39 @@ impl From<rss_mdm_compliance_service::transaction::Fault> for Error {
             | rss_mdm_compliance_service::transaction::Fault::Sql(_) => {
                 Self::Unavailable(crate::Failure::ComplianceStorage)
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn policy_failure_categories_survive_in_the_request_diagnostic_extension() {
+        use rss_mdm_policy_service::{Error as P, Failure as F};
+        for (failure, reason) in [
+            (F::PreparationContract, "native_input_integrity"),
+            (F::SoftwareIntegrity, "software_catalog_invariant"),
+            (F::PolicyAdmission, "planning_admission"),
+            (F::AutomationAdmission, "automation_admission"),
+            (F::Clock, "clock"),
+            (F::PolicyStorage, "planning_storage"),
+        ] {
+            let response = Error::from(P::Unavailable(failure)).into_response();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            );
+            let diagnostic = response
+                .extensions()
+                .get::<Error>()
+                .expect("request diagnostic");
+            assert_eq!(
+                serde_json::to_value(diagnostic).unwrap(),
+                serde_json::json!({"kind":"unavailable","reason":reason})
+            );
         }
     }
 }

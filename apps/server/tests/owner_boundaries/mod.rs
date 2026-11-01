@@ -1,6 +1,6 @@
 //! Real independent Group and Compliance consumers of Inventory's bounded facts.
 use crate::{authority_t2_support::Context, planning_t2_support as planning};
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use rss_mdm_authorization_service::{Permission as P, context::AuthorizedPrincipal};
 use rss_mdm_compliance_service as compliance;
 use rss_mdm_group_service as group;
@@ -75,7 +75,9 @@ impl Owners {
                         operation_id: Uuid::new_v4(),
                         expected_revision: 0,
                         input: group::GroupChange::Create {
-                            presentation: serde_json::from_value(json!({"name":"boundary"}))?,
+                            presentation: serde_json::from_value(
+                                json!({"name":format!("boundary-{id}"),"description":""}),
+                            )?,
                             criteria,
                             asset_context: rss_mdm_group::AssetContext::Endpoint,
                         },
@@ -84,7 +86,8 @@ impl Owners {
                 &c.request(proof)?,
                 proof,
             )
-            .await?;
+            .await
+            .with_context(|| format!("Group creation {id}"))?;
         if let Some(task) = result.get("task").and_then(serde_json::Value::as_str) {
             use rss_reconcile::{DurableStore, ReconcileStep, Reconciler};
             let task = Uuid::parse_str(task)?;
@@ -182,6 +185,13 @@ async fn mixed_references_are_owned_authorized_and_stable_across_pages() -> Resu
         vec![super::software_t2::support::stage(scoped)],
     )
     .await?;
+    let field = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|field| field.key.as_str() == "device.os.name")
+        .expect("builtin OS name");
+    let mut seed = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    assert!(rss_mdm_inventory_postgres::publish_field_in(&mut seed, c.tenant, 0, &field).await?);
+    seed.commit().await?;
     let rule = Uuid::new_v4();
     let definition: compliance::Definition = serde_json::from_value(
         json!({"presentation":{"name":"boundary"},"severity":"low","enabled":true,"platform":"all","target":{"kind":"groups","ids":[root,child]},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.os.name","op":"eq","value":{"kind":"string","value":"Windows"}}}}),
