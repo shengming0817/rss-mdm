@@ -19,16 +19,13 @@ pub(super) async fn many(
         let permissions = permissions.iter().chain(a.required());
         let valid = permissions.clone().all(|p| match a {
             ExecutionAuthority::DeviceControl { required, .. }
-            | ExecutionAuthority::Credential { required, .. }
             | ExecutionAuthority::Retirement { required, .. } => required.contains(p),
         });
         if !valid {
             continue;
         }
         match a {
-            ExecutionAuthority::DeviceControl { .. } | ExecutionAuthority::Credential { .. } => {
-                results[index] = true
-            }
+            ExecutionAuthority::DeviceControl { .. } => results[index] = true,
             ExecutionAuthority::Retirement { tenant, .. } => {
                 groups.entry(tenant.clone()).or_default().push(index)
             }

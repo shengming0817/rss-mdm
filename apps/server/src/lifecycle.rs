@@ -303,9 +303,8 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         startup.stage_resource(DynManagedResource::new_box(
                             rss_mdm_execution_service::Resource(execution.service.clone()),
                         ));
-let policy_inputs=Arc::new(rss_mdm_execution_service::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.materials.inputs.clone()));
-let policies=crate::assembly::policy::management(&policy_application,policy_inputs,Arc::new(rss_mdm_software_service::deployment::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.software.materials.inputs.clone())),compiled.config.enrollment_entries.clone(),&cursor_key,content.clone(),protection.clone(),compiled.config.software_distribution.mdm_enabled,execution.materials.inputs.signing_enabled).await.map_err(assembly_error)?;
-let events=crate::assembly::policy::events(policy_application.clone(),execution.materials.clone(),execution.software.materials.clone(),execution.registration.materials.clone()).await.map_err(assembly_error)?;
+let policies=crate::assembly::policy::management(&policy_application,Arc::new(rss_mdm_software_service::deployment::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.software.materials.inputs.clone())),compiled.config.enrollment_entries.clone(),&cursor_key,content.clone(),protection.clone(),compiled.config.software_distribution.mdm_enabled,execution.signing.loaded_key().is_some(),execution.credential_execution.is_some()).await.map_err(assembly_error)?;
+let events=crate::assembly::policy::events(policy_application.clone(),execution.materials.clone(),execution.software.materials.clone(),execution.registration.materials.clone(),execution.access_execution.materials.clone(),execution.credential_execution.as_ref().map(|v|v.materials.clone())).await.map_err(assembly_error)?;
                         let telemetry = match &compiled.config.telemetry {
                             Some(config) => {
 let telemetry_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.telemetry,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.telemetry_control_connections(),audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
@@ -534,8 +533,11 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         device_work.registration(signals.handle(crate::worker_wake::Work::Devices)),
                     );
                     launch.stage_deferred_task_with_token(archive.registration().critical());
-                    if let Some(maintenance) = execution.service.clone().credential_maintenance() {
-                        launch.stage_deferred_task_with_token(maintenance);
+                    launch.stage_deferred_task_with_token(execution.access_execution.worker.clone().registration(signals.handle(crate::worker_wake::Work::AccessRecovery)).critical());
+                    if let Some(credentials)=&execution.credential_execution {
+                        launch.stage_deferred_task_with_token(credentials.maintenance.clone().registration().critical());
+                        launch.stage_deferred_task_with_token(credentials.worker.clone().registration(signals.handle(crate::worker_wake::Work::CredentialRecovery)).critical());
+                        launch.stage_deferred_task_with_token(credentials.native.clone().registration(Arc::new(rss_mdm_recovery_credentials::native::worker_wake::Signals::from_handles([signals.handle(crate::worker_wake::Work::CommandRelay),signals.handle(crate::worker_wake::Work::CredentialNativeRecovery)]))).critical());
                     }
                     launch.stage_deferred_task_with_token(
                         execution
@@ -549,7 +551,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                     launch.stage_deferred_task_with_token(execution.software.service.clone().registration(signals.software()).critical());
                     launch.stage_deferred_task_with_token(execution.registration.native.clone().registration(signals.installation()).critical());
                     launch.stage_deferred_task_with_token(execution.registration.worker.clone().registration(signals.handle(crate::worker_wake::Work::EnrollmentRecovery)).critical());
-                    launch.stage_deferred_task_with_token(crate::assembly::task_relay::registration(execution.service.clone(),execution.script_work.clone(),execution.collection_work.clone(),execution.software.service.clone(),execution.registration.native.clone(),execution.registration.worker.clone(),signals.handle(crate::worker_wake::Work::CommandRelay)).critical());
+                    launch.stage_deferred_task_with_token(crate::assembly::task_relay::registration(execution.service.clone(),execution.script_work.clone(),execution.collection_work.clone(),execution.software.service.clone(),execution.registration.native.clone(),execution.registration.worker.clone(),execution.access_execution.worker.clone(),execution.credential_execution.clone(),signals.handle(crate::worker_wake::Work::CommandRelay)).critical());
                     launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
                     launch.stage_deferred_task_with_token(
                         query_work

@@ -37,7 +37,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  FROM mdm_apple.psso_sources u
  JOIN mdm_apple.psso_sources d ON(d.tenant_id,d.id)=(u.tenant_id,u.parent)
  CROSS JOIN LATERAL (SELECT mdm_devices.object_current(u.document->'object','mdm') AS member) o
- CROSS JOIN LATERAL (SELECT mdm_commands.active_access_binding(u.binding,(u.document->>'bindingGeneration')::bigint,as_of) AS value) b
+ CROSS JOIN LATERAL (SELECT mdm_access.active_access_binding(u.binding,(u.document->>'bindingGeneration')::bigint,as_of) AS value) b
  CROSS JOIN LATERAL (SELECT mdm_apple.application_valid_until(u.registration,config,as_of) AS until) a
  WHERE config IS NOT NULL AND config<>'null'::jsonb
   AND u.id=p_source

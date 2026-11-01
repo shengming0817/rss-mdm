@@ -6,6 +6,8 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    "registration.device_access": dict(prefix="assembly::credential_owners_t2::registration::", profiles=("shared",), inputs=("crates/registration-service/src/device_access*", "crates/registration-service/schema/device-access*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/access_execution.rs")),
+    "recovery.credentials": dict(prefix="assembly::credential_owners_t2::credentials::", profiles=("shared", "recovery_maintenance", "recovery_audit"), inputs=("crates/recovery-credentials/*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/credential*", "crates/execution-service/src/credential_inputs.rs", "crates/apple-channel/src/recovery_credentials.rs")),
     'software.deployment': dict(prefix='assembly::software_t2::', profiles=('shared',),
         inputs=('crates/software-service/*', 'apps/server/src/assembly/software*',
                 'apps/server/tests/software/*', 'apps/server/tests/support/command_runtime.rs',

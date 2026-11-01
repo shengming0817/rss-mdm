@@ -123,6 +123,7 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+rss-transactional-messaging-postgres = { workspace = true, features = ["integration"] }
 rss-mdm-task-state.workspace=true
 tokio = { workspace = true, features = ["test-util", "process", "io-util"] }
 tempfile.workspace = true

@@ -30,6 +30,8 @@ pub struct Policies {
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
     script: std::sync::Arc<rss_mdm_script_service::inputs::Inputs>,
+    access: std::sync::Arc<rss_mdm_registration_service::device_access::publication::Inputs>,
+    credentials: std::sync::Arc<rss_mdm_recovery_credentials::tasks::publication::Inputs>,
     collections: std::sync::Arc<rss_mdm_inventory_service::collection::execution::inputs::Inputs>,
     configuration: std::sync::Arc<crate::configuration::publication::Publications>,
     changes: std::sync::Arc<dyn crate::inputs::ExecutionChanges>,
@@ -45,6 +47,8 @@ pub struct Dependencies {
     pub policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     pub inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
     pub script: std::sync::Arc<rss_mdm_script_service::inputs::Inputs>,
+    pub access: std::sync::Arc<rss_mdm_registration_service::device_access::publication::Inputs>,
+    pub credentials: std::sync::Arc<rss_mdm_recovery_credentials::tasks::publication::Inputs>,
     pub collections:
         std::sync::Arc<rss_mdm_inventory_service::collection::execution::inputs::Inputs>,
     pub configuration: std::sync::Arc<crate::configuration::publication::Publications>,
@@ -63,6 +67,8 @@ impl Policies {
             inputs,
             script,
             collections,
+            access,
+            credentials,
             configuration,
             changes,
             mdm_software_enabled,
@@ -78,6 +84,8 @@ impl Policies {
             inputs,
             script,
             collections,
+            access,
+            credentials,
             configuration,
             changes,
             mdm_software_enabled,
@@ -197,6 +205,11 @@ impl Policies {
                             s.configuration.freeze_in(tx,&policy,verified,p,&authorization).await?
                         } else if let Action::UnmanageDevice{schedule,run_lifetime_seconds}=&policy.definition.action {
                             checked_input(serde_json::to_value(lifecycle::Frozen::UnmanageDevice{schedule:schedule.clone(),run_lifetime_seconds:*run_lifetime_seconds,actor:p.actor()}))?
+                        } else if let Action::DeviceAccess{mac,windows,self_enrollment,role}=&policy.definition.action {
+                            let configuration=rss_mdm_agent_wire::runtime::AccessConfiguration {mac:mac.clone(),windows:windows.clone(),self_enrollment:*self_enrollment,enabled:true,role:role.map(|r|match r {rss_mdm_policy::AccessRole::Standard=>rss_mdm_agent_wire::runtime::AccessRole::Standard,rss_mdm_policy::AccessRole::Administrator=>rss_mdm_agent_wire::runtime::AccessRole::Administrator})};
+                            checked_input(serde_json::to_value(s.access.publish_in(tx,configuration,p,&authorization)?))?
+                        } else if matches!(policy.definition.action,Action::Credential{..}) {
+                            checked_input(serde_json::to_value(s.credentials.publish_in(tx,&policy.definition.action,p,&authorization)?))?
                         } else if let Action::Execution {resource,parameters,schedule,frequency,run_lifetime_seconds}=&policy.definition.action {
                             checked_input(serde_json::to_value(s.script.publish_in(tx,&rss_mdm_script_service::inputs::Publication {
                                 binding:resource,parameters:rss_mdm_script_service::Parameters::Sources(parameters),schedule,frequency:*frequency,lifetime:*run_lifetime_seconds,

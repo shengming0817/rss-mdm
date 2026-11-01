@@ -91,3 +91,22 @@ impl From<axum::extract::rejection::JsonRejection> for Error {
         }
     }
 }
+
+impl From<rss_mdm_recovery_credentials::native::Error> for Error {
+    fn from(e: rss_mdm_recovery_credentials::native::Error) -> Self {
+        use rss_mdm_recovery_credentials::native::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Forbidden => Self::Forbidden,
+            E::Unauthorized => Self::Unauthorized,
+            E::NotFound => Self::NotFound,
+            E::Conflict => Self::Conflict,
+            E::ReadConflict => Self::QueryReadConflict,
+            E::CursorInvalidated => Self::QueryCursorInvalidated,
+            E::Unsupported => Self::Unsupported,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            _ => Self::Unavailable(crate::Failure::CommandStorage),
+        }
+    }
+}

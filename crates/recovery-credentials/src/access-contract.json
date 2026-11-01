@@ -92,12 +92,77 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery_tasks",
+      "table": "runs",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null,
+      "read_only": true
+    },
+    {
+      "schema": "mdm_recovery_tasks",
+      "table": "agent_admission",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery_tasks",
+      "table": "policy_recovery",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery_tasks",
+      "table": "operations",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null,
+      "read_only": true
+    },
+    {
+      "schema": "mdm_recovery_tasks",
+      "table": "requests",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery_tasks",
+      "table": "device_recovery",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [
     {
       "name": "mdm_recovery.filevault_accessible",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_recovery_tasks.save_retired_run",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_recovery_tasks.native_status",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_recovery_tasks.retirement_commands",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_recovery_tasks.save_retired_command",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_recovery_tasks.recovery_key",
+      "search_path": "search_path=pg_catalog",
+      "security_definer": false
     }
   ],
   "external_relations": [],

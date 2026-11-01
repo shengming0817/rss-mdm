@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-device-command.workspace = true
 futures.workspace=true
 rss-mdm-content-service.workspace=true
 schemars.workspace = true

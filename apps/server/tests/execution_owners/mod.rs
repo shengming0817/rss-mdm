@@ -62,6 +62,8 @@ async fn delivery(
             audit,
             signing: a.signing.clone(),
             tasks: Arc::new(super::agent_tasks::AgentTasks {
+                access: a.access_execution.service.clone(),
+                credentials: a.credential_execution.as_ref().map(|v| v.tasks.clone()),
                 software: a.software.service.clone(),
                 registration: a.registration.enrollment.clone(),
                 content: a.content.clone(),

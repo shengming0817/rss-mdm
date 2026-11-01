@@ -50,6 +50,9 @@ impl TaskCleanup for Cleanup {
                         rss_mdm_software_service::deployment::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(software_error)?;
                         rss_mdm_registration_service::installation::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(installation_error)?;
                         rss_mdm_registration_service::enrollment::tasks::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(enrollment)?;
+                        rss_mdm_registration_service::device_access::execution::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(access)?;
+                        rss_mdm_recovery_credentials::tasks::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(credential)?;
+                        rss_mdm_recovery_credentials::native::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(|e|recovery_native(e.into()))?;
                         rss_mdm_script_service::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(script)?;
                         rss_mdm_inventory_service::collection::execution::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(collection)?;
                     }
@@ -58,8 +61,11 @@ impl TaskCleanup for Cleanup {
                     let enrollment=rss_mdm_registration_service::enrollment::tasks::retirement::progress_on(c,&tenant,&registrations).await.map_err(enrollment)?;
                     let software=rss_mdm_software_service::deployment::retirement::progress_on(c,&tenant,&registrations).await.map_err(software)?;
                     let native=rss_mdm_registration_service::installation::retirement::progress_on(c,&tenant,&registrations).await.map_err(installation)?;
-                    progress.pending=script.0 || collection.0 || enrollment.0 || software.0 || native.0;
-                    progress.unknown=script.1.into_iter().chain(collection.1).chain(enrollment.1).chain(software.1).chain(native.1).min();
+                    let access=rss_mdm_registration_service::device_access::execution::retirement::progress_on(c,&tenant,&registrations).await.map_err(access)?;
+                    let credential=rss_mdm_recovery_credentials::tasks::retirement::progress_on(c,&tenant,&registrations).await.map_err(credential)?;
+                    let recovery_native=rss_mdm_recovery_credentials::native::retirement::progress_on(c,&tenant,&registrations).await.map_err(|e|recovery_native(e.into()))?;
+                    progress.pending=access.0 || script.0 || collection.0 || enrollment.0 || software.0 || native.0;
+                    progress.unknown=script.1.into_iter().chain(recovery_native.1).chain(credential.1).chain(access.1).chain(collection.1).chain(enrollment.1).chain(software.1).chain(native.1).min();
                     Ok(progress)
                 }.await)
             })).await?
@@ -167,5 +173,61 @@ fn enrollment(e: rss_mdm_registration_service::enrollment::tasks::transaction::F
         F::Request(e) => enrollment_error(e),
         F::Sql(e) => Fault::Sql(e),
         F::Storage(e) => Fault::Storage(e),
+    }
+}
+
+fn access(e: rss_mdm_registration_service::device_access::execution::transaction::Fault) -> Fault {
+    use rss_mdm_registration_service::device_access::execution::{
+        Error as E, transaction::Fault as F,
+    };
+    match e {
+        F::Sql(e) => Fault::Sql(e),
+        F::Storage(e) => Fault::Storage(e),
+        F::Request(e) => match e {
+            E::CommitUnknown => Error::CommitUnknown,
+            E::RollbackFailed => Error::RollbackFailed,
+            E::Malformed => Error::Malformed,
+            E::Forbidden => Error::Forbidden,
+            E::Unauthorized => Error::Unauthorized,
+            E::Conflict => Error::Conflict,
+            _ => Error::Unavailable(Failure::CommandStorage),
+        }
+        .into(),
+    }
+}
+
+fn credential(e: rss_mdm_recovery_credentials::tasks::transaction::Fault) -> Fault {
+    use rss_mdm_recovery_credentials::tasks::{Error as E, transaction::Fault as F};
+    match e {
+        F::Sql(e) => Fault::Sql(e),
+        F::Storage(e) => Fault::Storage(e),
+        F::Request(e) => match e {
+            E::CommitUnknown => Error::CommitUnknown,
+            E::RollbackFailed => Error::RollbackFailed,
+            E::Malformed => Error::Malformed,
+            E::Forbidden => Error::Forbidden,
+            E::Unauthorized => Error::Unauthorized,
+            E::Conflict => Error::Conflict,
+            _ => Error::Unavailable(Failure::CommandStorage),
+        }
+        .into(),
+    }
+}
+
+fn recovery_native(e: rss_mdm_recovery_credentials::native::transaction::Fault) -> Fault {
+    use rss_mdm_recovery_credentials::native::{Error as E, transaction::Fault as F};
+    match e {
+        F::Sql(e) => Fault::Sql(e),
+        F::Storage(e) => Fault::Storage(e),
+        F::Request(e) => match e {
+            E::CommitUnknown => Error::CommitUnknown,
+            E::RollbackFailed => Error::RollbackFailed,
+            E::Malformed => Error::Malformed,
+            E::Forbidden => Error::Forbidden,
+            E::Unauthorized => Error::Unauthorized,
+            E::Conflict => Error::Conflict,
+            _ => Error::Unavailable(Failure::CommandStorage),
+        }
+        .into(),
     }
 }

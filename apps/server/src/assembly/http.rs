@@ -40,13 +40,18 @@ pub(crate) fn from_state(
         clock: Arc::new(crate::clock::InventoryClock(state.clock.clone())),
         delivery: state.apple_delivery.clone(),
         enrollment_authority: state.registration.enrollment.clone(),
-        access_admission: state.execution.clone(),
+        access_admission: state.access_execution.service.clone(),
         platform_access: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
             state.configuration.clone(),
             state.agent_tasks.collections.clone(),
             state.software.service.clone(),
             state.registration.native.clone(),
+            state
+                .credential_execution
+                .as_ref()
+                .map(|v| v.native.clone()),
+            state.access_execution.service.clone(),
         )),
         departure: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
@@ -54,6 +59,11 @@ pub(crate) fn from_state(
             state.agent_tasks.collections.clone(),
             state.software.service.clone(),
             state.registration.native.clone(),
+            state
+                .credential_execution
+                .as_ref()
+                .map(|v| v.native.clone()),
+            state.access_execution.service.clone(),
         )),
         protection: state.protection.clone(),
         credentials: state.credentials.clone(),
@@ -69,7 +79,7 @@ pub(crate) fn from_state(
     state
         .identity
         .enterprise_platform
-        .bind(state.execution.clone())
+        .bind(state.access_execution.service.clone())
         .expect("single enterprise platform composition");
     if let Some(platform) = &state.identity.platform {
         platform
@@ -220,7 +230,10 @@ pub(crate) fn from_state(
             .task_trust
             .loaded_task_signing_key()
             .map(str::to_owned),
-        recovery: state.execution.recovery_credentials(),
+        recovery: state
+            .credential_execution
+            .as_ref()
+            .map(|v| v.native_materials.credentials.clone()),
         apple_store: apple_state.access.clone(),
         apple: apple_state.apple.clone(),
     };
@@ -282,6 +295,7 @@ pub(crate) fn from_state(
     );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            access_execution: state.access_execution.service.clone(),
             operation_reads: state.operation_reads.clone(),
             device_reads: Arc::new(super::device_reads::Devices {
                 tasks: state.task_reads.clone(),
@@ -322,22 +336,34 @@ pub(crate) fn from_state(
             agent_enrollment: state.agent_enrollment.clone(),
             pki: state.pki.clone(),
             pki_clock: Arc::new(crate::agent_pki::PkiClock(state.clock.clone())),
-            filevault: state.execution.recovery_credentials().map(|p| {
-                Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(
-                    state.access.archive_pool(),
-                    state.audit_store.clone(),
-                    p.clone(),
-                ))
-            }),
-            recovery_credentials: state.execution.recovery_credentials().map(|p| {
-                Arc::new(rss_mdm_recovery_credentials::Credentials::new(
-                    state.access.archive_pool(),
-                    state.audit_store.clone(),
-                    p.keys.clone(),
-                    state.access_audit.clone(),
-                    state.execution.clone(),
-                ))
-            }),
+            filevault: state
+                .credential_execution
+                .as_ref()
+                .map(|v| v.native_materials.credentials.clone())
+                .map(|p| {
+                    Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(
+                        state.access.archive_pool(),
+                        state.audit_store.clone(),
+                        p.clone(),
+                    ))
+                }),
+            recovery_native: state
+                .credential_execution
+                .as_ref()
+                .map(|v| v.native.clone()),
+            recovery_credentials: state
+                .credential_execution
+                .as_ref()
+                .map(|v| v.native_materials.credentials.clone())
+                .map(|p| {
+                    Arc::new(rss_mdm_recovery_credentials::Credentials::new(
+                        state.access.archive_pool(),
+                        state.audit_store.clone(),
+                        p.keys.clone(),
+                        state.access_audit.clone(),
+                        state.access_execution.service.clone(),
+                    ))
+                }),
             certificate_archive: state.certificate_archive.clone(),
             timeline: state.timeline.clone(),
             associations: state.associations.clone(),
@@ -433,7 +459,7 @@ pub(crate) fn from_state(
             self_service: participant.clone(),
             installation: participant.clone(),
             recovery_use: participant,
-            access_admission: state.execution.clone(),
+            access_admission: state.access_execution.service.clone(),
         });
         let agent_services = rss_mdm_agent_channel::RuntimeServices {
             http: Arc::new(crate::agent::HttpState {
@@ -447,13 +473,17 @@ pub(crate) fn from_state(
             tasks: task_state,
             timeline: state.timeline.clone(),
             events: state.events.clone(),
-            filevault: state.execution.recovery_credentials().map(|p| {
-                Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(
-                    state.access.archive_pool(),
-                    state.audit_store.clone(),
-                    p.clone(),
-                ))
-            }),
+            filevault: state
+                .credential_execution
+                .as_ref()
+                .map(|v| v.native_materials.credentials.clone())
+                .map(|p| {
+                    Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(
+                        state.access.archive_pool(),
+                        state.audit_store.clone(),
+                        p.clone(),
+                    ))
+                }),
             envelope,
         };
         let router = mount_agent(

@@ -188,14 +188,14 @@ impl Service {
             &service.transactions.source,
             tx,
             policy.definition.scope,
-            crate::enrollment::tasks::scope::Channel::Agent,
+            crate::participants::scope::Channel::Agent,
             p.device(),
         )
         .await?;
-        if admission == crate::enrollment::tasks::scope::ScopeAdmission::Excluded {
+        if admission == crate::participants::scope::ScopeAdmission::Excluded {
             return Err(Error::Forbidden.into());
         }
-        let pending_scope = (admission == crate::enrollment::tasks::scope::ScopeAdmission::Pending)
+        let pending_scope = (admission == crate::participants::scope::ScopeAdmission::Pending)
             .then_some(policy.definition.scope);
         let Some(prepared) = prepare_in(
             service,
@@ -482,11 +482,11 @@ pub(crate) async fn advance_waiting_in(
                 &service.transactions.source,
                 tx,
                 scope,
-                crate::enrollment::tasks::scope::Channel::Agent,
+                crate::participants::scope::Channel::Agent,
                 &run.target.device
             )
             .await?,
-            crate::enrollment::tasks::scope::ScopeAdmission::Eligible { .. }
+            crate::participants::scope::ScopeAdmission::Eligible { .. }
         ) {
             return Ok(false);
         }
@@ -501,7 +501,7 @@ pub(crate) async fn advance_waiting_in(
                             c,
                             tenant,
                             scope,
-                            crate::enrollment::tasks::scope::Channel::Agent,
+                            crate::participants::scope::Channel::Agent,
                             &device,
                         )
                         .await)

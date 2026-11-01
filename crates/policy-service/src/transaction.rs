@@ -410,3 +410,51 @@ impl From<rss_mdm_script_service::transaction::Fault> for Fault {
         }
     }
 }
+
+impl From<rss_mdm_registration_service::device_access::execution::transaction::Fault> for Fault {
+    fn from(e: rss_mdm_registration_service::device_access::execution::transaction::Fault) -> Self {
+        use rss_mdm_registration_service::device_access::execution::{
+            Error as E, transaction::Fault as F,
+        };
+        match e {
+            F::Sql(e) => Self::Sql(e),
+            F::Storage(e) => Self::Storage(e),
+            F::Request(e) => Self::Request(match e {
+                E::Malformed => Error::Malformed,
+                E::Unauthorized => Error::Unauthorized,
+                E::Forbidden => Error::Forbidden,
+                E::Conflict => Error::Conflict,
+                E::NotFound => Error::NotFound,
+                E::Unsupported => Error::Unsupported,
+                E::CommitUnknown => Error::CommitUnknown,
+                E::RollbackFailed => Error::RollbackFailed,
+                E::Audit(e) => Error::from(e.as_ref()),
+                E::Invariant => Error::Unavailable(crate::Failure::PreparationContract),
+                E::Unavailable => Error::Unavailable(crate::Failure::Database),
+            }),
+        }
+    }
+}
+
+impl From<rss_mdm_recovery_credentials::tasks::transaction::Fault> for Fault {
+    fn from(e: rss_mdm_recovery_credentials::tasks::transaction::Fault) -> Self {
+        use rss_mdm_recovery_credentials::tasks::{Error as E, transaction::Fault as F};
+        match e {
+            F::Sql(e) => Self::Sql(e),
+            F::Storage(e) => Self::Storage(e),
+            F::Request(e) => Self::Request(match e {
+                E::Malformed => Error::Malformed,
+                E::Unauthorized => Error::Unauthorized,
+                E::Forbidden => Error::Forbidden,
+                E::Conflict => Error::Conflict,
+                E::NotFound => Error::NotFound,
+                E::Unsupported => Error::Unsupported,
+                E::CommitUnknown => Error::CommitUnknown,
+                E::RollbackFailed => Error::RollbackFailed,
+                E::Audit(e) => Error::from(e.as_ref()),
+                E::Invariant => Error::Unavailable(crate::Failure::PreparationContract),
+                E::Unavailable => Error::Unavailable(crate::Failure::Database),
+            }),
+        }
+    }
+}

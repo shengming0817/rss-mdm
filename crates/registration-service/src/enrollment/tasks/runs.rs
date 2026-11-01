@@ -32,5 +32,5 @@ pub struct Run {
     pub state: RunState,
     pub result: Option<wire::EnrollmentEntryOutcome>,
     pub invocation: Option<Invocation>,
-    pub source_objects: Vec<crate::enrollment::tasks::scope::DeviceObject>,
+    pub source_objects: Vec<crate::participants::scope::DeviceObject>,
 }

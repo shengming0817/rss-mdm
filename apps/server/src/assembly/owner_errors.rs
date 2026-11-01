@@ -81,3 +81,47 @@ pub(super) fn installation_http(
         _ => H::Unavailable(Failure::CommandStorage),
     }
 }
+
+pub(super) fn access(
+    e: rss_mdm_registration_service::device_access::execution::Error,
+) -> crate::Error {
+    use rss_mdm_registration_service::device_access::execution::Error as E;
+    match e {
+        E::CommitUnknown => crate::Error::CommitUnknown,
+        E::RollbackFailed => crate::Error::RollbackFailed,
+        E::Malformed => crate::Error::Malformed,
+        E::Unauthorized => crate::Error::Unauthorized,
+        E::Forbidden => crate::Error::Forbidden,
+        E::Conflict => crate::Error::Conflict,
+        E::NotFound => crate::Error::NotFound,
+        _ => crate::Error::Unavailable(crate::Failure::CommandStorage),
+    }
+}
+
+pub(super) fn credential(e: rss_mdm_recovery_credentials::tasks::Error) -> crate::Error {
+    use rss_mdm_recovery_credentials::tasks::Error as E;
+    match e {
+        E::CommitUnknown => crate::Error::CommitUnknown,
+        E::RollbackFailed => crate::Error::RollbackFailed,
+        E::Malformed => crate::Error::Malformed,
+        E::Unauthorized => crate::Error::Unauthorized,
+        E::Forbidden => crate::Error::Forbidden,
+        E::Conflict => crate::Error::Conflict,
+        E::NotFound => crate::Error::NotFound,
+        _ => crate::Error::Unavailable(crate::Failure::CommandStorage),
+    }
+}
+
+pub(super) fn credential_native(e: rss_mdm_recovery_credentials::native::Error) -> crate::Error {
+    use rss_mdm_recovery_credentials::native::Error as E;
+    match e {
+        E::CommitUnknown => crate::Error::CommitUnknown,
+        E::RollbackFailed => crate::Error::RollbackFailed,
+        E::Malformed => crate::Error::Malformed,
+        E::Unauthorized => crate::Error::Unauthorized,
+        E::Forbidden => crate::Error::Forbidden,
+        E::Conflict => crate::Error::Conflict,
+        E::NotFound => crate::Error::NotFound,
+        _ => crate::Error::Unavailable(crate::Failure::CommandStorage),
+    }
+}

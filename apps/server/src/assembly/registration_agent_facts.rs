@@ -1,13 +1,11 @@
 //! Static mapping of Agent facts to their business consumers.
-use rss_mdm_registration_service::enrollment::tasks::agent_facts::{Binding, Pending, Store};
+use rss_mdm_registration_service::participants::agent::{Binding, Pending, Store};
 use sqlx::PgConnection;
 use uuid::Uuid;
 pub(crate) struct AgentFacts;
-fn error(
-    e: rss_mdm_agent_channel::Error,
-) -> rss_mdm_registration_service::enrollment::tasks::Error {
+fn error(e: rss_mdm_agent_channel::Error) -> rss_mdm_registration_service::participants::Error {
     use rss_mdm_agent_channel::Error as A;
-    use rss_mdm_registration_service::enrollment::tasks::Error as E;
+    use rss_mdm_registration_service::participants::Error as E;
     match e {
         A::Malformed => E::Malformed,
         A::Unauthorized => E::Unauthorized,

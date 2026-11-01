@@ -11,7 +11,11 @@ use rss_mdm_agent_wire::runtime::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const INSTALL_SQL: &str = include_str!("../schema/device-access.sql");
+pub const INSTALL_SQL: &str = concat!(
+    include_str!("../schema/device-access.sql"),
+    "\n",
+    include_str!("../schema/device-access-qualification.sql")
+);
 
 #[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -358,3 +362,7 @@ pub static DISCOVERY: rss_mdm_query::window::Schema = rss_mdm_query::window::Sch
     order: "policy UUID ascending (bounded live eligibility scan)",
     context: &[],
 };
+
+pub mod execution;
+pub mod participants;
+pub mod publication;

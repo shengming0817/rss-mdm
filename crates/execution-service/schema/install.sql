@@ -67,13 +67,9 @@ $$;
 
 REVOKE ALL ON FUNCTION mdm_commands.save_retired_action(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
 
-CREATE TABLE mdm_commands.agent_admission (
-    tenant_id uuid NOT NULL,
-    registration uuid NOT NULL,
-    policy_after uuid
-);
 
-ALTER TABLE ONLY mdm_commands.agent_admission FORCE ROW LEVEL SECURITY;
+
+
 
 CREATE TABLE mdm_commands.action_receipts (
     tenant_id uuid NOT NULL,
@@ -94,7 +90,6 @@ CREATE TABLE mdm_commands.action_runs (
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,
  source_kind text DEFAULT 'policy'::text NOT NULL,
- access_binding jsonb CHECK(access_binding IS NULL OR octet_length(access_binding::text)<=16384),
  policy_version uuid,
  device text NOT NULL,
  registration uuid NOT NULL,
@@ -109,7 +104,7 @@ CREATE TABLE mdm_commands.action_runs (
  dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
  result jsonb,
  CONSTRAINT action_runs_available_at_check CHECK ((available_at >= 0)),
- CONSTRAINT action_runs_check CHECK ((source_kind IN ('policy','device_access')) AND (policy_version IS NOT NULL)),
+ CONSTRAINT action_runs_check CHECK ((source_kind = 'policy') AND (policy_version IS NOT NULL)),
  CONSTRAINT action_runs_check1 CHECK ((deadline > available_at)),
  CONSTRAINT action_runs_created_at_check CHECK ((created_at >= 0)),
  CONSTRAINT action_runs_dispatch_fingerprint_check CHECK ((octet_length(dispatch_fingerprint) = 32)),
@@ -157,7 +152,7 @@ CREATE TABLE mdm_commands.operations (
     policy_version uuid,
     CONSTRAINT operation_authority_source CHECK (COALESCE(
 CASE source_kind
-    WHEN 'direct'::text THEN ((authority ->> 'kind'::text) IN ('device_control'::text,'credential'::text))
+    WHEN 'direct'::text THEN ((authority ->> 'kind'::text) = 'device_control'::text)
     WHEN 'policy'::text THEN (((authority ->> 'kind'::text) = 'retirement') AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text))
     ELSE NULL::boolean
 END, false)),
@@ -198,8 +193,7 @@ CREATE TABLE mdm_commands.requests (
 
 ALTER TABLE ONLY mdm_commands.requests FORCE ROW LEVEL SECURITY;
 
-ALTER TABLE ONLY mdm_commands.agent_admission
-    ADD CONSTRAINT agent_admission_pkey PRIMARY KEY (tenant_id, registration);
+
 
 ALTER TABLE ONLY mdm_commands.action_receipts
     ADD CONSTRAINT action_receipts_pkey PRIMARY KEY (tenant_id, actor, id);
@@ -223,7 +217,7 @@ CREATE INDEX collection_starts ON mdm_commands.action_runs(tenant_id,policy_vers
 
 CREATE INDEX action_due ON mdm_commands.action_runs USING btree (tenant_id, registration, available_at, id);
 
-ALTER TABLE mdm_commands.agent_admission ENABLE ROW LEVEL SECURITY;
+
 
 ALTER TABLE mdm_commands.action_receipts ENABLE ROW LEVEL SECURITY;
 
@@ -235,7 +229,7 @@ ALTER TABLE mdm_commands.policy_recovery ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_commands.requests ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant ON mdm_commands.agent_admission USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
 
 CREATE POLICY tenant ON mdm_commands.action_receipts USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 

@@ -1,126 +1,6 @@
-//! Native receipt extraction occurs once, inside the original command transaction.
-use crate::protocol_types::{AppleCommand, AppleRegistration};
-use crate::{Error, Failure, protocol};
-use rss_mdm_recovery_credentials::storage as vault;
+//! Secret response redaction and input copies belong to the Apple protocol owner.
+use crate::{Error, protocol};
 use sqlx::{PgConnection, Row};
-
-fn failed(_: rss_mdm_recovery_credentials::Error) -> Error {
-    Error::Unavailable(Failure::AppleStorage)
-}
-pub(crate) async fn receive(
-    c: &mut PgConnection,
-    command: &AppleCommand,
-    target: &AppleRegistration,
-    report: &plist::Dictionary,
-    status: protocol::Status,
-) -> Result<(), Error> {
-    let tenant = uuid::Uuid::parse_str(&target.tenant).map_err(|_| Error::Malformed)?;
-    let Some(action) = vault::native_action_in(
-        c,
-        tenant,
-        command.operation,
-        &target.device,
-        target.registration,
-        target.generation,
-    )
-    .await
-    .map_err(failed)?
-    else {
-        return Ok(());
-    };
-    let protection = command
-        .recovery
-        .as_ref()
-        .ok_or(Error::Unavailable(Failure::AppleStorage))?;
-    if status != protocol::Status::Acknowledged {
-        if status == protocol::Status::Error {
-            vault::unknown_in(c, tenant, command.operation)
-                .await
-                .map_err(failed)?;
-        }
-        return Ok(());
-    }
-    let Some(coordinates) = action.coordinates else {
-        return Ok(());
-    };
-    match action.action.as_str() {
-        "collect_filevault" | "rotate_filevault" => {
-            let value = if action.action == "collect_filevault" {
-                report
-                    .get("SecurityInfo")
-                    .and_then(plist::Value::as_dictionary)
-                    .and_then(|v| v.get("FDE_PersonalRecoveryKeyCMS"))
-            } else {
-                report
-                    .get("RotateResult")
-                    .and_then(plist::Value::as_dictionary)
-                    .and_then(|v| v.get("EncryptedNewRecoveryKey"))
-            };
-            let Some(cms) = value.and_then(plist::Value::as_data) else {
-                vault::unknown_in(c, tenant, command.operation)
-                    .await
-                    .map_err(failed)?;
-                return Ok(());
-            };
-            let operation = vault::source_operation_in(c, &coordinates)
-                .await
-                .map_err(failed)?;
-            let value = rss_mdm_recovery_credentials::filevault::receive_reserved_cms(
-                c,
-                protection,
-                &coordinates,
-                operation,
-                &action.recipient,
-                cms,
-            )
-            .await
-            .map_err(failed)?;
-            vault::replace_native_coordinates_in(c, tenant, command.operation, &value)
-                .await
-                .map_err(failed)?;
-        }
-        "verify_recovery_lock" => {
-            if report
-                .get("PasswordVerified")
-                .and_then(plist::Value::as_boolean)
-                == Some(true)
-            {
-                let operation = vault::source_operation_in(c, &coordinates)
-                    .await
-                    .map_err(failed)?;
-                if let Some(original) = action.reconciles {
-                    vault::reconcile_in(c, &coordinates, original)
-                        .await
-                        .map_err(failed)?;
-                } else {
-                    vault::verify_in(c, &coordinates, operation)
-                        .await
-                        .map_err(failed)?;
-                }
-            } else {
-                vault::uncertain_version_in(c, &coordinates)
-                    .await
-                    .map_err(failed)?;
-            }
-        }
-        "clear_recovery_lock" => {
-            vault::cleared_in(c, &coordinates).await.map_err(failed)?;
-        }
-        "set_recovery_lock" => {
-            vault::unknown_in(c, tenant, command.operation)
-                .await
-                .map_err(failed)?;
-        }
-        "lock_pin" => {
-            vault::settled_in(c, &coordinates, command.operation)
-                .await
-                .map_err(failed)?;
-        }
-        _ => return Err(Error::Malformed),
-    }
-    Ok(())
-}
-
 /// Secret carriers are absent from ordinary evidence and retained raw responses.
 /// The original response HMAC still proves exact replay without retaining another secret copy.
 pub(crate) fn redact(body: &mut plist::Dictionary) {
@@ -182,14 +62,20 @@ pub(crate) async fn purge_inputs(
     key: &rss_mdm_native_protection::Protector,
     tenant: &str,
     operation: uuid::Uuid,
-    terminal: bool,
-) -> Result<bool, Error> {
+    command: &rss_device_command::Command,
+) -> Result<rss_mdm_recovery_credentials::cleanup::CopyState, Error> {
     // ACK settles delivery, not recovery validity. Once the material owner permits expiry,
     // an accepted execute receipt proves these inputs cannot be dispatched again.
-    if !terminal {
+    use rss_mdm_recovery_credentials::cleanup::CopyState;
+    if command.spec().id().as_str() != operation.to_string()
+        || command.spec().scope().tenant().to_string() != tenant
+    {
+        return Err(Error::Conflict);
+    }
+    if !command.status().is_terminal() {
         let settled:bool=sqlx::query_scalar("SELECT coalesce((SELECT accepted AND state IN('acknowledged','error') FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' ORDER BY ordinal DESC LIMIT 1),false)").bind(tenant).bind(operation).fetch_one(&mut *c).await.map_err(crate::database::db)?;
         if !settled {
-            return Ok(false);
+            return Ok(CopyState::Retained);
         }
     }
     let rows=sqlx::query("SELECT id,registration,generation,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 FOR UPDATE")
@@ -228,5 +114,5 @@ pub(crate) async fn purge_inputs(
             .await
             .map_err(crate::database::db)?;
     }
-    Ok(true)
+    Ok(CopyState::Purged)
 }

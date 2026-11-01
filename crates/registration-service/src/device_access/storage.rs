@@ -401,7 +401,7 @@ pub async fn mac_configuration_in(
     let candidates: Vec<serde_json::Value> = sqlx::query_scalar(
         "SELECT q.result->'configuration' FROM mdm_policy.policies p
          JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version)
-         CROSS JOIN LATERAL (SELECT mdm_commands.access_policy(p.id,$2,
+         CROSS JOIN LATERAL (SELECT mdm_access.access_policy(p.id,$2,
              floor(extract(epoch FROM statement_timestamp()))::bigint) AS result OFFSET 0) q
          WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access'
            AND q.result->>'state'='eligible'

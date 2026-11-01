@@ -12,6 +12,7 @@ use rss_mdm_http_contract::{
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub access_execution: Arc<rss_mdm_registration_service::device_access::execution::Service>,
     pub query_cursor: rss_mdm_query::cursor::CursorCodec,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub mail: Arc<rss_mdm_mail_service::authority::Authority>,
@@ -25,6 +26,7 @@ pub struct Services {
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub filevault: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
+    pub recovery_native: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     pub certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub timeline: Arc<rss_mdm_timeline_service::Timeline>,
@@ -235,7 +237,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                             cursor: s.query_cursor.clone(),
                             recovery: s.recovery_credentials.clone(),
                             registration: registration.clone(),
-                            execution: s.execution.clone(),
+                            admission: s.access_execution.clone(),
                             identity: s.identity.clone(),
                         })
                     })
@@ -253,6 +255,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             )
             .bind_with(context, |(s, _)| {
                 Arc::new(crate::execution::http::HttpState {
+                    recovery: s.recovery_native.clone(),
                     operations: s.operation_reads.clone(),
                     task_trust: s.task_trust.clone(),
                     execution: s.execution.clone(),
@@ -354,7 +357,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             s.agent_enrollment.as_ref().map(|registration| {
                 Arc::new(crate::enterprise_broker::Services {
                     registration: registration.clone(),
-                    execution: s.execution.clone(),
+                    admission: s.access_execution.clone(),
                     identity: s.identity.clone(),
                     origin: format!("https://{}", envelope.host),
                     platform_configuration: serde_json::to_value(&s.platform_configuration)

@@ -39,6 +39,8 @@ pub(crate) async fn events(
     materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,
     software_materials: Arc<rss_mdm_software_service::deployment::Materials>,
     enrollment_materials: Arc<rss_mdm_registration_service::enrollment::tasks::Materials>,
+    access_materials: Arc<rss_mdm_registration_service::device_access::execution::Materials>,
+    credential_materials: Option<Arc<rss_mdm_recovery_credentials::tasks::Materials>>,
 ) -> Result<Arc<Events>, crate::Error> {
     let scripts = Arc::new(
         rss_mdm_script_service::Transactions::bind(
@@ -102,9 +104,34 @@ pub(crate) async fn events(
         .await
         .map_err(super::owner_errors::enrollment)?,
     );
+    let access = Arc::new(
+        rss_mdm_registration_service::device_access::execution::Transactions::bind(
+            application.runtime.clone(),
+            application.tenant,
+            application.audit_store.clone(),
+            access_materials,
+        )
+        .await
+        .map_err(super::owner_errors::access)?,
+    );
+    let credentials = match credential_materials {
+        Some(materials) => Some(Arc::new(
+            rss_mdm_recovery_credentials::tasks::Transactions::bind(
+                application.runtime.clone(),
+                application.tenant,
+                application.audit_store.clone(),
+                materials,
+            )
+            .await
+            .map_err(super::owner_errors::credential)?,
+        )),
+        None => None,
+    };
     let participants = Arc::new(super::policy_ports::Events {
         software,
         enrollment,
+        access,
+        credentials,
         scripts,
         collections,
         execution,
@@ -122,7 +149,6 @@ pub(crate) async fn events(
 )]
 pub(crate) async fn management(
     application: &Arc<Application>,
-    inputs: Arc<rss_mdm_execution_service::Inputs>,
     software_inputs: Arc<rss_mdm_software_service::deployment::Inputs>,
     enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
     key: &[u8],
@@ -130,6 +156,7 @@ pub(crate) async fn management(
     protection: Arc<rss_mdm_native_protection::Protector>,
     mdm_software_enabled: bool,
     signing_enabled: bool,
+    recovery_enabled: bool,
 ) -> Result<Arc<rss_mdm_policy_service::management::Policies>, crate::Error> {
     let store = Arc::new(
         rss_mdm_policy_postgres::PolicyStore::new(
@@ -151,11 +178,24 @@ pub(crate) async fn management(
             tenant: application.tenant,
             policy_store: store,
             inputs: Arc::new(super::policy_ports::Publication {
-                execution: inputs,
                 software: software_inputs,
                 enrollment_entries,
                 signing_enabled,
             }),
+            access: Arc::new(
+                rss_mdm_registration_service::device_access::publication::Inputs::bind(
+                    application.runtime.clone(),
+                    application.tenant,
+                    signing_enabled,
+                ),
+            ),
+            credentials: Arc::new(
+                rss_mdm_recovery_credentials::tasks::publication::Inputs::bind(
+                    application.runtime.clone(),
+                    application.tenant,
+                    signing_enabled && recovery_enabled,
+                ),
+            ),
             script: Arc::new(rss_mdm_script_service::inputs::Inputs::bind(
                 application.runtime.clone(),
                 application.tenant,

@@ -7,16 +7,16 @@ WITH reachable AS (
  ('mdm_commands.requests',true,false),('mdm_commands.action_runs',true,false),
  ('mdm_commands.action_receipts',true,false),('mdm_commands.policy_recovery',true,false),
  ('mdm_flow.native_protection',true,false),
- ('mdm_agent.bindings',false,false),('mdm_access.device_access_bindings',false,false),
+ ('mdm_agent.bindings',false,false),
  ('mdm_access.requests',false,false)
 ), updates(relation,col) AS (VALUES
  ('mdm_access.command_authorities','epoch'),('mdm_access.command_authorities','registration'),('mdm_access.command_authorities','registration_generation'),
  ('mdm_commands.operations','authority'),('mdm_commands.operations','revision'),('mdm_commands.operations','request'),
- ('mdm_commands.action_runs','access_binding'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','source_objects'),
+ ('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','source_objects'),
  ('mdm_commands.policy_recovery','input_revision'),
 
- ('mdm_agent.bindings','execution_context'),
- ('mdm_access.device_access_bindings','instance'),('mdm_access.device_access_bindings','principal'),('mdm_access.device_access_bindings','generation'),('mdm_access.device_access_bindings','revision'),('mdm_access.device_access_bindings','state'),('mdm_access.device_access_bindings','account'),('mdm_access.device_access_bindings','document')
+ ('mdm_agent.bindings','execution_context')
+
 )
 SELECT current_setting('transaction_isolation')='read committed'
  AND NOT pg_has_role(current_user,'mdm_command_runtime','MEMBER')
@@ -42,7 +42,7 @@ SELECT current_setting('transaction_isolation')='read committed'
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute col ON col.attrelid=to_regclass(r.relation),LATERAL aclexplode(col.attacl) a
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
- AND NOT EXISTS(SELECT FROM (VALUES('mdm_windows.attempts'),('mdm_windows.attempt_items'),('mdm_windows.attempt_frames'),('mdm_agent.task_attempts'),('mdm_commands.agent_admission')) worker(relation),reachable r
+ AND NOT EXISTS(SELECT FROM (VALUES('mdm_windows.attempts'),('mdm_windows.attempt_items'),('mdm_windows.attempt_frames'),('mdm_agent.task_attempts')) worker(relation),reachable r
  WHERE has_table_privilege(r.oid,worker.relation,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(r.oid,worker.relation,'INSERT,UPDATE,REFERENCES'))
  AND (
 -- Exact host authority for borrowed execution handoff and current authorization.

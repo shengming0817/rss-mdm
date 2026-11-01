@@ -1,13 +1,11 @@
 //! Persisted execution evidence uses its real Agent or native owner, including null/omission semantics.
 use rss_mdm_agent_wire::runtime as w;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum RunResult {
     Access(w::AccessResult),
-    Credential(w::CredentialResult),
-    CredentialRecovery(CredentialRecovery),
+
     Unmanage(Unmanage),
 }
 
@@ -19,14 +17,7 @@ pub struct Unmanage {
 
 impl RunResult {
     pub(crate) fn effect(&self) -> Option<&'static str> {
-        Some(match self {
-            Self::CredentialRecovery(value) => match value.effect {
-                w::CredentialRecoveryOutcome::NotAttempted => "not_attempted",
-                w::CredentialRecoveryOutcome::Unchanged => "unchanged",
-                w::CredentialRecoveryOutcome::Applied => "applied",
-            },
-            _ => return None,
-        })
+        None
     }
 }
 
@@ -38,8 +29,7 @@ pub struct SummaryResult(Summary);
 #[serde(untagged)]
 enum Summary {
     Access(WithDiagnostics<w::AccessResult>),
-    Credential(WithDiagnostics<w::CredentialResult>),
-    CredentialRecovery(WithDiagnostics<CredentialRecovery>),
+
     Unmanage(WithDiagnostics<Unmanage>),
 }
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
@@ -91,12 +81,4 @@ impl<'de> Deserialize<'de> for SummaryResult {
             .map(Self)
             .map_err(serde::de::Error::custom)
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CredentialRecovery {
-    pub effect: w::CredentialRecoveryOutcome,
-    pub recovered_by_task: Uuid,
-    pub recovered_by_attempt: Option<Uuid>,
 }

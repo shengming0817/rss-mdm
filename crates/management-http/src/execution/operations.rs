@@ -106,6 +106,7 @@ pub enum Detail {
             >,
         >,
     ),
+    Recovery(rss_mdm_recovery_credentials::native::queries::Detail<super::projection::Observation>),
     Registration(
         rss_mdm_registration_service::installation::queries::Detail<super::projection::Observation>,
     ),
@@ -117,6 +118,8 @@ pub enum Evidence {
     Execution(rss_mdm_execution_service::queries::records::RunEvidence),
     Software(rss_mdm_software_service::deployment::queries::records::RunEvidence),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
+    Access(rss_mdm_registration_service::device_access::execution::queries::Record),
+    Credential(rss_mdm_recovery_credentials::tasks::queries::Record),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]

@@ -12,6 +12,7 @@ pub(super) enum Owner {
     Execution,
     Software,
     Registration,
+    Recovery,
 }
 pub(super) async fn on(
     c: &mut sqlx::PgConnection,
@@ -43,6 +44,9 @@ pub(super) async fn batch_on(
         rss_mdm_registration_service::installation::storage::owned_ids_on(c, tenant, ids)
             .await
             .map_err(|_| Error::Unavailable(Failure::Database))?;
+    let recovery = rss_mdm_recovery_credentials::native::storage::owned_ids_on(c, tenant, ids)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::Database))?;
     ids.iter()
         .map(|id| {
             let owners = [
@@ -50,6 +54,7 @@ pub(super) async fn batch_on(
                 (execution.contains(id), Owner::Execution),
                 (software.contains(id), Owner::Software),
                 (registration.contains(id), Owner::Registration),
+                (recovery.contains(id), Owner::Recovery),
             ];
             let selected = owners
                 .into_iter()

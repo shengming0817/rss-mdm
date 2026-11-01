@@ -3,8 +3,7 @@ BEGIN;
 
 SET LOCAL check_function_bodies = false;
 
-ALTER TABLE ONLY mdm_commands.agent_admission
-    ADD CONSTRAINT agent_admission_tenant_id_registration_fkey FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id);
+
 
 ALTER TABLE ONLY mdm_commands.action_runs
     ADD CONSTRAINT action_runs_tenant_id_device_fkey FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices(tenant_id, id);
@@ -31,9 +30,9 @@ GRANT USAGE ON SCHEMA mdm_commands TO mdm_command_runtime;
 
 GRANT USAGE ON SCHEMA mdm_commands TO mdm_policy_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_commands.agent_admission TO mdm_command_runtime;
 
-GRANT UPDATE(policy_after) ON TABLE mdm_commands.agent_admission TO mdm_command_runtime;
+
+
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.action_receipts TO mdm_command_runtime;
 
@@ -79,7 +78,6 @@ GRANT EXECUTE ON FUNCTION mdm_commands.save_retired_action(uuid,uuid,jsonb,jsonb
 
 COMMIT;
 
-GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_command_runtime;
 
 GRANT SELECT ON mdm_policy.policies,mdm_policy.versions TO mdm_access;
 
@@ -115,9 +113,8 @@ GRANT UPDATE(input_revision) ON mdm_commands.policy_recovery TO mdm_policy_runti
 
 GRANT USAGE ON SCHEMA mdm_commands TO mdm_policy_runtime;
 
-GRANT SELECT ON mdm_commands.agent_admission TO mdm_policy_runtime;
 
-GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_policy_runtime;
+
 
 -- Namespace access accompanies the already-declared foreign-reader capabilities.
 GRANT USAGE ON SCHEMA mdm_commands TO mdm_inventory_runtime,mdm_scope_runtime,mdm_telemetry_runtime;

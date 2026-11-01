@@ -128,19 +128,6 @@ impl AppleProfiles for AppleFacts {
     }
 }
 impl AppleResults for AppleFacts {
-    fn platform_sso_observation<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        binding: &'a rss_mdm_registration_service::device_access::Binding,
-        facts: &'a rss_mdm_agent_wire::runtime::AccessMacPlatformSsoFacts,
-    ) -> Pending<'a, bool> {
-        Box::pin(async move {
-            self.0
-                .platform_sso_observation(c, binding, facts)
-                .await
-                .map_err(error)
-        })
-    }
     fn evidence_page<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -169,20 +156,6 @@ impl AppleResults for AppleFacts {
                         })
                         .collect()
                 })
-                .map_err(error)
-        })
-    }
-    fn purge_credential_inputs<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        operation: Uuid,
-        terminal: bool,
-    ) -> Pending<'a, bool> {
-        Box::pin(async move {
-            self.0
-                .purge_credential_inputs(c, tenant, operation, terminal)
-                .await
                 .map_err(error)
         })
     }

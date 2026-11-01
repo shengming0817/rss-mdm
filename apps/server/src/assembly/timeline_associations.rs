@@ -44,6 +44,19 @@ impl Associations for Producers {
                     if owner == Owner::Registration {
                         return Ok(rss_mdm_registration_service::installation::timeline::association_in(c,tenant,actor,rss_mdm_registration_service::installation::timeline::Identity::Operation(id)).await?);
                     }
+                    if owner == Owner::Recovery {
+                        return Ok(
+                            rss_mdm_recovery_credentials::native::timeline::association_in(
+                                c,
+                                tenant,
+                                actor,
+                                rss_mdm_recovery_credentials::native::timeline::Identity::Operation(
+                                    id,
+                                ),
+                            )
+                            .await?,
+                        );
+                    }
                     if owner == Owner::Configuration {
                         return Ok(
                             rss_mdm_policy_service::configuration::storage::association_on(
@@ -71,6 +84,8 @@ impl Associations for Producers {
                         TaskOwner::Collection => return Ok(rss_mdm_inventory_service::collection::execution::storage::association_on(c, tenant, id).await?),
                         TaskOwner::Software=>return Ok(rss_mdm_software_service::deployment::timeline::association_in(c,tenant,actor,rss_mdm_software_service::deployment::timeline::Identity::ActionRun(id)).await?),
                         TaskOwner::Registration=>return Ok(rss_mdm_registration_service::enrollment::tasks::storage::association_on(c,tenant,id).await?),
+                        TaskOwner::Access=>return Ok(rss_mdm_registration_service::device_access::execution::storage::association_on(c,tenant,id).await?),
+                        TaskOwner::Credential=>return Ok(rss_mdm_recovery_credentials::tasks::storage::association_on(c,tenant,id).await?),
                         TaskOwner::Execution => execution::Identity::ActionRun(id),
                     }
                 }
@@ -97,6 +112,17 @@ impl Associations for Producers {
                         .await?,
                     );
                     associations.extend(rss_mdm_registration_service::installation::timeline::association_in(c,tenant,actor,rss_mdm_registration_service::installation::timeline::Identity::ChangeRequest(id)).await?);
+                    associations.extend(
+                        rss_mdm_recovery_credentials::native::timeline::association_in(
+                            c,
+                            tenant,
+                            actor,
+                            rss_mdm_recovery_credentials::native::timeline::Identity::ChangeRequest(
+                                id,
+                            ),
+                        )
+                        .await?,
+                    );
                     return match associations.len() {
                         0 => Ok(None),
                         1 => Ok(associations.pop()),

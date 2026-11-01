@@ -287,6 +287,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::device_access::INSTALL_SQL,
         ),
         (
+            "registration-access-tasks-v1",
+            rss_mdm_registration_service::device_access::execution::INSTALL_SQL,
+        ),
+        (
             "timeline-service-schema-v1",
             rss_mdm_timeline_service::INSTALL_SQL,
         ),

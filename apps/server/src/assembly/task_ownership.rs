@@ -4,6 +4,8 @@ use uuid::Uuid;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Owner {
     Execution,
+    Access,
+    Credential,
     Script,
     Collection,
     Software,
@@ -14,7 +16,7 @@ pub(crate) async fn on(
     tenant: rss_request_context::TenantId,
     id: Uuid,
 ) -> Result<Owner, sqlx::Error> {
-    let mut owners = Vec::with_capacity(5);
+    let mut owners = Vec::with_capacity(7);
     if !rss_mdm_execution_service::capacity::owned_ids_on(c, tenant, &[id])
         .await?
         .is_empty()
@@ -44,6 +46,22 @@ pub(crate) async fn on(
         .is_empty()
     {
         owners.push(Owner::Registration);
+    }
+    if !rss_mdm_registration_service::device_access::execution::storage::owned_ids_on(
+        c,
+        tenant,
+        &[id],
+    )
+    .await?
+    .is_empty()
+    {
+        owners.push(Owner::Access);
+    }
+    if !rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(c, tenant, &[id])
+        .await?
+        .is_empty()
+    {
+        owners.push(Owner::Credential);
     }
     match owners.as_slice() {
         [owner] => Ok(*owner),

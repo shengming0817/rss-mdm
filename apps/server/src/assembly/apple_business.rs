@@ -13,6 +13,8 @@ pub(crate) struct AppleBusiness(
     pub Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
     pub Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub Arc<rss_mdm_registration_service::installation::Service>,
+    pub Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
+    pub Arc<rss_mdm_registration_service::device_access::execution::Service>,
 );
 pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_apple_channel::Error {
     use rss_mdm_apple_channel::Missing;
@@ -70,7 +72,6 @@ pub(super) fn target(t: rss_mdm_execution_service::NativeTarget) -> Target {
 }
 pub(super) fn command(c: rss_mdm_execution_service::apple_facts::AppleCommand) -> AppleCommand {
     AppleCommand {
-        recovery: c.recovery,
         operation: c.operation,
         owner: c.owner,
         authorized_declarations: c.authorized_declarations,
@@ -110,6 +111,12 @@ impl Business for AppleBusiness {
                 .apple_prepare_wake_in(tx, devices.clone(), audit)
                 .await
                 .map_err(registration_fault)?;
+            if let Some(recovery) = &self.5 {
+                recovery
+                    .apple_prepare_wake_in(tx, devices.clone(), audit)
+                    .await
+                    .map_err(recovery_fault)?;
+            }
             self.0
                 .apple_prepare_wake_in(tx, devices, audit)
                 .await
@@ -144,17 +151,30 @@ impl Business for AppleBusiness {
                 .apple_wake_commands_in(tx, registration, generation, after)
                 .await
                 .map_err(registration_fault)?;
+            let recovery = match &self.5 {
+                Some(recovery) => Some(
+                    recovery
+                        .apple_wake_commands_in(tx, registration, generation, after)
+                        .await
+                        .map_err(recovery_fault)?,
+                ),
+                None => None,
+            };
             let mut next = left
                 .next
                 .into_iter()
                 .chain(right.next)
                 .chain(software.next)
                 .chain(bootstrap.next)
+                .chain(recovery.as_ref().and_then(|v| v.next))
                 .min();
             let mut commands = left.commands;
             commands.extend(right.commands);
             commands.extend(software.commands);
             commands.extend(bootstrap.commands);
+            if let Some(recovery) = recovery {
+                commands.extend(recovery.commands);
+            }
             commands.sort_by_key(|v| v.0);
             if commands.len() > 64 {
                 next = Some(next.map_or(commands[63].0, |n| n.min(commands[63].0)));
@@ -238,6 +258,12 @@ impl Business for AppleBusiness {
                 .apple_settle_failures_in(tx, p, audit)
                 .await
                 .map_err(registration_fault)?;
+            if let Some(recovery) = &self.5 {
+                recovery
+                    .apple_settle_failures_in(tx, p, audit)
+                    .await
+                    .map_err(recovery_fault)?;
+            }
             rss_mdm_policy_service::configuration::protocol::settle_dispatch_failures(
                 &self.1, tx, p, audit,
             )
@@ -276,6 +302,14 @@ impl Business for AppleBusiness {
                     .await
                     .map_err(registration_fault)?,
             );
+            if let Some(recovery) = &self.5 {
+                ids.extend(
+                    recovery
+                        .apple_candidates_in(tx, p, user, after)
+                        .await
+                        .map_err(recovery_fault)?,
+                );
+            }
             ids.sort();
             ids.truncate(64);
             for id in &ids {
@@ -321,6 +355,14 @@ impl Business for AppleBusiness {
                     .await
                     .map(registration_admission)
                     .map_err(registration_fault),
+                Owner::Recovery => self
+                    .5
+                    .as_ref()
+                    .ok_or(rss_mdm_apple_channel::Error::Unsupported)?
+                    .apple_command_in(tx, p, id)
+                    .await
+                    .map(recovery_admission)
+                    .map_err(recovery_fault),
             }
         })
     }
@@ -358,6 +400,13 @@ impl Business for AppleBusiness {
                     .apple_settle_in(tx, p, id, input_version, fact, audit)
                     .await
                     .map_err(registration_fault),
+                Owner::Recovery => self
+                    .5
+                    .as_ref()
+                    .ok_or(rss_mdm_apple_channel::Error::Unsupported)?
+                    .apple_settle_in(tx, p, id, input_version, fact, audit)
+                    .await
+                    .map_err(recovery_fault),
             }
         })
     }
@@ -411,7 +460,9 @@ impl Business for AppleBusiness {
                     )
                     .await
                     .map_err(software_fault),
-                Owner::Registration => Err(rss_mdm_apple_channel::Error::Forbidden),
+                Owner::Registration | Owner::Recovery => {
+                    Err(rss_mdm_apple_channel::Error::Forbidden)
+                }
             }
         })
     }
@@ -447,6 +498,13 @@ impl Business for AppleBusiness {
                     .apple_rejected_in(tx, p, id, reason)
                     .await
                     .map_err(registration_fault),
+                Owner::Recovery => self
+                    .5
+                    .as_ref()
+                    .ok_or(rss_mdm_apple_channel::Error::Unsupported)?
+                    .apple_rejected_in(tx, p, id, reason)
+                    .await
+                    .map_err(recovery_fault),
             }
         })
     }
@@ -469,7 +527,9 @@ impl Business for AppleBusiness {
                     Owner::Configuration => configuration.push(id),
                     Owner::Execution => execution.push(id),
                     Owner::Software => software.push(id),
-                    Owner::Registration => return Err(rss_mdm_apple_channel::Error::Forbidden),
+                    Owner::Registration | Owner::Recovery => {
+                        return Err(rss_mdm_apple_channel::Error::Forbidden);
+                    }
                 }
             }
             let mut rows = self
@@ -573,7 +633,9 @@ impl Business for AppleBusiness {
                     .await
                     .map(|(r, t)| (r, software_target(t)))
                     .map_err(software_fault),
-                Owner::Registration => Err(rss_mdm_apple_channel::Error::Forbidden),
+                Owner::Registration | Owner::Recovery => {
+                    Err(rss_mdm_apple_channel::Error::Forbidden)
+                }
             }
         })
     }
@@ -617,7 +679,7 @@ impl PlatformAccess for AppleBusiness {
         registration: Uuid,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
-            self.0
+            self.6
                 .platform_sso_supported_on(c, registration)
                 .await
                 .map_err(Into::into)
@@ -631,7 +693,7 @@ impl PlatformAccess for AppleBusiness {
         generation: i64,
     ) -> Pending<'a, rss_mdm_registration_service::device_access::Binding> {
         Box::pin(async move {
-            self.0
+            self.6
                 .registration_access_binding_on(c, p, binding, generation)
                 .await
                 .map_err(Into::into)
@@ -644,7 +706,7 @@ impl PlatformAccess for AppleBusiness {
         generation: i64,
     ) -> Pending<'a, rss_mdm_registration_service::device_access::Binding> {
         Box::pin(async move {
-            self.0
+            self.6
                 .active_access_binding_on(c, binding, generation)
                 .await
                 .map_err(Into::into)
@@ -702,7 +764,6 @@ fn configuration_admission(
             generation: a.target.generation,
         },
         command: AppleCommand {
-            recovery: None,
             operation: a.command.operation,
             owner: a.command.owner,
             authorized_declarations: Vec::new(),
@@ -776,7 +837,6 @@ pub(super) fn software_command(
     c: rss_mdm_software_service::deployment::apple_facts::AppleCommand,
 ) -> AppleCommand {
     AppleCommand {
-        recovery: None,
         operation: c.operation,
         owner: c.owner,
         authorized_declarations: c.authorized_declarations,
@@ -874,7 +934,6 @@ pub(super) fn registration_command(
     c: rss_mdm_registration_service::installation::apple_facts::AppleCommand,
 ) -> AppleCommand {
     AppleCommand {
-        recovery: None,
         operation: c.operation,
         owner: c.owner,
         authorized_declarations: c.authorized_declarations,
@@ -917,5 +976,109 @@ pub(super) fn registration_policy_error(
         P::NotFound | P::PolicyMissing | P::ResourceMissing => E::NotFound,
         P::Unsupported => E::Unsupported,
         P::Unavailable(_) => E::Unavailable(Failure::CommandStorage),
+    }
+}
+
+pub(super) fn recovery_error(
+    e: rss_mdm_recovery_credentials::native::Error,
+) -> rss_mdm_apple_channel::Error {
+    use rss_mdm_apple_channel::Missing;
+    use rss_mdm_apple_channel::{Error as A, Failure};
+    use rss_mdm_recovery_credentials::native::Error as E;
+    match e {
+        E::MdmSoftwareDisabled => A::Forbidden,
+        E::Malformed => A::Malformed,
+        E::CertificateRequest => A::CertificateRequest,
+        E::Unauthorized => A::Unauthorized,
+        E::Forbidden => A::Forbidden,
+        E::ReadConflict
+        | E::CursorInvalidated
+        | E::Conflict
+        | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+        E::EnrollmentPaused => A::EnrollmentPaused,
+        E::CommitUnknown => A::CommitUnknown,
+        E::RollbackFailed => A::RollbackFailed,
+        E::Unsupported => A::Unsupported,
+        E::NotFound => A::NotFound,
+        E::Resource(_) => A::Missing(Missing::Resource),
+        E::Execution(e) => A::Missing(match e {
+            rss_mdm_recovery_credentials::native::missing::ExecutionError::MissingOperation => {
+                Missing::Operation
+            }
+            rss_mdm_recovery_credentials::native::missing::ExecutionError::MissingTask => {
+                Missing::Task
+            }
+        }),
+
+        E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
+        E::Unavailable(f) => A::Unavailable(match f {
+            rss_mdm_recovery_credentials::native::Failure::RequestDeadline => {
+                Failure::RequestDeadline
+            }
+            rss_mdm_recovery_credentials::native::Failure::Audit => Failure::Audit,
+            rss_mdm_recovery_credentials::native::Failure::AuditIntegrity => {
+                Failure::AuditIntegrity
+            }
+            rss_mdm_recovery_credentials::native::Failure::AuditAdmission => {
+                Failure::AuditAdmission
+            }
+            rss_mdm_recovery_credentials::native::Failure::AuditIsolation => {
+                Failure::AuditIsolation
+            }
+            rss_mdm_recovery_credentials::native::Failure::AuditContract => Failure::AuditContract,
+
+            _ => Failure::Business,
+        }),
+    }
+}
+
+fn recovery_fault(
+    e: rss_mdm_recovery_credentials::native::transaction::Fault,
+) -> rss_mdm_apple_channel::Error {
+    use rss_mdm_recovery_credentials::native::transaction::Fault;
+    match e {
+        Fault::Request(e) => recovery_error(e),
+        Fault::Storage(e) => e.into(),
+        Fault::Sql(e) => e.into(),
+    }
+}
+
+pub(super) fn recovery_target(t: rss_mdm_recovery_credentials::native::NativeTarget) -> Target {
+    match t {
+        rss_mdm_recovery_credentials::native::NativeTarget::Device => Target::Device,
+        rss_mdm_recovery_credentials::native::NativeTarget::User { user_id } => {
+            Target::User { user_id }
+        }
+    }
+}
+
+pub(super) fn recovery_command(
+    c: rss_mdm_recovery_credentials::native::apple_facts::AppleCommand,
+) -> AppleCommand {
+    AppleCommand {
+        operation: c.operation,
+        owner: c.owner,
+        authorized_declarations: c.authorized_declarations,
+        assets: c.assets,
+        deadline: c.deadline,
+        input_version: c.input_version,
+        target: recovery_target(c.target),
+        request: c.request,
+    }
+}
+
+fn recovery_admission(
+    a: rss_mdm_recovery_credentials::native::apple_business::AppleAdmission,
+) -> Admission {
+    Admission {
+        eligible: a.eligible,
+        dispatch: a.dispatch,
+        command: recovery_command(a.command),
+        target: AppleRegistration {
+            tenant: a.target.tenant,
+            device: a.target.device,
+            registration: a.target.registration,
+            generation: a.target.generation,
+        },
     }
 }

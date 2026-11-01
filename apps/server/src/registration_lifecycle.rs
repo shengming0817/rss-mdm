@@ -65,6 +65,30 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_registration_service::device_access::execution::retirement::retire_in(
+                tx,
+                facts,
+                tenant,
+                registration,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_recovery_credentials::tasks::retirement::retire_in(
+                tx,
+                facts,
+                tenant,
+                registration,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_recovery_credentials::native::retirement::retire_in(
+                tx,
+                facts,
+                tenant,
+                registration,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_recovery_credentials::storage::retire_in(tx, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;

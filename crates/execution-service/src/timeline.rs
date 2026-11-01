@@ -141,7 +141,7 @@ pub(crate) fn native_activity(
             activity.links.retirement = Some(*retirement);
             activity.origin = *origin;
         }
-        A::Credential { .. } | A::DeviceControl { .. } => activity.origin = ActivityOrigin::Human,
+        A::DeviceControl { .. } => activity.origin = ActivityOrigin::Human,
     }
     activity.execution = Some(match status {
         crate::dc::Status::Queued => ActivityExecution::Queued,

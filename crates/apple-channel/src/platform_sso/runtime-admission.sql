@@ -36,7 +36,7 @@ SELECT
 
  AND has_function_privilege(current_user,'mdm_apple.profile_qualifications(uuid[])','EXECUTE')
  AND has_function_privilege(current_user,'mdm_apple.platform_session_qualifications(uuid,jsonb,bigint)','EXECUTE')
- AND has_function_privilege(current_user,'mdm_commands.active_access_binding(uuid,bigint,bigint)','EXECUTE')
+ AND has_function_privilege(current_user,'mdm_access.active_access_binding(uuid,bigint,bigint)','EXECUTE')
 
  AND has_table_privilege(current_user,'mdm_access.registration_operations','SELECT,INSERT')
  AND has_table_privilege(current_user,'mdm_access.device_access_bindings','INSERT')

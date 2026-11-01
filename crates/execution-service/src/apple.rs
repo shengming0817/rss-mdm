@@ -75,7 +75,6 @@ pub async fn own(
         generation,
     };
     let command = super::apple_facts::AppleCommand {
-        recovery: None,
         operation: input.operation_id,
         authorized_declarations: Vec::new(),
         owner: String::new(),

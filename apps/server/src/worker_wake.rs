@@ -27,6 +27,9 @@ pub(crate) enum Work {
     SoftwareRecovery,
     EnrollmentRecovery,
     InstallationRecovery,
+    AccessRecovery,
+    CredentialRecovery,
+    CredentialNativeRecovery,
     Apple,
     Windows,
     WindowsPush,
@@ -36,7 +39,7 @@ pub(crate) enum Work {
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 21] = [
         Self::Inventory,
         Self::Devices,
         Self::Policy,
@@ -48,6 +51,9 @@ impl Work {
         Self::SoftwareRecovery,
         Self::EnrollmentRecovery,
         Self::InstallationRecovery,
+        Self::AccessRecovery,
+        Self::CredentialRecovery,
+        Self::CredentialNativeRecovery,
         Self::Apple,
         Self::Windows,
         Self::WindowsPush,
@@ -68,6 +74,9 @@ impl Work {
             Self::CollectionRecovery => "collection_recovery",
             Self::SoftwareRecovery => "software_recovery",
             Self::EnrollmentRecovery => "enrollment_recovery",
+            Self::AccessRecovery => "access_recovery",
+            Self::CredentialRecovery => "credential_recovery",
+            Self::CredentialNativeRecovery => "credential_native_recovery",
             Self::InstallationRecovery => "installation_recovery",
             Self::Apple => "apple",
             Self::Windows => "windows",
@@ -103,6 +112,9 @@ impl Signals {
                 Work::SoftwareRecovery,
                 Work::EnrollmentRecovery,
                 Work::InstallationRecovery,
+                Work::AccessRecovery,
+                Work::CredentialRecovery,
+                Work::CredentialNativeRecovery,
             ] {
                 self.get(work).notify_one();
             }

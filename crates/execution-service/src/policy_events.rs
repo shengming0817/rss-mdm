@@ -1,9 +1,6 @@
 //! Targeted event admission borrows the original transaction and the existing execution owners.
 //! ref: meilisearch crates/index-scheduler/src/queue/batches.rs — operation references in atomic batches.
-use crate::{
-    Result, Target,
-    actions::{production, storage as runs},
-};
+use crate::{Result, Target, actions::storage as runs};
 use rss_mdm_agent_wire::runtime::{
     PolicyEventDecision as Decision, PolicyEventOperation as Operation,
 };
@@ -14,20 +11,6 @@ use uuid::Uuid;
 pub fn rejected(reason: &str) -> Decision {
     Decision::Rejected {
         reason: reason.into(),
-    }
-}
-fn accepted(ids: Vec<Uuid>, native: bool) -> Decision {
-    Decision::Accepted {
-        operations: ids
-            .into_iter()
-            .map(|id| {
-                if native {
-                    Operation::Native { id }
-                } else {
-                    Operation::Run { id }
-                }
-            })
-            .collect(),
     }
 }
 /// Resolve the exact currently assigned channel; never silently choose an ambiguous registration.
@@ -148,12 +131,11 @@ impl crate::transactions::ExecutionTransactions {
         tx: &mut PgTransaction<'_>,
         policy: &Policy,
         target: &Target,
-        cause: (Uuid, rss_mdm_audit_integration::activity::ActivityOrigin),
+        _cause: (Uuid, rss_mdm_audit_integration::activity::ActivityOrigin),
         deadline: i64,
-        audit: &rss_mdm_audit_integration::RequestAudit,
+        _audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Decision> {
         self.validate_policy_transaction_in(tx)?;
-        let (request, origin) = cause;
         let now = crate::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
@@ -177,67 +159,7 @@ impl crate::transactions::ExecutionTransactions {
         ) {
             return Ok(rejected("scope_not_eligible"));
         }
-        match &policy.definition.action {
-            Action::Credential { .. } => {
-                let plan =
-                    runs::load_policy_version(&self.policy_reader, tx, policy.version).await?;
-                production::accept_for_device(
-                    self,
-                    tx,
-                    &plan,
-                    target,
-                    production::AdmissionTrigger::Custom {
-                        origin,
-                        request,
-                        at: now,
-                        deadline,
-                    },
-                    now,
-                    request,
-                )
-                .await?;
-                let tenant = tx.tenant_id().to_string();
-                let exists:bool=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant).bind(request).fetch_one(c).await})).await?;
-                Ok(if exists {
-                    accepted(vec![request], false)
-                } else {
-                    rejected("execution_not_eligible")
-                })
-            }
-
-            Action::Configuration { .. } => Err(crate::Error::Unsupported.into()),
-
-            Action::DeviceAccess { .. } => {
-                let prepared = crate::device_access::prepare_target_reconciliation_in(
-                    self,
-                    tx,
-                    target,
-                    Some(policy.id),
-                )
-                .await?;
-                let outcome =
-                    crate::device_access::reconcile_in(self, tx, prepared, now, origin, audit)
-                        .await?;
-                Ok(if !outcome.operations.is_empty() {
-                    accepted(outcome.operations, false)
-                } else if outcome.blocked {
-                    rejected("access_not_eligible")
-                } else {
-                    Decision::NoChange {
-                        reason: "account_bindings_current".into(),
-                    }
-                })
-            }
-            // App dispatches these actions directly to their business owners.
-            Action::Software { .. }
-            | Action::EnsureAgentInstalled { .. }
-            | Action::RequestMdmEnrollment { .. }
-            | Action::UnmanageDevice { .. }
-            | Action::TelemetryProfile { .. }
-            | Action::Execution { .. }
-            | Action::AgentCollection { .. }
-            | Action::NativeCollection { .. } => Err(crate::Error::Unsupported.into()),
-        }
+        Err(crate::Error::Unsupported.into())
     }
 
     /// Validate ingress using the same authenticated Agent and OS-context owner as task events.
@@ -256,11 +178,6 @@ impl crate::transactions::ExecutionTransactions {
                 .as_ref()
                 .ok_or(crate::Error::Malformed)?;
             context.validate().map_err(|_| crate::Error::Malformed)?;
-            if let rss_mdm_agent_wire::runtime::PolicyEventSource::Policy { run_id } = input.source
-            {
-                let run = runs::load_run(tx, run_id).await?;
-                crate::actions::agent::belongs(&run, p)?;
-            }
         }
         Ok(())
     }
@@ -375,12 +292,12 @@ impl PolicyEvents {
         tx: &mut PgTransaction<'_>,
         policy: &Policy,
         target: &Target,
-        cause: (Uuid, rss_mdm_audit_integration::activity::ActivityOrigin),
+        _cause: (Uuid, rss_mdm_audit_integration::activity::ActivityOrigin),
         deadline: i64,
-        audit: &rss_mdm_audit_integration::RequestAudit,
+        _audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Decision> {
         self.transactions
-            .accept_policy_event_in(tx, policy, target, cause, deadline, audit)
+            .accept_policy_event_in(tx, policy, target, _cause, deadline, _audit)
             .await
     }
     /// Borrow the original caller transaction; preserve its authority and operation identity.

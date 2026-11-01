@@ -44,9 +44,9 @@ impl From<rss_mdm_audit_integration::InvalidFact> for Fault {
         Self::from(rss_mdm_audit_integration::Error::Fact(e))
     }
 }
-impl From<crate::enrollment::tasks::scope::SourceError> for Fault {
-    fn from(e: crate::enrollment::tasks::scope::SourceError) -> Self {
-        use crate::enrollment::tasks::scope::SourceError as S;
+impl From<crate::participants::scope::SourceError> for Fault {
+    fn from(e: crate::participants::scope::SourceError) -> Self {
+        use crate::participants::scope::SourceError as S;
         match e {
             S::Missing => Error::NotFound.into(),
             S::Conflict => Error::Conflict.into(),
@@ -256,4 +256,19 @@ pub(crate) async fn prepare_audit_in(
 ) -> Result<()> {
     store.prepare_in(tx, audit, business).await?;
     Ok(())
+}
+
+impl From<crate::participants::Error> for Fault {
+    fn from(error: crate::participants::Error) -> Self {
+        use crate::participants::Error as P;
+        Self::Request(match error {
+            P::Malformed => Error::Malformed,
+            P::Unauthorized => Error::Unauthorized,
+            P::Forbidden => Error::Forbidden,
+            P::Conflict => Error::Conflict,
+            P::Unavailable => Error::Unavailable,
+            P::CommitUnknown => Error::CommitUnknown,
+            P::RollbackFailed => Error::RollbackFailed,
+        })
+    }
 }
