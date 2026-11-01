@@ -5,7 +5,6 @@ use crate::*;
 use sqlx::{PgConnection, Row};
 pub struct WindowsOperation {
     pub id: Uuid,
-    pub bootstrap: bool,
     pub request: rss_mdm_windows_mdm::native::Execution,
     pub user: bool,
     pub matches: bool,
@@ -13,16 +12,9 @@ pub struct WindowsOperation {
     pub receipt: bool,
     pub observe: bool,
     pub replay: bool,
-    pub software: bool,
-    pub agent_minimum_os: Option<[u16; 4]>,
-    pub minimum_os: Option<[u16; 4]>,
     pub observation: Option<rss_mdm_windows_mdm::native::Request>,
 }
 impl ExecutionService {
-    pub fn native_software_enabled(&self) -> bool {
-        self.transactions.inputs.software_distribution().mdm_enabled
-    }
-
     pub async fn windows_operation_on(
         &self,
         c: &mut PgConnection,
@@ -50,54 +42,30 @@ impl ExecutionService {
         let within_deadline = now < op.deadline;
         let status: String = row.try_get("status").map_err(database::db)?;
         let active = matches!(status.as_str(), "published" | "received");
-        let software = matches!(authority, ExecutionAuthority::Software { .. });
+
         let source = self.transactions.source.as_ref();
         let key = &self.transactions.protection;
         let permissions = op.task.permissions()?;
-        let valid = authority.valid(source, c, key, &permissions, now).await?;
-        let ready = authority
-            .dispatch_ready(
-                source,
-                c,
-                self.transactions.inputs.software_distribution().mdm_enabled,
-            )
-            .await?;
+        let valid = authority.valid(c, key, &permissions, now).await?;
+        let ready = authority.dispatch_ready(c).await?;
         let receipt_valid = authority
             .receipt_valid(source, c, key, &permissions, now)
             .await?;
         let control = !matches!(authority, ExecutionAuthority::DeviceControl { .. })
             || authority.control_matches(&op, p.registration(), p.generation())?;
-        let package = native_software::package_on(key, c, &authority, &op.task).await?;
-        let agent_minimum_os = authority.agent_package().and_then(|p| match &p.identity {
-            agent_install::Identity::WindowsMsix { minimum_os, .. } => Some(*minimum_os),
-            _ => None,
-        });
         let Task::Windows { request } = op.task else {
             return Err(Error::Malformed);
         };
         Ok(WindowsOperation {
             id,
-            bootstrap: matches!(
-                &authority,
-                ExecutionAuthority::AgentInstall {
-                    stage: crate::authority::AgentInstallStage::Bootstrap,
-                    ..
-                }
-            ),
             request,
             user: matches!(op.target, NativeTarget::User { .. }),
             matches,
             dispatch: matches && within_deadline && valid && ready && control,
             receipt: matches && within_deadline && active && receipt_valid,
-            observe: matches
-                && within_deadline
-                && (active || (software && status == "applied"))
-                && receipt_valid,
+            observe: matches && within_deadline && active && receipt_valid,
             replay: matches && within_deadline && active && valid && ready,
-            software,
-            agent_minimum_os,
-            minimum_os: package.as_ref().and_then(|p| p.minimum_os),
-            observation: package.and_then(|p| p.observation()),
+            observation: None,
         })
     }
     pub async fn windows_candidates_on(
@@ -105,7 +73,7 @@ impl ExecutionService {
         c: &mut PgConnection,
         p: &device::DevicePrincipal,
     ) -> std::result::Result<Vec<WindowsOperation>, Error> {
-        let ids=sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.input_context->>'platform'='windows' AND o.gateway_accepted AND o.dispatch_failure IS NULL AND (o.authority->>'kind'<>'software' OR NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs r WHERE r.tenant_id=o.tenant_id AND r.id=o.id AND r.state->>'execution'='succeeded')) AND (d.status IN('published','received') OR (d.status='applied' AND o.authority->>'kind'='software')) AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY (o.authority->>'stage'='bootstrap') DESC NULLS LAST,o.id LIMIT 64").bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
+        let ids=sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.input_context->>'platform'='windows' AND o.gateway_accepted AND o.dispatch_failure IS NULL AND d.status IN('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64").bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
         let mut output = Vec::new();
         for id in ids {
             let op = self.windows_operation_on(c, p, id).await?;

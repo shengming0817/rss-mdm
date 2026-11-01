@@ -1,0 +1,67 @@
+-- Policy accepts intents and observes their original progress; protocol workers remain Command-owned.
+WITH reachable AS (
+ SELECT r.* FROM pg_roles r WHERE r.rolname=current_user OR pg_has_role(session_user,r.oid,'MEMBER')
+), required(relation,insertable,deletable) AS (VALUES
+ ('mdm_apple.native_commands',true,false),('mdm_windows.native_commands',true,false),
+ ('mdm_access.command_authorities',true,false),('mdm_software_deployment.operations',true,false),
+ ('mdm_software_deployment.requests',true,false),('mdm_software_deployment.action_runs',true,false),
+ ('mdm_software_deployment.action_receipts',true,false),('mdm_software_deployment.policy_recovery',true,false),('mdm_software_deployment.agent_install_inputs',true,false),
+ ('mdm_flow.native_protection',true,false),
+ ('mdm_agent.bindings',false,false)), updates(relation,col) AS (VALUES
+ ('mdm_access.command_authorities','epoch'),('mdm_access.command_authorities','registration'),('mdm_access.command_authorities','registration_generation'),
+ ('mdm_software_deployment.operations','authority'),('mdm_software_deployment.operations','revision'),('mdm_software_deployment.operations','request'),
+ ('mdm_software_deployment.action_runs','state'),('mdm_software_deployment.action_runs','result'),('mdm_software_deployment.action_runs','invocation'),('mdm_software_deployment.action_runs','source_objects'),('mdm_software_deployment.action_runs','software_effect'),
+ ('mdm_software_deployment.policy_recovery','input_revision'),('mdm_software_deployment.agent_install_inputs','input_revision'),
+
+ ('mdm_agent.bindings','execution_context'))
+SELECT current_setting('transaction_isolation')='read committed'
+ AND NOT pg_has_role(current_user,'mdm_command_runtime','MEMBER')
+ AND NOT EXISTS(SELECT FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication)
+ AND NOT EXISTS(SELECT FROM required r LEFT JOIN pg_class c ON c.oid=to_regclass(r.relation)
+ WHERE c.oid IS NULL OR c.relkind<>'r' OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity
+ OR c.relowner IN(SELECT oid FROM reachable)
+ OR has_table_privilege(current_user,c.oid,'SELECT')<>true
+ OR has_table_privilege(current_user,c.oid,'INSERT')<>r.insertable
+ OR has_table_privilege(current_user,c.oid,'DELETE')<>r.deletable
+ OR has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
+ OR (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid)<>1
+ OR NOT EXISTS(SELECT FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
+ AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
+ AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)))
+ AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute a ON a.attrelid=to_regclass(r.relation) AND a.attnum>0 AND NOT a.attisdropped
+ WHERE has_column_privilege(current_user,a.attrelid,a.attnum,'UPDATE')<>EXISTS(SELECT FROM updates u WHERE u.relation=r.relation AND u.col=a.attname)
+ OR has_column_privilege(current_user,a.attrelid,a.attnum,'REFERENCES'))
+ AND NOT EXISTS(SELECT FROM required r JOIN pg_class c ON c.oid=to_regclass(r.relation),LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
+ WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
+ AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute col ON col.attrelid=to_regclass(r.relation),LATERAL aclexplode(col.attacl) a
+ WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
+ AND NOT EXISTS(SELECT FROM (VALUES('mdm_windows.attempts'),('mdm_windows.attempt_items'),('mdm_windows.attempt_frames'),('mdm_agent.task_attempts'),('mdm_software_deployment.agent_admission')) worker(relation),reachable r
+ WHERE has_table_privilege(r.oid,worker.relation,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(r.oid,worker.relation,'INSERT,UPDATE,REFERENCES'))
+ AND (
+-- Exact host authority for borrowed execution handoff and current authorization.
+WITH capabilities(name,append) AS (VALUES
+ ('mdm_access.authorization_rules',false),('mdm_access.user_groups',false),('mdm_access.api_keys',false)
+), objects AS (
+ SELECT name,append,to_regclass(name) AS oid FROM capabilities
+), reachable AS (
+ SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER')
+)
+SELECT
+ (SELECT count(*)=3 AND bool_and(o.oid IS NOT NULL AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
+  AND has_schema_privilege(current_user,c.relnamespace,'USAGE')
+  AND has_table_privilege(current_user,c.oid,'SELECT')
+  AND (NOT o.append OR has_table_privilege(current_user,c.oid,'INSERT')))
+  FROM objects o LEFT JOIN pg_class c ON c.oid=o.oid)
+ AND NOT EXISTS(SELECT 1 FROM objects o JOIN pg_class c ON c.oid=o.oid CROSS JOIN reachable r
+  WHERE c.relowner=r.oid
+   OR has_table_privilege(r.oid,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+   OR has_any_column_privilege(r.oid,c.oid,'UPDATE,REFERENCES')
+   OR (NOT o.append AND (has_table_privilege(r.oid,c.oid,'INSERT') OR has_any_column_privilege(r.oid,c.oid,'INSERT'))))
+ AND NOT EXISTS(SELECT 1 FROM objects o JOIN pg_class c ON c.oid=o.oid,
+  LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
+  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable)
+   AND (a.is_grantable OR a.privilege_type NOT IN('SELECT','INSERT') OR (a.privilege_type='INSERT' AND NOT o.append))))
+ AND NOT EXISTS(SELECT 1 FROM objects o JOIN pg_attribute c ON c.attrelid=o.oid,
+  LATERAL aclexplode(c.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable)
+   AND (a.is_grantable OR a.privilege_type NOT IN('SELECT','INSERT') OR (a.privilege_type='INSERT' AND NOT o.append))))
+)

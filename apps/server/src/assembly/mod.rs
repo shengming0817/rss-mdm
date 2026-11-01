@@ -30,6 +30,9 @@ pub(crate) mod resource;
 pub(crate) mod software;
 pub(crate) mod webhooks;
 pub(crate) struct Assembly {
+    pub(crate) operation_reads: Arc<operation_reads::Operations>,
+    pub(crate) software: software::Assembly,
+    pub(crate) registration: registration::Assembly,
     pub(crate) configuration_preview: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     pub(crate) configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
@@ -173,6 +176,8 @@ pub(crate) async fn from_compiled(
     } = dependencies;
     let crate::assembly::execution::Assembly {
         materials: _,
+        software,
+        registration,
         configuration,
         read_pool,
         signing,
@@ -425,7 +430,7 @@ pub(crate) async fn from_compiled(
                     issuer: pki.issuer.clone(),
                     clock: pki.pki_clock.clone(),
                     binding: Arc::new(rss_mdm_agent_channel::Bindings),
-                    native: execution.clone(),
+                    native: software.authority.clone(),
                     bootstrap: pki.bootstrap.clone(),
                     protection: protection.clone(),
                     installations: Arc::new(crate::agent_configurations::Installations),
@@ -485,6 +490,8 @@ pub(crate) async fn from_compiled(
             execution.clone(),
             configuration.clone(),
             collections.clone(),
+            software.service.clone(),
+            registration.native.clone(),
         )),
     });
     let apple_delivery = Arc::new(rss_mdm_apple_channel::delivery::Delivery {
@@ -495,6 +502,8 @@ pub(crate) async fn from_compiled(
             execution.clone(),
             configuration.clone(),
             collections.clone(),
+            software.service.clone(),
+            registration.native.clone(),
         )),
         facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: protection.clone(),
@@ -502,6 +511,9 @@ pub(crate) async fn from_compiled(
     });
     let agent_tasks = Arc::new(agent_tasks::AgentTasks {
         requests: self_service,
+        software: software.service.clone(),
+        registration: registration.enrollment.clone(),
+        content: content_writer.clone(),
         execution: execution.clone(),
         scripts,
         collections,
@@ -514,7 +526,15 @@ pub(crate) async fn from_compiled(
         tasks: agent_tasks.clone(),
         content: content_writer.clone(),
     });
+    let operation_reads = Arc::new(operation_reads::Operations {
+        tasks: task_reads.clone(),
+        registration: registration.native.clone(),
+        execution: execution.clone(),
+    });
     let state = Arc::new(Assembly {
+        operation_reads,
+        software,
+        registration,
         agent_tasks,
         agent_delivery,
         apple_delivery,
@@ -770,3 +790,26 @@ mod task_reads;
 mod execution_owners_t2;
 
 mod task_cleanup;
+
+mod registration_sources;
+mod software_sources;
+
+mod registration_agent_facts;
+mod registration_apple_facts;
+mod registration_windows_facts;
+mod software_agent_facts;
+mod software_apple_facts;
+mod software_windows_facts;
+
+mod owner_errors;
+mod registration;
+
+mod device_reads;
+mod operation_reads;
+
+#[cfg(test)]
+#[path = "../../tests/registration/mod.rs"]
+mod registration_installation_t2;
+#[cfg(test)]
+#[path = "../../tests/software/mod.rs"]
+mod software_t2;

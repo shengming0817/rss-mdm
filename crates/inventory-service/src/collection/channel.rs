@@ -5,28 +5,11 @@ use crate::{
     database::db,
     device::{self, DevicePrincipal},
 };
+use rss_mdm_inventory::channel::AgentEvidence;
 use rss_mdm_inventory::{AgentInstallation, CollectedValue, ReportSource, Scalar};
 use rss_observation::{Batch, Body, Change, Id, Scope};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentEvidence {
-    pub catalog_digest: [u8; 32],
-    pub provisioned: bool,
-    pub checked_identities: Vec<String>,
-    pub identity: String,
-    pub publisher: Option<String>,
-    pub version: Option<String>,
-    pub architecture: Option<String>,
-}
-impl AgentEvidence {
-    pub fn matches(&self, identity: &str) -> bool {
-        self.checked_identities
-            .iter()
-            .any(|candidate| candidate == identity)
-    }
-}
 pub async fn start_in(
     c: &mut PgConnection,
     p: &DevicePrincipal,

@@ -5,24 +5,7 @@ use rss_request_context::TenantId;
 use sqlx::Row;
 use uuid::Uuid;
 
-#[derive(Clone, Debug)]
-pub struct Current {
-    pub state: String,
-    pub snapshot: Uuid,
-    pub received_at: i64,
-    pub evidence: Option<crate::collection::channel::AgentEvidence>,
-}
-
-/// Observation readiness is distinct from a negative or unknown channel fact.
-#[derive(Clone, Debug)]
-pub enum Observation {
-    Ready(Current),
-    ProjectionPending {
-        evidence: Option<crate::collection::channel::AgentEvidence>,
-    },
-    Unavailable,
-}
-
+use rss_mdm_inventory::channel::{Current, Observation};
 pub async fn detail_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
@@ -146,7 +129,7 @@ pub async fn snapshot_details_in(
             .get(&field)
             .and_then(|f| f.received_at)
             .ok_or(Error::Malformed)?;
-        let evidence: Option<crate::collection::channel::AgentEvidence> = latest
+        let evidence: Option<rss_mdm_inventory::channel::AgentEvidence> = latest
             .try_get::<Option<String>, _>("evidence")
             .map_err(db)?
             .map(|s| {

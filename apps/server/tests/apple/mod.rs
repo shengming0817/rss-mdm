@@ -39,6 +39,8 @@ async fn delivery(
             a.service.clone(),
             a.configuration.clone(),
             a.collections.clone(),
+            a.software.service.clone(),
+            a.registration.native.clone(),
         )),
         facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: a.protection.clone(),

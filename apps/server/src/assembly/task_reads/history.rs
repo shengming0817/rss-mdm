@@ -10,7 +10,7 @@ struct Position {
     available_at: i64,
     task_id: Uuid,
 }
-pub(super) fn execution_fault(error: rss_mdm_execution_service::transaction::Fault) -> Error {
+pub(crate) fn execution_fault(error: rss_mdm_execution_service::transaction::Fault) -> Error {
     use rss_mdm_execution_service::transaction::Fault as F;
     match error {
         F::Request(e) => e.into(),
@@ -95,6 +95,27 @@ impl Reads {
                         .into_iter()
                         .map(RunSummary::Collection),
                     );
+                    items.extend(
+                        s.software
+                            .run_page_on(c, policy, after, limit + 1, now)
+                            .await
+                            .map_err(software_fault)?
+                            .into_iter()
+                            .map(RunSummary::Software),
+                    );
+                    items.extend(
+                        rss_mdm_registration_service::enrollment::tasks::queries::page_on(
+                            c,
+                            &s.tenant.to_string(),
+                            policy,
+                            after,
+                            limit + 1,
+                        )
+                        .await
+                        .map_err(enrollment_fault)?
+                        .into_iter()
+                        .map(RunSummary::Enrollment),
+                    );
                     items.sort_by_key(|v| std::cmp::Reverse(v.position()));
                     let mut ids = std::collections::BTreeSet::new();
                     if items.iter().any(|v| !ids.insert(v.position().1)) {
@@ -148,6 +169,25 @@ impl Reads {
                         other => sql(other),
                     })?;
                 match owner {
+                    Owner::Software => s
+                        .software
+                        .run_detail_on(c, proof, grant, policy, id, now)
+                        .await
+                        .map(RunDetail::Software)
+                        .map_err(software_fault),
+                    Owner::Registration => {
+                        rss_mdm_registration_service::enrollment::tasks::queries::detail_on(
+                            c,
+                            &s.tenant.to_string(),
+                            policy,
+                            id,
+                            proof,
+                            grant,
+                        )
+                        .await
+                        .map(RunDetail::Enrollment)
+                        .map_err(enrollment_fault)
+                    }
                     Owner::Execution => s
                         .execution
                         .run_detail_on(c, proof, grant, policy, id, now)

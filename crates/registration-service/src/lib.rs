@@ -55,3 +55,14 @@ pub use storage_authority::verify_authority;
 
 pub mod command_authority;
 pub const COMMAND_AUTHORITIES_SQL: &str = include_str!("../schema/command-authorities.sql");
+
+pub mod installation;
+
+pub const TASKS_SQL: &str = concat!(
+    include_str!("../schema/tasks/enrollment.sql"),
+    "\n",
+    include_str!("../schema/tasks/installation.sql"),
+    "\n",
+    include_str!("../schema/tasks/task-retirement.sql")
+);
+pub const TASKS_RELATIONS_SQL: &str = include_str!("../schema/tasks/relations.sql");

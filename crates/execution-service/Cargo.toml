@@ -25,13 +25,11 @@ rss-mdm-registration-service.workspace = true
 rss-mdm-authorization-service.workspace = true
 rss-mdm-content-service.workspace = true
 rss-mdm-apple-mdm.workspace = true
-rss-mdm-software-service.workspace = true
 rss-mdm-inventory.workspace = true
 rss-mdm-policy.workspace = true
 rss-mdm-policy-postgres.workspace = true
 rss-mdm-resource.workspace = true
 rss-mdm-resource-postgres.workspace = true
-rss-mdm-software-release.workspace = true
 rss-mdm-agent-wire.workspace = true
 rss-mdm-windows-mdm.workspace = true
 rss-mdm-audit-integration.workspace = true
@@ -65,10 +63,6 @@ tokio = {workspace=true,features=["rt","macros","time","sync"]}
 rss-mdm-scope.workspace = true
 rss-mdm-scope-service.workspace = true
 rss-mdm-scope-postgres.workspace = true
-
-[dev-dependencies]
-rss-mdm-group.workspace = true
-jsonschema.workspace = true
 
 [lints]
 workspace = true

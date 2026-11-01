@@ -1,5 +1,4 @@
 //! A draft preview reads an immutable Scope result and never publishes or creates execution work.
-use crate::sources::{onboarding, software};
 use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
@@ -7,8 +6,8 @@ use crate::{
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_policy::Action;
+use rss_mdm_policy::pages::{TaskAdmission, TaskAdmissionState};
 use serde_json::json;
-use uuid::Uuid;
 
 use crate::authorize_action;
 use crate::input_preparation::{PublicationInput, preview::PreviewInputs};
@@ -70,11 +69,6 @@ pub async fn preview(
             return super::lifecycle::preview_on(s,c,input,after.as_deref(),limit,codec,&binding).await;
         }
         let prepared = &prepared.inputs;
-        let software = if let PreviewInputs::Software(action) = prepared {
-            let Action::Software { rollout, .. } = &input.definition.action else { return Err(Error::Malformed.into()); };
-            Some(software::SoftwareAssignment::draft(input.definition.scope, rollout.clone(), (**action).clone()))
-        } else { None };
-        let onboarding = if let PreviewInputs::Onboarding(frozen) = prepared { Some(frozen) } else { None };
         authorization.require_all_devices(proof,Permission::InventoryRead)?;
         let source=s.source.clone();let tenant=s.tenant;let scope=input.definition.scope;let after=after.clone();let channel=crate::sources::candidates::action_channel(&input.definition.action)?;
         let mut objects=source.assignment_objects_on(c,tenant,scope,channel,after.as_deref(),limit).await?;
@@ -84,20 +78,18 @@ pub async fn preview(
         let more=objects.len()>limit;objects.truncate(limit);let next=if more{objects.last().map(|o|o.object.key())}else{None};let mut items=Vec::new();
         for mut object in objects {
             let task_admission=if let Some(target)=&object.target {
-                let device=&target.device;
-                if let Some(software)=&software {let now=basis.now;Some(software.management_state_on(&s.admission,c,tenant,device,now).await?)}
-                else if let Some(frozen)=onboarding {Some(onboarding::state_on(&s.admission,c,tenant,device,frozen,Uuid::nil(),basis.now).await?)}
-                else if let PreviewInputs::DeviceAccess { windows } = prepared {
+                let _device=&target.device;
+                if let PreviewInputs::DeviceAccess { windows } = prepared {
                     let binding=crate::agent_facts::agent_binding_on(c,tenant,s.agent_store.clone(),target.registration_id).await?;
                     let allowed=binding.is_some_and(|b|crate::device_access::capable(&b, windows));
-                    Some(software::TaskAdmission::new(if allowed{software::TaskAdmissionState::Eligible}else{software::TaskAdmissionState::UnsupportedCapability},None))
+                    Some(TaskAdmission::new(if allowed{TaskAdmissionState::Eligible}else{TaskAdmissionState::UnsupportedCapability},None))
                 } else if let PreviewInputs::Credential { architecture } = prepared {
                     let binding=crate::agent_facts::agent_binding_on(c,tenant,s.agent_store.clone(),target.registration_id).await?;
                     let allowed=binding.is_some_and(|b|crate::credential_tasks::capable(&b,*architecture));
-                    Some(software::TaskAdmission::new(if allowed { software::TaskAdmissionState::Eligible } else { software::TaskAdmissionState::UnsupportedCapability },None))
+                    Some(TaskAdmission::new(if allowed { TaskAdmissionState::Eligible } else { TaskAdmissionState::UnsupportedCapability },None))
                 }else{None}
             }else{None};
-            if task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
+            if task_admission.as_ref().is_some_and(|a|!TaskAdmission::is_eligible(a)) {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
             items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"eligibility":object.admission,"taskAdmission":task_admission}));
         }
 

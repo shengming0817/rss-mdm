@@ -453,3 +453,29 @@ pub async fn native_departure_in(
         .bind(tenant).bind(registration).bind(confirmed).execute(c).await?;
     Ok(())
 }
+
+/// Exact cleanup admission; ordinary lifecycle eligibility also admits unenrollment and is wider.
+pub async fn cleanup_allowed_in(
+    c: &mut PgConnection,
+    tenant: &str,
+    retirement: Uuid,
+    device: &str,
+    execution: Option<Uuid>,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.retirement_channels t JOIN mdm_access.devices d ON(d.tenant_id,d.id,d.retirement)=(t.tenant_id,t.device,t.operation) JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(t.tenant_id,t.registration,t.generation) WHERE t.tenant_id=$1::uuid AND t.operation=$2 AND t.device=$3 AND t.stage='cleanup' AND r.state='active' AND ($4::uuid IS NULL OR EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.operation,w.registration,w.execution)=(t.tenant_id,t.operation,t.registration,$4))))").bind(tenant).bind(retirement).bind(device).bind(execution).fetch_one(c).await?)
+}
+pub async fn cleanup_context_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    retirement: Uuid,
+) -> Result<(Retirement, u32)> {
+    let context = read_in(c, tenant, retirement).await?;
+    let lifetime: i32 = sqlx::query_scalar(
+        "SELECT delivery_seconds FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(retirement)
+    .fetch_one(c)
+    .await?;
+    Ok((context, lifetime.try_into().map_err(|_| Error::Malformed)?))
+}

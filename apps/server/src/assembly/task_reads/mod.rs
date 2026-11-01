@@ -5,6 +5,9 @@ use std::sync::Arc;
 mod preview;
 mod snapshot;
 pub(crate) struct Reads {
+    pub software: Arc<rss_mdm_software_service::deployment::queries::Queries>,
+    pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::Materials>,
+    pub entries: rss_mdm_registration_service::enrollment::task::Entries,
     pub signing_enabled: bool,
     pub clock: Arc<dyn rss_request_context::Clock>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
@@ -15,7 +18,7 @@ pub(crate) struct Reads {
     pub collections: rss_mdm_inventory_service::collection::execution::inputs::Inputs,
     pub execution: Arc<rss_mdm_execution_service::queries::Queries>,
 }
-fn sql(error: sqlx::Error) -> Error {
+pub(super) fn sql(error: sqlx::Error) -> Error {
     if error
         .as_database_error()
         .and_then(|e| e.code())
@@ -52,7 +55,7 @@ fn script_fault(error: rss_mdm_script_service::transaction::Fault) -> Error {
     }
 }
 
-mod history;
+pub(super) mod history;
 
 mod assignments;
 
@@ -74,3 +77,25 @@ fn window(error: rss_mdm_scope_service::window::Error) -> Error {
         W::Source(e) => source(e),
     }
 }
+
+pub(super) fn software_fault(
+    error: rss_mdm_software_service::deployment::transaction::Fault,
+) -> Error {
+    use rss_mdm_software_service::deployment::transaction::Fault as F;
+    match error {
+        F::Request(e) => super::owner_errors::software_http(e),
+        F::Sql(e) => sql(e),
+        F::Storage(_) => Error::Unavailable(Failure::Database),
+    }
+}
+pub(super) fn enrollment_fault(
+    error: rss_mdm_registration_service::enrollment::tasks::transaction::Fault,
+) -> Error {
+    use rss_mdm_registration_service::enrollment::tasks::transaction::Fault as F;
+    match error {
+        F::Request(e) => super::owner_errors::enrollment_http(e),
+        F::Sql(e) => sql(e),
+        F::Storage(_) => Error::Unavailable(Failure::Database),
+    }
+}
+mod projections;

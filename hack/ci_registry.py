@@ -103,7 +103,6 @@ T1_INPUTS = ('apps/server/tests/foundation/mod.rs',
  'crates/device-trust/tests/*',
  'crates/examples/examples/*.rs',
  'crates/examples/tests/*',
- 'crates/execution-service/tests/*',
  'crates/group/tests/*',
  'crates/http-contract/tests/*',
  'crates/inventory-service/examples/packaged_collections.rs',
@@ -160,7 +159,7 @@ CONTROL_INPUTS = {'.cargo/config.toml': {'fields': {'build.jobs': 'tools',
 
 T1_CONSUMERS = {
     'fixtures/apple-collection/*': ('rss-mdm-apple-channel',),
-    'fixtures/windows-collection/*': ('rss-mdm-execution-service',),
+    'fixtures/windows-collection/*': ('rss-mdm-windows-channel',),
     'fixtures/snapshot.json': ('rss-mdm-examples',),
     'fixtures/mdm-config.example.json': ('rss-mdm-app',),
 }

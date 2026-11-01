@@ -3,7 +3,9 @@ use crate::Error;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_query::{cursor::CursorCodec, window::Query};
+use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
+use uuid::Uuid;
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
 pub trait Reads: Send + Sync {
     fn preview<'a>(
@@ -13,7 +15,7 @@ pub trait Reads: Send + Sync {
         input: &'a rss_mdm_policy::pages::Preview,
         query: &'a Query,
         codec: &'a CursorCodec,
-    ) -> Pending<'a, rss_mdm_execution_service::queries::records::Preview>;
+    ) -> Pending<'a, Preview>;
     fn runs<'a>(
         &'a self,
         proof: &'a AuthorizedPrincipal,
@@ -36,7 +38,7 @@ pub trait Reads: Send + Sync {
         policy: uuid::Uuid,
         page: &'a Query,
         codec: &'a CursorCodec,
-    ) -> Pending<'a, rss_mdm_execution_service::queries::records::AssignmentPage>;
+    ) -> Pending<'a, AssignmentPage>;
 }
 
 pub static RUNS_SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
@@ -49,6 +51,8 @@ pub static RUNS_SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::S
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunSummary {
+    Software(rss_mdm_software_service::deployment::queries::records::RunSummary),
+    Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
     Execution(rss_mdm_execution_service::queries::records::RunSummary),
     Script(rss_mdm_script_service::queries::Summary),
     Collection(rss_mdm_inventory_service::collection::execution::queries::Summary),
@@ -56,6 +60,8 @@ pub enum RunSummary {
 impl RunSummary {
     pub fn position(&self) -> (i64, uuid::Uuid) {
         match self {
+            Self::Software(r) => (r.available_at, r.task_id),
+            Self::Enrollment(r) => (r.available_at, r.task_id),
             Self::Execution(r) => (r.available_at, r.task_id),
             Self::Script(r) => (r.available_at, r.task_id),
             Self::Collection(r) => {
@@ -68,6 +74,8 @@ impl RunSummary {
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunDetail {
+    Software(rss_mdm_software_service::deployment::queries::records::RunDetail),
+    Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
     Execution(rss_mdm_execution_service::queries::records::RunDetail),
     Script(rss_mdm_script_service::queries::Detail),
     Collection(rss_mdm_inventory_service::collection::execution::queries::Detail),
@@ -77,4 +85,44 @@ pub enum RunDetail {
 pub struct RunPage {
     pub items: Vec<RunSummary>,
     pub next_cursor: Option<String>,
+}
+
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Assignment {
+    pub object: rss_mdm_scope_service::channels::ObjectRef,
+    pub channel: Option<rss_mdm_inventory::Channel>,
+    pub availability: rss_mdm_scope_service::channels::Availability,
+    pub reason: Option<String>,
+    pub target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
+    pub qualification: rss_mdm_scope_service::channels::ScopeAdmission,
+    pub sources: Vec<rss_mdm_scope_service::channels::DeviceObject>,
+    pub scope_result: Option<Uuid>,
+    pub task_admission: Option<rss_mdm_policy::pages::TaskAdmission>,
+    pub operation_ids: Vec<Uuid>,
+}
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignmentPage {
+    pub items: Vec<Assignment>,
+    pub next_cursor: Option<String>,
+}
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preview {
+    pub action: rss_mdm_policy::Action,
+    pub scope_result: Uuid,
+    pub items: Vec<PreviewTarget>,
+    pub next_cursor: Option<String>,
+}
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTarget {
+    pub object: rss_mdm_scope_service::channels::ObjectRef,
+    pub channel: Option<rss_mdm_inventory::Channel>,
+    pub availability: rss_mdm_scope_service::channels::Availability,
+    pub reason: Option<String>,
+    pub target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
+    pub eligibility: rss_mdm_scope_service::channels::ScopeAdmission,
+    pub task_admission: Option<rss_mdm_policy::pages::TaskAdmission>,
 }

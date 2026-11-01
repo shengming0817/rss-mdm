@@ -30,6 +30,30 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             rss_mdm_execution_service::retire_in(tx, facts, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_software_service::deployment::retirement::retire_in(
+                tx,
+                facts,
+                tenant,
+                registration,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_registration_service::installation::retirement::retire_in(
+                tx,
+                facts,
+                tenant,
+                registration,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_registration_service::enrollment::tasks::retirement::retire_in(
+                tx,
+                facts,
+                tenant,
+                registration,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_script_service::retirement::retire_in(tx, facts, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;

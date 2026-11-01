@@ -707,6 +707,49 @@ pub async fn current_certificates_in(
     Ok(rows.into_iter().collect())
 }
 
+/// Read current trust under the issuer-generation fence in the initiating business transaction.
+/// The caller retains the connection and owns commit or rollback.
+pub async fn trust_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    usage: Purpose,
+) -> Result<Trust, Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2639))")
+        .bind(tenant.to_string())
+        .execute(&mut *c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let body: Vec<u8> = sqlx::query_scalar(
+        "SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(purpose(usage))
+    .fetch_one(c)
+    .await
+    .map_err(|_| Error::Storage)?;
+    let trust: Trust = serde_json::from_slice(&body).map_err(|_| Error::Configuration)?;
+    if trust.tenant.to_string() != tenant.to_string() || trust.purpose != usage {
+        return Err(Error::Forbidden);
+    }
+    Ok(trust)
+}
+
+/// A signing retry must remain bound to an issuer retained for this purpose.
+pub async fn retained_issuer_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    usage: Purpose,
+    digest: &str,
+) -> Result<bool, Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
+        .bind(tenant.to_string())
+        .execute(&mut *c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.issuers WHERE tenant_id=$1::uuid AND purpose=$2 AND digest=$3 AND state IN('active','verify_only'))")
+        .bind(tenant.to_string()).bind(purpose(usage)).bind(digest).fetch_one(c).await.map_err(|_|Error::Storage)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

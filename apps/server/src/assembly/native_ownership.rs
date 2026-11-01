@@ -10,6 +10,8 @@ use uuid::Uuid;
 pub(super) enum Owner {
     Configuration,
     Execution,
+    Software,
+    Registration,
 }
 pub(super) async fn on(
     c: &mut sqlx::PgConnection,
@@ -34,15 +36,31 @@ pub(super) async fn batch_on(
     let execution = rss_mdm_execution_service::storage::owned_ids_on(c, tenant, ids)
         .await
         .map_err(|_| Error::Unavailable(Failure::Database))?;
+    let software = rss_mdm_software_service::deployment::storage::owned_ids_on(c, tenant, ids)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::Database))?;
+    let registration =
+        rss_mdm_registration_service::installation::storage::owned_ids_on(c, tenant, ids)
+            .await
+            .map_err(|_| Error::Unavailable(Failure::Database))?;
     ids.iter()
-        .map(
-            |id| match (configuration.contains(id), execution.contains(id)) {
-                (true, false) => Ok((*id, Owner::Configuration)),
-                (false, true) => Ok((*id, Owner::Execution)),
-                (false, false) => Err(Error::NotFound),
-                (true, true) => Err(Error::Unavailable(Failure::CommandInvariant)),
-            },
-        )
+        .map(|id| {
+            let owners = [
+                (configuration.contains(id), Owner::Configuration),
+                (execution.contains(id), Owner::Execution),
+                (software.contains(id), Owner::Software),
+                (registration.contains(id), Owner::Registration),
+            ];
+            let selected = owners
+                .into_iter()
+                .filter_map(|(present, owner)| present.then_some(owner))
+                .collect::<Vec<_>>();
+            match selected.as_slice() {
+                [owner] => Ok((*id, *owner)),
+                [] => Err(Error::NotFound),
+                _ => Err(Error::Unavailable(Failure::CommandInvariant)),
+            }
+        })
         .collect()
 }
 

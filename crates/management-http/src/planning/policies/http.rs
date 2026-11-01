@@ -179,9 +179,7 @@ async fn assignments(
     >,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
 ) -> std::result::Result<
-    rss_mdm_http_contract::CollectionResponse<
-        Json<rss_mdm_execution_service::queries::records::AssignmentPage>,
-    >,
+    rss_mdm_http_contract::CollectionResponse<Json<crate::execution::task_reads::AssignmentPage>>,
     Error,
 > {
     (async {

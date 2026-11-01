@@ -73,20 +73,13 @@ impl ExecutionService {
                 .map_err(database::db)?;
                 if authority
                     .valid(
-                        self.transactions.source.as_ref(),
                         c,
                         &self.transactions.protection,
                         &input.task.permissions()?,
                         now,
                     )
                     .await?
-                    && authority
-                        .dispatch_ready(
-                            self.transactions.source.as_ref(),
-                            c,
-                            self.transactions.inputs.software_distribution().mdm_enabled,
-                        )
-                        .await?
+                    && authority.dispatch_ready(c).await?
                 {
                     return Ok(true);
                 }

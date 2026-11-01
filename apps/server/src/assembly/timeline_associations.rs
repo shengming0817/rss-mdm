@@ -28,6 +28,22 @@ impl Associations for Producers {
                             ) => Error::Integrity,
                             _ => Error::Storage,
                         })?;
+                    if owner == Owner::Software {
+                        return Ok(
+                            rss_mdm_software_service::deployment::timeline::association_in(
+                                c,
+                                tenant,
+                                actor,
+                                rss_mdm_software_service::deployment::timeline::Identity::Operation(
+                                    id,
+                                ),
+                            )
+                            .await?,
+                        );
+                    }
+                    if owner == Owner::Registration {
+                        return Ok(rss_mdm_registration_service::installation::timeline::association_in(c,tenant,actor,rss_mdm_registration_service::installation::timeline::Identity::Operation(id)).await?);
+                    }
                     if owner == Owner::Configuration {
                         return Ok(
                             rss_mdm_policy_service::configuration::storage::association_on(
@@ -53,10 +69,40 @@ impl Associations for Producers {
                     match owner {
                         TaskOwner::Script => return Ok(rss_mdm_script_service::storage::association_on(c, tenant, id).await?),
                         TaskOwner::Collection => return Ok(rss_mdm_inventory_service::collection::execution::storage::association_on(c, tenant, id).await?),
+                        TaskOwner::Software=>return Ok(rss_mdm_software_service::deployment::timeline::association_in(c,tenant,actor,rss_mdm_software_service::deployment::timeline::Identity::ActionRun(id)).await?),
+                        TaskOwner::Registration=>return Ok(rss_mdm_registration_service::enrollment::tasks::storage::association_on(c,tenant,id).await?),
                         TaskOwner::Execution => execution::Identity::ActionRun(id),
                     }
                 }
-                Identity::ChangeRequest(id) => execution::Identity::ChangeRequest(id),
+                Identity::ChangeRequest(id) => {
+                    let mut associations = Vec::new();
+                    associations.extend(
+                        execution::association_in(
+                            c,
+                            tenant,
+                            actor,
+                            execution::Identity::ChangeRequest(id),
+                        )
+                        .await?,
+                    );
+                    associations.extend(
+                        rss_mdm_software_service::deployment::timeline::association_in(
+                            c,
+                            tenant,
+                            actor,
+                            rss_mdm_software_service::deployment::timeline::Identity::ChangeRequest(
+                                id,
+                            ),
+                        )
+                        .await?,
+                    );
+                    associations.extend(rss_mdm_registration_service::installation::timeline::association_in(c,tenant,actor,rss_mdm_registration_service::installation::timeline::Identity::ChangeRequest(id)).await?);
+                    return match associations.len() {
+                        0 => Ok(None),
+                        1 => Ok(associations.pop()),
+                        _ => Err(Error::Integrity),
+                    };
+                }
             };
             Ok(execution::association_in(c, tenant, actor, identity).await?)
         })

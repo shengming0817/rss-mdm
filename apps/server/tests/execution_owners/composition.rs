@@ -61,6 +61,9 @@ async fn original_self_service_receipt_replays_after_policy_kind_changes() -> Re
     sqlx::query("UPDATE mdm_policy.policies SET revision=revision+1,definition=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(policy).bind(serde_json::to_value(changed)?).execute(&mut *tx).await?;
     tx.commit().await?;
     let tasks = super::super::agent_tasks::AgentTasks {
+        software: h.a.software.service.clone(),
+        registration: h.a.registration.enrollment.clone(),
+        content: h.a.content.clone(),
         requests: h.a.self_service.clone(),
         execution: h.a.service.clone(),
         scripts: h.a.scripts.clone(),

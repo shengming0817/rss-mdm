@@ -11,6 +11,18 @@ pub struct Progress {
     pub facts: Vec<Fact>,
 }
 pub trait TaskCleanup: Send + Sync {
+    fn installations_removed_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        retirement: Uuid,
+        target: &'a crate::Target,
+    ) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + 'a>>;
+    fn remove_software_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        retirement: Uuid,
+        target: &'a crate::Target,
+    ) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + 'a>>;
     fn advance_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,

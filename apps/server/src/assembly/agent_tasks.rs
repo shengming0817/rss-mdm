@@ -12,6 +12,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 #[derive(Clone)]
 pub(crate) struct AgentTasks {
+    pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
+    pub registration: Arc<rss_mdm_registration_service::enrollment::tasks::Service>,
+    pub content: Option<Arc<rss_mdm_content_service::Store>>,
+
     pub requests: Arc<super::self_service::Requests>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub scripts: Arc<rss_mdm_script_service::ScriptService>,
@@ -21,24 +25,40 @@ pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_agent_channe
     use rss_mdm_agent_channel::Missing;
     use rss_mdm_agent_channel::{Error as A, Failure};
     use rss_mdm_execution_service::Error as E;
-    match e { E::MdmSoftwareDisabled => A::Forbidden, E::Malformed => A::Malformed, E::CertificateRequest => A::CertificateRequest,
-            E::Unauthorized => A::Unauthorized, E::Forbidden => A::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::EnrollmentPaused | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
-            E::CommitUnknown => A::CommitUnknown, E::RollbackFailed => A::RollbackFailed, E::Unsupported => A::Unsupported,
-            E::NotFound => A::NotFound, E::Resource(_) => A::Missing(Missing::Resource),
-            E::Execution(e) => A::Missing(match e { rss_mdm_execution_service::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task }),
-            E::Publication(e) => A::Missing(match e { rss_mdm_software_service::management::publication::error::PublicationError::MissingSource => Missing::SoftwareSource, rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication => Missing::SoftwarePublication }),
-            E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
-            E::Unavailable(f) => A::Unavailable(match f {
-                rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-                rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-                rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-                rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-                rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-                rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+    match e {
+        E::Malformed => A::Malformed,
+        E::CertificateRequest => A::CertificateRequest,
+        E::Unauthorized => A::Unauthorized,
+        E::Forbidden => A::Forbidden,
+        E::ReadConflict
+        | E::CursorInvalidated
+        | E::Conflict
+        | E::EnrollmentPaused
+        | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+        E::CommitUnknown => A::CommitUnknown,
+        E::RollbackFailed => A::RollbackFailed,
+        E::Unsupported => A::Unsupported,
+        E::NotFound => A::NotFound,
+        E::Resource(_) => A::Missing(Missing::Resource),
+        E::Execution(e) => A::Missing(match e {
+            rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {
+                Missing::Operation
+            }
+            rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task,
+        }),
 
-                _ => Failure::Business,
-            }),
-        }
+        E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
+        E::Unavailable(f) => A::Unavailable(match f {
+            rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
+            rss_mdm_execution_service::Failure::Audit => Failure::Audit,
+            rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
+            rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
+            rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
+            rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+
+            _ => Failure::Business,
+        }),
+    }
 }
 pub(super) fn fault(
     e: rss_mdm_execution_service::transaction::Fault,
@@ -103,7 +123,7 @@ impl Tasks for AgentTasks {
         tx: &'a mut PgTransaction<'_>,
         p: &'a DevicePrincipal,
     ) -> Pending<'a, ()> {
-        Box::pin(async move { self.execution.agent_prepare_in(tx, p).await.map_err(fault) })
+        Box::pin(async move { prepare(tx, p).await })
     }
     fn offer<'a>(
         &'a self,
@@ -150,24 +170,90 @@ impl Tasks for AgentTasks {
                 .into_iter()
                 .map(|v| (v, Owner::Collection)),
             );
+            candidates.extend(
+                rss_mdm_software_service::deployment::actions::poll::offer_candidates(
+                    tx,
+                    p.registration(),
+                    now,
+                    after,
+                )
+                .await
+                .map_err(software_fault)?
+                .into_iter()
+                .map(|v| (v, Owner::Software)),
+            );
+            candidates.extend(
+                rss_mdm_registration_service::enrollment::tasks::poll::offer_candidates(
+                    tx,
+                    p.registration(),
+                    now,
+                    after,
+                )
+                .await
+                .map_err(registration_fault)?
+                .into_iter()
+                .map(|v| (v, Owner::Registration)),
+            );
             candidates.sort_by_key(|(coordinate, _)| *coordinate);
             if candidates.windows(2).any(|v| v[0].0.1 == v[1].0.1) {
                 return Err(rss_mdm_agent_channel::Error::Conflict);
             }
             candidates.truncate(128);
             // Capture the globally bounded page before admission/relay can expose additional work.
-            self.execution
-                .agent_admit_in(tx, p, input, audit)
+            let tenant = tx.tenant_id().to_string();
+            let registration = p.registration();
+            let binding = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(rss_mdm_agent_channel::Bindings
+                            .binding(c, tenant, registration)
+                            .await)
+                    })
+                })
                 .await
-                .map_err(fault)?;
-            self.scripts
-                .agent_admit_in(tx, p, input)
-                .await
-                .map_err(script_fault)?;
-            self.collections
-                .agent_admit_in(tx, p, input)
-                .await
-                .map_err(collection_fault)?;
+                .map_err(|_| {
+                    rss_mdm_agent_channel::Error::Unavailable(
+                        rss_mdm_agent_channel::Failure::Business,
+                    )
+                })??
+                .ok_or(rss_mdm_agent_channel::Error::Unauthorized)?;
+            if binding.capabilities.iter().any(|v| {
+                matches!(
+                    v,
+                    wire::Capability::DeviceAccessV1
+                        | wire::Capability::DeviceUnmanageV1
+                        | wire::Capability::CredentialsWindowsV1
+                )
+            }) {
+                self.execution
+                    .agent_admit_in(tx, p, input, audit)
+                    .await
+                    .map_err(fault)?;
+            }
+            if binding.script() {
+                self.scripts
+                    .agent_admit_in(tx, p, input)
+                    .await
+                    .map_err(script_fault)?;
+            }
+            if binding.inventory() {
+                self.collections
+                    .agent_admit_in(tx, p, input)
+                    .await
+                    .map_err(collection_fault)?;
+            }
+            if binding.software() {
+                self.software
+                    .agent_admit_in(tx, p, input, audit)
+                    .await
+                    .map_err(software_fault)?;
+            }
+            if binding.enrollment() {
+                self.registration
+                    .agent_admit_in(tx, p, input)
+                    .await
+                    .map_err(registration_fault)?;
+            }
             let mut inspected = None;
             let mut offer = None;
             for (coordinate, owner) in candidates {
@@ -180,11 +266,21 @@ impl Tasks for AgentTasks {
                         .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
                         .await
                         .map_err(fault)?,
+                    Owner::Software => self
+                        .software
+                        .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
+                        .await
+                        .map_err(software_fault)?,
                     Owner::Script => self
                         .scripts
                         .agent_offer_one_in(tx, p, coordinate.1, attempt, audit)
                         .await
                         .map_err(script_fault)?,
+                    Owner::Registration => self
+                        .registration
+                        .agent_offer_one_in(tx, p, coordinate.1, attempt, audit)
+                        .await
+                        .map_err(registration_fault)?,
                     Owner::Collection => self
                         .collections
                         .agent_offer_one_in(tx, p, coordinate.1, attempt, audit)
@@ -215,11 +311,21 @@ impl Tasks for AgentTasks {
                     .agent_replay_offer_in(tx, p, signed, audit)
                     .await
                     .map_err(fault),
+                Owner::Software => self
+                    .software
+                    .agent_replay_offer_in(tx, p, signed, audit)
+                    .await
+                    .map_err(software_fault),
                 Owner::Script => self
                     .scripts
                     .agent_replay_offer_in(tx, p, signed, audit)
                     .await
                     .map_err(script_fault),
+                Owner::Registration => self
+                    .registration
+                    .agent_replay_offer_in(tx, p, signed, audit)
+                    .await
+                    .map_err(registration_fault),
                 Owner::Collection => self
                     .collections
                     .agent_replay_offer_in(tx, p, signed, audit)
@@ -243,11 +349,21 @@ impl Tasks for AgentTasks {
                     .agent_replay_event_in(tx, p, task, input, audit)
                     .await
                     .map_err(fault),
+                Owner::Software => self
+                    .software
+                    .agent_replay_event_in(tx, p, task, input, audit)
+                    .await
+                    .map_err(software_fault),
                 Owner::Script => self
                     .scripts
                     .agent_replay_event_in(tx, p, task, input, audit)
                     .await
                     .map_err(script_fault),
+                Owner::Registration => self
+                    .registration
+                    .agent_replay_event_in(tx, p, task, input, audit)
+                    .await
+                    .map_err(registration_fault),
                 Owner::Collection => self
                     .collections
                     .agent_replay_event_in(tx, p, task, input, audit)
@@ -279,12 +395,38 @@ impl Tasks for AgentTasks {
                         fact: e.fact,
                     }
                 }
+                Owner::Software => {
+                    let e = self
+                        .software
+                        .agent_event_in(tx, p, task, input, audit)
+                        .await
+                        .map_err(software_fault)?;
+                    EventEffects {
+                        start: e.start,
+                        cancelled: e.cancelled,
+                        credentials: vec![],
+                        fact: e.fact,
+                    }
+                }
                 Owner::Script => {
                     let e = self
                         .scripts
                         .agent_event_in(tx, p, task, input, audit)
                         .await
                         .map_err(script_fault)?;
+                    EventEffects {
+                        start: e.start,
+                        cancelled: e.cancelled,
+                        credentials: vec![],
+                        fact: e.fact,
+                    }
+                }
+                Owner::Registration => {
+                    let e = self
+                        .registration
+                        .agent_event_in(tx, p, task, input, audit)
+                        .await
+                        .map_err(registration_fault)?;
                     EventEffects {
                         start: e.start,
                         cancelled: e.cancelled,
@@ -333,6 +475,24 @@ impl Tasks for AgentTasks {
                 .await
                 .map_err(collection_fault)?,
             );
+            page.extend(
+                rss_mdm_software_service::deployment::actions::poll::cancellations(
+                    tx,
+                    registration,
+                    after,
+                )
+                .await
+                .map_err(software_fault)?,
+            );
+            page.extend(
+                rss_mdm_registration_service::enrollment::tasks::poll::cancellations(
+                    tx,
+                    registration,
+                    after,
+                )
+                .await
+                .map_err(registration_fault)?,
+            );
             page.sort_by_key(|v| v.task_id());
             if page.windows(2).any(|v| v[0].task_id() == v[1].task_id()) {
                 return Err(rss_mdm_agent_channel::Error::Conflict);
@@ -352,16 +512,18 @@ impl Tasks for AgentTasks {
     ) -> Pending<'a, rss_mdm_resource::Artifact> {
         Box::pin(async move {
             match owner_in(tx, task).await? {
-                Owner::Execution => self
-                    .execution
+                Owner::Execution => Err(rss_mdm_agent_channel::Error::Forbidden),
+                Owner::Software => self
+                    .software
                     .agent_content_in(tx, p, task, attempt, key, audit)
                     .await
-                    .map_err(fault),
+                    .map_err(software_fault),
                 Owner::Script => self
                     .scripts
                     .agent_content_in(tx, p, task, attempt, key, audit)
                     .await
                     .map_err(script_fault),
+                Owner::Registration => Err(rss_mdm_agent_channel::Error::Malformed),
                 Owner::Collection => Err(rss_mdm_agent_channel::Error::Malformed),
             }
         })
@@ -417,10 +579,10 @@ impl Installation for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, rss_mdm_agent_wire::enroll::NativeEnrollmentReceipt> {
         Box::pin(async move {
-            self.execution
+            self.registration
                 .native_enrollment(p, task, input, audit)
                 .await
-                .map_err(error)
+                .map_err(registration_error)
         })
     }
     fn content<'a>(
@@ -429,10 +591,21 @@ impl Installation for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, rss_mdm_content_service::Verified> {
         Box::pin(async move {
-            self.execution
-                .installation_content(id, audit)
+            let store = self
+                .content
+                .as_ref()
+                .ok_or(rss_mdm_agent_channel::Error::Unsupported)?;
+            let artifact = self
+                .software
+                .installation_artifact(id, audit)
                 .await
-                .map_err(error)
+                .map_err(software_error)?;
+            let verified = store.verify(&artifact).await?;
+            self.software
+                .revalidate_installation_download(id, &artifact, audit)
+                .await
+                .map_err(software_error)?;
+            Ok(verified)
         })
     }
 }
@@ -474,4 +647,111 @@ impl rss_mdm_http_contract::query::QueryOwner for SelfServiceQuery {
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
         Ok(raw.to_owned())
     }
+}
+
+pub(super) fn software_error(
+    e: rss_mdm_software_service::deployment::Error,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_agent_channel::Missing;
+    use rss_mdm_agent_channel::{Error as A, Failure};
+    use rss_mdm_software_service::deployment::Error as E;
+    match e { E::MdmSoftwareDisabled => A::Forbidden, E::Malformed => A::Malformed, E::CertificateRequest => A::CertificateRequest,
+            E::Unauthorized => A::Unauthorized, E::Forbidden => A::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::EnrollmentPaused | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+            E::CommitUnknown => A::CommitUnknown, E::RollbackFailed => A::RollbackFailed, E::Unsupported => A::Unsupported,
+            E::NotFound => A::NotFound, E::Resource(_) => A::Missing(Missing::Resource),
+            E::Execution(e) => A::Missing(match e { rss_mdm_software_service::deployment::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_software_service::deployment::missing::ExecutionError::MissingTask => Missing::Task }),
+            E::Publication(e) => A::Missing(match e { rss_mdm_software_service::management::publication::error::PublicationError::MissingSource => Missing::SoftwareSource, rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication => Missing::SoftwarePublication }),
+            E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
+            E::Unavailable(f) => A::Unavailable(match f {
+                rss_mdm_software_service::deployment::Failure::RequestDeadline => Failure::RequestDeadline,
+                rss_mdm_software_service::deployment::Failure::Audit => Failure::Audit,
+                rss_mdm_software_service::deployment::Failure::AuditIntegrity => Failure::AuditIntegrity,
+                rss_mdm_software_service::deployment::Failure::AuditAdmission => Failure::AuditAdmission,
+                rss_mdm_software_service::deployment::Failure::AuditIsolation => Failure::AuditIsolation,
+                rss_mdm_software_service::deployment::Failure::AuditContract => Failure::AuditContract,
+
+                _ => Failure::Business,
+            }),
+        }
+}
+pub(super) fn software_fault(
+    e: rss_mdm_software_service::deployment::transaction::Fault,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_software_service::deployment::transaction::Fault;
+    match e {
+        Fault::Request(e) => software_error(e),
+        Fault::Storage(e) => e.into(),
+        Fault::Sql(e) => e.into(),
+    }
+}
+
+pub(super) fn registration_error(
+    e: rss_mdm_registration_service::enrollment::tasks::Error,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_agent_channel::{Error as A, Failure};
+    use rss_mdm_registration_service::enrollment::tasks::Error as S;
+    match e {
+        S::Malformed => A::Malformed,
+        S::Conflict => A::Conflict,
+        S::Forbidden => A::Forbidden,
+        S::Unauthorized => A::Unauthorized,
+        S::NotFound => A::NotFound,
+        S::CommitUnknown => A::CommitUnknown,
+        S::RollbackFailed => A::RollbackFailed,
+        S::Invariant | S::Unavailable => A::Unavailable(Failure::Business),
+        S::Audit(e) => e.as_ref().into(),
+    }
+}
+pub(super) fn registration_fault(
+    e: rss_mdm_registration_service::enrollment::tasks::transaction::Fault,
+) -> rss_mdm_agent_channel::Error {
+    use rss_mdm_registration_service::enrollment::tasks::transaction::Fault as F;
+    match e {
+        F::Request(e) => registration_error(e),
+        F::Storage(e) => e.into(),
+        F::Sql(e) => e.into(),
+    }
+}
+
+pub(super) async fn prepare(
+    tx: &mut PgTransaction<'_>,
+    p: &DevicePrincipal,
+) -> Result<(), rss_mdm_agent_channel::Error> {
+    if tx.tenant_id() != p.tenant() {
+        return Err(rss_mdm_agent_channel::Error::Unauthorized);
+    }
+    let p = p.clone();
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            Ok(async {
+                rss_mdm_registration_service::device::store::lock_channel(
+                    c,
+                    &tenant,
+                    p.device(),
+                    rss_mdm_inventory::Channel::Mdm,
+                )
+                .await?;
+                rss_mdm_registration_service::device::store::revalidate_source(
+                    c,
+                    &p,
+                    rss_mdm_inventory::ReportSource::AgentBuiltin,
+                )
+                .await?;
+                let binding = rss_mdm_agent_channel::Bindings
+                    .binding(c, tenant, p.registration())
+                    .await?
+                    .ok_or(rss_mdm_agent_channel::Error::Unauthorized)?;
+                if !binding.inventory() || !binding.task() {
+                    return Err(rss_mdm_agent_channel::Error::Forbidden);
+                }
+                Ok(())
+            }
+            .await)
+        })
+    })
+    .await
+    .map_err(|_| {
+        rss_mdm_agent_channel::Error::Unavailable(rss_mdm_agent_channel::Failure::Business)
+    })?
 }

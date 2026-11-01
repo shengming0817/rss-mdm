@@ -24,6 +24,9 @@ pub(crate) enum Work {
     CommandRecovery,
     ScriptRecovery,
     CollectionRecovery,
+    SoftwareRecovery,
+    EnrollmentRecovery,
+    InstallationRecovery,
     Apple,
     Windows,
     WindowsPush,
@@ -33,7 +36,7 @@ pub(crate) enum Work {
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 18] = [
         Self::Inventory,
         Self::Devices,
         Self::Policy,
@@ -42,6 +45,9 @@ impl Work {
         Self::CommandRecovery,
         Self::ScriptRecovery,
         Self::CollectionRecovery,
+        Self::SoftwareRecovery,
+        Self::EnrollmentRecovery,
+        Self::InstallationRecovery,
         Self::Apple,
         Self::Windows,
         Self::WindowsPush,
@@ -60,6 +66,9 @@ impl Work {
             Self::CommandRecovery => "command_recovery",
             Self::ScriptRecovery => "script_recovery",
             Self::CollectionRecovery => "collection_recovery",
+            Self::SoftwareRecovery => "software_recovery",
+            Self::EnrollmentRecovery => "enrollment_recovery",
+            Self::InstallationRecovery => "installation_recovery",
             Self::Apple => "apple",
             Self::Windows => "windows",
             Self::WindowsPush => "windows_push",
@@ -91,6 +100,9 @@ impl Signals {
                 Work::CommandRecovery,
                 Work::ScriptRecovery,
                 Work::CollectionRecovery,
+                Work::SoftwareRecovery,
+                Work::EnrollmentRecovery,
+                Work::InstallationRecovery,
             ] {
                 self.get(work).notify_one();
             }
@@ -234,5 +246,31 @@ impl Signals {
         Arc::new(rss_mdm_policy_service::worker_wake::Signals::from_handles(
             [self.handle(Work::Policy), self.handle(Work::PolicyEvents)],
         ))
+    }
+}
+
+impl Signals {
+    pub(crate) fn software(
+        &self,
+    ) -> Arc<rss_mdm_software_service::deployment::worker_wake::Signals> {
+        Arc::new(
+            rss_mdm_software_service::deployment::worker_wake::Signals::from_handles([
+                self.handle(Work::CommandRelay),
+                self.handle(Work::SoftwareRecovery),
+            ]),
+        )
+    }
+}
+
+impl Signals {
+    pub(crate) fn installation(
+        &self,
+    ) -> Arc<rss_mdm_registration_service::installation::worker_wake::Signals> {
+        Arc::new(
+            rss_mdm_registration_service::installation::worker_wake::Signals::from_handles([
+                self.handle(Work::CommandRelay),
+                self.handle(Work::InstallationRecovery),
+            ]),
+        )
     }
 }

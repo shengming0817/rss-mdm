@@ -4,6 +4,13 @@ use anyhow::Result;
 use serde_json::json;
 use std::sync::Arc;
 pub async fn open(c: &Context, signing: bool) -> Result<crate::assembly::execution::Assembly> {
+    open_with(c, signing, |_| {}).await
+}
+pub async fn open_with(
+    c: &Context,
+    signing: bool,
+    configure: fn(&mut serde_json::Value),
+) -> Result<crate::assembly::execution::Assembly> {
     let mut config: serde_json::Value =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
     config["identity"]["tenant_id"] = json!(c.tenant.to_string());
@@ -24,6 +31,7 @@ pub async fn open(c: &Context, signing: bool) -> Result<crate::assembly::executi
     };
     config["content"] = serde_json::Value::Null;
     config["recovery_credentials"] = serde_json::Value::Null;
+    configure(&mut config);
     let config = serde_json::from_value(config)?;
     let protection = super::device_material_support::protection(c)?;
     Ok(crate::assembly::execution::open(

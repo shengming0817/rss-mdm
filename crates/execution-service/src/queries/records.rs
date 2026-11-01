@@ -82,8 +82,6 @@ pub struct CommandEvidence<O = NativeObservation> {
     pub command_status: CommandStatus,
     pub observation: O,
     pub dispatch_failure: Option<crate::DispatchFailure>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_installation: Option<InstallationObservation>,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -115,17 +113,11 @@ pub struct RunSummary {
     result: Option<SummaryResult>,
 }
 pub type RunPage = Page<RunSummary, String>;
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunNode {
-    step_id: [u8; 32],
-    definition: rss_mdm_agent_wire::runtime::SoftwareStepDefinition,
-}
+
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunDetail {
     /// Nodes from this attempt's frozen material, without executable content or streams.
-    pub nodes: Vec<RunNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization: Option<rss_mdm_agent_wire::runtime::TaskAuthorization>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,7 +152,6 @@ pub struct CommandDetail<O = NativeObservation> {
     pub reauthorization: crate::authorization_decision::Reauthorization,
     pub command_status: CommandStatus,
     pub observation: O,
-    pub agent_installation: Option<InstallationObservation>,
 }
 pub enum NativeObservation {
     Apple {
@@ -179,16 +170,7 @@ pub enum NativeObservation {
         reason: Option<&'static str>,
     },
 }
-impl NativeObservation {
-    pub(crate) fn redact_values(&mut self) {
-        if let Self::Windows { receipts, .. } = self {
-            for receipt in receipts {
-                receipt.value = None;
-                receipt.redacted = true;
-            }
-        }
-    }
-}
+impl NativeObservation {}
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowsReceipt {
@@ -223,34 +205,7 @@ pub struct WindowsFrame {
     pub accepted: Option<bool>,
     pub received_at: Option<i64>,
 }
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BootstrapObservation {
-    pub state: String,
-    pub delivery: Uuid,
-    pub cleanup: Option<Uuid>,
-    pub cleanup_complete: bool,
-    pub cleanup_retry_at: i64,
-    pub deadline: i64,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallationObservation {
-    pub bootstrap: Option<BootstrapObservation>,
-    pub protocol: String,
-    pub delivery: String,
-    pub installation: String,
-    pub agent_registration: Option<AgentRegistration>,
-    pub observed_at: Option<i64>,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentRegistration {
-    pub device_id: String,
-    pub registration_id: Uuid,
-    pub state: String,
-    pub capabilities: Option<Vec<String>>,
-}
+
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SupportState {
@@ -271,92 +226,61 @@ pub enum CapabilityReason {
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 pub struct Support {
-    state: SupportState,
-    reason: Option<CapabilityReason>,
+    pub state: SupportState,
+    pub reason: Option<CapabilityReason>,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 pub struct Permission {
-    allowed: bool,
-    reason: Option<CapabilityReason>,
+    pub allowed: bool,
+    pub reason: Option<CapabilityReason>,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capability {
-    action: String,
-    channel: String,
-    product_support: Support,
-    device_prerequisite: Support,
-    permission: Permission,
+    pub action: String,
+    pub channel: String,
+    pub product_support: Support,
+    pub device_prerequisite: Support,
+    pub permission: Permission,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Assignment {
-    object: rss_mdm_scope_service::channels::ObjectRef,
-    channel: Option<rss_mdm_inventory::Channel>,
-    availability: rss_mdm_scope_service::channels::Availability,
-    reason: Option<String>,
-    target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
-    qualification: rss_mdm_scope_service::channels::ScopeAdmission,
-    sources: Vec<rss_mdm_scope_service::channels::DeviceObject>,
-    scope_result: Option<Uuid>,
-    task_admission: Option<crate::sources::software::TaskAdmission>,
-    operation_ids: Vec<Uuid>,
+    pub object: rss_mdm_scope_service::channels::ObjectRef,
+    pub channel: Option<rss_mdm_inventory::Channel>,
+    pub availability: rss_mdm_scope_service::channels::Availability,
+    pub reason: Option<String>,
+    pub target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
+    pub qualification: rss_mdm_scope_service::channels::ScopeAdmission,
+    pub sources: Vec<rss_mdm_scope_service::channels::DeviceObject>,
+    pub scope_result: Option<Uuid>,
+    pub task_admission: Option<rss_mdm_policy::pages::TaskAdmission>,
+    pub operation_ids: Vec<Uuid>,
 }
 pub type AssignmentPage = Page<Assignment, String>;
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Preview {
-    action: rss_mdm_policy::Action,
-    scope_result: Uuid,
-    items: Vec<PreviewTarget>,
-    next_cursor: Option<String>,
+    pub action: rss_mdm_policy::Action,
+    pub scope_result: Uuid,
+    pub items: Vec<PreviewTarget>,
+    pub next_cursor: Option<String>,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PreviewTarget {
-    object: rss_mdm_scope_service::channels::ObjectRef,
-    channel: Option<rss_mdm_inventory::Channel>,
-    availability: rss_mdm_scope_service::channels::Availability,
-    reason: Option<String>,
-    target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
-    eligibility: rss_mdm_scope_service::channels::ScopeAdmission,
-    task_admission: Option<crate::sources::software::TaskAdmission>,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Rollout {
-    policy_id: Uuid,
-    version_id: Uuid,
-    paused: bool,
-    as_of: i64,
-    stages: Vec<Stage>,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Stage {
-    ready: bool,
-    as_of: Option<i64>,
-    scope: Uuid,
-    opens_at: i64,
-    minimum_verified_percent: Option<u8>,
-    open: bool,
-    total_targets: u64,
-    reported: u64,
-    unknown: u64,
-    waiting_user: u64,
-    waiting_reboot: u64,
-    failed: u64,
-    verified_success: u64,
-    unsupported_capability: u64,
+pub struct PreviewTarget {
+    pub object: rss_mdm_scope_service::channels::ObjectRef,
+    pub channel: Option<rss_mdm_inventory::Channel>,
+    pub availability: rss_mdm_scope_service::channels::Availability,
+    pub reason: Option<String>,
+    pub target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
+    pub eligibility: rss_mdm_scope_service::channels::ScopeAdmission,
+    pub task_admission: Option<rss_mdm_policy::pages::TaskAdmission>,
 }
 
 pub(crate) fn decode<T: serde::de::DeserializeOwned>(v: Value) -> crate::transaction::Result<T> {
     crate::transaction::stored(serde_json::from_value(v))
 }
-
-#[cfg(test)]
-#[path = "../../tests/query_records.rs"]
-mod tests;
 
 /// The shared command owner's closed public state, without a second state table.
 #[derive(Clone, Copy, Debug)]

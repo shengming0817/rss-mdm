@@ -91,11 +91,9 @@ impl Service {
         );
         self.write(audit, (self, &csr, &input, challenge, &active, now), |ctx,c| Box::pin(async move {
             let (s,csr,input,challenge,active,now)=*ctx;
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(s.tenant.to_string()).execute(&mut *c).await.map_err(db)?;
-            let retained:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.issuers WHERE tenant_id=$1::uuid AND purpose='agent_bootstrap' AND digest=$2 AND state IN ('active','verify_only'))")
-                .bind(s.tenant.to_string()).bind(&active.digest).fetch_one(&mut *c).await.map_err(db)?;
-            if !retained {return Err(Error::Forbidden);}
             let row = row(c,s.tenant,csr.attempt()).await?;
+            let retained = rss_mdm_pki_service::registry::retained_issuer_on(c,s.tenant,rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,&active.digest).await.map_err(|_|Error::Storage)?;
+            if !retained {return Err(Error::Forbidden);}
             if !row.try_get::<bool,_>("active").map_err(db)?
                 || row.try_get::<Uuid,_>("installation").map_err(db)? != csr.installation()
                 || row.try_get::<i64,_>("deadline").map_err(db)? <= now
@@ -110,6 +108,7 @@ impl Service {
                 && row.try_get::<Option<Vec<u8>>,_>("spki").map_err(db)?.as_deref() == Some(csr.spki().as_slice());
             if state != "prepared" && !replay { return Err(Error::Forbidden); }
             let source = native::source(c,s.tenant,row.try_get("source").map_err(db)?).await?;
+            require_delivery(c,s.tenant,source.bootstrap()).await?;
             s.native.bootstrap(c,&source).await?;
             let stored_deadline: i64 = row.try_get("deadline").map_err(db)?;
             let deadline = if replay { stored_deadline } else { stored_deadline.min(now + 1800) };
@@ -179,7 +178,8 @@ impl Service {
                 if row.try_get::<Option<Vec<u8>>,_>("fingerprint").map_err(db)?.as_ref()!=Some(fingerprint) {return Err(Error::Conflict);}
             } else if state=="signing" {
                 let source=native::source(c,s.tenant,row.try_get("source").map_err(db)?).await?;
-                s.native.bootstrap(c,&source).await?;
+                require_delivery(c,s.tenant,source.bootstrap()).await?;
+            s.native.bootstrap(c,&source).await?;
                 sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='issued',fingerprint=$3,certificate=$4 WHERE tenant_id=$1::uuid AND id=$2")
                     .bind(s.tenant.to_string()).bind(id).bind(fingerprint).bind(der).execute(c).await.map_err(db)?;
             } else {return Err(Error::Forbidden);}
@@ -226,7 +226,9 @@ impl Service {
             let mut proof: serde_json::Value=row.try_get("source").map_err(db)?;
             proof["runtime"]=serde_json::to_value(&input.runtime).map_err(|_|Error::Malformed)?;
             let source=native::source(c,s.tenant,proof).await?;
-            let (value,replay)=s.native.grant(c,&source,input).await?;
+            let authority = s.native.validate(c, &source).await?;
+            let native = serde_json::json!({"installation":source.installation(),"registration":source.principal().registration(),"credential":source.principal().credential(),"generation":source.principal().generation(),"source":source.report_source(),"runtime":input.runtime,"bootstrap":source.bootstrap()});
+            let (value,replay)=native::create_in(c,authority,input,&native).await?;
             sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='consumed' WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(s.tenant.to_string()).bind(id).execute(c).await.map_err(db)?;
             Ok(Change {value, replay})
@@ -238,6 +240,16 @@ async fn row(
     tenant: rss_request_context::TenantId,
     id: Uuid,
 ) -> Result<PgRow, Error> {
+    // Match coordinator order: endpoint before bootstrap row. The frozen endpoint cannot change.
+    let device:String=sqlx::query_scalar("SELECT installation_facts->>'device' FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    crate::device::store::lock_channel(
+        c,
+        &tenant.to_string(),
+        &device,
+        rss_mdm_inventory::Channel::Mdm,
+    )
+    .await?;
     sqlx::query(
         "SELECT * FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE",
     )
@@ -247,4 +259,16 @@ async fn row(
     .await
     .map_err(db)?
     .ok_or(Error::Unauthorized)
+}
+
+async fn require_delivery(
+    c: &mut PgConnection,
+    tenant: rss_request_context::TenantId,
+    bootstrap: Uuid,
+) -> Result<(), Error> {
+    let delivered:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b WHERE b.tenant_id=$1::uuid AND b.id=$2 AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute' AND a.state<>'pending')))").bind(tenant.to_string()).bind(bootstrap).fetch_one(c).await.map_err(db)?;
+    if !delivered {
+        return Err(Error::Forbidden);
+    }
+    Ok(())
 }

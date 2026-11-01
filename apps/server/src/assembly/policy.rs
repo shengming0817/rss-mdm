@@ -37,6 +37,8 @@ pub(crate) async fn application(
 pub(crate) async fn events(
     application: Arc<Application>,
     materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,
+    software_materials: Arc<rss_mdm_software_service::deployment::Materials>,
+    enrollment_materials: Arc<rss_mdm_registration_service::enrollment::tasks::Materials>,
 ) -> Result<Arc<Events>, crate::Error> {
     let scripts = Arc::new(
         rss_mdm_script_service::Transactions::bind(
@@ -80,7 +82,29 @@ pub(crate) async fn events(
         )
         .await?,
     );
+    let software = Arc::new(
+        rss_mdm_software_service::deployment::Transactions::bind(
+            application.runtime.clone(),
+            application.tenant,
+            application.audit_store.clone(),
+            software_materials,
+        )
+        .await
+        .map_err(super::owner_errors::software)?,
+    );
+    let enrollment = Arc::new(
+        rss_mdm_registration_service::enrollment::tasks::Transactions::bind(
+            application.runtime.clone(),
+            application.tenant,
+            application.audit_store.clone(),
+            enrollment_materials,
+        )
+        .await
+        .map_err(super::owner_errors::enrollment)?,
+    );
     let participants = Arc::new(super::policy_ports::Events {
+        software,
+        enrollment,
         scripts,
         collections,
         execution,
@@ -92,9 +116,15 @@ pub(crate) async fn events(
         progress: participants,
     }))
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
+)]
 pub(crate) async fn management(
     application: &Arc<Application>,
     inputs: Arc<rss_mdm_execution_service::Inputs>,
+    software_inputs: Arc<rss_mdm_software_service::deployment::Inputs>,
+    enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
     key: &[u8],
     content: Option<Arc<rss_mdm_content_service::Store>>,
     protection: Arc<rss_mdm_native_protection::Protector>,
@@ -120,7 +150,12 @@ pub(crate) async fn management(
             audit_store: application.audit_store.clone(),
             tenant: application.tenant,
             policy_store: store,
-            inputs: Arc::new(super::policy_ports::Publication(inputs)),
+            inputs: Arc::new(super::policy_ports::Publication {
+                execution: inputs,
+                software: software_inputs,
+                enrollment_entries,
+                signing_enabled,
+            }),
             script: Arc::new(rss_mdm_script_service::inputs::Inputs::bind(
                 application.runtime.clone(),
                 application.tenant,

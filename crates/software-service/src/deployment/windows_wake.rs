@@ -1,0 +1,109 @@
+//! Eligibility participates in the wake claimant's audit transaction; it grants no dispatch rights.
+use super::*;
+use sqlx::Row;
+impl SoftwareService {
+    /// Read-only discovery from committed work. A candidate grants no wake or dispatch rights.
+    /// The caller advances by the last returned registration even when no channel is usable.
+    pub async fn windows_wake_candidates_in(
+        &self,
+        c: &mut sqlx::PgConnection,
+        after: Uuid,
+    ) -> std::result::Result<Vec<Uuid>, Error> {
+        sqlx::query_scalar("SELECT registration FROM mdm_software_deployment.windows_wake_candidates($1) WHERE current_setting('rss.tenant_id')::uuid=$2::uuid ORDER BY registration")
+            .bind(after).bind(self.transactions.tenant.to_string()).fetch_all(c).await.map_err(database::db)
+    }
+
+    pub async fn windows_wake_pending_in(
+        &self,
+        c: &mut sqlx::PgConnection,
+        device: &str,
+        registration: Uuid,
+        generation: i64,
+    ) -> std::result::Result<bool, Error> {
+        let tenant = self.transactions.tenant.to_string();
+        crate::deployment::authorization::lock_shared_on(c, &tenant, &self.transactions.instance)
+            .await?;
+        crate::deployment::device::store::lock_channel(
+            c,
+            &tenant,
+            device,
+            rss_mdm_inventory::Channel::Mdm,
+        )
+        .await?;
+        let row=sqlx::query("SELECT q.windows_profile FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.generation=$4 AND r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active') FOR SHARE OF r")
+            .bind(&tenant).bind(registration).bind(device).bind(generation).fetch_optional(&mut *c).await.map_err(database::db)?;
+        let Some(row) = row else { return Ok(false) };
+        if !crate::deployment::device::store::active_source_in(
+            c,
+            &tenant,
+            registration,
+            rss_mdm_inventory::ReportSource::MdmWindows,
+        )
+        .await?
+        {
+            return Ok(false);
+        }
+        let user_context = (row
+            .try_get::<Option<String>, _>("windows_profile")
+            .map_err(database::db)?
+            .as_deref()
+            == Some("Full"))
+        .then_some(registration);
+        let mut after = Uuid::nil();
+        loop {
+            let rows=sqlx::query("SELECT id,device,registration,registration_generation,input_context,request,authority::text FROM mdm_software_deployment.windows_pending_operations($1,$2,$3)")
+                .bind(registration).bind(generation).bind(after).fetch_all(&mut *c).await.map_err(database::db)?;
+            let count = rows.len();
+            for row in rows {
+                after = row.try_get("id").map_err(database::db)?;
+                let input = input_storage::open_row(
+                    &self.transactions.protection,
+                    self.transactions.tenant,
+                    after,
+                    &row,
+                    "request",
+                )?;
+                if !input.target.matches_windows_context(user_context) {
+                    continue;
+                }
+                let authority: authority::Authority = serde_json::from_str(
+                    &row.try_get::<String, _>("authority")
+                        .map_err(database::db)?,
+                )
+                .map_err(|_| Error::Malformed)?;
+                let now: i64 = sqlx::query_scalar(
+                    "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint",
+                )
+                .fetch_one(&mut *c)
+                .await
+                .map_err(database::db)?;
+                if authority
+                    .valid(
+                        self.transactions.source.as_ref(),
+                        self.transactions.lifecycle.as_ref(),
+                        c,
+                        &self.transactions.protection,
+                        &input.task.permissions()?,
+                        now,
+                    )
+                    .await?
+                    && authority
+                        .dispatch_ready(
+                            self.transactions.inventory.as_ref(),
+                            self.transactions.source.as_ref(),
+                            self.transactions.lifecycle.as_ref(),
+                            c,
+                            self.transactions.inputs.software_distribution().mdm_enabled,
+                        )
+                        .await?
+                {
+                    return Ok(true);
+                }
+            }
+            if count < 64 {
+                break;
+            }
+        }
+        Ok(false)
+    }
+}

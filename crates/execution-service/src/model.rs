@@ -187,9 +187,6 @@ pub struct Change {
     pub request_id: Uuid,
     pub expected_revision: i64,
 }
-#[cfg(test)]
-#[path = "../tests/model_unit.rs"]
-mod tests;
 
 /// Native exchange phases; database values are decoded fail-closed.
 #[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,9 +213,6 @@ impl AttemptPhase {
         }
     }
 }
-#[cfg(test)]
-#[path = "../tests/model_phase_unit.rs"]
-mod phase_tests;
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskSummary {

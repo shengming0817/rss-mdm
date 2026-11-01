@@ -80,7 +80,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     let script = h.run(v, "retiring", now() + 300).await?;
     let (d, f, _) = super::mixed::agent(&h)?;
     let v = super::mixed::publish(&h, Uuid::new_v4(), 1, d, f).await?;
-    let collection = super::mixed::run(&h, v, true, now()).await?;
+    let collection = super::mixed::run(&h, v, now()).await?;
     let at = now();
     let attempt = Uuid::new_v4();
     let mut running = rss_mdm_task_state::RunState::new(at + 300, at)?;
@@ -252,7 +252,7 @@ async fn native_detail_does_not_require_raw_evidence_permission() -> Result<()> 
     let (d, f, _) = super::mixed::agent(&h)?;
     let policy = Uuid::new_v4();
     let v = super::mixed::publish(&h, policy, 1, d, f).await?;
-    let task = super::mixed::run(&h, v, true, now()).await?;
+    let task = super::mixed::run(&h, v, now()).await?;
     assert!(matches!(
         Reads::run(
             h.a.task_reads.as_ref(),

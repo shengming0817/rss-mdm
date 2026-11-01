@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, State},
 };
 pub struct StateServices {
-    pub execution: std::sync::Arc<rss_mdm_execution_service::queries::Queries>,
+    pub software: std::sync::Arc<rss_mdm_software_service::deployment::queries::Queries>,
     pub tasks: std::sync::Arc<dyn crate::execution::task_reads::Reads>,
 }
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -48,13 +48,13 @@ async fn rollout(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-) -> Result<Json<rss_mdm_execution_service::queries::records::Rollout>, Error> {
+) -> Result<Json<rss_mdm_software_service::deployment::queries::records::Rollout>, Error> {
     audit.operation(
         id,
         "command_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    app.execution
+    app.software
         .software_rollout(&auth.proof, id, &audit)
         .await
         .map(Json)

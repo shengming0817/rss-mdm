@@ -3,65 +3,9 @@ use rss_mdm_apple_mdm::native::{
     evidence::{MutationProgress, PublicationState, ReadEvidence},
     profiles::Verification,
 };
-use rss_mdm_execution_service::queries::records::{
-    self, CommandDetail, ExecutionDirectory, ExecutionEvidence, ExecutionKind, NativeObservation,
-};
+use rss_mdm_execution_service::queries::records::{self, CommandDetail, NativeObservation};
 use serde::Serialize;
 use uuid::Uuid;
-#[derive(Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct DirectoryItem {
-    #[serde(flatten)]
-    item: records::ExecutionSummary<Observation>,
-    detail_url: String,
-}
-pub type Directory = records::Page<DirectoryItem, String>;
-pub fn directory(facts: ExecutionDirectory) -> Directory {
-    let items = facts
-        .items
-        .into_iter()
-        .map(|item| {
-            let detail_url = match item.metadata.kind {
-                ExecutionKind::Command => {
-                    let device =
-                        url::form_urlencoded::byte_serialize(item.metadata.device.as_bytes())
-                            .collect::<String>()
-                            .replace('+', "%20");
-                    format!("/api/v1/devices/{device}/operations/{}", item.metadata.id)
-                }
-                ExecutionKind::ActionRun => format!(
-                    "/api/v1/policies/{}/runs/{}",
-                    item.metadata.policy.expect("stored Policy run source"),
-                    item.metadata.id
-                ),
-            };
-            let evidence = item.evidence.map(|evidence| match evidence {
-                ExecutionEvidence::Command(value) => {
-                    ExecutionEvidence::Command(Box::new(records::CommandEvidence {
-                        command_status: value.command_status,
-                        observation: observation(value.observation),
-                        dispatch_failure: value.dispatch_failure,
-                        agent_installation: value.agent_installation,
-                    }))
-                }
-                ExecutionEvidence::Run(value) => ExecutionEvidence::Run(value),
-            });
-            DirectoryItem {
-                item: records::ExecutionSummary {
-                    metadata: item.metadata,
-                    authorization: item.authorization,
-                    reauthorization: item.reauthorization,
-                    evidence,
-                },
-                detail_url,
-            }
-        })
-        .collect();
-    Directory {
-        items,
-        next_cursor: facts.next_cursor,
-    }
-}
 pub fn command(facts: CommandDetail) -> CommandDetail<Observation> {
     CommandDetail {
         operation_id: facts.operation_id,
@@ -76,7 +20,6 @@ pub fn command(facts: CommandDetail) -> CommandDetail<Observation> {
         reauthorization: facts.reauthorization,
         command_status: facts.command_status,
         observation: observation(facts.observation),
-        agent_installation: facts.agent_installation,
     }
 }
 #[derive(Serialize, schemars::JsonSchema)]
@@ -337,6 +280,324 @@ pub fn ddm(page: rss_mdm_execution_service::queries::ddm::Page) -> Ddm {
         },
         effect: Unverified::Unverified,
         compliance: Unknown::Unknown,
+    }
+}
+
+pub fn software_observation(
+    facts: rss_mdm_software_service::deployment::queries::records::NativeObservation,
+) -> Observation {
+    match facts {
+        rss_mdm_software_service::deployment::queries::records::NativeObservation::Windows {
+            receipts,
+            progress,
+            effect,
+            reason,
+        } => Observation::Windows {
+            observation_scope: NativeObjects::NativeObjects,
+            receipts:receipts.into_iter().map(software_receipt).collect(),
+            progress:records::CommandStatus(progress.0),
+            effect,
+            effect_reason: reason,
+        },
+        rss_mdm_software_service::deployment::queries::records::NativeObservation::Declarations { facts, progress } => {
+            let (synchronization, input_version, expected, native_status, received_at) =
+                if let Some(facts) = facts {
+                    (
+                        match facts.publication {
+                            PublicationState::Published => Synchronization::Published,
+                            PublicationState::Withdrawn => Synchronization::Withdrawn,
+                        },
+                        Some(facts.input_version),
+                        Some(facts.expected),
+                        Some(facts.status),
+                        facts.received_at,
+                    )
+                } else {
+                    (Synchronization::Unpublished, None, None, None, None)
+                };
+            Observation::Apple {
+                observation: Box::new(AppleObservation::Declarations {
+                    progress:records::CommandStatus(progress.0),
+                    synchronization,
+                    effect: Unverified::Unverified,
+                    compliance: Unknown::Unknown,
+                    input_version,
+                    expected,
+                    native_status,
+                    received_at,
+                }),
+            }
+        }
+        rss_mdm_software_service::deployment::queries::records::NativeObservation::Apple {
+            facts,
+            progress,
+            effect_confirmed,
+        } => Observation::Apple {
+            observation: Box::new(match facts {
+                ReadEvidence::Command {
+                    receipts: rows,
+                    outcome,
+                    fields,
+                    error,
+                } => AppleObservation::NativeCommand {
+                    receipts: receipts(rows),
+                    progress:records::CommandStatus(progress.0),
+                    effect: Unverified::Unverified,
+                    result: outcome,
+                    fields,
+                    error,
+                },
+                ReadEvidence::Profile {
+                    receipts: rows,
+                    progress,
+                    verification,
+                    status,
+                    received_at,
+                } => {
+                    let result = match verification {
+                        Some(Verification::Matched) if effect_confirmed => ProfileResult::Matched,
+                        Some(Verification::Mismatched | Verification::Failed) => {
+                            ProfileResult::Mismatched
+                        }
+                        _ => ProfileResult::Unknown,
+                    };
+                    AppleObservation::ProfilePresence {
+                        receipts: receipts(rows),
+                        result,
+                        effect: Unknown::Unknown,
+                        progress,
+                        native_status: status,
+                        received_at,
+                    }
+                }
+            }),
+        },
+    }
+}
+
+fn software_receipt(
+    r: rss_mdm_software_service::deployment::queries::records::WindowsReceipt,
+) -> records::WindowsReceipt {
+    records::WindowsReceipt {
+        phase: match r.phase {
+            rss_mdm_software_service::deployment::AttemptPhase::Prepare => {
+                rss_mdm_execution_service::AttemptPhase::Prepare
+            }
+            rss_mdm_software_service::deployment::AttemptPhase::Execute => {
+                rss_mdm_execution_service::AttemptPhase::Execute
+            }
+            rss_mdm_software_service::deployment::AttemptPhase::Observe => {
+                rss_mdm_execution_service::AttemptPhase::Observe
+            }
+        },
+        ordinal: r.ordinal,
+        session: r.session,
+        message: r.message,
+        command: r.command,
+        parent_command: r.parent_command,
+        item: r.item,
+        kind: r.kind,
+        uri: r.uri,
+        status: r.status,
+        value: r.value,
+        accepted: r.accepted,
+        received_at: r.received_at,
+        result_accepted: r.result_accepted,
+        result_received_at: r.result_received_at,
+        redacted: r.redacted,
+        frames: r
+            .frames
+            .into_iter()
+            .map(|f| records::WindowsFrame {
+                message: f.message,
+                command: f.command,
+                start_byte: f.start_byte,
+                end_byte: f.end_byte,
+                total_bytes: f.total_bytes,
+                status: f.status,
+                accepted: f.accepted,
+                received_at: f.received_at,
+            })
+            .collect(),
+    }
+}
+pub fn software_command(
+    v: rss_mdm_software_service::deployment::queries::records::CommandDetail,
+) -> rss_mdm_software_service::deployment::queries::records::CommandDetail<Observation> {
+    rss_mdm_software_service::deployment::queries::records::CommandDetail {
+        operation_id: v.operation_id,
+        command_id: v.command_id,
+        revision: v.revision,
+        task: v.task,
+        target: v.target,
+        input_version: v.input_version,
+        deadline: v.deadline,
+        dispatch_failure: v.dispatch_failure,
+        authorization: v.authorization,
+        reauthorization: v.reauthorization,
+        command_status: v.command_status,
+        agent_installation: v.agent_installation,
+        observation: software_observation(v.observation),
+    }
+}
+
+pub fn registration_observation(
+    facts: rss_mdm_registration_service::installation::queries::NativeObservation,
+) -> Observation {
+    match facts {
+        rss_mdm_registration_service::installation::queries::NativeObservation::Windows {
+            receipts,
+            progress,
+            effect,
+            reason,
+        } => Observation::Windows {
+            observation_scope: NativeObjects::NativeObjects,
+            receipts: receipts.into_iter().map(registration_receipt).collect(),
+            progress: records::CommandStatus(progress.0),
+            effect,
+            effect_reason: reason,
+        },
+        rss_mdm_registration_service::installation::queries::NativeObservation::Declarations {
+            facts,
+            progress,
+        } => {
+            let (synchronization, input_version, expected, native_status, received_at) =
+                if let Some(facts) = facts {
+                    (
+                        match facts.publication {
+                            PublicationState::Published => Synchronization::Published,
+                            PublicationState::Withdrawn => Synchronization::Withdrawn,
+                        },
+                        Some(facts.input_version),
+                        Some(facts.expected),
+                        Some(facts.status),
+                        facts.received_at,
+                    )
+                } else {
+                    (Synchronization::Unpublished, None, None, None, None)
+                };
+            Observation::Apple {
+                observation: Box::new(AppleObservation::Declarations {
+                    progress: records::CommandStatus(progress.0),
+                    synchronization,
+                    effect: Unverified::Unverified,
+                    compliance: Unknown::Unknown,
+                    input_version,
+                    expected,
+                    native_status,
+                    received_at,
+                }),
+            }
+        }
+        rss_mdm_registration_service::installation::queries::NativeObservation::Apple {
+            facts,
+            progress,
+            effect_confirmed,
+        } => Observation::Apple {
+            observation: Box::new(match facts {
+                ReadEvidence::Command {
+                    receipts: rows,
+                    outcome,
+                    fields,
+                    error,
+                } => AppleObservation::NativeCommand {
+                    receipts: receipts(rows),
+                    progress: records::CommandStatus(progress.0),
+                    effect: Unverified::Unverified,
+                    result: outcome,
+                    fields,
+                    error,
+                },
+                ReadEvidence::Profile {
+                    receipts: rows,
+                    progress,
+                    verification,
+                    status,
+                    received_at,
+                } => {
+                    let result = match verification {
+                        Some(Verification::Matched) if effect_confirmed => ProfileResult::Matched,
+                        Some(Verification::Mismatched | Verification::Failed) => {
+                            ProfileResult::Mismatched
+                        }
+                        _ => ProfileResult::Unknown,
+                    };
+                    AppleObservation::ProfilePresence {
+                        receipts: receipts(rows),
+                        result,
+                        effect: Unknown::Unknown,
+                        progress,
+                        native_status: status,
+                        received_at,
+                    }
+                }
+            }),
+        },
+    }
+}
+
+fn registration_receipt(
+    r: rss_mdm_registration_service::installation::queries::WindowsReceipt,
+) -> records::WindowsReceipt {
+    records::WindowsReceipt {
+        phase: match r.phase {
+            rss_mdm_registration_service::installation::AttemptPhase::Prepare => {
+                rss_mdm_execution_service::AttemptPhase::Prepare
+            }
+            rss_mdm_registration_service::installation::AttemptPhase::Execute => {
+                rss_mdm_execution_service::AttemptPhase::Execute
+            }
+            rss_mdm_registration_service::installation::AttemptPhase::Observe => {
+                rss_mdm_execution_service::AttemptPhase::Observe
+            }
+        },
+        ordinal: r.ordinal,
+        session: r.session,
+        message: r.message,
+        command: r.command,
+        parent_command: r.parent_command,
+        item: r.item,
+        kind: r.kind,
+        uri: r.uri,
+        status: r.status,
+        value: r.value,
+        accepted: r.accepted,
+        received_at: r.received_at,
+        result_accepted: r.result_accepted,
+        result_received_at: r.result_received_at,
+        redacted: r.redacted,
+        frames: r
+            .frames
+            .into_iter()
+            .map(|f| records::WindowsFrame {
+                message: f.message,
+                command: f.command,
+                start_byte: f.start_byte,
+                end_byte: f.end_byte,
+                total_bytes: f.total_bytes,
+                status: f.status,
+                accepted: f.accepted,
+                received_at: f.received_at,
+            })
+            .collect(),
+    }
+}
+pub fn registration_command(
+    v: rss_mdm_registration_service::installation::queries::Detail,
+) -> rss_mdm_registration_service::installation::queries::Detail<Observation> {
+    rss_mdm_registration_service::installation::queries::Detail {
+        operation_id: v.operation_id,
+        command_id: v.command_id,
+        revision: v.revision,
+        task: v.task,
+        target: v.target,
+        input_version: v.input_version,
+        deadline: v.deadline,
+        dispatch_failure: v.dispatch_failure,
+        authorization: v.authorization,
+        reauthorization: v.reauthorization,
+        command_status: v.command_status,
+        observation: registration_observation(v.observation),
     }
 }
 

@@ -46,7 +46,7 @@ pub(super) fn error(e: rss_mdm_policy_service::Error) -> rss_mdm_execution_servi
         P::Unauthorized => Error::Unauthorized,
         P::Forbidden => Error::Forbidden,
         P::NotFound | P::PolicyMissing | P::ResourceMissing => Error::NotFound,
-        P::MdmSoftwareDisabled => Error::MdmSoftwareDisabled,
+        P::MdmSoftwareDisabled => Error::Unsupported,
         P::Unsupported => Error::Unsupported,
         P::Unavailable(F::Inventory(f)) => rss_mdm_inventory_service::Error::Unavailable(f).into(),
         P::Unavailable(F::PreparationConfiguration) => {

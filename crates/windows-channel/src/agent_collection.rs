@@ -1,11 +1,8 @@
 //! Agent presence reuses the bounded native read-plan executor, including Win32 inventory.
 use crate::participants::{Business, DetectionCatalog, Identity};
 use crate::{Error, Failure, database::db, device::DevicePrincipal};
-use rss_mdm_inventory::{AgentInstallation, ReportSource};
-use rss_mdm_inventory_service::collection::{
-    channel::{self, AgentEvidence},
-    store,
-};
+use rss_mdm_inventory::{AgentInstallation, ReportSource, channel::AgentEvidence};
+use rss_mdm_inventory_service::collection::{channel, store};
 use rss_mdm_windows_mdm::{
     CodecLimits,
     native::collection::{Inventory, Outcome, Plan, Read, State},

@@ -6,13 +6,15 @@ pub(crate) enum Owner {
     Execution,
     Script,
     Collection,
+    Software,
+    Registration,
 }
 pub(crate) async fn on(
     c: &mut PgConnection,
     tenant: rss_request_context::TenantId,
     id: Uuid,
 ) -> Result<Owner, sqlx::Error> {
-    let mut owners = Vec::with_capacity(3);
+    let mut owners = Vec::with_capacity(5);
     if !rss_mdm_execution_service::capacity::owned_ids_on(c, tenant, &[id])
         .await?
         .is_empty()
@@ -30,6 +32,18 @@ pub(crate) async fn on(
         .is_empty()
     {
         owners.push(Owner::Collection);
+    }
+    if !rss_mdm_software_service::deployment::capacity::owned_ids_on(c, tenant, &[id])
+        .await?
+        .is_empty()
+    {
+        owners.push(Owner::Software);
+    }
+    if !rss_mdm_registration_service::enrollment::tasks::storage::owned_ids_on(c, tenant, &[id])
+        .await?
+        .is_empty()
+    {
+        owners.push(Owner::Registration);
     }
     match owners.as_slice() {
         [owner] => Ok(*owner),

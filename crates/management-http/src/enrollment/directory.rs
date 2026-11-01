@@ -7,14 +7,13 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
 
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 pub struct HttpState {
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub devices: Arc<rss_mdm_registration_service::DeviceService>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
-    pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
-    pub windows: bool,
-    pub apple: bool,
+    pub reads: Arc<dyn DeviceReads>,
 }
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
@@ -112,23 +111,7 @@ async fn detail(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     audit.target_device(&device);
-    let devices = s.devices.clone();
-    let assets = s.assets.clone();
-    let selected = device.clone();
-    let (item, capabilities) = s
-        .queries
-        .directory_device_snapshot(&auth.proof, &device, s.windows, s.apple, move |c| {
-            Box::pin(async move {
-                let mut item = devices.directory_device_on(c, &selected).await?;
-                let present = assets
-                    .directory_presence_on(c, std::slice::from_ref(&selected))
-                    .await?;
-                item.inventory_available = Some(present.contains(&selected));
-                Ok(item)
-            })
-        })
-        .await?;
-    Ok(Json(DeviceDetail { item, capabilities }))
+    Ok(Json(s.reads.detail(&auth.proof, &device).await?))
 }
 
 struct ListQuery;
@@ -146,8 +129,53 @@ impl rss_mdm_http_contract::query::DirectoryOwner for DeviceStatisticsQuery {
 }
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
-struct DeviceDetail {
+pub struct DeviceDetail {
     #[serde(flatten)]
-    item: rss_mdm_registration_service::device::directory::Item,
-    capabilities: Vec<rss_mdm_execution_service::queries::records::Capability>,
+    pub item: rss_mdm_registration_service::device::directory::Item,
+    pub capabilities: Vec<Capability>,
+}
+
+pub trait DeviceReads: Send + Sync {
+    fn detail<'a>(
+        &'a self,
+        proof: &'a rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        device: &'a str,
+    ) -> crate::execution::task_reads::Pending<'a, DeviceDetail>;
+}
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportState {
+    Supported,
+    Unsupported,
+    Blocked,
+    Unknown,
+    Ready,
+}
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityReason {
+    ProductNotConfigured,
+    NotRegistered,
+    CapabilityUnknown,
+    CapabilityNotSupported,
+    PermissionDenied,
+}
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+pub struct Support {
+    pub state: SupportState,
+    pub reason: Option<CapabilityReason>,
+}
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+pub struct Permission {
+    pub allowed: bool,
+    pub reason: Option<CapabilityReason>,
+}
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Capability {
+    pub action: String,
+    pub channel: String,
+    pub product_support: Support,
+    pub device_prerequisite: Support,
+    pub permission: Permission,
 }

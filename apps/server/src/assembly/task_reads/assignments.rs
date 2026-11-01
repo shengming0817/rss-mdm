@@ -10,7 +10,7 @@ pub(super) async fn assignments(
     id: Uuid,
     query: &rss_mdm_query::window::Query,
     codec: &rss_mdm_query::cursor::CursorCodec,
-) -> std::result::Result<rss_mdm_execution_service::queries::records::AssignmentPage, Error> {
+) -> std::result::Result<rss_mdm_management_http::execution::task_reads::AssignmentPage, Error> {
     query
         .require_schema(&rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA)
         .map_err(|_| Error::Malformed)?;
@@ -34,7 +34,7 @@ pub(super) async fn assignments(
         if matches!(p.definition.action,Action::UnmanageDevice {..}) {
             let page=s.execution.lifecycle_assignments_on(c,&p,after.as_deref(),limit,codec,&binding).await.map_err(super::history::execution_fault)?;
 
-            return Ok(page);
+            return Ok(super::projections::execution_assignments(page));
         }
         let source=s.source.clone();let tenant=s.tenant;let scope=p.definition.scope;let cursor=after.clone();let channel=match p.definition.action.target_channel() {Some(rss_mdm_policy::SoftwareChannel::Agent)=>rss_mdm_inventory::Channel::Agent,Some(rss_mdm_policy::SoftwareChannel::Mdm)=>rss_mdm_inventory::Channel::Mdm,None=>return Err(Error::Malformed)};
         let mut objects=source.assignment_objects_on(c,tenant,scope,channel,cursor.as_deref(),limit).await.map_err(super::source)?;
@@ -51,11 +51,19 @@ pub(super) async fn assignments(
                 let device=&target.device;
                 let eligible=rss_mdm_registration_service::lifecycle::work_allowed_on(c,&tenant.to_string(),device).await?;
                 if !eligible && object.availability==rss_mdm_scope_service::channels::Availability::Ready {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("source_pending".into());}
-                let execution=s.execution.assignment_state_on(c,&p,target,channel,now).await.map_err(super::history::execution_fault)?;
-                task_admission=execution.task_admission;
-                operations=execution.operations;
+                let diagnosis=match &p.definition.action {
+                    Action::Software{..}|Action::EnsureAgentInstalled{..}=>{
+                        let state=s.software.assignment_state_on(c,&p,target,channel,now).await.map_err(software_fault)?;
+                        task_admission=state.task_admission;operations=state.operations;state.diagnosis
+                    },
+                    Action::RequestMdmEnrollment{..}=>{
+                        task_admission=Some(rss_mdm_registration_service::enrollment::tasks::queries::assignment_state_on(c,tenant,&s.enrollment,&p,device,now).await.map_err(enrollment_fault)?);
+                        operations=rss_mdm_registration_service::enrollment::tasks::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(enrollment_fault)?;None
+                    },
+                    _=>{let state=s.execution.assignment_state_on(c,&p,target,channel,now).await.map_err(super::history::execution_fault)?;task_admission=state.task_admission;operations=state.operations;state.diagnosis}
+                };
                 if object.availability==rss_mdm_scope_service::channels::Availability::Ready && task_admission.as_ref().is_some_and(|a|!a.is_eligible()) {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
-                if (object.availability==rss_mdm_scope_service::channels::Availability::Ready||object.reason.as_deref()==Some("policy_disabled")) && let Some(reason)=execution.diagnosis {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some(reason);}
+                if (object.availability==rss_mdm_scope_service::channels::Availability::Ready||object.reason.as_deref()==Some("policy_disabled")) && let Some(reason)=diagnosis {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some(reason);}
                 operations.extend(rss_mdm_script_service::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(script_fault)?);
                 operations.extend(rss_mdm_inventory_service::collection::execution::queries::assignment_ids_on(c,tenant,id,target,channel).await?);
                 operations.sort();

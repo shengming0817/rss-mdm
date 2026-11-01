@@ -2,8 +2,6 @@ use crate::{ConfigIssue, Failure};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
-    #[error("MDM software distribution is disabled")]
-    MdmSoftwareDisabled,
     #[error("invalid product configuration")]
     Configuration(ConfigIssue),
     #[error("invalid request")]
@@ -12,8 +10,6 @@ pub enum Error {
     Resource(#[from] ResourceError),
     #[error(transparent)]
     Execution(#[from] crate::missing::ExecutionError),
-    #[error(transparent)]
-    Publication(#[from] rss_mdm_software_service::management::publication::error::PublicationError),
     #[error("certificate request rejected")]
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
@@ -45,7 +41,7 @@ impl Error {
     pub fn is_not_found(&self) -> bool {
         matches!(
             self,
-            Self::NotFound | Self::Resource(_) | Self::Execution(_) | Self::Publication(_)
+            Self::NotFound | Self::Resource(_) | Self::Execution(_)
         )
     }
 }

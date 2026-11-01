@@ -1,7 +1,7 @@
 use crate::Error;
 use crate::Target;
 use crate::sources::admission::ExecutionPolicy;
-use crate::sources::software::SoftwareExecutionPolicy;
+
 use crate::{Result, checked_input, storage, stored};
 use rss_mdm_task_state::RunState;
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -14,15 +14,12 @@ use uuid::Uuid;
 pub enum Source {
     DeviceAccess { version: Uuid, delivery: Uuid },
     Policy { version: Uuid },
-    RetirementSoftware { version: Uuid, retirement: Uuid },
 }
 impl Source {
     pub fn columns(self) -> (&'static str, Uuid) {
         match self {
             Self::DeviceAccess { version, .. } => ("device_access", version),
-            Self::Policy { version } | Self::RetirementSoftware { version, .. } => {
-                ("policy", version)
-            }
+            Self::Policy { version } => ("policy", version),
         }
     }
     pub fn audit(self, audit: &rss_mdm_audit_integration::RequestAudit) {
@@ -40,7 +37,7 @@ pub struct Run {
     pub deadline: i64,
     pub state: RunState,
     pub result: Option<super::result::RunResult>,
-    pub invocation: Option<crate::self_service::Invocation>,
+
     pub source_objects: Vec<rss_mdm_scope_service::channels::DeviceObject>,
 }
 pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
@@ -51,7 +48,7 @@ pub async fn read_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
 }
 async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{if locked {sqlx::query("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?;}sqlx::query("SELECT w.operation AS retirement,CASE WHEN o.version<>a.policy_version THEN w.operation END AS cleanup_retirement,a.origin,a.source_kind,a.policy_version,a.device,a.registration::text,a.generation,a.available_at,a.deadline,a.state,a.result,a.invocation,a.source_objects FROM mdm_commands.action_runs a LEFT JOIN mdm_devices.retirement_work w ON(w.tenant_id,w.execution)=(a.tenant_id,a.id) LEFT JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(w.tenant_id,w.operation) WHERE a.tenant_id=$1::uuid AND a.id=$2::uuid ").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{if locked {sqlx::query("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?;}sqlx::query("SELECT w.operation AS retirement,a.origin,a.source_kind,a.policy_version,a.device,a.registration::text,a.generation,a.available_at,a.deadline,a.state,a.result,a.source_objects FROM mdm_commands.action_runs a LEFT JOIN mdm_devices.retirement_work w ON(w.tenant_id,w.execution)=(a.tenant_id,a.id) LEFT JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(w.tenant_id,w.operation) WHERE a.tenant_id=$1::uuid AND a.id=$2::uuid ").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
     Ok(Run {
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         retirement: row.try_get("retirement")?,
@@ -61,18 +58,9 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
                 version: row.try_get("policy_version")?,
                 delivery: id,
             },
-            "policy" => {
-                if let Some(retirement) = row.try_get::<Option<Uuid>, _>("cleanup_retirement")? {
-                    Source::RetirementSoftware {
-                        version: row.try_get("policy_version")?,
-                        retirement,
-                    }
-                } else {
-                    Source::Policy {
-                        version: row.try_get("policy_version")?,
-                    }
-                }
-            }
+            "policy" => Source::Policy {
+                version: row.try_get("policy_version")?,
+            },
             _ => return Err(Error::Unavailable(crate::Failure::CommandInvariant).into()),
         },
         target: Target {
@@ -88,15 +76,10 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
             .try_get::<Option<Value>, _>("result")?
             .map(|v| stored(serde_json::from_value(v)))
             .transpose()?,
-        invocation: row
-            .try_get::<Option<Value>, _>("invocation")?
-            .map(serde_json::from_value)
-            .map(crate::stored)
-            .transpose()?,
     })
 }
 pub async fn save_run(
-    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    _reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     run: &Run,
 ) -> Result<()> {
@@ -111,25 +94,6 @@ pub async fn save_run(
     let previous=tx.with_connection({let tenant=tenant.clone();let id=id.clone();move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).fetch_one(c).await})}).await?;
     let changed = tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)").bind(tenant).bind(id).bind(state).bind(result).execute(c).await})).await?;
     if changed.rows_affected() > 0 {
-        if let Source::Policy { version } = run.source {
-            let tenant = tx.tenant_id().to_string();
-            let scheduled: bool = tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND current_version=$2 AND state='enabled' AND definition->'action'->>'kind' ='software')")
-                    .bind(tenant).bind(version).fetch_one(c).await
-            })).await?;
-            if scheduled {
-                super::scheduled::wake_in(
-                    reconcile,
-                    tx,
-                    super::scheduled::Work {
-                        version,
-                        registration: run.target.registration,
-                        generation: run.target.generation,
-                    },
-                )
-                .await?;
-            }
-        }
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
     }
     let terminal = match run.state.execution {
@@ -140,7 +104,6 @@ pub async fn save_run(
         }
         _ => None,
     };
-    // RetirementSoftware is cleanup work, not a policy execution terminal event.
     if let (Some(status), Source::Policy { version }) = (terminal, run.source) {
         let old = previous.get("execution").and_then(Value::as_str);
         let cancelled = previous.get("cancellation").and_then(Value::as_str) == Some("confirmed");
@@ -214,8 +177,6 @@ pub enum ScheduledPolicy {
     DeviceAccess(crate::device_access::Plan),
     Retirement(crate::unmanage::RetirementPlan),
     Credential(ExecutionPolicy<crate::credential_tasks::FrozenCredential>),
-    Software(SoftwareExecutionPolicy),
-    Enrollment(crate::sources::enrollment::EnrollmentPolicy),
 }
 pub struct TaskIssue {
     pub run: Uuid,
@@ -228,8 +189,7 @@ impl ScheduledPolicy {
         match self {
             Self::DeviceAccess(v) => v.owner,
             Self::Credential(v) => v.owner,
-            Self::Software(v) => v.owner,
-            Self::Enrollment(v) => v.owner,
+
             Self::Retirement(v) => v.owner,
         }
     }
@@ -243,26 +203,7 @@ impl ScheduledPolicy {
         if let Self::Retirement(v) = self {
             return v.allowed_in(tx, target, None).await;
         }
-        if let Self::Software(v) = self
-            && v.assignment.retirement.is_some()
-        {
-            let Some((platform, architecture)) =
-                agent_profile_in(service, tx, target.registration).await?
-            else {
-                return Ok(false);
-            };
-            return v
-                .assignment
-                .authorized_in(
-                    &service.admission(),
-                    tx,
-                    &target.device,
-                    platform,
-                    architecture,
-                    now,
-                )
-                .await;
-        }
+
         let tenant = tx.tenant_id().to_string();
         let device = target.device.clone();
         let allowed = tx
@@ -291,56 +232,6 @@ impl ScheduledPolicy {
                 && v.frozen.authorized_in(service, tx, target, now).await?
                 && v.authorized_in(&service.source, tx, &target.device, now)
                     .await?),
-            Self::Enrollment(v) => v.authorized_in(service, tx, target, now).await,
-            Self::Software(v) => {
-                if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
-                    let crate::native_software::TargetAdmission::Eligible(
-                        crate::native_software::NativeTarget {
-                            platform: p,
-                            architecture: a,
-                            ..
-                        },
-                    ) = crate::native_software::target_admission_in(tx, &target.device).await?
-                    else {
-                        return Ok(false);
-                    };
-                    return v
-                        .assignment
-                        .authorized_in(&service.admission(), tx, &target.device, p, a, now)
-                        .await;
-                }
-                let Some(binding) = crate::agent_facts::agent_binding_in(
-                    tx,
-                    service.agent_store.clone(),
-                    target.registration,
-                )
-                .await?
-                else {
-                    return Ok(false);
-                };
-                if !v
-                    .assignment
-                    .supported_in(&service.admission(), tx, &binding)
-                    .await?
-                {
-                    return Ok(false);
-                }
-                let Some((platform, architecture)) =
-                    agent_profile_in(service, tx, target.registration).await?
-                else {
-                    return Ok(false);
-                };
-                v.assignment
-                    .authorized_in(
-                        &service.admission(),
-                        tx,
-                        &target.device,
-                        platform,
-                        architecture,
-                        now,
-                    )
-                    .await
-            }
         }
     }
     /// Recheck current authority for an existing Run without reselecting rollout.
@@ -351,48 +242,6 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
-        if let Self::Software(v) = self {
-            let tenant = tx.tenant_id().to_string();
-            let device = target.device.clone();
-            if !tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(rss_mdm_registration_service::lifecycle::work_allowed_in(
-                            c, &tenant, &device,
-                        )
-                        .await)
-                    })
-                })
-                .await??
-            {
-                return Ok(false);
-            }
-            let profile = if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
-                match crate::native_software::target_admission_in(tx, &target.device).await? {
-                    crate::native_software::TargetAdmission::Eligible(v) => {
-                        Some((v.platform, v.architecture))
-                    }
-                    crate::native_software::TargetAdmission::ProjectionPending(_)
-                    | crate::native_software::TargetAdmission::Rejected(_) => None,
-                }
-            } else {
-                agent_profile_in(service, tx, target.registration).await?
-            };
-            let Some((platform, architecture)) = profile else {
-                return Ok(false);
-            };
-            return v
-                .assignment
-                .authorized_run_in(
-                    &service.admission(),
-                    tx,
-                    &target.device,
-                    platform,
-                    architecture,
-                    now,
-                )
-                .await;
-        }
         match self {
             Self::Credential(v) => Ok(v.active
                 && v.frozen.authorized_in(service, tx, target, now).await?
@@ -403,10 +252,9 @@ impl ScheduledPolicy {
                     v.frozen.input.architecture,
                 )
                 .await?),
-            Self::Enrollment(v) => v.accepted_in(service, tx, target).await,
+
             Self::DeviceAccess(v) => v.allowed_in(service, tx, target).await,
             Self::Retirement(v) => v.allowed_in(tx, target, None).await,
-            Self::Software(_) => unreachable!(),
         }
     }
     pub(crate) async fn authorized_run_in(
@@ -422,28 +270,9 @@ impl ScheduledPolicy {
         if let Self::DeviceAccess(v) = self {
             return v.allowed_in(service, tx, &run.target).await;
         }
-        if let Self::Software(v) = self
-            && let Some(retirement) = v.assignment.retirement
-        {
-            if !crate::unmanage::cleanup_allowed_in(
-                tx,
-                retirement,
-                &run.target.device,
-                Some(run.id),
-            )
-            .await?
-            {
-                return Ok(false);
-            }
-            return self.run_admission_in(service, tx, &run.target, now).await;
-        }
+
         if run.state.started_at.is_none() {
-            let channel = if matches!(self, Self::Software(v) if v.assignment.channel()==rss_mdm_inventory::Channel::Mdm)
-            {
-                rss_mdm_inventory::Channel::Mdm
-            } else {
-                rss_mdm_inventory::Channel::Agent
-            };
+            let channel = { rss_mdm_inventory::Channel::Agent };
             let source = service.source.clone();
             let tenant = tx.tenant_id();
             let device = run.target.device.clone();
@@ -461,17 +290,7 @@ impl ScheduledPolicy {
                 return Ok(false);
             }
         }
-        match &run.invocation {
-            Some(invocation) => {
-                invocation
-                    .valid_in(service, tx, self, &run.target, now)
-                    .await
-            }
-            None if matches!(self, Self::Software(v) if v.assignment.intent() == rss_mdm_policy::SoftwareIntent::AvailableInstall) => {
-                Ok(false)
-            }
-            None => self.run_admission_in(service, tx, &run.target, now).await,
-        }
+        self.run_admission_in(service, tx, &run.target, now).await
     }
 
     /// Completion keeps current business authority without requiring a fresh executor context.
@@ -483,49 +302,10 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
-        match self {
-            Self::Credential(v) => {
-                return Ok(v.active && v.frozen.authorized_in(service, tx, target, now).await?);
-            }
-            Self::Enrollment(v) => return Ok(v.policy.state.is_enabled()),
-            _ => (),
+        if let Self::Credential(v) = self {
+            return Ok(v.active && v.frozen.authorized_in(service, tx, target, now).await?);
         }
-        if let Self::Software(v) = self {
-            if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
-                let crate::native_software::TargetAdmission::Eligible(
-                    crate::native_software::NativeTarget {
-                        platform: p,
-                        architecture: a,
-                        ..
-                    },
-                ) = crate::native_software::target_admission_in(tx, &target.device).await?
-                else {
-                    return Ok(false);
-                };
-                return Ok(v
-                    .assignment
-                    .admitted_in(&service.admission(), tx, p, a)
-                    .await?
-                    .is_some());
-            }
-            let Some((platform, architecture)) =
-                agent_profile_in(service, tx, target.registration).await?
-            else {
-                return Ok(false);
-            };
-            v.assignment
-                .authorized_run_in(
-                    &service.admission(),
-                    tx,
-                    &target.device,
-                    platform,
-                    architecture,
-                    now,
-                )
-                .await
-        } else {
-            self.authorized_in(service, tx, target, now).await
-        }
+        self.authorized_in(service, tx, target, now).await
     }
     pub(crate) async fn withdrawn_in(
         &self,
@@ -539,31 +319,6 @@ impl ScheduledPolicy {
             Self::Retirement(v) => Ok(!v.allowed_in(tx, target, None).await?),
             Self::Credential(v) => Ok(v.withdrawn_in(&service.source, tx, &target.device).await?
                 || !v.frozen.authorized_in(service, tx, target, now).await?),
-            Self::Software(v) if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm => {
-                match crate::native_software::target_admission_in(tx, &target.device).await? {
-                    crate::native_software::TargetAdmission::Eligible(current)
-                    | crate::native_software::TargetAdmission::ProjectionPending(current) => {
-                        // Pending evidence can deny authority, never authorize a new side effect.
-                        Ok(current.target.registration != target.registration
-                            || current.target.generation != target.generation
-                            || !v
-                                .assignment
-                                .authorized_run_in(
-                                    &service.admission(),
-                                    tx,
-                                    &target.device,
-                                    current.platform,
-                                    current.architecture,
-                                    now,
-                                )
-                                .await?)
-                    }
-                    crate::native_software::TargetAdmission::Rejected(_) => Ok(true),
-                }
-            }
-            Self::Software(_) | Self::Enrollment(_) => Ok(!self
-                .completion_authorized_in(service, tx, target, now)
-                .await?),
         }
     }
     pub(crate) async fn task(
@@ -578,78 +333,6 @@ impl ScheduledPolicy {
             Self::Retirement(v) => v.task(service, tx, target, issue).await,
             Self::Credential(v) => {
                 crate::credential_tasks::task(v, service, tx, target, issue).await
-            }
-            Self::Enrollment(v) => v.task(service, tx, target, issue).await,
-            Self::Software(v) => {
-                use rss_mdm_agent_wire::runtime as wire;
-                let (platform, architecture) = agent_profile_in(service, tx, target.registration)
-                    .await?
-                    .ok_or(Error::Forbidden)?;
-                let binding = crate::agent_facts::agent_binding_in(
-                    tx,
-                    service.agent_store.clone(),
-                    target.registration,
-                )
-                .await?
-                .ok_or(Error::Forbidden)?;
-                let steps = v
-                    .assignment
-                    .prepared_in(
-                        &service.admission(),
-                        tx,
-                        platform,
-                        architecture,
-                        &binding.execution_context,
-                    )
-                    .await?
-                    .ok_or(Error::Forbidden)?;
-                let plan_bytes = checked_input(serde_json::to_vec(&steps))?;
-                let digest: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, &plan_bytes)
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_| Error::Malformed)?;
-                let run = load_run(tx, issue.run).await?;
-                let authorization = run
-                    .invocation
-                    .as_ref()
-                    .map(|i| i.authorization.clone())
-                    .unwrap_or(wire::TaskAuthorization::Policy {
-                        policy_id: v.owner,
-                        policy_version: v.id,
-                    });
-                let spec = wire::SoftwareTaskSpec {
-                    wire_version: wire::WIRE_VERSION,
-                    tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                    device_id: target.device.clone(),
-                    platform: match platform {
-                        rss_mdm_policy::Platform::Windows => wire::TaskPlatform::Windows,
-                        rss_mdm_policy::Platform::Macos => wire::TaskPlatform::Macos,
-                    },
-                    architecture: match architecture {
-                        rss_mdm_policy::Architecture::X86_64 => wire::TaskArchitecture::X86_64,
-                        rss_mdm_policy::Architecture::Aarch64 => wire::TaskArchitecture::Aarch64,
-                    },
-                    registration_id: target.registration,
-                    generation: target.generation.try_into().map_err(|_| Error::Malformed)?,
-                    task_id: issue.run,
-                    attempt_id: issue.attempt,
-                    permit: issue.permit,
-                    expires_at: issue.expiry,
-                    steps,
-                    execution_context: binding.execution_context,
-                    authorization,
-                    definition_digest: digest,
-                    intent: match v.assignment.intent() {
-                        rss_mdm_policy::SoftwareIntent::RequiredInstall
-                        | rss_mdm_policy::SoftwareIntent::AvailableInstall => {
-                            wire::SoftwareTaskIntent::Install
-                        }
-                        rss_mdm_policy::SoftwareIntent::ExplicitUninstall => {
-                            wire::SoftwareTaskIntent::Uninstall
-                        }
-                    },
-                };
-                checked_input(spec.try_into())
             }
         }
     }
@@ -700,18 +383,6 @@ pub async fn load_policy_version(
         crate::frozen::Frozen::Credential { .. } => Ok(ScheduledPolicy::Credential(
             crate::sources::admission::credential_in(reader, tx, id).await?,
         )),
-        crate::frozen::Frozen::MdmEnrollment { action } => Ok(ScheduledPolicy::Enrollment(
-            crate::sources::enrollment::EnrollmentPolicy {
-                id,
-                owner: policy.id,
-                policy,
-                frozen: *action,
-            },
-        )),
-        crate::frozen::Frozen::Software { .. } => Ok(ScheduledPolicy::Software(
-            crate::sources::software::read_in(reader, tx, id).await?,
-        )),
-        _ => Err(Error::Unsupported.into()),
     }
 }
 
@@ -725,11 +396,5 @@ pub async fn load_source(
             crate::device_access::load(tx, delivery).await?,
         )),
         Source::Policy { version } => load_policy_version(reader, tx, version).await,
-        Source::RetirementSoftware {
-            version,
-            retirement,
-        } => Ok(ScheduledPolicy::Software(
-            crate::sources::software::retirement_in(reader, tx, version, retirement).await?,
-        )),
     }
 }

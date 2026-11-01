@@ -15,18 +15,7 @@ pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
     fact.links.version = Some(run.source.columns().1);
     fact.links.attempt = run.state.attempt();
     fact.origin = run.origin;
-    if let Some(invocation) = &run.invocation {
-        fact.user = invocation.activity_user.clone();
-        if let rss_mdm_agent_wire::runtime::TaskAuthorization::SelfService {
-            request_id,
-            policy_id,
-            ..
-        } = &invocation.authorization
-        {
-            fact.links.request = Some(*request_id);
-            fact.links.policy = Some(*policy_id);
-        }
-    }
+
     fact.delivery = Some(match run.state.delivery {
         Delivery::Queued => ActivityDelivery::Queued,
         Delivery::Claimed { .. } => ActivityDelivery::Offered,
@@ -78,8 +67,4 @@ pub(crate) fn phase(event: &rss_mdm_agent_wire::runtime::TaskEvent) -> ActivityP
         | E::UnmanageResult { .. }
         | E::EnrollmentResult { .. } => ActivityPhase::Result,
     }
-}
-
-pub(crate) fn step_id(id: &[u8; 32]) -> String {
-    id.iter().map(|byte| format!("{byte:02x}")).collect()
 }

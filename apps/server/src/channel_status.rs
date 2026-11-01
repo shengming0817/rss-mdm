@@ -233,7 +233,7 @@ impl Channels {
     }
 }
 
-impl rss_mdm_execution_service::AgentInstallationAdmission for Channels {
+impl rss_mdm_software_service::installation::inputs::Admission for Channels {
     fn ready_signing_revision(&self, now: i64) -> Option<u64> {
         use rss_mdm_agent_wire::pki::Purpose;
         let (agent, pki) = self.installation.get()?;
@@ -283,7 +283,7 @@ mod tests {
     use super::*;
     #[test]
     fn prepared_materials_without_final_assembly_cannot_admit_installation() {
-        use rss_mdm_execution_service::AgentInstallationAdmission;
+        use rss_mdm_software_service::installation::inputs::Admission;
         let channels = Channels {
             endpoints: rss_mdm_management_http::enrollment::channels::PublicEndpoints {
                 console: "https://mdm.example.test".into(),

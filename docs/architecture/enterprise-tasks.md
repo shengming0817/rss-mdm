@@ -10,11 +10,11 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 ## 持有与事务
 
-`policy` 持有定义、状态、CAS 与执行语义版本；`policy-service` 持有管理、发布、重跑、分配、事件批次和所属 worker，`policy-postgres` 持有对应存储、锁及权限准入。Inventory 编排 Group，`scope-service` 独立拥有 Scope，资源目录由 `resource-service` 持有。Execution 独立拥有设备来源变化扫描和推进。
+`policy` 持有定义、状态、CAS 与执行语义版本；`policy-service` 持有管理、发布、重跑、分配、事件批次和所属 worker，`policy-postgres` 持有对应存储、锁及权限准入。Inventory 编排 Group，`scope-service` 独立拥有 Scope，资源目录由 `resource-service` 持有。各业务 owner 独立拥有其设备来源变化扫描和推进。
 
-`script-service` 持有脚本冻结输入、参数、Run、自助服务回执、输出及恢复；Inventory 持有 Agent/native collection task 和逐 attempt 的 collection report。原生采集只保存投递进度，报告是采集终态的唯一来源。`execution-service` 保留其余远程命令和执行能力。Agent、Windows、Apple 通道持有协议交付与持久状态，App 按实际存储归属装配具体参与者；重复或缺失 owner 属于完整性错误。
+`script-service` 持有脚本冻结输入、参数、Run、自助服务回执、输出及恢复；Inventory 持有 Agent/native collection task 和逐 attempt 的 collection report。原生采集只保存投递进度，报告是采集终态的唯一来源。`software-service` 持有软件冻结输入、安装和移除、跨渠道效果去重、rollout 统计及 Agent 安装派发；`registration-service` 持有 Enrollment 任务、Bootstrap/SCEP 和身份世代。Software 通过原事务中的窄参与接口消费 Registration，Registration 不依赖 Software。`execution-service` 保留设备控制、访问、凭据和退出管理命令。Agent、Windows、Apple 通道持有协议交付与持久状态，App 按实际存储归属装配具体参与者；重复或缺失 owner 属于完整性错误。
 
-Policy 发布分别消费各 owner 的 `Inputs`，事件批次通过 App 定向受理并读取原操作事实。参与者借入发起方 runtime 的同一事务，成员决定、执行意图、审计和持久 wake 在原 claim 保护事务内提交。三个执行 owner 共用设备 fence、128 个活动任务上限、原连接池及恢复并发预算；一个宿主 relay 循环调度三个 outbox。各 owner 持有自己的持久恢复检查点，通知丢失与进程重启不会丢掉工作。
+Policy 发布分别消费各 owner 的 `Inputs`，事件批次通过 App 定向受理并读取原操作事实。参与者借入发起方 runtime 的同一事务，成员决定、执行意图、审计和持久 wake 在原 claim 保护事务内提交。各业务 owner 共用设备 fence、128 个活动任务上限、原连接池及恢复并发预算；一个宿主 relay 循环调度所属 outbox。各 owner 持有自己的持久恢复检查点，通知丢失与进程重启不会丢掉工作。
 
 Agent 在同一个有界候选页中按 `(available_at,id)` 排序检查，协议表保存唯一 offer 游标。自助服务先在同一请求锁和事务内检索各 owner 的原回执，只有全部缺席才按当前 Policy 分类；Policy 改类不会改变旧请求归属。Policy 历史由 App 在一个只读快照内合并各 owner 的有界页面，并在返回前复验当前授权。
 
@@ -41,7 +41,7 @@ Scope 是目标计算的唯一 owner。成员三值结果与定义版本决定�
 
 配置持续分配和单次命令期限独立。临时缺少注册或能力时保留分配及诊断，相关事实到达后自动核对。脚本成功只表示退出结果；MDM 收到回执也不等于效果已经核实。采集输出仍通过 CollectionRun → Observation → Inventory，非法、部分、截断和迟到结果保留最后可信值。
 
-Content 持有内容流及其锁、permit 与截止时间；Agent 通道持有 Offer、Start permit 签名、领取、事件去重、取消分页与内容交付资格。Execution 持有命令提交、任务业务准入与结果归档。事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
+Content 持有内容流及其锁、permit 与截止时间；Agent 通道持有 Offer、Start permit 签名、领取、事件去重、取消分页与内容交付资格。各业务 owner 持有自己的命令提交、准入与结果归档。事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
 
 通道交付借入宿主现有的 `mdm_command_runtime` 与同一 PostgreSQL 事务，业务参与端口只接收原事务或原连接。通道不反向依赖 Execution，也不新增池、角色或统一交付框架。Registration 是注册身份与世代的唯一权威；原业务 command/outbox/audit 原子性、当前来源授权、fencing、提交未知和回滚失败均保持。
 

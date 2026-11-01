@@ -5,70 +5,21 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum RunResult {
-    Software(Software),
-    NativeSoftware(NativeSoftware),
     Access(w::AccessResult),
     Credential(w::CredentialResult),
     CredentialRecovery(CredentialRecovery),
     Unmanage(Unmanage),
-    Enrollment(Enrollment),
 }
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Software<E = w::SoftwareTaskResult> {
-    pub intent: w::SoftwareTaskIntent,
-    pub definition_digest: [u8; 32],
-    pub evidence: E,
-    pub effect: w::SelfServiceSoftwareEffect,
-    pub effect_observed_at: Option<i64>,
-    pub effect_received_at: i64,
-    pub received_at: i64,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(
-    tag = "effect",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum NativeSoftware {
-    NotStarted {
-        operation: Uuid,
-    },
-    Verified {
-        operation: Uuid,
-        effect_observed_at: i64,
-        effect_received_at: i64,
-    },
-    Unknown {
-        operation: Uuid,
-        protocol: String,
-    },
-}
+
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Unmanage {
     pub unmanage_outcome: w::UnmanageOutcome,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Enrollment {
-    pub entry_outcome: w::EnrollmentEntryOutcome,
-}
+
 impl RunResult {
     pub(crate) fn effect(&self) -> Option<&'static str> {
         Some(match self {
-            Self::Software(value) => match value.effect {
-                w::SelfServiceSoftwareEffect::Verified => "verified",
-                w::SelfServiceSoftwareEffect::Failed => "failed",
-                w::SelfServiceSoftwareEffect::WaitingReboot => "waiting_reboot",
-                w::SelfServiceSoftwareEffect::Unknown => "unknown",
-            },
-            Self::NativeSoftware(value) => match value {
-                NativeSoftware::NotStarted { .. } => "not_started",
-                NativeSoftware::Verified { .. } => "verified",
-                NativeSoftware::Unknown { .. } => "unknown",
-            },
             Self::CredentialRecovery(value) => match value.effect {
                 w::CredentialRecoveryOutcome::NotAttempted => "not_attempted",
                 w::CredentialRecoveryOutcome::Unchanged => "unchanged",
@@ -86,13 +37,10 @@ pub struct SummaryResult(Summary);
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 enum Summary {
-    Software(Software<w::SoftwareTaskResult<DiagnosticsSummary>>),
-    NativeSoftware(WithDiagnostics<NativeSoftware>),
     Access(WithDiagnostics<w::AccessResult>),
     Credential(WithDiagnostics<w::CredentialResult>),
     CredentialRecovery(WithDiagnostics<CredentialRecovery>),
     Unmanage(WithDiagnostics<Unmanage>),
-    Enrollment(WithDiagnostics<Enrollment>),
 }
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 struct WithDiagnostics<T> {
@@ -151,35 +99,4 @@ pub struct CredentialRecovery {
     pub effect: w::CredentialRecoveryOutcome,
     pub recovered_by_task: Uuid,
     pub recovered_by_attempt: Option<Uuid>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    fn summary(value: RunResult) -> serde_json::Value {
-        let mut raw = serde_json::to_value(value).unwrap();
-        if raw.get("evidence").is_none() && raw.get("diagnostics").is_none() {
-            raw["diagnostics"] = serde_json::Value::Null;
-        }
-        serde_json::to_value(serde_json::from_value::<SummaryResult>(raw).unwrap()).unwrap()
-    }
-    #[test]
-    fn native_summary_keeps_sql_null_and_omitted_native_software_fields() {
-        let operation = Uuid::new_v4();
-        let value = summary(RunResult::NativeSoftware(NativeSoftware::NotStarted {
-            operation,
-        }));
-        assert_eq!(
-            value,
-            json!({"operation":operation,"effect":"not_started","diagnostics":null})
-        );
-        assert!(
-            serde_json::from_value::<SummaryResult>(
-                json!({"operation":operation,"effect":"future","diagnostics":null})
-            )
-            .is_err()
-        );
-        assert!(serde_json::from_value::<RunResult>(json!({"unknownResult":{}})).is_err());
-    }
 }

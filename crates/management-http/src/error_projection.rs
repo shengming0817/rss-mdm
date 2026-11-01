@@ -252,7 +252,6 @@ impl From<rss_mdm_execution_service::Error> for Error {
     fn from(e: rss_mdm_execution_service::Error) -> Self {
         use rss_mdm_execution_service::Error as E;
         match e {
-            E::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
             E::Malformed => Self::Malformed,
             E::CertificateRequest => Self::CertificateRequest,
             E::Conflict => Self::Conflict,
@@ -270,7 +269,7 @@ impl From<rss_mdm_execution_service::Error> for Error {
             E::Resource(_) => {
                 Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
             }
-            E::Publication(e) => Self::Publication(e),
+
             E::Configuration(c) => Self::Configuration(match c {
                 rss_mdm_execution_service::ConfigIssue::Audit => ConfigIssue::Audit,
                 rss_mdm_execution_service::ConfigIssue::Execution => ConfigIssue::Execution,
@@ -348,11 +347,44 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
     fn from(e: rss_mdm_execution_service::queries::QueryError) -> Self {
         use rss_mdm_execution_service::queries::{Missing, QueryError as Q};
         match e {
+            Q::Malformed => Self::Malformed,
+            Q::Unauthorized => Self::Unauthorized,
+            Q::Forbidden => Self::Forbidden,
+            Q::Conflict => Self::Conflict,
+            Q::ReadConflict => Self::QueryReadConflict,
+            Q::CursorInvalidated => Self::QueryCursorInvalidated,
+
+            Q::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
+            Q::Unsupported => Self::Unsupported,
+            Q::CommitUnknown => Self::CommitUnknown,
+            Q::RollbackFailed => Self::RollbackFailed,
+            Q::Unavailable(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
+            Q::Missing(m) => match m {
+                Missing::Policy => Self::PolicyMissing,
+                Missing::Inventory => Self::NotFound,
+                Missing::Resource => {
+                    Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
+                }
+                Missing::Operation => Self::Execution(
+                    rss_mdm_execution_service::missing::ExecutionError::MissingOperation,
+                ),
+                Missing::Task => {
+                    Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingTask)
+                }
+            },
+        }
+    }
+}
+
+impl From<rss_mdm_software_service::deployment::queries::QueryError> for Error {
+    fn from(e: rss_mdm_software_service::deployment::queries::QueryError) -> Self {
+        use rss_mdm_software_service::deployment::queries::{Missing, QueryError as Q};
+        match e {
             Q::Malformed => Self::Malformed, Q::Unauthorized => Self::Unauthorized, Q::Forbidden => Self::Forbidden, Q::Conflict => Self::Conflict, Q::ReadConflict => Self::QueryReadConflict, Q::CursorInvalidated => Self::QueryCursorInvalidated,
             Q::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
             Q::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             Q::Unsupported => Self::Unsupported, Q::CommitUnknown => Self::CommitUnknown, Q::RollbackFailed => Self::RollbackFailed,
-            Q::Unavailable(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
+            Q::Unavailable(f) => Self::Unavailable(match f { rss_mdm_software_service::deployment::Failure::RequestDeadline=>Failure::RequestDeadline, rss_mdm_software_service::deployment::Failure::Capacity=>Failure::Capacity, _=>Failure::CommandStorage }),
             Q::Missing(m) => match m {
                 Missing::Policy => Self::PolicyMissing,
                 Missing::Inventory => Self::NotFound, Missing::Resource => Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing),

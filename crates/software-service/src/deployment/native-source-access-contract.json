@@ -1,0 +1,17 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "mdm_software_deployment.installation_status",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [
+    "mdm_software_deployment.operations",
+    "mdm_resource.aggregates",
+    "mdm_resource.immutable",
+    "mdm_software.sources",
+    "mdm_software.versions"
+  ],
+  "verified_schemas": []
+}

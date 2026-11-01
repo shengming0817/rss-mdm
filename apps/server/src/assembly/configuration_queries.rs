@@ -280,7 +280,6 @@ impl ConfigurationReads for ConfigurationQueries {
                 reauthorization: authorization_decision::Reauthorization::NotApplicable,
                 command_status: records::CommandStatus(v.command_status),
                 observation: observation(v.observation),
-                agent_installation: None,
             })
         })
     }
@@ -304,7 +303,6 @@ impl ConfigurationReads for ConfigurationQueries {
                             command_status: records::CommandStatus(v.command_status),
                             observation: observation(v.observation),
                             dispatch_failure: v.dispatch_failure.map(dispatch_failure),
-                            agent_installation: None,
                         },
                     ))
                 })

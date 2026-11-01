@@ -72,3 +72,20 @@ impl crate::Transactions {
         })
     }
 }
+
+impl crate::Transactions {
+    pub async fn event_parent_current_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        target: &crate::Target,
+        id: Uuid,
+    ) -> crate::Result<bool> {
+        self.validate_in(tx)?;
+        let run = crate::storage::load_run(tx, id).await?;
+        Ok(run.target.device == target.device
+            && run.target.registration == target.registration
+            && run.target.generation == target.generation
+            && run.state.execution == rss_mdm_task_state::Execution::Running
+            && run.state.started_at.is_some())
+    }
+}

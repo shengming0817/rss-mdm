@@ -11,29 +11,47 @@ pub(crate) struct WindowsBusiness(
     pub Arc<rss_mdm_execution_service::ExecutionService>,
     pub Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
+    pub Arc<rss_mdm_software_service::deployment::SoftwareService>,
+    pub Arc<rss_mdm_registration_service::installation::Service>,
 );
 fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_windows_channel::Error {
     use rss_mdm_execution_service::Error as E;
     use rss_mdm_windows_channel::Missing;
     use rss_mdm_windows_channel::{Error as A, Failure};
-    match e { E::MdmSoftwareDisabled => A::Forbidden, E::Malformed => A::Malformed, E::CertificateRequest => A::CertificateRequest,
-            E::Unauthorized => A::Unauthorized, E::Forbidden => A::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
-            E::EnrollmentPaused=> A::EnrollmentPaused, E::CommitUnknown => A::CommitUnknown, E::RollbackFailed => A::RollbackFailed, E::Unsupported => A::Unsupported,
-            E::NotFound => A::NotFound, E::Resource(_) => A::Missing(Missing::Resource),
-            E::Execution(e) => A::Missing(match e { rss_mdm_execution_service::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task }),
-            E::Publication(e) => A::Missing(match e { rss_mdm_software_service::management::publication::error::PublicationError::MissingSource => Missing::SoftwareSource, rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication => Missing::SoftwarePublication }),
-            E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
-            E::Unavailable(f) => A::Unavailable(match f {
-                rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-                rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-                rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-                rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-                rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-                rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+    match e {
+        E::Malformed => A::Malformed,
+        E::CertificateRequest => A::CertificateRequest,
+        E::Unauthorized => A::Unauthorized,
+        E::Forbidden => A::Forbidden,
+        E::ReadConflict
+        | E::CursorInvalidated
+        | E::Conflict
+        | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+        E::EnrollmentPaused => A::EnrollmentPaused,
+        E::CommitUnknown => A::CommitUnknown,
+        E::RollbackFailed => A::RollbackFailed,
+        E::Unsupported => A::Unsupported,
+        E::NotFound => A::NotFound,
+        E::Resource(_) => A::Missing(Missing::Resource),
+        E::Execution(e) => A::Missing(match e {
+            rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {
+                Missing::Operation
+            }
+            rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task,
+        }),
 
-                _ => Failure::Business,
-            }),
-        }
+        E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
+        E::Unavailable(f) => A::Unavailable(match f {
+            rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
+            rss_mdm_execution_service::Failure::Audit => Failure::Audit,
+            rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
+            rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
+            rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
+            rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+
+            _ => Failure::Business,
+        }),
+    }
 }
 fn fault(e: rss_mdm_execution_service::transaction::Fault) -> rss_mdm_windows_channel::Error {
     use rss_mdm_execution_service::transaction::Fault;
@@ -53,15 +71,15 @@ fn operation(v: rss_mdm_execution_service::windows_business::WindowsOperation) -
         receipt: v.receipt,
         observe: v.observe,
         replay: v.replay,
-        software: v.software,
-        agent_minimum_os: v.agent_minimum_os,
-        minimum_os: v.minimum_os,
+        software: false,
+        agent_minimum_os: None,
+        minimum_os: None,
         observation: v.observation,
     }
 }
 impl Business for WindowsBusiness {
     fn software_enabled(&self) -> bool {
-        self.0.native_software_enabled()
+        self.3.native_software_enabled()
     }
     fn detection<'a>(
         &'a self,
@@ -69,24 +87,24 @@ impl Business for WindowsBusiness {
         tenant: rss_request_context::TenantId,
     ) -> Pending<'a, DetectionCatalog> {
         Box::pin(async move {
-            let catalog = rss_mdm_execution_service::agent_install::detection_on(
+            let catalog = rss_mdm_software_service::deployment::agent_install::detection_on(
                 c,
                 tenant,
                 rss_mdm_inventory::ReportSource::MdmWindows,
             )
             .await
-            .map_err(error)?;
-            let digest = catalog.digest().map_err(error)?;
+            .map_err(software_error)?;
+            let digest = catalog.digest().map_err(software_error)?;
             let identities = catalog
                 .identities
                 .into_iter()
                 .map(|i| {
                     Ok(match i {
-                        rss_mdm_execution_service::agent_install::Identity::WindowsMsi {
+                        rss_mdm_software_service::installation::package::Identity::WindowsMsi {
                             product,
                             publisher,
                         } => Identity::WindowsMsi { product, publisher },
-                        rss_mdm_execution_service::agent_install::Identity::WindowsMsix {
+                        rss_mdm_software_service::installation::package::Identity::WindowsMsix {
                             family,
                             identity,
                             minimum_os,
@@ -150,6 +168,14 @@ impl Business for WindowsBusiness {
             )
             .await
             .map_err(policy_fault)?;
+            self.3
+                .windows_before_receipts_in(tx, p, audit)
+                .await
+                .map_err(software_fault)?;
+            self.4
+                .windows_before_receipts_in(tx, p, audit)
+                .await
+                .map_err(registration_fault)?;
             let mut after = None;
             loop {
                 let ids = self
@@ -183,6 +209,20 @@ impl Business for WindowsBusiness {
                         )
                         .await
                         .map_err(fault)?,
+                        Owner::Software => {
+                            rss_mdm_software_service::deployment::settle_windows_receipt_in(
+                                &self.3, tx, id, complete, audit,
+                            )
+                            .await
+                            .map_err(software_fault)?
+                        }
+                        Owner::Registration => {
+                            rss_mdm_registration_service::installation::settle_windows_receipt_in(
+                                &self.4, tx, id, complete, audit,
+                            )
+                            .await
+                            .map_err(registration_fault)?
+                        }
                     }
                 }
                 after = Some(last);
@@ -191,10 +231,11 @@ impl Business for WindowsBusiness {
                 .finished_in(tx, p, &runs)
                 .await
                 .map_err(collection_fault)?;
-            self.0
+            self.3
                 .windows_after_receipts_in(tx, p, audit)
                 .await
-                .map_err(fault)
+                .map_err(software_fault)?;
+            Ok(())
         })
     }
     fn candidates<'a>(
@@ -209,7 +250,7 @@ impl Business for WindowsBusiness {
                 .await
                 .map_err(error)?
                 .into_iter()
-                .map(|v| (!v.bootstrap, v.id, operation(v)))
+                .map(|v| (true, v.id, operation(v)))
                 .collect::<Vec<_>>();
             candidates.extend(
                 self.1
@@ -218,6 +259,22 @@ impl Business for WindowsBusiness {
                     .map_err(policy_error)?
                     .into_iter()
                     .map(|v| (true, v.id, configuration_operation(v))),
+            );
+            candidates.extend(
+                self.3
+                    .windows_candidates_on(c, p)
+                    .await
+                    .map_err(software_error)?
+                    .into_iter()
+                    .map(|v| (true, v.id, software_operation(v))),
+            );
+            candidates.extend(
+                self.4
+                    .windows_candidates_on(c, p)
+                    .await
+                    .map_err(registration_error)?
+                    .into_iter()
+                    .map(|v| (!v.bootstrap, v.id, registration_operation(v))),
             );
             candidates.sort_by_key(|v| (v.0, v.1));
             candidates.truncate(64);
@@ -252,6 +309,18 @@ impl Business for WindowsBusiness {
                     .await
                     .map(operation)
                     .map_err(error),
+                Owner::Software => self
+                    .3
+                    .windows_operation_on(c, p, id)
+                    .await
+                    .map(software_operation)
+                    .map_err(software_error),
+                Owner::Registration => self
+                    .4
+                    .windows_operation_on(c, p, id)
+                    .await
+                    .map(registration_operation)
+                    .map_err(registration_error),
             }
         })
     }
@@ -313,6 +382,50 @@ impl Business for WindowsBusiness {
                     )
                     .await
                     .map_err(error),
+                Owner::Software => self
+                    .3
+                    .windows_dispatch_failure_on(
+                        c,
+                        p,
+                        id,
+                        reason,
+                        phase.map(|p| match p {
+                            AttemptPhase::Prepare => {
+                                rss_mdm_software_service::deployment::AttemptPhase::Prepare
+                            }
+                            AttemptPhase::Execute => {
+                                rss_mdm_software_service::deployment::AttemptPhase::Execute
+                            }
+                            AttemptPhase::Observe => {
+                                rss_mdm_software_service::deployment::AttemptPhase::Observe
+                            }
+                        }),
+                        context,
+                    )
+                    .await
+                    .map_err(software_error),
+                Owner::Registration => self
+                    .4
+                    .windows_dispatch_failure_on(
+                        c,
+                        p,
+                        id,
+                        reason,
+                        phase.map(|p| match p {
+                            AttemptPhase::Prepare => {
+                                rss_mdm_registration_service::installation::AttemptPhase::Prepare
+                            }
+                            AttemptPhase::Execute => {
+                                rss_mdm_registration_service::installation::AttemptPhase::Execute
+                            }
+                            AttemptPhase::Observe => {
+                                rss_mdm_registration_service::installation::AttemptPhase::Observe
+                            }
+                        }),
+                        context,
+                    )
+                    .await
+                    .map_err(registration_error),
             }
         })
     }
@@ -406,6 +519,18 @@ impl WakeDemand for WindowsBusiness {
                     .await
                     .map_err(collection_fault)?,
             );
+            candidates.extend(
+                self.3
+                    .windows_wake_candidates_in(c, after)
+                    .await
+                    .map_err(software_error)?,
+            );
+            candidates.extend(
+                self.4
+                    .windows_wake_candidates_in(c, after)
+                    .await
+                    .map_err(registration_error)?,
+            );
             candidates.sort();
             candidates.dedup();
             candidates.truncate(32);
@@ -435,7 +560,17 @@ impl WakeDemand for WindowsBusiness {
                 .windows_wake_pending_on(c, device, registration, generation)
                 .await
                 .map_err(collection_fault)?;
-            Ok(execution || configuration || collection)
+            let software = self
+                .3
+                .windows_wake_pending_in(c, device, registration, generation)
+                .await
+                .map_err(software_error)?;
+            let bootstrap = self
+                .4
+                .windows_wake_pending_in(c, device, registration, generation)
+                .await
+                .map_err(registration_error)?;
+            Ok(execution || configuration || collection || software || bootstrap)
         })
     }
 }
@@ -490,5 +625,117 @@ fn collection_fault(
         Fault::Request(e) => e.into(),
         Fault::Sql(e) => e.into(),
         Fault::Storage(e) => e.into(),
+    }
+}
+
+fn software_error(
+    e: rss_mdm_software_service::deployment::Error,
+) -> rss_mdm_windows_channel::Error {
+    use rss_mdm_software_service::deployment::Error as E;
+    use rss_mdm_windows_channel::Missing;
+    use rss_mdm_windows_channel::{Error as A, Failure};
+    match e { E::MdmSoftwareDisabled => A::Forbidden, E::Malformed => A::Malformed, E::CertificateRequest => A::CertificateRequest,
+            E::Unauthorized => A::Unauthorized, E::Forbidden => A::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+            E::EnrollmentPaused=> A::EnrollmentPaused, E::CommitUnknown => A::CommitUnknown, E::RollbackFailed => A::RollbackFailed, E::Unsupported => A::Unsupported,
+            E::NotFound => A::NotFound, E::Resource(_) => A::Missing(Missing::Resource),
+            E::Execution(e) => A::Missing(match e { rss_mdm_software_service::deployment::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_software_service::deployment::missing::ExecutionError::MissingTask => Missing::Task }),
+            E::Publication(e) => A::Missing(match e { rss_mdm_software_service::management::publication::error::PublicationError::MissingSource => Missing::SoftwareSource, rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication => Missing::SoftwarePublication }),
+            E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
+            E::Unavailable(f) => A::Unavailable(match f {
+                rss_mdm_software_service::deployment::Failure::RequestDeadline => Failure::RequestDeadline,
+                rss_mdm_software_service::deployment::Failure::Audit => Failure::Audit,
+                rss_mdm_software_service::deployment::Failure::AuditIntegrity => Failure::AuditIntegrity,
+                rss_mdm_software_service::deployment::Failure::AuditAdmission => Failure::AuditAdmission,
+                rss_mdm_software_service::deployment::Failure::AuditIsolation => Failure::AuditIsolation,
+                rss_mdm_software_service::deployment::Failure::AuditContract => Failure::AuditContract,
+
+                _ => Failure::Business,
+            }),
+        }
+}
+
+fn software_fault(
+    e: rss_mdm_software_service::deployment::transaction::Fault,
+) -> rss_mdm_windows_channel::Error {
+    use rss_mdm_software_service::deployment::transaction::Fault;
+    match e {
+        Fault::Request(e) => software_error(e),
+        Fault::Storage(e) => e.into(),
+        Fault::Sql(e) => e.into(),
+    }
+}
+
+fn software_operation(
+    v: rss_mdm_software_service::deployment::windows_business::WindowsOperation,
+) -> Operation {
+    Operation {
+        id: v.id,
+        request: v.request,
+        user: v.user,
+        matches: v.matches,
+        dispatch: v.dispatch,
+        receipt: v.receipt,
+        observe: v.observe,
+        replay: v.replay,
+        software: v.software,
+        agent_minimum_os: v.agent_minimum_os,
+        minimum_os: v.minimum_os,
+        observation: v.observation,
+    }
+}
+
+fn registration_error(
+    e: rss_mdm_registration_service::installation::Error,
+) -> rss_mdm_windows_channel::Error {
+    use rss_mdm_registration_service::installation::Error as E;
+    use rss_mdm_windows_channel::Missing;
+    use rss_mdm_windows_channel::{Error as A, Failure};
+    match e { E::MdmSoftwareDisabled => A::Forbidden, E::Malformed => A::Malformed, E::CertificateRequest => A::CertificateRequest,
+            E::Unauthorized => A::Unauthorized, E::Forbidden => A::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+            E::EnrollmentPaused=> A::EnrollmentPaused, E::CommitUnknown => A::CommitUnknown, E::RollbackFailed => A::RollbackFailed, E::Unsupported => A::Unsupported,
+            E::NotFound => A::NotFound, E::Resource(_) => A::Missing(Missing::Resource),
+            E::Execution(e) => A::Missing(match e { rss_mdm_registration_service::installation::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_registration_service::installation::missing::ExecutionError::MissingTask => Missing::Task }),
+
+            E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
+            E::Unavailable(f) => A::Unavailable(match f {
+                rss_mdm_registration_service::installation::Failure::RequestDeadline => Failure::RequestDeadline,
+                rss_mdm_registration_service::installation::Failure::Audit => Failure::Audit,
+                rss_mdm_registration_service::installation::Failure::AuditIntegrity => Failure::AuditIntegrity,
+                rss_mdm_registration_service::installation::Failure::AuditAdmission => Failure::AuditAdmission,
+                rss_mdm_registration_service::installation::Failure::AuditIsolation => Failure::AuditIsolation,
+                rss_mdm_registration_service::installation::Failure::AuditContract => Failure::AuditContract,
+
+                _ => Failure::Business,
+            }),
+        }
+}
+
+fn registration_fault(
+    e: rss_mdm_registration_service::installation::transaction::Fault,
+) -> rss_mdm_windows_channel::Error {
+    use rss_mdm_registration_service::installation::transaction::Fault;
+    match e {
+        Fault::Request(e) => registration_error(e),
+        Fault::Storage(e) => e.into(),
+        Fault::Sql(e) => e.into(),
+    }
+}
+
+fn registration_operation(
+    v: rss_mdm_registration_service::installation::windows_business::WindowsOperation,
+) -> Operation {
+    Operation {
+        id: v.id,
+        request: v.request,
+        user: v.user,
+        matches: v.matches,
+        dispatch: v.dispatch,
+        receipt: v.receipt,
+        observe: v.observe,
+        replay: v.replay,
+        software: v.software,
+        agent_minimum_os: v.agent_minimum_os,
+        minimum_os: v.minimum_os,
+        observation: v.observation,
     }
 }

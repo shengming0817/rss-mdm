@@ -1,10 +1,8 @@
 //! Product execution contracts, lifecycle, storage and read service.
 pub mod action_admission;
 pub mod action_contract;
-pub mod agent_install;
 mod database;
 pub mod device_control;
-pub mod enrollment;
 mod error;
 pub mod frozen;
 pub mod model;
@@ -22,21 +20,17 @@ pub use model::{
 };
 use rss_mdm_authorization_service as authorization;
 
-pub mod self_service;
 mod target;
 pub use target::Target;
 
-use rss_mdm_inventory_service::{assets, collection};
+use rss_mdm_inventory_service::collection;
 use rss_mdm_registration_service::device;
 pub mod actions;
 mod apple;
 mod apple_assets;
-mod bootstrap_delivery;
 pub mod health;
 mod input_storage;
 mod lifecycle;
-mod managed_registration;
-mod native_installation;
 mod retirement;
 mod windows_wake;
 pub use retirement::retire_in;
@@ -73,7 +67,6 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 pub struct ExecutionService {
     pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) worker_concurrency: usize,
-    pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
     pub(crate) readiness: health::Readiness,
@@ -88,8 +81,6 @@ pub struct Dependencies {
     pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub worker_concurrency: usize,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
-    pub sessions: Arc<authorization::session::SessionAuthority>,
-    pub inputs: Arc<Inputs>,
     pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn agent_facts::Store>,
@@ -105,7 +96,6 @@ pub struct Dependencies {
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub tenant: TenantId,
     pub instance: String,
-    pub content: Option<Arc<rss_mdm_content_service::Store>>,
 }
 impl ExecutionService {
     /// The production durable store, including owner health and settlement semantics.
@@ -121,7 +111,6 @@ impl ExecutionService {
                 capacity: dependencies.capacity,
                 recovery_credentials: dependencies.recovery_credentials,
 
-                inputs: dependencies.inputs,
                 source: dependencies.source,
                 protection: dependencies.protection,
                 agent_store: dependencies.agent_store,
@@ -137,13 +126,11 @@ impl ExecutionService {
                 reconcile_messaging: dependencies.reconcile_messaging,
                 tenant: dependencies.tenant,
                 instance: dependencies.instance,
-                content: dependencies.content,
             },
             worker_concurrency: dependencies.worker_concurrency,
             worker_budget: dependencies.worker_budget,
             readiness: Default::default(),
 
-            sessions: dependencies.sessions,
             outbox: dependencies.outbox,
             reconcile: dependencies.reconcile,
         }
@@ -187,12 +174,6 @@ pub use transactions::ExecutionMaterials;
 
 pub mod queries;
 
-/// Host-owned admission for operations that require a working Agent bootstrap listener.
-/// Material and transaction authorities are still checked by each operation.
-pub trait AgentInstallationAdmission: Send + Sync {
-    fn ready_signing_revision(&self, now: i64) -> Option<u64>;
-}
-
 /// Policy publication receives immutable input preparation, never execution readers or workers.
 pub struct Inputs {
     pub(crate) runtime: Arc<PgRuntime>,
@@ -201,16 +182,10 @@ pub struct Inputs {
 }
 /// Immutable preparation ports shared by independently bound transaction participants.
 pub struct InputMaterials {
-    pub software_distribution: SoftwareDistribution,
-    pub product_origin: String,
     pub recovery_enabled: bool,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
-    pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
-    pub bootstrap: Option<std::collections::BTreeMap<String, String>>,
-    pub enrollment_entries: crate::enrollment::Entries,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
     pub signing_enabled: bool,
-    pub agent_installation: Arc<dyn AgentInstallationAdmission>,
 }
 impl Inputs {
     /// Bind preparation and publication to the actual initiating runtime.
@@ -230,9 +205,6 @@ impl Inputs {
     }
 }
 
-mod agent_preparation;
-pub mod enrollment_preparation;
-
 pub const INSTALL_SQL: &str = concat!(
     include_str!("../schema/install.sql"),
     "\n",
@@ -250,36 +222,7 @@ pub(crate) mod credential_tasks;
 
 mod credential_maintenance;
 
-/// Host-owned software admission, read once with the rest of product configuration.
-#[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SoftwareDistribution {
-    #[serde(default)]
-    pub mdm_enabled: bool,
-}
-impl Inputs {
-    pub fn software_distribution(&self) -> SoftwareDistribution {
-        self.materials.software_distribution
-    }
-    pub fn admit_software_channel(
-        &self,
-        action: &rss_mdm_policy::Action,
-    ) -> std::result::Result<(), Error> {
-        if matches!(
-            action,
-            rss_mdm_policy::Action::Software {
-                channel: rss_mdm_policy::SoftwareChannel::Mdm,
-                ..
-            }
-        ) && !self.materials.software_distribution.mdm_enabled
-        {
-            return Err(Error::MdmSoftwareDisabled);
-        }
-        Ok(())
-    }
-}
-
-mod native_software;
+impl Inputs {}
 
 pub mod device_access;
 
@@ -291,14 +234,6 @@ pub mod source_changes;
 pub const SOURCE_CHANGES_SQL: &str = include_str!("../schema/source-changes.sql");
 
 impl crate::transactions::ExecutionTransactions {
-    pub(crate) fn admission(&self) -> queries::Admission {
-        queries::Admission {
-            software_distribution: self.inputs.materials.software_distribution,
-            source: self.source.clone(),
-            software: self.inputs.materials.software.clone(),
-            agent_store: self.agent_store.clone(),
-        }
-    }
     pub(crate) async fn required_command(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -309,15 +244,9 @@ impl crate::transactions::ExecutionTransactions {
             .await?
             .ok_or_else(|| Error::Unavailable(Failure::CommandInvariant).into())
     }
-    pub(crate) fn installation_authorization_time(&self, database_now: i64) -> i64 {
-        database_now
-    }
 }
 
 /// Native registration reads frozen Execution authority through this narrow profile.
-pub const NATIVE_SOURCE_ACCESS_CONTRACT: &str = include_str!("native-source-access-contract.json");
-pub const NATIVE_SOURCE_ADMISSION_SQL: &str = include_str!("native-source-admission.sql");
-
 pub mod configuration_cleanup;
 
 pub mod task_cleanup;

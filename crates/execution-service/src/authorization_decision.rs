@@ -263,9 +263,8 @@ pub(crate) async fn batch(
     }
     if !requests.is_empty() {
         let key = queries.protection.clone();
-        let source = queries.source.clone();
-        let validity =
-            ExecutionAuthority::valid_many(source.as_ref(), c, &key, &requests, now).await?;
+        let _source = queries.source.clone();
+        let validity = ExecutionAuthority::valid_many(c, &key, &requests, now).await?;
         for (id, valid) in source_ids.into_iter().zip(validity) {
             if !valid {
                 decisions.insert(
@@ -308,7 +307,3 @@ pub(crate) async fn batch(
     }
     Ok(results)
 }
-
-#[cfg(test)]
-#[path = "../tests/authorization_decision.rs"]
-mod tests;

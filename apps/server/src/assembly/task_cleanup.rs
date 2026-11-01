@@ -7,8 +7,34 @@ use rss_mdm_execution_service::{
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::{future::Future, pin::Pin};
 use uuid::Uuid;
-pub(super) struct Cleanup;
+pub(super) struct Cleanup(pub std::sync::Arc<rss_mdm_software_service::deployment::Transactions>);
 impl TaskCleanup for Cleanup {
+    fn installations_removed_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        retirement: Uuid,
+        target: &'a rss_mdm_execution_service::Target,
+    ) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            self.0
+                .prior_agent_installations_removed_in(tx, retirement, &channel(target))
+                .await
+                .map_err(software)
+        })
+    }
+    fn remove_software_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        retirement: Uuid,
+        target: &'a rss_mdm_execution_service::Target,
+    ) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            self.0
+                .cleanup_software_retirement_in(tx, retirement, &channel(target))
+                .await
+                .map_err(software)
+        })
+    }
     fn advance_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
@@ -21,13 +47,19 @@ impl TaskCleanup for Cleanup {
                 Ok(async {
                     let mut progress=Progress::default();
                     for registration in &registrations {
+                        rss_mdm_software_service::deployment::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(software_error)?;
+                        rss_mdm_registration_service::installation::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(installation_error)?;
+                        rss_mdm_registration_service::enrollment::tasks::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(enrollment)?;
                         rss_mdm_script_service::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(script)?;
                         rss_mdm_inventory_service::collection::execution::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(collection)?;
                     }
                     let script=rss_mdm_script_service::retirement::progress_on(c,&tenant,&registrations).await.map_err(script)?;
                     let collection=rss_mdm_inventory_service::collection::execution::retirement::progress_on(c,&tenant,&registrations).await.map_err(collection)?;
-                    progress.pending=script.0 || collection.0;
-                    progress.unknown=script.1.into_iter().chain(collection.1).min();
+                    let enrollment=rss_mdm_registration_service::enrollment::tasks::retirement::progress_on(c,&tenant,&registrations).await.map_err(enrollment)?;
+                    let software=rss_mdm_software_service::deployment::retirement::progress_on(c,&tenant,&registrations).await.map_err(software)?;
+                    let native=rss_mdm_registration_service::installation::retirement::progress_on(c,&tenant,&registrations).await.map_err(installation)?;
+                    progress.pending=script.0 || collection.0 || enrollment.0 || software.0 || native.0;
+                    progress.unknown=script.1.into_iter().chain(collection.1).chain(enrollment.1).chain(software.1).chain(native.1).min();
                     Ok(progress)
                 }.await)
             })).await?
@@ -62,5 +94,78 @@ fn script(error: rss_mdm_script_service::transaction::Fault) -> Fault {
             E::Unavailable => Error::Unavailable(Failure::CommandStorage),
         }
         .into(),
+    }
+}
+
+fn channel(
+    t: &rss_mdm_execution_service::Target,
+) -> rss_mdm_software_service::deployment::retirement::Channel {
+    rss_mdm_software_service::deployment::retirement::Channel {
+        device: t.device.clone(),
+        registration: t.registration,
+        generation: t.generation,
+    }
+}
+fn software_error(e: rss_mdm_software_service::deployment::Error) -> Fault {
+    use rss_mdm_software_service::deployment::Error as E;
+    match e {
+        E::CommitUnknown => Error::CommitUnknown,
+        E::RollbackFailed => Error::RollbackFailed,
+        E::Malformed => Error::Malformed,
+        E::Forbidden => Error::Forbidden,
+        E::Unauthorized => Error::Unauthorized,
+        E::Conflict => Error::Conflict,
+        _ => Error::Unavailable(Failure::CommandStorage),
+    }
+    .into()
+}
+fn software(e: rss_mdm_software_service::deployment::transaction::Fault) -> Fault {
+    use rss_mdm_software_service::deployment::transaction::Fault as F;
+    match e {
+        F::Request(e) => software_error(e),
+        F::Sql(e) => Fault::Sql(e),
+        F::Storage(e) => Fault::Storage(e),
+    }
+}
+fn installation_error(e: rss_mdm_registration_service::installation::Error) -> Fault {
+    use rss_mdm_registration_service::installation::Error as E;
+    match e {
+        E::CommitUnknown => Error::CommitUnknown,
+        E::RollbackFailed => Error::RollbackFailed,
+        E::Malformed => Error::Malformed,
+        E::Forbidden => Error::Forbidden,
+        E::Unauthorized => Error::Unauthorized,
+        E::Conflict => Error::Conflict,
+        _ => Error::Unavailable(Failure::CommandStorage),
+    }
+    .into()
+}
+fn installation(e: rss_mdm_registration_service::installation::transaction::Fault) -> Fault {
+    use rss_mdm_registration_service::installation::transaction::Fault as F;
+    match e {
+        F::Request(e) => installation_error(e),
+        F::Sql(e) => Fault::Sql(e),
+        F::Storage(e) => Fault::Storage(e),
+    }
+}
+fn enrollment_error(e: rss_mdm_registration_service::enrollment::tasks::Error) -> Fault {
+    use rss_mdm_registration_service::enrollment::tasks::Error as E;
+    match e {
+        E::CommitUnknown => Error::CommitUnknown,
+        E::RollbackFailed => Error::RollbackFailed,
+        E::Malformed => Error::Malformed,
+        E::Forbidden => Error::Forbidden,
+        E::Unauthorized => Error::Unauthorized,
+        E::Conflict => Error::Conflict,
+        _ => Error::Unavailable(Failure::CommandStorage),
+    }
+    .into()
+}
+fn enrollment(e: rss_mdm_registration_service::enrollment::tasks::transaction::Fault) -> Fault {
+    use rss_mdm_registration_service::enrollment::tasks::transaction::Fault as F;
+    match e {
+        F::Request(e) => enrollment_error(e),
+        F::Sql(e) => Fault::Sql(e),
+        F::Storage(e) => Fault::Storage(e),
     }
 }

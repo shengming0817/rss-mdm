@@ -75,7 +75,6 @@ pub(crate) async fn accept_for_device(
     now: i64,
     id: Uuid,
 ) -> Result<()> {
-    use rss_mdm_policy::Frequency;
     let (version, owner, schedule, lifetime, frequency, entry, entry_source) = match policy {
         db::ScheduledPolicy::Credential(definition) => {
             if !policy.authorized_in(service, tx, target, now).await? {
@@ -97,26 +96,10 @@ pub(crate) async fn accept_for_device(
                 definition.entry_source(),
             )
         }
-        db::ScheduledPolicy::Enrollment(definition) => {
-            if !definition.authorized_in(service, tx, target, now).await? {
-                return Ok(());
-            }
-            (
-                definition.id,
-                definition.owner,
-                &definition.frozen.schedule,
-                definition.frozen.run_lifetime_seconds,
-                Frequency::OncePerVersion,
-                1,
-                format!("scope:{}", definition.policy.definition.scope),
-            )
-        }
-        db::ScheduledPolicy::DeviceAccess(_)
-        | db::ScheduledPolicy::Retirement(_)
-        | db::ScheduledPolicy::Software(_) => return Ok(()),
+
+        db::ScheduledPolicy::DeviceAccess(_) | db::ScheduledPolicy::Retirement(_) => return Ok(()),
     };
-    let enrollment = matches!(policy, db::ScheduledPolicy::Enrollment(_));
-    let (pending, last) = policy_pending_in(tx, owner, version, target, now, enrollment).await?;
+    let (pending, last) = policy_pending_in(tx, owner, version, target, now).await?;
     if pending {
         return Ok(());
     }
@@ -126,16 +109,7 @@ pub(crate) async fn accept_for_device(
     let explicit=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query_as::<_,(Uuid,i64,i64)>("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND $5 AND NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1").bind(tenant).bind(version).bind(device).bind(now).bind(allow_explicit).fetch_optional(c).await
     })).await?;
-    if enrollment && explicit.is_none() {
-        let tenant = tx.tenant_id().to_string();
-        let registration = target.registration;
-        let prior=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND v.frozen->>'kind'='mdm_enrollment')").bind(tenant).bind(registration).fetch_one(c).await
-        })).await?;
-        if prior {
-            return Ok(());
-        }
-    }
+
     let (coordinate, event) = if let AdmissionTrigger::Custom { request, at, .. } = trigger {
         (at, format!("event:{request}"))
     } else if let Some((id, at, _)) = explicit {
@@ -200,7 +174,6 @@ pub(crate) async fn accept_for_device(
                 AdmissionTrigger::Custom { origin, .. } => origin,
                 _ => rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
             },
-            invocation: None,
             source: db::Source::Policy { version },
             target,
             id,
@@ -216,7 +189,7 @@ pub(crate) async fn accept_for_device(
 }
 pub struct RunInput<'a> {
     pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
-    pub invocation: Option<crate::self_service::Invocation>,
+
     pub source: db::Source,
     pub target: &'a crate::Target,
     pub id: Uuid,
@@ -232,7 +205,7 @@ pub(crate) async fn queue_run_in(
 ) -> Result<()> {
     let RunInput {
         origin,
-        invocation,
+
         source,
         target,
         id,
@@ -252,8 +225,7 @@ pub(crate) async fn queue_run_in(
     let (_, version) = source.columns();
     let (policy, frozen) =
         crate::sources::storage::version_in(&service.policy_reader, tx, version).await?;
-    let retirement = matches!(source, db::Source::RetirementSoftware { .. })
-        || matches!(frozen, crate::frozen::Frozen::UnmanageDevice { .. });
+    let retirement = matches!(frozen, crate::frozen::Frozen::UnmanageDevice { .. });
     let reader = service.source.clone();
     let tenant = tx.tenant_id();
     let scope = policy.definition.scope;
@@ -298,15 +270,11 @@ pub(crate) async fn queue_run_in(
     let target = target.clone();
     let digest = fingerprint.clone();
     let origin = checked_input(serde_json::to_value(origin))?;
-    let invocation = invocation
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(|_| Error::Malformed)?;
     let (kind, version) = source.columns();
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,invocation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).bind(invocation).execute(c).await?;Ok(())
+        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).execute(c).await?;Ok(())
     })).await?;
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
@@ -354,14 +322,13 @@ pub async fn policy_pending_in(
     version: Uuid,
     target: &crate::Target,
     now: i64,
-    enrollment: bool,
 ) -> Result<(bool, Option<i64>)> {
     let tenant = tx.tenant_id().to_string();
     let device = target.device.clone();
     let registration = target.registration.to_string();
     let value=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or(state->>'execution'='unknown' OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND (v.policy=$2::uuid OR ($7 AND v.frozen->>'kind'='mdm_enrollment')) AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
-            .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).bind(enrollment).fetch_one(c).await
+        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or(state->>'execution'='unknown' OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
+            .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).fetch_one(c).await
     })).await?;
     Ok(value)
 }

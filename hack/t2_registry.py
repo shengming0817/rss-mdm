@@ -6,6 +6,18 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'software.deployment': dict(prefix='assembly::software_t2::', profiles=('shared',),
+        inputs=('crates/software-service/*', 'apps/server/src/assembly/software*',
+                'apps/server/tests/software/*', 'apps/server/tests/support/command_runtime.rs',
+                'apps/server/tests/support/planning.rs', 'hack/task_trust_materials.py')),
+    'registration.installation': dict(prefix='assembly::registration_installation_t2::', profiles=('shared',),
+        inputs=('crates/registration-service/src/installation/*', 'crates/registration-service/src/agent*',
+                'crates/registration-service/src/agent/*', 'crates/registration-service/schema/*',
+                'crates/software-service/src/installation/*', 'crates/software-service/src/deployment/managed_registration.rs',
+                'crates/software-service/src/deployment/native_installation.rs',
+                'apps/server/src/assembly/registration*', 'apps/server/tests/registration/*',
+                'apps/server/tests/software/support.rs', 'apps/server/tests/support/native_identity.rs',
+                'hack/native_registration_materials.py', 'hack/native_protocol_materials.py', 'hack/task_trust_materials.py')),
     'execution.owners': dict(prefix='assembly::execution_owners_t2::', profiles=('shared',),
         inputs=('crates/script-service/*', 'crates/inventory-service/src/collection/*',
                 'crates/inventory-service/schema/*', 'crates/agent-channel/*',
@@ -37,7 +49,7 @@ MODULES = {
     'windows.protocol': dict(prefix='windows_t2::', profiles=('shared',),
         inputs=('crates/windows-channel/*',
                 'crates/policy-service/src/configuration/windows*', 'crates/policy-service/src/configuration/protocol.rs', 'crates/policy-service/src/configuration/storage.rs', 'crates/policy-service/src/configuration/authority.rs', 'crates/policy-service/schema/*', 'crates/registration-service/src/command_authority.rs', 'crates/registration-service/schema/command-authorities.sql', 'apps/server/src/assembly/native_ownership.rs', 'apps/server/src/assembly/configuration_channels.rs', 'crates/execution-service/schema/*', 'crates/execution-service/src/protocol.rs',
-                'crates/execution-service/src/windows_*', 'crates/execution-service/src/native_installation.rs',
+                'crates/execution-service/src/windows_*',
                 'crates/windows-mdm/src/native/*', 'apps/server/src/assembly/windows_*',
                 'apps/server/tests/windows/protocol.rs', 'apps/server/tests/support/native_identity.rs',
                 'apps/server/src/assembly/command*', 'apps/server/src/assembly/execution.rs',

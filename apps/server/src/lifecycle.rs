@@ -304,8 +304,8 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             rss_mdm_execution_service::Resource(execution.service.clone()),
                         ));
 let policy_inputs=Arc::new(rss_mdm_execution_service::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.materials.inputs.clone()));
-let policies=crate::assembly::policy::management(&policy_application,policy_inputs,&cursor_key,content.clone(),protection.clone(),compiled.config.software_distribution.mdm_enabled,execution.materials.inputs.signing_enabled).await.map_err(assembly_error)?;
-let events=crate::assembly::policy::events(policy_application.clone(),execution.materials.clone()).await.map_err(assembly_error)?;
+let policies=crate::assembly::policy::management(&policy_application,policy_inputs,Arc::new(rss_mdm_software_service::deployment::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.software.materials.inputs.clone())),compiled.config.enrollment_entries.clone(),&cursor_key,content.clone(),protection.clone(),compiled.config.software_distribution.mdm_enabled,execution.materials.inputs.signing_enabled).await.map_err(assembly_error)?;
+let events=crate::assembly::policy::events(policy_application.clone(),execution.materials.clone(),execution.software.materials.clone(),execution.registration.materials.clone()).await.map_err(assembly_error)?;
                         let telemetry = match &compiled.config.telemetry {
                             Some(config) => {
 let telemetry_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.telemetry,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.telemetry_control_connections(),audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
@@ -546,7 +546,10 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                     );
                     launch.stage_deferred_task_with_token(execution.script_work.clone().registration(signals.handle(crate::worker_wake::Work::ScriptRecovery)).critical());
                     launch.stage_deferred_task_with_token(execution.collection_work.clone().registration(signals.handle(crate::worker_wake::Work::CollectionRecovery)).critical());
-                    launch.stage_deferred_task_with_token(crate::assembly::task_relay::registration(execution.service.clone(),execution.script_work.clone(),execution.collection_work.clone(),signals.handle(crate::worker_wake::Work::CommandRelay)).critical());
+                    launch.stage_deferred_task_with_token(execution.software.service.clone().registration(signals.software()).critical());
+                    launch.stage_deferred_task_with_token(execution.registration.native.clone().registration(signals.installation()).critical());
+                    launch.stage_deferred_task_with_token(execution.registration.worker.clone().registration(signals.handle(crate::worker_wake::Work::EnrollmentRecovery)).critical());
+                    launch.stage_deferred_task_with_token(crate::assembly::task_relay::registration(execution.service.clone(),execution.script_work.clone(),execution.collection_work.clone(),execution.software.service.clone(),execution.registration.native.clone(),execution.registration.worker.clone(),signals.handle(crate::worker_wake::Work::CommandRelay)).critical());
                     launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
                     launch.stage_deferred_task_with_token(
                         query_work
@@ -581,7 +584,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         launch.stage_task_with_token(
                             rss_mdm_windows_channel::push::registration(
                                 windows.channel.clone(),
-                                Arc::new(crate::assembly::windows_business::WindowsBusiness(execution.service.clone(),execution.configuration.clone(),execution.collections.clone())),
+                                Arc::new(crate::assembly::windows_business::WindowsBusiness(execution.service.clone(),execution.configuration.clone(),execution.collections.clone(),execution.software.service.clone(),execution.registration.native.clone())),
                                 execution.protection.clone(),
                                 access.windows_store(),
                                 audit_store.clone(),

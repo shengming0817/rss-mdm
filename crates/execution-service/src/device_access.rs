@@ -838,7 +838,7 @@ pub(crate) async fn reconcile_in(
             tx,
             crate::actions::production::RunInput {
                 origin,
-                invocation: None,
+
                 source: Source::DeviceAccess {
                     version: binding.policy_version,
                     delivery,

@@ -211,38 +211,6 @@ impl From<rss_mdm_content_service::service::Error> for Error {
     }
 }
 
-impl From<rss_mdm_software_service::management::Error> for Error {
-    fn from(error: rss_mdm_software_service::management::Error) -> Self {
-        use rss_mdm_software_service::management::{Error as S, Failure as F};
-        match error {
-            S::Malformed => Self::Malformed,
-            S::Forbidden => Self::Forbidden,
-            S::AgentPackage(_) => Self::Conflict,
-            S::Conflict => Self::Conflict,
-            S::Unsupported => Self::Unsupported,
-            S::ResourceMissing => Self::Resource(crate::error::ResourceError::Missing),
-            S::Publication(e) => Self::Publication(e),
-            S::CommitUnknown => Self::CommitUnknown,
-            S::RollbackFailed => Self::RollbackFailed,
-            S::Authorization(e) => e.into(),
-            S::Audit(e) => e.as_ref().into(),
-            S::Unavailable(e) => match e {
-                F::SoftwareCatalogStorage => Self::Unavailable(Failure::SoftwareCatalogStorage),
-                F::SoftwareCatalogInvariant => Self::Unavailable(Failure::SoftwareCatalogInvariant),
-                F::PublicationStorage => Self::Unavailable(Failure::PublicationStorage),
-                F::Clock => Self::Unavailable(Failure::Clock),
-                F::Runtime => Self::Unavailable(Failure::Runtime),
-                F::ContentStorage => Self::Unavailable(Failure::ContentStorage),
-                F::ContentInvariant => Self::Unavailable(Failure::ContentInvariant),
-                F::ContentMetadata => Self::Unavailable(Failure::ContentMetadata),
-                F::ContentDeadline => Self::Unavailable(Failure::ContentDeadline),
-                F::ContentCleanup => Self::Unavailable(Failure::ContentCleanup),
-                F::ContentConfiguration => Self::Configuration(ConfigIssue::Content),
-            },
-        }
-    }
-}
-
 impl From<rss_mdm_device_service::Error> for Error {
     fn from(e: rss_mdm_device_service::Error) -> Self {
         use rss_mdm_device_service::Error as E;

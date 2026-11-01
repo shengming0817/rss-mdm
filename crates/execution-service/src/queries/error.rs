@@ -6,13 +6,9 @@ pub enum Missing {
     Resource,
     Operation,
     Task,
-    SoftwareSource,
-    SoftwarePublication,
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum QueryError {
-    #[error("MDM software distribution is disabled")]
-    MdmSoftwareDisabled,
     #[error("invalid query")]
     Malformed,
     #[error("identity rejected")]
@@ -41,7 +37,6 @@ pub enum QueryError {
 impl From<crate::Error> for QueryError {
     fn from(e: crate::Error) -> Self {
         use crate::{Error, error::ResourceError, missing::ExecutionError};
-        use rss_mdm_software_service::management::publication::error::PublicationError;
         match e {
             Error::Malformed => Self::Malformed,
             Error::Unauthorized => Self::Unauthorized,
@@ -49,7 +44,7 @@ impl From<crate::Error> for QueryError {
             Error::Conflict => Self::Conflict,
             Error::ReadConflict => Self::ReadConflict,
             Error::CursorInvalidated => Self::CursorInvalidated,
-            Error::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
+
             Error::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             Error::CommitUnknown => Self::CommitUnknown,
             Error::RollbackFailed => Self::RollbackFailed,
@@ -59,12 +54,7 @@ impl From<crate::Error> for QueryError {
             Error::Resource(ResourceError::Missing) => Self::Missing(Missing::Resource),
             Error::Execution(ExecutionError::MissingOperation) => Self::Missing(Missing::Operation),
             Error::Execution(ExecutionError::MissingTask) => Self::Missing(Missing::Task),
-            Error::Publication(PublicationError::MissingSource) => {
-                Self::Missing(Missing::SoftwareSource)
-            }
-            Error::Publication(PublicationError::MissingPublication) => {
-                Self::Missing(Missing::SoftwarePublication)
-            }
+
             Error::EnrollmentPaused | Error::Configuration(_) | Error::CertificateRequest => {
                 Self::Unavailable(crate::Failure::CommandInvariant)
             }
