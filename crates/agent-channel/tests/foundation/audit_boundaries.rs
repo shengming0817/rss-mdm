@@ -21,24 +21,27 @@ pub fn rejected_audits(c: &Context) -> [RequestAudit; 2] {
 pub async fn snapshot(c: &Context) -> Result<Vec<serde_json::Value>> {
     let mut result = Vec::new();
     // Fixed tables cover both inserts and updates at each affected owner boundary.
-    for table in [
-        "rss_da.registrations",
-        "rss_da.report_sources",
-        "rss_da.agent_bindings",
-        "rss_da.agent_task_attempts",
-        "rss_da.agent_task_receipts",
-        "rss_da.agent_task_polls",
-        "rss_da.enrollment_runs",
-        "rss_da.enrollment_receipts",
-        "rss_da.pki_installations",
-        "rss_da.pki_operations",
-        "rss_da.signing_acknowledgements",
-        "rss_da.signing_observations",
-        "rss_audit.records",
+    macro_rules! rows {
+        ($table:literal) => {
+            concat!("SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM ", $table, " t")
+        };
+    }
+    for query in [
+        rows!("rss_da.registrations"),
+        rows!("rss_da.report_sources"),
+        rows!("rss_da.agent_bindings"),
+        rows!("rss_da.agent_task_attempts"),
+        rows!("rss_da.agent_task_receipts"),
+        rows!("rss_da.agent_task_polls"),
+        rows!("rss_da.enrollment_runs"),
+        rows!("rss_da.enrollment_receipts"),
+        rows!("rss_da.pki_installations"),
+        rows!("rss_da.pki_operations"),
+        rows!("rss_da.signing_acknowledgements"),
+        rows!("rss_da.signing_observations"),
+        rows!("rss_audit.records"),
     ] {
-        result.push(sqlx::query_scalar(&format!(
-            "SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM {table} t"
-        )).fetch_one(&c.operator).await?);
+        result.push(sqlx::query_scalar(query).fetch_one(&c.operator).await?);
     }
     Ok(result)
 }
@@ -55,7 +58,7 @@ pub async fn task_trust(
         c.tenant,
         signing,
         protection,
-        c.audit.clone(),
+        c.access_audit.clone(),
         Arc::new(rss_mdm_agent_channel::signature_retirement::PendingSignatures::new(DA)),
     )?;
     let ack = Acknowledgement {

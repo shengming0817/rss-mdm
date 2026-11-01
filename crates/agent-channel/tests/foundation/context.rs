@@ -98,6 +98,8 @@ pub struct Context {
     pub runtime: Arc<PgRuntime>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     identity_runtime: Arc<PgRuntime>,
+    access_runtime: Arc<PgRuntime>,
+    pub access_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     audit_pool: sqlx::PgPool,
     pub sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
 }
@@ -207,6 +209,12 @@ impl Context {
             )
             .await?,
         );
+        let access_runtime = inputs.runtime("da_access", tenant).await?;
+        let access_audit = Arc::new(
+            audit
+                .on_runtime(access_runtime.clone(), tenant, &budget.control())
+                .await?,
+        );
         let identity_runtime = inputs.runtime("da_identity_runtime", tenant).await?;
         let authority = rss_identity_postgres::Authority::connect_runtime(
             identity_runtime.clone(),
@@ -240,11 +248,14 @@ impl Context {
             audit,
             sessions,
             identity_runtime,
+            access_runtime,
+            access_audit,
             audit_pool,
         })
     }
     pub async fn close(&self) {
         self.identity_runtime.close().await;
+        self.access_runtime.close().await;
         self.runtime.close().await;
         self.audit_pool.close().await;
         self.access.close().await;

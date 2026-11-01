@@ -7,7 +7,7 @@ use rss_transactional_messaging_postgres::PgError;
 pub async fn verify(c: &Context) -> Result<()> {
     scope(c).await?;
     let runtime = c.inputs.runtime("da_policy_runtime", c.tenant).await?;
-    let cutoff = tokio::time::Instant::now().into_std() + Duration::from_secs(10);
+    let cutoff = rss_request_context::Clock::now(&context::Timer) + Duration::from_secs(10);
     assert!(
         !rss_mdm_policy_service::worker::configuration_input_suspended(
             &runtime, c.tenant, None, cutoff,
