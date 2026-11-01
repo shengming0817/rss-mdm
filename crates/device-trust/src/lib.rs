@@ -497,12 +497,7 @@ impl DeviceTrust {
                         rss_mdm_certificate::device_identity::subject(trust.purpose)
                             .map_err(invalid)?
                     )
-                    || !uri.as_str().starts_with(&format!(
-                        "{}{}:",
-                        rss_mdm_certificate::device_identity::identity_prefix(trust.purpose)
-                            .map_err(invalid)?,
-                        trust.tenant
-                    ))
+                    || !uri.as_str().starts_with(&identity_authority_prefix(trust)?)
                 {
                     return Err(Error::Unauthorized);
                 }

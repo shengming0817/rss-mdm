@@ -9,7 +9,7 @@ from ci import verify_capability_boundaries
 class CapabilityBoundaries(unittest.TestCase):
     def test_target_optional_renamed_and_build_edges_cannot_hide_forbidden_packages(self):
         names = ('group-service compliance-service recovery-observation certificate apple-mdm inventory-service software-service authorization-service '
-                 'registration-service script-service device-service content-service webhook-service management-http '
+                 'registration-service script-service device-service content-service webhook-service management-http device-access-http '
                  'task-state task-trust agent-channel windows-channel apple-channel query http-contract resource resource-postgres group group-postgres scope policy scope-postgres scope-service policy-service resource-service').split()
         packages = [dict(id=n, name='rss-mdm-' + n, dependencies=[]) for n in names]
         data = dict(packages=packages, workspace_members=names)
@@ -34,7 +34,7 @@ class CapabilityBoundaries(unittest.TestCase):
                             ('software-service', 'rss-mdm-agent-channel'),
                             ('software-service', 'rss-mdm-windows-channel'),
                             ('software-service', 'rss-mdm-apple-channel'),
-                            ('agent-channel','rss-mdm-device-service'), ('windows-channel','rss-mdm-device-service'), ('webhook-service','rss-mdm-management-http'), ('webhook-service','rss-mdm-inventory-service'), ('inventory-service', 'axum'), ('query', 'rss-identity-core'),
+                            ('device-access-http','rss-mdm-agent-channel'), ('agent-channel','rss-mdm-device-access-http'), ('task-trust','rss-mdm-device-access-http'), ('agent-channel','rss-mdm-device-service'), ('windows-channel','rss-mdm-device-service'), ('webhook-service','rss-mdm-management-http'), ('webhook-service','rss-mdm-inventory-service'), ('inventory-service', 'axum'), ('query', 'rss-identity-core'),
                             ('http-contract', 'rss-mdm-resource'), ('resource', 'rss-mdm-http-contract'),
                             ('scope', 'rss-mdm-policy-service'),
                             ('scope', 'rss-transactional-messaging-postgres'),

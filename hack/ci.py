@@ -335,10 +335,10 @@ def verify_capability_boundaries(data):
                         if name.endswith(('-service', '-postgres')) or
                         name in {'reqwest', 'hyper', 'tower', 'sqlx', 'axum'}}
         if owner in {'certificate', 'apple-mdm'}:
-            # Apple PSSO consumes shared value contracts; verify_agent_wire separately
+            # Certificate purposes and Apple PSSO consume canonical wire values; verify_agent_wire separately
             # rejects backend, OS execution and private-component dependencies.
             invalid |= {name for name in dependencies if name.startswith('rss-mdm-')
-                        and not (owner == 'apple-mdm' and name == 'rss-mdm-agent-wire')}
+                        and name != 'rss-mdm-agent-wire'}
         if owner in {'query', 'http-contract'}:
             invalid |= {name for name in dependencies if name.startswith(('rss-mdm-', 'rss-identity-')) and not (owner == 'http-contract' and name == 'rss-mdm-query')}
         require(not invalid, f'{owner}: forbidden production dependencies: {sorted(invalid)}')

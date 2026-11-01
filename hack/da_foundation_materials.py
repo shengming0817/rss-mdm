@@ -31,7 +31,8 @@ def main():
     for index in (1, 2, 3):
         run('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=rss-da-device', '-keyout', directory / f'device{index}.key', '-out', directory / f'device{index}.csr')
         (directory / f'device{index}.der').write_bytes(run('req', '-in', directory / f'device{index}.csr', '-outform', 'DER'))
-    (root / 'ca.conf').write_text((root / 'ca.conf').read_text() + '\npolicy=policy_any\n[policy_any]\ncommonName=supplied\n')
+    (root / 'issued').mkdir(mode=0o700)
+    (root / 'ca.conf').write_text((root / 'ca.conf').read_text() + f'\nnew_certs_dir={root}/issued\npolicy=policy_any\n[policy_any]\ncommonName=supplied\n')
     # The fixture intentionally allows renewing the same device subject.
     (root / 'index.attr').write_text('unique_subject = no\n')
 

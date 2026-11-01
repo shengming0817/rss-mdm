@@ -457,7 +457,7 @@ impl Service {
                 .iter()
                 .map(|v| STANDARD.decode(v).map_err(|_| Error::Corrupt))
                 .collect::<Result<Vec<_>, _>>()?;
-            if digest(&("agent_issuance_recovery", id, chain))?
+            if digest(&("certificate_issuance_recovery", id, chain))?
                 != record.try_get::<String, _>("digest").map_err(db)?
             {
                 return Err(Error::Corrupt);

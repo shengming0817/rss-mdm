@@ -17,8 +17,10 @@ class DependencyPolicy(unittest.TestCase):
         data = {'packages': [{'id': name, 'name': name, 'dependencies': []} for name in ci.LOCAL_PACKAGES], 'workspace_members': list(ci.LOCAL_PACKAGES)}
         apple = next((p for p in data['packages'] if p['name'] == 'rss-mdm-apple-mdm'))
         apple['dependencies'] = [{'name': 'rss-mdm-agent-wire', 'kind': None}]
+        certificate = next(p for p in data['packages'] if p['name'] == 'rss-mdm-certificate')
+        certificate['dependencies'] = [{'name': 'rss-mdm-agent-wire', 'kind': None}]
         ci.verify_capability_boundaries(data)
-        for owner, dependency in [('apple-mdm', 'rss-mdm-app'), ('apple-mdm', 'rss-mdm-apple-channel'), ('certificate', 'rss-mdm-agent-wire')]:
+        for owner, dependency in [('apple-mdm', 'rss-mdm-app'), ('apple-mdm', 'rss-mdm-apple-channel'), ('certificate', 'rss-mdm-registration-service')]:
             changed = copy.deepcopy(data)
             package = next((p for p in changed['packages'] if p['name'] == 'rss-mdm-' + owner))
             package['dependencies'].append({'name': dependency, 'kind': None})
@@ -58,7 +60,7 @@ class DependencyPolicy(unittest.TestCase):
         next((n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-app'))['deps'] = [{'pkg': name} for name in ci.IDENTITY_PACKAGES | {'rss-mdm-audit-integration', 'rss-mdm-backend-postgres-support'}]
         data['resolve']['nodes'][-2:-2] = [{'id': p['id'], 'features': [], 'deps': []} for p in extra]
         next((n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-software-service'))['deps'] = [{'pkg': 'rss-mdm-audit-integration'}]
-        for owner in ['rss-mdm-group-service','rss-mdm-compliance-service','rss-mdm-script-service', 'rss-mdm-task-trust', 'rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',  'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']:
+        for owner in ['rss-mdm-group-service','rss-mdm-compliance-service','rss-mdm-script-service', 'rss-mdm-task-trust', 'rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',  'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']:
             next((n for n in data['resolve']['nodes'] if n['id'] == owner))['deps'].append({'pkg': 'rss-mdm-audit-integration'})
         for kind in ('policy', 'resource', 'software-release'):
             next((n for n in data['resolve']['nodes'] if n['id'] == f'rss-mdm-{kind}-postgres'))['deps'].append({'pkg': 'rss-mdm-backend-postgres-support'})

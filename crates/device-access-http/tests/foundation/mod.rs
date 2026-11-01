@@ -56,16 +56,18 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         material.protection.clone(),
         c.access_audit.clone(),
     )?);
+    let request_audit = audit();
     let first = trust
         .change_task_trust(
             &proof,
-            &audit(),
+            &request_audit,
             Uuid::new_v4(),
             &Change::Prepare {
                 expected_revision: 0,
             },
         )
         .await?;
+    request_audit.finalize(None);
     let old_key = first
         .keys
         .iter()
@@ -120,6 +122,27 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .await?,
     )
     .await?;
+    // Identical CA material cannot confer authority in another installation or tenant.
+    {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use tokio_rustls::rustls::pki_types::CertificateDer;
+        let chain = candidate
+            .certificate_chain
+            .iter()
+            .map(|value| STANDARD.decode(value).map(CertificateDer::from))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for change_instance in [true, false] {
+            let mut other = registration.trust().trust.public()?;
+            if change_instance {
+                other.service_id = Uuid::new_v4();
+            } else {
+                other.tenant = Uuid::new_v4();
+            }
+            let other =
+                rss_mdm_device_trust::DeviceTrust::new(other, pki::Purpose::DaDevice, now())?;
+            assert!(other.verify(&chain, now()).is_err());
+        }
+    }
     let replay: enroll::Candidate = material::success(
         client
             .post(format!("{base}/certificates"))
@@ -199,6 +222,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     assert_eq!(signed.key_id, old_key);
     let mut foreign = export.clone();
     foreign.operation_id = Uuid::new_v4();
+    foreign.configuration.id = Uuid::new_v4();
     foreign.configuration.service_id = Uuid::new_v4();
     assert_eq!(
         client
@@ -295,16 +319,18 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
     assert_eq!(fetched.signature, signed.signature);
+    let request_audit = audit();
     let prepared = trust
         .change_task_trust(
             &proof,
-            &audit(),
+            &request_audit,
             Uuid::new_v4(),
             &Change::Prepare {
                 expected_revision: 1,
             },
         )
         .await?;
+    request_audit.finalize(None);
     let new_key = prepared
         .keys
         .iter()
@@ -313,10 +339,11 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         .id
         .clone();
     // No ACK for revision 2: activation succeeds while the already enrolled device is offline.
+    let request_audit = audit();
     let active = trust
         .change_task_trust(
             &proof,
-            &audit(),
+            &request_audit,
             Uuid::new_v4(),
             &Change::Activate {
                 expected_revision: 2,
@@ -324,6 +351,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             },
         )
         .await?;
+    request_audit.finalize(None);
     assert_eq!(active.revision, 3);
     let mut second = export.clone();
     second.operation_id = Uuid::new_v4();

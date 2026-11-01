@@ -156,6 +156,10 @@ async fn replay(
     }
     Ok(Some(value))
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep transaction, authority coordinates and protected operation inputs explicit"
+)]
 async fn save(
     profile: rss_mdm_install_support::StorageProfile,
     usage: Use,
@@ -166,7 +170,7 @@ async fn save(
     request: &[u8],
     trust: &Trust,
 ) -> Result<(), Error> {
-    let digest = installation_digest(usage, &trust).map_err(|_| Error::Malformed)?;
+    let digest = installation_digest(usage, trust).map_err(|_| Error::Malformed)?;
     let tag = protection
         .mac(request, &request_aad(profile, usage, tenant, operation)?)
         .map_err(|_| Error::Conflict)?;
