@@ -13,11 +13,15 @@ pub struct Material {
 }
 pub struct Server {
     pub origin: String,
-    task: tokio::task::JoinHandle<()>,
+    owner: rss_runtime::ShutdownStack,
 }
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.task.abort();
+impl Server {
+    pub async fn shutdown(self) -> Result<()> {
+        anyhow::ensure!(
+            self.owner.shutdown().join().await?.is_clean(),
+            "DA listener drain"
+        );
+        Ok(())
     }
 }
 impl registration::certificate_issuance::Clock for context::Timer {
@@ -149,14 +153,29 @@ impl Material {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let key = PrivateKeyDer::from_pem_file(self.directory.join("server.key"))?;
         let state = Arc::new(state);
-        let task = tokio::spawn(async move {
-            rss_mdm_device_access_http::tls::serve(listener, cert, key, state)
-                .await
-                .expect("DA TLS listener");
-        });
+        let policy = rss_axum::Http1ServePolicy::new(
+            rss_axum::ServePolicy::new(
+                4,
+                Duration::from_secs(5),
+                Duration::from_secs(3),
+                Duration::from_secs(10),
+            )?,
+            Duration::from_secs(3),
+            64,
+            32768,
+        )?;
+        let mut owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(12))?,
+            Arc::new(context::Timer),
+        )?;
+        owner
+            .startup()?
+            .stage_task_with_token(rss_mdm_device_access_http::tls::registration(
+                listener, cert, key, state, policy,
+            )?);
         Ok(Server {
             origin: format!("https://localhost:{}/api/v1/da", addr.port()),
-            task,
+            owner,
         })
     }
     pub fn client(&self, peer: Option<(&enroll::Candidate, u8)>) -> Result<reqwest::Client> {

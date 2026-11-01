@@ -220,4 +220,4 @@ ListParts 的 SHA-256 是可选的分片提示；缺省明确为未知，不能�
 
 扫描未完成时，外部对象游标和结果不前移；重启从已提交块恢复，终态与结果提交清理进度。规则证据使用 `inventory-manifest-v1` 来源清单摘要，绑定完整数组内容摘要及来源／lastKnown，摘要字符串不兼容旧完整 JSON 算法。查询和展示仍通过列表摘要及条目游标消费数组。
 
-`device_access.foundation` 在独立 `rss_da` 数据库安装共享 owners，通过真实 PostgreSQL、TLS listener 和本地 step-ca 协议签发边界验证 DA 注册、配置导出、逐设备 ACK、滚动激活及凭据更新；不装配 Agent/native runtime。这是服务端 T2 接缝证明，不替代终端客户端或完整 DA 产品 T3。
+`device_access.foundation` 在独立 `rss_da` 数据库安装共享 owners，通过真实 PostgreSQL、TLS listener 和本地 step-ca 协议签发边界验证 DA 注册、配置导出、逐设备 ACK、滚动激活及凭据更新，并验证完成 TLS 后的匿名连接容量、未完整发送 HTTP 头的超时回收和正常请求恢复；不装配 Agent/native runtime。这是服务端 T2 接缝证明，不替代终端客户端或完整 DA 产品 T3。

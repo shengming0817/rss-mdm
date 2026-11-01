@@ -1,9 +1,10 @@
-//! Actual TLS possession is projected from rustls after the configured DA trust verifier succeeds.
-//! ref: rustls v0.23.35 rustls/src/verify.rs ClientCertVerifier.
+//! DA TLS preparation delegates connection capacity, HTTP budgets and drain to RSS.
+//! ref: rss aa7d4d72a06046691a07237c63a336d8100e9900 crates/axum/src/server.rs.
 use crate::Services;
-use axum::extract::{ConnectInfo, connect_info::Connected};
+use axum::Extension;
+use rss_axum::{AcceptedConnectionInfo, ConnectionTransport, EstablishedTransport};
 use rss_mdm_certificate::ClientCertificateEvidence;
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{
     TlsAcceptor,
@@ -15,59 +16,32 @@ use tokio_rustls::{
 };
 #[derive(Clone)]
 struct Peer(Option<ClientCertificateEvidence>);
-impl std::fmt::Debug for Peer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Peer")
-            .field("authenticated", &self.0.is_some())
-            .finish()
-    }
-}
-struct Listener {
-    tcp: TcpListener,
-    tls: TlsAcceptor,
-    handshakes: tokio::task::JoinSet<Option<(TlsStream<TcpStream>, Peer)>>,
-}
-impl axum::serve::Listener for Listener {
+struct Transport(TlsAcceptor);
+impl ConnectionTransport for Transport {
     type Io = TlsStream<TcpStream>;
-    type Addr = Peer;
-    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        loop {
-            tokio::select! {
-                ready = self.handshakes.join_next(), if !self.handshakes.is_empty() => {
-                    if let Some(Ok(Some(connection))) = ready { return connection; }
-                }
-                accepted = self.tcp.accept(), if self.handshakes.len() < 64 => {
-                    let Ok((tcp, _)) = accepted else {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        continue;
-                    };
-                    let acceptor = self.tls.clone();
-                    self.handshakes.spawn(async move {
-                        let tls = tokio::time::timeout(Duration::from_secs(5), acceptor.accept(tcp)).await.ok()?.ok()?;
-                        let peer = ClientCertificateEvidence::from_tls(&tls).ok()?;
-                        Some((tls, Peer(peer)))
-                    });
-                }
-            }
-        }
-    }
-
-    fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        Ok(Peer(None))
+    type Metadata = Peer;
+    type Guard = ();
+    type Error = std::io::Error;
+    async fn prepare(
+        &self,
+        tcp: TcpStream,
+        _: SocketAddr,
+    ) -> Result<EstablishedTransport<Self::Io, Peer, ()>, Self::Error> {
+        let tls = self.0.accept(tcp).await?;
+        let peer = ClientCertificateEvidence::from_tls(&tls).map_err(std::io::Error::other)?;
+        Ok(EstablishedTransport::new(tls, Peer(peer), ()))
     }
 }
-impl Connected<axum::serve::IncomingStream<'_, Listener>> for Peer {
-    fn connect_info(stream: axum::serve::IncomingStream<'_, Listener>) -> Self {
-        stream.remote_addr().clone()
-    }
-}
-/// The listener uses the registration owner's live certificate verifier, including bootstrap without mTLS.
-pub async fn serve(
+/// Prepare a managed listener using the live registration verifier, including anonymous bootstrap.
+/// The host supplies validated capacity, TLS/establishment/header budgets and drain policy.
+/// RSS retains each connection from TCP acceptance through HTTP completion and shutdown.
+pub fn registration(
     tcp: TcpListener,
     certificates: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
     services: Arc<Services>,
-) -> std::io::Result<()> {
+    policy: rss_axum::Http1ServePolicy,
+) -> std::io::Result<rss_runtime::ManagedTaskRegistration> {
     let config = ServerConfig::builder()
         .with_client_cert_verifier(services.registrations.trust().enrollment_verifier())
         .with_single_cert(certificates, key)
@@ -75,22 +49,20 @@ pub async fn serve(
     let router = crate::router(services)
         .into_checked_axum(rss_mdm_http_contract::module::Listener::Da)
         .layer(axum::middleware::from_fn(
-            |ConnectInfo(peer): ConnectInfo<Peer>,
+            |Extension(info): Extension<AcceptedConnectionInfo<Peer>>,
              mut request: axum::extract::Request,
              next: axum::middleware::Next| async move {
-                if let Some(evidence) = peer.0 {
-                    request.extensions_mut().insert(evidence);
+                if let Some(evidence) = &info.metadata().0 {
+                    request.extensions_mut().insert(evidence.clone());
                 }
                 next.run(request).await
             },
         ));
-    axum::serve(
-        Listener {
-            tcp,
-            tls: TlsAcceptor::from(Arc::new(config)),
-            handshakes: tokio::task::JoinSet::new(),
-        },
-        router.into_make_service_with_connect_info::<Peer>(),
-    )
-    .await
+    Ok(rss_axum::serve_http1_registration(
+        tcp,
+        router,
+        Transport(TlsAcceptor::from(Arc::new(config))),
+        "da-http",
+        policy,
+    ))
 }

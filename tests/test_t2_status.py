@@ -236,3 +236,15 @@ class T2Status(unittest.TestCase):
                 # Git input list is supplied, so missing input mappings fail this test.
                 decision = ci_impact.select(ROOT, 'current-working-input')
                 self.assertEqual(decision['t2']['modules'], expected)
+
+    def test_da_protocol_inputs_select_the_independent_owner(self):
+        from ci_registry import ROOT
+        paths = ['crates/agent-wire/src/' + name + '.rs' for name in
+                 ('da', 'enroll', 'pki', 'task_trust', 'runtime', 'device_access', 'platform_sso')]
+        paths += ['crates/native-protection/src/lib.rs', 'hack/task_trust_materials.py']
+        for path in paths + ['crates/agent-wire/src/telemetry.rs']:
+            with self.subTest(path=path), \
+                 patch.object(ci_impact, 'changed_paths', return_value=[ci_impact.Change('M', path, path)]), \
+                 patch.object(ci_impact, 'baseline_tree', return_value=contextlib.nullcontext(ROOT)):
+                decision = ci_impact.select(ROOT, 'current-working-input')
+                self.assertEqual('device_access.foundation' in decision['t2']['modules'], path in paths)

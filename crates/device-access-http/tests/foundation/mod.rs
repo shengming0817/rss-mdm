@@ -3,6 +3,7 @@ mod admission;
 mod context;
 mod installation;
 mod material;
+mod transport;
 use anyhow::Result;
 use context::{Context, Inputs};
 use rss_mdm_install_support::StorageProfile;
@@ -78,6 +79,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let loaded = material::load(&c, &material, first.revision).await?;
     let state = material::state(&c, registration.clone(), loaded.clone(), &material)?;
     let server = material.listen(state).await?;
+    transport::bounded_connections(&material, &server).await?;
     let client = material.client(None)?;
     let base = &server.origin;
     let address = base
@@ -516,8 +518,8 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         401
     );
     unknown_recovery(&c, &material, &client, base2, &token, export.operation_id).await?;
-    drop(next_server);
-    drop(server);
+    next_server.shutdown().await?;
+    server.shutdown().await?;
     drop(material);
     c.close().await;
     Ok(())

@@ -17,6 +17,8 @@ rss-mdm-http-contract.workspace = true
 rss-identity-core.workspace = true
 rss-request-context.workspace = true
 axum.workspace = true
+rss-axum.workspace = true
+rss-runtime.workspace = true
 tokio-rustls.workspace = true
 
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
