@@ -62,7 +62,7 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
         .await?;
     let later = Uuid::new_v4();
     let second = vault::reserve_in(&mut tx, first.tenant, &first.binding, later, 1).await?;
-    vault::ingest_in(&mut tx, &keys, &second, later, b"New-owner-Password!43").await?;
+    vault::ingest_in(&mut tx, keys, &second, later, b"New-owner-Password!43").await?;
     assert!(matches!(
         receipts
             .receive_in(
@@ -90,7 +90,7 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
     tx.commit().await?;
     let mut tx = seed(&c).await?;
     assert_eq!(
-        vault::secret_in(&mut tx, &keys, &second).await?.expose(),
+        vault::secret_in(&mut tx, keys, &second).await?.expose(),
         b"New-owner-Password!43"
     );
     let current: i64 = sqlx::query_scalar(
@@ -151,25 +151,13 @@ async fn maintenance_rewrap_is_atomic_and_concurrent() -> Result<()> {
         p.keys.open(&key, &coordinate, &sealed)?.expose(),
         b"Owner-test-Password!42"
     );
-    let rows: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT canonical FROM rss_audit.records WHERE tenant_id=$1 AND source_id='mdm.business'",
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1 AND source_id='mdm.business'",
     )
     .bind(coordinate.tenant)
-    .fetch_all(&mut *tx)
+    .fetch_one(&mut *tx)
     .await?;
-    let mut count = 0;
-    for row in &rows {
-        let decoded = rss_audit_core::decode_untrusted(row)?;
-        if decoded
-            .event()
-            .context()
-            .coordinates()
-            .operation_id()
-            .is_some_and(|id| id.as_str().starts_with("recovery:maintenance:"))
-        {
-            count += 1;
-        }
-    }
+    // This private tenant has no other business writes: only the successful rewrap audits.
     assert_eq!(count, 1);
     tx.rollback().await?;
     owner.close().await;
@@ -188,6 +176,7 @@ async fn expiry_preserves_unresolved_material_then_resumes() -> Result<()> {
     vault::verify_in(&mut tx, &coordinate, operation).await?;
     sqlx::query("UPDATE mdm_recovery.versions SET validity='revoked',invalidated_at=$3 WHERE tenant_id=$1 AND entry=$2").bind(coordinate.tenant).bind(coordinate.material).bind(now()-7_776_001).execute(&mut *tx).await?;
     tx.commit().await?;
+    input_secrets(&c, &coordinate, operation, attempt, true).await?;
     owner.maintenance.run_once().await?;
     let mut tx = seed(&c).await?;
     let exists: bool = sqlx::query_scalar(
@@ -207,7 +196,8 @@ async fn expiry_preserves_unresolved_material_then_resumes() -> Result<()> {
     .await?;
     assert!(!purged);
     input_secrets(&c, &coordinate, operation, attempt, true).await?;
-    sqlx::query("UPDATE rss_device_command.commands SET status='applied',received_at=$3,terminal_at=$3,version=version+1 WHERE tenant_id=$1 AND command_id=$2").bind(coordinate.tenant).bind(operation.to_string()).bind(now()*1_000_000).execute(&mut *tx).await?;
+    // Published -> Received -> Applied advances the component version twice.
+    sqlx::query("UPDATE rss_device_command.commands SET status='applied',received_at=$3,terminal_at=$3,version=version+2 WHERE tenant_id=$1 AND command_id=$2").bind(coordinate.tenant).bind(operation.to_string()).bind(now()*1_000_000).execute(&mut *tx).await?;
     tx.commit().await?;
     owner.maintenance.run_once().await?;
     let row: (Option<Vec<u8>>, Option<String>) = sqlx::query_as(
@@ -253,14 +243,21 @@ async fn sensitive_disclosure_requires_confirmed_audit_commit() -> Result<()> {
         )
         .await?;
     assert_eq!(result.secret.as_str(), "Owner-test-Password!42");
-    assert_eq!(
-        c.audit_count(
-            "mdm.business",
-            &format!("recovery:read:{}", audit.request_id())
-        )
-        .await?,
-        1
-    );
+    let fact = rss_mdm_audit_integration::Fact::business(
+        &audit,
+        &format!("recovery:read:{}", audit.request_id()),
+        200,
+        "success",
+        None,
+    )?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1 AND source_id='mdm.business' AND event_id=$2",
+    )
+    .bind(coordinate.tenant)
+    .bind(fact.identity().event_id().as_str())
+    .fetch_one(&c.operator).await?;
+    assert_eq!(count, 1);
+    audit.finalize(None);
     c.runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
     assert!(matches!(
@@ -347,23 +344,9 @@ async fn filevault_receipt(
     protection: &Arc<recovery::Protection>,
     source: &recovery::Binding,
 ) -> Result<()> {
-    use openssl::{
-        cms::{CMSOptions, CmsContentInfo},
-        stack::Stack,
-        symm::Cipher,
-        x509::X509,
-    };
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
-    let custody = Uuid::new_v4();
-    let binding = recovery::Binding {
-        subject: recovery::Subject::Filevault { custody, epoch: 1 },
-        ..source.clone()
-    };
     let mut tx = seed(c).await?;
-    sqlx::query("INSERT INTO mdm_recovery.filevault_custodies(tenant_id,id,origin_device,origin_registration,origin_generation) VALUES($1,$2,$3,$4,$5)")
-        .bind(tenant).bind(custody).bind(&binding.device).bind(binding.registration).bind(binding.generation).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_recovery.filevault_sources(tenant_id,registration,generation,custody,epoch) VALUES($1,$2,$3,$4,1)")
-        .bind(tenant).bind(binding.registration).bind(binding.generation).bind(custody).execute(&mut *tx).await?;
+    let binding = filevault_binding(&mut tx, tenant, source).await?;
     let original = Uuid::new_v4();
     let existing_op = Uuid::new_v4();
     let reconcile = Uuid::new_v4();
@@ -387,6 +370,39 @@ async fn filevault_receipt(
         )
         .await?;
     }
+    let report = filevault_report(protection, secret)?;
+    let receipts = recovery::native_receipts::NativeReceipts::new(protection.clone());
+    receipts
+        .receive_in(
+            &mut tx,
+            tenant,
+            reconcile,
+            &binding.device,
+            binding.registration,
+            binding.generation,
+            &report,
+            recovery::native_receipts::ReceiptStatus::Acknowledged,
+        )
+        .await?;
+    assert_native_coordinates(&mut tx, tenant, reconcile, &binding, &existing).await?;
+    assert_native_coordinates(&mut tx, tenant, original, &binding, &pending).await?;
+    assert_eq!(
+        vault::secret_in(&mut tx, &protection.keys, &existing)
+            .await?
+            .expose(),
+        secret
+    );
+    tx.commit().await?;
+    Ok(())
+}
+
+fn filevault_report(protection: &recovery::Protection, secret: &[u8]) -> Result<plist::Dictionary> {
+    use openssl::{
+        cms::{CMSOptions, CmsContentInfo},
+        stack::Stack,
+        symm::Cipher,
+        x509::X509,
+    };
     let mut recipients = Stack::new()?;
     recipients.push(X509::from_der(
         &protection.active_recipient().certificate_der()?,
@@ -405,23 +421,20 @@ async fn filevault_receipt(
             plist::Value::Data(cms),
         )])),
     )]);
-    let receipts = recovery::native_receipts::NativeReceipts::new(protection.clone());
-    receipts
-        .receive_in(
-            &mut tx,
-            tenant,
-            reconcile,
-            &binding.device,
-            binding.registration,
-            binding.generation,
-            &report,
-            recovery::native_receipts::ReceiptStatus::Acknowledged,
-        )
-        .await?;
+    Ok(report)
+}
+
+async fn assert_native_coordinates(
+    c: &mut sqlx::PgConnection,
+    tenant: Uuid,
+    operation: Uuid,
+    binding: &recovery::Binding,
+    expected: &recovery::Coordinates,
+) -> Result<()> {
     let action = vault::native_action_in(
-        &mut tx,
+        c,
         tenant,
-        reconcile,
+        operation,
         &binding.device,
         binding.registration,
         binding.generation,
@@ -430,28 +443,24 @@ async fn filevault_receipt(
     .unwrap();
     assert_eq!(
         serde_json::to_value(action.coordinates)?,
-        serde_json::to_value(Some(&existing))?
+        serde_json::to_value(Some(expected))?
     );
-    let original_action = vault::native_action_in(
-        &mut tx,
-        tenant,
-        original,
-        &binding.device,
-        binding.registration,
-        binding.generation,
-    )
-    .await?
-    .unwrap();
-    assert_eq!(
-        serde_json::to_value(original_action.coordinates)?,
-        serde_json::to_value(Some(&pending))?
-    );
-    assert_eq!(
-        vault::secret_in(&mut tx, &protection.keys, &existing)
-            .await?
-            .expose(),
-        secret
-    );
-    tx.commit().await?;
     Ok(())
+}
+
+async fn filevault_binding(
+    c: &mut sqlx::PgConnection,
+    tenant: Uuid,
+    source: &recovery::Binding,
+) -> Result<recovery::Binding> {
+    let custody = Uuid::new_v4();
+    let binding = recovery::Binding {
+        subject: recovery::Subject::Filevault { custody, epoch: 1 },
+        ..source.clone()
+    };
+    sqlx::query("INSERT INTO mdm_recovery.filevault_custodies(tenant_id,id,origin_device,origin_registration,origin_generation) VALUES($1,$2,$3,$4,$5)")
+        .bind(tenant).bind(custody).bind(&binding.device).bind(binding.registration).bind(binding.generation).execute(&mut *c).await?;
+    sqlx::query("INSERT INTO mdm_recovery.filevault_sources(tenant_id,registration,generation,custody,epoch) VALUES($1,$2,$3,$4,1)")
+        .bind(tenant).bind(binding.registration).bind(binding.generation).bind(custody).execute(&mut *c).await?;
+    Ok(binding)
 }

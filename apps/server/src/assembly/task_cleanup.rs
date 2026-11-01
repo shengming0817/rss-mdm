@@ -63,7 +63,7 @@ impl TaskCleanup for Cleanup {
                     let native=rss_mdm_registration_service::installation::retirement::progress_on(c,&tenant,&registrations).await.map_err(installation)?;
                     let access=rss_mdm_registration_service::device_access::execution::retirement::progress_on(c,&tenant,&registrations).await.map_err(access)?;
                     let credential=rss_mdm_recovery_credentials::tasks::retirement::progress_on(c,&tenant,&registrations).await.map_err(credential)?;
-                    let recovery_native=rss_mdm_recovery_credentials::native::retirement::progress_on(c,&tenant,&registrations).await.map_err(|e|recovery_native(e.into()))?;
+                    let recovery_native=rss_mdm_recovery_credentials::native::retirement::progress_on(c,&tenant,&registrations).await.map_err(recovery_native)?;
                     progress.pending=credential.0 || recovery_native.0 || access.0 || script.0 || collection.0 || enrollment.0 || software.0 || native.0;
                     progress.unknown=script.1.into_iter().chain(recovery_native.1).chain(credential.1).chain(access.1).chain(collection.1).chain(enrollment.1).chain(software.1).chain(native.1).min();
                     Ok(progress)

@@ -1,4 +1,4 @@
--- Registration owns the bootstrap write contract shared by Command and Policy callers.
+-- Recovery owns the credential command write contract.
 WITH reachable AS (
  SELECT r.* FROM pg_roles r WHERE r.rolname=current_user OR pg_has_role(session_user,r.oid,'MEMBER')
 ), required(relation,insertable,deletable) AS (VALUES

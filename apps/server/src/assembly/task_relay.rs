@@ -1,5 +1,9 @@
 //! One fixed relay loop shares the existing process delivery budget across concrete owners.
 use std::{sync::Arc, time::Duration};
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fixed concrete owners share one relay and shutdown budget"
+)]
 pub(crate) fn registration(
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
     scripts: Arc<rss_mdm_script_service::worker::Worker>,

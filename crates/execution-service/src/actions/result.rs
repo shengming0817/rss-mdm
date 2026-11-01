@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum RunResult {
-    Access(w::AccessResult),
-
     Unmanage(Unmanage),
 }
 
@@ -28,8 +26,6 @@ pub struct SummaryResult(Summary);
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 enum Summary {
-    Access(WithDiagnostics<w::AccessResult>),
-
     Unmanage(WithDiagnostics<Unmanage>),
 }
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]

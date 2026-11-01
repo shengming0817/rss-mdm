@@ -225,6 +225,7 @@ impl Timer {
     }
 }
 impl rss_reconcile::Timer for Timer {
+    #[allow(clippy::disallowed_methods, reason = "host monotonic clock boundary")]
     fn now(&self) -> Duration {
         self.0.elapsed()
     }

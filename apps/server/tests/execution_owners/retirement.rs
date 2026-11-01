@@ -287,6 +287,9 @@ async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Re
     let operation = rss_mdm_policy::CredentialOperation::CollectBitlocker;
     let schedule = super::mixed::manual();
     let definition = rss_mdm_policy::Definition {
+        alias: None,
+        custom_event: None,
+        self_service: None,
         scope: h.scope,
         action: rss_mdm_policy::Action::Credential {
             operation: operation.clone(),

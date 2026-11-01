@@ -61,9 +61,6 @@ pub enum AppleEvidence {
     Observations(Vec<rss_mdm_apple_mdm::native::evidence::Observation>),
 }
 pub trait AppleResults: Send + Sync {
-    /// Correlate native PSSO readback before projecting a Password completion.
-    /// Registration qualification deliberately does not require an already-Applied binding.
-
     /// Bounded evidence for one authorized page; all native decoding stays with Apple.
     fn evidence_page<'a>(
         &'a self,

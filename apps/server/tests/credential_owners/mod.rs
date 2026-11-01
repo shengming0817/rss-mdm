@@ -41,7 +41,6 @@ fn protection(c: &Context, active: &str) -> Result<Arc<recovery::Protection>> {
 }
 struct Owners {
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    audit: Arc<rss_mdm_audit_integration::AuditStore>,
     access: Arc<access::Service>,
     maintenance: recovery::maintenance::Maintenance,
 }
@@ -51,14 +50,20 @@ impl Owners {
         profile: &str,
         credentials: Arc<recovery::Protection>,
     ) -> Result<Self> {
-        let runtime = crate::identity::open_runtime(
+        let (pg, binding) = crate::identity::runtime_inputs(
             &c.inputs.database(profile, "mdm_command_runtime"),
             &c.inputs.installation.target,
             &c.inputs.installation.lineage,
             &[(c.tenant, 1)],
-            4,
-        )
-        .await?;
+        )?;
+        let runtime = Arc::new(
+            rss_transactional_messaging_postgres::PgRuntime::connect(
+                pg.with_pool_limits(0, 4),
+                crate::lifecycle::RuntimeTimer,
+                binding,
+            )
+            .await?,
+        );
         let budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
         let audit = Arc::new(
@@ -103,7 +108,6 @@ impl Owners {
         );
         Ok(Self {
             runtime,
-            audit,
             access,
             maintenance,
         })

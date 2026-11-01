@@ -283,7 +283,8 @@ let content_access=if let Some(content)=&content {
 let content_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.content,&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"content-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 Some(crate::assembly::content::access(&content_owner,&identity,access.authorization_store(),content.clone(),application_clock.clone()).await.map_err(assembly_error)?)
 }else{None};
-                        let execution = crate::assembly::execution::open(
+                        // Bound the aggregate startup future at the host assembly boundary.
+                        let execution = Box::pin(crate::assembly::execution::open(
                             &compiled.config,
                             protection.clone(),
                             audit_store.clone(),
@@ -297,7 +298,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                                 ),
                             ),
                             cursor_key.clone(),
-                        )
+                        ))
                         .await
                         .map_err(|e| ProcessError::at("startup.execution", e))?;
                         startup.stage_resource(DynManagedResource::new_box(

@@ -428,7 +428,8 @@ pub(crate) async fn assemble(
         worker_budget.clone(),
     )
     .await?;
-    let access_execution = super::access_execution::assemble(
+    // Keep independent owner startup futures off the enclosing host startup stack.
+    let access_execution = Box::pin(super::access_execution::assemble(
         runtime.clone(),
         tenant,
         audit_store.clone(),
@@ -438,11 +439,11 @@ pub(crate) async fn assemble(
         reconcile.clone(),
         worker_budget.clone(),
         config.background.device_concurrency,
-    )
+    ))
     .await?;
     let credential_execution = if let Some(credentials) = recovery_credentials.clone() {
         Some(
-            super::credential_execution::assemble(
+            Box::pin(super::credential_execution::assemble(
                 config,
                 runtime.clone(),
                 tenant,
@@ -452,7 +453,7 @@ pub(crate) async fn assemble(
                 source.clone(),
                 reconcile.clone(),
                 worker_budget.clone(),
-            )
+            ))
             .await?,
         )
     } else {
