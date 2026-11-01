@@ -29,6 +29,7 @@ pub(crate) async fn open(
         groups: Arc::new(groups),
         dependents: Arc::new(crate::assembly::policy::ScopeDependents(
             rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 runtime.clone(),
                 tenant,
             ),
@@ -40,6 +41,7 @@ pub(crate) async fn open(
     };
     Ok(Arc::new(
         rss_mdm_scope_service::Scopes::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             runtime,
             tenant,
             Arc::new(crate::clock::ScopeClock(clock)),

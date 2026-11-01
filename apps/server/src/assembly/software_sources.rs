@@ -216,10 +216,16 @@ impl Sources for Source {
         device: &'a str,
     ) -> Pending<'a, ScopeAdmission> {
         Box::pin(async move {
-            channels::targets::channel_state_on(c, scope, channel, device)
-                .await
-                .map(admission)
-                .map_err(error)
+            channels::targets::channel_state_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                scope,
+                channel,
+                device,
+            )
+            .await
+            .map(admission)
+            .map_err(error)
         })
     }
     fn effect_devices<'a>(
@@ -228,10 +234,16 @@ impl Sources for Source {
         tenant: TenantId,
         device: &'a str,
     ) -> Pending<'a, Vec<String>> {
-        Box::pin(async move { Ok(self.0.objects.effect_devices(c, tenant, device).await?) })
+        Box::pin(async move {
+            Ok(self
+                .0
+                .required_objects()?
+                .effect_devices(c, tenant, device)
+                .await?)
+        })
     }
     fn change_head<'a>(&'a self, c: &'a mut PgConnection, tenant: TenantId) -> Pending<'a, i64> {
-        Box::pin(async move { Ok(self.0.objects.change_head(c, tenant).await?) })
+        Box::pin(async move { Ok(self.0.required_objects()?.change_head(c, tenant).await?) })
     }
     fn changes<'a>(
         &'a self,
@@ -244,7 +256,7 @@ impl Sources for Source {
         Box::pin(async move {
             Ok(self
                 .0
-                .objects
+                .required_objects()?
                 .changes(c, tenant, after, through, limit)
                 .await?
                 .into_iter()
@@ -288,10 +300,21 @@ impl rss_mdm_software_service::deployment::inventory::Inventory for Inventory {
     > {
         Box::pin(async move {
             if lock {
-                rss_mdm_inventory_service::assets::channel::details_in(c, tenant, targets).await
+                rss_mdm_inventory_service::assets::channel::details_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    tenant,
+                    targets,
+                )
+                .await
             } else {
-                rss_mdm_inventory_service::assets::channel::snapshot_details_in(c, tenant, targets)
-                    .await
+                rss_mdm_inventory_service::assets::channel::snapshot_details_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    tenant,
+                    targets,
+                )
+                .await
             }
             .map_err(inventory_error)
         })

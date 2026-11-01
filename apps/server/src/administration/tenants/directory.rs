@@ -63,9 +63,14 @@ pub(super) async fn page(
         &TENANTS
     })
     .map_err(error)?;
-    let current = rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
-        .await
-        .map_err(|_| Reason::Storage)?;
+    let current = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(|_| Reason::Storage)?;
     let binding = q
         .binding(&(
             p.tenant_id(),

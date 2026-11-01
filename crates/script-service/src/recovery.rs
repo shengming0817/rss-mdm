@@ -126,6 +126,7 @@ pub async fn recover_one(
         .with_connection(move |c| {
             Box::pin(
                 rss_mdm_registration_service::device::read::stale_registration_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     tenant,
                     target.registration,

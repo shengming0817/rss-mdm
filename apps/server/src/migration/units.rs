@@ -15,7 +15,14 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_transactional_messaging_postgres::MIGRATION_SQL,
         ),
         ("group-v1", rss_mdm_group_postgres::MIGRATION_SQL),
-        ("policy-v1", rss_mdm_policy_postgres::MIGRATION_SQL),
+        (
+            "group-scope-facts-v1",
+            rss_mdm_group_postgres::SCOPE_FACTS_SQL,
+        ),
+        (
+            "policy-v1",
+            rss_mdm_policy_postgres::migration_sql(rss_mdm_install_support::StorageProfile::Mdm),
+        ),
         ("resource-v1", rss_mdm_resource_postgres::MIGRATION_SQL),
         (
             "resource-application-v1",
@@ -31,7 +38,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "registration-service-schema-v1",
-            rss_mdm_registration_service::INSTALL_SQL,
+            rss_mdm_registration_service::install_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
             "software-publication-v1",
@@ -43,7 +50,9 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "policy-outbox-writer-v1",
-            rss_mdm_policy_postgres::OUTBOX_MIGRATION_SQL,
+            rss_mdm_policy_postgres::outbox_migration_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "resource-outbox-writer-v1",
@@ -88,7 +97,25 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "authorization-service-schema-v1",
-            rss_mdm_authorization_service::INSTALL_SQL,
+            rss_mdm_authorization_service::install_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
+        (
+            "authorization-authority-v1",
+            rss_mdm_authorization_service::authority_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
+        (
+            "inventory-collections-v1",
+            rss_mdm_inventory_service::collection_sql(rss_mdm_install_support::StorageProfile::Mdm),
+        ),
+        (
+            "inventory-collection-metadata-v1",
+            rss_mdm_inventory_service::collection_metadata_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "inventory-service-schema-v1",
@@ -106,7 +133,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "registration-command-authorities-v1",
             rss_mdm_registration_service::COMMAND_AUTHORITIES_SQL,
         ),
-        ("scope-schema-v1", rss_mdm_scope_postgres::INSTALL_SQL),
+        (
+            "scope-schema-v1",
+            rss_mdm_scope_postgres::install_sql(rss_mdm_install_support::StorageProfile::Mdm),
+        ),
         (
             "software-management-publication-v1",
             rss_mdm_software_service::management::publication::INSTALL_SQL,
@@ -121,7 +151,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "native-protection-v1",
-            rss_mdm_native_protection::INSTALL_SQL,
+            rss_mdm_native_protection::install_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
             "script-service-schema-v1",
@@ -132,8 +162,26 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_software_service::deployment::INSTALL_SQL,
         ),
         (
+            "registration-agent-tasks-v1",
+            rss_mdm_registration_service::enrollment_tasks_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
+        (
+            "registration-agent-task-retirement-v1",
+            rss_mdm_registration_service::enrollment_retirement_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
+        (
+            "registration-member-authority-v1",
+            rss_mdm_registration_service::member_authority_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
+        (
             "registration-tasks-schema-v1",
-            rss_mdm_registration_service::TASKS_SQL,
+            rss_mdm_registration_service::NATIVE_TASKS_SQL,
         ),
         (
             "software-deployment-source-changes-v1",
@@ -165,7 +213,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "scope-channel-projections-v1",
-            rss_mdm_scope_postgres::PROJECTIONS_SQL,
+            rss_mdm_scope_postgres::projections_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
             "operation-receipts-schema-v1",
@@ -173,7 +221,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "agent-channel-schema-v1",
-            rss_mdm_agent_channel::INSTALL_SQL,
+            rss_mdm_agent_channel::install_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
             "windows-channel-schema-v1",
@@ -197,15 +245,31 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "registration-service-relations-v1",
-            rss_mdm_registration_service::RELATIONS_SQL,
+            rss_mdm_registration_service::relations_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "authorization-service-relations-v1",
-            rss_mdm_authorization_service::RELATIONS_SQL,
+            rss_mdm_authorization_service::relations_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "inventory-service-relations-v1",
             rss_mdm_inventory_service::RELATIONS_SQL,
+        ),
+        (
+            "inventory-ingestion-grants-v1",
+            rss_mdm_inventory_service::ingestion_grants_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
+        (
+            "inventory-collection-relations-v1",
+            rss_mdm_inventory_service::collection_relations_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "group-service-relations-v1",
@@ -228,6 +292,18 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_software_service::deployment::RELATIONS_SQL,
         ),
         (
+            "registration-agent-task-relations-v1",
+            rss_mdm_registration_service::task_relations_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
+        (
+            "recovery-agent-task-relations-v1",
+            rss_mdm_recovery_credentials::task_relations_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
+        (
             "registration-tasks-relations-v1",
             rss_mdm_registration_service::TASKS_RELATIONS_SQL,
         ),
@@ -237,16 +313,21 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "scope-channel-relations-v1",
-            rss_mdm_scope_postgres::PROJECTION_RELATIONS_SQL,
+            rss_mdm_scope_postgres::projection_relations_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "operation-receipts-relations-v1",
             rss_mdm_audit_integration::OPERATION_RECEIPT_RELATIONS_SQL,
         ),
-        ("scope-relations-v1", rss_mdm_scope_postgres::RELATIONS_SQL),
+        (
+            "scope-relations-v1",
+            rss_mdm_scope_postgres::relations_sql(rss_mdm_install_support::StorageProfile::Mdm),
+        ),
         (
             "policy-relations-v1",
-            rss_mdm_policy_postgres::RELATIONS_SQL,
+            rss_mdm_policy_postgres::relations_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
             "resource-relations-v1",
@@ -279,11 +360,11 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ("group-relations-v1", rss_mdm_group_postgres::RELATIONS_SQL),
         (
             "scope-group-changes-v1",
-            rss_mdm_scope_postgres::GROUP_CHANGES_SQL,
+            rss_mdm_scope_postgres::group_changes_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
             "agent-channel-relations-v1",
-            rss_mdm_agent_channel::RELATIONS_SQL,
+            rss_mdm_agent_channel::relations_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
             "windows-channel-relations-v1",
@@ -295,11 +376,13 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "registration-quotas-v1",
-            rss_mdm_registration_service::QUOTAS_SQL,
+            rss_mdm_registration_service::quotas_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
             "registration-admission-v1",
-            rss_mdm_registration_service::ADMISSION_SQL,
+            rss_mdm_registration_service::admission_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "registration-device-access-v1",
@@ -315,20 +398,34 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "recovery-credentials-schema-v1",
-            rss_mdm_recovery_credentials::INSTALL_SQL,
+            rss_mdm_recovery_credentials::install_sql(rss_mdm_install_support::StorageProfile::Mdm),
+        ),
+        (
+            "recovery-tasks-v1",
+            rss_mdm_recovery_credentials::tasks_sql(rss_mdm_install_support::StorageProfile::Mdm),
+        ),
+        (
+            "recovery-native-v1",
+            rss_mdm_recovery_credentials::NATIVE_SQL,
         ),
         (
             "certificate-archive-schema-v1",
             rss_mdm_certificate_archive_service::INSTALL_SQL,
         ),
-        ("device-pki-v1", rss_mdm_pki_service::INSTALL_SQL),
+        (
+            "device-pki-v1",
+            rss_mdm_pki_service::install_sql(rss_mdm_install_support::StorageProfile::Mdm),
+        ),
+        ("device-pki-native-v1", rss_mdm_pki_service::NATIVE_SQL),
         (
             "apple-account-channel-v1",
             rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
         ),
         (
             "registration-agent-configurations-v1",
-            rss_mdm_registration_service::AGENT_CONFIGURATIONS_SQL,
+            rss_mdm_registration_service::agent_configurations_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "software-agent-packages-v1",
@@ -336,7 +433,9 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "registration-agent-bootstrap-v1",
-            rss_mdm_registration_service::AGENT_BOOTSTRAP_SQL,
+            rss_mdm_registration_service::agent_bootstrap_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         ("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL),
         (
@@ -370,7 +469,9 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "registration-tenant-seed-v1",
-            rss_mdm_registration_service::agent::settings::tenant_seed_sql(),
+            rss_mdm_registration_service::agent::settings::tenant_seed_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "tenant-administration-v1",
@@ -387,15 +488,19 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "task-signing-trust-v1",
-            rss_mdm_task_trust::trust::INSTALL_SQL,
+            rss_mdm_task_trust::trust::install_sql(rss_mdm_install_support::StorageProfile::Mdm),
         ),
         (
             "task-trust-observations-v1",
-            rss_mdm_task_trust::observations::INSTALL_SQL,
+            rss_mdm_task_trust::observations::install_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "agent-pki-observations-v1",
-            rss_mdm_pki_service::observations::INSTALL_SQL,
+            rss_mdm_pki_service::observations::install_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "windows-wns-materials-v1",
@@ -428,11 +533,19 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "registration-directory-v1",
-            rss_mdm_registration_service::DIRECTORY_SQL,
+            rss_mdm_registration_service::directory_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         (
             "inventory-directory-v1",
             rss_mdm_inventory_service::DIRECTORY_SQL,
+        ),
+        (
+            "inventory-snapshot-v1",
+            rss_mdm_inventory_service::read_snapshot_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
         ),
         ("device-directory-v1", rss_mdm_device_service::DIRECTORY_SQL),
     ]

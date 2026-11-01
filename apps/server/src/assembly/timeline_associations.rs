@@ -83,9 +83,9 @@ impl Associations for Producers {
                         TaskOwner::Script => return Ok(rss_mdm_script_service::storage::association_on(c, tenant, id).await?),
                         TaskOwner::Collection => return Ok(rss_mdm_inventory_service::collection::execution::storage::association_on(c, tenant, id).await?),
                         TaskOwner::Software=>return Ok(rss_mdm_software_service::deployment::timeline::association_in(c,tenant,actor,rss_mdm_software_service::deployment::timeline::Identity::ActionRun(id)).await?),
-                        TaskOwner::Registration=>return Ok(rss_mdm_registration_service::enrollment::tasks::storage::association_on(c,tenant,id).await?),
+                        TaskOwner::Registration=>return Ok(rss_mdm_registration_service::enrollment::tasks::storage::association_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,id).await?),
                         TaskOwner::Access=>return Ok(rss_mdm_registration_service::device_access::execution::storage::association_on(c,tenant,id).await?),
-                        TaskOwner::Credential=>return Ok(rss_mdm_recovery_credentials::tasks::storage::association_on(c,tenant,id).await?),
+                        TaskOwner::Credential=>return Ok(rss_mdm_recovery_credentials::tasks::storage::association_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,id).await?),
                         TaskOwner::Device => execution::Identity::ActionRun(id),
                     }
                 }

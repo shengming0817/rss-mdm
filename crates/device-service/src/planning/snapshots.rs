@@ -42,9 +42,15 @@ pub(super) async fn endpoint(
 ) -> Result<DeviceObject, sqlx::Error> {
     let mut members = Vec::new();
     for channel in [Channel::Mdm, Channel::Agent] {
-        if let Some(member) = endpoints::current_in(c, &tenant.to_string(), device, channel)
-            .await
-            .map_err(storage)?
+        if let Some(member) = endpoints::current_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &tenant.to_string(),
+            device,
+            channel,
+        )
+        .await
+        .map_err(storage)?
         {
             members.push(member);
         }
@@ -63,9 +69,15 @@ pub(super) async fn endpoint_at(
     cut: &rss_mdm_inventory::AssetCut,
     device: &str,
 ) -> Result<DeviceObject, sqlx::Error> {
-    let members = endpoints::page_at(c, &tenant.to_string(), cut, &[device.to_owned()])
-        .await
-        .map_err(storage)?;
+    let members = endpoints::page_at(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant.to_string(),
+        cut,
+        &[device.to_owned()],
+    )
+    .await
+    .map_err(storage)?;
     Ok(DeviceObject {
         object: ObjectRef::Endpoint(device.into()),
         association_version: None,

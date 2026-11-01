@@ -395,8 +395,8 @@ async fn write(
         let(app,p,audit,id,purpose,expected,request,change,fingerprint)=ctx;
         let mut context=(*app,*p,*id,*purpose,*expected,*request,&*change,*fingerprint);
         let (value,replayed)=tx.with_connection_context(&mut context,|(app,p,id,purpose,expected,request,change,fingerprint),c|Box::pin(async move{
-            rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
-            let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+            rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
+            let rules=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
             rules.require(p,Permission::RegistrationConfigurationWrite,None)?;
             storage::lock(c,p.tenant_id(),*purpose).await?;
             if let Some(value)=storage::replay(c,app,p.tenant_id(),*id,request).await? {return Ok((value,true));}
@@ -503,9 +503,9 @@ async fn history(
     let (q, _) = query.parse()
         .map_err(|_| Error::Malformed)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
-    rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+    rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx, p.tenant_id(), p.instance_id()).await?;
     let current =
-        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+        rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx, p.tenant_id(), p.instance_id()).await?;
     current
         .require(p, Permission::RegistrationConfigurationRead, None)
         .map_err(rss_mdm_authorization_service::Error::from)?;

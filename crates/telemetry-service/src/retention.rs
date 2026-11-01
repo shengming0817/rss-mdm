@@ -77,6 +77,7 @@ async fn step(service: &Service, c: &mut PgConnection) -> Result<(), Error> {
         return Ok(());
     };
     rss_mdm_registration_service::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &tenant.to_string(),
         &device,

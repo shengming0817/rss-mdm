@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-install-support.workspace = true
 rss-mdm-recovery-observation.workspace = true
 schemars.workspace = true
 rss-contract.workspace = true

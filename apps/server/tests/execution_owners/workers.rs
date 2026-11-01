@@ -281,7 +281,10 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
                         Box::pin(async move {
                             let mut facts = Vec::new();
                             let count = rss_mdm_inventory_service::collection::store::expire_timed(
-                                c, &mut facts, &tenant,
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                &mut facts,
+                                &tenant,
                             )
                             .await;
                             Ok((count, facts))

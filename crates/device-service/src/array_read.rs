@@ -164,6 +164,7 @@ async fn validate(
             read::authorize(grant, proof, members, false)?;
             for member in members {
                 let current = rss_mdm_registration_service::device::endpoints::current_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     proof.tenant_id(),
                     &member.device,

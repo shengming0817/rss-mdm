@@ -189,7 +189,7 @@ impl Service {
                     let targets=crate::administration::baseline::manifest::build(uuid::Uuid::parse_str(&user.tenant_id).map_err(|_|Error::Malformed)?)?.targets();
                     tx.with_connection(move |c| Box::pin(async move {
                         Ok(async {
-                            let (_,authority)=rss_mdm_authorization_service::baseline::grant_administrator_on(c,user,rule_id,targets).await?;
+                            let (_,authority)=rss_mdm_authorization_service::baseline::grant_administrator_on(rss_mdm_install_support::StorageProfile::Mdm, c,user,rule_id,targets).await?;
                             crate::administration::baseline::reserve_on(c,&authority).await
                         }.await)
                     })).await.map_err(pg_error)??;

@@ -52,6 +52,7 @@ impl Service {
                                 let result = async {
                                     actor.check_live().map_err(|_| Error::Denied)?;
                                     rss_mdm_authorization_service::lock_shared_on(
+                                        rss_mdm_install_support::StorageProfile::Mdm,
                                         c,
                                         actor.tenant_id(),
                                         actor.instance_id(),
@@ -59,6 +60,7 @@ impl Service {
                                     .await
                                     .map_err(|_| Error::Denied)?;
                                     let snapshot = rss_mdm_authorization_service::snapshot_on(
+                                        rss_mdm_install_support::StorageProfile::Mdm,
                                         c,
                                         actor.tenant_id(),
                                         actor.instance_id(),
@@ -226,6 +228,7 @@ impl Service {
                         }
                         let authority = grant.query_binding(proof).map_err(|_| Error::Denied)?;
                         let coordinate = rss_mdm_scope_service::channels::query_coordinate_on(
+                            rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             service.tenant,
                             input.definition.scope,
@@ -245,7 +248,8 @@ impl Service {
                             .map_err(|_| Error::Conflict)?;
                         let limit = query.limit();
                         let mut targets = rss_mdm_scope_service::channels::targets::objects_on(
-                            service.objects.as_ref(),
+                            rss_mdm_install_support::StorageProfile::Mdm,
+                            Some(service.objects.as_ref()),
                             c,
                             service.tenant,
                             input.definition.scope,
@@ -256,6 +260,7 @@ impl Service {
                         .await
                         .map_err(|_| Error::Conflict)?;
                         let result = rss_mdm_scope_service::channels::targets::devices_on(
+                            rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             service.tenant,
                             input.definition.scope,

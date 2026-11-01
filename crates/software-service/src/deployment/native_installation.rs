@@ -35,7 +35,10 @@ impl SoftwareService {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             Ok(crate::deployment::authorization::lock_shared_on(
-                                c, &tenant, &instance,
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                &tenant,
+                                &instance,
                             )
                             .await)
                         })
@@ -478,7 +481,7 @@ impl crate::deployment::transactions::Transactions {
         };
         let tenant = tx.tenant_id();
         let download_origin = tx.with_connection(move |c| Box::pin(async move {
-            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(c, &tenant.to_string()).await
+            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant.to_string()).await
                 .map(|v| v.configuration.preferred_origin).map_err(Error::from))
         })).await??;
         let operation_id = Uuid::new_v4();

@@ -336,9 +336,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                                 })
                                 .collect()
                         });
-                        let source = Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
-                            Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-                        ));
+                        let source = Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(rss_mdm_install_support::StorageProfile::Mdm, Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects))));
                         let sessions = Arc::new(
                             rss_mdm_authorization_service::session::SessionAuthority::new(
                                 identity.authority.clone(),
@@ -528,7 +526,7 @@ let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
  agent_facts: Arc::new(crate::assembly::agent_facts::AgentFacts),
                     read_pool: commands.read_pool.clone(),
 clock: Arc::new(crate::lifecycle::RuntimeTimer),
- audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),inventory_tenant,Arc::new(rss_mdm_device_service::planning::PlanningObjects))),objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+ audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(rss_mdm_install_support::StorageProfile::Mdm, telemetry_owner.runtime.clone(),inventory_tenant,Arc::new(rss_mdm_device_service::planning::PlanningObjects))),objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects),
 };
                                 let service = config
                                     .open(inventory_tenant, telemetry_owner.runtime, dependencies, signing.clone())

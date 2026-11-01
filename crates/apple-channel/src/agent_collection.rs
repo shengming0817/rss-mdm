@@ -66,7 +66,14 @@ pub async fn receive(
     let mut facts = vec![];
     if row.try_get::<bool, _>("expired").map_err(db)? {
         facts.extend(
-            channel::abandon_in(c, &p.tenant().to_string(), id_collection, "timeout").await?,
+            channel::abandon_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &p.tenant().to_string(),
+                id_collection,
+                "timeout",
+            )
+            .await?,
         );
         return Ok(Some(AppleReception::Collection { facts, run: None }));
     }
@@ -78,6 +85,7 @@ pub async fn receive(
             let saved:serde_json::Value=sqlx::query_scalar("SELECT evidence->'catalogDigest' FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(p.tenant().to_string()).bind(id_collection).fetch_one(&mut *c).await.map_err(db)?;
             facts.extend(
                 channel::finish_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     p,
                     id_collection,
@@ -179,6 +187,7 @@ pub async fn receive(
     };
     facts.extend(
         channel::finish_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             p,
             id_collection,
@@ -231,7 +240,16 @@ pub async fn send(
             }
             None
         } else if row.try_get::<bool, _>("expired").map_err(db)? {
-            facts.extend(channel::abandon_in(c, &tenant, id, "timeout").await?);
+            facts.extend(
+                channel::abandon_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    id,
+                    "timeout",
+                )
+                .await?,
+            );
             sqlx::query("UPDATE mdm_apple.attempts SET state='superseded' WHERE tenant_id=$1::uuid AND collection=$2 AND state IN('sent','not_now','pending')").bind(&tenant).bind(id).execute(&mut *c).await.map_err(db)?;
             return Ok((vec![], facts));
         } else {
@@ -243,8 +261,14 @@ pub async fn send(
     let collection = if let Some(id) = collection {
         id
     } else {
-        let (id, _, sequence) =
-            channel::start_in(c, p, ReportSource::MdmApple, catalog.digest).await?;
+        let (id, _, sequence) = channel::start_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p,
+            ReportSource::MdmApple,
+            catalog.digest,
+        )
+        .await?;
         let mut queries = vec![("collect_agent_platform", wire::platform())];
         if let Some(first) = bundles.first() {
             let mut query = wire::query(first)?;

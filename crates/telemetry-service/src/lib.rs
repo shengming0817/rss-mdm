@@ -317,7 +317,7 @@ pub async fn admit_configuration(
 ) -> Result<(), Error> {
     runtime.local_tx(tenant,deadline(),move|tx|Box::pin(async move {
         tx.with_connection(move|c|Box::pin(async move {
-            rss_mdm_inventory_service::verify_authority(c).await?;
+            rss_mdm_inventory_service::verify_authority(rss_mdm_install_support::StorageProfile::Mdm, c).await?;
             rss_mdm_inventory_postgres::verify_asset_history(c).await?;
             rss_mdm_inventory_postgres::verify_collections(c).await
                 .map_err(|_| sqlx::Error::Protocol("collection producer admission rejected".into()))?;

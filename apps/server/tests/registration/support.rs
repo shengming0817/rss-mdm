@@ -84,6 +84,7 @@ pub fn service(
     }])?);
     let clock = Arc::new(Clock);
     let issuer = Arc::new(agent_pki::AgentIssuer::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
         providers,
         2,
         true,
@@ -115,11 +116,13 @@ pub fn service(
         access_audit: c.audit.clone(),
         issuer,
         clock,
-        binding: Arc::new(rss_mdm_agent_channel::Bindings),
-        native: authority,
+        binding: Arc::new(rss_mdm_agent_channel::Bindings::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+        )),
+        native: Some(authority),
         bootstrap: Some(Arc::new(bootstrap)),
         protection,
-        installations: Arc::new(crate::agent_configurations::Installations),
+        installations: Some(Arc::new(crate::agent_configurations::Installations)),
     })?)
 }
 pub async fn counts(c: &Context) -> Result<(i64, i64)> {
@@ -239,7 +242,12 @@ pub async fn installation(
         .await?
         .scope;
     let mut tx = command::seed_transaction(c).await?;
-    agent::settings::initialize_on(&mut tx, &c.tenant.to_string()).await?;
+    agent::settings::initialize_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        &c.tenant.to_string(),
+    )
+    .await?;
     let lifecycle = rss_mdm_software_service::catalog::binding_on(
         &mut tx,
         c.tenant,

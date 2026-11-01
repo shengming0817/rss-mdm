@@ -22,6 +22,7 @@ pub(crate) async fn principal(
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::deployment::device::store::revalidate_source(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &checked,
                 rss_mdm_inventory::ReportSource::AgentBuiltin,

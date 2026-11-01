@@ -165,6 +165,7 @@ async fn configuration_on(
     )
     .await?;
     let scope = rss_mdm_registration_service::device::store::revalidate_collection_source(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         principal,
         frozen.source,
@@ -361,13 +362,18 @@ async fn directory_on(
         return Err(Error::Denied);
     }
     let eligible = crate::configurations::eligible_on(service, c, principal.device()).await?;
-    rss_mdm_registration_service::device::store::revalidate_management(c, principal)
-        .await
-        .map_err(registration_error)?;
+    rss_mdm_registration_service::device::store::revalidate_management(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        principal,
+    )
+    .await
+    .map_err(registration_error)?;
     let mut assignments = Vec::new();
     for candidate in eligible {
         let frozen = &candidate.frozen;
         match rss_mdm_registration_service::device::store::revalidate_collection_source(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             principal,
             frozen.source,

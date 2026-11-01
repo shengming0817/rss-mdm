@@ -407,8 +407,8 @@ async fn mutate(
         let (app,p,audit,id,input)=ctx;
         let mut context=(*app,*p,*id,*input);
         let (value,replayed)=tx.with_connection_context(&mut context,|(app,p,id,input),c|Box::pin(async move {
-            rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
-            let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+            rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
+            let rules=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
             rules.require(p,rss_mdm_authorization_service::Permission::RegistrationConfigurationWrite,None)?;
             let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND operation_id=$2 UNION ALL SELECT 1 FROM mdm_wns.revocations WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(p.tenant_id()).bind(*id).fetch_one(&mut *c).await.map_err(db)?;
             let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
@@ -599,9 +599,9 @@ async fn history(
     let (q, _) = query.parse()
         .map_err(|_| Error::Malformed)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
-    rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+    rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx, p.tenant_id(), p.instance_id()).await?;
     let current =
-        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+        rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx, p.tenant_id(), p.instance_id()).await?;
     current
         .require(
             p,

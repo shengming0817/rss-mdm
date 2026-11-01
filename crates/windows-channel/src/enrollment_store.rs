@@ -95,8 +95,15 @@ pub async fn active_windows_enrollment(
     tenant: &str,
     id: Uuid,
 ) -> Result<Uuid, Error> {
-    let registration = crate::enrollment::store::active_registration(tx, tenant, id).await?;
+    let registration = crate::enrollment::store::active_registration(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        tx,
+        tenant,
+        id,
+    )
+    .await?;
     if !crate::device::store::active_source_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tx,
         tenant,
         registration,

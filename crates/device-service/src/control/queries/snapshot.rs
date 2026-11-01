@@ -59,7 +59,7 @@ impl Queries {
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
             let timeout = remaining().as_millis().max(1).to_string();
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(timeout).execute(&mut *tx).await?;
-            let grant = authorization::snapshot_on(&mut tx, proof.tenant_id(), proof.instance_id()).await?;
+            let grant = authorization::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx, proof.tenant_id(), proof.instance_id()).await?;
             let binding = grant.query_binding(proof)?;
             let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint").fetch_one(&mut *tx).await?;
             let mut basis = Basis { grant, now, registration: None };
@@ -107,6 +107,7 @@ impl Queries {
                                     Ok::<_, sqlx::Error>(
                                         async {
                                             endpoints::lock_in(
+                                                rss_mdm_install_support::StorageProfile::Mdm,
                                                 c,
                                                 &tenant,
                                                 device,
@@ -114,6 +115,7 @@ impl Queries {
                                             )
                                             .await?;
                                             let actual = endpoints::current_in(
+                                                rss_mdm_install_support::StorageProfile::Mdm,
                                                 c,
                                                 &tenant,
                                                 device,

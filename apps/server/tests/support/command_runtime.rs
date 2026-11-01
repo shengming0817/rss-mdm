@@ -82,7 +82,8 @@ impl Prepared {
             signing,
             channels,
             source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
-                Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+                rss_mdm_install_support::StorageProfile::Mdm,
+                Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
             )),
             sessions: Arc::new(
                 rss_mdm_authorization_service::session::SessionAuthority::new(

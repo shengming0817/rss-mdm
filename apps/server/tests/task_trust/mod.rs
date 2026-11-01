@@ -159,9 +159,20 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         .bind(c.tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    let loaded = rss_mdm_task_trust::trust::load(&mut tx, c.tenant, 1, &protection).await?;
+    let loaded = rss_mdm_task_trust::trust::load(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        c.tenant,
+        1,
+        &protection,
+    )
+    .await?;
     tx.commit().await?;
-    let signing = rss_mdm_task_trust::Signing::new(c.tenant, Some(loaded))?;
+    let signing = rss_mdm_task_trust::Signing::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c.tenant,
+        Some(loaded),
+    )?;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let payload = w::TaskPayload::Unmanage(Box::new(w::UnmanageTaskSpec {
         wire_version: 1,

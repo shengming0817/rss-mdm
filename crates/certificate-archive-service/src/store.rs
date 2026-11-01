@@ -184,8 +184,8 @@ pub(crate) async fn write(
         let (receipt,replayed)=tx.with_connection_context(context,|context,c|Box::pin(async move{
             let (p,id,action,digest,mutation,_,_,_)=context;
             p.check_live()?;
-            rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
-            let snapshot=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+            rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
+            let snapshot=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
             for permission in mutation.permissions(){snapshot.require(p,*permission,None).map_err(|_|Error::Forbidden)?;}
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2641))").bind(p.tenant_id()).execute(&mut *c).await?;
             // Export returns plaintext even on replay; a retired unlock cannot be reused.

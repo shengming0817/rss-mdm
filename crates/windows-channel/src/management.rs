@@ -77,6 +77,7 @@ pub(crate) async fn manage(
     });
     crate::renewal::activate(&app, &checked, &message.header.source, purpose).await?;
     let mount = crate::device::ChannelMount::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
         app.identity.tenant(),
         rss_mdm_inventory::ReportSource::MdmWindows,
         purpose,
@@ -520,7 +521,7 @@ async fn session_decision(
             };
             if old.try_get::<bool, _>("authenticated").map_err(db)? {
                 if let Err(delay)=ingress.authenticated(principal){return Ok(SessionDecision::Limited(delay));}
-                crate::device::store::record_communication_in(tx, principal).await?;
+                crate::device::store::record_communication_in(rss_mdm_install_support::StorageProfile::Mdm, tx, principal).await?;
             }
             return Ok(SessionDecision::Replay(Reply { bytes: plain.expose().to_vec(), facts: vec![] }, package));
         }

@@ -53,7 +53,11 @@ impl PolicyCandidates {
         let kinds = ["ensure_agent_installed", "software"];
         Box::pin(async move {
             Ok(rss_mdm_policy_postgres::candidates::native_interests_on(
-                connection, tenant, devices, &kinds,
+                rss_mdm_install_support::StorageProfile::Mdm,
+                connection,
+                tenant,
+                devices,
+                &kinds,
             )
             .await?)
         })
@@ -68,9 +72,14 @@ impl PolicyCandidates {
         after: Uuid,
     ) -> Pending<'a, CandidatePage> {
         Box::pin(async move {
-            let rows =
-                rss_mdm_policy_postgres::candidates::candidates_on(c, tenant, after, kind.as_str())
-                    .await?;
+            let rows = rss_mdm_policy_postgres::candidates::candidates_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                after,
+                kind.as_str(),
+            )
+            .await?;
             let has_more = rows.len() > 16;
             let mut scanned_after = after;
             let mut items = Vec::new();

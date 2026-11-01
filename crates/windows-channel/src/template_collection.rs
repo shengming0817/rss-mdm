@@ -92,9 +92,23 @@ pub async fn send(
         let plan = source
             .collection_plan(c, &p.tenant().to_string(), id)
             .await?;
-        let mut run = store::load_on(c, &p.tenant().to_string(), id).await?;
+        let mut run = store::load_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &p.tenant().to_string(),
+            id,
+        )
+        .await?;
         if plan.applicable(context).is_err() {
-            facts.extend(store::seal(c, &mut run, "native_not_applicable").await?);
+            facts.extend(
+                store::seal(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &mut run,
+                    "native_not_applicable",
+                )
+                .await?,
+            );
             continue;
         }
         let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT template_state FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2 AND kind='template' AND session_id=$3")
@@ -120,6 +134,7 @@ pub async fn send(
             }
         };
         let first = crate::device::store::allocate_commands_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             p,
             state.unsent().max(1).min(limits.commands) as i64,
@@ -140,8 +155,15 @@ pub async fn send(
                 s::Admission::Send(_) => response.commands.push(command),
                 s::Admission::Defer => break,
                 s::Admission::Unsupported => {
-                    facts
-                        .extend(store::seal(c, &mut run, "native_response_budget_exceeded").await?);
+                    facts.extend(
+                        store::seal(
+                            rss_mdm_install_support::StorageProfile::Mdm,
+                            c,
+                            &mut run,
+                            "native_response_budget_exceeded",
+                        )
+                        .await?,
+                    );
                     break;
                 }
             }
@@ -183,7 +205,8 @@ pub async fn receive(
     let mut runs = Vec::new();
     for row in rows {
         let id: Uuid = row.try_get("id").map_err(db)?;
-        let mut run = store::load_on(c, &tenant, id).await?;
+        let mut run =
+            store::load_on(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, id).await?;
         let mut state = open(
             protection,
             &run,
@@ -308,9 +331,18 @@ pub async fn receive(
             message.final_message,
             message.header.message_id as usize,
         ) {
-            Settlement::Seal(reason) => facts.extend(store::seal(c, &mut run, reason).await?),
+            Settlement::Seal(reason) => facts.extend(
+                store::seal(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &mut run,
+                    reason,
+                )
+                .await?,
+            ),
             Settlement::Abandon => facts.extend(
                 rss_mdm_inventory_service::collection::channel::abandon_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &tenant,
                     id,
@@ -318,7 +350,10 @@ pub async fn receive(
                 )
                 .await?,
             ),
-            Settlement::Pending => store::save_attempts_in(c, &run).await?,
+            Settlement::Pending => {
+                store::save_attempts_in(rss_mdm_install_support::StorageProfile::Mdm, c, &run)
+                    .await?
+            }
         }
     }
     Ok((

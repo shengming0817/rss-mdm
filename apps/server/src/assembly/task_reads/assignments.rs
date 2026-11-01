@@ -47,7 +47,7 @@ pub(super) async fn assignments(
             if !p.state.is_enabled() {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
             if let Some(target)=&object.target {
                 let device=&target.device;
-                let eligible=rss_mdm_registration_service::lifecycle::work_allowed_on(c,&tenant.to_string(),device).await?;
+                let eligible=rss_mdm_registration_service::lifecycle::work_allowed_on(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant.to_string(),device).await?;
                 if !eligible && object.availability==rss_mdm_scope_service::channels::Availability::Ready {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("source_pending".into());}
                 let diagnosis=match &p.definition.action {
                     Action::Software{..}|Action::EnsureAgentInstalled{..}=>{
@@ -55,10 +55,10 @@ pub(super) async fn assignments(
                         task_admission=state.task_admission;operations=state.operations;state.diagnosis
                     },
                     Action::DeviceAccess{..}=>{operations=rss_mdm_registration_service::device_access::execution::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(access_fault)?;None},
-                    Action::Credential{..}=>{operations=rss_mdm_recovery_credentials::tasks::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(credential_fault)?;None},
+                    Action::Credential{..}=>{operations=rss_mdm_recovery_credentials::tasks::queries::assignment_ids_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,id,target,channel).await.map_err(credential_fault)?;None},
                     Action::RequestMdmEnrollment{..}=>{
-                        task_admission=Some(rss_mdm_registration_service::enrollment::tasks::queries::assignment_state_on(c,tenant,&s.enrollment,&p,device,now).await.map_err(enrollment_fault)?);
-                        operations=rss_mdm_registration_service::enrollment::tasks::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(enrollment_fault)?;None
+                        task_admission=Some(rss_mdm_registration_service::enrollment::tasks::queries::assignment_state_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,&s.enrollment,&p,device,now).await.map_err(enrollment_fault)?);
+                        operations=rss_mdm_registration_service::enrollment::tasks::queries::assignment_ids_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,id,target,channel).await.map_err(enrollment_fault)?;None
                     },
                     Action::Configuration{..}=>{let state=s.configuration.assignment_on(c,p.id,target).await.map_err(super::configuration_fault)?;operations=state.operations;state.diagnosis},
                     _=>None

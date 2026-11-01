@@ -57,7 +57,9 @@ impl Compliance {
             groups: d.groups,
             reconcile_messaging: d.reconcile_messaging,
             asset_reader: rss_mdm_inventory_service::assets::planning::SnapshotReader::bind(
-                d.runtime, d.tenant,
+                rss_mdm_install_support::StorageProfile::Mdm,
+                d.runtime,
+                d.tenant,
             ),
             cursor_key: d.cursor_key,
         }

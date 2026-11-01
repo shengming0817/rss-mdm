@@ -80,6 +80,7 @@ pub(crate) async fn deliver_on(
         .map_err(|_| Error::Storage)?;
     if !current
         || rss_mdm_registration_service::device::store::collection_stream_retired_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             tenant,
             &input.device,
@@ -94,6 +95,7 @@ pub(crate) async fn deliver_on(
     }
     let (definition, batches) = prepare(input)?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tenant,
         input.registration,
         input.source.as_str(),

@@ -150,6 +150,7 @@ pub(crate) async fn prepare_request(
         .devices
         .management_principal(
             &crate::device::ChannelMount::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 app.identity.tenant(),
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 purpose,
@@ -191,8 +192,16 @@ async fn issue_on(
     issued: &PendingCertificate,
 ) -> Result<(Uuid, Vec<u8>, String, bool), Error> {
     let tenant = p.tenant().to_string();
-    crate::device::store::lock_channel(c, &tenant, p.device(), p.channel()).await?;
-    crate::device::store::revalidate_management(c, p).await?;
+    crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant,
+        p.device(),
+        p.channel(),
+    )
+    .await?;
+    crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, p)
+        .await?;
     let windows = app.windows()?;
     if let Some(old)=sqlx::query("SELECT n.id,n.proof_digest,n.certificate,q.windows_profile AS enrollment_type,n.configuration FROM mdm_windows.renewals n JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(n.tenant_id,n.registration) JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE n.tenant_id=$1::uuid AND n.registration=$2 AND n.generation=$3 AND n.previous_credential=$4 FOR UPDATE OF n")
         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).fetch_optional(&mut *c).await.map_err(db)? {
@@ -235,6 +244,7 @@ async fn issue_on(
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     rss_mdm_pki_service::certificates::record_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &tenant,
         "windows",
@@ -286,8 +296,20 @@ async fn prepare_on(
 ) -> Result<(Pending, Option<(Uuid, Uuid, Uuid)>), Error> {
     let tenant = p.tenant().to_string();
     let tx = connection;
-    crate::device::store::lock_channel(tx, &tenant, p.device(), p.channel()).await?;
-    crate::device::store::revalidate_management(tx, p).await?;
+    crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        tx,
+        &tenant,
+        p.device(),
+        p.channel(),
+    )
+    .await?;
+    crate::device::store::revalidate_management(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        tx,
+        p,
+    )
+    .await?;
     let windows = app.windows()?;
     if let Some(row) = sqlx::query("SELECT id,signing_attempt,proof_digest,profile,configuration FROM mdm_windows.renewal_intents WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND previous_credential=$4")
         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential())
@@ -436,7 +458,14 @@ async fn activate_on(
         return Err(Error::Forbidden);
     };
     let device = internal_device.as_str();
-    crate::device::store::lock_channel(c, &tenant, device, rss_mdm_inventory::Channel::Mdm).await?;
+    crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant,
+        device,
+        rss_mdm_inventory::Channel::Mdm,
+    )
+    .await?;
     let row=sqlx::query("SELECT id,registration,generation,previous_credential,configuration FROM mdm_windows.renewals WHERE tenant_id=$1::uuid AND fingerprint=$2 AND activated_at IS NULL FOR UPDATE")
         .bind(&tenant).bind(leaf.fingerprint().as_slice()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
@@ -446,6 +475,7 @@ async fn activate_on(
     let registration: Uuid = row.try_get("registration").map_err(db)?;
     let id: Uuid = row.try_get("id").map_err(db)?;
     crate::device::store::activate_renewed_mdm_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &tenant,
         device,
@@ -453,6 +483,7 @@ async fn activate_on(
         row.try_get("generation").map_err(db)?,
         row.try_get("previous_credential").map_err(db)?,
         &crate::device::ChannelMount::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             app.identity.tenant(),
             rss_mdm_inventory::ReportSource::MdmWindows,
             purpose,

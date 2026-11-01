@@ -84,6 +84,7 @@ pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Res
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::deployment::device::store::lock_channel(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &tenant,
                 &device,
@@ -104,6 +105,7 @@ pub(crate) async fn try_lock_device(tx: &mut PgTransaction<'_>, device: &str) ->
             Box::pin(async move {
                 Ok(
                     rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &tenant,
                         &[selected],

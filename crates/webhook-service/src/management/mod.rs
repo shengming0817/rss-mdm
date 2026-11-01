@@ -206,7 +206,10 @@ impl Service {
                             tx.with_connection(move |c| {
                                 Box::pin(async move {
                                     Ok(rss_mdm_authorization_service::lock_on(
-                                        c, &tenant, &instance,
+                                        rss_mdm_install_support::StorageProfile::Mdm,
+                                        c,
+                                        &tenant,
+                                        &instance,
                                     )
                                     .await)
                                 })
@@ -379,9 +382,20 @@ impl Service {
         if !deliveries {
             q.default_filter("deleted", "false").map_err(err)?;
         }
-        rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id()).await?;
-        let current =
-            rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id()).await?;
+        rss_mdm_authorization_service::lock_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
+        let current = rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
         current.require(p, Permission::WebhookRead, None)?;
         let binding = q
             .binding(&(
@@ -511,13 +525,23 @@ impl Service {
             command,
             Command::PrepareMaterial(..) | Command::TransitionMaterial(..)
         ) {
-            rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id())
-                .await
-                .map_err(|_| unavailable())?;
-            rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
-                .await
-                .map_err(|_| unavailable())?
-                .require(p, Permission::WebhookWrite, None)?;
+            rss_mdm_authorization_service::lock_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                p.tenant_id(),
+                p.instance_id(),
+            )
+            .await
+            .map_err(|_| unavailable())?;
+            rss_mdm_authorization_service::snapshot_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                p.tenant_id(),
+                p.instance_id(),
+            )
+            .await
+            .map_err(|_| unavailable())?
+            .require(p, Permission::WebhookWrite, None)?;
             let now = self.host.clock.unix_seconds().map_err(|_| unavailable())?;
             if !p.recently_authenticated(now, 300)? {
                 return Err(Error::Denied);

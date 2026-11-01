@@ -9,9 +9,21 @@ pub async fn asset_binding(
     operation: Uuid,
     identifier: &str,
 ) -> Result<Option<native::ddm::AssetBinding>, Error> {
-    crate::device::store::lock_channel(c, &p.tenant().to_string(), p.device(), p.channel()).await?;
-    crate::device::store::revalidate_source(c, p, rss_mdm_inventory::ReportSource::MdmApple)
-        .await?;
+    crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &p.tenant().to_string(),
+        p.device(),
+        p.channel(),
+    )
+    .await?;
+    crate::device::store::revalidate_source(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p,
+        rss_mdm_inventory::ReportSource::MdmApple,
+    )
+    .await?;
     let row=sqlx::query("SELECT user_key,snapshot FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND retired_at IS NULL")
         .bind(p.tenant().to_string()).bind(operation).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {

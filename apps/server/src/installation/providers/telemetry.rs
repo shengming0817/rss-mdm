@@ -363,7 +363,7 @@ async fn install_objects(c: &mut PgConnection, input: &Request) -> Result<()> {
         Some(profile) => profile.installation_sql().map_err(|_| Error::Input)?,
         None => rss_timeseries_clickhouse::CONTROL_SQL.to_owned(),
     };
-    for body in crate::migration::transaction_body(&source).map_err(|_| Error::Input)? {
+    for body in rss_mdm_install_support::transaction_body(&source).map_err(|_| Error::Input)? {
         if !body.trim().is_empty() {
             sql(&mut *c, body).await?;
         }

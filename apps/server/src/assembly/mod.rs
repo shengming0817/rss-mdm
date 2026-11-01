@@ -240,9 +240,10 @@ pub(crate) async fn from_compiled(
                     protection: protection.clone(),
                 },
             ),
-            source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets {
-                objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-            }),
+            source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
+            )),
             read_pool,
             clock: Arc::new(crate::lifecycle::RuntimeTimer),
         });
@@ -406,6 +407,7 @@ pub(crate) async fn from_compiled(
         .flatten();
     let trusts = native_trusts(&windows, &apple, &agent_pki);
     let admission = rss_mdm_pki_service::registry::Registry::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
         access.archive_pool(),
         audit_store.clone(),
         trusts,
@@ -424,6 +426,7 @@ pub(crate) async fn from_compiled(
     loaded_native_materials(&windows, &apple, &channels)?;
     let trusts = native_trusts(&windows, &apple, &agent_pki);
     let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
         access.archive_pool(),
         audit_store.clone(),
         trusts,
@@ -463,11 +466,13 @@ pub(crate) async fn from_compiled(
                     access_audit: access_audit.clone().ok_or(Error::Malformed)?,
                     issuer: pki.issuer.clone(),
                     clock: pki.pki_clock.clone(),
-                    binding: Arc::new(rss_mdm_agent_channel::Bindings),
-                    native: software.authority.clone(),
+                    binding: Arc::new(rss_mdm_agent_channel::Bindings::new(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                    )),
+                    native: Some(software.authority.clone()),
                     bootstrap: pki.bootstrap.clone(),
                     protection: protection.clone(),
-                    installations: Arc::new(crate::agent_configurations::Installations),
+                    installations: Some(Arc::new(crate::agent_configurations::Installations)),
                 },
             )
             .map(Arc::new)
@@ -875,3 +880,5 @@ mod device_t2;
 #[cfg(test)]
 #[path = "../../tests/owner_boundaries/mod.rs"]
 mod owner_boundaries_t2;
+
+mod recovery_eligibility;

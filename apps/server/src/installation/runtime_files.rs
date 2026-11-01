@@ -469,6 +469,7 @@ pub(super) async fn record_observation(
     {
         for origin in std::iter::once(&endpoint.origin).chain(additional_origins.iter()) {
             rss_mdm_registration_service::agent::connections::record_deployment_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 &mut tx,
                 tenant,
                 origin,

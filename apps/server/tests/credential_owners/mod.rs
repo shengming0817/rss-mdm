@@ -73,14 +73,19 @@ impl Owners {
         );
         let native = material::protection(c)?;
         let source = Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
-            Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+            rss_mdm_install_support::StorageProfile::Mdm,
+            Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
         ));
         let materials = Arc::new(access::Materials {
-            agent_store: Arc::new(super::registration_agent_facts::AgentFacts),
+            agent_store: Arc::new(super::registration_agent_facts::AgentFacts::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            )),
             source: Arc::new(super::registration_sources::Source(source)),
             capacity: Arc::new(super::capacity::Capacity),
             recovery: Some(Arc::new(recovery::access::AccessMaterials::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 credentials.clone(),
+                Arc::new(super::recovery_eligibility::AccessEligibility { admission: None }),
             ))),
             platform: Arc::new(super::access_execution::Platform(
                 rss_mdm_apple_channel::flow_store::Store {
@@ -99,12 +104,16 @@ impl Owners {
         )
         .await?;
         let maintenance = recovery::maintenance::Maintenance::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             runtime.clone(),
             c.tenant,
             audit.clone(),
             credentials,
-            Arc::new(copies),
+            Some(Arc::new(copies)),
             Arc::new(tokio::sync::Semaphore::new(2)),
+            Some(Arc::new(super::recovery_eligibility::AccessEligibility {
+                admission: None,
+            })),
         );
         Ok(Self {
             runtime,
@@ -129,6 +138,10 @@ async fn candidate(c: &Context, keys: &recovery::KeyRing) -> Result<(recovery::C
     let operation = Uuid::new_v4();
     let mut tx = seed(c).await?;
     let coordinate = recovery::storage::reserve_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
         &mut tx,
         Uuid::parse_str(&c.tenant.to_string())?,
         &binding,
@@ -137,6 +150,10 @@ async fn candidate(c: &Context, keys: &recovery::KeyRing) -> Result<(recovery::C
     )
     .await?;
     recovery::storage::ingest_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
         &mut tx,
         keys,
         &coordinate,
@@ -162,6 +179,10 @@ async fn native_candidate(
     let operation = Uuid::new_v4();
     let mut tx = seed(c).await?;
     let coordinate = recovery::storage::reserve_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
         &mut tx,
         Uuid::parse_str(&c.tenant.to_string())?,
         &binding,
@@ -170,6 +191,10 @@ async fn native_candidate(
     )
     .await?;
     recovery::storage::ingest_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
         &mut tx,
         keys,
         &coordinate,
@@ -263,6 +288,10 @@ async fn input_copy(
     .derive();
     sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,ordinal,request,state,deadline) VALUES($1,$2,$3,1,$4,'execute',0,$5,'sent',clock_timestamp()+interval '5 minutes')").bind(coordinate.tenant).bind(attempt).bind(binding.registration).bind(operation).bind(key.seal_bytes(&bytes,&aad)?).execute(&mut *tx).await?;
     recovery::storage::link_native_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
         &mut tx,
         coordinate.tenant,
         operation,

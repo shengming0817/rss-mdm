@@ -1,5 +1,7 @@
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
+    #[error("capability not enabled")]
+    Unsupported,
     #[error("invalid script request")]
     Malformed,
     #[error("script execution conflict")]
@@ -58,6 +60,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
     fn from(e: rss_mdm_registration_service::Error) -> Self {
         use rss_mdm_registration_service::Error as R;
         match e {
+            R::Unsupported => Self::Unsupported,
             R::Malformed => Self::Malformed,
             R::Unauthorized => Self::Unauthorized,
             R::Forbidden => Self::Forbidden,

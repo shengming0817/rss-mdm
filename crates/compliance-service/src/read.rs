@@ -50,7 +50,15 @@ impl Compliance {
         let d = device.to_owned();
         if !tx
             .with_connection(move |c| {
-                Box::pin(async move { crate::device::read::exists(c, t, d).await })
+                Box::pin(async move {
+                    crate::device::read::exists(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        t,
+                        d,
+                    )
+                    .await
+                })
             })
             .await?
         {

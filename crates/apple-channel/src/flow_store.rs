@@ -87,6 +87,7 @@ impl channels::ApplePush for Store {
             for row in rows {
                 let registration = row.try_get("registration").map_err(storage)?;
                 let active = rss_mdm_registration_service::device::store::active_source_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &tenant,
                     registration,
@@ -519,9 +520,21 @@ pub(crate) async fn current(
     udid: &str,
     user_key: &str,
 ) -> Result<(), Error> {
-    crate::device::store::lock_channel(c, &p.tenant().to_string(), p.device(), p.channel()).await?;
-    crate::device::store::revalidate_source(c, p, rss_mdm_inventory::ReportSource::MdmApple)
-        .await?;
+    crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &p.tenant().to_string(),
+        p.device(),
+        p.channel(),
+    )
+    .await?;
+    crate::device::store::revalidate_source(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p,
+        rss_mdm_inventory::ReportSource::MdmApple,
+    )
+    .await?;
     let valid=sqlx::query_scalar::<_,bool>("SELECT true FROM mdm_apple.devices d JOIN mdm_apple.channels ch USING(tenant_id,registration) WHERE d.tenant_id=$1::uuid AND d.registration=$2::uuid AND d.state<>'retired' AND d.udid=$3 AND ch.user_key=$4 AND ch.generation=$5 AND ch.state='active' FOR UPDATE OF d,ch").bind(p.tenant().to_string()).bind(p.registration()).bind(udid).bind(user_key).bind(p.generation()).fetch_optional(c).await.map_err(db)?.unwrap_or(false);
     if !valid {
         return Err(Error::Unauthorized);

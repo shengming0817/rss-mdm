@@ -20,12 +20,16 @@ pub(crate) async fn assemble(
     concurrency: usize,
 ) -> Result<Assembly, crate::Error> {
     let materials = Arc::new(access::Materials {
-        agent_store: Arc::new(super::registration_agent_facts::AgentFacts),
+        agent_store: Arc::new(super::registration_agent_facts::AgentFacts::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+        )),
         source: Arc::new(super::registration_sources::Source(source)),
         capacity: Arc::new(super::capacity::Capacity),
         recovery: recovery.map(|p| {
             Arc::new(rss_mdm_recovery_credentials::access::AccessMaterials::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 p,
+                Arc::new(super::recovery_eligibility::AccessEligibility { admission: None }),
             ))
                 as Arc<
                     dyn rss_mdm_registration_service::device_access::participants::AccessRecovery,

@@ -212,8 +212,8 @@ impl Authority {
         let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*input);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,input),c|Box::pin(async move {
-                rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
-                let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+                rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
+                let rules=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::StorageConfigurationWrite,None)?;
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
                 if !p.recently_authenticated(now,300)? {return Err(Failure::Forbidden)}
@@ -253,8 +253,8 @@ impl Authority {
         let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*input);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,input),c|Box::pin(async move {
-                rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
-                let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+                rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
+                let rules=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::StorageConfigurationWrite,None)?;
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
                 if !p.recently_authenticated(now,300)? {return Err(Failure::Forbidden)}
@@ -293,8 +293,8 @@ impl Authority {
         let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation),|(service,p,audit,operation),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation),c|Box::pin(async move {
-                rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
-                let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+                rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
+                let rules=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::StorageConfigurationWrite,None)?;
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
                 if !p.recently_authenticated(now,300)? {return Err(Failure::Forbidden)}
@@ -338,8 +338,8 @@ impl Authority {
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result=self.audit.read(self.tenant,&budget.control(),(p,q,codec),|ctx,tx|Box::pin(async move{
    tx.with_connection_context(ctx,|(p,q,codec),c|Box::pin(async move{
-    rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
-    let current=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+    rss_mdm_authorization_service::lock_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
+    let current=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),p.instance_id()).await?;
     current.require(p,Permission::StorageConfigurationRead,None).map_err(rss_mdm_authorization_service::Error::from)?;
     let binding=rss_mdm_query::cursor::fingerprint(&("storage_connection_versions",p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(|_|Failure::Malformed)?;
     let before:Option<i64>=q.cursor().as_ref().map(|v|codec.decode(&rss_contract::PageCursor::parse(v).map_err(|_|Failure::Malformed)?,&binding).map_err(|_|Failure::Conflict)).transpose()?;

@@ -296,7 +296,14 @@ impl Compliance {
         let sources = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    crate::device::read::sources_at(c, t.to_string(), ids, &at).await
+                    crate::device::read::sources_at(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        t.to_string(),
+                        ids,
+                        &at,
+                    )
+                    .await
                 })
             })
             .await?;

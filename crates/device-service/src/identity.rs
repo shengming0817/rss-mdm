@@ -330,7 +330,14 @@ pub(crate) async fn affected_world(
         .bind(&t).bind(device).fetch_all(&mut *c).await?;
     ids.extend(associated);
     let ids = ids.into_iter().collect::<Vec<_>>();
-    if !rss_mdm_registration_service::lifecycle::try_lock_devices_in(c, &t, &ids).await? {
+    if !rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &t,
+        &ids,
+    )
+    .await?
+    {
         return Err(Error::Conflict);
     }
     let association_ids: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=ANY($2) AND NOT released ORDER BY association_id")
@@ -401,11 +408,23 @@ pub(crate) async fn endpoint_page(
     )
     .map_err(|_| Error::Storage)?;
     let devices = rss_mdm_inventory_service::assets::raw_snapshot::scalar_devices_on(
-        c, tenant, cut, ids, &catalog,
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        tenant,
+        cut,
+        ids,
+        &catalog,
     )
     .await
     .map_err(|_| Error::Storage)?;
-    let primary = endpoints::page_at(c, &tenant.to_string(), cut, ids).await?;
+    let primary = endpoints::page_at(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant.to_string(),
+        cut,
+        ids,
+    )
+    .await?;
     endpoint_facts(&devices.iter().collect::<Vec<_>>(), primary)
 }
 pub(crate) fn endpoint_facts(

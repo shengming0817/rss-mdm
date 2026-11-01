@@ -106,15 +106,15 @@ pub(crate) async fn requested(
             let replay = tx.with_connection_context(&mut (*app,*p,&mut **facts,*digest,*sealed,*session),
                 |(app,p,facts,digest,sealed,session),c| Box::pin(async move {
                     let tenant = p.tenant().to_string();
-                    crate::device::store::lock_channel(c,&tenant,p.device(),p.channel()).await?;
+                    crate::device::store::lock_channel(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant,p.device(),p.channel()).await?;
                     if let Some(row) = sqlx::query("SELECT digest,response FROM mdm_windows.unenrollment_receipts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND credential=$4 AND session=$5")
                         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(*session)).fetch_optional(&mut *c).await.map_err(db)? {
                         if row.try_get::<Vec<u8>,_>("digest").map_err(db)? != **digest { return Err(Error::Conflict); }
                         return Ok::<_,Error>(Some(row.try_get::<Vec<u8>,_>("response").map_err(db)?));
                     }
-                    crate::device::store::revalidate_management(c,p).await?;
+                    crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c,p).await?;
                     app.departure.departed(c,&tenant,p.registration()).await.map_err(|_|Error::Conflict)?;
-                    rss_mdm_registration_service::retire(c,facts,&tenant,p.registration(),"revoked",app.devices.retirement()).await?;
+                    rss_mdm_registration_service::retire(rss_mdm_install_support::StorageProfile::Mdm, c,facts,&tenant,p.registration(),"revoked",app.devices.retirement()).await?;
                     sqlx::query("INSERT INTO mdm_windows.unenrollment_receipts(tenant_id,registration,generation,credential,session,digest,response) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
                         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(*session))
                         .bind(digest.as_slice()).bind(sealed.as_slice()).execute(c).await.map_err(db)?;

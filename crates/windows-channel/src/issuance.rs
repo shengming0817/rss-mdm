@@ -40,16 +40,33 @@ impl IssuanceAuthority<'_> {
         }
     }
     async fn current(&self, c: &mut sqlx::PgConnection) -> Result<sqlx::postgres::PgRow, Error> {
-        rss_mdm_registration_service::admission::lock_in(c, &self.coordinates().tenant).await?;
+        rss_mdm_registration_service::admission::lock_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &self.coordinates().tenant,
+        )
+        .await?;
         match self {
             Self::Native(p) => {
                 let d = p.coordinates();
-                crate::device::store::lock_channel(c, &d.tenant, &d.device, d.source.channel())
-                    .await?;
+                crate::device::store::lock_channel(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &d.tenant,
+                    &d.device,
+                    d.source.channel(),
+                )
+                .await?;
                 p.current_request(c).await.map_err(Into::into)
             }
             Self::Password(a, p) => {
-                let r = request(c, p.tenant_id(), a.id).await?;
+                let r = request(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    p.tenant_id(),
+                    a.id,
+                )
+                .await?;
                 current(&r, a, p)?;
                 Ok(r)
             }
@@ -216,6 +233,7 @@ async fn issue_intent_on(
         return Ok((old, replacement));
     }
     rss_mdm_registration_service::admission::require_request_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tx,
         &d.tenant,
         d.id,
@@ -296,6 +314,7 @@ pub(crate) async fn resume_profile(
         .collect::<String>();
     let next = Uuid::new_v4();
     let replaced = rss_mdm_pki_service::signing::supersede_expired_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
         rss_mdm_pki_service::Sign {
@@ -361,6 +380,7 @@ pub(crate) async fn resume_intent(
     .await?
     {
         rss_mdm_registration_service::admission::require_request_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             tenant,
             request,
@@ -584,6 +604,7 @@ async fn complete_on(
     let receipt = match authority {
         IssuanceAuthority::Password(_, proof) => {
             bind_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
                 proof,
                 credential,
@@ -602,6 +623,7 @@ async fn complete_on(
         }
         IssuanceAuthority::Native(admission) => {
             crate::device::store::bind_native_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
                 admission,
                 credential,
@@ -623,6 +645,7 @@ async fn complete_on(
     .await
     .map_err(db)?;
     rss_mdm_pki_service::certificates::record_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tx,
         &d.tenant,
         "windows",
@@ -635,7 +658,13 @@ async fn complete_on(
     // Evaluate again after channel/registration lock waits, immediately before committing.
     match authority {
         IssuanceAuthority::Password(auth, _) => {
-            crate::enrollment::store::mark_bound_in(tx, &d.tenant, auth).await?
+            crate::enrollment::store::mark_bound_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                tx,
+                &d.tenant,
+                auth,
+            )
+            .await?
         }
         IssuanceAuthority::Native(p) => p.mark_bound_in(tx).await?,
     }
@@ -745,6 +774,7 @@ pub(crate) async fn authorize_profile(
         .get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)
         .map_err(|_| Error::Conflict)?;
     rss_mdm_pki_service::signing::authorize_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
         "windows",
@@ -812,36 +842,39 @@ pub(crate) async fn sign_profile(
         .providers
         .get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)
         .map_err(|_| Error::Conflict)?;
-    let chain = rss_mdm_pki_service::signing::SigningStore::new(app.audit_store.clone())
-        .issue(
-            Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
-            ("windows", &issuer),
-            provider,
-            rss_mdm_pki_service::Sign {
-                attempt,
-                csr_pem: &pem,
-                csr_digest: &digest,
-                subject: &subject,
-                sans: &[],
-                start: profile.start,
-                end: profile.end,
-                deadline: profile.start + 60,
-            },
-            &|| {
-                app.clock
-                    .unix_seconds()
-                    .ok_or(rss_mdm_pki_service::Error::Request)
-            },
-            |chain| {
-                let chain: Vec<_> = chain
-                    .iter()
-                    .map(|bytes| CertificateDer::from(bytes.as_slice()))
-                    .collect();
-                w.ca.validate_issued(profile, &csr, &chain, now).is_ok()
-            },
-        )
-        .await
-        .map_err(pki_error)?;
+    let chain = rss_mdm_pki_service::signing::SigningStore::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        app.audit_store.clone(),
+    )
+    .issue(
+        Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
+        ("windows", &issuer),
+        provider,
+        rss_mdm_pki_service::Sign {
+            attempt,
+            csr_pem: &pem,
+            csr_digest: &digest,
+            subject: &subject,
+            sans: &[],
+            start: profile.start,
+            end: profile.end,
+            deadline: profile.start + 60,
+        },
+        &|| {
+            app.clock
+                .unix_seconds()
+                .ok_or(rss_mdm_pki_service::Error::Request)
+        },
+        |chain| {
+            let chain: Vec<_> = chain
+                .iter()
+                .map(|bytes| CertificateDer::from(bytes.as_slice()))
+                .collect();
+            w.ca.validate_issued(profile, &csr, &chain, now).is_ok()
+        },
+    )
+    .await
+    .map_err(pki_error)?;
     chain.into_iter().next().ok_or(Error::Conflict)
 }
 use sha2::Digest;

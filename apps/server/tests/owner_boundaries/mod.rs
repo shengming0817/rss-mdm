@@ -363,9 +363,18 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
     let first = planning::endpoint(&c).await?;
     let at = cut::capture(&c.audit, c.tenant, &budget).await?;
     let later = planning::endpoint(&c).await?;
-    let reader = SnapshotReader::bind(owners.storage.runtime.clone(), c.tenant);
-    let wrong = SnapshotReader::bind(other.runtime.clone(), c.tenant);
+    let reader = SnapshotReader::bind(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        owners.storage.runtime.clone(),
+        c.tenant,
+    );
+    let wrong = SnapshotReader::bind(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        other.runtime.clone(),
+        c.tenant,
+    );
     let foreign = SnapshotReader::bind(
+        rss_mdm_install_support::StorageProfile::Mdm,
         owners.storage.runtime.clone(),
         rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?,
     );

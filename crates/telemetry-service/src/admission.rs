@@ -79,9 +79,13 @@ pub(crate) async fn receive_on(
     {
         return Err(Error::Capacity);
     }
-    rss_mdm_registration_service::device::store::revalidate_management(c, principal)
-        .await
-        .map_err(|_| Error::Denied)?;
+    rss_mdm_registration_service::device::store::revalidate_management(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        principal,
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2815))")
         .bind(format!("{}:{}", service.tenant, input.batch_id))
         .execute(&mut *c)
@@ -113,9 +117,14 @@ pub(crate) async fn receive_on(
             rss_mdm_policy_service::Error::Forbidden => Error::Denied,
             _ => Error::Storage,
         })?;
-    let scope = revalidate_collection_source(c, principal, frozen.source)
-        .await
-        .map_err(|_| Error::Denied)?;
+    let scope = revalidate_collection_source(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        principal,
+        frozen.source,
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
     let epoch = Uuid::parse_str(scope.epoch().as_str()).map_err(|_| Error::Storage)?;
     if configuration.source_epoch != epoch
         || configuration.resource_digest != frozen.resource_digest
@@ -291,9 +300,13 @@ pub(crate) async fn status_on(
     {
         return Err(Error::Denied);
     }
-    rss_mdm_registration_service::device::store::revalidate_management(c, principal)
-        .await
-        .map_err(|_| Error::Denied)?;
+    rss_mdm_registration_service::device::store::revalidate_management(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        principal,
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
     if principal.tenant() != service.tenant {
         return Err(Error::Denied);
     }
@@ -475,6 +488,7 @@ pub(crate) async fn current_on(
     let epoch = row.try_get::<Uuid, _>("epoch")?;
     let policy = row.try_get::<Uuid, _>("policy")?;
     let expected = rss_mdm_registration_service::device::scope_dataset(
+        rss_mdm_install_support::StorageProfile::Mdm,
         service.tenant,
         principal.registration(),
         &source,
@@ -483,6 +497,7 @@ pub(crate) async fn current_on(
     )
     .map_err(|_| Error::Storage)?;
     let run = rss_mdm_inventory_service::collection::store::read_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &service.tenant.to_string(),
         observation,

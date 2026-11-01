@@ -41,7 +41,11 @@ impl Requests {
         key: &[u8],
     ) -> Self {
         Self {
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                runtime.clone(),
+                tenant,
+            ),
             runtime,
             tenant,
             audit,
@@ -157,10 +161,21 @@ async fn current(
     let instance = proof.instance_id().to_owned();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            rss_mdm_authorization_service::lock_shared_on(c, &tenant, &instance)
-                .await
-                .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-            Ok(rss_mdm_authorization_service::snapshot_on(c, &tenant, &instance).await)
+            rss_mdm_authorization_service::lock_shared_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &tenant,
+                &instance,
+            )
+            .await
+            .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
+            Ok(rss_mdm_authorization_service::snapshot_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &tenant,
+                &instance,
+            )
+            .await)
         })
     })
     .await?
@@ -236,6 +251,7 @@ async fn describe_in(
         }
         rss_mdm_policy::ActionKind::RequestMdmEnrollment => {
             rss_mdm_registration_service::enrollment::tasks::self_service::directory::describe_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 &service.registration,
                 tx,
                 p,

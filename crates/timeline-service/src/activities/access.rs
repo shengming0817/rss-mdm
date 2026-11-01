@@ -23,10 +23,16 @@ impl Timeline {
                 proof
                     .check_live()
                     .map_err(crate::service::authorization_error)?;
-                rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
-                    .await
-                    .map_err(crate::service::authorization_error)?;
+                rss_mdm_authorization_service::lock_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    proof.tenant_id(),
+                    proof.instance_id(),
+                )
+                .await
+                .map_err(crate::service::authorization_error)?;
                 let permissions = rss_mdm_authorization_service::snapshot_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     proof.tenant_id(),
                     proof.instance_id(),
@@ -54,10 +60,11 @@ impl Timeline {
                 if p.tenant() != self.tenant {
                     return Err(Error::Forbidden);
                 }
-                store::revalidate_management(c, p)
+                store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, p)
                     .await
                     .map_err(registration_error)?;
                 let binding = rss_mdm_registration_service::agent::current_user::binding_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &self.tenant.to_string(),
                     p.device(),
@@ -150,10 +157,15 @@ impl Timeline {
                 } else {
                     let mut members = Vec::new();
                     for channel in [Channel::Agent, Channel::Mdm] {
-                        if let Some(m) =
-                            endpoints::current_in(c, &self.tenant.to_string(), &device, channel)
-                                .await
-                                .map_err(registration_error)?
+                        if let Some(m) = endpoints::current_in(
+                            rss_mdm_install_support::StorageProfile::Mdm,
+                            c,
+                            &self.tenant.to_string(),
+                            &device,
+                            channel,
+                        )
+                        .await
+                        .map_err(registration_error)?
                         {
                             members.push(Member {
                                 device: m.device,
@@ -169,6 +181,7 @@ impl Timeline {
         };
         if let Reader::Management { proof, .. } = reader {
             let permissions = rss_mdm_authorization_service::snapshot_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 proof.tenant_id(),
                 proof.instance_id(),

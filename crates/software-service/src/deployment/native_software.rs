@@ -191,7 +191,10 @@ impl SoftwareService {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             Ok(crate::deployment::authorization::lock_shared_on(
-                                c, &tenant, &instance,
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                &tenant,
+                                &instance,
                             )
                             .await)
                         })

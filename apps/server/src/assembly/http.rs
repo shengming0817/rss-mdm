@@ -30,6 +30,7 @@ pub(crate) fn from_state(
             origin: format!("https://{host}"),
         },
         mount: crate::device::ChannelMount::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             state.identity.tenant,
             rss_mdm_inventory::ReportSource::MdmApple,
             rss_mdm_registration_service::Purpose::Primary,
@@ -93,6 +94,7 @@ pub(crate) fn from_state(
         )),
         protection: state.protection.clone(),
         mount: crate::device::ChannelMount::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             state.identity.tenant,
             rss_mdm_inventory::ReportSource::MdmWindows,
             rss_mdm_registration_service::Purpose::Primary,
@@ -369,11 +371,14 @@ pub(crate) fn from_state(
                 .map(|v| v.native_materials.credentials.clone())
                 .map(|p| {
                     Arc::new(rss_mdm_recovery_credentials::Credentials::new(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         state.access.archive_pool(),
                         state.audit_store.clone(),
                         p.keys.clone(),
                         state.access_audit.clone(),
-                        state.access_execution.service.clone(),
+                        Some(Arc::new(super::recovery_eligibility::AccessEligibility {
+                            admission: Some(state.access_execution.service.clone()),
+                        })),
                     ))
                 }),
             certificate_archive: state.certificate_archive.clone(),

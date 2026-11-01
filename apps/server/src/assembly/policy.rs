@@ -22,6 +22,7 @@ pub(crate) async fn application(
     let changes = changes(owner.runtime.clone(), tenant).await?;
     Ok(Arc::new(
         Application::new(rss_mdm_policy_service::application::Dependencies {
+            profile: rss_mdm_install_support::StorageProfile::Mdm,
             audit_store: owner.audit.clone(),
             runtime: owner.runtime.clone(),
             tenant,
@@ -29,7 +30,7 @@ pub(crate) async fn application(
             cursor_key: key,
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
             changes,
-            configuration,
+            configuration: Some(configuration),
         })
         .await?,
     ))
@@ -87,6 +88,7 @@ pub(crate) async fn events(
     );
     let enrollment = Arc::new(
         rss_mdm_registration_service::enrollment::tasks::Transactions::bind(
+            rss_mdm_install_support::StorageProfile::Mdm,
             application.runtime.clone(),
             application.tenant,
             application.audit_store.clone(),
@@ -108,6 +110,7 @@ pub(crate) async fn events(
     let credentials = match credential_materials {
         Some(materials) => Some(Arc::new(
             rss_mdm_recovery_credentials::tasks::Transactions::bind(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 application.runtime.clone(),
                 application.tenant,
                 application.audit_store.clone(),
@@ -125,7 +128,10 @@ pub(crate) async fn events(
         credentials,
         scripts,
         collections,
-        configuration: application.configuration.clone(),
+        configuration: application
+            .configuration
+            .clone()
+            .ok_or(crate::Error::Unsupported)?,
     });
     Ok(Arc::new(Events {
         application,
@@ -150,6 +156,7 @@ pub(crate) async fn management(
 ) -> Result<Arc<rss_mdm_policy_service::management::Policies>, crate::Error> {
     let store = Arc::new(
         rss_mdm_policy_postgres::PolicyStore::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             application.runtime.clone(),
             application.tenant,
             rss_mdm_policy_service::transaction::deadline(),
@@ -172,27 +179,27 @@ pub(crate) async fn management(
                 enrollment_entries,
                 signing_enabled,
             }),
-            access: Arc::new(
+            access: Some(Arc::new(
                 rss_mdm_registration_service::device_access::publication::Inputs::bind(
                     application.runtime.clone(),
                     application.tenant,
                     signing_enabled,
                 ),
-            ),
-            credentials: Arc::new(
+            )),
+            credentials: Some(Arc::new(
                 rss_mdm_recovery_credentials::tasks::publication::Inputs::bind(
                     application.runtime.clone(),
                     application.tenant,
                     signing_enabled && recovery_enabled,
                 ),
-            ),
-            script: Arc::new(rss_mdm_script_service::inputs::Inputs::bind(
+            )),
+            script: Some(Arc::new(rss_mdm_script_service::inputs::Inputs::bind(
                 application.runtime.clone(),
                 application.tenant,
                 content.clone(),
                 signing_enabled,
-            )),
-            collections: Arc::new(
+            ))),
+            collections: Some(Arc::new(
                 rss_mdm_inventory_service::collection::execution::inputs::Inputs::bind(
                     application.runtime.clone(),
                     application.tenant,
@@ -201,15 +208,15 @@ pub(crate) async fn management(
                         protection: protection.clone(),
                     }),
                 ),
-            ),
-            configuration: Arc::new(
+            )),
+            configuration: Some(Arc::new(
                 rss_mdm_policy_service::configuration::publication::Publications {
                     runtime: application.runtime.clone(),
                     tenant: application.tenant,
                     content,
                     protection,
                 },
-            ),
+            )),
             changes: application.changes.clone(),
             mdm_software_enabled,
         },
@@ -274,11 +281,16 @@ pub(crate) async fn changes(
     .await
     .map_err(|_| crate::Error::Unavailable(crate::Failure::PlanningStorage))?;
     Ok(Arc::new(super::policy_ports::Changes {
-        reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime, tenant),
+        reader: rss_mdm_policy_postgres::PolicyReader::bind(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            runtime,
+            tenant,
+        ),
         messaging,
-        targets: Arc::new(rss_mdm_scope_service::channels::ChannelTargets {
-            objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-        }),
+        targets: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
+        )),
     }))
 }
 pub(crate) async fn configuration(
@@ -302,9 +314,10 @@ pub(crate) async fn configuration(
                 runtime,
                 tenant,
                 audit_store: audit,
-                source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets {
-                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-                }),
+                source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
+                )),
                 protection: protection.clone(),
                 content,
                 channels: Arc::new(super::configuration_channels::ConfigurationChannels {

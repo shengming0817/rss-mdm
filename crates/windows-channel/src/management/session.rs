@@ -59,7 +59,12 @@ async fn prepare(
         message: raw,
         bytes,
     } = input;
-    rss_mdm_registration_service::admission::require_windows_in(c, p).await?;
+    rss_mdm_registration_service::admission::require_windows_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p,
+    )
+    .await?;
     let tenant = p.tenant().to_string();
     let registration = p.registration().to_string();
     let binding = (
@@ -78,7 +83,8 @@ async fn prepare(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    crate::device::store::revalidate_management(c, p).await?;
+    crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, p)
+        .await?;
     lock_sessions(c, &tenant, &registration).await?;
     let stored = match session_decision(c, key, p, raw, &digest, audit, ingress).await? {
         SessionDecision::Limited(delay) => return Ok(WindowsReception::Limited(delay)),
@@ -389,6 +395,7 @@ impl WindowsSession for Session {
                     return Ok(false);
                 }
                 if !crate::device::store::active_source_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &p.tenant().to_string(),
                     p.registration(),
@@ -400,6 +407,7 @@ impl WindowsSession for Session {
                     return Ok(false);
                 }
                 crate::device::store::revalidate_source(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     p,
                     rss_mdm_inventory::ReportSource::MdmWindows,
@@ -488,6 +496,7 @@ impl WindowsSession for Session {
                     return Ok(pending);
                 }
                 if !crate::device::store::active_source_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &p.tenant().to_string(),
                     p.registration(),
@@ -575,8 +584,18 @@ async fn save(
         .await?;
     }
     if session.authenticated {
-        rss_mdm_registration_service::enrollment::read::record_authenticated_in(c, p).await?;
-        crate::device::store::record_communication_in(c, p).await?;
+        rss_mdm_registration_service::enrollment::read::record_authenticated_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p,
+        )
+        .await?;
+        crate::device::store::record_communication_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p,
+        )
+        .await?;
     }
     let state = if session.stopped || package == PackageState::Aborted {
         "complete"

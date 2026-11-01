@@ -21,13 +21,21 @@ pub(crate) async fn signing(
         channels,
     )
     .await?;
-    let signing = Arc::new(rss_mdm_task_trust::Signing::new(tenant, loaded_signing)?);
+    let signing = Arc::new(rss_mdm_task_trust::Signing::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        tenant,
+        loaded_signing,
+    )?);
     let task_trust = Arc::new(rss_mdm_task_trust::Service::new(
         tenant,
         signing.clone(),
         protection.clone(),
         audit,
-        Arc::new(rss_mdm_agent_channel::signature_retirement::PendingSignatures),
+        Arc::new(
+            rss_mdm_agent_channel::signature_retirement::PendingSignatures::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
     )?);
     Ok((signing, task_trust))
 }

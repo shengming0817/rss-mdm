@@ -287,6 +287,7 @@ impl Config {
         }
         let identity_management =
             crate::authorization::identity_management::IdentityManagementPolicy::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 &self.identity.instance_id,
             )?;
         Ok(Compiled {

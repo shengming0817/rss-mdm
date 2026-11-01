@@ -25,9 +25,20 @@ async fn authorize(
         .await
         .map_err(admission)?;
     }
-    rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id()).await?;
-    let rules =
-        rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id()).await?;
+    rss_mdm_authorization_service::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    let rules = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
     if let Some(permission) = permission {
         rules.require(p, permission, None)?;
     } else {

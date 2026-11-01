@@ -61,7 +61,16 @@ async fn wake(app: &rss_mdm_policy_service::application::Application, device: &s
         &app.runtime,
         app.tenant,
         (app, vec![device.to_owned()]),
-        |ctx, tx| Box::pin(async move { ctx.0.configuration.wake_devices_in(tx, &ctx.1).await }),
+        |ctx, tx| {
+            Box::pin(async move {
+                ctx.0
+                    .configuration
+                    .as_ref()
+                    .expect("MDM configuration")
+                    .wake_devices_in(tx, &ctx.1)
+                    .await
+            })
+        },
     )
     .await?;
     Ok(())
@@ -138,9 +147,16 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
                 ctx.0.audit_store.prepare_in(tx, ctx.2, &[]).await?;
                 ctx.0
                     .configuration
+                    .as_ref()
+                    .expect("MDM configuration")
                     .wake_devices_in(tx, &[ctx.1.to_owned()])
                     .await?;
-                ctx.0.configuration.reconcile_in(tx, ctx.1, ctx.2).await?;
+                ctx.0
+                    .configuration
+                    .as_ref()
+                    .expect("MDM configuration")
+                    .reconcile_in(tx, ctx.1, ctx.2)
+                    .await?;
                 tx.with_connection(|c| {
                     Box::pin(async move {
                         sqlx::query("SELECT 1/0").execute(c).await?;

@@ -32,6 +32,7 @@ pub async fn maintain(
             .collect::<Result<Vec<_>, _>>()
             .map_err(db)?;
         let active = crate::device::read::active_sources_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &mut tx,
             tenant,
             &ids,
@@ -165,6 +166,7 @@ async fn prepare_on(
     audit: &RequestAudit,
 ) -> Result<Option<(PreparedRenewal, bool)>, Error> {
     let Some((device, generation)) = crate::device::read::lock_active_source_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         tenant,
         candidate.registration,
@@ -306,6 +308,7 @@ async fn current(
         return Ok(None);
     };
     let (device, generation) = crate::device::read::lock_active_source_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tx,
         tenant,
         registration,
@@ -522,7 +525,7 @@ pub async fn activate(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    crate::device::store::replace_mdm_credential_in(c, &tenant, &registration, &locator)
+    crate::device::store::replace_mdm_credential_in(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, &registration, &locator)
         .await?;
     enrollment::persist_leaf(c, &tenant, leaf).await?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state=CASE WHEN id=$2::uuid THEN 'bound' ELSE 'superseded' END WHERE tenant_id=$1::uuid AND id IN ($2::uuid,$3::uuid)").bind(&tenant).bind(leaf.attempt().to_string()).bind(old).execute(&mut *c).await.map_err(db)?;
@@ -567,8 +570,8 @@ pub async fn management(
                 let p = *p; let d = *d; let bytes = *bytes;
     let message = protocol::management(d)?;
     let tenant = p.tenant().to_string();
-    crate::device::store::lock_channel(c, &tenant, p.device(), p.channel()).await?;
-    crate::device::store::revalidate_source(c,p,rss_mdm_inventory::ReportSource::MdmApple).await?;
+    crate::device::store::lock_channel(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, p.device(), p.channel()).await?;
+    crate::device::store::revalidate_source(rss_mdm_install_support::StorageProfile::Mdm, c,p,rss_mdm_inventory::ReportSource::MdmApple).await?;
     let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active' AND udid=$3)").bind(&tenant).bind(p.registration()).bind(message.udid).fetch_one(&mut *c).await.map_err(db)?;
     if !live {
         return Err(Error::Unauthorized);

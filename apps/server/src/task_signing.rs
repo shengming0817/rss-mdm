@@ -31,8 +31,14 @@ pub(crate) async fn open(
     .execute(&mut *tx)
     .await
     .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-    let loaded =
-        rss_mdm_task_trust::trust::load(&mut tx, tenant, config.revision, protection).await;
+    let loaded = rss_mdm_task_trust::trust::load(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        tenant,
+        config.revision,
+        protection,
+    )
+    .await;
     tx.rollback()
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;

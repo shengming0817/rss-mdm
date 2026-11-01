@@ -41,6 +41,7 @@ pub(crate) fn registration(
                 Err(e) => {
                     use rss_mdm_registration_service::enrollment::tasks::Error as E;
                     let reason = match e {
+        E::Unsupported => "unsupported",
                         E::Malformed | E::Forbidden | E::Unauthorized | E::Invariant => {
                             return Err(rss_runtime::ShutdownError::new(e));
                         }

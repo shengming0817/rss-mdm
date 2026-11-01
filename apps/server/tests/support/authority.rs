@@ -109,6 +109,7 @@ impl Context {
                 rss_audit_postgres::Integrity::Plain,
             )?,
             Arc::new(access::identity_management::IdentityManagementPolicy::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 &inputs.installation.instance_id,
             )?),
             deadline(),
@@ -222,7 +223,14 @@ impl Context {
         let now = sqlx::query_scalar("SELECT extract(epoch FROM clock_timestamp())::bigint")
             .fetch_one(&mut *tx)
             .await?;
-        let valid = authority.valid(&mut tx, permission, now).await?;
+        let valid = authority
+            .valid(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                &mut tx,
+                permission,
+                now,
+            )
+            .await?;
         tx.rollback().await?;
         Ok(valid)
     }

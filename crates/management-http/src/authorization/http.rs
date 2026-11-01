@@ -436,7 +436,7 @@ async fn authenticate_inner(
         .await
     {
         Ok((proof, credential)) => {
-            let proof = AuthorizedPrincipal::from_identity(proof);
+            let proof = AuthorizedPrincipal::from_identity(app.access.profile(), proof);
             if let Some(audit) = parts.extensions.get::<RequestAudit>()
                 && let Err(error) = proof.bind_audit(audit)
             {

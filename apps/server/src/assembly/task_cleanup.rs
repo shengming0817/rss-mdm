@@ -49,20 +49,20 @@ impl TaskCleanup for Cleanup {
                     for registration in &registrations {
                         rss_mdm_software_service::deployment::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(software_error)?;
                         rss_mdm_registration_service::installation::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(installation_error)?;
-                        rss_mdm_registration_service::enrollment::tasks::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(enrollment)?;
+                        rss_mdm_registration_service::enrollment::tasks::retirement::retire_in(rss_mdm_install_support::StorageProfile::Mdm, c,&mut progress.facts,&tenant,*registration).await.map_err(enrollment)?;
                         rss_mdm_registration_service::device_access::execution::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(access)?;
-                        rss_mdm_recovery_credentials::tasks::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(credential)?;
+                        rss_mdm_recovery_credentials::tasks::retirement::retire_in(rss_mdm_install_support::StorageProfile::Mdm, c,&mut progress.facts,&tenant,*registration).await.map_err(credential)?;
                         rss_mdm_recovery_credentials::native::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(|e|recovery_native(e.into()))?;
                         rss_mdm_script_service::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(script)?;
                         rss_mdm_inventory_service::collection::execution::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(collection)?;
                     }
                     let script=rss_mdm_script_service::retirement::progress_on(c,&tenant,&registrations).await.map_err(script)?;
                     let collection=rss_mdm_inventory_service::collection::execution::retirement::progress_on(c,&tenant,&registrations).await.map_err(collection)?;
-                    let enrollment=rss_mdm_registration_service::enrollment::tasks::retirement::progress_on(c,&tenant,&registrations).await.map_err(enrollment)?;
+                    let enrollment=rss_mdm_registration_service::enrollment::tasks::retirement::progress_on(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant,&registrations).await.map_err(enrollment)?;
                     let software=rss_mdm_software_service::deployment::retirement::progress_on(c,&tenant,&registrations).await.map_err(software)?;
                     let native=rss_mdm_registration_service::installation::retirement::progress_on(c,&tenant,&registrations).await.map_err(installation)?;
                     let access=rss_mdm_registration_service::device_access::execution::retirement::progress_on(c,&tenant,&registrations).await.map_err(access)?;
-                    let credential=rss_mdm_recovery_credentials::tasks::retirement::progress_on(c,&tenant,&registrations).await.map_err(credential)?;
+                    let credential=rss_mdm_recovery_credentials::tasks::retirement::progress_on(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant,&registrations).await.map_err(credential)?;
                     let recovery_native=rss_mdm_recovery_credentials::native::retirement::progress_on(c,&tenant,&registrations).await.map_err(recovery_native)?;
                     progress.pending=credential.0 || recovery_native.0 || access.0 || script.0 || collection.0 || enrollment.0 || software.0 || native.0;
                     progress.unknown=script.1.into_iter().chain(recovery_native.1).chain(credential.1).chain(access.1).chain(collection.1).chain(enrollment.1).chain(software.1).chain(native.1).min();
@@ -86,6 +86,7 @@ fn script(error: rss_mdm_script_service::transaction::Fault) -> Fault {
         F::Sql(e) => Fault::Sql(e),
         F::Storage(e) => Fault::Storage(e),
         F::Request(e) => match e {
+            E::Unsupported => Error::Unsupported,
             E::Malformed => Error::Malformed,
             E::Conflict => Error::Conflict,
             E::Forbidden => Error::Forbidden,

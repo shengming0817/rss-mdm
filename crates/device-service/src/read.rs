@@ -12,12 +12,20 @@ pub(crate) async fn authorization(
     proof: &AuthorizedPrincipal,
 ) -> Result<Snapshot> {
     proof.check_live()?;
-    rss_mdm_authorization_service::lock_shared_on(c, proof.tenant_id(), proof.instance_id())
-        .await?;
-    Ok(
-        rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
-            .await?,
+    rss_mdm_authorization_service::lock_shared_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
     )
+    .await?;
+    Ok(rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await?)
 }
 pub(crate) fn authorize(
     snapshot: &Snapshot,
@@ -79,7 +87,14 @@ pub(crate) async fn lock_members(
             .then(a.channel.as_str().cmp(b.channel.as_str()))
     });
     for m in ordered {
-        endpoints::lock_in(c, tenant, &m.device, m.channel).await?;
+        endpoints::lock_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            tenant,
+            &m.device,
+            m.channel,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -129,7 +144,7 @@ impl Associations {
                 let snapshot=authorization(c,proof).await?;
                 snapshot.require(proof,Permission::InventoryRead,Some(device))?;
                 snapshot.require(proof,Permission::DeviceAssociationWrite,Some(device))?;
-                let registration=endpoints::current_in(c,proof.tenant_id(),device,*selected).await?.ok_or(Error::Conflict)?;
+                let registration=endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm, c,proof.tenant_id(),device,*selected).await?.ok_or(Error::Conflict)?;
                 let binding=rss_mdm_query::cursor::fingerprint(&("association-candidates",proof.tenant_id(),proof.instance_id(),proof.principal_id(),*device,*selected,snapshot.query_binding(proof)?,registration)).map_err(|_|Error::Malformed)?;
                 let codec=rss_mdm_query::cursor::CursorCodec::from_key(service.key.clone());
                 let after:Option<String>=token.map(|token|codec.decode(&rss_contract::PageCursor::parse(token).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::CursorInvalidated)).transpose()?;

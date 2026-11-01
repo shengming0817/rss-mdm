@@ -171,7 +171,7 @@ pub(crate) async fn authenticate(
             _ => Error::Unauthorized,
         },
     )?;
-    AuthorizedPrincipal::new(session)?
+    AuthorizedPrincipal::new(rss_mdm_install_support::StorageProfile::Mdm, session)?
         .load_authorization(&app.access.authorization)
         .await
         .map_err(Into::into)
@@ -402,6 +402,7 @@ pub(crate) async fn maid(
     let tenant = app.identity.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
     crate::device::store::revalidate_source(
+        rss_mdm_install_support::StorageProfile::Mdm,
         &mut tx,
         principal,
         rss_mdm_inventory::ReportSource::MdmApple,

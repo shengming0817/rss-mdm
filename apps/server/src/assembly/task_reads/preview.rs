@@ -260,6 +260,7 @@ async fn enrollment(
                     let admission = if let Some(target) = &object.target {
                         Some(
                             rss_mdm_registration_service::enrollment::tasks::queries::state_on(
+                                rss_mdm_install_support::StorageProfile::Mdm,
                                 c,
                                 s.tenant,
                                 &s.enrollment,

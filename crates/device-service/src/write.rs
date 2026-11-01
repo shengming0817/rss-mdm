@@ -265,9 +265,15 @@ pub(crate) async fn persist(
     read::lock_members(c, tenant, &members).await?;
     if state == State::Confirmed {
         for m in &members {
-            if endpoints::current_in(c, tenant, &m.device, m.channel)
-                .await?
-                .as_ref()
+            if endpoints::current_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                &m.device,
+                m.channel,
+            )
+            .await?
+            .as_ref()
                 != Some(m)
             {
                 return Err(Error::Conflict);

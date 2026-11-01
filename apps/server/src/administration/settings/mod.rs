@@ -765,6 +765,7 @@ impl Directory {
         projection: &mut Projection,
     ) -> Result<(), Error> {
         match rss_mdm_task_trust::service::read_task_trust(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &self.audit,
             self.tenant,
             proof,

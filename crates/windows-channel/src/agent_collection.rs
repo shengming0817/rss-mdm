@@ -48,7 +48,13 @@ async fn read_state(
     session: u32,
     bytes: &[u8],
 ) -> Result<State, Error> {
-    let run = store::load_on(c, &p.tenant().to_string(), id).await?;
+    let run = store::load_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &p.tenant().to_string(),
+        id,
+    )
+    .await?;
     crate::native::open_collection_state(protection, &run.scope, id, session, bytes)
         .map_err(|_| protocol())
 }
@@ -61,7 +67,13 @@ async fn save(
     query: &Query,
     state: &State,
 ) -> Result<(), Error> {
-    let run = store::load_on(c, &p.tenant().to_string(), id).await?;
+    let run = store::load_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &p.tenant().to_string(),
+        id,
+    )
+    .await?;
     let bytes = serde_json::to_vec(state).map_err(|_| protocol())?;
     if bytes.len() > CodecLimits::default().object_bytes {
         return Err(protocol());
@@ -210,7 +222,14 @@ pub async fn receive(
             && !(complete && message.final_message)
         {
             facts.extend(
-                channel::abandon_in(c, &p.tenant().to_string(), id, "message_budget").await?,
+                channel::abandon_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &p.tenant().to_string(),
+                    id,
+                    "message_budget",
+                )
+                .await?,
             );
         } else if complete && message.final_message {
             let mut absent = query.catalog.complete
@@ -287,6 +306,7 @@ pub async fn receive(
             };
             facts.extend(
                 channel::finish_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     p,
                     id,
@@ -366,14 +386,26 @@ pub async fn send(
             state = state
                 .resume(&query.plans[query.batch], "agent-observation")
                 .map_err(|_| protocol())?;
-            let run = store::load_on(c, &p.tenant().to_string(), id).await?;
+            let run = store::load_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &p.tenant().to_string(),
+                id,
+            )
+            .await?;
             let sealed = protection
                 .seal_bytes(
                     &serde_json::to_vec(&state).map_err(|_| protocol())?,
                     &crate::protection::collection_aad(&run.scope, id, response.header.session_id)?,
                 )
                 .map_err(|_| protocol())?;
-            let first = crate::device::store::allocate_commands_in(c, p, 1).await?;
+            let first = crate::device::store::allocate_commands_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                p,
+                1,
+            )
+            .await?;
             sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,channel_state,template_state,kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,'agent')")
                 .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string())
                 .bind(i64::from(response.header.message_id)).bind(i64::from(first))
@@ -389,9 +421,21 @@ pub async fn send(
         let state = query.plans[query.batch]
             .start("agent-observation")
             .map_err(|_| protocol())?;
-        let (id, scope, _) =
-            channel::start_in(c, p, ReportSource::MdmWindows, query.catalog.digest).await?;
-        let first = crate::device::store::allocate_commands_in(c, p, 1).await?;
+        let (id, scope, _) = channel::start_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p,
+            ReportSource::MdmWindows,
+            query.catalog.digest,
+        )
+        .await?;
+        let first = crate::device::store::allocate_commands_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p,
+            1,
+        )
+        .await?;
         let bytes = protection
             .seal_bytes(
                 &serde_json::to_vec(&state).map_err(|_| protocol())?,
@@ -405,7 +449,13 @@ pub async fn send(
         .unsent()
         .min(limits.commands.saturating_sub(response.commands.len()));
     if count > 0 {
-        let first = crate::device::store::allocate_commands_in(c, p, count as i64).await?;
+        let first = crate::device::store::allocate_commands_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p,
+            count as i64,
+        )
+        .await?;
         for index in 0..count {
             let Some((step, request)) = state.next().map_err(|_| protocol())? else {
                 break;

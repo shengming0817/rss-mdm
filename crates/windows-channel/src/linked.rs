@@ -249,6 +249,7 @@ pub(crate) async fn prepare_request(
         .devices
         .management_principal(
             &crate::device::ChannelMount::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 app.identity.tenant(),
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 Purpose::Primary,
@@ -318,13 +319,22 @@ async fn intent_on(
     csr: &[u8],
     input: &soap::Issue,
 ) -> Result<((Uuid, issuance::Intent), Option<(Uuid, Uuid, Uuid)>), Error> {
-    rss_mdm_registration_service::admission::lock_in(connection, &parent.tenant().to_string())
-        .await?;
+    rss_mdm_registration_service::admission::lock_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        connection,
+        &parent.tenant().to_string(),
+    )
+    .await?;
     let w = app.windows()?;
     let verified = certificate::Csr::verify(csr)?;
     let tenant = parent.tenant().to_string();
     let c = connection;
-    crate::device::store::revalidate_management(c, parent).await?;
+    crate::device::store::revalidate_management(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        parent,
+    )
+    .await?;
     if let Some(row) = sqlx::query("SELECT request_id,digest,parent_id,parent_generation,parent_credential FROM mdm_windows.linked_enrollments WHERE tenant_id=$1::uuid AND id=$2")
         .bind(&tenant).bind(operation).fetch_optional(&mut *c).await.map_err(db)? {
         if row.try_get::<Vec<u8>,_>("digest").map_err(db)?.as_slice()!=digest || row.try_get::<Uuid,_>("parent_id").map_err(db)?!=parent.registration() || row.try_get::<i64,_>("parent_generation").map_err(db)?!=parent.generation() || row.try_get::<Uuid,_>("parent_credential").map_err(db)?!=parent.credential() { return Err(Error::Conflict); }
@@ -338,7 +348,14 @@ async fn intent_on(
         return Ok(((id,intent),replacement));
     }
     let id = Uuid::new_v4();
-    crate::device::linked::request_in(c, parent, id, operation).await?;
+    crate::device::linked::request_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        parent,
+        id,
+        operation,
+    )
+    .await?;
     let profile: String = sqlx::query_scalar(
         "SELECT windows_profile FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -426,6 +443,7 @@ pub(crate) async fn complete(
         now(app)?,
     )?;
     let credential = crate::device::ChannelMount::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
         parent.tenant(),
         rss_mdm_inventory::ReportSource::MdmWindows,
         Purpose::WindowsDeclared,
@@ -436,17 +454,17 @@ pub(crate) async fn complete(
             &budget.source_control(),(app,parent,id,intent,certificate,audit,&credential,Vec::new()),|(app,parent,id,intent,certificate,audit,credential,facts),tx|Box::pin(async move {
         let replayed = tx.with_connection_context(&mut (*app,*parent,*id,*intent,*certificate,*credential,&mut *facts),|(app,parent,id,intent,certificate,credential,facts),c|Box::pin(async move {
             let (app,parent,id,intent,certificate,credential) = (*app,*parent,*id,*intent,*certificate,*credential);
-            rss_mdm_registration_service::admission::lock_in(c, &parent.tenant().to_string()).await?;
-            crate::device::store::revalidate_management(c,parent).await?;
+            rss_mdm_registration_service::admission::lock_in(rss_mdm_install_support::StorageProfile::Mdm, c, &parent.tenant().to_string()).await?;
+            crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c,parent).await?;
             issuance::require_current_intent(c, &parent.tenant().to_string(), id, intent).await?;
             if let Some(old) = enrollment_store::certificate(c,&parent.tenant().to_string(),id.to_string()).await.map_err(db)? {
                 let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND state='active' AND purpose='windows_declared' AND parent_id=$3 AND parent_generation=$4)")
                     .bind(parent.tenant().to_string()).bind(intent.registration).bind(parent.registration()).bind(parent.generation()).fetch_one(c).await.map_err(db)?;
                 if !live || old != certificate { return Err(Error::Conflict); } return Ok(true);
             }
-            crate::device::linked::bind_in(c,parent,credential,id,[intent.registration,intent.credential,intent.epoch],facts,app.devices.retirement()).await?;
+            crate::device::linked::bind_in(rss_mdm_install_support::StorageProfile::Mdm, c,parent,credential,id,[intent.registration,intent.credential,intent.epoch],facts,app.devices.retirement()).await?;
             let secrets = app.windows()?.protection.open(&parent.tenant().to_string(),id,&intent.sealed)?;
-            rss_mdm_pki_service::certificates::record_in(c,&parent.tenant().to_string(),"windows",intent.registration,
+            rss_mdm_pki_service::certificates::record_in(rss_mdm_install_support::StorageProfile::Mdm, c,&parent.tenant().to_string(),"windows",intent.registration,
                 &rss_mdm_device_trust::digest(&intent.issuer),certificate).await.map_err(|_|Error::Unavailable(Failure::Database))?;
             enrollment_store::insert_certificate(c,&parent.tenant().to_string(),id.to_string(),certificate,&secrets.server_nonce).await.map_err(db)?;
             Ok(false)

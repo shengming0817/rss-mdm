@@ -46,6 +46,7 @@ impl NativeProgress for EnrollmentProgress {
                 };
                 details.credential_usable =
                     rss_mdm_pki_service::certificates::current_native_credential_in(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &context.tenant,
                         registration.id,

@@ -32,10 +32,24 @@ pub async fn receive(
         rss_mdm_inventory_service::apple_collection::current(c, &tenant, collection).await?;
     if !current || !source.collection_eligible(c, p, collection, false).await? {
         attempt.settle(c, status, false).await?;
-        let mut run = store::load_on(c, &tenant, collection).await?;
+        let mut run = store::load_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &tenant,
+            collection,
+        )
+        .await?;
         // Expiry and already settled evidence retain the collection owner's reason.
         if current && run.sealed_at.is_none() {
-            facts.extend(store::seal(c, &mut run, "revoked").await?);
+            facts.extend(
+                store::seal(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &mut run,
+                    "revoked",
+                )
+                .await?,
+            );
         }
         return Ok(Some((collection, false)));
     }
@@ -58,7 +72,13 @@ pub async fn receive(
         if status == wire::Status::Acknowledged && valid {
             facts.extend(prepare_native(c, protection, &tenant, collection).await?);
         } else if status != wire::Status::NotNow {
-            let mut run = store::load_on(c, &tenant, collection).await?;
+            let mut run = store::load_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &tenant,
+                collection,
+            )
+            .await?;
             let template =
                 rss_mdm_inventory_service::collection::native::template(c, &tenant, collection)
                     .await?
@@ -75,14 +95,23 @@ pub async fn receive(
                 now,
                 false,
             )?;
-            facts.extend(store::seal(c, &mut run, "complete").await?);
+            facts.extend(
+                store::seal(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &mut run,
+                    "complete",
+                )
+                .await?,
+            );
         }
         return Ok(Some((collection, false)));
     }
     let native_valid = attempt.valid;
     attempt.settle(c, status, native_valid).await?;
     if status != wire::Status::NotNow {
-        let mut run = store::load_on(c, &tenant, id).await?;
+        let mut run =
+            store::load_on(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, id).await?;
         let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *c)
             .await
@@ -145,7 +174,15 @@ pub async fn receive(
                 success,
                 &unsupported,
             )?;
-            facts.extend(store::seal(c, &mut run, "complete").await?);
+            facts.extend(
+                store::seal(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &mut run,
+                    "complete",
+                )
+                .await?,
+            );
             return Ok(Some((collection, false)));
         }
     }
@@ -171,9 +208,23 @@ pub async fn send(
             continue;
         }
         if !source.collection_eligible(c, p, collection, true).await? {
-            let mut run = store::load_on(c, &tenant, collection).await?;
+            let mut run = store::load_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &tenant,
+                collection,
+            )
+            .await?;
             if run.sealed_at.is_none() {
-                facts.extend(store::seal(c, &mut run, "revoked").await?);
+                facts.extend(
+                    store::seal(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        &mut run,
+                        "revoked",
+                    )
+                    .await?,
+                );
             }
             continue;
         }
@@ -219,7 +270,8 @@ pub async fn prepare_native(
         _ => return Err(Error::Malformed),
     };
     if row.try_get::<i32, _>("access_rights").map_err(db)? & required != required {
-        let mut run = store::load_on(c, tenant, id).await?;
+        let mut run =
+            store::load_on(rss_mdm_install_support::StorageProfile::Mdm, c, tenant, id).await?;
         let now: i64 =
             sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
                 .fetch_one(&mut *c)
@@ -240,10 +292,15 @@ pub async fn prepare_native(
             .collect();
         run.attempts = Attempts::native(run.attempts.definition().clone(), values, now)
             .map_err(|_| Error::Malformed)?;
-        return Ok(store::seal(c, &mut run, "complete")
-            .await?
-            .into_iter()
-            .collect());
+        return Ok(store::seal(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &mut run,
+            "complete",
+        )
+        .await?
+        .into_iter()
+        .collect());
     }
     let Some(context) = crate::collection_context::prepare(
         c,
@@ -357,7 +414,8 @@ pub async fn prepare_native(
     }) {
         Ok(command) => command,
         Err(_) => {
-            let mut run = store::load_on(c, tenant, id).await?;
+            let mut run =
+                store::load_on(rss_mdm_install_support::StorageProfile::Mdm, c, tenant, id).await?;
             let now =
                 sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
                     .fetch_one(&mut *c)
@@ -378,10 +436,15 @@ pub async fn prepare_native(
                 .collect();
             run.attempts = Attempts::native(run.attempts.definition().clone(), values, now)
                 .map_err(|_| Error::Malformed)?;
-            return Ok(store::seal(c, &mut run, "complete")
-                .await?
-                .into_iter()
-                .collect());
+            return Ok(store::seal(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &mut run,
+                "complete",
+            )
+            .await?
+            .into_iter()
+            .collect());
         }
     };
     let request = command.encode(id).map_err(|_| Error::Malformed)?;

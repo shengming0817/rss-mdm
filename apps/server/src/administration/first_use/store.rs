@@ -24,10 +24,21 @@ async fn authorize(
     permission: Permission,
 ) -> Result<(), Error> {
     p.session()?;
-    rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id()).await?;
-    rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
-        .await?
-        .require(p, permission, None)?;
+    rss_mdm_authorization_service::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?
+    .require(p, permission, None)?;
     Ok(())
 }
 async fn saved(c: &mut PgConnection, tenant: &str) -> Result<Saved, Error> {
@@ -212,8 +223,13 @@ async fn completion_permissions(
     p: &AuthorizedPrincipal,
     intent: &Intent,
 ) -> Result<(), Error> {
-    let rules =
-        rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id()).await?;
+    let rules = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
     let mut ids = Vec::new();
     if intent.channels.contains(&Channel::Agent) {
         ids.push("registration");

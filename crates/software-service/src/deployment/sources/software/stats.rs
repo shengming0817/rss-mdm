@@ -40,7 +40,13 @@ impl SoftwareAssignment {
             .with_connection(move |c| {
                 Box::pin(async move {
                     for scope in scopes {
-                        rss_mdm_scope_postgres::admission_on(c, tenant, scope).await?;
+                        rss_mdm_scope_postgres::admission_on(
+                            rss_mdm_install_support::StorageProfile::Mdm,
+                            c,
+                            tenant,
+                            scope,
+                        )
+                        .await?;
                     }
                     Ok(assignment
                         .stats_input_on(source.as_ref(), c, tenant, index)

@@ -61,11 +61,23 @@ impl crate::deployment::queries::Queries {
     ) -> crate::deployment::Result<Vec<crate::deployment::queries::records::Capability>> {
         use rss_mdm_registration_service::device::endpoints;
         let tenant = self.tenant.to_string();
-        let agent =
-            endpoints::current_in(c, &tenant, device, rss_mdm_inventory::Channel::Agent).await?;
-        let _mdm = endpoints::current_in(c, &tenant, device, rss_mdm_inventory::Channel::Mdm)
-            .await?
-            .is_some();
+        let agent = endpoints::current_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &tenant,
+            device,
+            rss_mdm_inventory::Channel::Agent,
+        )
+        .await?;
+        let _mdm = endpoints::current_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &tenant,
+            device,
+            rss_mdm_inventory::Channel::Mdm,
+        )
+        .await?
+        .is_some();
         let binding = if let Some(registration) = &agent {
             self.agent_store
                 .binding(c, tenant, registration.registration_id)
