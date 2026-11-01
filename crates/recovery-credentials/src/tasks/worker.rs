@@ -1,4 +1,4 @@
-//! Durable enrollment work uses the host's store, runtime and shared process concurrency budget.
+//! Durable credential work uses the host's store, runtime and shared process concurrency budget.
 use crate::tasks::{Error, Service};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, ReconcileStep, Reconciler};
@@ -62,7 +62,15 @@ impl Worker {
                 scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),initial_backoff:Duration::from_secs(5),max_backoff:Duration::from_secs(60),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             rss_reconcile::run_with_notify(&self.store,self.as_ref(),&crate::tasks::wake::scope(self.service.transactions.tenant),policy,&control,&stop,&notify,|event| {
-                if let rss_reconcile::Observation::AttemptFailed{target,error,..}=event {eprintln!("{}",serde_json::json!({"event":"mdm_recovery_tasks_recovery_failure","target":target.entity(),"reason":format!("{:?}",error.kind())}));}
+                match event {
+                    rss_reconcile::Observation::ScanFailed { scope, error } => {
+                        eprintln!("{}", serde_json::json!({"event":"mdm_recovery_tasks_recovery_failure","phase":"scan","scope":scope.reconciler(),"reason":format!("{:?}",error.kind())}));
+                    }
+                    rss_reconcile::Observation::AttemptFailed { target, error, .. } => {
+                        eprintln!("{}", serde_json::json!({"event":"mdm_recovery_tasks_recovery_failure","phase":"attempt","target":target.entity(),"reason":format!("{:?}",error.kind())}));
+                    }
+                    _ => {}
+                }
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
         })
     }
