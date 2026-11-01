@@ -28,9 +28,9 @@
 
 应用服务不依赖 Axum 或入口通道。各入口返回完成状态绑定的路由，并负责自己的请求预算、审计结算和协议错误；App 不维护业务路由前缀判断。证书能力不读取宿主配置文件，也不持有注册数据库或外部 CA 生命周期。
 
-跨能力写入借用调用方的 PostgreSQL connection / transaction。发起业务的 owner 负责提交、回执与审计，参与方只修改自己持有的状态；注册及通道绑定、退休及采集终止仍在同一事务中完成。命令提交归 Execution，Windows / Apple 协议状态由通道参与写入。后台继续消费既有 RSS 持久恢复机制。
+跨能力写入借用调用方的 PostgreSQL connection / transaction。发起业务的 owner 负责提交、回执与审计，参与方只修改自己持有的状态；注册及通道绑定、退休及采集终止仍在同一事务中完成。命令提交归 Device、Software、Policy 配置、Registration 与 Inventory 等实际业务 owner，Windows / Apple 协议状态由通道参与写入。后台继续消费既有 RSS 持久恢复机制。
 
-Policy 普通持久工作使用 `mdm.policy`，事件使用 `mdm.policy-events`；Execution 来源扫描只消费 `mdm.assets/changes`。App 持有独立的 2 连接业务 scheduler pool，将同一 PgStore 借给各业务 worker 并负责关闭。Policy 管理 worker 使用 device_concurrency，事件并发为 2；来源扫描归 Execution 的既有恢复 worker。各自通知、启动补扫和周期恢复独立。Command 的查询与调度共用既有 Command 读池，单独计入预算。
+Policy 普通持久工作使用 `mdm.policy`，事件使用 `mdm.policy-events`；Device 与 Software 的来源扫描各自消费 `mdm.assets/changes`。App 持有独立的 2 连接业务 scheduler pool，将同一 PgStore 借给各业务 worker 并负责关闭。Policy 管理 worker 使用 device_concurrency，事件并发为 2；来源扫描归各业务 owner 的既有恢复 worker。各自通知、启动补扫和周期恢复独立。Command 的查询与调度共用既有 Command 读池，单独计入预算。
 
 安装单元由各能力导出，App 决定顺序并校验稳定安装身份。产品 schema 是当前完整定义，只支持全新安装和当前安装重放。可变租户登记由产品 App 持有；首次与后续租户共用事务登记入口，当前 epoch 仍由 RSS fencing 持有。测试载体不构成生产 facade。
 

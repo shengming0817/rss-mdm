@@ -236,7 +236,7 @@ MDM 宿主使用同一份运行配置生成两份公开 bootstrap 输入：`ui.j
 Identity callback 固定 `/api/v1/identity/oidc/callback`，其它 API 保留后端路由和错误，不能落入 SPA。
 这些宿主配置和 HTTP 接缝由后端验证；前端消费和页面验收由前端 owner 负责。
 
-原生采集持久恢复采用当前 execution schema；旧安装清单拒绝接入，无原地转换或双读。重新安装须使用独立空库，安装器不会自动清理已有数据库。
+原生采集持久恢复采用 Inventory 当前 schema 与所属通道投影；旧安装清单拒绝接入，无原地转换或双读。重新安装须使用独立空库，安装器不会自动清理已有数据库。
 
 使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。接受空库或完全一致的当前安装记录；失败恢复见[运维](operations.md)。
 
@@ -370,7 +370,7 @@ docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 
 Group、Scope、查询、合规与剩余任务共享容量为 2 的调度池，Group→Scope 投影使用另一个容量为 2 的池，均由 App 统一关闭。运行配置必须提供 `scope_group_database`，登录角色为 `mdm_scope_group_consumer`，指向同一产品数据库。部署时为该实际连接角色启用 LOGIN 并设置独立秘密，再执行迁移；安装只授予固定 Group domain / Scope consumer group 的 RSS 消费能力和 Scope 接收状态写权限，不授予 Group 生产者权限。投影池不按租户复制，恢复使用既有 native protector。Scope 的 `mdm.scopes` worker 独立注册、监视和关闭，复用原业务 runtime 与共享调度池，不另建数据库连接池。
 
-资源、Scope 与执行使用当前全新安装结构。产品配置中的 `storage_binding` 持有 target/lineage/epoch，`business_databases` 持有具名 owner 的独立数据库身份，`publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧 `flow`、综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 公开 origin 配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
+资源、Scope 与执行使用当前全新安装结构。产品配置中的 `storage_binding` 持有 target/lineage/epoch，`business_databases` 持有具名 owner 的独立数据库身份，`publication` 持有发布数据库与 sources，`command_database` 持有共享命令 runtime 数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧 `flow`、综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 公开 origin 配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
 
 内容与网关的大小及时间预算必须一致配置。随附 nginx 配置仅为精确上传路由关闭 request buffering，示例正文上限 8GiB；普通请求继续保留 16KiB。管理专属路由的网关上限对应 `management-http/src/body_policy.rs`：Policy/Resource 8MiB、设备 operations 16MiB、PKI rotation/CRL 64MiB、signing recovery 256KiB、Entra policy 128KiB、证书导入及授权规则/用户组 2MiB、软件目录及 Agent 包写入口 1MiB；应用继续按方法执行精确预算与 DTO 校验。内容目录须以可写持久卷提供给服务，签名秘密仍使用独立只读挂载。
 

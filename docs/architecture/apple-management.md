@@ -1,6 +1,6 @@
 # Apple 原生管理设计
 
-产品拥有 Rust Apple 通道、身份、注册、采集和结果；step-ca 仅负责外部 SCEP 签发。复用 Execution/CollectionRun/Observation/Inventory，避免第二套队列与设备状态权威。
+产品拥有 Rust Apple 通道、身份、注册、采集和结果；step-ca 仅负责外部 SCEP 签发。复用各业务 owner 的命令提交及 CollectionRun → Observation → Inventory，避免第二套队列与设备状态权威。
 
 组织身份由 Apple 产品 owner 单源持有，账户驱动与 ADE 各自持有配置和授权。ADE server token 使用独立 RSA/S-MIME 密钥并绑定租户/组织/版本加密；外部 HTTP 不持有业务行锁。ADE journal 仅持有 Apple 控制面操作，现有 runtime 执行每次一页/一效果，不新增设备任务框架。完成时重验 server revision、token revision 和租约；组织内未知外部写必须先只读恢复，不能覆盖或盲目重发。同步页面放入每操作隔离的暂存目录，最终页事务发布并推进 cursor；只有完整全量结果可证明目录缺席。
 
@@ -16,7 +16,7 @@ token revision 与租约隔离旧 APNs 回执，旧 410 不得清除新 token；
 
 设备续期复用一次性签发与原生 attempt，保持稳定 profile 身份和注册世代；只有新密钥首次 mTLS/UDID 证明才替换凭据并隔离旧凭据。通用 CA renewal 保持关闭，离线跨过到期须人工重新注册。真实 Mac 的 profile 更新与证书生命周期仍需设备验收。
 
-Apple 纯核心持有版本/条件编译、结果解释、Profile 组合/清单与 guards 规则；通道 adapter 只持有协议和其存储，Execution 继续持有共同资格与业务结算；Apple 通道在宿主共享 runtime 上持有交付事务。Profile 错误后的完整反向证据只释放本次失败预留，旧安装 guards 保留；部分或加密清单保持未知。Profile、push、collection 和结果读取端口按真实消费者收窄，复用一个 adapter 与现有 attempt 流。命令查询完成、原生 ACK、待重启/延后/Unknown 与真实效果分别保存。原生观察与读事实由 Apple 核心单源解释，通道负责保护材料读取与字段隐藏，Execution 组合共同状态和读取授权，management HTTP 持有最终响应投影。
+Apple 纯核心持有版本/条件编译、结果解释、Profile 组合/清单与 guards 规则；通道 adapter 只持有协议和其存储，Device、Software、Policy 配置、Registration 与 Inventory 分别持有所属资格与业务结算；Apple 通道在宿主共享 runtime 上持有交付事务。Profile 错误后的完整反向证据只释放本次失败预留，旧安装 guards 保留；部分或加密清单保持未知。Profile、push、collection 和结果读取端口按真实消费者收窄，复用一个 adapter 与现有 attempt 流。命令查询完成、原生 ACK、待重启/延后/Unknown 与真实效果分别保存。原生观察与读事实由 Apple 核心单源解释，通道负责保护材料读取与字段隐藏，App 组合各业务查询端口和读取授权，management HTTP 持有最终响应投影。
 
 DDM 在通道原事务与设备锁内调用借入式业务参与端口。共同层只消费资格、类型化结算和原生投影；Apple channel 持有声明发布、密文报告、ProfileList 原文及尝试关联，纯核心持有原生编译、完整性与声明状态解释。配置输入必须形成自己的闭合引用图；共用相同原生内容的 Policy 持有同一配置单元，不因最初作者退出而撤回另一有效分配的声明。
 

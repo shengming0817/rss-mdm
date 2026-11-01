@@ -14,6 +14,10 @@ class CapabilityBoundaries(unittest.TestCase):
         packages = [dict(id=n, name='rss-mdm-' + n, dependencies=[]) for n in names]
         data = dict(packages=packages, workspace_members=names)
         verify_capability_boundaries(data)
+        trust = next(p for p in packages if p['id'] == 'task-trust')
+        trust['dependencies'] = [dict(name=name, kind=None) for name in
+                                 ('rss-mdm-registration-service', 'rss-mdm-authorization-service')]
+        verify_capability_boundaries(data)
         # Platform SSO consumes canonical wire DTOs, whose pure production closure is separately checked.
         apple = next(p for p in packages if p['id'] == 'apple-mdm')
         apple['dependencies'] = [dict(name='rss-mdm-agent-wire', kind=None)]
@@ -22,7 +26,15 @@ class CapabilityBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'apple-mdm'):
             verify_capability_boundaries(data)
         apple['dependencies'] = []
-        for owner, name in (('agent-channel','rss-mdm-device-service'), ('windows-channel','rss-mdm-device-service'), ('webhook-service','rss-mdm-management-http'), ('webhook-service','rss-mdm-inventory-service'), ('inventory-service', 'axum'), ('query', 'rss-identity-core'),
+        for owner, name in (('task-state', 'rss-mdm-script-service'),
+                            ('task-state', 'rss-reconcile'), ('task-state', 'sqlx'),
+                            ('task-trust', 'rss-mdm-device-service'),
+                            ('task-trust', 'rss-mdm-script-service'),
+                            ('task-trust', 'rss-mdm-inventory-service'),
+                            ('software-service', 'rss-mdm-agent-channel'),
+                            ('software-service', 'rss-mdm-windows-channel'),
+                            ('software-service', 'rss-mdm-apple-channel'),
+                            ('agent-channel','rss-mdm-device-service'), ('windows-channel','rss-mdm-device-service'), ('webhook-service','rss-mdm-management-http'), ('webhook-service','rss-mdm-inventory-service'), ('inventory-service', 'axum'), ('query', 'rss-identity-core'),
                             ('http-contract', 'rss-mdm-resource'), ('resource', 'rss-mdm-http-contract'),
                             ('scope', 'rss-mdm-policy-service'),
                             ('scope', 'rss-transactional-messaging-postgres'),
