@@ -85,4 +85,6 @@ END;
 $$;
 REVOKE ALL ON FUNCTION mdm_apple.account_current(uuid,uuid,bigint,uuid,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_apple.account_current(uuid,uuid,bigint,uuid,text) TO mdm_access,mdm_command_runtime;
+GRANT SELECT(tenant_id,enrollment) ON mdm_apple.account_flows TO mdm_command_runtime;
+GRANT UPDATE(revoked,material,profile) ON mdm_apple.account_flows TO mdm_command_runtime;
 COMMIT;

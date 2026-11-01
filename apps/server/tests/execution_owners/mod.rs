@@ -199,7 +199,7 @@ impl Harness {
             .await
             .map_err(|e| anyhow::anyhow!("claim: {e:?}"))?
             .task()
-            .expect("eligible Script offer")
+            .expect("eligible task offer")
             .clone())
     }
     async fn event(&self, offer: &w::SignedTask, event: w::TaskEvent) -> Result<w::TaskEventAck> {

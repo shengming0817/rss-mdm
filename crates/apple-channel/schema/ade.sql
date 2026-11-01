@@ -73,4 +73,6 @@ GRANT UPDATE(revision,configuration,remote_uuid) ON mdm_apple.ade_profiles TO md
 GRANT UPDATE(operation_date,deleted,seen_run,remote_profile,assignment_revision,observed_at) ON mdm_apple.ade_devices TO mdm_access;
 GRANT UPDATE(state,result,cursor,cursor_digests,full_sync,lease,lease_until,next_attempt,attempts) ON mdm_apple.ade_operations TO mdm_access;
 GRANT UPDATE(revoked) ON mdm_apple.ade_enrollments TO mdm_access;
+GRANT SELECT(tenant_id,enrollment) ON mdm_apple.ade_enrollments TO mdm_command_runtime;
+GRANT UPDATE(revoked) ON mdm_apple.ade_enrollments TO mdm_command_runtime;
 COMMIT;

@@ -26,6 +26,7 @@ fn contract() -> String {
         "{apple_allowed_tables}",
         rss_mdm_apple_channel::ALLOWED_TABLES,
     );
+    sql = sql.replace("{apple_read_columns}", rss_mdm_apple_channel::READ_COLUMNS);
     sql
 }
 pub(super) async fn admit(

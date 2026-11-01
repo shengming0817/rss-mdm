@@ -103,6 +103,10 @@ GRANT UPDATE(registration) ON TABLE mdm_apple.scep_attempts TO mdm_access;
 GRANT UPDATE(not_before) ON TABLE mdm_apple.scep_attempts TO mdm_access;
 
 GRANT UPDATE(not_after) ON TABLE mdm_apple.scep_attempts TO mdm_access;
+-- Borrowed retirement clears only channel state and retained bootstrap material.
+GRANT UPDATE(bootstrap) ON mdm_apple.devices TO mdm_command_runtime;
+GRANT SELECT(tenant_id,registration) ON mdm_apple.scep_attempts TO mdm_command_runtime;
+GRANT UPDATE(state) ON mdm_apple.scep_attempts TO mdm_command_runtime;
 COMMIT;
 
 -- Inventory user views may inspect channel liveness, never push or credential material.

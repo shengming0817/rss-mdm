@@ -76,10 +76,39 @@ async fn step(h: &Harness, id: Uuid) -> Result<()> {
 async fn state(h: &Harness, id: Uuid) -> Result<(String, String, Option<Uuid>)> {
     Ok(sqlx::query_as("SELECT stage,effect,blocking_execution FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2").bind(h.c.tenant.to_string()).bind(id).fetch_one(&h.c.operator).await?)
 }
+// The issuance fixture already contains a verified real certificate. Seed its
+// retained PKI mapping so retirement must enqueue physical revocation, not an empty set.
+async fn certificate(h: &Harness) -> Result<()> {
+    let (leaf, metadata): (Vec<u8>, Value) = sqlx::query_as("SELECT decode(i.certificate_chain->>0,'base64'),i.metadata FROM mdm_access.agent_issuances i JOIN mdm_access.credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) WHERE k.tenant_id=$1::uuid AND k.registration=$2")
+        .bind(h.c.tenant.to_string()).bind(h.p.registration()).fetch_one(&h.c.operator).await?;
+    let issuer: Vec<u8> = serde_json::from_value(metadata["issuer"].clone())?;
+    let serial: Vec<u8> = serde_json::from_value(metadata["serial"].clone())?;
+    let root = crate::native_identity_t2_support::der(
+        "x509",
+        &h.c.inputs.directory.join("task-trust-ca/ca.pem"),
+    )
+    .await?;
+    let issuer = issuer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'agent',$2,1,'active',$3,'step_ca',$4)")
+        .bind(h.c.tenant.to_string()).bind(&issuer).bind(root)
+        .bind(metadata["not_after"].as_i64().unwrap()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_pki.certificates(tenant_id,purpose,fingerprint,issuer,serial,registration,not_after,certificate,verification_version,verification_trust) VALUES($1::uuid,'agent',sha256($2),$3,$4,$5,$6,$2,1,sha256($2))")
+        .bind(h.c.tenant.to_string()).bind(leaf)
+        .bind(issuer)
+        .bind(rss_mdm_device_trust::serial(&serial)).bind(h.p.registration())
+        .bind(metadata["not_after"].as_i64().unwrap()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
 #[tokio::test]
 #[ignore = "T2: cleanup cancels both owners and waits for Running and Unknown evidence before unenrollment"]
 async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     let mut h = Harness::open().await?;
+    certificate(&h).await?;
     let (_, v) = h.policy("retiring").await?;
     let script = h.run(v, "retiring", now() + 300).await?;
     let (d, f, _) = super::mixed::agent(&h)?;
@@ -188,6 +217,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     );
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
+    assert_eq!(h.a.service.relay_once().await?, 1);
     let offer = h.claim().await?;
     assert!(matches!(offer.payload, w::TaskPayload::Unmanage(_)));
     h.event(&offer, w::TaskEvent::Received).await?;
@@ -201,6 +231,9 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     .await?;
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "complete");
+    let revoked: (String, bool, bool, i64) = sqlx::query_as("SELECT r.state,NOT EXISTS(SELECT FROM mdm_access.credentials k WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND k.state='active'),NOT EXISTS(SELECT FROM mdm_access.report_sources s WHERE s.tenant_id=r.tenant_id AND s.registration=r.id AND s.enabled),(SELECT count(*) FROM mdm_pki.revocations v JOIN mdm_pki.certificates k USING(tenant_id,purpose,issuer,serial) WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND v.state='pending') FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2")
+        .bind(h.c.tenant.to_string()).bind(h.p.registration()).fetch_one(&h.c.operator).await?;
+    assert_eq!(revoked, ("revoked".into(), true, true, 1));
     let before: serde_json::Value = sqlx::query_scalar(
         "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -226,7 +259,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     .await?;
     assert_eq!(before, after);
     assert_eq!(state(&h, retirement).await?.0, "complete");
-    // An old, completed Script receipt must never restore ordinary work eligibility.
+    // Completed retirement and late receipts must never restore ordinary work eligibility.
     let mut tx = command::seed_transaction(&h.c).await?;
     assert!(
         !rss_mdm_registration_service::lifecycle::work_allowed_in(

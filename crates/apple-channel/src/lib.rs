@@ -564,6 +564,9 @@ pub use storage_authority::verify_authority;
 /// This owner's exact privileges in the shared host transaction role.
 pub const UPDATE_COLUMNS: &str = include_str!("update-columns.sql");
 
+/// Minimal read columns for borrowed registration retirement; token material stays private.
+pub const READ_COLUMNS: &str = include_str!("read-columns.sql");
+
 /// This owner's exact privileges in the shared host transaction role.
 pub const ALLOWED_TABLES: &str = include_str!("allowed-tables.sql");
 
