@@ -428,9 +428,7 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
 #[tokio::test]
 #[ignore = "T2: installation facts use the channel adapter and original SQL transaction"]
 async fn installation_facts_correlate_receipts_and_post_dispatch_collection() -> Result<()> {
-    use rss_mdm_execution_service::windows_results::{
-        InstallationDelivery as Delivery, InstallationRead,
-    };
+    use rss_mdm_windows_channel::results::{InstallationDelivery as Delivery, InstallationRead};
     use uuid::Uuid;
     let c = Context::open("shared", &[]).await?;
     let n = identity::seed(&c, "windows").await?;
@@ -475,58 +473,58 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
         (n.registration, 3, after, Delivery::Unknown, false),
         (Uuid::new_v4(), 1, after, Delivery::Unknown, false),
     ] {
-        let facts = a
-            .materials
-            .windows_results
-            .installations(
-                &mut tx,
-                c.tenant,
-                vec![InstallationRead {
-                    id: operation,
-                    registration,
-                    generation,
-                    snapshot: Some(snapshot),
-                }],
-            )
-            .await?;
+        let facts = rss_mdm_windows_channel::results::Results {
+            protection: a.materials.protection.clone(),
+        }
+        .installations(
+            &mut tx,
+            c.tenant,
+            &[InstallationRead {
+                id: operation,
+                registration,
+                generation,
+                snapshot: Some(snapshot),
+            }],
+        )
+        .await?;
         assert_eq!(facts[&operation].delivery, expected_delivery);
         assert_eq!(
             facts[&operation].channel_state.as_ref(),
             correlated.then_some(&state)
         );
     }
-    let sentinel_facts = a
-        .materials
-        .windows_results
-        .installations(
-            &mut tx,
-            c.tenant,
-            vec![InstallationRead {
-                id: sentinel,
-                registration: n.registration,
-                generation: 1,
-                snapshot: Some(after),
-            }],
-        )
-        .await?;
+    let sentinel_facts = rss_mdm_windows_channel::results::Results {
+        protection: a.materials.protection.clone(),
+    }
+    .installations(
+        &mut tx,
+        c.tenant,
+        &[InstallationRead {
+            id: sentinel,
+            registration: n.registration,
+            generation: 1,
+            snapshot: Some(after),
+        }],
+    )
+    .await?;
     assert_eq!(sentinel_facts[&sentinel].delivery, Delivery::Rejected);
     // Same borrowed transaction sees uncommitted receipt progress; no second checkout can substitute.
     sqlx::query("UPDATE mdm_windows.attempt_items i SET receipt_accepted=false FROM mdm_windows.attempts a WHERE (i.tenant_id,i.attempt)=(a.tenant_id,a.id) AND a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='execute'")
         .bind(c.tenant.to_string()).bind(operation).execute(&mut *tx).await?;
-    let facts = a
-        .materials
-        .windows_results
-        .installations(
-            &mut tx,
-            c.tenant,
-            vec![InstallationRead {
-                id: operation,
-                registration: n.registration,
-                generation: 1,
-                snapshot: None,
-            }],
-        )
-        .await?;
+    let facts = rss_mdm_windows_channel::results::Results {
+        protection: a.materials.protection.clone(),
+    }
+    .installations(
+        &mut tx,
+        c.tenant,
+        &[InstallationRead {
+            id: operation,
+            registration: n.registration,
+            generation: 1,
+            snapshot: None,
+        }],
+    )
+    .await?;
     assert_eq!(
         facts[&operation].delivery,
         Delivery::Rejected,

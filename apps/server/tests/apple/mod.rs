@@ -6,7 +6,7 @@ use crate::{
 };
 use anyhow::Result;
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
-use rss_mdm_execution_service::{Create, NativeTarget, Task, authority::ExecutionAuthority};
+use rss_mdm_device_service::control::{Create, NativeTarget, Task, authority::Authority};
 use std::sync::Arc;
 use uuid::Uuid;
 fn audit(c: &Context) -> RequestAudit {
@@ -99,8 +99,8 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
         .account(&[rss_mdm_authorization_service::Permission::DeviceControl])
         .await?;
     let proof = c.authenticate(&account).await?;
-    let authority = ExecutionAuthority::DeviceControl {
-        action: rss_mdm_execution_service::device_control::Kind::Restart,
+    let authority = Authority::DeviceControl {
+        action: rss_mdm_device_service::control::device_control::Kind::Restart,
         confirmation: None,
         required: input.task.permissions()?,
         actor: proof.actor(),

@@ -13,7 +13,7 @@ async fn accept(
     let actor = rss_mdm_authorization_service::Actor::Account {
         user: h.c.user(Uuid::new_v4()),
     };
-    let frozen = rss_mdm_execution_service::frozen::Frozen::UnmanageDevice {
+    let frozen = rss_mdm_device_service::control::frozen::Frozen::UnmanageDevice {
         schedule: super::mixed::manual(),
         run_lifetime_seconds: 300,
         actor: actor.clone(),
@@ -21,28 +21,32 @@ async fn accept(
     let policy = Uuid::new_v4();
     let version =
         super::mixed::publish(h, policy, 1, definition, serde_json::to_value(frozen)?).await?;
-    let id = Uuid::new_v4();
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES($1::uuid,$2,$3,$4,$5,'manual',$6,$7,300,$8,'\"policy\"')").bind(h.c.tenant.to_string()).bind(id).bind(policy).bind(version).bind(object.object.key()).bind(serde_json::to_value(object)?).bind(serde_json::to_value(actor)?).bind(now()).execute(&mut *tx).await?;
-    for member in &object.members {
-        sqlx::query("INSERT INTO mdm_devices.retirement_channels(tenant_id,operation,device,channel,registration,generation,stage,effect) VALUES($1::uuid,$2,$3,$4,$5,$6,'cleanup','pending')").bind(h.c.tenant.to_string()).bind(id).bind(&member.device).bind(match member.channel {rss_mdm_inventory::Channel::Mdm=>"mdm",rss_mdm_inventory::Channel::Agent=>"agent"}).bind(member.registration_id).bind(member.generation).execute(&mut *tx).await?;
-        sqlx::query(
-            "UPDATE mdm_access.devices SET retirement=$3 WHERE tenant_id=$1::uuid AND id=$2",
-        )
-        .bind(h.c.tenant.to_string())
-        .bind(&member.device)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    }
+    let (id, replay) = rss_mdm_device_service::lifecycle::accept_in(
+        &mut tx,
+        h.c.tenant,
+        &rss_mdm_device_service::planning::PlanningObjects,
+        &rss_mdm_device_service::lifecycle::Acceptance {
+            origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+            policy,
+            version,
+            occurrence: "manual",
+            target: object,
+            actor: &actor,
+            delivery_seconds: 300,
+            now: now(),
+        },
+    )
+    .await?;
+    assert!(!replay);
     tx.commit().await?;
     Ok(id)
 }
 async fn step(h: &Harness, id: Uuid) -> Result<()> {
-    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
-    let scope = rss_mdm_execution_service::recovery_scope(h.c.tenant);
+    let scope = rss_mdm_device_service::control::recovery_scope(h.c.tenant);
     let target = rss_reconcile::Target::new(scope.clone(), format!("retirement:{id}"))?;
     let store = h.a.service.recovery_store();
     store
@@ -72,10 +76,39 @@ async fn step(h: &Harness, id: Uuid) -> Result<()> {
 async fn state(h: &Harness, id: Uuid) -> Result<(String, String, Option<Uuid>)> {
     Ok(sqlx::query_as("SELECT stage,effect,blocking_execution FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2").bind(h.c.tenant.to_string()).bind(id).fetch_one(&h.c.operator).await?)
 }
+// The issuance fixture already contains a verified real certificate. Seed its
+// retained PKI mapping so retirement must enqueue physical revocation, not an empty set.
+async fn certificate(h: &Harness) -> Result<()> {
+    let (leaf, metadata): (Vec<u8>, Value) = sqlx::query_as("SELECT decode(i.certificate_chain->>0,'base64'),i.metadata FROM mdm_access.agent_issuances i JOIN mdm_access.credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) WHERE k.tenant_id=$1::uuid AND k.registration=$2")
+        .bind(h.c.tenant.to_string()).bind(h.p.registration()).fetch_one(&h.c.operator).await?;
+    let issuer: Vec<u8> = serde_json::from_value(metadata["issuer"].clone())?;
+    let serial: Vec<u8> = serde_json::from_value(metadata["serial"].clone())?;
+    let root = crate::native_identity_t2_support::der(
+        "x509",
+        &h.c.inputs.directory.join("task-trust-ca/ca.pem"),
+    )
+    .await?;
+    let issuer = issuer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'agent',$2,1,'active',$3,'step_ca',$4)")
+        .bind(h.c.tenant.to_string()).bind(&issuer).bind(root)
+        .bind(metadata["not_after"].as_i64().unwrap()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_pki.certificates(tenant_id,purpose,fingerprint,issuer,serial,registration,not_after,certificate,verification_version,verification_trust) VALUES($1::uuid,'agent',sha256($2),$3,$4,$5,$6,$2,1,sha256($2))")
+        .bind(h.c.tenant.to_string()).bind(leaf)
+        .bind(issuer)
+        .bind(rss_mdm_device_trust::serial(&serial)).bind(h.p.registration())
+        .bind(metadata["not_after"].as_i64().unwrap()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
 #[tokio::test]
 #[ignore = "T2: cleanup cancels both owners and waits for Running and Unknown evidence before unenrollment"]
 async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
-    let h = Harness::open().await?;
+    let mut h = Harness::open().await?;
+    certificate(&h).await?;
     let (_, v) = h.policy("retiring").await?;
     let script = h.run(v, "retiring", now() + 300).await?;
     let (d, f, _) = super::mixed::agent(&h)?;
@@ -139,6 +172,104 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     tx.commit().await?;
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
+    let scope = rss_mdm_device_service::control::recovery_scope(h.c.tenant);
+    let target = rss_reconcile::Target::new(scope.clone(), format!("retirement:{retirement}"))?;
+    let (old_claim, old_diff) = {
+        let store = h.a.service.recovery_store();
+        store
+            .wake(
+                &target,
+                &rss_reconcile::ResourceSet::empty(h.c.tenant),
+                &control,
+            )
+            .await?;
+        let mut batch = store
+            .claim_due(&scope, 64, Duration::from_secs(30), &control)
+            .await?;
+        let index = batch
+            .claims
+            .iter()
+            .position(|c| c.target() == &target)
+            .unwrap();
+        let claim = batch.claims.remove(index);
+        let ReconcileStep::Ready(diff) = h.a.service.observe(&claim, &control).await? else {
+            anyhow::bail!("retirement not observed")
+        };
+        store.release(&claim, &control).await?;
+        for other in batch.claims {
+            store.release(&other, &control).await?;
+        }
+        (claim, diff)
+    };
+    drop(h.delivery);
+    drop(h.audit);
+    command::close(h.a).await?;
+    h.a = command::open(&h.c, true).await?;
+    (h.audit, h.delivery) = delivery(&h.c, &h.a).await?;
+    assert!(
+        h.a.service
+            .apply(&old_claim, old_diff, &control)
+            .await
+            .is_err()
+    );
+    step(&h, retirement).await?;
+    assert_eq!(state(&h, retirement).await?.0, "unenroll");
+    assert_eq!(h.a.service.relay_once().await?, 1);
+    let offer = h.claim().await?;
+    assert!(matches!(offer.payload, w::TaskPayload::Unmanage(_)));
+    h.event(&offer, w::TaskEvent::Received).await?;
+    h.event(&offer, w::TaskEvent::Start).await?;
+    h.event(
+        &offer,
+        w::TaskEvent::UnmanageResult {
+            outcome: w::UnmanageOutcome::Completed,
+        },
+    )
+    .await?;
+    step(&h, retirement).await?;
+    assert_eq!(state(&h, retirement).await?.0, "complete");
+    let revoked: (String, bool, bool, i64) = sqlx::query_as("SELECT r.state,NOT EXISTS(SELECT FROM mdm_access.credentials k WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND k.state='active'),NOT EXISTS(SELECT FROM mdm_access.report_sources s WHERE s.tenant_id=r.tenant_id AND s.registration=r.id AND s.enabled),(SELECT count(*) FROM mdm_pki.revocations v JOIN mdm_pki.certificates k USING(tenant_id,purpose,issuer,serial) WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND v.state='pending') FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2")
+        .bind(h.c.tenant.to_string()).bind(h.p.registration()).fetch_one(&h.c.operator).await?;
+    assert_eq!(revoked, ("revoked".into(), true, true, 1));
+    let before: serde_json::Value = sqlx::query_scalar(
+        "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(offer.payload.task_id())
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert!(h.event(&offer, w::TaskEvent::Start).await.is_err());
+    let _ = h
+        .event(
+            &offer,
+            w::TaskEvent::UnmanageResult {
+                outcome: w::UnmanageOutcome::Completed,
+            },
+        )
+        .await;
+    let after: serde_json::Value = sqlx::query_scalar(
+        "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(offer.payload.task_id())
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert_eq!(before, after);
+    assert_eq!(state(&h, retirement).await?.0, "complete");
+    // Completed retirement and late receipts must never restore ordinary work eligibility.
+    let mut tx = command::seed_transaction(&h.c).await?;
+    assert!(
+        !rss_mdm_registration_service::lifecycle::work_allowed_in(
+            &mut tx,
+            &h.c.tenant.to_string(),
+            h.p.device()
+        )
+        .await?
+    );
+    tx.rollback().await?;
     h.close().await
 }
 pub(super) async fn native(
@@ -216,68 +347,6 @@ pub(super) async fn native(
     tx.commit().await?;
     Ok((policy, task, object))
 }
-#[tokio::test]
-#[ignore = "T2: native cleanup derives sent task certainty from Inventory reports without a second terminal state"]
-async fn native_cleanup_distinguishes_complete_failure_from_unconfirmed_report() -> Result<()> {
-    for reason in ["complete", "timeout", "revoked"] {
-        let h = Harness::open().await?;
-        let (_, task, object) = native(&h, Some(reason)).await?;
-        let retirement = accept(&h, &object).await?;
-        step(&h, retirement).await?;
-        let state = state(&h, retirement).await?;
-        if reason == "complete" {
-            assert_eq!(state.0, "unenroll");
-        } else {
-            assert_eq!(state, ("cleanup".into(), "unknown".into(), Some(task)));
-        }
-        h.close().await?;
-    }
-    Ok(())
-}
-#[tokio::test]
-#[ignore = "T2: native metadata detail needs InventoryRead while Agent raw detail retains sensitive authorization"]
-async fn native_detail_does_not_require_raw_evidence_permission() -> Result<()> {
-    use rss_mdm_authorization_service::Permission;
-    use rss_mdm_management_http::execution::task_reads::Reads;
-    let h = Harness::open().await?;
-    let (policy, task, _) = native(&h, Some("complete")).await?;
-    let account =
-        h.c.account(&[
-            Permission::PolicyRead,
-            Permission::OperationRead,
-            Permission::InventoryRead,
-        ])
-        .await?;
-    let proof = h.c.authenticate(&account).await?;
-    let detail = Reads::run(
-        h.a.task_reads.as_ref(),
-        &proof,
-        &h.c.request(&proof)?,
-        policy,
-        task,
-    )
-    .await?;
-    let detail = serde_json::to_value(detail)?;
-    assert_eq!(detail["channel"], "mdm");
-    assert_eq!(detail["report"]["reason"], "complete");
-    assert!(detail.get("native").is_none());
-    let (d, f, _) = super::mixed::agent(&h)?;
-    let policy = Uuid::new_v4();
-    let v = super::mixed::publish(&h, policy, 1, d, f).await?;
-    let task = super::mixed::run(&h, v, now()).await?;
-    assert!(matches!(
-        Reads::run(
-            h.a.task_reads.as_ref(),
-            &proof,
-            &h.c.request(&proof)?,
-            policy,
-            task
-        )
-        .await,
-        Err(rss_mdm_management_http::Error::Forbidden)
-    ));
-    h.close().await
-}
 
 async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Result<Uuid> {
     use rss_mdm_recovery_credentials::tasks::{
@@ -326,4 +395,76 @@ async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Re
         .bind(h.c.tenant.to_string()).bind(id).bind(version).bind(json!([h.object])).bind(h.p.device()).bind(h.p.registration()).bind(h.p.generation()).bind(id.to_string()).bind(now()).bind(now()+300).bind(serde_json::to_value(state)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(id)
+}
+
+#[tokio::test]
+#[ignore = "T2: retirement checkpoints one bounded history page per claim and preserves sent blockers after restart"]
+async fn cleanup_history_is_bounded_and_resumes() -> Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_device_service::control::device_control::{Action, Input};
+    let mut h = Harness::open().await?;
+    let native = crate::native_identity_t2_support::seed(&h.c, "windows").await?;
+    h.object = serde_json::from_value(
+        json!({"object":{"kind":"endpoint","id":native.device},"associationVersion":null,"verified":true,"members":[{"device":native.device,"channel":"mdm","registrationId":native.registration,"generation":1}]}),
+    )?;
+    h.scope = planning::published(&h.c, &h.object).await?.scope;
+    let account = h.c.account(&[Permission::DeviceWipe]).await?;
+    let proof = h.c.authenticate(&account).await?;
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) VALUES($1::uuid,$2,1,'10.0.22631.0',4,1,extract(epoch FROM clock_timestamp())::bigint)")
+        .bind(h.c.tenant.to_string()).bind(native.registration).execute(&mut *tx).await?;
+    tx.commit().await?;
+    for n in 1..=65 {
+        h.a.service
+            .create_control(
+                &proof,
+                &native.device,
+                &Input {
+                    operation_id: Uuid::from_u128(n),
+                    deadline: now() + 300,
+                    action: Action::Wipe {
+                        confirmed: true,
+                        expected_registration_id: native.registration,
+                        expected_generation: 1,
+                    },
+                },
+                &h.c.request(&proof)?,
+            )
+            .await?;
+    }
+    // Legal terminal history: cancellation alone does not confirm remote stop.
+    let blocked = Uuid::from_u128(65);
+    let mut tx = command::seed_transaction(&h.c).await?;
+    sqlx::query("UPDATE rss_device_command.commands d SET status='cancelled',version=d.version+1,terminal_at=d.queued_at+1 FROM mdm_devices.control_operations o WHERE (o.tenant_id,o.id::text)=(d.tenant_id,d.command_id) AND o.tenant_id=$1::uuid AND o.registration=$2")
+        .bind(h.c.tenant.to_string()).bind(native.registration).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.attempts(tenant_id,id,operation,registration,generation,ordinal,credential,session,message,phase,request) VALUES($1::uuid,$2,$3,$4,1,1,$5,1,1,'execute',$6)")
+        .bind(h.c.tenant.to_string()).bind(Uuid::new_v4()).bind(blocked).bind(native.registration).bind(native.credential).bind(vec![0u8;68]).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let retirement = accept(&h, &h.object).await?;
+    step(&h, retirement).await?;
+    assert_eq!(state(&h, retirement).await?.0, "cleanup");
+    let checkpoint: Option<Uuid> = sqlx::query_scalar(
+        "SELECT cleanup_after FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(retirement)
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert_eq!(checkpoint, Some(Uuid::from_u128(64)));
+    let replacement = command::open(&h.c, true).await?;
+    command::close(std::mem::replace(&mut h.a, replacement)).await?;
+    step(&h, retirement).await?;
+    assert_eq!(
+        state(&h, retirement).await?,
+        ("cleanup".into(), "unknown".into(), Some(blocked))
+    );
+    let resumed: Option<Uuid> = sqlx::query_scalar(
+        "SELECT cleanup_after FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(retirement)
+    .fetch_one(&h.c.operator)
+    .await?;
+    assert_eq!(resumed, checkpoint);
+    h.close().await
 }

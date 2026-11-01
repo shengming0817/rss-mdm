@@ -1,4 +1,4 @@
-//! Device retirement is accepted once; command delivery remains execution-owned.
+//! Device accepts and advances retirement; Registration owns credential retirement fences.
 //! ref: sqlx sqlx-core/src/transaction.rs (borrowed atomic acceptance).
 use crate::{Error, Result};
 use rss_mdm_authorization_service::Actor;
@@ -381,13 +381,14 @@ pub async fn observe_in(
 }
 
 /// One final credential settlement, borrowed from the Device owner claim transaction.
-pub(crate) async fn settle_one_in(
+pub(crate) async fn settle_retirement_in(
     c: &mut PgConnection,
     tenant: TenantId,
+    operation: Uuid,
     participant: &dyn rss_mdm_registration_service::Retirement,
 ) -> Result<Vec<rss_mdm_audit_integration::Fact>> {
     let t = tenant.to_string();
-    let row:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT t.operation,t.registration,t.device FROM mdm_devices.retirement_channels t JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(t.tenant_id,t.registration) WHERE t.tenant_id=$1::uuid AND (t.stage='revoke' OR (r.state<>'active' AND t.stage<>'complete')) ORDER BY t.device,t.registration LIMIT 1").bind(&t).fetch_optional(&mut *c).await?;
+    let row:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT t.operation,t.registration,t.device FROM mdm_devices.retirement_channels t JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(t.tenant_id,t.registration) WHERE t.tenant_id=$1::uuid AND t.operation=$2 AND (t.stage='revoke' OR (r.state<>'active' AND t.stage<>'complete')) ORDER BY t.device,t.registration LIMIT 1").bind(&t).bind(operation).fetch_optional(&mut *c).await?;
     let Some((id, registration, device)) = row else {
         return Ok(vec![]);
     };
@@ -402,10 +403,6 @@ pub(crate) async fn settle_one_in(
     sqlx::query("UPDATE mdm_devices.retirement_channels SET stage='complete',effect=CASE WHEN effect='confirmed' THEN effect ELSE 'unknown' END,reason=CASE WHEN effect='confirmed' THEN reason ELSE coalesce(reason,'device_cleanup_unconfirmed') END WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3").bind(t).bind(id).bind(registration).execute(c).await?;
     Ok(facts)
 }
-pub(crate) async fn settlement_pending(c: &mut PgConnection, tenant: TenantId) -> Result<bool> {
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.retirement_channels t JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(t.tenant_id,t.registration) WHERE t.tenant_id=$1::uuid AND (t.stage='revoke' OR (r.state<>'active' AND t.stage<>'complete')))").bind(tenant.to_string()).fetch_one(c).await?)
-}
-
 /// References existing execution work; this table owns no attempt or retry state.
 pub async fn authorize_execution_in(
     c: &mut PgConnection,
@@ -478,4 +475,19 @@ pub async fn cleanup_context_in(
     .fetch_one(c)
     .await?;
     Ok((context, lifetime.try_into().map_err(|_| Error::Malformed)?))
+}
+
+/// Retained retirement targets for this Policy's current read page.
+pub async fn retained_targets_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    policy: Uuid,
+    after: Option<&str>,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>> {
+    if !(1..=1000).contains(&limit) {
+        return Err(Error::Malformed);
+    }
+    Ok(sqlx::query_scalar("SELECT DISTINCT ON(o.object) o.target FROM mdm_devices.retirements o JOIN mdm_devices.retirement_policies p ON(p.tenant_id,p.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND p.policy=$2 AND o.object>coalesce($3,'') COLLATE \"C\" ORDER BY o.object,o.created_at DESC LIMIT $4")
+        .bind(tenant.to_string()).bind(policy).bind(after).bind((limit+1) as i64).fetch_all(c).await?)
 }

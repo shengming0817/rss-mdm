@@ -86,4 +86,9 @@ GRANT SELECT ON mdm_apple.psso_password_providers TO mdm_identity_runtime;
 -- The existing profile dispatcher fences provider generations before issuing the profile.
 GRANT SELECT,INSERT ON mdm_apple.psso_password_providers TO mdm_command_runtime;
 GRANT UPDATE(revision,fingerprint) ON mdm_apple.psso_password_providers TO mdm_command_runtime;
+-- Retirement can invalidate a source and delete its tokens without reading tokens.
+GRANT SELECT(tenant_id,id,registration,revoked,version,document) ON mdm_apple.psso_sources TO mdm_command_runtime;
+GRANT UPDATE(revoked,version,document) ON mdm_apple.psso_sources TO mdm_command_runtime;
+GRANT SELECT(tenant_id,source) ON mdm_apple.psso_tokens TO mdm_command_runtime;
+GRANT DELETE ON mdm_apple.psso_tokens TO mdm_command_runtime;
 COMMIT;

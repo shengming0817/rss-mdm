@@ -7,7 +7,7 @@ async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result
     tx.with_connection(move |c| {
         Box::pin(async move {
             let execution =
-                rss_mdm_execution_service::capacity::active_count_on(c, tenant, &device, now)
+                rss_mdm_device_service::control::capacity::active_count_on(c, tenant, &device, now)
                     .await?;
             let script =
                 rss_mdm_script_service::storage::active_count_on(c, tenant, &device, now).await?;
@@ -50,14 +50,15 @@ async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result
     })
     .await
 }
-impl rss_mdm_execution_service::capacity::DeviceCapacity for Capacity {
+impl rss_mdm_device_service::control::capacity::DeviceCapacity for Capacity {
     fn available_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         device: &'a str,
         now: i64,
-    ) -> std::pin::Pin<Box<dyn Future<Output = rss_mdm_execution_service::Result<bool>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = rss_mdm_device_service::control::Result<bool>> + Send + 'a>,
+    > {
         Box::pin(async move { Ok(available(tx, device, now).await?) })
     }
 }

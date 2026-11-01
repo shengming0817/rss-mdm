@@ -19,14 +19,14 @@ pub(crate) struct AgentTasks {
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
 
     pub requests: Arc<super::self_service::Requests>,
-    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub execution: Arc<rss_mdm_device_service::control::Service>,
     pub scripts: Arc<rss_mdm_script_service::ScriptService>,
     pub collections: Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
 }
-pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_agent_channel::Error {
+pub(super) fn error(e: rss_mdm_device_service::control::Error) -> rss_mdm_agent_channel::Error {
     use rss_mdm_agent_channel::Missing;
     use rss_mdm_agent_channel::{Error as A, Failure};
-    use rss_mdm_execution_service::Error as E;
+    use rss_mdm_device_service::control::Error as E;
     match e {
         E::Malformed => A::Malformed,
         E::CertificateRequest => A::CertificateRequest,
@@ -43,29 +43,29 @@ pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_agent_channe
         E::NotFound => A::NotFound,
         E::Resource(_) => A::Missing(Missing::Resource),
         E::Execution(e) => A::Missing(match e {
-            rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {
+            rss_mdm_device_service::control::missing::ExecutionError::MissingOperation => {
                 Missing::Operation
             }
-            rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task,
+            rss_mdm_device_service::control::missing::ExecutionError::MissingTask => Missing::Task,
         }),
 
         E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
         E::Unavailable(f) => A::Unavailable(match f {
-            rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-            rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-            rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-            rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-            rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-            rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+            rss_mdm_device_service::control::Failure::RequestDeadline => Failure::RequestDeadline,
+            rss_mdm_device_service::control::Failure::Audit => Failure::Audit,
+            rss_mdm_device_service::control::Failure::AuditIntegrity => Failure::AuditIntegrity,
+            rss_mdm_device_service::control::Failure::AuditAdmission => Failure::AuditAdmission,
+            rss_mdm_device_service::control::Failure::AuditIsolation => Failure::AuditIsolation,
+            rss_mdm_device_service::control::Failure::AuditContract => Failure::AuditContract,
 
             _ => Failure::Business,
         }),
     }
 }
 pub(super) fn fault(
-    e: rss_mdm_execution_service::transaction::Fault,
+    e: rss_mdm_device_service::control::transaction::Fault,
 ) -> rss_mdm_agent_channel::Error {
-    use rss_mdm_execution_service::transaction::Fault;
+    use rss_mdm_device_service::control::transaction::Fault;
     match e {
         Fault::Request(e) => error(e),
         Fault::Storage(e) => e.into(),
@@ -142,7 +142,7 @@ impl Tasks for AgentTasks {
             let after =
                 rss_mdm_agent_channel::delivery::offer_after_in(tx, p.registration()).await?;
             let mut candidates: Vec<_> =
-                rss_mdm_execution_service::actions::poll::offer_candidates(
+                rss_mdm_device_service::control::actions::poll::offer_candidates(
                     tx,
                     p.registration(),
                     now,
@@ -151,7 +151,7 @@ impl Tasks for AgentTasks {
                 .await
                 .map_err(fault)?
                 .into_iter()
-                .map(|v| (v, Owner::Execution))
+                .map(|v| (v, Owner::Device))
                 .collect();
             candidates.extend(
                 rss_mdm_script_service::poll::offer_candidates(tx, p.registration(), now, after)
@@ -305,7 +305,7 @@ impl Tasks for AgentTasks {
                         .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
                         .await
                         .map_err(credential_fault)?,
-                    Owner::Execution => self
+                    Owner::Device => self
                         .execution
                         .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
                         .await
@@ -362,7 +362,7 @@ impl Tasks for AgentTasks {
                     .agent_replay_offer_in(tx, p, signed, audit)
                     .await
                     .map_err(credential_fault),
-                Owner::Execution => self
+                Owner::Device => self
                     .execution
                     .agent_replay_offer_in(tx, p, signed, audit)
                     .await
@@ -412,7 +412,7 @@ impl Tasks for AgentTasks {
                     .agent_replay_event_in(tx, p, task, input, audit)
                     .await
                     .map_err(credential_fault),
-                Owner::Execution => self
+                Owner::Device => self
                     .execution
                     .agent_replay_event_in(tx, p, task, input, audit)
                     .await
@@ -478,7 +478,7 @@ impl Tasks for AgentTasks {
                         fact: e.fact,
                     }
                 }
-                Owner::Execution => {
+                Owner::Device => {
                     let e = self
                         .execution
                         .agent_event_in(tx, p, task, input, audit)
@@ -553,10 +553,13 @@ impl Tasks for AgentTasks {
         after: Option<Uuid>,
     ) -> Pending<'a, Vec<wire::TaskCancellation>> {
         Box::pin(async move {
-            let mut page =
-                rss_mdm_execution_service::actions::poll::cancellations(tx, registration, after)
-                    .await
-                    .map_err(fault)?;
+            let mut page = rss_mdm_device_service::control::actions::poll::cancellations(
+                tx,
+                registration,
+                after,
+            )
+            .await
+            .map_err(fault)?;
             page.extend(
                 rss_mdm_script_service::poll::cancellations(tx, registration, after)
                     .await
@@ -628,7 +631,7 @@ impl Tasks for AgentTasks {
             match owner_in(tx, task).await? {
                 Owner::Access => Err(rss_mdm_agent_channel::Error::Forbidden),
                 Owner::Credential => Err(rss_mdm_agent_channel::Error::Forbidden),
-                Owner::Execution => Err(rss_mdm_agent_channel::Error::Forbidden),
+                Owner::Device => Err(rss_mdm_agent_channel::Error::Forbidden),
                 Owner::Software => self
                     .software
                     .agent_content_in(tx, p, task, attempt, key, audit)

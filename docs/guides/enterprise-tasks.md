@@ -99,7 +99,7 @@ Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 
 
 MDM 与 Agent 各自持有 DeviceId、注册世代、凭据、采集和策略。MDM 来源字段 `channel.agent.installation` 的 `absent` 才能触发安装；Agent 来源 `channel.mdm.enrollment` 的 `unenrolled` 才能触发标准入口。可以将这些字段用于动态 Group，再通过 Scope 分配策略。当前有效来源的最新完整观察是依据，没有 TTL 或最后连接时间门槛；未知、失败、第三方 MDM 和旧注册观察不会变成缺失。
 
-`ensure_agent_installed` 沿用 Software Resource / Content → Agent 包发布 → Group / Scope → Policy → execution-service。Action 使用 `packages` 按平台和架构显式选择一个发布 releaseId；没有 latest、格式回退、自动升级或格式迁移。发布需要全设备 SoftwareDeploy 与 Enrollment 授权，执行和下载复核当前授权、发布状态及冻结摘要。普通软件没有 Agent 发布记录时不能获得引导权限。
+`ensure_agent_installed` 沿用 Software Resource / Content → Agent 包发布 → Group / Scope → Policy → Software / Registration owner。Action 使用 `packages` 按平台和架构显式选择一个发布 releaseId；没有 latest、格式回退、自动升级或格式迁移。发布需要全设备 SoftwareDeploy 与 Enrollment 授权，执行和下载复核当前授权、发布状态及冻结摘要。普通软件没有 Agent 发布记录时不能获得引导权限。
 
 ```json
 {

@@ -160,7 +160,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_software_service::agent_packages::ACCESS_CONTRACT,
         rss_mdm_software_service::source_snapshots::ACCESS_CONTRACT,
         r#"{"tables":[],"functions":[],"external_relations":["mdm_initialization.baselines"],"verified_schemas":[]}"#,
-        rss_mdm_execution_service::ACCESS_CONTRACT,
+        rss_mdm_device_service::control::ACCESS_CONTRACT,
         rss_mdm_software_service::deployment::ACCESS_CONTRACT,
         rss_mdm_registration_service::enrollment::tasks::ACCESS_CONTRACT,
         rss_mdm_script_service::ACCESS_CONTRACT,
@@ -240,7 +240,7 @@ async fn verify_task_storage(connection: &mut sqlx::PgConnection) -> Result<(), 
     rss_mdm_inventory_service::collection::execution::verify_storage(connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_execution_service::verify_authority(connection)
+    rss_mdm_device_service::control::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
     Ok(())

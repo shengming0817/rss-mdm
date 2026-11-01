@@ -308,8 +308,8 @@ pub enum OwnerDiagnostic {
     CommitUnknown,
     RollbackFailed,
     Audit(rss_mdm_audit_integration::ErrorClass),
-    ExecutionConfiguration(rss_mdm_execution_service::ConfigIssue),
-    ExecutionDependency(rss_mdm_execution_service::Failure),
+    ExecutionConfiguration(rss_mdm_device_service::control::ConfigIssue),
+    ExecutionDependency(rss_mdm_device_service::control::Failure),
     WindowsDeclaredEnrollmentNotReady,
     Inventory(rss_mdm_inventory_service::Failure),
     Resource(rss_mdm_resource_service::Failure),
@@ -342,9 +342,9 @@ impl From<rss_mdm_policy_service::Error> for OwnerDiagnostic {
         }
     }
 }
-impl From<rss_mdm_execution_service::Error> for OwnerDiagnostic {
-    fn from(e: rss_mdm_execution_service::Error) -> Self {
-        use rss_mdm_execution_service::Error as E;
+impl From<rss_mdm_device_service::control::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_device_service::control::Error) -> Self {
+        use rss_mdm_device_service::control::Error as E;
         match e {
             E::Malformed | E::CertificateRequest => Self::Malformed,
             E::ReadConflict | E::CursorInvalidated | E::Conflict => Self::Conflict,

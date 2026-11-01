@@ -204,7 +204,7 @@ impl Policies {
                         if matches!(policy.definition.action,Action::Configuration{..}) {
                             s.configuration.freeze_in(tx,&policy,verified,p,&authorization).await?
                         } else if let Action::UnmanageDevice{schedule,run_lifetime_seconds}=&policy.definition.action {
-                            checked_input(serde_json::to_value(lifecycle::Frozen::UnmanageDevice{schedule:schedule.clone(),run_lifetime_seconds:*run_lifetime_seconds,actor:p.actor()}))?
+                            checked_input(serde_json::to_value(rss_mdm_device_service::control::frozen::Frozen::UnmanageDevice{schedule:schedule.clone(),run_lifetime_seconds:*run_lifetime_seconds,actor:p.actor()}))?
                         } else if let Action::DeviceAccess{mac,windows,self_enrollment,role}=&policy.definition.action {
                             let configuration=rss_mdm_agent_wire::runtime::AccessConfiguration {mac:mac.clone(),windows:windows.clone(),self_enrollment:*self_enrollment,enabled:true,role:role.map(|r|match r {rss_mdm_policy::AccessRole::Standard=>rss_mdm_agent_wire::runtime::AccessRole::Standard,rss_mdm_policy::AccessRole::Administrator=>rss_mdm_agent_wire::runtime::AccessRole::Administrator})};
                             checked_input(serde_json::to_value(s.access.publish_in(tx,configuration,p,&authorization)?))?

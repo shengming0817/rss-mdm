@@ -55,7 +55,7 @@ pub enum RunSummary {
     Access(rss_mdm_registration_service::device_access::execution::queries::Record),
     Credential(rss_mdm_recovery_credentials::tasks::queries::Record),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
-    Execution(rss_mdm_execution_service::queries::records::RunSummary),
+    Execution(rss_mdm_device_service::control::queries::records::RunSummary),
     Script(rss_mdm_script_service::queries::Summary),
     Collection(rss_mdm_inventory_service::collection::execution::queries::Summary),
 }
@@ -82,7 +82,7 @@ pub enum RunDetail {
     Access(rss_mdm_registration_service::device_access::execution::queries::Record),
     Credential(rss_mdm_recovery_credentials::tasks::queries::Record),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
-    Execution(rss_mdm_execution_service::queries::records::RunDetail),
+    Execution(rss_mdm_device_service::control::queries::records::RunDetail),
     Script(rss_mdm_script_service::queries::Detail),
     Collection(rss_mdm_inventory_service::collection::execution::queries::Detail),
 }

@@ -106,7 +106,9 @@ pub struct WindowsFrame {
     pub received_at: Option<i64>,
 }
 
-pub struct Detail {
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Detail<O = NativeObservation> {
     pub operation_id: Uuid,
     pub command_id: Uuid,
     pub revision: i64,
@@ -116,8 +118,10 @@ pub struct Detail {
     pub deadline: i64,
     pub dispatch_failure: Option<super::super::model::DispatchFailure>,
     pub authorization: Authorization,
+    #[serde(serialize_with = "status")]
+    #[schemars(with = "String")]
     pub command_status: rss_device_command::Status,
-    pub observation: NativeObservation,
+    pub observation: O,
 }
 pub struct Evidence {
     pub command_status: rss_device_command::Status,
@@ -133,4 +137,8 @@ pub struct Declaration {
 pub struct Assignment {
     pub diagnosis: Option<String>,
     pub operations: Vec<Uuid>,
+}
+
+fn status<S: serde::Serializer>(v: &rss_device_command::Status, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(v.as_str())
 }

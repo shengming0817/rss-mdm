@@ -8,8 +8,8 @@ use rss_mdm_policy_service::{Error, Failure, inputs::*, transaction::Fault};
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::sync::Arc;
 use uuid::Uuid;
-pub(super) fn error(e: rss_mdm_execution_service::Error) -> Error {
-    use rss_mdm_execution_service::Error as E;
+pub(super) fn error(e: rss_mdm_device_service::control::Error) -> Error {
+    use rss_mdm_device_service::control::Error as E;
     match e {
         E::Malformed => Error::Malformed,
         E::Unauthorized => Error::Unauthorized,
@@ -24,67 +24,71 @@ pub(super) fn error(e: rss_mdm_execution_service::Error) -> Error {
         E::Unsupported => Error::Unsupported,
         E::NotFound | E::Resource(_) => Error::ResourceMissing,
         E::Unavailable(f) => Error::Unavailable(match f {
-            rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-            rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-            rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-            rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-            rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-            rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
-            rss_mdm_execution_service::Failure::NativeProtection => Failure::NativeProtection,
-            rss_mdm_execution_service::Failure::NativeInputIntegrity => {
+            rss_mdm_device_service::control::Failure::RequestDeadline => Failure::RequestDeadline,
+            rss_mdm_device_service::control::Failure::Audit => Failure::Audit,
+            rss_mdm_device_service::control::Failure::AuditIntegrity => Failure::AuditIntegrity,
+            rss_mdm_device_service::control::Failure::AuditAdmission => Failure::AuditAdmission,
+            rss_mdm_device_service::control::Failure::AuditIsolation => Failure::AuditIsolation,
+            rss_mdm_device_service::control::Failure::AuditContract => Failure::AuditContract,
+            rss_mdm_device_service::control::Failure::NativeProtection => Failure::NativeProtection,
+            rss_mdm_device_service::control::Failure::NativeInputIntegrity => {
                 Failure::NativeInputIntegrity
             }
-            rss_mdm_execution_service::Failure::CommandInvariant => Failure::CommandInvariant,
-            rss_mdm_execution_service::Failure::ContentStorage => Failure::ContentStorage,
-            rss_mdm_execution_service::Failure::ContentMetadata => Failure::ContentMetadata,
-            rss_mdm_execution_service::Failure::ContentInvariant => Failure::ContentInvariant,
-            rss_mdm_execution_service::Failure::ContentDeadline => Failure::ContentDeadline,
-            rss_mdm_execution_service::Failure::ContentCleanup => Failure::ContentCleanup,
-            rss_mdm_execution_service::Failure::AutomationConnection => {
+            rss_mdm_device_service::control::Failure::CommandInvariant => Failure::CommandInvariant,
+            rss_mdm_device_service::control::Failure::ContentStorage => Failure::ContentStorage,
+            rss_mdm_device_service::control::Failure::ContentMetadata => Failure::ContentMetadata,
+            rss_mdm_device_service::control::Failure::ContentInvariant => Failure::ContentInvariant,
+            rss_mdm_device_service::control::Failure::ContentDeadline => Failure::ContentDeadline,
+            rss_mdm_device_service::control::Failure::ContentCleanup => Failure::ContentCleanup,
+            rss_mdm_device_service::control::Failure::AutomationConnection => {
                 Failure::AutomationConnection
             }
-            rss_mdm_execution_service::Failure::AutomationAdmission => Failure::AutomationAdmission,
-            rss_mdm_execution_service::Failure::AutomationStorage => Failure::AutomationStorage,
-            rss_mdm_execution_service::Failure::Database => Failure::Database,
-            rss_mdm_execution_service::Failure::AssetObjectLimit => Failure::AssetObjectLimit,
-            rss_mdm_execution_service::Failure::AssetSourceLimit => Failure::AssetSourceLimit,
-            rss_mdm_execution_service::Failure::AssetBytesLimit => Failure::AssetBytesLimit,
-            rss_mdm_execution_service::Failure::Clock => Failure::Clock,
-            rss_mdm_execution_service::Failure::Capacity => Failure::Capacity,
-            rss_mdm_execution_service::Failure::Runtime => Failure::Runtime,
-            rss_mdm_execution_service::Failure::SoftwareCatalogInvariant => {
+            rss_mdm_device_service::control::Failure::AutomationAdmission => {
+                Failure::AutomationAdmission
+            }
+            rss_mdm_device_service::control::Failure::AutomationStorage => {
+                Failure::AutomationStorage
+            }
+            rss_mdm_device_service::control::Failure::Database => Failure::Database,
+            rss_mdm_device_service::control::Failure::AssetObjectLimit => Failure::AssetObjectLimit,
+            rss_mdm_device_service::control::Failure::AssetSourceLimit => Failure::AssetSourceLimit,
+            rss_mdm_device_service::control::Failure::AssetBytesLimit => Failure::AssetBytesLimit,
+            rss_mdm_device_service::control::Failure::Clock => Failure::Clock,
+            rss_mdm_device_service::control::Failure::Capacity => Failure::Capacity,
+            rss_mdm_device_service::control::Failure::Runtime => Failure::Runtime,
+            rss_mdm_device_service::control::Failure::SoftwareCatalogInvariant => {
                 Failure::SoftwareIntegrity
             }
-            rss_mdm_execution_service::Failure::PlanningAdmission => Failure::PolicyAdmission,
-            rss_mdm_execution_service::Failure::PlanningStorage => Failure::PolicyStorage,
-            rss_mdm_execution_service::Failure::Timeline
-            | rss_mdm_execution_service::Failure::IdentityStorage
-            | rss_mdm_execution_service::Failure::ResourceAdmission
-            | rss_mdm_execution_service::Failure::CommandAdmission
-            | rss_mdm_execution_service::Failure::ContentImport
-            | rss_mdm_execution_service::Failure::SoftwareCatalogStorage
-            | rss_mdm_execution_service::Failure::CommandStorage
-            | rss_mdm_execution_service::Failure::AssetsStorage
-            | rss_mdm_execution_service::Failure::ComplianceStorage
-            | rss_mdm_execution_service::Failure::ResourceStorage
-            | rss_mdm_execution_service::Failure::PublicationStorage
-            | rss_mdm_execution_service::Failure::InventoryQuery
-            | rss_mdm_execution_service::Failure::AssetCandidates
-            | rss_mdm_execution_service::Failure::AssetSources
-            | rss_mdm_execution_service::Failure::ManualQuery
-            | rss_mdm_execution_service::Failure::CollectionQuery
-            | rss_mdm_execution_service::Failure::InventoryRuntime
-            | rss_mdm_execution_service::Failure::Protocol => Failure::Preparation,
+            rss_mdm_device_service::control::Failure::PlanningAdmission => Failure::PolicyAdmission,
+            rss_mdm_device_service::control::Failure::PlanningStorage => Failure::PolicyStorage,
+            rss_mdm_device_service::control::Failure::Timeline
+            | rss_mdm_device_service::control::Failure::IdentityStorage
+            | rss_mdm_device_service::control::Failure::ResourceAdmission
+            | rss_mdm_device_service::control::Failure::CommandAdmission
+            | rss_mdm_device_service::control::Failure::ContentImport
+            | rss_mdm_device_service::control::Failure::SoftwareCatalogStorage
+            | rss_mdm_device_service::control::Failure::CommandStorage
+            | rss_mdm_device_service::control::Failure::AssetsStorage
+            | rss_mdm_device_service::control::Failure::ComplianceStorage
+            | rss_mdm_device_service::control::Failure::ResourceStorage
+            | rss_mdm_device_service::control::Failure::PublicationStorage
+            | rss_mdm_device_service::control::Failure::InventoryQuery
+            | rss_mdm_device_service::control::Failure::AssetCandidates
+            | rss_mdm_device_service::control::Failure::AssetSources
+            | rss_mdm_device_service::control::Failure::ManualQuery
+            | rss_mdm_device_service::control::Failure::CollectionQuery
+            | rss_mdm_device_service::control::Failure::InventoryRuntime
+            | rss_mdm_device_service::control::Failure::Protocol => Failure::Preparation,
         }),
         E::Configuration(_) => Error::Unavailable(Failure::PreparationConfiguration),
         E::Execution(_) | E::CertificateRequest => Error::Unavailable(Failure::PreparationContract),
     }
 }
-pub(super) fn fault(e: rss_mdm_execution_service::transaction::Fault) -> Fault {
+pub(super) fn fault(e: rss_mdm_device_service::control::transaction::Fault) -> Fault {
     match e {
-        rss_mdm_execution_service::transaction::Fault::Request(e) => Fault::Request(error(e)),
-        rss_mdm_execution_service::transaction::Fault::Storage(e) => Fault::Storage(e),
-        rss_mdm_execution_service::transaction::Fault::Sql(e) => Fault::Sql(e),
+        rss_mdm_device_service::control::transaction::Fault::Request(e) => Fault::Request(error(e)),
+        rss_mdm_device_service::control::transaction::Fault::Storage(e) => Fault::Storage(e),
+        rss_mdm_device_service::control::transaction::Fault::Sql(e) => Fault::Sql(e),
     }
 }
 pub(super) struct Publication {
@@ -92,21 +96,7 @@ pub(super) struct Publication {
     pub enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
     pub signing_enabled: bool,
 }
-fn execution_action(action: &Action) -> Result<(), Error> {
-    if matches!(
-        action,
-        Action::Execution { .. }
-            | Action::AgentCollection { .. }
-            | Action::NativeCollection { .. }
-            | Action::Configuration { .. }
-            | Action::TelemetryProfile { .. }
-            | Action::UnmanageDevice { .. }
-    ) {
-        Err(Error::Unsupported)
-    } else {
-        Ok(())
-    }
-}
+
 impl ExecutionPublication for Publication {
     fn software_binding_in<'a>(
         &'a self,
@@ -225,7 +215,7 @@ impl ExecutionChanges for Changes {
                 policy,
             )
             .await?;
-            rss_mdm_execution_service::sources::storage::wake_execution_in(
+            rss_mdm_device_service::control::sources::storage::wake_execution_in(
                 &self.messaging,
                 tx,
                 policy,
@@ -272,9 +262,8 @@ impl ExecutionChanges for Changes {
             )
             .await
             .map_err(software_fault)?;
-            rss_mdm_execution_service::wake::wake_native_batch_in(
+            rss_mdm_device_service::control::wake::wake_native_batch_in(
                 &self.messaging,
-                self.targets.clone(),
                 tx,
                 devices,
             )
@@ -288,7 +277,7 @@ impl ExecutionChanges for Changes {
         retirement: Uuid,
     ) -> Pending<'a, (), Fault> {
         Box::pin(async move {
-            rss_mdm_execution_service::unmanage::wake_in(&self.messaging, tx, retirement)
+            rss_mdm_device_service::control::unmanage::wake_in(&self.messaging, tx, retirement)
                 .await
                 .map_err(fault)
         })
@@ -301,16 +290,9 @@ pub(super) struct Events {
     pub credentials: Option<Arc<rss_mdm_recovery_credentials::tasks::Transactions>>,
     pub scripts: Arc<rss_mdm_script_service::Transactions>,
     pub collections: Arc<rss_mdm_inventory_service::collection::execution::Transactions>,
-    pub execution: Arc<rss_mdm_execution_service::policy_events::PolicyEvents>,
     pub configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
 }
-fn target(v: &Target) -> rss_mdm_execution_service::Target {
-    rss_mdm_execution_service::Target {
-        device: v.device.clone(),
-        registration: v.registration,
-        generation: v.generation,
-    }
-}
+
 impl ExecutionEvents for Events {
     fn verify_event_device_in<'a>(
         &'a self,
@@ -319,10 +301,42 @@ impl ExecutionEvents for Events {
         input: Option<&'a wire::PolicyEventRequest>,
     ) -> Pending<'a, (), Fault> {
         Box::pin(async move {
-            self.execution
-                .verify_event_device_in(tx, principal, input)
-                .await
-                .map_err(fault)
+            if tx.tenant_id() != principal.tenant() {
+                return Err(Error::Unauthorized.into());
+            }
+            let p = principal.clone();
+            tx.with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(
+                        rss_mdm_registration_service::device::store::revalidate_source(
+                            c,
+                            &p,
+                            rss_mdm_inventory::ReportSource::AgentBuiltin,
+                        )
+                        .await,
+                    )
+                })
+            })
+            .await??;
+            let binding = rss_mdm_device_service::control::agent_facts::agent_binding_in(
+                tx,
+                Arc::new(super::agent_facts::AgentFacts),
+                principal.registration(),
+            )
+            .await
+            .map_err(fault)?;
+            if !binding.is_some_and(|b| b.inventory() && b.task()) {
+                return Err(Error::Forbidden.into());
+            }
+            if let Some(input) = input {
+                input
+                    .execution_context
+                    .as_ref()
+                    .ok_or(Error::Malformed)?
+                    .validate()
+                    .map_err(|_| Error::Malformed)?;
+            }
+            Ok(())
         })
     }
     fn apply_event_context_in<'a>(
@@ -357,11 +371,16 @@ impl ExecutionEvents for Events {
                 .await?;
             use super::task_ownership::Owner;
             match owner {
-                Owner::Execution => self
-                    .execution
-                    .event_parent_current_in(tx, &target(value), source)
-                    .await
-                    .map_err(fault),
+                Owner::Device => {
+                    let run = rss_mdm_device_service::control::actions::storage::load_run(tx, id)
+                        .await
+                        .map_err(fault)?;
+                    Ok(run.target.device == value.device
+                        && run.target.registration == value.registration
+                        && run.target.generation == value.generation
+                        && run.state.execution == rss_mdm_task_state::Execution::Running
+                        && run.state.started_at.is_some())
+                }
                 Owner::Software => self
                     .software
                     .event_parent_current_in(tx, &software_target(value), source)
@@ -554,11 +573,8 @@ impl ExecutionEvents for Events {
                 }
                 _ => {}
             }
-            execution_action(&policy.definition.action)?;
-            self.execution
-                .accept_policy_event_in(tx, policy, &target(value), cause, deadline, audit)
-                .await
-                .map_err(fault)
+            // Unmanage events are admitted by Policy's lifecycle path before this port.
+            Err(Error::Unsupported.into())
         })
     }
 }
@@ -624,7 +640,7 @@ impl ExecutionProgress for Events {
                             .map(software_progress)
                             .map_err(software_fault);
                     }
-                    super::task_ownership::Owner::Execution => {}
+                    super::task_ownership::Owner::Device => {}
                 }
             }
             if let wire::PolicyEventOperation::Native { id } = reference {
@@ -648,44 +664,40 @@ impl ExecutionProgress for Events {
                     return self.configuration.event_progress_in(tx, reference).await;
                 }
             }
-            use rss_mdm_execution_service::policy_events::EventOperationProgress as P;
-            Ok(
-                match self
-                    .execution
-                    .policy_event_operation_in(tx, reference)
-                    .await
-                    .map_err(fault)?
-                {
-                    P::Run {
-                        reference,
-                        state,
-                        allowed_actions,
-                    } => EventOperationProgress::Run {
-                        reference,
-                        state,
-                        allowed_actions,
-                    },
-                    P::Native {
-                        reference,
-                        state,
-                        allowed_actions,
-                    } => EventOperationProgress::Native {
-                        reference,
-                        state,
-                        agent_installation: None,
-                        allowed_actions,
-                    },
-                    P::Retirement {
-                        reference,
-                        state,
-                        allowed_actions,
-                    } => EventOperationProgress::Retirement {
-                        reference,
-                        state,
-                        allowed_actions,
-                    },
+            Ok(match reference {
+                wire::PolicyEventOperation::Run { id } => EventOperationProgress::Run {
+                    reference: reference.clone(),
+                    state: rss_mdm_device_service::control::actions::storage::read_run(tx, *id)
+                        .await
+                        .map_err(fault)?
+                        .state,
+                    allowed_actions: [],
                 },
-            )
+                wire::PolicyEventOperation::Native { id } => EventOperationProgress::Native {
+                    reference: reference.clone(),
+                    state: rss_mdm_device_service::control::storage::status_in(tx, *id)
+                        .await
+                        .map_err(fault)?,
+                    agent_installation: None,
+                    allowed_actions: [],
+                },
+                wire::PolicyEventOperation::Retirement { id } => {
+                    let tenant = tx.tenant_id();
+                    let id = *id;
+                    let state = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(rss_mdm_device_service::lifecycle::read_in(c, tenant, id).await)
+                            })
+                        })
+                        .await??;
+                    EventOperationProgress::Retirement {
+                        reference: reference.clone(),
+                        state,
+                        allowed_actions: [],
+                    }
+                }
+            })
         })
     }
 }

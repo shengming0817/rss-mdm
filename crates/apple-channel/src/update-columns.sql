@@ -29,4 +29,13 @@
 ('mdm_apple.channels','push_status'),
 ('mdm_apple.channels','push_outcome'),
 ('mdm_apple.channels','push_configuration'),
-('mdm_apple.channels','push_failures')
+('mdm_apple.channels','push_failures'),
+('mdm_apple.devices','bootstrap'),
+('mdm_apple.scep_attempts','state'),
+('mdm_apple.ade_enrollments','revoked'),
+('mdm_apple.account_flows','revoked'),
+('mdm_apple.account_flows','material'),
+('mdm_apple.account_flows','profile'),
+('mdm_apple.psso_sources','revoked'),
+('mdm_apple.psso_sources','version'),
+('mdm_apple.psso_sources','document')

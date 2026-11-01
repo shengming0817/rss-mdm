@@ -5,4 +5,9 @@
 ('mdm_apple.attempts',true,true,false),
 ('mdm_apple.profiles',true,true,false),
 ('mdm_apple.devices',true,false,false),
-('mdm_apple.channels',true,false,false)
+('mdm_apple.channels',true,false,false),
+('mdm_apple.ade_enrollments',false,false,false),
+('mdm_apple.account_flows',false,false,false),
+('mdm_apple.psso_sources',false,false,false),
+('mdm_apple.psso_tokens',false,false,true),
+('mdm_apple.scep_attempts',false,false,false)

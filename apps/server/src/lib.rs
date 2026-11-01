@@ -96,7 +96,7 @@ pub enum Error {
     #[error(transparent)]
     Scope(#[from] rss_mdm_scope_service::Error),
     #[error(transparent)]
-    Execution(#[from] rss_mdm_execution_service::Error),
+    Execution(#[from] rss_mdm_device_service::control::Error),
     #[error(transparent)]
     Authorization(#[from] rss_mdm_authorization_service::Error),
     #[error(transparent)]

@@ -8,14 +8,14 @@ use sqlx::PgConnection;
 use std::sync::Arc;
 use uuid::Uuid;
 pub(crate) struct WindowsBusiness(
-    pub Arc<rss_mdm_execution_service::ExecutionService>,
+    pub Arc<rss_mdm_device_service::control::Service>,
     pub Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
     pub Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub Arc<rss_mdm_registration_service::installation::Service>,
 );
-fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_windows_channel::Error {
-    use rss_mdm_execution_service::Error as E;
+fn error(e: rss_mdm_device_service::control::Error) -> rss_mdm_windows_channel::Error {
+    use rss_mdm_device_service::control::Error as E;
     use rss_mdm_windows_channel::Missing;
     use rss_mdm_windows_channel::{Error as A, Failure};
     match e {
@@ -34,34 +34,34 @@ fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_windows_channel::Error 
         E::NotFound => A::NotFound,
         E::Resource(_) => A::Missing(Missing::Resource),
         E::Execution(e) => A::Missing(match e {
-            rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {
+            rss_mdm_device_service::control::missing::ExecutionError::MissingOperation => {
                 Missing::Operation
             }
-            rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task,
+            rss_mdm_device_service::control::missing::ExecutionError::MissingTask => Missing::Task,
         }),
 
         E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
         E::Unavailable(f) => A::Unavailable(match f {
-            rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-            rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-            rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-            rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-            rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-            rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+            rss_mdm_device_service::control::Failure::RequestDeadline => Failure::RequestDeadline,
+            rss_mdm_device_service::control::Failure::Audit => Failure::Audit,
+            rss_mdm_device_service::control::Failure::AuditIntegrity => Failure::AuditIntegrity,
+            rss_mdm_device_service::control::Failure::AuditAdmission => Failure::AuditAdmission,
+            rss_mdm_device_service::control::Failure::AuditIsolation => Failure::AuditIsolation,
+            rss_mdm_device_service::control::Failure::AuditContract => Failure::AuditContract,
 
             _ => Failure::Business,
         }),
     }
 }
-fn fault(e: rss_mdm_execution_service::transaction::Fault) -> rss_mdm_windows_channel::Error {
-    use rss_mdm_execution_service::transaction::Fault;
+fn fault(e: rss_mdm_device_service::control::transaction::Fault) -> rss_mdm_windows_channel::Error {
+    use rss_mdm_device_service::control::transaction::Fault;
     match e {
         Fault::Request(e) => error(e),
         Fault::Storage(e) => e.into(),
         Fault::Sql(e) => e.into(),
     }
 }
-fn operation(v: rss_mdm_execution_service::windows_business::WindowsOperation) -> Operation {
+fn operation(v: rss_mdm_device_service::control::windows_business::WindowsOperation) -> Operation {
     Operation {
         id: v.id,
         request: v.request,
@@ -204,11 +204,13 @@ impl Business for WindowsBusiness {
                             .await
                             .map_err(policy_fault)?
                         }
-                        Owner::Execution => rss_mdm_execution_service::settle_windows_receipt_in(
-                            &self.0, tx, id, complete, audit,
-                        )
-                        .await
-                        .map_err(fault)?,
+                        Owner::Device => {
+                            rss_mdm_device_service::control::settle_windows_receipt_in(
+                                &self.0, tx, id, complete, audit,
+                            )
+                            .await
+                            .map_err(fault)?
+                        }
                         Owner::Software => {
                             rss_mdm_software_service::deployment::settle_windows_receipt_in(
                                 &self.3, tx, id, complete, audit,
@@ -304,7 +306,7 @@ impl Business for WindowsBusiness {
                     .await
                     .map(configuration_operation)
                     .map_err(policy_error),
-                Owner::Execution => self
+                Owner::Device => self
                     .0
                     .windows_operation_on(c, p, id)
                     .await
@@ -362,7 +364,7 @@ impl Business for WindowsBusiness {
                     )
                     .await
                     .map_err(policy_error),
-                Owner::Execution => self
+                Owner::Device => self
                     .0
                     .windows_dispatch_failure_on(
                         c,
@@ -371,13 +373,13 @@ impl Business for WindowsBusiness {
                         reason,
                         phase.map(|p| match p {
                             AttemptPhase::Prepare => {
-                                rss_mdm_execution_service::AttemptPhase::Prepare
+                                rss_mdm_device_service::control::AttemptPhase::Prepare
                             }
                             AttemptPhase::Execute => {
-                                rss_mdm_execution_service::AttemptPhase::Execute
+                                rss_mdm_device_service::control::AttemptPhase::Execute
                             }
                             AttemptPhase::Observe => {
-                                rss_mdm_execution_service::AttemptPhase::Observe
+                                rss_mdm_device_service::control::AttemptPhase::Observe
                             }
                         }),
                         context,
@@ -496,9 +498,14 @@ impl Departure for WindowsBusiness {
         registration: Uuid,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            rss_mdm_execution_service::unmanage::native_departure_in(c, tenant, registration, false)
-                .await
-                .map_err(error)
+            rss_mdm_device_service::control::unmanage::native_departure_in(
+                c,
+                tenant,
+                registration,
+                false,
+            )
+            .await
+            .map_err(error)
         })
     }
 }

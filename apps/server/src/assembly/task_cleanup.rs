@@ -1,5 +1,5 @@
 //! Static composition of exact registration retirement participants.
-use rss_mdm_execution_service::{
+use rss_mdm_device_service::control::{
     Error, Failure,
     task_cleanup::*,
     transaction::{Fault, Result},
@@ -13,7 +13,7 @@ impl TaskCleanup for Cleanup {
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         retirement: Uuid,
-        target: &'a rss_mdm_execution_service::Target,
+        target: &'a rss_mdm_device_service::control::Target,
     ) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + 'a>> {
         Box::pin(async move {
             self.0
@@ -26,7 +26,7 @@ impl TaskCleanup for Cleanup {
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         retirement: Uuid,
-        target: &'a rss_mdm_execution_service::Target,
+        target: &'a rss_mdm_device_service::control::Target,
     ) -> Pin<Box<dyn Future<Output = Result<bool>> + Send + 'a>> {
         Box::pin(async move {
             self.0
@@ -94,7 +94,12 @@ fn script(error: rss_mdm_script_service::transaction::Fault) -> Fault {
             E::CommitUnknown => Error::CommitUnknown,
             E::RollbackFailed => Error::RollbackFailed,
             E::Inventory(e) => e.into(),
-            E::Content(e) => e.into(),
+            E::Content(e) => match e {
+                rss_mdm_content_service::Error::CommitUnknown => Error::CommitUnknown,
+                rss_mdm_content_service::Error::Conflict => Error::Conflict,
+                rss_mdm_content_service::Error::Malformed => Error::Malformed,
+                _ => Error::Unavailable(Failure::ContentStorage),
+            },
             E::Audit(_) => Error::Unavailable(Failure::Audit),
             E::Invariant => Error::Unavailable(Failure::CommandInvariant),
             E::Unavailable => Error::Unavailable(Failure::CommandStorage),
@@ -104,7 +109,7 @@ fn script(error: rss_mdm_script_service::transaction::Fault) -> Fault {
 }
 
 fn channel(
-    t: &rss_mdm_execution_service::Target,
+    t: &rss_mdm_device_service::control::Target,
 ) -> rss_mdm_software_service::deployment::retirement::Channel {
     rss_mdm_software_service::deployment::retirement::Channel {
         device: t.device.clone(),

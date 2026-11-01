@@ -151,4 +151,6 @@ WHERE c.tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid
   WHERE (r.tenant_id,r.purpose,r.issuer,r.serial)=(c.tenant_id,c.purpose,c.issuer,c.serial));
 REVOKE ALL ON mdm_pki.current_certificates FROM PUBLIC;
 GRANT SELECT ON mdm_pki.current_certificates TO mdm_access;
+-- Registration retirement queues revocation; the PKI worker owns later delivery.
+GRANT INSERT ON mdm_pki.revocations TO mdm_command_runtime;
 COMMIT;

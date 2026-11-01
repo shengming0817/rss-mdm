@@ -36,7 +36,7 @@ pub(crate) async fn application(
 }
 pub(crate) async fn events(
     application: Arc<Application>,
-    materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,
+    materials: Arc<EventInputs>,
     software_materials: Arc<rss_mdm_software_service::deployment::Materials>,
     enrollment_materials: Arc<rss_mdm_registration_service::enrollment::tasks::Materials>,
     access_materials: Arc<rss_mdm_registration_service::device_access::execution::Materials>,
@@ -72,15 +72,6 @@ pub(crate) async fn events(
                     }),
                 },
             ),
-        )
-        .await?,
-    );
-    let execution = Arc::new(
-        rss_mdm_execution_service::policy_events::PolicyEvents::bind(
-            application.runtime.clone(),
-            application.tenant,
-            application.audit_store.clone(),
-            materials,
         )
         .await?,
     );
@@ -134,7 +125,6 @@ pub(crate) async fn events(
         credentials,
         scripts,
         collections,
-        execution,
         configuration: application.configuration.clone(),
     });
     Ok(Arc::new(Events {
@@ -324,4 +314,10 @@ pub(crate) async fn configuration(
         )
         .await?,
     ))
+}
+
+pub(crate) struct EventInputs {
+    pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
+    pub instance: String,
 }

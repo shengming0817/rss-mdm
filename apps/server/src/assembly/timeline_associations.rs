@@ -14,7 +14,7 @@ impl Associations for Producers {
     ) -> Pin<Box<dyn Future<Output = Result<Association, Error>> + Send + 'a>> {
         Box::pin(async move {
             use super::native_ownership::{self, Owner};
-            use rss_mdm_execution_service::timeline as execution;
+            use rss_mdm_device_service::control::timeline as execution;
             let identity = match identity {
                 Identity::Operation(id) => {
                     let parsed = rss_request_context::TenantId::parse(tenant)
@@ -86,7 +86,7 @@ impl Associations for Producers {
                         TaskOwner::Registration=>return Ok(rss_mdm_registration_service::enrollment::tasks::storage::association_on(c,tenant,id).await?),
                         TaskOwner::Access=>return Ok(rss_mdm_registration_service::device_access::execution::storage::association_on(c,tenant,id).await?),
                         TaskOwner::Credential=>return Ok(rss_mdm_recovery_credentials::tasks::storage::association_on(c,tenant,id).await?),
-                        TaskOwner::Execution => execution::Identity::ActionRun(id),
+                        TaskOwner::Device => execution::Identity::ActionRun(id),
                     }
                 }
                 Identity::ChangeRequest(id) => {

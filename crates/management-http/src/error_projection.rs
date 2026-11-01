@@ -248,9 +248,9 @@ impl From<rss_mdm_software_service::management::Error> for Error {
     }
 }
 
-impl From<rss_mdm_execution_service::Error> for Error {
-    fn from(e: rss_mdm_execution_service::Error) -> Self {
-        use rss_mdm_execution_service::Error as E;
+impl From<rss_mdm_device_service::control::Error> for Error {
+    fn from(e: rss_mdm_device_service::control::Error) -> Self {
+        use rss_mdm_device_service::control::Error as E;
         match e {
             E::Malformed => Self::Malformed,
             E::CertificateRequest => Self::CertificateRequest,
@@ -271,81 +271,123 @@ impl From<rss_mdm_execution_service::Error> for Error {
             }
 
             E::Configuration(c) => Self::Configuration(match c {
-                rss_mdm_execution_service::ConfigIssue::Audit => ConfigIssue::Audit,
-                rss_mdm_execution_service::ConfigIssue::Execution => ConfigIssue::Execution,
-                rss_mdm_execution_service::ConfigIssue::Content => ConfigIssue::Content,
-                rss_mdm_execution_service::ConfigIssue::Publication => ConfigIssue::Publication,
-                rss_mdm_execution_service::ConfigIssue::IdentityConfiguration => {
+                rss_mdm_device_service::control::ConfigIssue::Audit => ConfigIssue::Audit,
+                rss_mdm_device_service::control::ConfigIssue::Execution => ConfigIssue::Execution,
+                rss_mdm_device_service::control::ConfigIssue::Content => ConfigIssue::Content,
+                rss_mdm_device_service::control::ConfigIssue::Publication => {
+                    ConfigIssue::Publication
+                }
+                rss_mdm_device_service::control::ConfigIssue::IdentityConfiguration => {
                     ConfigIssue::IdentityConfiguration
                 }
             }),
             E::Unavailable(f) => Self::Unavailable(match f {
-                rss_mdm_execution_service::Failure::NativeProtection => Failure::NativeProtection,
-                rss_mdm_execution_service::Failure::NativeInputIntegrity => {
+                rss_mdm_device_service::control::Failure::NativeProtection => {
+                    Failure::NativeProtection
+                }
+                rss_mdm_device_service::control::Failure::NativeInputIntegrity => {
                     Failure::NativeInputIntegrity
                 }
-                rss_mdm_execution_service::Failure::Timeline => Failure::Timeline,
-                rss_mdm_execution_service::Failure::IdentityStorage => Failure::IdentityStorage,
-                rss_mdm_execution_service::Failure::ResourceAdmission => Failure::ResourceAdmission,
-                rss_mdm_execution_service::Failure::PlanningAdmission => Failure::PlanningAdmission,
-                rss_mdm_execution_service::Failure::CommandAdmission => Failure::CommandAdmission,
-                rss_mdm_execution_service::Failure::AutomationConnection => {
+                rss_mdm_device_service::control::Failure::Timeline => Failure::Timeline,
+                rss_mdm_device_service::control::Failure::IdentityStorage => {
+                    Failure::IdentityStorage
+                }
+                rss_mdm_device_service::control::Failure::ResourceAdmission => {
+                    Failure::ResourceAdmission
+                }
+                rss_mdm_device_service::control::Failure::PlanningAdmission => {
+                    Failure::PlanningAdmission
+                }
+                rss_mdm_device_service::control::Failure::CommandAdmission => {
+                    Failure::CommandAdmission
+                }
+                rss_mdm_device_service::control::Failure::AutomationConnection => {
                     Failure::AutomationConnection
                 }
-                rss_mdm_execution_service::Failure::AutomationAdmission => {
+                rss_mdm_device_service::control::Failure::AutomationAdmission => {
                     Failure::AutomationAdmission
                 }
-                rss_mdm_execution_service::Failure::ContentStorage => Failure::ContentStorage,
-                rss_mdm_execution_service::Failure::ContentMetadata => Failure::ContentMetadata,
-                rss_mdm_execution_service::Failure::ContentInvariant => Failure::ContentInvariant,
-                rss_mdm_execution_service::Failure::ContentDeadline => Failure::ContentDeadline,
-                rss_mdm_execution_service::Failure::ContentCleanup => Failure::ContentCleanup,
-                rss_mdm_execution_service::Failure::ContentImport => Failure::ContentImport,
-                rss_mdm_execution_service::Failure::SoftwareCatalogStorage => {
+                rss_mdm_device_service::control::Failure::ContentStorage => Failure::ContentStorage,
+                rss_mdm_device_service::control::Failure::ContentMetadata => {
+                    Failure::ContentMetadata
+                }
+                rss_mdm_device_service::control::Failure::ContentInvariant => {
+                    Failure::ContentInvariant
+                }
+                rss_mdm_device_service::control::Failure::ContentDeadline => {
+                    Failure::ContentDeadline
+                }
+                rss_mdm_device_service::control::Failure::ContentCleanup => Failure::ContentCleanup,
+                rss_mdm_device_service::control::Failure::ContentImport => Failure::ContentImport,
+                rss_mdm_device_service::control::Failure::SoftwareCatalogStorage => {
                     Failure::SoftwareCatalogStorage
                 }
-                rss_mdm_execution_service::Failure::SoftwareCatalogInvariant => {
+                rss_mdm_device_service::control::Failure::SoftwareCatalogInvariant => {
                     Failure::SoftwareCatalogInvariant
                 }
-                rss_mdm_execution_service::Failure::CommandStorage => Failure::CommandStorage,
-                rss_mdm_execution_service::Failure::CommandInvariant => Failure::CommandInvariant,
-                rss_mdm_execution_service::Failure::PlanningStorage => Failure::PlanningStorage,
-                rss_mdm_execution_service::Failure::AssetsStorage => Failure::AssetsStorage,
-                rss_mdm_execution_service::Failure::ComplianceStorage => Failure::ComplianceStorage,
-                rss_mdm_execution_service::Failure::ResourceStorage => Failure::ResourceStorage,
-                rss_mdm_execution_service::Failure::PublicationStorage => {
+                rss_mdm_device_service::control::Failure::CommandStorage => Failure::CommandStorage,
+                rss_mdm_device_service::control::Failure::CommandInvariant => {
+                    Failure::CommandInvariant
+                }
+                rss_mdm_device_service::control::Failure::PlanningStorage => {
+                    Failure::PlanningStorage
+                }
+                rss_mdm_device_service::control::Failure::AssetsStorage => Failure::AssetsStorage,
+                rss_mdm_device_service::control::Failure::ComplianceStorage => {
+                    Failure::ComplianceStorage
+                }
+                rss_mdm_device_service::control::Failure::ResourceStorage => {
+                    Failure::ResourceStorage
+                }
+                rss_mdm_device_service::control::Failure::PublicationStorage => {
                     Failure::PublicationStorage
                 }
-                rss_mdm_execution_service::Failure::AutomationStorage => Failure::AutomationStorage,
-                rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-                rss_mdm_execution_service::Failure::Database => Failure::Database,
-                rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-                rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-                rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-                rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+                rss_mdm_device_service::control::Failure::AutomationStorage => {
+                    Failure::AutomationStorage
+                }
+                rss_mdm_device_service::control::Failure::RequestDeadline => {
+                    Failure::RequestDeadline
+                }
+                rss_mdm_device_service::control::Failure::Database => Failure::Database,
+                rss_mdm_device_service::control::Failure::Audit => Failure::Audit,
+                rss_mdm_device_service::control::Failure::AuditIntegrity => Failure::AuditIntegrity,
+                rss_mdm_device_service::control::Failure::AuditIsolation => Failure::AuditIsolation,
+                rss_mdm_device_service::control::Failure::AuditContract => Failure::AuditContract,
 
-                rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-                rss_mdm_execution_service::Failure::InventoryQuery => Failure::InventoryQuery,
-                rss_mdm_execution_service::Failure::AssetCandidates => Failure::AssetCandidates,
-                rss_mdm_execution_service::Failure::AssetSources => Failure::AssetSources,
-                rss_mdm_execution_service::Failure::ManualQuery => Failure::ManualQuery,
-                rss_mdm_execution_service::Failure::CollectionQuery => Failure::CollectionQuery,
-                rss_mdm_execution_service::Failure::AssetObjectLimit => Failure::AssetObjectLimit,
-                rss_mdm_execution_service::Failure::AssetSourceLimit => Failure::AssetSourceLimit,
-                rss_mdm_execution_service::Failure::AssetBytesLimit => Failure::AssetBytesLimit,
-                rss_mdm_execution_service::Failure::InventoryRuntime => Failure::InventoryRuntime,
-                rss_mdm_execution_service::Failure::Clock => Failure::Clock,
-                rss_mdm_execution_service::Failure::Capacity => Failure::Capacity,
-                rss_mdm_execution_service::Failure::Runtime => Failure::Runtime,
-                rss_mdm_execution_service::Failure::Protocol => Failure::Protocol,
+                rss_mdm_device_service::control::Failure::AuditAdmission => Failure::AuditAdmission,
+                rss_mdm_device_service::control::Failure::InventoryQuery => Failure::InventoryQuery,
+                rss_mdm_device_service::control::Failure::AssetCandidates => {
+                    Failure::AssetCandidates
+                }
+                rss_mdm_device_service::control::Failure::AssetSources => Failure::AssetSources,
+                rss_mdm_device_service::control::Failure::ManualQuery => Failure::ManualQuery,
+                rss_mdm_device_service::control::Failure::CollectionQuery => {
+                    Failure::CollectionQuery
+                }
+                rss_mdm_device_service::control::Failure::AssetObjectLimit => {
+                    Failure::AssetObjectLimit
+                }
+                rss_mdm_device_service::control::Failure::AssetSourceLimit => {
+                    Failure::AssetSourceLimit
+                }
+                rss_mdm_device_service::control::Failure::AssetBytesLimit => {
+                    Failure::AssetBytesLimit
+                }
+                rss_mdm_device_service::control::Failure::InventoryRuntime => {
+                    Failure::InventoryRuntime
+                }
+                rss_mdm_device_service::control::Failure::Clock => Failure::Clock,
+                rss_mdm_device_service::control::Failure::Capacity => Failure::Capacity,
+                rss_mdm_device_service::control::Failure::Runtime => Failure::Runtime,
+                rss_mdm_device_service::control::Failure::Protocol => Failure::Protocol,
             }),
         }
     }
 }
 
-impl From<rss_mdm_execution_service::queries::QueryError> for Error {
-    fn from(e: rss_mdm_execution_service::queries::QueryError) -> Self {
-        use rss_mdm_execution_service::queries::{Missing, QueryError as Q};
+impl From<rss_mdm_device_service::control::queries::QueryError> for Error {
+    fn from(e: rss_mdm_device_service::control::queries::QueryError) -> Self {
+        use rss_mdm_device_service::control::queries::{Missing, QueryError as Q};
         match e {
             Q::Malformed => Self::Malformed,
             Q::Unauthorized => Self::Unauthorized,
@@ -358,7 +400,7 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
             Q::Unsupported => Self::Unsupported,
             Q::CommitUnknown => Self::CommitUnknown,
             Q::RollbackFailed => Self::RollbackFailed,
-            Q::Unavailable(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
+            Q::Unavailable(f) => rss_mdm_device_service::control::Error::Unavailable(f).into(),
             Q::Missing(m) => match m {
                 Missing::Policy => Self::PolicyMissing,
                 Missing::Inventory => Self::NotFound,
@@ -366,11 +408,11 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
                     Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
                 }
                 Missing::Operation => Self::Execution(
-                    rss_mdm_execution_service::missing::ExecutionError::MissingOperation,
+                    rss_mdm_device_service::control::missing::ExecutionError::MissingOperation,
                 ),
-                Missing::Task => {
-                    Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingTask)
-                }
+                Missing::Task => Self::Execution(
+                    rss_mdm_device_service::control::missing::ExecutionError::MissingTask,
+                ),
             },
         }
     }
@@ -388,8 +430,8 @@ impl From<rss_mdm_software_service::deployment::queries::QueryError> for Error {
             Q::Missing(m) => match m {
                 Missing::Policy => Self::PolicyMissing,
                 Missing::Inventory => Self::NotFound, Missing::Resource => Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing),
-                Missing::Operation => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingOperation),
-                Missing::Task => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingTask),
+                Missing::Operation => Self::Execution(rss_mdm_device_service::control::missing::ExecutionError::MissingOperation),
+                Missing::Task => Self::Execution(rss_mdm_device_service::control::missing::ExecutionError::MissingTask),
                 Missing::SoftwareSource => Self::Publication(rss_mdm_software_service::management::publication::error::PublicationError::MissingSource),
                 Missing::SoftwarePublication => Self::Publication(rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication),
             },

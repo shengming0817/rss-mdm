@@ -152,3 +152,79 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
     assert_eq!(row(attempt).await?, sealed);
     h.close().await
 }
+
+#[tokio::test]
+#[ignore = "T2: native cleanup derives sent task certainty from Inventory reports without a second terminal state"]
+async fn native_cleanup_distinguishes_complete_failure_from_unconfirmed_report()
+-> anyhow::Result<()> {
+    let h = Harness::open().await?;
+    for reason in ["complete", "timeout", "revoked"] {
+        let (_, task, object) = super::retirement::native(&h, Some(reason)).await?;
+        let registrations = object
+            .members
+            .iter()
+            .map(|m| m.registration_id)
+            .collect::<Vec<_>>();
+        let mut tx = command::seed_transaction(&h.c).await?;
+        let progress = rss_mdm_inventory_service::collection::execution::retirement::progress_on(
+            &mut tx,
+            &h.c.tenant.to_string(),
+            &registrations,
+        )
+        .await?;
+        tx.rollback().await?;
+        assert_eq!(
+            progress,
+            if reason == "complete" {
+                (false, None)
+            } else {
+                (true, Some(task))
+            }
+        );
+    }
+    h.close().await
+}
+#[tokio::test]
+#[ignore = "T2: native metadata detail needs InventoryRead while Agent raw detail retains sensitive authorization"]
+async fn native_detail_does_not_require_raw_evidence_permission() -> anyhow::Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_management_http::execution::task_reads::Reads;
+    let h = Harness::open().await?;
+    let (policy, task, _) = super::retirement::native(&h, Some("complete")).await?;
+    let account =
+        h.c.account(&[
+            Permission::PolicyRead,
+            Permission::OperationRead,
+            Permission::InventoryRead,
+        ])
+        .await?;
+    let proof = h.c.authenticate(&account).await?;
+    let detail = Reads::run(
+        h.a.task_reads.as_ref(),
+        &proof,
+        &h.c.request(&proof)?,
+        policy,
+        task,
+    )
+    .await?;
+    let detail = serde_json::to_value(detail)?;
+    assert_eq!(detail["channel"], "mdm");
+    assert_eq!(detail["report"]["reason"], "complete");
+    assert!(detail.get("native").is_none());
+    let (d, f, _) = super::mixed::agent(&h)?;
+    let policy = Uuid::new_v4();
+    let v = super::mixed::publish(&h, policy, 1, d, f).await?;
+    let task = super::mixed::run(&h, v, now()).await?;
+    assert!(matches!(
+        Reads::run(
+            h.a.task_reads.as_ref(),
+            &proof,
+            &h.c.request(&proof)?,
+            policy,
+            task
+        )
+        .await,
+        Err(rss_mdm_management_http::Error::Forbidden)
+    ));
+    h.close().await
+}

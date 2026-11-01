@@ -26,10 +26,10 @@
   ],
   "functions": [],
   "external_relations": [
-    "mdm_commands.action_runs",
+    "mdm_devices.unmanage_runs",
     "mdm_assets.operations",
-    "mdm_commands.requests",
-    "mdm_commands.operations",
+    "mdm_devices.control_requests",
+    "mdm_devices.control_operations",
     "mdm_policy.versions",
     "mdm_planning.configuration_operations",
     "mdm_script.runs",

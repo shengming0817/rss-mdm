@@ -27,7 +27,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             rss_mdm_pki_service::certificates::revoke_registration_in(tx, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
-            rss_mdm_execution_service::retire_in(tx, facts, tenant, registration)
+            rss_mdm_device_service::control::retire_in(tx, facts, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_software_service::deployment::retirement::retire_in(

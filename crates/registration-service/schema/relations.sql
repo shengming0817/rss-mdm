@@ -106,4 +106,7 @@ GRANT UPDATE(last_communication_received_at) ON mdm_access.registrations TO mdm_
 GRANT UPDATE(first_authenticated_at) ON mdm_access.registrations TO mdm_access, mdm_command_runtime;
 GRANT UPDATE(account_version,account_reference,account_challenge) ON mdm_access.requests TO mdm_access;
 GRANT UPDATE(organization_version,organization_challenge) ON mdm_access.requests TO mdm_access;
+-- Device invokes Registration retirement on the shared audited command transaction.
+GRANT UPDATE(state) ON mdm_access.registrations,mdm_access.credentials TO mdm_command_runtime;
+GRANT UPDATE(enabled) ON mdm_access.report_sources TO mdm_command_runtime;
 COMMIT;

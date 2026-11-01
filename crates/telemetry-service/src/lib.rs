@@ -116,7 +116,8 @@ pub struct StorageBudget {
 /// Only the Policy capabilities and audit resource actually consumed by telemetry.
 pub struct PolicyDependencies {
     pub agent_facts: Arc<dyn rss_mdm_script_service::agent_facts::Store>,
-    pub query_reads: Arc<rss_mdm_execution_service::queries::Queries>,
+    pub read_pool: sqlx::PgPool,
+    pub clock: Arc<dyn rss_request_context::Clock>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub policies: Arc<rss_mdm_policy_service::telemetry::Reader>,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
@@ -124,7 +125,8 @@ pub struct PolicyDependencies {
 /// One tenant's telemetry application; the host owns its worker and adopted backend.
 pub struct Service {
     agent_facts: Arc<dyn rss_mdm_script_service::agent_facts::Store>,
-    query_reads: Arc<rss_mdm_execution_service::queries::Queries>,
+    read_pool: sqlx::PgPool,
+    clock: Arc<dyn rss_request_context::Clock>,
     tenant: TenantId,
     runtime: Arc<PgRuntime>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -153,7 +155,8 @@ impl Service {
         }
         Ok(Self {
             agent_facts: dependencies.agent_facts,
-            query_reads: dependencies.query_reads,
+            read_pool: dependencies.read_pool,
+            clock: dependencies.clock,
             tenant,
             runtime,
             audit_store: dependencies.audit_store,
@@ -332,3 +335,5 @@ pub mod profile_validation;
 pub const RELAY_CONCURRENCY: u32 = 2;
 /// Relay consumers plus the sequential maintenance loop.
 pub const CONTROL_WORKERS: u32 = RELAY_CONCURRENCY + 1;
+
+mod snapshot;

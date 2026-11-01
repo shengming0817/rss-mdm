@@ -701,9 +701,9 @@ impl Application {
                 .await?,
         )?
         .ok_or(Error::NotFound)?;
-        let frozen: crate::management::lifecycle::Frozen =
+        let frozen: rss_mdm_device_service::control::frozen::Frozen =
             stored(serde_json::from_value(published.frozen))?;
-        let crate::management::lifecycle::Frozen::UnmanageDevice {
+        let rss_mdm_device_service::control::frozen::Frozen::UnmanageDevice {
             actor,
             run_lifetime_seconds,
             schedule,

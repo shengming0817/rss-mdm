@@ -4,7 +4,7 @@ use crate::{
     native_identity_t2_support::{self as identity, Native},
 };
 use anyhow::Result;
-use rss_mdm_execution_service::{Create, authority::ExecutionAuthority};
+use rss_mdm_device_service::control::{Create, authority::Authority};
 use rss_mdm_native_protection::{ProtectionContext, Protector};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -168,7 +168,7 @@ pub async fn operation(
     n: &Native,
     key: &Protector,
     input: &Create,
-    authority: ExecutionAuthority,
+    authority: Authority,
     policy: Option<Uuid>,
 ) -> Result<()> {
     seed_operation(
@@ -250,7 +250,7 @@ async fn seed_operation(
     if configuration {
         sqlx::query("INSERT INTO mdm_planning.configuration_operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,1,1,$8,$6,true,$9)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(n.registration).bind(authority).bind(policy).execute(&mut *tx).await?;
     } else {
-        sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,source_kind,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,1,1,$8,$6,true,$9,$10)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(n.registration).bind(authority).bind(if policy.is_some(){"policy"}else{"direct"}).bind(policy).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_devices.control_operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,source_kind,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,1,1,$8,$6,true,$9,$10)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(n.registration).bind(authority).bind(if policy.is_some(){"policy"}else{"direct"}).bind(policy).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())

@@ -5,6 +5,8 @@ use std::sync::Arc;
 mod preview;
 mod snapshot;
 pub(crate) struct Reads {
+    pub content_available: bool,
+    pub configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub software: Arc<rss_mdm_software_service::deployment::queries::Queries>,
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::Materials>,
     pub entries: rss_mdm_registration_service::enrollment::task::Entries,
@@ -17,7 +19,7 @@ pub(crate) struct Reads {
     pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub scripts: rss_mdm_script_service::inputs::Inputs,
     pub collections: rss_mdm_inventory_service::collection::execution::inputs::Inputs,
-    pub execution: Arc<rss_mdm_execution_service::queries::Queries>,
+    pub execution: Arc<rss_mdm_device_service::control::queries::Queries>,
 }
 pub(super) fn sql(error: sqlx::Error) -> Error {
     if error
@@ -144,5 +146,17 @@ pub(super) fn credential_fault(
             E::Audit(_) => Error::Unavailable(Failure::Audit),
             _ => Error::Unavailable(Failure::CommandInvariant),
         },
+    }
+}
+
+mod retirement;
+
+pub(super) fn configuration_fault(e: rss_mdm_policy_service::transaction::Fault) -> Error {
+    match e {
+        rss_mdm_policy_service::transaction::Fault::Request(e) => e.into(),
+        rss_mdm_policy_service::transaction::Fault::Sql(e) => sql(e),
+        rss_mdm_policy_service::transaction::Fault::Storage(_) => {
+            Error::Unavailable(Failure::Database)
+        }
     }
 }

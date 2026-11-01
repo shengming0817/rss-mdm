@@ -274,7 +274,7 @@ Windows RSS 恢复后续轮换/核对使用既有 Credential task 的 `rotate_rs
 本后端契约不证明 Agent、Windows CP 或 Apple PSSO 的真实执行；对应消费和平台证据由 #2870–#2876 承接。
 
 平台 verifier 的 resolve/recheck 必须在 Identity 提供的原 PG connection 上调用
-`ExecutionService::active_access_binding_on`，同时核对当前注册、绑定代际和 Policy/Scope。
+Registration Device Access 的 `active_access_binding_on`，同时核对当前注册、绑定代际和 Policy/Scope。
 普通 Binding JSON、清单或历史状态不能作为有效会话证明；Identity 继续独占账户/成员有效性与会话签发。
 
 ## 管理目录查询

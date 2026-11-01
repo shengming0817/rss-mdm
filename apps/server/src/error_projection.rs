@@ -66,8 +66,8 @@ impl From<rss_mdm_resource_service::error::ResourceError> for Error {
         Self::Resource(e.into())
     }
 }
-impl From<rss_mdm_execution_service::missing::ExecutionError> for Error {
-    fn from(e: rss_mdm_execution_service::missing::ExecutionError) -> Self {
+impl From<rss_mdm_device_service::control::missing::ExecutionError> for Error {
+    fn from(e: rss_mdm_device_service::control::missing::ExecutionError) -> Self {
         Self::Execution(e.into())
     }
 }

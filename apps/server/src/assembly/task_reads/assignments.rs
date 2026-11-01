@@ -32,9 +32,7 @@ pub(super) async fn assignments(
         let page=async {
         let after=rss_mdm_scope_service::window::after(codec,query,&binding).map_err(window)?;
         if matches!(p.definition.action,Action::UnmanageDevice {..}) {
-            let page=s.execution.lifecycle_assignments_on(c,&p,after.as_deref(),limit,codec,&binding).await.map_err(super::history::execution_fault)?;
-
-            return Ok(super::projections::execution_assignments(page));
+            return super::retirement::assignments_on(s,c,&p,after.as_deref(),limit,codec,&binding).await;
         }
         let source=s.source.clone();let tenant=s.tenant;let scope=p.definition.scope;let cursor=after.clone();let channel=match p.definition.action.target_channel() {Some(rss_mdm_policy::SoftwareChannel::Agent)=>rss_mdm_inventory::Channel::Agent,Some(rss_mdm_policy::SoftwareChannel::Mdm)=>rss_mdm_inventory::Channel::Mdm,None=>return Err(Error::Malformed)};
         let mut objects=source.assignment_objects_on(c,tenant,scope,channel,cursor.as_deref(),limit).await.map_err(super::source)?;
@@ -62,7 +60,8 @@ pub(super) async fn assignments(
                         task_admission=Some(rss_mdm_registration_service::enrollment::tasks::queries::assignment_state_on(c,tenant,&s.enrollment,&p,device,now).await.map_err(enrollment_fault)?);
                         operations=rss_mdm_registration_service::enrollment::tasks::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(enrollment_fault)?;None
                     },
-                    _=>{let state=s.execution.assignment_state_on(c,&p,target,channel,now).await.map_err(super::history::execution_fault)?;task_admission=state.task_admission;operations=state.operations;state.diagnosis}
+                    Action::Configuration{..}=>{let state=s.configuration.assignment_on(c,p.id,target).await.map_err(super::configuration_fault)?;operations=state.operations;state.diagnosis},
+                    _=>None
                 };
                 if object.availability==rss_mdm_scope_service::channels::Availability::Ready && task_admission.as_ref().is_some_and(|a|!a.is_eligible()) {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
                 if (object.availability==rss_mdm_scope_service::channels::Availability::Ready||object.reason.as_deref()==Some("policy_disabled")) && let Some(reason)=diagnosis {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some(reason);}

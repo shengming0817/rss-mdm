@@ -1,0 +1,84 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_devices",
+      "table": "control_operations",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "control_requests",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "control_recovery",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "unmanage_runs",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "unmanage_receipts",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "unmanage_policy_recovery",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "control_source_dispatch",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "mdm_devices.windows_wake_candidates",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_devices.retirement_commands",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_devices.save_retired_command",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_devices.save_retired_action",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_devices.windows_pending_operations",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [],
+  "verified_schemas": []
+}

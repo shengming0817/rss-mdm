@@ -47,11 +47,20 @@ class T2Status(unittest.TestCase):
     def test_channel_sql_and_signature_retirement_select_real_consumers(self):
         for schema in ('install.sql', 'relations.sql'):
             with self.subTest(schema=schema):
-                self.assertEqual(affected(['crates/execution-service/schema/' + schema]),
-                                 ['agent.delivery', 'apple.protocol', 'policy.configuration', 'windows.protocol'])
+                self.assertEqual(affected(['crates/device-service/schema/control-' + schema]),
+                                 ['agent.delivery', 'apple.protocol', 'device.control', 'device.retirement', 'policy.configuration', 'windows.protocol'])
                 self.assertEqual(affected(['crates/agent-channel/schema/' + schema]),
-                                 ['agent.delivery', 'execution.owners', 'task_trust'])
-        self.assertEqual(affected(['crates/execution-service/README.md']), [])
+                                 ['agent.delivery', 'device.retirement', 'inventory.collection', 'script.delivery', 'task.composition', 'task.locking', 'task.recovery', 'task_trust'])
+        for path in ('crates/device-service/src/lifecycle.rs',
+                     'crates/device-service/src/control/retirement.rs',
+                     'crates/device-service/src/control/recovery.rs',
+                     'crates/device-service/src/control/source_changes.rs',
+                     'crates/registration-service/src/lifecycle.rs',
+                     'crates/pki-service/src/certificates.rs',
+                     'crates/pki-service/schema/install.sql'):
+            with self.subTest(path=path):
+                self.assertIn('device.retirement', affected([path]))
+        self.assertEqual(affected(['docs/architecture/enterprise-tasks.md']), [])
         for path in ('apps/server/src/runtime_diagnostics.rs',
                      'crates/policy-service/src/worker/health.rs',
                      'crates/policy-service/src/worker/completion.rs',

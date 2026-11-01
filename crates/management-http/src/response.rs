@@ -58,10 +58,10 @@ impl IntoResponse for Error {
             Error::PolicyMissing => Code::PolicyNotFound,
             Error::Resource(_) => Code::ResourceNotFound,
             Error::Execution(e) => match e {
-                rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {
+                rss_mdm_device_service::control::missing::ExecutionError::MissingOperation => {
                     Code::OperationNotFound
                 }
-                rss_mdm_execution_service::missing::ExecutionError::MissingTask => {
+                rss_mdm_device_service::control::missing::ExecutionError::MissingTask => {
                     Code::TaskNotFound
                 }
             },

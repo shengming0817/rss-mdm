@@ -26,13 +26,16 @@ fn contract() -> String {
         "{apple_allowed_tables}",
         rss_mdm_apple_channel::ALLOWED_TABLES,
     );
+    sql = sql.replace("{apple_read_columns}", rss_mdm_apple_channel::READ_COLUMNS);
     sql
 }
 pub(super) async fn admit(
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
-    tx.with_connection(|c| Box::pin(rss_mdm_execution_service::source_changes::verify_storage(c)))
-        .await?;
+    tx.with_connection(|c| {
+        Box::pin(rss_mdm_device_service::control::source_changes::verify_storage(c))
+    })
+    .await?;
     tx.with_connection(|c| {
         Box::pin(async move {
             rss_mdm_agent_channel::verify_delivery(c).await?;
@@ -42,7 +45,7 @@ pub(super) async fn admit(
             rss_mdm_inventory_service::collection::execution::verify_storage(c).await?;
             rss_mdm_windows_channel::verify_delivery(c).await?;
             rss_mdm_inventory_postgres::verify_asset_history(c).await?;
-            rss_mdm_execution_service::verify_authority(c)
+            rss_mdm_device_service::control::verify_authority(c)
                 .await
                 .inspect_err(|e| eprintln!("command authority admission: {e}"))?;
             rss_mdm_authorization_service::verify_authority(c)

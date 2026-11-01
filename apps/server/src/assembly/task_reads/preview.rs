@@ -71,23 +71,11 @@ impl Port for Reads {
             if matches!(input.definition.action, Action::RequestMdmEnrollment { .. }) {
                 return enrollment(self, proof, audit, input, query, codec).await;
             }
-            if !matches!(
-                input.definition.action,
-                Action::Execution { .. }
-                    | Action::AgentCollection { .. }
-                    | Action::NativeCollection { .. }
-            ) {
-                return rss_mdm_execution_service::queries::preview::preview(
-                    &self.execution,
-                    proof,
-                    audit,
-                    input,
-                    query,
-                    codec,
-                )
-                .await
-                .map(super::projections::execution_preview)
-                .map_err(Into::into);
+            if matches!(input.definition.action, Action::UnmanageDevice { .. }) {
+                return retirement(self, proof, audit, input, query, codec).await;
+            }
+            if matches!(input.definition.action, Action::Configuration { .. }) {
+                return Err(Error::Unsupported);
             }
             input.definition.validate().map_err(|_| Error::Malformed)?;
             query
@@ -423,4 +411,64 @@ async fn access_credentials(
     )
     .await
     .inspect(|_| audit.require_final_request())
+}
+
+async fn retirement(
+    s: &Reads,
+    proof: &AuthorizedPrincipal,
+    audit: &rss_mdm_audit_integration::RequestAudit,
+    input: &rss_mdm_policy::pages::Preview,
+    query: &rss_mdm_query::window::Query,
+    codec: &rss_mdm_query::cursor::CursorCodec,
+) -> Result<rss_mdm_management_http::execution::task_reads::Preview, Error> {
+    query
+        .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
+        .map_err(|_| Error::Malformed)?;
+    input.definition.validate().map_err(|_| Error::Malformed)?;
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    s.snapshot(
+        proof,
+        (s, proof, input, query, codec),
+        |ctx, c, grant, _| {
+            Box::pin(async move {
+                let (s, proof, input, query, codec) = *ctx;
+                grant.require(proof, Permission::PolicyRead, None)?;
+                grant.require(proof, Permission::ScopeRead, None)?;
+                grant.require_all_devices(proof, Permission::InventoryRead)?;
+                rss_mdm_device_service::control::authorize_action(
+                    grant,
+                    proof,
+                    &input.definition.action,
+                )?;
+                let authority = grant.query_binding(proof)?;
+                let binding = rss_mdm_scope_service::window::binding_on(
+                    &s.source,
+                    c,
+                    proof,
+                    &authority,
+                    rss_mdm_policy::pages::PREVIEW_SCHEMA.id,
+                    input.definition.scope,
+                    &json!([input.definition, input.scope_result]),
+                )
+                .await
+                .map_err(window)?;
+                let after =
+                    rss_mdm_scope_service::window::after(codec, query, &binding).map_err(window)?;
+                super::retirement::preview_on(
+                    s,
+                    c,
+                    input,
+                    after.as_deref(),
+                    query.limit(),
+                    codec,
+                    &binding,
+                )
+                .await
+            })
+        },
+    )
+    .await
 }

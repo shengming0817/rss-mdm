@@ -20,7 +20,7 @@ pub(crate) struct RuntimeDiagnostics {
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub scope_group_health: Arc<crate::scope_group_changes::Health>,
-    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub execution: Arc<rss_mdm_device_service::control::Service>,
     pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
     pub installation: Arc<rss_mdm_registration_service::installation::Service>,
@@ -85,7 +85,7 @@ impl RuntimeDiagnostics {
         }
     }
     fn execution_component(&self) -> Component {
-        use rss_mdm_execution_service::health::Phase as E;
+        use rss_mdm_device_service::control::health::Phase as E;
         use rss_mdm_registration_service::installation::health::Phase as R;
         use rss_mdm_software_service::deployment::health::Phase as S;
         let execution = self.execution.health();
@@ -1057,10 +1057,12 @@ fn software_health_error(e: rss_mdm_software_service::deployment::Error) -> Heal
     }
 }
 
-fn input_health_error(e: rss_mdm_execution_service::Error) -> HealthFailure {
+fn input_health_error(e: rss_mdm_device_service::control::Error) -> HealthFailure {
     match e {
-        rss_mdm_execution_service::Error::CommitUnknown
-        | rss_mdm_execution_service::Error::RollbackFailed => HealthFailure::SettlementUnknown,
+        rss_mdm_device_service::control::Error::CommitUnknown
+        | rss_mdm_device_service::control::Error::RollbackFailed => {
+            HealthFailure::SettlementUnknown
+        }
         _ => HealthFailure::Storage,
     }
 }

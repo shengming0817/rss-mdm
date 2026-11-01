@@ -79,6 +79,7 @@ CREATE TABLE mdm_devices.retirements (
  target jsonb NOT NULL, authority jsonb NOT NULL,
  delivery_seconds integer NOT NULL CHECK(delivery_seconds BETWEEN 60 AND 604800),
  created_at bigint NOT NULL, forced_at bigint, forced_by jsonb,
+ cleanup_after uuid,
  PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,version,object,occurrence),
  CHECK(length(object) BETWEEN 1 AND 1024), CHECK(length(occurrence) BETWEEN 1 AND 256),
  CHECK(octet_length(target::text)<=1048576), CHECK(octet_length(authority::text)<=65536),
@@ -105,6 +106,7 @@ CREATE POLICY tenant ON mdm_devices.retirement_channels USING(tenant_id=nullif(c
 REVOKE ALL ON mdm_devices.retirements,mdm_devices.retirement_channels FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_devices.retirements,mdm_devices.retirement_channels TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
 GRANT SELECT ON mdm_devices.retirements,mdm_devices.retirement_channels,mdm_devices.associations,mdm_devices.members TO mdm_command_runtime;
+GRANT UPDATE(cleanup_after) ON mdm_devices.retirements TO mdm_command_runtime;
 GRANT UPDATE(forced_at,forced_by) ON mdm_devices.retirements TO mdm_access;
 GRANT UPDATE(stage,effect,execution,blocking_execution,reason) ON mdm_devices.retirement_channels TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
 CREATE INDEX pending_retirement_channels ON mdm_devices.retirement_channels(tenant_id,operation) WHERE stage<>'complete';

@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Duration};
     reason = "fixed concrete owners share one relay and shutdown budget"
 )]
 pub(crate) fn registration(
-    execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    execution: Arc<rss_mdm_device_service::control::Service>,
     scripts: Arc<rss_mdm_script_service::worker::Worker>,
     collections: Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
     software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
@@ -20,7 +20,7 @@ pub(crate) fn registration(
         loop {
             if stop.is_cancelled(){return Ok(());}
             let result=execution.relay_once().await;execution.record_relay_health(&result);
-            let mut pending=match result {Ok(n)=>n,Err(e)=>{if matches!(e,rss_mdm_execution_service::Error::Malformed|rss_mdm_execution_service::Error::Forbidden|rss_mdm_execution_service::Error::Unauthorized|rss_mdm_execution_service::Error::Unavailable(rss_mdm_execution_service::Failure::CommandInvariant|rss_mdm_execution_service::Failure::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}0}};
+            let mut pending=match result {Ok(n)=>n,Err(e)=>{if matches!(e,rss_mdm_device_service::control::Error::Malformed|rss_mdm_device_service::control::Error::Forbidden|rss_mdm_device_service::control::Error::Unauthorized|rss_mdm_device_service::control::Error::Unavailable(rss_mdm_device_service::control::Failure::CommandInvariant|rss_mdm_device_service::control::Failure::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}0}};
             if stop.is_cancelled(){return Ok(());}
             match scripts.relay_once().await {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_script_service::Error::Malformed|rss_mdm_script_service::Error::Forbidden|rss_mdm_script_service::Error::Unauthorized|rss_mdm_script_service::Error::Invariant){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"script","reason":match e {rss_mdm_script_service::Error::CommitUnknown=>"commit_unknown",rss_mdm_script_service::Error::RollbackFailed=>"rollback_failed",_=>"transient"}}));}}
             if stop.is_cancelled(){return Ok(());}
