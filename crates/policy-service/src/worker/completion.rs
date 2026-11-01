@@ -15,8 +15,10 @@ impl DurableStore for PolicyWork {
         control: &Control<'_, T>,
     ) -> std::result::Result<(), ReconcileError> {
         self.check_scope(target.scope())?;
-        if target.entity().starts_with("event:")
-            != (target.scope().reconciler() == jobs::EVENT_SCOPE)
+        if (crate::configuration::recovery::owns_entity(target.entity())
+            && self.service.configuration.is_none())
+            || target.entity().starts_with("event:")
+                != (target.scope().reconciler() == jobs::event_domain(self.profile()))
         {
             return Err(ReconcileError::new(ErrorKind::Invariant));
         }
@@ -29,8 +31,10 @@ impl DurableStore for PolicyWork {
         control: &Control<'_, T>,
     ) -> std::result::Result<(), ReconcileError> {
         self.check_scope(target.scope())?;
-        if target.entity().starts_with("event:")
-            != (target.scope().reconciler() == jobs::EVENT_SCOPE)
+        if (crate::configuration::recovery::owns_entity(target.entity())
+            && self.service.configuration.is_none())
+            || target.entity().starts_with("event:")
+                != (target.scope().reconciler() == jobs::event_domain(self.profile()))
         {
             return Err(ReconcileError::new(ErrorKind::Invariant));
         }
@@ -71,6 +75,8 @@ impl DurableStore for PolicyWork {
         completion: Completion,
         control: &Control<'_, T>,
     ) -> impl std::future::Future<Output = std::result::Result<(), ReconcileError>> + Send {
+        let profile = self.profile();
+
         Box::pin(async move {
             self.check_claim(claim)?;
             // RSS settles with the runner's lifetime control, not the attempt control.
@@ -163,6 +169,7 @@ impl DurableStore for PolicyWork {
                                                 let result = match id {
                                                     Some(id) => {
                                                         crate::worker::jobs::finish_job_in(
+                                                            profile,
                                                             tx,
                                                             audit_store,
                                                             id,

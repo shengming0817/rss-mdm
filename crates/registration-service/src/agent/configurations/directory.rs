@@ -67,6 +67,8 @@ impl Service {
         q: &Query,
         audit: &RequestAudit,
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Metadata>>, Failure> {
+        let profile = self.profile();
+
         q.require_schema(&SCHEMA).map_err(error)?;
         self.proof(p, audit)?;
         p.manage(Permission::AgentEnrollmentRead)?;
@@ -76,21 +78,29 @@ impl Service {
         );
 
         let mut tx = self.store.begin(p.tenant_id()).await?;
-        authorize_on(&mut tx, p, Permission::AgentEnrollmentRead).await?;
-        let current =
-            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
-                .await?;
+        authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
+        let current = rss_mdm_authorization_service::snapshot_on(
+            profile,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
         let binding = q
             .binding(&(p.tenant_id(), p.instance_id(), current.query_binding(p)?))
             .map_err(error)?;
         let after = q.after(&self.cursor, &binding).map_err(error)?;
         let mut sql = sqlx::QueryBuilder::new(
-            "WITH candidates AS (SELECT id,tenant_id,creator,quantity,document->'quantity' AS quantity_metadata,document->'targets' AS targets,floor(extract(epoch FROM created_at))::bigint AS created, floor(extract(epoch FROM expires_at))::bigint AS expiry,CASE WHEN state='revoked' THEN 'revoked' WHEN expires_at<=statement_timestamp() THEN 'expired' ELSE 'available' END AS effective_state FROM mdm_access.agent_configurations WHERE tenant_id=",
+            crate::storage_profile::sql(profile)
+                .agent_configurations_directory_configuration_directory_1,
         );
         sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(error)?;
         // Reapply the same order after aggregation; no implicit CTE order is assumed.
-        sql.push(") SELECT jsonb_build_object('configurationId',c.id,'state',c.effective_state,'createdAt',c.created,'expiresAt',c.expiry,'createdBy',c.creator,'targets',c.targets,'quantity',c.quantity_metadata,'reserved',u.reserved,'consumed',u.consumed,'remaining',c.quantity-u.reserved-u.consumed) FROM candidates c CROSS JOIN LATERAL (SELECT count(*) FILTER(WHERE NOT issued AND state='available' AND expires_at>statement_timestamp()) AS reserved,count(*) FILTER(WHERE issued) AS consumed FROM (SELECT g.state,g.expires_at,EXISTS(SELECT 1 FROM mdm_access.agent_issuances i WHERE (i.tenant_id,i.grant_id)=(g.tenant_id,g.id)) AS issued FROM mdm_access.agent_grants g WHERE g.tenant_id=c.tenant_id AND g.configuration_id=c.id) grants) u");
+        sql.push(
+            crate::storage_profile::sql(profile)
+                .agent_configurations_directory_configuration_directory_2,
+        );
         for (i, sort) in q.sort().iter().enumerate() {
             sql.push(if i == 0 { " ORDER BY " } else { "," });
             sql.push(match sort.field.as_str() {

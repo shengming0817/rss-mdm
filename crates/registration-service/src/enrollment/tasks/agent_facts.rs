@@ -2,22 +2,27 @@
 use crate::participants::agent::{Binding, Store};
 use uuid::Uuid;
 pub async fn agent_binding_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     store: std::sync::Arc<dyn Store>,
     registration: Uuid,
 ) -> crate::enrollment::tasks::transaction::Result<Option<Binding>> {
     let tenant = tx.tenant_id();
     tx.with_connection(move |c| {
-        Box::pin(async move { Ok(agent_binding_on(c, tenant, store, registration).await) })
+        Box::pin(async move { Ok(agent_binding_on(profile, c, tenant, store, registration).await) })
     })
     .await?
 }
 pub async fn agent_binding_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     store: std::sync::Arc<dyn Store>,
     registration: Uuid,
 ) -> crate::enrollment::tasks::transaction::Result<Option<Binding>> {
+    if store.storage_profile() != profile {
+        return Err(crate::Error::Forbidden.into());
+    }
     Ok(store.binding(c, tenant.to_string(), registration).await?)
 }
 
@@ -28,23 +33,26 @@ pub struct RegisteredAgent {
     pub binding: Binding,
 }
 pub async fn agent_targets_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     store: std::sync::Arc<dyn Store>,
     devices: Vec<String>,
 ) -> crate::enrollment::tasks::transaction::Result<Vec<RegisteredAgent>> {
     let tenant = tx.tenant_id();
     tx.with_connection(move |c| {
-        Box::pin(async move { Ok(agent_targets_on(c, tenant, store, devices).await) })
+        Box::pin(async move { Ok(agent_targets_on(profile, c, tenant, store, devices).await) })
     })
     .await?
 }
 pub async fn agent_targets_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     store: std::sync::Arc<dyn Store>,
     devices: Vec<String>,
 ) -> crate::enrollment::tasks::transaction::Result<Vec<RegisteredAgent>> {
     let registrations = crate::device::read::active_channel_in(
+        profile,
         c,
         tenant.to_string(),
         devices,
@@ -71,11 +79,13 @@ pub async fn agent_targets_on(
 }
 
 pub async fn profile_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &super::Transactions,
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     registration: Uuid,
 ) -> super::Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
-    let Some(binding) = agent_binding_in(tx, service.agent_store.clone(), registration).await?
+    let Some(binding) =
+        agent_binding_in(profile, tx, service.agent_store.clone(), registration).await?
     else {
         return Ok(None);
     };

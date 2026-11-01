@@ -31,17 +31,23 @@ use std::sync::Arc;
 use uuid::Uuid;
 /// A narrow tenant/runtime-bound publication reader, without workers or management writers.
 pub struct Reader {
+    profile: rss_mdm_install_support::StorageProfile,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
 }
 impl Reader {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     ) -> Self {
         Self {
+            profile,
             runtime,
             tenant,
             objects,
@@ -66,8 +72,11 @@ impl Reader {
         snapshot: &rss_mdm_authorization_service::Snapshot,
         validator: &dyn crate::inputs::ProfileValidator,
     ) -> crate::transaction::Result<FrozenProfile> {
+        let profile = self.profile();
+
         self.validate_in(tx)?;
-        crate::management::telemetry::prepare_in(tx, binding, proof, snapshot, validator).await
+        crate::management::telemetry::prepare_in(profile, tx, binding, proof, snapshot, validator)
+            .await
     }
     /// Read on the bound consumer's already opened transaction connection.
     pub async fn current_on(
@@ -77,7 +86,10 @@ impl Reader {
         policy: Uuid,
         version: Uuid,
     ) -> Result<FrozenProfile, Error> {
+        let profile = self.profile();
+
         current_on(
+            profile,
             self.tenant,
             self.objects.clone(),
             c,
@@ -94,18 +106,27 @@ impl Reader {
         policy: Uuid,
         version: Uuid,
     ) -> Result<FrozenProfile, Error> {
-        let value =
-            rss_mdm_policy_postgres::telemetry::historical_on(c, self.tenant, policy, version)
-                .await
-                .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?
-                .ok_or(Error::Forbidden)?;
+        let profile = self.profile();
+
+        let value = rss_mdm_policy_postgres::telemetry::historical_on(
+            profile,
+            c,
+            self.tenant,
+            policy,
+            version,
+        )
+        .await
+        .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?
+        .ok_or(Error::Forbidden)?;
         serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
     pub async fn candidates_on(
         &self,
         c: &mut sqlx::PgConnection,
     ) -> Result<Vec<(Uuid, Uuid, serde_json::Value)>, Error> {
-        rss_mdm_policy_postgres::telemetry::candidates_on(c, self.tenant)
+        let profile = self.profile();
+
+        rss_mdm_policy_postgres::telemetry::candidates_on(profile, c, self.tenant)
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
@@ -115,7 +136,9 @@ impl Reader {
         policy: Uuid,
         version: Uuid,
     ) -> Result<bool, Error> {
-        rss_mdm_policy_postgres::telemetry::is_current_on(c, self.tenant, policy, version)
+        let profile = self.profile();
+
+        rss_mdm_policy_postgres::telemetry::is_current_on(profile, c, self.tenant, policy, version)
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
@@ -123,6 +146,7 @@ impl Reader {
 
 /// Common current-publication admission used by delivery and targeted Policy events.
 pub(crate) async fn current_on(
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     c: &mut sqlx::PgConnection,
@@ -131,12 +155,13 @@ pub(crate) async fn current_on(
     version: Uuid,
 ) -> Result<FrozenProfile, Error> {
     let (definition, frozen) =
-        rss_mdm_policy_postgres::telemetry::current_on(c, tenant, policy, version)
+        rss_mdm_policy_postgres::telemetry::current_on(profile, c, tenant, policy, version)
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?
             .ok_or(Error::Forbidden)?;
     let admission = rss_mdm_scope_service::channels::targets::admission_on(
-        objects.as_ref(),
+        profile,
+        Some(objects.as_ref()),
         c,
         tenant,
         definition.scope,

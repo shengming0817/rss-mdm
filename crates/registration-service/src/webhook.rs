@@ -2,7 +2,37 @@
 use rss_mdm_webhook_service::{events, model::*};
 use sqlx::PgConnection;
 use uuid::Uuid;
+/// Optional product notification sink, borrowed inside the original registration transaction.
+pub trait EventSink: Send + Sync {
+    fn emit<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        event: &'a Event,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), crate::Error>> + Send + 'a>>;
+}
+/// MDM's real Webhook adapter; independent hosts explicitly omit this capability.
+pub struct WebhookEvents;
+impl EventSink for WebhookEvents {
+    fn emit<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        event: &'a Event,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), crate::Error>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            events::emit_on(c, event).await.map_err(|e| match e {
+                rss_mdm_webhook_service::Error::Conflict => crate::Error::Conflict,
+                _ => crate::Error::Storage,
+            })
+        })
+    }
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "original transaction notification carries the explicit sink and registration fact coordinates"
+)]
 pub(crate) async fn registration(
+    sink: Option<&dyn EventSink>,
     c: &mut PgConnection,
     tenant: &str,
     device: &str,
@@ -11,6 +41,9 @@ pub(crate) async fn registration(
     channel: &str,
     state: &str,
 ) -> Result<(), crate::Error> {
+    let Some(sink) = sink else {
+        return Ok(());
+    };
     let kind = if state == "active" {
         EventType::Registered
     } else {
@@ -30,8 +63,5 @@ pub(crate) async fn registration(
             state: state.into(),
         },
     };
-    events::emit_on(c, &event).await.map_err(|e| match e {
-        rss_mdm_webhook_service::Error::Conflict => crate::Error::Conflict,
-        _ => crate::Error::Storage,
-    })
+    sink.emit(c, &event).await
 }

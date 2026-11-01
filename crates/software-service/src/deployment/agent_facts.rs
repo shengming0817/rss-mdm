@@ -132,6 +132,7 @@ pub async fn agent_targets_on(
     devices: Vec<String>,
 ) -> crate::deployment::transaction::Result<Vec<RegisteredAgent>> {
     let registrations = rss_mdm_registration_service::device::read::active_channel_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         tenant.to_string(),
         devices,

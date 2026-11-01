@@ -30,8 +30,17 @@ impl LockPins {
             generation,
             subject: Subject::LockPin { operation },
         };
-        let coordinates = storage::reserve_in(c, tenant, &binding, operation, 0).await?;
+        let coordinates = storage::reserve_in(
+            crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+            c,
+            tenant,
+            &binding,
+            operation,
+            0,
+        )
+        .await?;
         storage::ingest_in(
+            crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
             c,
             &self.protection.keys,
             &coordinates,
@@ -40,6 +49,7 @@ impl LockPins {
         )
         .await?;
         storage::link_native_in(
+            crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
             c,
             tenant,
             operation,

@@ -155,7 +155,12 @@ mod tests {
     use super::*;
     #[test]
     fn ordinary_reads_never_depend_on_transaction_or_audit_state() {
-        let audit = RequestAudit::new("tenant".into(), "read", crate::AuditIntent::Routine);
+        let audit = RequestAudit::new(
+            crate::StorageProfile::Mdm,
+            "tenant".into(),
+            "read",
+            crate::AuditIntent::Routine,
+        );
         for outcome in [
             WriteOutcome::CommitNotStarted,
             WriteOutcome::Committed,
@@ -176,7 +181,12 @@ mod tests {
     #[test]
     fn sensitive_reads_cannot_be_downgraded_by_routine_helpers() {
         use crate::{AuditIntent as I, SensitiveAction as S};
-        let audit = RequestAudit::new("tenant".into(), "secret", I::Sensitive(S::CredentialReveal));
+        let audit = RequestAudit::new(
+            crate::StorageProfile::Mdm,
+            "tenant".into(),
+            "secret",
+            I::Sensitive(S::CredentialReveal),
+        );
         audit.set_action("nested_read", I::Routine);
         assert_eq!(audit.snapshot().intent, I::Sensitive(S::CredentialReveal));
         assert!(requires_fact(&audit.snapshot(), 200));
@@ -224,6 +234,7 @@ mod tests {
     #[test]
     fn operation_coordinate_does_not_claim_request_replay() {
         let audit = RequestAudit::new(
+            crate::StorageProfile::Mdm,
             "11111111-1111-4111-8111-111111111111".into(),
             "command_read",
             crate::AuditIntent::Routine,

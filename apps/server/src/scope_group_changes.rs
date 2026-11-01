@@ -90,7 +90,11 @@ impl Delivery {
                 capture,
                 ConsumerGroup::parse(CONSUMER).expect("constant consumer"),
                 MessagingDomain::parse(DOMAIN).expect("constant domain"),
-                Receiver::new(runtime.clone(), tenant),
+                Receiver::new(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    runtime.clone(),
+                    tenant,
+                ),
                 DeliveryBudget::new(
                     Duration::from_secs(30),
                     Duration::from_secs(6),

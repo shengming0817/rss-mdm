@@ -178,20 +178,36 @@ fn query_error(e: rss_mdm_query::Error) -> Error {
     }
 }
 async fn authorize(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
     device: &str,
 ) -> Result<String, Error> {
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
     p.credentials(device)?;
     let auth =
-        rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id()).await?;
+        rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
+            .await?;
     auth.require(p, Permission::Credentials, Some(device))
         .map_err(rss_mdm_authorization_service::Error::from)?;
     Ok(auth.query_binding(p)?)
 }
-async fn issuance_device(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<String, Error> {
-    sqlx::query_scalar("SELECT g.device FROM mdm_access.agent_issuances i JOIN mdm_access.agent_grants g ON(g.tenant_id,g.id)=(i.tenant_id,i.grant_id) WHERE i.tenant_id=$1::uuid AND i.id=$2")
-        .bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?.ok_or(Error::NotFound)
+async fn issuance_device(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<String, Error> {
+    sqlx::query_scalar(crate::storage_profile::sql(profile).agent_queries_issuance_device_1)
+        .bind(tenant)
+        .bind(id)
+        .fetch_optional(c)
+        .await
+        .map_err(db)?
+        .ok_or(Error::NotFound)
 }
 impl Service {
     fn query_tenant(&self, p: &AuthorizedPrincipal) -> Result<(), Error> {
@@ -207,10 +223,12 @@ impl Service {
         device: &str,
         q: &Query,
     ) -> Result<Page<Projection<Request>>, Error> {
+        let profile = self.profile();
+
         self.query_tenant(p)?;
         q.require_schema(&REQUESTS).map_err(query_error)?;
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        let before = authorize(&mut tx, p, device).await?;
+        let before = authorize(profile, &mut tx, p, device).await?;
         let binding = q
             .binding(&(
                 p.tenant_id(),
@@ -249,10 +267,12 @@ impl Service {
         p: &AuthorizedPrincipal,
         id: Uuid,
     ) -> Result<Request, Error> {
+        let profile = self.profile();
+
         self.query_tenant(p)?;
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
         let device: String = sqlx::query_scalar(
-            "SELECT device FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2",
+            crate::storage_profile::sql(profile).agent_queries_request_details_1,
         )
         .bind(p.tenant_id())
         .bind(id)
@@ -260,7 +280,9 @@ impl Service {
         .await
         .map_err(db)?
         .ok_or(Error::NotFound)?;
-        let before = authorize(&mut tx, p, &device).await.map_err(conceal)?;
+        let before = authorize(profile, &mut tx, p, &device)
+            .await
+            .map_err(conceal)?;
         let mut sql = sqlx::QueryBuilder::new(REQUEST_SQL);
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND g.id=")
@@ -282,12 +304,32 @@ impl Service {
         operation: Uuid,
         identity: &ReceiptIdentity,
     ) -> Result<Option<wire::GrantReceipt>, Error> {
+        let profile = self.profile();
+
         self.query_tenant(p)?;
         identity.validate()?;
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        let device:String=sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND channel='agent'").bind(p.tenant_id()).bind(registration).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
-        let before = authorize(&mut tx, p, &device).await.map_err(conceal)?;
-        let row=sqlx::query("SELECT id,state,platform,floor(extract(epoch FROM expires_at))::bigint AS expiry,expires_at>statement_timestamp() AS live,actor,instance,target_registration FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='recovery' AND operation_id=$2 AND target_registration=$3").bind(p.tenant_id()).bind(operation).bind(registration).fetch_optional(&mut *tx).await.map_err(db)?;
+        let device: String = sqlx::query_scalar(
+            crate::storage_profile::sql(profile).agent_queries_registration_recovery_operation_1,
+        )
+        .bind(p.tenant_id())
+        .bind(registration)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::NotFound)?;
+        let before = authorize(profile, &mut tx, p, &device)
+            .await
+            .map_err(conceal)?;
+        let row = sqlx::query(
+            crate::storage_profile::sql(profile).agent_queries_registration_recovery_operation_2,
+        )
+        .bind(p.tenant_id())
+        .bind(operation)
+        .bind(registration)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
         let value = if let Some(row) = row {
             if row.try_get::<String, _>("actor").map_err(db)? != identity.actor
                 || row.try_get::<String, _>("instance").map_err(db)? != identity.instance
@@ -309,11 +351,15 @@ impl Service {
         id: Uuid,
         q: &Query,
     ) -> Result<Page<Projection<Operation>>, Error> {
+        let profile = self.profile();
+
         self.query_tenant(p)?;
         q.require_schema(&OPERATIONS).map_err(query_error)?;
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        let device = issuance_device(&mut tx, p.tenant_id(), id).await?;
-        let before = authorize(&mut tx, p, &device).await.map_err(conceal)?;
+        let device = issuance_device(profile, &mut tx, p.tenant_id(), id).await?;
+        let before = authorize(profile, &mut tx, p, &device)
+            .await
+            .map_err(conceal)?;
         let binding = q
             .binding(&(
                 p.tenant_id(),
@@ -326,7 +372,7 @@ impl Service {
             .map_err(query_error)?;
         let after = q.after(&self.cursor, &binding).map_err(query_error)?;
         let mut sql = sqlx::QueryBuilder::new(
-            "SELECT jsonb_build_object('actor',actor,'instance',instance,'operationId',operation_id) FROM mdm_access.registration_operations WHERE tenant_id=",
+            crate::storage_profile::sql(profile).agent_queries_issuance_recovery_operations_1,
         );
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND agent_issuance_recovery=")
@@ -358,21 +404,41 @@ impl Service {
         operation: Uuid,
         identity: &ReceiptIdentity,
     ) -> Result<Option<wire::Candidate>, Error> {
+        let profile = self.profile();
+
         self.query_tenant(p)?;
         identity.validate()?;
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        let device = issuance_device(&mut tx, p.tenant_id(), id).await?;
-        let before = authorize(&mut tx, p, &device).await.map_err(conceal)?;
+        let device = issuance_device(profile, &mut tx, p.tenant_id(), id).await?;
+        let before = authorize(profile, &mut tx, p, &device)
+            .await
+            .map_err(conceal)?;
         let row = sqlx::query(
-            "SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2",
+            crate::storage_profile::sql(profile).agent_queries_issuance_recovery_operation_1,
         )
         .bind(p.tenant_id())
         .bind(id)
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
-        let grant=sqlx::query("SELECT *,floor(extract(epoch FROM expires_at))::bigint AS expiry,expires_at>statement_timestamp() AS live FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2").bind(p.tenant_id()).bind(row.try_get::<Uuid,_>("grant_id").map_err(db)?).fetch_one(&mut *tx).await.map_err(db)?;
-        let record=sqlx::query("SELECT result,digest,instance,agent_issuance_recovery FROM mdm_access.registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3 AND agent_issuance_recovery=$4").bind(p.tenant_id()).bind(&identity.actor).bind(operation).bind(id).fetch_optional(&mut *tx).await.map_err(db)?;
+        let grant = sqlx::query(
+            crate::storage_profile::sql(profile).agent_queries_issuance_recovery_operation_2,
+        )
+        .bind(p.tenant_id())
+        .bind(row.try_get::<Uuid, _>("grant_id").map_err(db)?)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        let record = sqlx::query(
+            crate::storage_profile::sql(profile).agent_queries_issuance_recovery_operation_3,
+        )
+        .bind(p.tenant_id())
+        .bind(&identity.actor)
+        .bind(operation)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
         let value = if let Some(record) = record {
             if record.try_get::<String, _>("instance").map_err(db)? != identity.instance
                 || record

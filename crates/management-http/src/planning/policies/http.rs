@@ -133,7 +133,7 @@ async fn list(
 > {
     (async {
         let page = query.parse().map_err(|_| Error::Malformed)?;
-        super::read::list(&service, &auth.proof, &audit, &page)
+        super::read::list(auth.proof.profile(), &service, &auth.proof, &audit, &page)
             .await
             .map(Json)
             .map_err(Error::from)

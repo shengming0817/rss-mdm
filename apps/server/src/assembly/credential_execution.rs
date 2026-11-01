@@ -36,18 +36,27 @@ pub(crate) async fn assemble(
         apple_results: apple,
     });
     let materials = Arc::new(tasks::Materials {
-        agent_store: Arc::new(super::registration_agent_facts::AgentFacts),
+        agent_store: Arc::new(super::registration_agent_facts::AgentFacts::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+        )),
         source: Arc::new(super::registration_sources::Source(source)),
         capacity: Arc::new(super::capacity::Capacity),
         recovery_credentials: credentials.clone(),
     });
     let tasks = Arc::new(tasks::Service::new(
-        tasks::Transactions::bind(runtime.clone(), tenant, audit.clone(), materials.clone())
-            .await
-            .map_err(super::owner_errors::credential)?,
+        tasks::Transactions::bind(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            runtime.clone(),
+            tenant,
+            audit.clone(),
+            materials.clone(),
+        )
+        .await
+        .map_err(super::owner_errors::credential)?,
     ));
     let worker = Arc::new(
         tasks::worker::Worker::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             tasks.clone(),
             reconcile.clone(),
             budget.clone(),
@@ -97,12 +106,16 @@ pub(crate) async fn assemble(
             .map_err(super::owner_errors::credential_native)?,
     });
     let maintenance = Arc::new(rss_mdm_recovery_credentials::maintenance::Maintenance::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
         runtime,
         tenant,
         audit,
         credentials,
-        copies,
+        Some(copies),
         budget,
+        Some(Arc::new(super::recovery_eligibility::AccessEligibility {
+            admission: None,
+        })),
     ));
     maintenance
         .validate_keys()

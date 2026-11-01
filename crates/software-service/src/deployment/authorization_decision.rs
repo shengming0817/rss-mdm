@@ -127,8 +127,15 @@ pub(crate) async fn batch(
         let t = tenant.clone();
         let rows = {
             let c = &mut *c;
-            device::read::active_channel_in(c, t, devices, rss_mdm_inventory::Channel::Mdm, purpose)
-                .await
+            device::read::active_channel_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                t,
+                devices,
+                rss_mdm_inventory::Channel::Mdm,
+                purpose,
+            )
+            .await
         }?;
         let mut current = BTreeMap::<String, Option<(Uuid, i64)>>::new();
         for (device, id, generation) in rows {

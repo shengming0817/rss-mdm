@@ -97,3 +97,7 @@ pub mod channels;
 mod projection;
 
 pub mod window;
+
+mod storage_profile;
+
+pub mod registration;

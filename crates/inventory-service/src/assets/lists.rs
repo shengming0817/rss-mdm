@@ -125,14 +125,28 @@ impl AssetService {
         scope: &ReadScope,
         cut: &AssetCut,
     ) -> Result<DeviceView> {
-        let reader = planning::SnapshotReader::bind(self.runtime.clone(), self.tenant);
+        let reader = planning::SnapshotReader::bind(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            self.runtime.clone(),
+            self.tenant,
+        );
         let ids = vec![device.to_owned()];
         let tenant = self.tenant.to_string();
         let selected = ids.clone();
         let present = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
-                    crate::device::read::page_at(c, tenant, cut, None, false, selected, 1).await
+                    crate::device::read::page_at(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        tenant,
+                        cut,
+                        None,
+                        false,
+                        selected,
+                        1,
+                    )
+                    .await
                 })
             })
             .await?;
@@ -210,7 +224,11 @@ impl AssetService {
         let device_id = device.to_owned();
         let read_scope = scope.clone();
         let selected_source = source.clone();
-        let snapshot = planning::SnapshotReader::bind(self.runtime.clone(), tenant);
+        let snapshot = planning::SnapshotReader::bind(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            self.runtime.clone(),
+            tenant,
+        );
         let (total, items, next) = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {

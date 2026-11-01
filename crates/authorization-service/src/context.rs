@@ -3,23 +3,31 @@ use crate::{Error, Permission};
 use rss_identity_postgres::AuthenticatedSession;
 
 pub struct AuthorizedPrincipal {
+    profile: rss_mdm_install_support::StorageProfile,
     identity: Principal,
     authorization: Option<crate::Snapshot>,
 }
 impl AuthorizedPrincipal {
-    pub fn from_identity(identity: Principal) -> Self {
+    pub fn from_identity(
+        profile: rss_mdm_install_support::StorageProfile,
+        identity: Principal,
+    ) -> Self {
         Self {
+            profile,
             identity,
             authorization: None,
         }
     }
-    pub fn new(session: AuthenticatedSession) -> Result<Self, Error> {
-        Ok(Self::from_identity(Principal::new(session)?))
+    pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
+        session: AuthenticatedSession,
+    ) -> Result<Self, Error> {
+        Ok(Self::from_identity(profile, Principal::new(session)?))
     }
     /// Bind authenticated identity to the same tenant's audit facts, including denied requests.
     /// Expiry/authorization is checked by the operation; recording the known actor is not a grant.
     pub fn bind_audit(&self, audit: &rss_mdm_audit_integration::RequestAudit) -> Result<(), Error> {
-        if audit.tenant() != self.tenant_id() {
+        if audit.profile() != self.profile() || audit.tenant() != self.tenant_id() {
             audit.intent(rss_mdm_audit_integration::AuditIntent::Security);
             return Err(Error::Forbidden);
         }
@@ -36,6 +44,7 @@ impl AuthorizedPrincipal {
     ) -> Self {
         let user = authority.user().clone();
         Self {
+            profile: authority.profile(),
             identity: Principal {
                 subject: user.principal_id.clone(),
                 actor: crate::Actor::Account { user },
@@ -86,6 +95,9 @@ impl AuthorizedPrincipal {
         ))
     }
 
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub fn instance_id(&self) -> &str {
         self.identity.instance_id()
     }
@@ -99,7 +111,11 @@ impl AuthorizedPrincipal {
         Ok(self.session()?.view().id.to_string())
     }
     pub fn credential_binding(&self) -> String {
-        self.identity.credential_binding()
+        format!(
+            "{}:{}",
+            self.profile.name(),
+            self.identity.credential_binding()
+        )
     }
     pub fn actor(&self) -> crate::Actor {
         self.identity.actor.clone()
@@ -111,6 +127,14 @@ impl AuthorizedPrincipal {
         self.identity.actor.account().cloned()
     }
     pub async fn load_authorization(mut self, access: &crate::Store) -> Result<Self, Error> {
+        if self.profile != access.profile()
+            || self
+                .identity
+                .key_proof()
+                .is_some_and(|k| k.profile != self.profile)
+        {
+            return Err(Error::Forbidden);
+        }
         self.authorization = Some(crate::store::authorization_snapshot(access, &self).await?);
         Ok(self)
     }

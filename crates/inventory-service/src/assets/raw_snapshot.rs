@@ -24,6 +24,7 @@ pub fn catalog(value: &Value) -> Result<Catalog> {
 }
 /// Compose on the caller's transaction; no source, publication or writer locks are acquired.
 pub async fn read_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     cut: &rss_mdm_inventory::AssetCut,
@@ -39,12 +40,20 @@ pub async fn read_on(
         .filter(|f| fields::visible(f))
         .map(|f| f.key.as_str())
         .collect::<Vec<_>>();
-    let raw: Value = sqlx::query_scalar("SELECT mdm_assets.read_snapshot($2,$3,$4,$5) WHERE nullif(current_setting('rss.tenant_id',true),'')=$1")
-        .bind(tenant.to_string()).bind(ids).bind(keys).bind(cut.to_json()).bind(stored(serde_json::to_value(scope))?).fetch_one(c).await?;
-    decode(tenant, ids, catalog, scope, raw)
+    let raw: Value =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).assets_raw_snapshot_read_on_1)
+            .bind(tenant.to_string())
+            .bind(ids)
+            .bind(keys)
+            .bind(cut.to_json())
+            .bind(stored(serde_json::to_value(scope))?)
+            .fetch_one(c)
+            .await?;
+    decode(profile, tenant, ids, catalog, scope, raw)
 }
 /// Decode a composed SELECT using the same provenance checks and resolvers as standalone reads.
 pub fn decode(
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     ids: &[String],
     catalog: &Catalog,
@@ -79,6 +88,7 @@ pub fn decode(
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
         let expected = crate::device::scope_dataset(
+            profile,
             tenant,
             stored(Uuid::parse_str(&row.registration))?,
             &row.source,
@@ -216,6 +226,7 @@ pub fn decode(
 
 /// Scalar projection for callers already holding an authorized connection and fixed asset cut.
 pub async fn scalar_devices_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     cut: &AssetCut,
@@ -229,11 +240,17 @@ pub async fn scalar_devices_on(
             .cloned()
             .collect(),
     ))?;
-    Ok(
-        read_on(c, tenant, cut, ids, &catalog, &CollectionScope::Device)
-            .await?
-            .into_iter()
-            .map(|view| view.scalars)
-            .collect(),
+    Ok(read_on(
+        profile,
+        c,
+        tenant,
+        cut,
+        ids,
+        &catalog,
+        &CollectionScope::Device,
     )
+    .await?
+    .into_iter()
+    .map(|view| view.scalars)
+    .collect())
 }

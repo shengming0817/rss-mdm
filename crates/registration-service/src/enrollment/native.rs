@@ -111,7 +111,14 @@ impl Admission {
         {
             return Err(Error::Unauthorized);
         }
-        crate::device::store::lock_channel(c, &d.tenant, &d.device, d.source.channel()).await?;
+        crate::device::store::lock_channel(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &d.tenant,
+            &d.device,
+            d.source.channel(),
+        )
+        .await?;
         authority.current(c, d).await?;
         let same:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2 AND authority_kind='apple_account' AND account_version=$3 AND account_reference=$4 AND expected_generation=$5 AND issuance_operation=$6 AND state<>'cancelled')")
             .bind(&d.tenant).bind(d.id).bind(d.version).bind(serde_json::to_value(reference).map_err(|_|Error::Corrupt)?).bind(d.expected_generation).bind(d.operation).fetch_one(c).await.map_err(db)?;
@@ -204,7 +211,12 @@ impl Admission {
     /// Binding and exact certificate replay share current authority checks.
     pub async fn current_request(&self, c: &mut PgConnection) -> Result<PgRow, Error> {
         self.check_live()?;
-        crate::admission::lock_in(c, &self.data.tenant).await?;
+        crate::admission::lock_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &self.data.tenant,
+        )
+        .await?;
         if self.is_account() {
             self.revalidate_account_in(c).await?;
         }
@@ -218,7 +230,13 @@ impl Admission {
         if let Basis::AgentPolicy { authority } = &self.basis {
             authority.current(c, d).await?;
         }
-        let row = request(c, &d.tenant, d.id).await?;
+        let row = request(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &d.tenant,
+            d.id,
+        )
+        .await?;
         if row.try_get::<String, _>("state").map_err(db)? == "cancelled"
             || !row.try_get::<bool, _>("live").map_err(db)?
             || row.try_get::<String, _>("actor").map_err(db)? != d.actor
@@ -282,7 +300,13 @@ pub async fn account(
 ) -> Result<Admission, Error> {
     let tenant = sessions.tenant().to_string();
     let mut tx = store.begin(&tenant).await?;
-    let row = request(&mut tx, &tenant, id).await?;
+    let row = request(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        &tenant,
+        id,
+    )
+    .await?;
     if row.try_get::<String, _>("authority_kind").map_err(db)? != "apple_account"
         || row.try_get::<String, _>("state").map_err(db)? == "cancelled"
     {
@@ -346,6 +370,7 @@ pub async fn lock_account_issuance(
         id
     );
     crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         proof.tenant_id(),
         &device,
@@ -367,7 +392,12 @@ pub async fn issue_in(
     challenge: &str,
     audit: &RequestAudit,
 ) -> Result<(Receipt, bool), Error> {
-    crate::admission::lock_in(c, proof.tenant_id()).await?;
+    crate::admission::lock_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+    )
+    .await?;
     lock_account_issuance(c, proof, id).await?;
     authority.authorize_issue(c, proof, id, operation).await?;
     let reference = proof
@@ -381,13 +411,21 @@ pub async fn issue_in(
         key: operation,
         digest: &fingerprint,
     };
-    crate::quotas::lock_on(c, proof.tenant_id()).await?;
-    if let Some(old) = crate::operations::replay(c, &op).await? {
+    crate::quotas::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+    )
+    .await?;
+    if let Some(old) =
+        crate::operations::replay(rss_mdm_install_support::StorageProfile::Mdm, c, &op).await?
+    {
         return serde_json::from_str(&old)
             .map(|r| (r, true))
             .map_err(|_| Error::Corrupt);
     }
     crate::admission::require_request_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         proof.tenant_id(),
         id,
@@ -409,12 +447,21 @@ pub async fn issue_in(
             return Err(Error::Unauthorized);
         }
         registration = if state == "bound" {
-            Some(super::store::active_registration(c, proof.tenant_id(), id).await?)
+            Some(
+                super::store::active_registration(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    proof.tenant_id(),
+                    id,
+                )
+                .await?,
+            )
         } else {
             None
         };
         if state == "pending" && !row.try_get::<bool, _>("live").map_err(db)? {
             crate::quotas::admit_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 proof.tenant_id(),
                 proof.instance_id(),
@@ -427,6 +474,7 @@ pub async fn issue_in(
             .bind(proof.tenant_id()).bind(id).bind(serde_json::to_value(&reference).map_err(|_|Error::Corrupt)?).bind(&hash).execute(&mut *c).await.map_err(db)?;
     } else {
         crate::quotas::admit_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             proof.tenant_id(),
             proof.instance_id(),
@@ -446,7 +494,13 @@ pub async fn issue_in(
             .bind(proof.tenant_id()).bind(grant).bind(proof.principal_id()).bind(proof.instance_id()).bind(&device).execute(&mut *c).await.map_err(db)?;
         sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,account_version,account_reference,account_challenge) VALUES($1::uuid,$2,'apple_account',$3,'pending','mdm.apple',0,$4,clock_timestamp()+interval '300 seconds',true,1,$5,$6)")
             .bind(proof.tenant_id()).bind(id).bind(grant).bind(operation).bind(serde_json::to_value(&reference).map_err(|_|Error::Corrupt)?).bind(&hash).execute(&mut *c).await.map_err(db)?;
-        crate::device::registration_user::initialize_on(c, &device, &proof.user()?).await?;
+        crate::device::registration_user::initialize_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &device,
+            &proof.user()?,
+        )
+        .await?;
         registration = None;
     }
     let expiry:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM expires_at))::bigint FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2").bind(proof.tenant_id()).bind(id).fetch_one(&mut *c).await.map_err(db)?;
@@ -465,6 +519,7 @@ pub async fn issue_in(
     };
     proof.check_live()?;
     crate::operations::save(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &op,
         &serde_json::to_string(&receipt).map_err(|_| Error::Corrupt)?,
@@ -492,9 +547,22 @@ pub async fn issue_organization_in(
     if id.is_nil() || organization.is_nil() || profile.is_nil() {
         return Err(Error::Malformed);
     }
-    crate::admission::require_new_in(c, tenant, crate::quotas::Channel::MacosMdm).await?;
+    crate::admission::require_new_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        tenant,
+        crate::quotas::Channel::MacosMdm,
+    )
+    .await?;
     let device = format!("ade:{organization}:{id}");
-    crate::device::store::lock_channel(c, tenant, &device, rss_mdm_inventory::Channel::Mdm).await?;
+    crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        tenant,
+        &device,
+        rss_mdm_inventory::Channel::Mdm,
+    )
+    .await?;
     authority
         .authorize_issue(c, tenant, organization, profile, machine)
         .await?;
@@ -529,7 +597,13 @@ pub async fn organization(
     challenge: Option<&str>,
 ) -> Result<Admission, Error> {
     let mut tx = store.begin(tenant).await?;
-    let row = request(&mut tx, tenant, id).await?;
+    let row = request(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        tenant,
+        id,
+    )
+    .await?;
     if row.try_get::<String, _>("authority_kind").map_err(db)? != "apple_ade" {
         return Err(Error::Unauthorized);
     }
@@ -579,15 +653,21 @@ pub async fn entra_in(
     if id.is_nil() || policy_version <= 0 {
         return Err(Error::Malformed);
     }
-    crate::admission::lock_in(c, &tenant).await?;
+    crate::admission::lock_in(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant).await?;
     // Organization authority uses the shared lifecycle without personal quota locks.
-    crate::device::store::lock_channel(c, &tenant, &device, rss_mdm_inventory::Channel::Mdm)
-        .await?;
+    crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant,
+        &device,
+        rss_mdm_inventory::Channel::Mdm,
+    )
+    .await?;
     let old = sqlx::query("SELECT q.id FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.authority_kind='windows_entra' AND g.device=$2 AND q.state<>'cancelled' AND ((q.state='bound' AND EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=q.tenant_id AND r.request_id=q.id AND r.state='active' AND r.purpose='primary')) OR (q.state='pending' AND q.expires_at>clock_timestamp())) FOR UPDATE OF q")
         .bind(&tenant).bind(&device).fetch_optional(&mut *c).await.map_err(db)?;
     let (id, generation) = if let Some(old) = old {
         let id: Uuid = old.try_get("id").map_err(db)?;
-        let row = request(c, &tenant, id).await?;
+        let row = request(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, id).await?;
         if row.try_get::<String, _>("actor").map_err(db)? != actor
             || row.try_get::<String, _>("instance").map_err(db)? != instance
             || row.try_get::<i64, _>("organization_version").map_err(db)? != policy_version
@@ -604,7 +684,13 @@ pub async fn entra_in(
             row.try_get::<i64, _>("expected_generation").map_err(db)?,
         )
     } else {
-        crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::WindowsMdm).await?;
+        crate::admission::require_new_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &tenant,
+            crate::quotas::Channel::WindowsMdm,
+        )
+        .await?;
         // Active enrollments use certificate renewal; a new native token cannot replace another owner.
         let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND purpose='primary'")
             .bind(&tenant).bind(&device).fetch_one(&mut *c).await.map_err(db)?;
@@ -614,6 +700,7 @@ pub async fn entra_in(
         sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,organization_version,windows_profile) VALUES($1::uuid,$2,'windows_entra',$3,'pending','mdm.windows',$4,$2,clock_timestamp()+interval '300 seconds',false,$5,$6)")
             .bind(&tenant).bind(id).bind(grant).bind(generation).bind(policy_version).bind(profile.as_str()).execute(&mut *c).await.map_err(db)?;
         crate::device::registration_user::initialize_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             &device,
             &rss_mdm_authorization_service::User {
@@ -673,7 +760,13 @@ pub async fn agent_policy(
     authority: Arc<dyn AgentPolicyAuthority>,
 ) -> Result<Admission, Error> {
     let mut tx = database.begin(tenant).await?;
-    let row = request(&mut tx, tenant, id).await?;
+    let row = request(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        tenant,
+        id,
+    )
+    .await?;
     if row.try_get::<String, _>("authority_kind").map_err(db)? != "agent_policy" {
         return Err(Error::Unauthorized);
     }

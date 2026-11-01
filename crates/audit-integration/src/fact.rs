@@ -55,7 +55,10 @@ impl Fact {
     ) -> Result<Self, InvalidFact> {
         Self::new(
             context,
-            "mdm.business",
+            match context.profile() {
+                crate::StorageProfile::Mdm => "mdm.business",
+                crate::StorageProfile::Da => "da.business",
+            },
             key,
             None,
             status,
@@ -66,7 +69,10 @@ impl Fact {
     pub fn request(context: &RequestAudit, status: u16, result: &str) -> Result<Self, InvalidFact> {
         let fact = Self::new(
             context,
-            "mdm.request",
+            match context.profile() {
+                crate::StorageProfile::Mdm => "mdm.request",
+                crate::StorageProfile::Da => "da.request",
+            },
             &context.request_id().to_string(),
             Some(context.request_id()),
             status,

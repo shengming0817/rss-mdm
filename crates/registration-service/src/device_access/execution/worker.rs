@@ -209,6 +209,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             return Err(failure(Error::Invariant));
         }
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             service.transactions.tenant.to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -281,7 +282,13 @@ async fn prepare_in(
         let locked = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    Ok(crate::lifecycle::try_lock_devices_in(c, &tenant, &[device]).await)
+                    Ok(crate::lifecycle::try_lock_devices_in(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        &tenant,
+                        &[device],
+                    )
+                    .await)
                 })
             })
             .await??;

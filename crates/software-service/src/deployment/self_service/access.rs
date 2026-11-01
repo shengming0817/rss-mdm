@@ -138,12 +138,22 @@ pub(super) async fn qualify_on(
             if matches!(config.access, Some(Access::Users { .. })) {
                 let tenant = user.tenant_id.clone();
                 let instance = user.instance_id.clone();
-                crate::deployment::authorization::lock_shared_on(c, &tenant, &instance)
-                    .await
-                    .map_err(Error::from)?;
-                let snapshot = crate::deployment::authorization::snapshot_on(c, &tenant, &instance)
-                    .await
-                    .map_err(Error::from)?;
+                crate::deployment::authorization::lock_shared_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await
+                .map_err(Error::from)?;
+                let snapshot = crate::deployment::authorization::snapshot_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await
+                .map_err(Error::from)?;
                 if !snapshot
                     .matches_subjects(SubjectFacts::Revalidated(&facts), &subjects)
                     .map_err(crate::deployment::authorization::Error::from)

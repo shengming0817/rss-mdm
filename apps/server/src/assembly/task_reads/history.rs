@@ -105,6 +105,7 @@ impl Reads {
                     );
                     items.extend(
                         rss_mdm_registration_service::enrollment::tasks::queries::page_on(
+                            rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             &s.tenant.to_string(),
                             policy,
@@ -131,6 +132,7 @@ impl Reads {
                     );
                     items.extend(
                         rss_mdm_recovery_credentials::tasks::queries::page_on(
+                            rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             &s.tenant.to_string(),
                             policy,
@@ -215,6 +217,7 @@ impl Reads {
                         .map_err(access_fault)
                     }
                     Owner::Credential => rss_mdm_recovery_credentials::tasks::queries::detail_on(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &s.tenant.to_string(),
                         policy,
@@ -227,6 +230,7 @@ impl Reads {
                     .map_err(credential_fault),
                     Owner::Registration => {
                         rss_mdm_registration_service::enrollment::tasks::queries::detail_on(
+                            rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             &s.tenant.to_string(),
                             policy,

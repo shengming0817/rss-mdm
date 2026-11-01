@@ -31,7 +31,8 @@ use rss_request_context::TenantId;
 use sqlx::PgConnection;
 use std::sync::Arc;
 
-pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+pub const ACCESS_CONTRACT: &str =
+    crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm).access_contract;
 
 /// The caller supplies the original transaction; implementations never settle it.
 pub trait RetirementGuard: Send + Sync {
@@ -45,15 +46,27 @@ pub trait RetirementGuard: Send + Sync {
 
 /// Shared signing capability. Private key operations cannot bypass durable admission.
 pub struct Signing {
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     signer: Option<signing::Signer>,
 }
 impl Signing {
-    pub fn new(tenant: TenantId, loaded: Option<trust::Loaded>) -> Result<Self, Error> {
-        if loaded.as_ref().is_some_and(|v| v.tenant != tenant) {
+    pub const fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
+    pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
+        tenant: TenantId,
+        loaded: Option<trust::Loaded>,
+    ) -> Result<Self, Error> {
+        if loaded
+            .as_ref()
+            .is_some_and(|v| v.tenant != tenant || v.profile != profile)
+        {
             return Err(Error::Forbidden);
         }
         Ok(Self {
+            profile,
             tenant,
             signer: loaded.map(|v| v.task),
         })
@@ -62,13 +75,15 @@ impl Signing {
         self.signer.as_ref().map(|s| s.key_id())
     }
     async fn revalidate(&self, c: &mut PgConnection, p: &DevicePrincipal) -> Result<(), Error> {
-        if p.tenant() != self.tenant
+        if p.profile() != self.profile
+            || p.tenant() != self.tenant
             || p.channel() != rss_mdm_inventory::Channel::Agent
             || p.purpose() != rss_mdm_registration_service::Purpose::Primary
         {
             return Err(Error::Forbidden);
         }
         rss_mdm_registration_service::device::store::revalidate_source(
+            self.profile,
             c,
             p,
             rss_mdm_inventory::ReportSource::AgentBuiltin,
@@ -135,7 +150,7 @@ impl Signing {
         }
         self.revalidate(c, p).await?;
         let signer = self.signer.as_ref().ok_or(Error::Unsupported)?;
-        trust::require_issue(c, p, signer.key_id()).await?;
+        trust::require_issue(self.profile, c, p, signer.key_id()).await?;
         signer.sign(payload)
     }
 }
@@ -166,4 +181,15 @@ impl Service {
             retirement,
         })
     }
+}
+
+mod storage_profile;
+
+/// Shared owner objects, combined by the host for complete schema admission.
+pub const fn object_manifest(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).object_manifest
+}
+/// Exact access-role contract for this installation.
+pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).access_contract
 }

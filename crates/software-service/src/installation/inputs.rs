@@ -52,16 +52,19 @@ impl Inputs {
         let tenant = tx.tenant_id();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                Ok(
-                    rss_mdm_task_trust::trust::check_revision(c, tenant, revision)
-                        .await
-                        .map_err(|_| Error::Dependency),
+                Ok(rss_mdm_task_trust::trust::check_revision(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    tenant,
+                    revision,
                 )
+                .await
+                .map_err(|_| Error::Dependency))
             })
         })
         .await??;
         tx.with_connection(move |c| Box::pin(async move {
-            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(c, &tenant.to_string()).await.map(|_| ()).map_err(|_| Error::Dependency))
+            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant.to_string()).await.map(|_| ()).map_err(|_| Error::Dependency))
         })).await??;
         Ok(())
     }

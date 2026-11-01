@@ -23,6 +23,7 @@ use uuid::Uuid;
 async fn admitted(c: &mut sqlx::PgConnection, proof: &Admission) -> Result<PgRow, Error> {
     let d = proof.coordinates();
     rss_mdm_registration_service::admission::require_request_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &d.tenant,
         d.id,
@@ -48,7 +49,13 @@ async fn authorized(
 ) -> Result<(Coordinates, Admission), Error> {
     let tenant = app.identity.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
-    let row = request(&mut tx, &tenant, id).await?;
+    let row = request(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        &tenant,
+        id,
+    )
+    .await?;
     let kind: String = row.try_get("authority_kind").map_err(db)?;
     tx.rollback().await.map_err(db)?;
     let proof = if kind == "agent_policy" {
@@ -83,6 +90,7 @@ async fn authorized(
         let auth = if let Some(secret) = secret {
             let password = Password::new(secret.to_owned())?;
             rss_mdm_registration_service::enrollment::store::enrollment_authorization(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 &app.access.registration(),
                 &tenant,
                 id,
@@ -345,7 +353,13 @@ pub(crate) async fn notify(
                                     let transaction = *transaction;
                                     let audit = *audit;
                                     let tenant = app.identity.tenant().to_string();
-                                    let row = request(c, &tenant, leaf.enrollment()).await?;
+                                    let row = request(
+                                        rss_mdm_install_support::StorageProfile::Mdm,
+                                        c,
+                                        &tenant,
+                                        leaf.enrollment(),
+                                    )
+                                    .await?;
                                     let pending = row.try_get::<String, _>("state").map_err(db)?
                                         == "pending"
                                         && row.try_get::<bool, _>("live").map_err(db)?;
@@ -464,6 +478,7 @@ pub async fn persist_leaf(
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     rss_mdm_pki_service::certificates::record_candidate_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tx,
         tenant,
         "apple",
@@ -590,6 +605,7 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     rss_mdm_pki_service::certificates::record_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tx,
         &tenant,
         "apple",

@@ -7,13 +7,18 @@ impl PolicyWork {
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
         control.check()?;
+        let service = self
+            .service
+            .configuration
+            .as_ref()
+            .ok_or_else(|| reconcile_error(Error::Unsupported))?;
         let pending = crate::transaction::inspect_budget(
             &self.service.runtime,
             self.service.tenant,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                 control.remaining(),
             ),
-            (&self.service.configuration, claim.target().entity()),
+            (service, claim.target().entity()),
             |ctx, tx| Box::pin(async move { ctx.0.work_pending_in(tx, ctx.1).await }),
         )
         .await
@@ -29,7 +34,11 @@ impl PolicyWork {
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
         control.check()?;
-        let service = &self.service.configuration;
+        let service = self
+            .service
+            .configuration
+            .as_ref()
+            .ok_or_else(|| reconcile_error(Error::Unsupported))?;
         if claim.target().entity() == "configuration-relay" {
             // The RSS outbox claim and idempotent gateway receipt protect this independent relay.
             let count = service.relay_once(control).await.map_err(reconcile_error)?;
@@ -54,6 +63,7 @@ impl PolicyWork {
             None
         };
         let audit = RequestAudit::new(
+            self.profile(),
             self.service.tenant.to_string(),
             "configuration_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,

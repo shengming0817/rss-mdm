@@ -71,7 +71,11 @@ pub async fn published(c: &Context, object: &DeviceObject) -> Result<Published> 
     let mut tx = seed_transaction(c).await?;
     let device = &object.members[0].device;
     let authority = rss_mdm_registration_service::device::coordinates::authority_at_on(
-        &mut tx, c.tenant, device, &cut,
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        c.tenant,
+        device,
+        &cut,
     )
     .await?;
     let definition = serde_json::from_value(

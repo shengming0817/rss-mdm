@@ -58,9 +58,13 @@ impl Verifier {
     async fn binding(&self, c: &mut PgConnection, id: Uuid) -> Result<Binding, PlatformError> {
         let tenant =
             Uuid::parse_str(&self.tenant.to_string()).map_err(|_| PlatformError::Rejected)?;
-        crate::admission::lock_in(c, &self.tenant.to_string())
-            .await
-            .map_err(failure)?;
+        crate::admission::lock_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &self.tenant.to_string(),
+        )
+        .await
+        .map_err(failure)?;
         let candidate = crate::device_access::storage::get_in(c, tenant, id)
             .await
             .map_err(failure)?;

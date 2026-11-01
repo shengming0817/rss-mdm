@@ -4,11 +4,11 @@ fn contract() -> String {
     let mut sql = include_str!("command-admission.sql").to_owned();
     sql = sql.replace(
         "{agent_update_columns}",
-        rss_mdm_agent_channel::UPDATE_COLUMNS,
+        rss_mdm_agent_channel::update_columns_sql(rss_mdm_install_support::StorageProfile::Mdm),
     );
     sql = sql.replace(
         "{agent_allowed_tables}",
-        rss_mdm_agent_channel::ALLOWED_TABLES,
+        rss_mdm_agent_channel::allowed_tables_sql(rss_mdm_install_support::StorageProfile::Mdm),
     );
     sql = sql.replace(
         "{windows_update_columns}",
@@ -38,7 +38,8 @@ pub(super) async fn admit(
     .await?;
     tx.with_connection(|c| {
         Box::pin(async move {
-            rss_mdm_agent_channel::verify_delivery(c).await?;
+            rss_mdm_agent_channel::verify_delivery(rss_mdm_install_support::StorageProfile::Mdm, c)
+                .await?;
             rss_mdm_script_service::verify_storage(c).await?;
             rss_mdm_registration_service::device_access::execution::verify_storage(c).await?;
             rss_mdm_recovery_credentials::verify_storage(c).await?;
@@ -48,9 +49,12 @@ pub(super) async fn admit(
             rss_mdm_device_service::control::verify_authority(c)
                 .await
                 .inspect_err(|e| eprintln!("command authority admission: {e}"))?;
-            rss_mdm_authorization_service::verify_authority(c)
-                .await
-                .inspect_err(|e| eprintln!("command authorization admission: {e}"))?;
+            rss_mdm_authorization_service::verify_authority(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+            )
+            .await
+            .inspect_err(|e| eprintln!("command authorization admission: {e}"))?;
             rss_mdm_registration_service::verify_authority(c)
                 .await
                 .inspect_err(|e| eprintln!("command registration admission: {e}"))?;
@@ -135,11 +139,26 @@ impl Storage {
                 Box::pin(async move {
                     tx.with_connection(|c| {
                         Box::pin(async move {
-                            rss_mdm_policy_postgres::verify_authority(c).await?;
-                            rss_mdm_scope_postgres::verify_authority(c).await?;
-                            rss_mdm_inventory_service::verify_authority(c).await?;
-                            rss_mdm_agent_channel::signature_retirement::verify_authority(c)
-                                .await?;
+                            rss_mdm_policy_postgres::verify_authority(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                            )
+                            .await?;
+                            rss_mdm_scope_postgres::verify_authority(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                            )
+                            .await?;
+                            rss_mdm_inventory_service::verify_authority(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                            )
+                            .await?;
+                            rss_mdm_agent_channel::signature_retirement::verify_authority(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                            )
+                            .await?;
                             rss_mdm_apple_channel::verify_authority(c).await
                         })
                     })
@@ -248,7 +267,14 @@ pub async fn bind_native_key(
 ) -> std::result::Result<(), Error> {
     let result = runtime
         .local_tx_with_context(tenant, deadline(), key_id, |key_id, tx| {
-            Box::pin(async move { rss_mdm_native_protection::binding::bind_in(tx, key_id).await })
+            Box::pin(async move {
+                rss_mdm_native_protection::binding::bind_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    tx,
+                    key_id,
+                )
+                .await
+            })
         })
         .await;
     result.fold(

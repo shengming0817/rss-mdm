@@ -84,6 +84,7 @@ async fn principal(
         .devices
         .management_principal(
             &crate::device::ChannelMount::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 app.identity.tenant(),
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 purpose,

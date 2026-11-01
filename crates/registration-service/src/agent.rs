@@ -63,6 +63,7 @@ impl From<rss_mdm_authorization_service::Error> for Failure {
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
 /// Coordinates allocated only by the registration owner at activation.
 pub struct Binding {
+    pub profile: rss_mdm_install_support::StorageProfile,
     pub tenant: rss_request_context::TenantId,
     pub device: String,
     pub registration: Uuid,
@@ -72,6 +73,7 @@ pub struct Binding {
 }
 /// The Agent channel owns capability bindings and collection definitions.
 pub trait RuntimeBinding: Send + Sync {
+    fn storage_profile(&self) -> rss_mdm_install_support::StorageProfile;
     fn bind<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -101,9 +103,9 @@ pub struct Service {
     issuer: Arc<AgentIssuer>,
     clock: Arc<dyn Clock>,
     binding: Arc<dyn RuntimeBinding>,
-    native: Arc<dyn NativeAdmission>,
+    native: Option<Arc<dyn NativeAdmission>>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    installations: Arc<dyn configurations::InstallationAdmission>,
+    installations: Option<Arc<dyn configurations::InstallationAdmission>>,
     bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
 pub struct Assembly {
@@ -115,9 +117,9 @@ pub struct Assembly {
     pub issuer: Arc<AgentIssuer>,
     pub clock: Arc<dyn Clock>,
     pub binding: Arc<dyn RuntimeBinding>,
-    pub native: Arc<dyn NativeAdmission>,
+    pub native: Option<Arc<dyn NativeAdmission>>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
-    pub installations: Arc<dyn configurations::InstallationAdmission>,
+    pub installations: Option<Arc<dyn configurations::InstallationAdmission>>,
     pub bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
 pub(crate) struct Change<R> {
@@ -125,7 +127,15 @@ pub(crate) struct Change<R> {
     pub(crate) replay: bool,
 }
 impl Service {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.store.profile()
+    }
     pub fn new(a: Assembly) -> Result<Self, Error> {
+        if a.binding.storage_profile() != a.store.profile()
+            || a.issuer.profile() != a.store.profile()
+        {
+            return Err(Error::Configuration);
+        }
         Ok(Self {
             tenant: a.tenant,
             cursor: a.cursor,
@@ -156,7 +166,10 @@ impl Service {
         self.clock.unix_seconds()
     }
     pub(crate) fn proof(&self, p: &AuthorizedPrincipal, a: &RequestAudit) -> Result<(), Error> {
-        if p.tenant_id() != self.tenant.to_string() || a.tenant() != p.tenant_id() {
+        if p.profile() != self.profile()
+            || p.tenant_id() != self.tenant.to_string()
+            || a.tenant() != p.tenant_id()
+        {
             return Err(Error::Forbidden);
         }
         p.check_live()?;
@@ -186,7 +199,9 @@ impl Service {
         before: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, ()> + Send,
         f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, Change<R>> + Send,
     ) -> Result<R, Error> {
-        if a.tenant() != self.tenant.to_string() {
+        let profile = self.profile();
+
+        if a.profile() != profile || a.tenant() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(6));
@@ -207,7 +222,7 @@ impl Service {
                                 Box::pin(async move {
                                     let before = ctx.3.take().ok_or(Error::Corrupt)?;
                                     before(&mut ctx.1, c).await?;
-                                    crate::admission::lock_in(c, &ctx.0).await?;
+                                    crate::admission::lock_in(profile, c, &ctx.0).await?;
                                     let f = ctx.2.take().ok_or(Error::Corrupt)?;
                                     f(&mut ctx.1, c).await
                                 })
@@ -244,6 +259,8 @@ impl Service {
         crate::operations::settle(out, a)
     }
     async fn grant_live(&self, c: &mut PgConnection, row: &PgRow) -> Result<(), Error> {
+        let profile = self.profile();
+
         if row.try_get::<String, _>("state").map_err(db)? == "revoked" {
             return Err(Error::Agent(wire::ErrorCode::GrantRevoked));
         }
@@ -257,14 +274,19 @@ impl Service {
             .try_get::<Option<serde_json::Value>, _>("native_authority")
             .map_err(db)?
         {
-            let source = native::source(c, self.tenant, authority).await?;
+            let source = native::source(profile, c, self.tenant, authority).await?;
             crate::lifecycle::require_work_in(
+                profile,
                 c,
                 &self.tenant.to_string(),
                 source.principal().device(),
             )
             .await?;
-            self.native.validate(c, &source).await?;
+            self.native
+                .as_ref()
+                .ok_or(Error::Unsupported)?
+                .validate(c, &source)
+                .await?;
         }
         Ok(())
     }
@@ -312,9 +334,19 @@ fn csr(encoded: &str) -> Result<VerifiedAgentCsr, Error> {
     let der = STANDARD.decode(encoded).map_err(|_| Error::Malformed)?;
     VerifiedAgentCsr::verify(&der).map_err(|_| Error::Malformed)
 }
-async fn grant_row(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
-    sqlx::query("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
-        .bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?.ok_or(Error::Unauthorized)
+async fn grant_row(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<PgRow, Error> {
+    sqlx::query(crate::storage_profile::sql(profile).agent_grant_row_1)
+        .bind(tenant)
+        .bind(id)
+        .fetch_optional(c)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)
 }
 fn receipt(row: &PgRow) -> Result<wire::GrantReceipt, Error> {
     let state = match row.try_get::<String, _>("state").map_err(db)?.as_str() {
@@ -346,13 +378,18 @@ fn platform(p: runtime::TaskPlatform) -> &'static str {
 }
 
 async fn authorize_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
     permission: rss_mdm_authorization_service::Permission,
 ) -> Result<(), Error> {
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
     p.check_live()?;
-    rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id()).await?;
-    rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
+    rss_mdm_authorization_service::lock_on(profile, c, p.tenant_id(), p.instance_id()).await?;
+    rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
         .await?
         .require(p, permission, None)
         .map_err(|_| Error::Forbidden)

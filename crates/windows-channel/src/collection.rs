@@ -27,6 +27,7 @@ pub async fn terminate_session(
         if native || reason == "aborted" {
             facts.extend(
                 rss_mdm_inventory_service::collection::channel::abandon_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     tx,
                     tenant,
                     Uuid::parse_str(&id).map_err(|_| corrupt())?,
@@ -36,10 +37,23 @@ pub async fn terminate_session(
             );
             continue;
         }
-        let mut run =
-            store::load_on(tx, tenant, Uuid::parse_str(&id).map_err(|_| corrupt())?).await?;
+        let mut run = store::load_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            tx,
+            tenant,
+            Uuid::parse_str(&id).map_err(|_| corrupt())?,
+        )
+        .await?;
         if run.sealed_at.is_none() {
-            facts.extend(store::seal(tx, &mut run, reason).await?);
+            facts.extend(
+                store::seal(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    tx,
+                    &mut run,
+                    reason,
+                )
+                .await?,
+            );
         }
     }
     Ok(())

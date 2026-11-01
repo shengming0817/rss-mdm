@@ -10,15 +10,24 @@ pub struct AssetPage {
 }
 #[derive(Clone)]
 pub struct SnapshotReader {
+    pub(super) profile: rss_mdm_install_support::StorageProfile,
     pub(super) tenant: TenantId,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
 }
 impl SnapshotReader {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub fn bind(
+        profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
         tenant: TenantId,
     ) -> Self {
-        Self { runtime, tenant }
+        Self {
+            profile,
+            runtime,
+            tenant,
+        }
     }
     fn check_in(&self, tx: &PgTransaction<'_>, cut: &rss_mdm_inventory::AssetCut) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
@@ -34,6 +43,8 @@ impl SnapshotReader {
         cut: &rss_mdm_inventory::AssetCut,
         devices: &[String],
     ) -> Result<BTreeSet<String>> {
+        let profile = self.profile;
+
         self.check_in(tx, cut)?;
         if devices.len() > 1000 {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
@@ -42,7 +53,9 @@ impl SnapshotReader {
         let devices = devices.to_vec();
         let rows: Vec<String> = tx
             .with_connection_context(&mut (cut,), move |(cut,), c| {
-                Box::pin(async move { crate::device::read::live_at(c, tenant, devices, cut).await })
+                Box::pin(async move {
+                    crate::device::read::live_at(profile, c, tenant, devices, cut).await
+                })
             })
             .await?;
         Ok(rows.into_iter().collect())
@@ -55,6 +68,8 @@ impl SnapshotReader {
         limit: usize,
         scope: &ReadScope,
     ) -> Result<AssetPage> {
+        let profile = self.profile;
+
         self.check_in(tx, cut)?;
         if !(1..=1000).contains(&limit) {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
@@ -71,6 +86,7 @@ impl SnapshotReader {
             .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
                     crate::device::read::page_at(
+                        profile,
                         c,
                         tenant,
                         cut,
@@ -160,6 +176,8 @@ impl SnapshotReader {
         progress: Option<evaluation::EvaluationProgress>,
         request: ConditionRequest<'_>,
     ) -> Result<evaluation::EvaluationStep> {
+        let profile = self.profile;
+
         let ConditionRequest {
             cut,
             devices,
@@ -206,12 +224,35 @@ impl SnapshotReader {
                     } else {
                         Vec::new()
                     };
-                    let raw: Vec<String> = tx.with_connection_context(&mut (cut,), move |(cut,),c| Box::pin(async move {
-                    let sources = crate::device::read::sources_at(c, tenant.clone(), selected, cut).await?;
-                    let registrations: Vec<String> = sources.iter().map(|r| r.try_get("registration")).collect::<std::result::Result<_,sqlx::Error>>()?;
-                    sqlx::query_scalar("SELECT DISTINCT (f->'scope')::text AS scope FROM mdm_access.collection_history h JOIN mdm_access.collection_versions v ON v.tenant_id=h.tenant_id AND v.version=h.document->>'progress_version' CROSS JOIN LATERAL jsonb_array_elements(v.metadata->'definition'->'fields') f WHERE h.tenant_id=$1::uuid AND mdm.asset_visible($2,h.revision) AND h.scope::jsonb->>'registration'=ANY($3) AND ($4::text IS NULL OR ($5::text='macos' AND ((f->'scope'->>'kind' IN ('macos_applications','macos_brew') AND f->'scope'->>'uid'=$4) OR (f->'scope'->'owner'->>'kind'='macos' AND f->'scope'->'owner'->>'uid'=$4))) OR ($5::text='windows' AND f->'scope'->'owner'->>'kind'='windows' AND f->'scope'->'owner'->>'sid'=$4)) LIMIT 129")
-                        .bind(tenant).bind(cut.to_json()).bind(registrations).bind(identity).bind(platform).fetch_all(c).await
-                })).await?;
+                    let raw: Vec<String> = tx
+                        .with_connection_context(&mut (cut,), move |(cut,), c| {
+                            Box::pin(async move {
+                                let sources = crate::device::read::sources_at(
+                                    profile,
+                                    c,
+                                    tenant.clone(),
+                                    selected,
+                                    cut,
+                                )
+                                .await?;
+                                let registrations: Vec<String> = sources
+                                    .iter()
+                                    .map(|r| r.try_get("registration"))
+                                    .collect::<std::result::Result<_, sqlx::Error>>()?;
+                                sqlx::query_scalar(
+                                    crate::storage_profile::sql(profile)
+                                        .assets_planning_condition_inputs_in_1,
+                                )
+                                .bind(tenant)
+                                .bind(cut.to_json())
+                                .bind(registrations)
+                                .bind(identity)
+                                .bind(platform)
+                                .fetch_all(c)
+                                .await
+                            })
+                        })
+                        .await?;
                     if raw.len() > 128 {
                         return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
                     }
@@ -367,6 +408,7 @@ pub(super) struct SelectedSources {
 }
 impl SnapshotReader {
     pub(super) async fn select_sources_on(
+        profile: rss_mdm_install_support::StorageProfile,
         c: &mut sqlx::PgConnection,
         tenant: TenantId,
         rows: Vec<sqlx::postgres::PgRow>,
@@ -389,6 +431,7 @@ impl SnapshotReader {
             }
             for dataset in datasets.get(&source).into_iter().flatten() {
                 let scope = crate::device::scope_dataset(
+                    profile,
                     tenant,
                     stored(Uuid::parse_str(row.try_get("registration")?))?,
                     source.as_str(),

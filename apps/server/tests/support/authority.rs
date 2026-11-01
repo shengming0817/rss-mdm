@@ -76,7 +76,8 @@ impl Context {
             inputs.database(profile, "mdm_access").options()?,
             &config::AuditConfig::Plain {},
         )
-        .await?;
+        .await
+        .map_err(|e| anyhow::anyhow!("MDM connection admission: {e:?}"))?;
         let runtime = identity::open_runtime(
             &inputs.database(profile, "mdm_access"),
             &inputs.installation.target,
@@ -84,7 +85,8 @@ impl Context {
             &[(tenant, 1)],
             4,
         )
-        .await?;
+        .await
+        .map_err(|e| anyhow::anyhow!("MDM messaging runtime: {e:?}"))?;
         let audit = database
             .audit_store(&config::AuditConfig::Plain {}, runtime.clone(), tenant)
             .await?;
@@ -109,6 +111,7 @@ impl Context {
                 rss_audit_postgres::Integrity::Plain,
             )?,
             Arc::new(access::identity_management::IdentityManagementPolicy::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 &inputs.installation.instance_id,
             )?),
             deadline(),
@@ -180,6 +183,7 @@ impl Context {
     }
     pub fn request(&self, proof: &access::context::AuthorizedPrincipal) -> Result<RequestAudit> {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             self.tenant.to_string(),
             "foundation",
             AuditIntent::Management,
@@ -222,7 +226,14 @@ impl Context {
         let now = sqlx::query_scalar("SELECT extract(epoch FROM clock_timestamp())::bigint")
             .fetch_one(&mut *tx)
             .await?;
-        let valid = authority.valid(&mut tx, permission, now).await?;
+        let valid = authority
+            .valid(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                &mut tx,
+                permission,
+                now,
+            )
+            .await?;
         tx.rollback().await?;
         Ok(valid)
     }

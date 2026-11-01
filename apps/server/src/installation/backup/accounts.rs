@@ -55,6 +55,7 @@ pub(super) async fn verify_restored(
     let result = async {
         let policy = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 &config.identity.instance_id,
             )
             .map_err(|_| Error::Input)?,
@@ -88,6 +89,7 @@ pub(super) async fn verify_restored(
             .await
             .map_err(|_| Error::Storage)?;
         let rules = rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &mut tx,
             tenant,
             &config.identity.instance_id,

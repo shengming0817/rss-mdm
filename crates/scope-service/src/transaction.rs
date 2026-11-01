@@ -216,15 +216,3 @@ impl From<rss_mdm_scope_postgres::BindingError> for Fault {
         }
     }
 }
-impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
-    fn from(e: rss_mdm_audit_integration::operation_receipts::Error) -> Self {
-        use rss_mdm_audit_integration::operation_receipts::Error as E;
-        match e {
-            E::Storage(e) => Self::Storage(e),
-            E::Sql(e) => Self::Sql(e),
-            E::Conflict => Error::Conflict.into(),
-            E::Malformed => Error::Malformed.into(),
-            E::Invariant => Error::Unavailable(Failure::Storage).into(),
-        }
-    }
-}

@@ -208,7 +208,7 @@ impl Authority {
                 let expected = native.objects()?;
                 let mut after = Uuid::nil();
                 let candidates = candidates::PolicyCandidates {
-                    objects: source.objects.clone(),
+                    objects: source.objects.clone().ok_or(Error::Unsupported)?,
                 };
                 loop {
                     let page = candidates

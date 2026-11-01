@@ -69,6 +69,7 @@ impl AssetService {
             .fetch_all(&mut *c)
             .await?;
         let selected = planning::SnapshotReader::select_sources_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             tenant,
             rows,

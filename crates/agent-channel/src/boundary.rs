@@ -14,6 +14,7 @@ use rss_mdm_http_contract::Router;
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
 pub struct Envelope {
+    pub profile: rss_mdm_install_support::StorageProfile,
     pub admission: Arc<tokio::sync::Semaphore>,
     pub host: String,
     pub clock: Arc<dyn rss_observation::Clock>,
@@ -97,6 +98,7 @@ pub async fn admit(
         route_action(route)
     };
     let audit = RequestAudit::new(
+        envelope.profile,
         envelope.tenant.clone(),
         action,
         rss_mdm_audit_integration::AuditIntent::Routine,

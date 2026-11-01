@@ -10,6 +10,7 @@ use std::{collections::BTreeSet, sync::Arc};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Authority {
+    profile: rss_mdm_install_support::StorageProfile,
     user: User,
     rule: Receipt,
     targets: BTreeSet<String>,
@@ -31,7 +32,12 @@ const PERMISSIONS: &[Permission] = &[
     Permission::InventoryFieldsWrite,
 ];
 impl Authority {
-    pub(crate) fn new(user: User, rule: Receipt, targets: BTreeSet<String>) -> Result<Self, Error> {
+    pub(crate) fn new(
+        profile: rss_mdm_install_support::StorageProfile,
+        user: User,
+        rule: Receipt,
+        targets: BTreeSet<String>,
+    ) -> Result<Self, Error> {
         user.validate(&user.tenant_id, &user.instance_id)?;
         if rule.deleted
             || rule.id.is_nil()
@@ -43,12 +49,16 @@ impl Authority {
             return Err(Error::Malformed);
         }
         Ok(Self {
+            profile,
             user,
             rule,
             targets,
         })
     }
     /// Stable owner of the original authenticated initialization, not a transferable credential.
+    pub(crate) fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub fn user(&self) -> &User {
         &self.user
     }
@@ -106,6 +116,9 @@ impl Authority {
     }
     /// Rehydrate a bounded attempt from trusted product state and current authorization facts.
     pub async fn principal(&self, store: &crate::Store) -> Result<AuthorizedPrincipal, Error> {
+        if self.profile != store.profile() {
+            return Err(Error::Forbidden);
+        }
         let principal =
             AuthorizedPrincipal::from_initialization(Arc::new(self.clone()), store.clock.clone())
                 .load_authorization(store)
@@ -117,13 +130,14 @@ impl Authority {
 /// Called only inside the already-authenticated target account/grant creation transaction.
 /// The caller must commit the returned evidence with that same provisioning operation.
 pub async fn grant_administrator_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     user: User,
     id: uuid::Uuid,
     targets: BTreeSet<String>,
 ) -> Result<(Receipt, Authority), Error> {
-    let receipt = crate::store::grant_tenant_administrator_on(c, user.clone(), id).await?;
-    let authority = Authority::new(user, receipt.clone(), targets)?;
+    let receipt = crate::store::grant_tenant_administrator_on(profile, c, user.clone(), id).await?;
+    let authority = Authority::new(profile, user, receipt.clone(), targets)?;
     Ok((receipt, authority))
 }
 
@@ -134,6 +148,8 @@ pub async fn check_in(
     permission: Permission,
     target: &str,
 ) -> Result<(), Error> {
+    let profile = proof.profile();
+
     if proof.initialization_authority().is_none() {
         return Err(Error::Forbidden);
     }
@@ -153,7 +169,7 @@ pub async fn check_in(
                     sqlx::query_scalar("SELECT extract(epoch FROM clock_timestamp())::bigint")
                         .fetch_one(&mut *c)
                         .await?;
-                Ok(authority.valid(c, permission, now).await)
+                Ok(authority.valid(profile, c, permission, now).await)
             })
         })
         .await
@@ -177,6 +193,7 @@ mod tests {
         };
         let id = Uuid::from_u128(4);
         let authority = Authority::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             user.clone(),
             Receipt {
                 id,

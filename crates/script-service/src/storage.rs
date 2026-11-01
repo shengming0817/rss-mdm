@@ -216,10 +216,13 @@ pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()>
     let devices = vec![device.to_owned()];
     tx.with_connection(move |c| {
         Box::pin(async move {
-            Ok(
-                rss_mdm_registration_service::lifecycle::lock_devices_in(c, &tenant, &devices)
-                    .await,
+            Ok(rss_mdm_registration_service::lifecycle::lock_devices_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                &tenant,
+                &devices,
             )
+            .await)
         })
     })
     .await??;
@@ -255,10 +258,21 @@ pub async fn current(
     let snapshot = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                crate::authorization::lock_shared_on(c, &tenant, &instance)
-                    .await
-                    .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-                Ok(crate::authorization::snapshot_on(c, &tenant, &instance).await)
+                crate::authorization::lock_shared_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await
+                .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
+                Ok(crate::authorization::snapshot_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await)
             })
         })
         .await??;

@@ -153,6 +153,7 @@ async fn host(
         query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[7; 32])?,
         protection: a.resources.protection.clone(),
         mount: rss_mdm_registration_service::device::ChannelMount::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c.tenant,
             rss_mdm_inventory::ReportSource::MdmWindows,
             rss_mdm_registration_service::Purpose::Primary,

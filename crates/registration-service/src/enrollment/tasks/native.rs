@@ -20,6 +20,11 @@ impl Service {
         input: &NativeEnrollmentRequest,
         audit: &RequestAudit,
     ) -> std::result::Result<NativeEnrollmentReceipt, Error> {
+        let profile = self.profile();
+        if profile != rss_mdm_install_support::StorageProfile::Mdm {
+            return Err(Error::Unsupported);
+        }
+
         crate::enrollment::tasks::transaction::run(
             &self.transactions.audit_store,
             &self.transactions.runtime,
@@ -30,9 +35,9 @@ impl Service {
                 Box::pin(async move {
                     let (s, p, task, input, audit) = *ctx;
 
-                    storage::lock_device(tx, p.device()).await?;
+                    storage::lock_device(rss_mdm_install_support::StorageProfile::Mdm, tx, p.device()).await?;
                     s.agent_prepare_in(tx,p).await?;
-                    let run = db::load_run(tx, task).await?;
+                    let run = db::load_run(profile, tx, task).await?;
                     agent::belongs(&run, p)?;
                     let plan = policy::read_in(&s.transactions,tx,run.policy_version).await?;
                     let _now = storage::now(tx).await?;
@@ -49,7 +54,7 @@ impl Service {
                         return Err(Error::Forbidden.into());
                     }
                     let policy=plan;
-                    let (platform, _) = agent_facts::profile_in(&s.transactions, tx, p.registration())
+                    let (platform, _) = agent_facts::profile_in(rss_mdm_install_support::StorageProfile::Mdm, &s.transactions, tx, p.registration())
                         .await?
                         .ok_or(Error::Forbidden)?;
                     let entry = policy
@@ -72,7 +77,7 @@ impl Service {
                     let (receipt, replay) = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(enrollment::agent_policy::create_in(
+                                Ok(enrollment::agent_policy::create_in(rss_mdm_install_support::StorageProfile::Mdm,
                                     c,
                                     enrollment::agent_policy::Create {
                                         principal: &principal,
@@ -141,10 +146,19 @@ impl AgentPolicyAuthority for Service {
     > {
         Box::pin(async move {
             use crate::Error as E;
+            if self.profile() != rss_mdm_install_support::StorageProfile::Mdm {
+                return Err(E::Unsupported);
+            }
             if self.transactions.tenant.to_string() != d.tenant {
                 return Err(E::Forbidden);
             }
-            enrollment::agent_policy::current_source_in(c, self.transactions.tenant, d.id).await?;
+            enrollment::agent_policy::current_source_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                self.transactions.tenant,
+                d.id,
+            )
+            .await?;
             let row=sqlx::query("SELECT l.authority,r.invocation,r.device,r.policy_version,p.id AS policy,p.definition,r.state AS task_state,r.deadline,(p.state='enabled') AS live FROM mdm_access.agent_native_enrollments l JOIN mdm_registration_tasks.runs r ON(r.tenant_id,r.id,r.registration,r.generation)=(l.tenant_id,l.task,l.source_registration,l.source_generation) JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations g ON(g.tenant_id,g.id,g.generation)=(l.tenant_id,l.source_registration,l.source_generation) WHERE l.tenant_id=$1::uuid AND l.request=$2 AND g.state='active' AND g.channel='agent' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=g.tenant_id AND k.registration=g.id AND k.state='active')")
                 .bind(&d.tenant).bind(d.id).fetch_optional(&mut *c).await.map_err(|_|E::Storage)?.ok_or(E::Forbidden)?;
             let state: serde_json::Value = row.try_get("task_state").map_err(|_| E::Storage)?;

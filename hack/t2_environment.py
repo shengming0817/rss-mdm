@@ -35,10 +35,20 @@ def prepared(root, modules, binary, command, resources):
             environment.roles()
             resources.append(dict(kind='roles', identity=environment.project,
                                   action='reused' if had_roles else 'created'))
+        if 'agent_foundation' in profiles(modules):
+            # Closed local fixture identities; production units still own every object/grant.
+            for role in ('da_owner', 'da_access', 'da_command_runtime', 'da_policy_runtime',
+                         'da_inventory_runtime', 'da_scope_runtime', 'da_telemetry_runtime',
+                         'da_identity_runtime', 'da_identity_maintenance', 'da_identity_provisioning',
+                         'da_resource_runtime', 'da_software_runtime', 'da_content_runtime',
+                         'da_software_driver', 'da_runtime', 'da_api'):
+                if environment.sql("SELECT count(*) FROM pg_roles WHERE rolname='" + role + "'") == '0':
+                    environment.sql("CREATE ROLE " + role + " LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD 'runtime-fixture'")
+            environment.sql('GRANT rss_tmsg_relay,mdm_audit_owner TO da_owner WITH INHERIT TRUE, SET TRUE;')
         system = environment.sql('SELECT system_identifier FROM pg_control_system()')
         installation = dict(audit_mode='plain', instance_id='33333333-3333-4333-8333-333333333333',
                             target=[1] * 16, lineage=[2] * 16)
-        description = command([str(binary), '--describe'], 'migration-manifest.log').stdout
+        description = command([str(binary), '--describe'], 'migration-manifest.log').stdout if binary else 'public-agent-owner-installation-fixture-v1'
         schema = hashlib.sha256(description.encode()).hexdigest()
         role_passwords = {
             'postgres': 'local-fixture', 'mdm_owner': 'owner-fixture',
@@ -59,7 +69,7 @@ def prepared(root, modules, binary, command, resources):
                 path.write_bytes(bytes([value]) * 32)
                 path.chmod(0o600)
 
-        if set(modules) & {'registration.device_access', 'recovery.credentials', 'software.deployment', 'registration.installation', 'device.control', 'device.retirement', 'script.delivery', 'inventory.collection', 'inventory.preview', 'task.composition', 'task.locking', 'task.recovery', 'task_trust', 'agent.delivery', 'windows.protocol', 'apple.protocol'}:
+        if set(modules) & {'agent.foundation', 'registration.device_access', 'recovery.credentials', 'software.deployment', 'registration.installation', 'device.control', 'device.retirement', 'script.delivery', 'inventory.collection', 'inventory.preview', 'task.composition', 'task.locking', 'task.recovery', 'task_trust', 'agent.delivery', 'windows.protocol', 'apple.protocol'}:
             from task_trust_materials import prepare
             material = directory / 'task-trust-ca'
             existed = material.exists()
@@ -98,7 +108,12 @@ def prepared(root, modules, binary, command, resources):
                     'mdm_policy_runtime', 'mdm_resource_runtime', 'mdm_software_runtime',
                     'mdm_content_runtime', 'mdm_telemetry_runtime', 'mdm_scheduler_runtime',
                     'mdm_scope_group_consumer', 'mdm_webhook_operator', 'mdm_software_driver')}
-                if profile != 'recovery':
+                if profile == 'agent_foundation':
+                    environment.sql('ALTER DATABASE ' + name + ' OWNER TO da_owner; GRANT CREATE ON DATABASE ' + name + ' TO mdm_owner; GRANT CREATE ON SCHEMA public TO da_owner;', name)
+                    values[profile].update({role: database(name, role) for role in ('da_owner','da_access',
+                        'da_command_runtime','da_policy_runtime','da_scope_runtime','da_inventory_runtime',
+                        'da_identity_runtime','da_identity_maintenance','da_identity_provisioning','da_runtime')})
+                if profile not in ('recovery', 'agent_foundation'):
                     config = directory / (name + '-migrate.json')
                     private(config, dict(database=database(name, 'mdm_owner'), installation=installation))
                     command([str(binary), 'migrate', '--config', str(config)], name + '-migrate.log')

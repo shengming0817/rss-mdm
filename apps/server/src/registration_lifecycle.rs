@@ -2,6 +2,9 @@
 
 pub(crate) struct Bridge;
 impl rss_mdm_registration_service::Retirement for Bridge {
+    fn events(&self) -> Option<&dyn rss_mdm_registration_service::EventSink> {
+        Some(&rss_mdm_registration_service::WebhookEvents)
+    }
     fn retire<'a>(
         &'a self,
         tx: &'a mut sqlx::PgConnection,
@@ -24,9 +27,14 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
-            rss_mdm_pki_service::certificates::revoke_registration_in(tx, tenant, registration)
-                .await
-                .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_pki_service::certificates::revoke_registration_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                tx,
+                tenant,
+                registration,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_device_service::control::retire_in(tx, facts, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
@@ -47,6 +55,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_registration_service::enrollment::tasks::retirement::retire_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
                 facts,
                 tenant,
@@ -74,6 +83,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_recovery_credentials::tasks::retirement::retire_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
                 facts,
                 tenant,
@@ -89,18 +99,33 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
-            rss_mdm_recovery_credentials::storage::retire_in(tx, tenant, registration)
-                .await
-                .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_recovery_credentials::storage::retire_in(
+                rss_mdm_recovery_credentials::Custody::new(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    None,
+                ),
+                tx,
+                tenant,
+                registration,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_windows_channel::retire_in(tx, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_apple_channel::retire_in(tx, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
-            crate::collection::terminate(tx, facts, tenant, &registration.to_string(), state)
-                .await
-                .map_err(collection_failure)
+            crate::collection::terminate(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                tx,
+                facts,
+                tenant,
+                &registration.to_string(),
+                state,
+            )
+            .await
+            .map_err(collection_failure)
         })
     }
 }

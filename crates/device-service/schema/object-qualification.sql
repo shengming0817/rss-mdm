@@ -45,17 +45,7 @@ BEGIN
  ELSIF p_input#>>'{object,kind}' IS DISTINCT FROM 'endpoint' THEN
   RAISE EXCEPTION 'invalid device object' USING ERRCODE='23514';
  END IF;
- IF EXISTS(SELECT FROM jsonb_array_elements(p_input->'members') m WHERE NOT EXISTS(
-  SELECT FROM mdm_access.registrations r WHERE r.tenant_id=tenant AND r.device=m->>'device'
-   AND r.channel=m->>'channel' AND r.id::text=m->>'registrationId' AND r.generation=(m->>'generation')::bigint
-   AND r.purpose='primary' AND r.state='active' AND EXISTS(
-    SELECT FROM mdm_access.credentials k WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active')
- )) THEN RETURN NULL; END IF;
- IF (SELECT count(*) FROM jsonb_array_elements(p_input->'members') m WHERE m->>'channel'=p_channel)>1 THEN
-  RAISE EXCEPTION 'ambiguous execution channel' USING ERRCODE='23514';
- END IF;
- SELECT m INTO selected FROM jsonb_array_elements(p_input->'members') m WHERE m->>'channel'=p_channel;
- RETURN selected;
+ RETURN mdm_access.channel_members_current(p_input,p_channel);
 END $$;
 REVOKE ALL ON FUNCTION mdm_devices.object_current(jsonb,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_devices.object_current(jsonb,text) TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;

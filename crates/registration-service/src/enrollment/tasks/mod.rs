@@ -26,6 +26,7 @@ pub use service::{Materials, Service, Transactions};
 pub use target::Target;
 pub use transaction::{Result, checked_input, stored};
 pub trait Inventory: Send + Sync {
+    fn storage_profile(&self) -> rss_mdm_install_support::StorageProfile;
     fn enrollment_on<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
@@ -45,4 +46,6 @@ pub mod retirement;
 
 pub mod queries;
 
-pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+pub const ACCESS_CONTRACT: &str =
+    crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm)
+        .enrollment_access_contract;

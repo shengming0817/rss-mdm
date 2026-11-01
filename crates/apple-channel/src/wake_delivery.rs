@@ -39,6 +39,7 @@ impl Delivery {
             return Ok(None);
         }
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             self.tenant.to_string(),
             "apple_push",
             AuditIntent::Management,
@@ -238,6 +239,7 @@ impl Delivery {
         outcome: PushOutcome,
     ) -> Result<(), Error> {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             self.tenant.to_string(),
             "apple_push",
             AuditIntent::Management,

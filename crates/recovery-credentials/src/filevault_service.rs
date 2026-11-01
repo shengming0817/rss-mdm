@@ -28,7 +28,12 @@ impl FilevaultService {
             .bind(source.tenant.to_string())
             .execute(&mut *tx)
             .await?;
-        rss_mdm_registration_service::device::store::revalidate_management(&mut tx, p).await?;
+        rss_mdm_registration_service::device::store::revalidate_management(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p,
+        )
+        .await?;
         let value = owner::configuration(&mut tx, &source, &self.protection).await?;
         tx.rollback().await?;
         Ok(value)
@@ -44,7 +49,12 @@ impl FilevaultService {
             .bind(source.tenant.to_string())
             .execute(&mut *tx)
             .await?;
-        rss_mdm_registration_service::device::store::revalidate_management(&mut tx, p).await?;
+        rss_mdm_registration_service::device::store::revalidate_management(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p,
+        )
+        .await?;
         let value = owner::receipt(&mut tx, &source, id).await?;
         tx.rollback().await?;
         Ok(value)
@@ -82,7 +92,7 @@ impl FilevaultService {
                 |ctx, tx| {
                     Box::pin(async move {
                         let (value,replayed)=tx.with_connection_context(ctx,|ctx,c|Box::pin(async move {
-                rss_mdm_registration_service::device::store::revalidate_management(c,ctx.1).await?;
+                rss_mdm_registration_service::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c,ctx.1).await?;
                 let replayed=owner::receipt(c,ctx.2,ctx.3.operation_id).await?.is_some();
                 let value=owner::receive(c,ctx.2,ctx.3,&ctx.0.protection).await?;
                 Ok::<_,Error>((value,replayed))
@@ -140,7 +150,7 @@ impl FilevaultService {
                         let (value,replayed) = tx
                             .with_connection_context(ctx, |ctx, c| {
                                 Box::pin(async move {
-                                    crate::service::authorize(
+                                    crate::service::authorize(rss_mdm_install_support::StorageProfile::Mdm,
                                         c,
                                         ctx.1,
                                         &ctx.2.device,
@@ -210,8 +220,8 @@ impl FilevaultService {
             let (value,replayed)=tx.with_connection_context(ctx,|ctx,c|Box::pin(async move {
                 use sha2::{Digest,Sha256};
                 use sqlx::Row;
-                crate::service::authorize(c,ctx.1,ctx.2,Permission::SecurityOperate).await?;
-                crate::service::authorize(c,ctx.1,&ctx.3.other_device,Permission::SecurityOperate).await?;
+                crate::service::authorize(rss_mdm_install_support::StorageProfile::Mdm, c,ctx.1,ctx.2,Permission::SecurityOperate).await?;
+                crate::service::authorize(rss_mdm_install_support::StorageProfile::Mdm, c,ctx.1,&ctx.3.other_device,Permission::SecurityOperate).await?;
                 let tenant=rss_request_context::TenantId::parse(ctx.1.tenant_id()).map_err(|_|Error::Malformed)?;
                 let object=rss_mdm_device_service::planning::PlanningObjects::paired_in(c,tenant,ctx.2).await?;
                 let members=object.members.iter().filter(|m|m.device==ctx.2 || m.device==ctx.3.other_device).collect::<Vec<_>>();
@@ -265,7 +275,14 @@ impl FilevaultService {
             .bind(p.tenant_id())
             .execute(&mut *tx)
             .await?;
-        crate::service::authorize(&mut tx, p, device, Permission::SecurityOperate).await?;
+        crate::service::authorize(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p,
+            device,
+            Permission::SecurityOperate,
+        )
+        .await?;
         let rows=sqlx::query("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active' AND purpose='primary' AND channel IN('agent','mdm') AND ($3::uuid IS NULL OR id=$3) AND ($4::bigint IS NULL OR generation=$4) ORDER BY id LIMIT 2")
             .bind(p.tenant_id()).bind(device).bind(selection.registration).bind(selection.generation).fetch_all(&mut *tx).await?;
         if rows.len() != 1 {

@@ -270,6 +270,7 @@ impl Transactions {
         budget: rss_transactional_messaging::policy::OperationDeadline,
     ) -> std::result::Result<(), Error> {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             self.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,

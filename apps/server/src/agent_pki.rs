@@ -114,6 +114,7 @@ impl Config {
                 .map_err(|_| invalid())?,
         );
         let issuer = AgentIssuer::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             providers,
             days,
             matches!(lifetime, Lifetime::Development { .. }),

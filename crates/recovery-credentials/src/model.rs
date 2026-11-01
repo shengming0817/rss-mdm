@@ -246,6 +246,7 @@ impl std::fmt::Debug for Disclosure {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Coordinates {
+    pub profile: rss_mdm_install_support::StorageProfile,
     pub tenant: Uuid,
     pub material: Uuid,
     pub binding: Binding,

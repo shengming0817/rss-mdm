@@ -36,15 +36,19 @@ pub struct Dependencies {
     pub cursor_key: Vec<u8>,
 }
 impl Scopes {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.store.profile()
+    }
     pub async fn new(
+        profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         clock: Arc<dyn clock::Clock>,
         dependencies: Dependencies,
     ) -> std::result::Result<Self, Error> {
-        let store = rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant);
+        let store = rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime.clone(), tenant);
         let s = Self {
-            projection: crate::projection::ScopeProjection::new(runtime.clone(), tenant),
+            projection: crate::projection::ScopeProjection::new(profile, runtime.clone(), tenant),
             runtime,
             tenant,
             clock,
@@ -127,6 +131,9 @@ impl Scopes {
                 audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, target)
             }
         }
+        if audit.profile() != self.profile() {
+            return Err(Error::Forbidden);
+        }
         authorize()?;
         crate::transaction::run(
             &self.audit_store,
@@ -166,10 +173,17 @@ impl Scopes {
         authorize()?;
         self.audit_store.prepare_in(tx, audit, &[]).await?;
         let (operation, fingerprint) = crate::identity(command, audit)?;
+        let actor = audit.snapshot().actor;
         if let Some(id) = operation
-            && let Some(old) =
-                rss_mdm_audit_integration::operation_receipts::replay(tx, audit, id, &fingerprint)
-                    .await?
+            && let Some(old) = self
+                .store
+                .replay_operation_in(
+                    tx,
+                    actor.as_deref().ok_or(Error::Malformed)?,
+                    id,
+                    &fingerprint,
+                )
+                .await?
         {
             wire::Response::decode(old.clone())?;
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -187,14 +201,15 @@ impl Scopes {
         // Reject a projection/schema defect before any mutation can commit.
         wire::Response::decode(value.clone())?;
         if let Some(id) = operation {
-            rss_mdm_audit_integration::operation_receipts::receipt(
-                tx,
-                audit,
-                id,
-                &fingerprint,
-                &value,
-            )
-            .await?;
+            self.store
+                .record_operation_in(
+                    tx,
+                    actor.as_deref().ok_or(Error::Malformed)?,
+                    id,
+                    &fingerprint,
+                    &value,
+                )
+                .await?;
         }
         crate::receipts::audit(tx, &self.audit_store, audit, operation, false).await?;
         authorize()?;

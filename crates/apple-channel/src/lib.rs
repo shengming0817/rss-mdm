@@ -213,6 +213,7 @@ impl Apple {
             .find(|g| g.mode == rss_mdm_agent_wire::pki::Mode::Active)
             .ok_or(Error::Conflict)?;
         rss_mdm_pki_service::signing::require_active_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
             c,
             uuid::Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
             "apple",

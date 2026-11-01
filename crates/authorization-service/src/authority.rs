@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OperationAuthority {
+    profile: rss_mdm_install_support::StorageProfile,
     permission: Permission,
     actor: crate::Actor,
     scope: Scope,
@@ -45,6 +46,7 @@ impl OperationAuthority {
             }
         };
         Ok(Self {
+            profile: proof.profile(),
             permission,
             actor: proof.actor(),
             scope,
@@ -72,6 +74,7 @@ impl OperationAuthority {
             }
         };
         Ok(Self {
+            profile: proof.profile(),
             permission,
             actor: proof.actor(),
             scope,
@@ -96,6 +99,7 @@ impl OperationAuthority {
             }
         };
         Ok(Self {
+            profile: proof.profile(),
             permission,
             actor: proof.actor(),
             scope,
@@ -104,14 +108,21 @@ impl OperationAuthority {
     }
     pub async fn valid(
         &self,
+        profile: rss_mdm_install_support::StorageProfile,
         conn: &mut PgConnection,
         permission: Permission,
         now: i64,
     ) -> Result<bool, Error> {
-        if self.permission != permission {
+        if self.profile != profile || self.permission != permission {
             return Ok(false);
         }
-        super::store::lock_shared(conn, self.actor.tenant_id(), self.actor.instance_id()).await?;
+        super::store::lock_shared(
+            profile,
+            conn,
+            self.actor.tenant_id(),
+            self.actor.instance_id(),
+        )
+        .await?;
         // Typed deserialization still rejects damaged persisted documents. The SQL
         // owner is the single current-authority predicate, also used by bounded queries.
         match (&self.actor, &self.basis) {
@@ -126,8 +137,17 @@ impl OperationAuthority {
                 if !permission.api_key_allowed() {
                     return Ok(false);
                 }
-                let raw = sqlx::query_scalar::<_, serde_json::Value>("SELECT metadata FROM mdm_access.api_keys WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3 AND authority_revision=$4 AND enabled AND NOT revoked AND (expires_at IS NULL OR expires_at>$5) AND (expires_at IS NULL OR to_timestamp(expires_at)>clock_timestamp())")
-                    .bind(tenant).bind(instance).bind(id).bind(i64::try_from(*authority_revision).map_err(|_|Error::Corrupt)?).bind(now).fetch_optional(&mut *conn).await.map_err(db)?;
+                let raw = sqlx::query_scalar::<_, serde_json::Value>(
+                    crate::storage_profile::sql(profile).authority_valid_1,
+                )
+                .bind(tenant)
+                .bind(instance)
+                .bind(id)
+                .bind(i64::try_from(*authority_revision).map_err(|_| Error::Corrupt)?)
+                .bind(now)
+                .fetch_optional(&mut *conn)
+                .await
+                .map_err(db)?;
                 if let Some(raw) = raw {
                     serde_json::from_value::<crate::api_key::KeyMetadata>(raw)
                         .map_err(|_| Error::Corrupt)?
@@ -139,14 +159,31 @@ impl OperationAuthority {
                     if basis.expires_at.is_some_and(|until| now >= until) {
                         continue;
                     }
-                    let raw = sqlx::query_scalar::<_, Option<serde_json::Value>>("SELECT document FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3 AND revision=$4")
-                        .bind(&user.tenant_id).bind(&user.instance_id).bind(basis.id).bind(i64::try_from(basis.revision).map_err(|_|Error::Corrupt)?).fetch_optional(&mut *conn).await.map_err(db)?.flatten();
+                    let raw = sqlx::query_scalar::<_, Option<serde_json::Value>>(
+                        crate::storage_profile::sql(profile).authority_valid_2,
+                    )
+                    .bind(&user.tenant_id)
+                    .bind(&user.instance_id)
+                    .bind(basis.id)
+                    .bind(i64::try_from(basis.revision).map_err(|_| Error::Corrupt)?)
+                    .fetch_optional(&mut *conn)
+                    .await
+                    .map_err(db)?
+                    .flatten();
                     if let Some(raw) = raw {
                         let rule: Rule =
                             serde_json::from_value(raw).map_err(|_| Error::Forbidden)?;
                         if let Subject::UserGroup { id } = rule.subject {
-                            let group = sqlx::query_scalar::<_, Option<serde_json::Value>>("SELECT document FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3")
-                                .bind(&user.tenant_id).bind(&user.instance_id).bind(id).fetch_optional(&mut *conn).await.map_err(db)?.flatten();
+                            let group = sqlx::query_scalar::<_, Option<serde_json::Value>>(
+                                crate::storage_profile::sql(profile).authority_valid_3,
+                            )
+                            .bind(&user.tenant_id)
+                            .bind(&user.instance_id)
+                            .bind(id)
+                            .fetch_optional(&mut *conn)
+                            .await
+                            .map_err(db)?
+                            .flatten();
                             if let Some(raw) = group {
                                 let _: UserGroup =
                                     serde_json::from_value(raw).map_err(|_| Error::Forbidden)?;
@@ -158,7 +195,7 @@ impl OperationAuthority {
             _ => return Err(Error::Corrupt),
         }
         let requested = serde_json::to_value(permission).map_err(|_| Error::Corrupt)?;
-        sqlx::query_scalar("SELECT mdm_access.operation_authority_valid($1,$2,$3)")
+        sqlx::query_scalar(crate::storage_profile::sql(profile).authority_valid_4)
             .bind(serde_json::to_value(self).map_err(|_| Error::Corrupt)?)
             .bind(requested.as_str().ok_or(Error::Corrupt)?)
             .bind(now)

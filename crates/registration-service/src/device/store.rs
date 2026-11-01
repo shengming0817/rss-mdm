@@ -19,14 +19,16 @@ fn locator(proof: &VerifiedChannelCredential) -> String {
     proof.locator.iter().map(|v| format!("{v:02x}")).collect()
 }
 pub async fn lock_channel(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     device: &str,
     channel: Channel,
 ) -> Result<(), Error> {
-    lock_channels(tx, tenant, &[(device.to_owned(), channel)]).await
+    lock_channels(profile, tx, tenant, &[(device.to_owned(), channel)]).await
 }
 pub async fn lock_channels(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     targets: &[(String, Channel)],
@@ -35,14 +37,15 @@ pub async fn lock_channels(
         .iter()
         .map(|(device, _)| device.clone())
         .collect::<Vec<_>>();
-    crate::lifecycle::lock_devices_in(c, tenant, &devices).await?;
+    crate::lifecycle::lock_devices_in(profile, c, tenant, &devices).await?;
     let keys = targets
         .iter()
         .map(|(d, c)| (d, c.as_str()))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .map(|(device, channel)| {
-            serde_json::to_string(&(tenant, device, channel)).map_err(|_| Error::Malformed)
+            serde_json::to_string(&(profile.name(), tenant, device, channel))
+                .map_err(|_| Error::Malformed)
         })
         .collect::<Result<Vec<_>, _>>()?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(key,2348)) FROM unnest($1::text[]) WITH ORDINALITY locks(key,n) ORDER BY n").bind(keys).execute(c).await.map_err(db)?;
@@ -54,22 +57,28 @@ pub async fn lock_channels(
 /// Subregistrations update their current primary registration; replacement starts empty.
 /// Only server receipt time is recorded, independently of Inventory and device clocks.
 pub async fn record_communication_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     principal: &DevicePrincipal,
 ) -> Result<(), Error> {
-    revalidate_management(c, principal).await?;
+    if profile != principal.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
+    revalidate_management(profile, c, principal).await?;
     let (registration, generation) = principal
         .parent()
         .unwrap_or((principal.registration(), principal.generation()));
-    let updated = sqlx::query("UPDATE mdm_access.registrations SET last_communication_received_at=greatest(last_communication_received_at,clock_timestamp()) WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND device=$4 AND channel=$5 AND purpose='primary' AND state='active'")
-        .bind(principal.tenant().to_string())
-        .bind(registration)
-        .bind(generation)
-        .bind(principal.device())
-        .bind(principal.channel().as_str())
-        .execute(c)
-        .await
-        .map_err(db)?;
+    let updated =
+        sqlx::query(crate::storage_profile::sql(profile).device_store_record_communication_in_1)
+            .bind(principal.tenant().to_string())
+            .bind(registration)
+            .bind(generation)
+            .bind(principal.device())
+            .bind(principal.channel().as_str())
+            .execute(c)
+            .await
+            .map_err(db)?;
     if updated.rows_affected() != 1 {
         return Err(Error::Unauthorized);
     }
@@ -85,6 +94,8 @@ impl DeviceService {
         key: Uuid,
         audit: &RequestAudit,
     ) -> Result<RevocationReceipt, Error> {
+        let profile = self.profile();
+
         if key.is_nil() || registration.is_nil() || Id::new(device).is_err() {
             return Err(Error::Malformed);
         }
@@ -122,7 +133,7 @@ impl DeviceService {
                     Box::pin(async move {
                         let (receipt, replayed) = tx
                             .with_connection_context(inputs, |inputs, c| {
-                                Box::pin(revoke_on(c, inputs))
+                                Box::pin(revoke_on(profile, c, inputs))
                             })
                             .await?;
                         for fact in &inputs.facts {
@@ -164,6 +175,8 @@ impl DeviceService {
         credential: &VerifiedChannelCredential,
         source: ReportSource,
     ) -> Result<(DevicePrincipal, Scope), Error> {
+        let profile = self.profile();
+
         if credential.purpose != Purpose::Primary
             || source != credential.source
             || self.tenant != credential.tenant.to_string()
@@ -174,14 +187,36 @@ impl DeviceService {
         let mut tx = self.access.begin(&tenant).await?;
         // Probe the immutable locator, then lock only the registration first. Replacement uses
         // the same order; post-lock reads recheck credential and source state.
-        let row=sqlx::query("SELECT registration::text AS id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND channel=$2 AND locator=$3")
-            .bind(&tenant).bind(credential.channel.as_str()).bind(locator(credential)).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+        let row = sqlx::query(crate::storage_profile::sql(profile).device_store_authorize_report_1)
+            .bind(&tenant)
+            .bind(credential.channel.as_str())
+            .bind(locator(credential))
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .ok_or(Error::Unauthorized)?;
         let registration = uuid(&row, "id")?;
-        let row=sqlx::query("SELECT r.device,r.generation,r.channel,r.epoch::text,q.windows_profile FROM mdm_access.registrations r JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.channel=$3 AND r.purpose='primary' AND r.state='active' FOR SHARE OF r")
-            .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-        let child=sqlx::query("SELECT c.id::text AS id,s.epoch::text AS epoch FROM mdm_access.credentials c JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.channel=$3 AND c.locator=$4 AND c.state='active' AND s.source=$5 AND s.enabled FOR SHARE OF c,s")
-            .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).bind(locator(credential)).bind(source.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+        let row = sqlx::query(crate::storage_profile::sql(profile).device_store_authorize_report_2)
+            .bind(&tenant)
+            .bind(registration.to_string())
+            .bind(credential.channel.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .ok_or(Error::Unauthorized)?;
+        let child =
+            sqlx::query(crate::storage_profile::sql(profile).device_store_authorize_report_3)
+                .bind(&tenant)
+                .bind(registration.to_string())
+                .bind(credential.channel.as_str())
+                .bind(locator(credential))
+                .bind(source.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?
+                .ok_or(Error::Forbidden)?;
         let principal = DevicePrincipal {
+            profile,
             tenant: credential.tenant,
             device: row.try_get("device").map_err(db)?,
             registration,
@@ -200,6 +235,7 @@ impl DeviceService {
             .then_some(registration),
         };
         let scope = scope(
+            profile,
             credential.tenant,
             registration,
             source.as_str(),
@@ -214,6 +250,8 @@ impl DeviceService {
         device: &str,
         coordinates: Coordinates,
     ) -> Result<Scope, Error> {
+        let profile = self.profile();
+
         if proof.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
         }
@@ -223,9 +261,17 @@ impl DeviceService {
             Some(device),
         )?;
         let mut tx = self.access.begin(proof.tenant_id()).await?;
-        let row=sqlx::query("SELECT r.id::text AS id,s.epoch::text AS epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel=$3 AND r.state='active' AND c.state='active' AND s.source=$4 AND s.enabled")
-            .bind(proof.tenant_id()).bind(device).bind(coordinates.source.channel().as_str()).bind(coordinates.source.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
+        let row = sqlx::query(crate::storage_profile::sql(profile).device_store_current_scope_1)
+            .bind(proof.tenant_id())
+            .bind(device)
+            .bind(coordinates.source.channel().as_str())
+            .bind(coordinates.source.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .ok_or(Error::NotFound)?;
         let scope = scope(
+            profile,
             TenantId::parse(proof.tenant_id()).map_err(|_| Error::Unauthorized)?,
             uuid(&row, "id")?,
             coordinates.source.as_str(),
@@ -253,28 +299,45 @@ fn unique_or_db(error: sqlx::Error) -> Error {
     }
 }
 pub async fn retire_state_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: Uuid,
     state: &str,
+    events: Option<&dyn crate::EventSink>,
 ) -> Result<(), Error> {
-    let previous=sqlx::query("SELECT device,generation,channel,state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(tenant).bind(registration).fetch_optional(&mut *tx).await.map_err(db)?;
-    sqlx::query(
-        "UPDATE mdm_access.registrations SET state=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid",
-    )
-    .bind(tenant)
-    .bind(registration.to_string())
-    .bind(state)
-    .execute(&mut *tx)
-    .await
-    .map_err(db)?;
-    sqlx::query("UPDATE mdm_access.credentials SET state=$3 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).bind(state).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
+    let previous = sqlx::query(crate::storage_profile::sql(profile).device_store_retire_state_in_1)
+        .bind(tenant)
+        .bind(registration)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_retire_state_in_2)
+        .bind(tenant)
+        .bind(registration.to_string())
+        .bind(state)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_retire_state_in_3)
+        .bind(tenant)
+        .bind(registration.to_string())
+        .bind(state)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_retire_state_in_4)
+        .bind(tenant)
+        .bind(registration.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     if let Some(row) = previous
         && row.try_get::<String, _>("state").map_err(db)? == "active"
         && matches!(state, "retired" | "revoked" | "superseded")
     {
         crate::webhook::registration(
+            events,
             tx,
             tenant,
             &row.try_get::<String, _>("device").map_err(db)?,
@@ -294,6 +357,7 @@ pub async fn retire_state_in(
     reason = "borrowed registration transaction carries separate authorization, channel evidence, command, receipt identities and retirement participant"
 )]
 pub async fn bind_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     admin: &AuthorizedPrincipal,
     credential: &VerifiedChannelCredential,
@@ -303,7 +367,16 @@ pub async fn bind_in(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     retirement: &dyn crate::Retirement,
 ) -> Result<RegistrationReceipt, Error> {
+    if profile != admin.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
+    if profile != credential.profile {
+        return Err(crate::Error::Forbidden);
+    }
+
     bind_authorized_in(
+        profile,
         tx,
         admin.tenant_id(),
         credential,
@@ -320,6 +393,7 @@ pub async fn bind_in(
     reason = "one shared registration mutation for user and policy authority"
 )]
 pub(crate) async fn bind_authorized_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     credential: &VerifiedChannelCredential,
@@ -329,44 +403,79 @@ pub(crate) async fn bind_authorized_in(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     retirement: Option<&dyn crate::Retirement>,
 ) -> Result<RegistrationReceipt, Error> {
+    if profile != credential.profile {
+        return Err(crate::Error::Forbidden);
+    }
+
     if credential.purpose != Purpose::Primary || credential.tenant.to_string() != tenant {
         return Err(Error::Forbidden);
     }
-    lock_channel(tx, tenant, &device, credential.channel).await?;
+    lock_channel(profile, tx, tenant, &device, credential.channel).await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
         .bind(format!("request:{}:{}", tenant, command.request_id))
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid)")
-            .bind(tenant).bind(command.request_id.to_string()).fetch_one(&mut *tx).await.map_err(db)? { return Err(Error::Conflict); }
-    let request_source: String = sqlx::query_scalar(
-        "SELECT source FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2::uuid",
+    if sqlx::query_scalar::<_, bool>(
+        crate::storage_profile::sql(profile).device_store_bind_authorized_in_1,
     )
     .bind(tenant)
     .bind(command.request_id.to_string())
-    .fetch_optional(&mut *tx)
+    .fetch_one(&mut *tx)
     .await
     .map_err(db)?
-    .ok_or(Error::Forbidden)?;
+    {
+        return Err(Error::Conflict);
+    }
+    let request_source: String =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).device_store_bind_authorized_in_2)
+            .bind(tenant)
+            .bind(command.request_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .ok_or(Error::Forbidden)?;
     if request_source != command.source.as_str() || command.source != credential.source {
         return Err(Error::Forbidden);
     }
-    lock_channel(tx, tenant, &device, credential.channel).await?;
-    crate::lifecycle::require_work_in(tx, tenant, &device).await?;
-    let current:i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND purpose='primary'")
-            .bind(tenant).bind(&device).bind(credential.channel.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
+    lock_channel(profile, tx, tenant, &device, credential.channel).await?;
+    crate::lifecycle::require_work_in(profile, tx, tenant, &device).await?;
+    let current: i64 =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).device_store_bind_authorized_in_3)
+            .bind(tenant)
+            .bind(&device)
+            .bind(credential.channel.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
     if current != command.expected_generation {
         return Err(Error::Conflict);
     }
     let generation = current.checked_add(1).ok_or(Error::Conflict)?;
-    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND channel=$2 AND locator=$3)")
-            .bind(tenant).bind(credential.channel.as_str()).bind(locator(credential)).fetch_one(&mut *tx).await.map_err(db)? { return Err(Error::Conflict); }
+    if sqlx::query_scalar::<_, bool>(
+        crate::storage_profile::sql(profile).device_store_bind_authorized_in_4,
+    )
+    .bind(tenant)
+    .bind(credential.channel.as_str())
+    .bind(locator(credential))
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?
+    {
+        return Err(Error::Conflict);
+    }
     // Registration row locks serialize authorization and replacement in a consistent order.
-    let active = sqlx::query("SELECT id::text AS id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND purpose='primary' AND state='active' FOR UPDATE")
-            .bind(tenant).bind(&device).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?;
+    let active =
+        sqlx::query(crate::storage_profile::sql(profile).device_store_bind_authorized_in_5)
+            .bind(tenant)
+            .bind(&device)
+            .bind(credential.channel.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
     if let Some(row) = active {
         crate::lifecycle::retire(
+            profile,
             tx,
             facts,
             tenant,
@@ -376,14 +485,12 @@ pub(crate) async fn bind_authorized_in(
         )
         .await?;
     }
-    sqlx::query(
-        "INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING",
-    )
-    .bind(tenant)
-    .bind(&device)
-    .execute(&mut *tx)
-    .await
-    .map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_bind_authorized_in_6)
+        .bind(tenant)
+        .bind(&device)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     let receipt = RegistrationReceipt {
         operation_id: command.operation_id,
         request_id: command.request_id,
@@ -394,14 +501,37 @@ pub(crate) async fn bind_authorized_in(
         credential: ids[1],
         epoch: ids[2],
     };
-    sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,'active','primary',$7::uuid)")
-            .bind(tenant).bind(receipt.registration.to_string()).bind(&receipt.device).bind(receipt.channel.as_str()).bind(generation).bind(command.request_id.to_string()).bind(receipt.epoch).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,'active')")
-            .bind(tenant).bind(receipt.credential.to_string()).bind(receipt.registration.to_string()).bind(receipt.channel.as_str()).bind(locator(credential)).execute(&mut *tx).await.map_err(unique_or_db)?;
-    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,true)")
-            .bind(tenant).bind(receipt.registration.to_string()).bind(command.source.as_str()).bind(receipt.epoch.to_string()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_bind_authorized_in_7)
+        .bind(tenant)
+        .bind(receipt.registration.to_string())
+        .bind(&receipt.device)
+        .bind(receipt.channel.as_str())
+        .bind(generation)
+        .bind(command.request_id.to_string())
+        .bind(receipt.epoch)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_bind_authorized_in_8)
+        .bind(tenant)
+        .bind(receipt.credential.to_string())
+        .bind(receipt.registration.to_string())
+        .bind(receipt.channel.as_str())
+        .bind(locator(credential))
+        .execute(&mut *tx)
+        .await
+        .map_err(unique_or_db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_bind_authorized_in_9)
+        .bind(tenant)
+        .bind(receipt.registration.to_string())
+        .bind(command.source.as_str())
+        .bind(receipt.epoch.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
 
     crate::webhook::registration(
+        Some(&crate::WebhookEvents),
         tx,
         tenant,
         &receipt.device,
@@ -415,50 +545,99 @@ pub(crate) async fn bind_authorized_in(
 }
 
 pub async fn replace_mdm_credential_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: &str,
     locator: &str,
 ) -> Result<(), Error> {
-    let old:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active' FOR UPDATE")
-        .bind(tenant).bind(registration).fetch_all(&mut *tx).await.map_err(db)?;
+    let old: Vec<Uuid> = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).device_store_replace_mdm_credential_in_1,
+    )
+    .bind(tenant)
+    .bind(registration)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(db)?;
     for credential in old {
-        rss_mdm_pki_service::certificates::revoke_credential_in(tx, tenant, credential)
+        rss_mdm_pki_service::certificates::revoke_credential_in(profile, tx, tenant, credential)
             .await
             .map_err(|_| Error::Storage)?;
     }
-    sqlx::query("UPDATE mdm_access.credentials SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active'").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm',$4,'active')").bind(tenant).bind(Uuid::new_v4().to_string()).bind(registration).bind(locator).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_replace_mdm_credential_in_2)
+        .bind(tenant)
+        .bind(registration)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_replace_mdm_credential_in_3)
+        .bind(tenant)
+        .bind(Uuid::new_v4().to_string())
+        .bind(registration)
+        .bind(locator)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     Ok(())
 }
 
 pub async fn revalidate_source(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     principal: &DevicePrincipal,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<Scope, Error> {
+    if profile != principal.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
     if principal.purpose() != Purpose::Primary || principal.channel() != source.channel() {
         return Err(Error::Forbidden);
     }
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
-    crate::device::store::lock_channel(tx, &tenant, principal.device(), principal.channel())
-        .await?;
-    super::management::revalidate(tx, principal).await?;
-    let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active'")
-        .bind(&tenant).bind(&registration).bind(principal.channel().as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    crate::device::store::lock_channel(
+        profile,
+        tx,
+        &tenant,
+        principal.device(),
+        principal.channel(),
+    )
+    .await?;
+    super::management::revalidate(profile, tx, principal).await?;
+    let live = sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_1)
+        .bind(&tenant)
+        .bind(&registration)
+        .bind(principal.channel().as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)?;
     if live.try_get::<String, _>("device").map_err(db)? != principal.device()
         || live.try_get::<i64, _>("generation").map_err(db)? != principal.generation()
     {
         return Err(Error::Unauthorized);
     }
-    sqlx::query("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND id=$3::uuid AND state='active'")
-        .bind(&tenant).bind(&registration).bind(principal.credential().to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_2)
+        .bind(&tenant)
+        .bind(&registration)
+        .bind(principal.credential().to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)?;
     // The device/channel fence above also serializes source retirement and credential rotation.
     // Revalidation only observes the epoch; sequence allocation takes its own row write lock.
-    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled")
-        .bind(&tenant).bind(&registration).bind(source.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_3)
+        .bind(&tenant)
+        .bind(&registration)
+        .bind(source.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Forbidden)?;
     crate::device::scope(
+        profile,
         principal.tenant(),
         principal.registration(),
         source.as_str(),
@@ -479,6 +658,7 @@ struct RevokeInputs<'a> {
     facts: Vec<rss_mdm_audit_integration::Fact>,
 }
 async fn revoke_on(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     inputs: &mut RevokeInputs<'_>,
 ) -> Result<(RevocationReceipt, bool), Error> {
@@ -498,23 +678,34 @@ async fn revoke_on(
     let operation = *operation;
     let registration = *registration;
     let key = *key;
-    crate::lifecycle::lock_device_in(tx, admin.tenant_id(), device).await?;
-    if let Some(old) = crate::operations::replay(tx, operation).await? {
+    crate::lifecycle::lock_device_in(profile, tx, admin.tenant_id(), device).await?;
+    if let Some(old) = crate::operations::replay(profile, tx, operation).await? {
         let receipt = serde_json::from_str(&old).map_err(|_| Error::Storage)?;
         audit.registration(registration);
         admin.credentials(device)?;
         return Ok((receipt, true));
     }
-    let row = sqlx::query("SELECT channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND device=$3")
-            .bind(admin.tenant_id()).bind(registration.to_string()).bind(device).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).device_store_revoke_on_1)
+        .bind(admin.tenant_id())
+        .bind(registration.to_string())
+        .bind(device)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Forbidden)?;
     let channel = channel(&row)?;
-    lock_channel(tx, admin.tenant_id(), device, channel).await?;
-    let row = sqlx::query("SELECT state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE")
-            .bind(admin.tenant_id()).bind(registration.to_string()).fetch_one(&mut *tx).await.map_err(db)?;
+    lock_channel(profile, tx, admin.tenant_id(), device, channel).await?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).device_store_revoke_on_2)
+        .bind(admin.tenant_id())
+        .bind(registration.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
     if row.try_get::<String, _>("state").map_err(db)? != "active" {
         return Err(Error::Conflict);
     }
     crate::lifecycle::retire(
+        profile,
         tx,
         facts,
         admin.tenant_id(),
@@ -530,6 +721,7 @@ async fn revoke_on(
         registration,
     };
     crate::operations::save(
+        profile,
         tx,
         operation,
         &serde_json::to_string(&receipt).expect("closed receipt"),
@@ -541,13 +733,19 @@ async fn revoke_on(
 
 /// Registry authority for a channel worker already operating under its owner's transaction.
 pub async fn active_source_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     registration: Uuid,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<bool, Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.state='active' AND s.source=$3 AND s.enabled)")
- .bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await.map_err(db)
+    sqlx::query_scalar(crate::storage_profile::sql(profile).device_store_active_source_in_1)
+        .bind(tenant)
+        .bind(registration)
+        .bind(source.as_str())
+        .fetch_one(c)
+        .await
+        .map_err(db)
 }
 
 pub struct CollectionSource {
@@ -558,17 +756,34 @@ pub struct CollectionSource {
 }
 /// Allocate a source sequence under the registration channel lock on the caller's transaction.
 pub async fn allocate_collection_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     device: &str,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<CollectionSource, Error> {
-    lock_channel(c, tenant, device, source.channel()).await?;
+    lock_channel(profile, c, tenant, device, source.channel()).await?;
     // The channel advisory lock serializes registration, credential replacement and revocation.
     // A collecting owner only mutates the report sequence and needs no UPDATE privilege on identity rows.
-    let row=sqlx::query("SELECT r.id,r.generation,s.epoch FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.state='active' AND c.state='active' AND s.source=$3 AND s.enabled FOR UPDATE OF s").bind(tenant).bind(device).bind(source.as_str()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+    let row =
+        sqlx::query(crate::storage_profile::sql(profile).device_store_allocate_collection_in_1)
+            .bind(tenant)
+            .bind(device)
+            .bind(source.as_str())
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(db)?
+            .ok_or(Error::Conflict)?;
     let registration: Uuid = row.try_get("id").map_err(db)?;
-    let sequence=sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND next_sequence<9223372036854775807 RETURNING next_sequence-1").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await.map_err(db)?;
+    let sequence = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).device_store_allocate_collection_in_2,
+    )
+    .bind(tenant)
+    .bind(registration)
+    .bind(source.as_str())
+    .fetch_one(c)
+    .await
+    .map_err(db)?;
     Ok(CollectionSource {
         registration,
         generation: row.try_get("generation").map_err(db)?,
@@ -577,17 +792,30 @@ pub async fn allocate_collection_in(
     })
 }
 pub async fn source_current_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     registration: Uuid,
     source: rss_mdm_inventory::ReportSource,
     epoch: Uuid,
 ) -> Result<bool, Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND enabled)").bind(tenant).bind(registration).bind(source.as_str()).bind(epoch).fetch_one(c).await.map_err(db)
+    sqlx::query_scalar(crate::storage_profile::sql(profile).device_store_source_current_in_1)
+        .bind(tenant)
+        .bind(registration)
+        .bind(source.as_str())
+        .bind(epoch)
+        .fetch_one(c)
+        .await
+        .map_err(db)
 }
 
 /// Allocate a report sequence and contiguous correlation IDs on an already locked source.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "report allocation borrows the transaction and explicit product and registration evidence"
+)]
 pub async fn allocate_report_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     registration: &str,
@@ -599,9 +827,18 @@ pub async fn allocate_report_in(
     if count < 1 || maximum < count {
         return Err(sqlx::Error::Protocol("invalid report allocation".into()));
     }
-    sqlx::query_as("WITH locked AS MATERIALIZED (SELECT r.id FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.purpose='primary' AND r.state='active' AND s.source=$3 AND s.epoch=$4::uuid AND s.enabled AND s.next_sequence<9223372036854775807 AND r.next_command<=$6 FOR UPDATE OF r,s), ids AS (UPDATE mdm_access.registrations r SET next_command=next_command+$5 FROM locked WHERE r.tenant_id=$1::uuid AND r.id=locked.id RETURNING r.id,r.next_command-$5 AS first), seq AS (UPDATE mdm_access.report_sources s SET next_sequence=next_sequence+1 FROM ids WHERE s.tenant_id=$1::uuid AND s.registration=ids.id AND s.source=$3 RETURNING s.next_sequence-1 AS sequence) SELECT sequence,first FROM seq CROSS JOIN ids").bind(tenant).bind(registration).bind(source.as_str()).bind(epoch).bind(count).bind(maximum-count+1).fetch_optional(c).await
+    sqlx::query_as(crate::storage_profile::sql(profile).device_store_allocate_report_in_1)
+        .bind(tenant)
+        .bind(registration)
+        .bind(source.as_str())
+        .bind(epoch)
+        .bind(count)
+        .bind(maximum - count + 1)
+        .fetch_optional(c)
+        .await
 }
 pub async fn allocate_task_report_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     registration: Uuid,
@@ -617,24 +854,48 @@ pub async fn allocate_task_report_in(
             "invalid enterprise report source".into(),
         ));
     }
-    sqlx::query_as("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND next_sequence<9223372036854775807 RETURNING epoch::text,next_sequence-1").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await
+    sqlx::query_as(crate::storage_profile::sql(profile).device_store_allocate_task_report_in_1)
+        .bind(tenant)
+        .bind(registration)
+        .bind(source.as_str())
+        .fetch_one(c)
+        .await
 }
 /// Allocate protocol identities independently of Inventory sources; caller revalidates first.
 pub async fn allocate_commands_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     p: &DevicePrincipal,
     count: i64,
 ) -> Result<u32, Error> {
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
     if count < 1 || count > i64::from(u32::MAX) {
         return Err(Error::Malformed);
     }
-    revalidate_management(c, p).await?;
-    let first: i64 = sqlx::query_scalar("UPDATE mdm_access.registrations SET next_command=next_command+$5 WHERE tenant_id=$1::uuid AND id=$2 AND purpose=$3 AND generation=$4 AND state='active' AND next_command<=4294967296-$5 RETURNING next_command-$5")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.purpose().as_str()).bind(p.generation()).bind(count).fetch_one(c).await.map_err(db)?;
+    revalidate_management(profile, c, p).await?;
+    let first: i64 = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).device_store_allocate_commands_in_1,
+    )
+    .bind(p.tenant().to_string())
+    .bind(p.registration())
+    .bind(p.purpose().as_str())
+    .bind(p.generation())
+    .bind(count)
+    .fetch_one(c)
+    .await
+    .map_err(db)?;
     first.try_into().map_err(|_| Error::Storage)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "native renewal keeps independent registration, generation and credential evidence"
+)]
 pub async fn activate_renewed_mdm_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     device: &str,
@@ -643,41 +904,77 @@ pub async fn activate_renewed_mdm_in(
     predecessor: Uuid,
     credential: &super::VerifiedChannelCredential,
 ) -> Result<(), Error> {
+    if profile != credential.profile {
+        return Err(crate::Error::Forbidden);
+    }
+
     if credential.tenant.to_string() != tenant
         || credential.channel != super::Channel::Mdm
         || credential.source != rss_mdm_inventory::ReportSource::MdmWindows
     {
         return Err(Error::Unauthorized);
     }
-    lock_channel(c, tenant, device, credential.channel).await?;
-    let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.generation=$4 AND r.state='active' AND k.id=$5 AND k.state='active' AND r.purpose=$6 AND (r.parent_id IS NULL OR EXISTS(SELECT 1 FROM mdm_access.registrations p WHERE p.tenant_id=r.tenant_id AND p.id=r.parent_id AND p.generation=r.parent_generation AND p.state='active' AND p.purpose='primary')))")
-        .bind(tenant).bind(registration).bind(device).bind(generation).bind(predecessor).bind(credential.purpose.as_str()).fetch_one(&mut *c).await.map_err(db)?;
+    lock_channel(profile, c, tenant, device, credential.channel).await?;
+    let current: bool = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).device_store_activate_renewed_mdm_in_1,
+    )
+    .bind(tenant)
+    .bind(registration)
+    .bind(device)
+    .bind(generation)
+    .bind(predecessor)
+    .bind(credential.purpose.as_str())
+    .fetch_one(&mut *c)
+    .await
+    .map_err(db)?;
     if !current {
         return Err(Error::Unauthorized);
     }
-    replace_mdm_credential_in(c, tenant, &registration.to_string(), &locator(credential)).await
+    replace_mdm_credential_in(
+        profile,
+        c,
+        tenant,
+        &registration.to_string(),
+        &locator(credential),
+    )
+    .await
 }
 
 /// Current management authority; this does not authorize publishing an observation.
 pub async fn management_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     credential: &VerifiedChannelCredential,
 ) -> Result<DevicePrincipal, Error> {
-    super::management::authenticate(c, credential).await
+    if profile != credential.profile {
+        return Err(crate::Error::Forbidden);
+    }
+
+    super::management::authenticate(profile, c, credential).await
 }
 /// Verify this exact credential and generation within a caller-owned read snapshot.
 pub async fn read_management_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     p: &DevicePrincipal,
 ) -> Result<(), Error> {
-    super::management::validate(c, p).await
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
+    super::management::validate(profile, c, p).await
 }
 
 pub async fn revalidate_management(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     p: &DevicePrincipal,
 ) -> Result<(), Error> {
-    super::management::revalidate(c, p).await
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
+    super::management::revalidate(profile, c, p).await
 }
 
 /// The same binding kernel consumes all closed native admission kinds.
@@ -686,6 +983,7 @@ pub async fn revalidate_management(
     reason = "borrowed registration transaction with live admission"
 )]
 pub async fn bind_native_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     admission: &crate::enrollment::native::Admission,
     credential: &VerifiedChannelCredential,
@@ -693,9 +991,14 @@ pub async fn bind_native_in(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     retirement: &dyn crate::Retirement,
 ) -> Result<RegistrationReceipt, Error> {
+    if profile != credential.profile {
+        return Err(crate::Error::Forbidden);
+    }
+
     admission.current(tx).await?;
     let d = admission.coordinates();
     bind_authorized_in(
+        profile,
         tx,
         &d.tenant,
         credential,
@@ -716,10 +1019,15 @@ pub async fn bind_native_in(
 /// Bind an already authorized collection template to the current Agent source incarnation.
 /// This validates registration/credential liveness; the caller still owns template authority.
 pub async fn revalidate_collection_source(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     principal: &DevicePrincipal,
     source: rss_mdm_inventory::Source,
 ) -> Result<Scope, Error> {
+    if profile != principal.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
     use rss_mdm_inventory::Source;
     if principal.purpose() != Purpose::Primary
         || principal.channel() != Channel::Agent
@@ -730,11 +1038,18 @@ pub async fn revalidate_collection_source(
     {
         return Err(Error::Forbidden);
     }
-    revalidate_management(c, principal).await?;
-    let epoch: Option<Uuid> = sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3 AND enabled")
-        .bind(principal.tenant().to_string()).bind(principal.registration()).bind(source.as_str())
-        .fetch_optional(c).await.map_err(db)?;
+    revalidate_management(profile, c, principal).await?;
+    let epoch: Option<Uuid> = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).device_store_revalidate_collection_source_1,
+    )
+    .bind(principal.tenant().to_string())
+    .bind(principal.registration())
+    .bind(source.as_str())
+    .fetch_optional(c)
+    .await
+    .map_err(db)?;
     crate::device::scope(
+        profile,
         principal.tenant(),
         principal.registration(),
         source.as_str(),
@@ -745,13 +1060,20 @@ pub async fn revalidate_collection_source(
 
 /// Effective Agent collection streams for a device; old registration incarnations stay historical.
 pub async fn live_collection_streams_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     device: &str,
 ) -> Result<Vec<(Uuid, String, Uuid)>, Error> {
-    lock_channel(c, &tenant.to_string(), device, Channel::Agent).await?;
-    let rows = sqlx::query_as("SELECT r.id,s.source,s.epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND s.enabled AND s.source IN('agent.native','agent.script','agent.osquery') AND EXISTS(SELECT 1 FROM mdm_access.credentials k JOIN mdm_access.agent_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND k.state='active' AND i.not_after>floor(extract(epoch FROM clock_timestamp()))::bigint) ORDER BY r.id,s.source LIMIT 65")
-        .bind(tenant.to_string()).bind(device).fetch_all(c).await.map_err(db)?;
+    lock_channel(profile, c, &tenant.to_string(), device, Channel::Agent).await?;
+    let rows = sqlx::query_as(
+        crate::storage_profile::sql(profile).device_store_live_collection_streams_on_1,
+    )
+    .bind(tenant.to_string())
+    .bind(device)
+    .fetch_all(c)
+    .await
+    .map_err(db)?;
     if rows.len() > 64 {
         return Err(Error::Storage);
     }
@@ -761,6 +1083,7 @@ pub async fn live_collection_streams_on(
 /// A closed old source must never be reactivated merely because a credential expired.
 /// The caller proves the historical stream's device membership from accepted product facts.
 pub async fn collection_stream_retired_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     device: &str,
@@ -768,19 +1091,34 @@ pub async fn collection_stream_retired_on(
     source: rss_mdm_inventory::Source,
     epoch: Uuid,
 ) -> Result<bool, Error> {
-    lock_channel(c, &tenant.to_string(), device, Channel::Agent).await?;
-    sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.id=$3 AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND s.source=$4 AND s.epoch=$5 AND s.enabled)")
-        .bind(tenant.to_string()).bind(device).bind(registration).bind(source.as_str()).bind(epoch).fetch_one(c).await.map_err(db)
+    lock_channel(profile, c, &tenant.to_string(), device, Channel::Agent).await?;
+    sqlx::query_scalar(
+        crate::storage_profile::sql(profile).device_store_collection_stream_retired_on_1,
+    )
+    .bind(tenant.to_string())
+    .bind(device)
+    .bind(registration)
+    .bind(source.as_str())
+    .bind(epoch)
+    .fetch_one(c)
+    .await
+    .map_err(db)
 }
 
 /// Current report epoch for a channel owner borrowing an already authorized device transaction.
 /// Caller holds the device/channel lifecycle lock; no new transaction or authority is created.
 pub async fn report_epoch_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     registration: Uuid,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<Option<Uuid>, Error> {
-    sqlx::query_scalar("SELECT s.epoch FROM mdm_access.report_sources s JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.registration=$2 AND s.source=$3 AND s.enabled AND r.state='active'")
-        .bind(tenant).bind(registration).bind(source.as_str()).fetch_optional(c).await.map_err(db)
+    sqlx::query_scalar(crate::storage_profile::sql(profile).device_store_report_epoch_in_1)
+        .bind(tenant)
+        .bind(registration)
+        .bind(source.as_str())
+        .fetch_optional(c)
+        .await
+        .map_err(db)
 }

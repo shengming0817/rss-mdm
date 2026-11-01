@@ -60,3 +60,11 @@ Agent 的原始 Offer/permit 是唯一已交付材料，不另存 execution mate
 - kube `45f9c9b18b6ef72ad65769781c5b1e2e90bc3243`，`kube-runtime/src/controller/mod.rs`（闭合调度行为）。
 
 退管由 Device 的同一个 claim 和借用事务推进 cleanup、unenroll、revoke、complete。App 仅连接各 owner 的清理参与接口，不持有阶段机。Registration 的退休回调先建立登记围栏，再调用各 owner 撤销其工作；中间阶段在持久存储恢复，提示丢失由有游标的有界扫描补齐。取消、超时或 Unknown 不证明远端停止，晚到结果不得恢复普通工作资格。Configuration 的详情与 DDM 直接读取配置 owner，Device 不提供跨业务查询回退。
+
+## 共享基础服务的安装边界
+
+Agent、Registration、PKI、Task Trust、Policy、Scope 与 Recovery 的共享存储由宿主在构造时固定选择 `StorageProfile::Mdm` 或 `StorageProfile::Da`。选择不来自 HTTP 参数；SQL 对象由 owner 的编译期字面量选择。每个凭据、任务参与者、签名材料与授权证明必须保持同一 profile，跨 profile 的相同租户、注册和任务编号不代表同一权限。公共 Inventory 和 Group 通过其公开读取与投影接口消费。PKI 的签发、信任、轮换与操作状态同样按 profile 隔离；原生信任下发关系独立安装，DA 不装 Windows/Apple 表。原生注册、软件安装校验和恢复资格是显式参与者，缺席时相应入口返回 Unsupported。
+
+`rss-mdm-install-support` 只拥有有界安装连接、排他锁、单元回执与不可变安装绑定。Identity、Audit 与业务单元的装配由宿主持有。DA 的共享对象集中在 `rss_da`，owner 提供精确对象和权限清单，宿主合并校验；不探测其它 schema，不回退旧存储。当前 V1 直接替换，既有数据升级不属于本次交付。
+
+Agent owner 的 `foundation` T2 使用独立数据库和真实公共安装单元，运行 Enrollment 任务提供者、持久化观测、签名与重放流程。该证明不要求 MDM App bootstrap 或原生 MDM 监听器。`Opened` 只表示系统注册入口已打开；只有服务端实际 MDM 注册与独立采集的观测可分别证明其对应事实。

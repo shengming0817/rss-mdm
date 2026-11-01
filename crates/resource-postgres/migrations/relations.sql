@@ -24,6 +24,7 @@ GRANT SELECT ON TABLE mdm_resource.immutable TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_resource.requests TO mdm_resource_runtime;
 
+GRANT USAGE ON SCHEMA mdm_resource TO mdm_access;
 GRANT SELECT ON TABLE mdm_resource.aggregates, mdm_resource.immutable, mdm_software.sources, mdm_software.versions TO mdm_access;
 
 GRANT USAGE ON SCHEMA mdm_resource TO mdm_policy_runtime,mdm_inventory_runtime,mdm_content_runtime,mdm_telemetry_runtime,mdm_software_runtime;

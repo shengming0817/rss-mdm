@@ -43,20 +43,32 @@ pub(crate) async fn assemble(
         instance: config.identity.instance_id.clone(),
     });
     let materials = Arc::new(tasks::Materials {
-        inventory: Arc::new(super::registration_sources::Inventory),
-        agent_store: Arc::new(super::registration_agent_facts::AgentFacts),
+        inventory: Arc::new(super::registration_sources::Inventory::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+        )),
+        agent_store: Arc::new(super::registration_agent_facts::AgentFacts::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+        )),
         source: Arc::new(super::registration_sources::Source(source)),
         capacity: Arc::new(super::capacity::Capacity),
+        events: Some(Arc::new(rss_mdm_registration_service::WebhookEvents)),
         instance: config.identity.instance_id.clone(),
     });
     let enrollment = Arc::new(tasks::Service::new(
-        tasks::Transactions::bind(runtime.clone(), tenant, audit.clone(), materials.clone())
-            .await
-            .map_err(super::owner_errors::enrollment)?,
+        tasks::Transactions::bind(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            runtime.clone(),
+            tenant,
+            audit.clone(),
+            materials.clone(),
+        )
+        .await
+        .map_err(super::owner_errors::enrollment)?,
         sessions,
     ));
     let worker = Arc::new(
         tasks::worker::Worker::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             enrollment.clone(),
             reconcile.clone(),
             budget.clone(),

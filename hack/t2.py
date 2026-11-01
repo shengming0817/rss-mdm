@@ -32,7 +32,7 @@ def verify_report(path, expected):
     return len(names)
 
 
-def run_modules(modules, output=None):
+def run_group(modules, output=None):
     from ci import working_source_state
     from t2_environment import prepared
     require_lease(ROOT)
@@ -63,17 +63,24 @@ def run_modules(modules, output=None):
             return evidence
         require(len(modules) == len(set(modules)) and set(modules) <= MODULES.keys(), 'invalid T2 selection')
         evidence.update(status='failed', reason='discovery')
-        listing = command(['cargo', 'nextest', 'list', '--locked', '-p', PACKAGE, '--lib',
+        module = MODULES[modules[0]]
+        package = module.get('package', PACKAGE)
+        target = module.get('target', PACKAGE.replace('-', '_'))
+        selector = ['--lib'] if target == package.replace('-', '_') else ['--test', target]
+        listing = command(['cargo', 'nextest', 'list', '--locked', '-p', package, *selector,
                            '--message-format', 'json'], 'discovery.json')
         found = discover(json.loads(listing.stdout), modules)
         expected = [case for cases in found.values() for case in cases]
         evidence['discovered'] = found
-        build = command(['cargo', 'build', '--locked', '-p', PACKAGE, '--bin', 'rss-mdm',
-                         '--message-format=json'], 'build.json')
-        artifacts = [json.loads(line) for line in build.stdout.splitlines() if line.startswith('{')]
-        binary = next(value['executable'] for value in artifacts
-                      if value.get('reason') == 'compiler-artifact' and value.get('executable')
-                      and value['target']['name'] == 'rss-mdm')
+        installer = module.get('installer', 'rss-mdm')
+        binary = None
+        if installer is not None:
+            build = command(['cargo', 'build', '--locked', '-p', PACKAGE, '--bin', installer,
+                             '--message-format=json'], 'build.json')
+            artifacts = [json.loads(line) for line in build.stdout.splitlines() if line.startswith('{')]
+            binary = next(value['executable'] for value in artifacts
+                          if value.get('reason') == 'compiler-artifact' and value.get('executable')
+                          and value['target']['name'] == installer)
         evidence['reason'] = 'preparation'
         with prepared(ROOT, modules, binary, command, evidence['resources']) as inputs:
             expression = ' | '.join('test(=' + name + ')' for name in expected)
@@ -83,7 +90,7 @@ def run_modules(modules, output=None):
             require(report.resolve().is_relative_to(ROOT.resolve()), 'JUnit must belong to this worktree')
             report.unlink(missing_ok=True)
             evidence['reason'] = 'business'
-            execution = command(['cargo', 'nextest', 'run', '--locked', '-p', PACKAGE, '--lib',
+            execution = command(['cargo', 'nextest', 'run', '--locked', '-p', package, *selector,
                                  '--run-ignored', 'only', '--profile', 't2', '-E', expression],
                                 'execution.log', env={**os.environ, **inputs}, check=False)
             require(report.is_file(), 'this T2 execution did not publish its JUnit report')
@@ -106,6 +113,52 @@ def run_modules(modules, output=None):
     finally:
         evidence['elapsedSeconds'] = round(time.monotonic() - started, 3)
         publish(receipt, evidence)
+
+
+def run_modules(modules, output=None):
+    from ci import working_source_state
+    require_lease(ROOT)
+    output = Path(output or ROOT / 'artifacts/local-t2')
+    require(not output.is_symlink(), 'T2 output directory cannot be a symlink')
+    require(len(modules) == len(set(modules)) and set(modules) <= MODULES.keys(), 'invalid T2 selection')
+    groups = {}
+    for name in modules:
+        value = MODULES[name]
+        key = (value.get('package', PACKAGE), value.get('target', PACKAGE.replace('-', '_')), value.get('installer', 'rss-mdm'))
+        groups.setdefault(key, []).append(name)
+    if len(groups) <= 1:
+        return run_group(modules, output)
+    output.mkdir(parents=True, exist_ok=True)
+    (output / 'result.json').unlink(missing_ok=True)
+    (output / 'junit.xml').unlink(missing_ok=True)
+    state = working_source_state()
+    started = time.monotonic()
+    receipt = selection_status(modules)
+    receipt.update(sourceState=state, sourceRevision=subprocess.check_output(
+        ['/usr/bin/git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(), resources=[],
+        discovered={}, cases=[], groups=[])
+    results, failures = [], []
+    for index, selected in enumerate(groups.values()):
+        path = output / ('owner-' + str(index))
+        try:
+            results.append(run_group(selected, path))
+        except Exception as error:
+            failures.append(str(error))
+            if (path / 'result.json').exists():
+                results.append(json.loads((path / 'result.json').read_text()))
+    if working_source_state() != state:
+        failures.append('source changed during T2')
+    for result in results:
+        receipt['resources'].extend(result.get('resources', []))
+        receipt['discovered'].update(result.get('discovered', {}))
+        receipt['cases'].extend(result.get('cases', []))
+    receipt.update(status='failed' if failures else 'passed',
+                   reason='owner-failures' if failures else 'executed', groups=results,
+                   executedCases=sum(r.get('executedCases', 0) for r in results), failures=failures,
+                   elapsedSeconds=round(time.monotonic() - started, 3))
+    publish(output / 'result.json', receipt)
+    require(not failures, 'T2 owner failures: ' + '; '.join(failures))
+    return receipt
 
 
 def main(argv=None):

@@ -35,6 +35,7 @@ pub(super) fn sql(error: sqlx::Error) -> Error {
 fn script(error: rss_mdm_script_service::Error) -> Error {
     use rss_mdm_script_service::Error as S;
     match error {
+        S::Unsupported => Error::Unsupported,
         S::Malformed => Error::Malformed,
         S::Conflict => Error::Conflict,
         S::Forbidden => Error::Forbidden,
@@ -65,6 +66,7 @@ mod assignments;
 fn source(error: rss_mdm_scope_service::channels::SourceError) -> Error {
     use rss_mdm_scope_service::channels::SourceError as S;
     match error {
+        S::Unsupported => Error::Unsupported,
         S::Capacity => Error::Unavailable(Failure::Capacity),
         S::Missing => Error::ScopeNotFound,
         S::Conflict => Error::QueryReadConflict,
@@ -188,6 +190,7 @@ pub(crate) fn assemble(
         recovery_enabled,
         clock: Arc::new(crate::lifecycle::RuntimeTimer),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+            rss_mdm_install_support::StorageProfile::Mdm,
             storage.runtime.clone(),
             storage.tenant,
         ),

@@ -186,6 +186,7 @@ pub(crate) async fn finish(
                 if access.state == access::State::Revoked
                     || access.generation != task.binding_generation
                     || !crate::lifecycle::work_allowed_in(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &task.tenant_id.to_string(),
                         &task.device_id,
@@ -233,6 +234,7 @@ pub(crate) async fn unresolved(
                 let withdrawn = b.state == access::State::Revoked
                     || b.generation != task.binding_generation
                     || !crate::lifecycle::work_allowed_in(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &task.tenant_id.to_string(),
                         &task.device_id,

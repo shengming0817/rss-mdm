@@ -208,13 +208,22 @@ async fn read_on(
     kind: &ReadKind,
     _audit: &RequestAudit,
 ) -> Result<Reply, Error> {
-    rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
-        .await
-        .map_err(|_| Error::Denied)?;
-    let authorization =
-        rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
-            .await
-            .map_err(|_| Error::Denied)?;
+    rss_mdm_authorization_service::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
+    let authorization = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
     authorization
         .require(proof, Permission::InventoryRead, Some(&input.device))
         .map_err(|_| Error::Denied)?;
@@ -333,6 +342,7 @@ async fn read_on(
         .transpose()
         .map_err(|_| Error::Invalid)?;
     let live = rss_mdm_registration_service::device::store::live_collection_streams_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         service.tenant,
         &input.device,

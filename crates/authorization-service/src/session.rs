@@ -59,7 +59,7 @@ impl SessionAuthority {
                     .await?
             }
         };
-        AuthorizedPrincipal::from_identity(principal)
+        AuthorizedPrincipal::from_identity(store.profile, principal)
             .load_authorization(store)
             .await
     }

@@ -23,6 +23,7 @@ pub struct Record {
 }
 const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'registrationId',r.registration,'generation',r.generation,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'authorization',NULL::jsonb,'attemptId',r.state->'delivery'->>'attempt'";
 pub async fn page_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     policy: Uuid,
@@ -30,7 +31,9 @@ pub async fn page_on(
     limit: usize,
 ) -> Result<Vec<Record>> {
     let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT jsonb_build_object(");
-    query.push(METADATA).push(",'result',r.result) FROM mdm_recovery_tasks.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND ($3::bigint IS NULL OR (r.available_at,r.id)<($3,$4)) ORDER BY r.available_at DESC,r.id DESC LIMIT $5");
+    query
+        .push(METADATA)
+        .push(crate::storage_profile::sql(profile).tasks_queries_page_on_1);
     query
         .build_query_scalar::<serde_json::Value>()
         .bind(tenant)
@@ -45,6 +48,7 @@ pub async fn page_on(
         .collect()
 }
 pub async fn detail_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     policy: Uuid,
@@ -52,14 +56,22 @@ pub async fn detail_on(
     proof: &AuthorizedPrincipal,
     grant: &Snapshot,
 ) -> Result<Record> {
-    let device:Option<String>=sqlx::query_scalar("SELECT r.device FROM mdm_recovery_tasks.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(tenant).bind(policy).bind(id).fetch_optional(&mut *c).await?;
+    let device: Option<String> =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).tasks_queries_detail_on_1)
+            .bind(tenant)
+            .bind(policy)
+            .bind(id)
+            .fetch_optional(&mut *c)
+            .await?;
     grant.require(
         proof,
         Permission::OperationRead,
         Some(&device.ok_or(Error::NotFound)?),
     )?;
     let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT jsonb_build_object(");
-    query.push(METADATA).push(",'result',r.result) FROM mdm_recovery_tasks.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3");
+    query
+        .push(METADATA)
+        .push(crate::storage_profile::sql(profile).tasks_queries_detail_on_2);
     super::stored(serde_json::from_value(
         query
             .build_query_scalar::<serde_json::Value>()
@@ -73,13 +85,24 @@ pub async fn detail_on(
 
 /// Correlate only the original Agent registration and generation.
 pub async fn assignment_ids_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     policy: Uuid,
     target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
     channel: rss_mdm_inventory::Channel,
 ) -> Result<Vec<Uuid>> {
-    Ok(sqlx::query_scalar("SELECT r.id FROM mdm_recovery_tasks.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.device=$3 AND $6='agent' AND r.registration=$4 AND r.generation=$5 ORDER BY r.id").bind(tenant.to_string()).bind(policy).bind(&target.device).bind(target.registration_id).bind(target.generation).bind(channel.as_str()).fetch_all(c).await?)
+    Ok(
+        sqlx::query_scalar(crate::storage_profile::sql(profile).tasks_queries_assignment_ids_on_1)
+            .bind(tenant.to_string())
+            .bind(policy)
+            .bind(&target.device)
+            .bind(target.registration_id)
+            .bind(target.generation)
+            .bind(channel.as_str())
+            .fetch_all(c)
+            .await?,
+    )
 }
 
 pub const RELATION_SQL: &str = "SELECT r.id,r.device,'action_run'::text AS kind,r.registration,r.generation,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') AS status,0::bigint AS input_bytes FROM mdm_recovery_tasks.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid";

@@ -194,6 +194,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             return Err(failure(Error::Unavailable(crate::Failure::PlanningStorage)));
         }
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             service.transactions.tenant.to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -270,6 +271,7 @@ async fn prepare_in(
                 Box::pin(async move {
                     Ok(
                         rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                            rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             &tenant,
                             &[device],

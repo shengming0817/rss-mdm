@@ -69,7 +69,14 @@ async fn require_device(tx: &mut PgTransaction<'_>, id: &str) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let id = id.to_owned();
     if !tx
-        .with_connection(move |c| Box::pin(crate::device::read::registered(c, tenant, id)))
+        .with_connection(move |c| {
+            Box::pin(crate::device::read::registered(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                id,
+            ))
+        })
         .await?
     {
         return Err(Error::Group(GroupMissing::Device).into());
@@ -124,7 +131,11 @@ pub mod tasks;
 mod calculation;
 impl Groups {
     fn asset_reader(&self) -> assets::planning::SnapshotReader {
-        assets::planning::SnapshotReader::bind(self.runtime.clone(), self.tenant)
+        assets::planning::SnapshotReader::bind(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            self.runtime.clone(),
+            self.tenant,
+        )
     }
 }
 
@@ -145,7 +156,11 @@ impl Groups {
         )
     }
     async fn assert_unused_in(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
-        let binding = rss_mdm_scope_postgres::ScopeBinding::new(self.runtime.clone(), self.tenant);
+        let binding = rss_mdm_scope_postgres::ScopeBinding::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            self.runtime.clone(),
+            self.tenant,
+        );
         let used = binding.group_used_in(tx, id).await.map_err(|e| match e {
             rss_mdm_scope_postgres::BindingError::Storage(e) => Fault::Storage(e),
             rss_mdm_scope_postgres::BindingError::TenantMismatch => Error::Forbidden.into(),

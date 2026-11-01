@@ -13,6 +13,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 fn audit(c: &Context) -> RequestAudit {
     RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         c.tenant.to_string(),
         "apple_management",
         AuditIntent::Management,

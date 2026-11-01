@@ -300,14 +300,16 @@ impl AuditStore {
 // existing business fact here would let a new mutation commit without its own audit fact.
 fn require_new_business_fact(appended: &rss_audit_postgres::StagedAppend) -> Result<(), Error> {
     if !appended.inserted()
-        && appended
-            .record()
-            .prepared()
-            .identity()
-            .source()
-            .source_id()
-            .as_str()
-            == "mdm.business"
+        && matches!(
+            appended
+                .record()
+                .prepared()
+                .identity()
+                .source()
+                .source_id()
+                .as_str(),
+            "mdm.business" | "da.business"
+        )
     {
         return Err(Error::Receipt);
     }

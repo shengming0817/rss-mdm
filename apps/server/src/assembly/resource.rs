@@ -40,7 +40,11 @@ pub(crate) async fn catalog(
             clock: Arc::new(ResourceClock(clock)),
             cursor_key: key,
             references: Arc::new(crate::resource_usage::StoredReferences {
-                policies: rss_mdm_policy_postgres::PolicyReader::bind(runtime, tenant),
+                policies: rss_mdm_policy_postgres::PolicyReader::bind(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    runtime,
+                    tenant,
+                ),
             }),
             collections: Arc::new(Validators),
             telemetry: Arc::new(Validators),

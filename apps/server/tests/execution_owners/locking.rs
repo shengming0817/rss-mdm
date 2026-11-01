@@ -23,7 +23,11 @@ async fn change(
     gate: &Gate,
 ) -> Result<()> {
     let changes = super::super::policy_ports::Changes {
-        reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+        reader: rss_mdm_policy_postgres::PolicyReader::bind(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            runtime.clone(),
+            tenant,
+        ),
         messaging: rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             tenant,
@@ -31,7 +35,8 @@ async fn change(
         )
         .await?,
         targets: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
-            Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+            rss_mdm_install_support::StorageProfile::Mdm,
+            Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
         )),
     };
     script::transaction::inspect(runtime,tenant,(changes,gate),move |ctx,tx|Box::pin(async move {

@@ -209,6 +209,7 @@ impl ExecutionChanges for Changes {
             }
             if kinds.contains(&K::RequestMdmEnrollment) {
                 rss_mdm_registration_service::enrollment::tasks::wake::policy_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     &self.messaging,
                     tx,
                     id,
@@ -225,8 +226,13 @@ impl ExecutionChanges for Changes {
                 .await?;
             }
             if kinds.contains(&K::Credential) {
-                rss_mdm_recovery_credentials::tasks::wake::policy_in(&self.messaging, tx, id)
-                    .await?;
+                rss_mdm_recovery_credentials::tasks::wake::policy_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    &self.messaging,
+                    tx,
+                    id,
+                )
+                .await?;
             }
             if kinds.contains(&K::Execution) {
                 rss_mdm_script_service::wake::policy_in(&self.messaging, tx, id).await?;
@@ -348,6 +354,7 @@ impl ExecutionEvents for Events {
                 Box::pin(async move {
                     Ok(
                         rss_mdm_registration_service::device::store::revalidate_source(
+                            rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             &p,
                             rss_mdm_inventory::ReportSource::AgentBuiltin,
@@ -657,13 +664,12 @@ impl ExecutionProgress for Events {
                         });
                     }
                     super::task_ownership::Owner::Access=>return Ok(EventOperationProgress::Run{reference:reference.clone(),state:rss_mdm_registration_service::device_access::execution::storage::read_run(tx,id).await?.state,allowed_actions:[]}),
-                    super::task_ownership::Owner::Credential=>return Ok(EventOperationProgress::Run{reference:reference.clone(),state:rss_mdm_recovery_credentials::tasks::storage::read_run(tx,id).await?.state,allowed_actions:[]}),
+                    super::task_ownership::Owner::Credential=>return Ok(EventOperationProgress::Run{reference:reference.clone(),state:rss_mdm_recovery_credentials::tasks::storage::read_run(rss_mdm_install_support::StorageProfile::Mdm, tx,id).await?.state,allowed_actions:[]}),
                     super::task_ownership::Owner::Registration => {
                         return Ok(EventOperationProgress::Run {
                             reference: reference.clone(),
                             state:
-                                rss_mdm_registration_service::enrollment::tasks::storage::read_run(
-                                    tx, id,
+                                rss_mdm_registration_service::enrollment::tasks::storage::read_run(rss_mdm_install_support::StorageProfile::Mdm, tx, id,
                                 )
                                 .await
                                 .map_err(enrollment_fault)?
@@ -959,6 +965,7 @@ fn software_progress(
 fn enrollment_error(e: rss_mdm_registration_service::enrollment::tasks::Error) -> Error {
     use rss_mdm_registration_service::enrollment::tasks::Error as E;
     match e {
+        E::Unsupported => Error::Unsupported,
         E::CommitUnknown => Error::CommitUnknown,
         E::RollbackFailed => Error::RollbackFailed,
         E::Malformed => Error::Malformed,

@@ -36,6 +36,7 @@ pub async fn resolve_in(
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::device::store::lock_channel(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &tenant.to_string(),
                 &name,
@@ -58,6 +59,7 @@ pub async fn resolve_in(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(crate::device::read::management_root_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     tenant.to_string(),
                     registration,

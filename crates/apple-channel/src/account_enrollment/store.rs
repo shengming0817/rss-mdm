@@ -95,7 +95,14 @@ pub(super) async fn bound_account(
 pub(super) async fn recovery(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
     let device:String=sqlx::query_scalar("SELECT g.device FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.authority_kind='apple_account'")
         .bind(tenant).bind(id).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    crate::device::store::lock_channel(c, tenant, &device, rss_mdm_inventory::Channel::Mdm).await?;
+    crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        tenant,
+        &device,
+        rss_mdm_inventory::Channel::Mdm,
+    )
+    .await?;
     sqlx::query("SELECT f.*,o.revision AS current_organization_revision FROM mdm_apple.account_flows f JOIN mdm_access.requests q ON(q.tenant_id,q.id,q.account_version)=(f.tenant_id,f.enrollment,f.authorization_version) JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) JOIN mdm_apple.account_configuration o ON(o.tenant_id,o.id)=(f.tenant_id,f.organization) JOIN mdm_apple.account_bindings b ON(b.tenant_id,b.organization,b.account)=(f.tenant_id,f.organization,f.account) WHERE f.tenant_id=$1::uuid AND f.enrollment=$2 AND NOT f.revoked AND q.authority_kind='apple_account' AND q.state<>'cancelled' AND o.enabled AND b.enabled AND b.principal::text=g.actor AND b.instance::text=g.instance AND (q.state='pending' OR EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=q.tenant_id AND r.request_id=q.id AND r.state='active' AND k.state='active')) FOR SHARE OF o,b,q,f")
         .bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?.ok_or(Error::Unauthorized)
 }

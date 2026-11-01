@@ -697,6 +697,7 @@ impl RuntimeDiagnostics {
                 .map_err(|_| ()),
                 ChannelName::Signing => {
                     match rss_mdm_task_trust::trust::check_revision(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         &mut tx,
                         self.tenant,
                         *revision as u64,

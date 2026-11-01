@@ -9,6 +9,7 @@ pub async fn audit_recovery(
 ) -> Result<()> {
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             tx.tenant_id().to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -56,6 +57,7 @@ impl Service {
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -101,6 +103,7 @@ pub(super) async fn stale_registration(
     Ok(tx
         .with_connection(move |c| {
             Box::pin(crate::device::read::stale_registration_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
                 target.registration,

@@ -175,12 +175,18 @@ impl Groups {
                         .with_connection(move |c| {
                             Box::pin(async move {
                                 rss_mdm_authorization_service::lock_shared_on(
-                                    c, &tenant, &instance,
+                                    rss_mdm_install_support::StorageProfile::Mdm,
+                                    c,
+                                    &tenant,
+                                    &instance,
                                 )
                                 .await
                                 .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
                                 Ok(rss_mdm_authorization_service::snapshot_on(
-                                    c, &tenant, &instance,
+                                    rss_mdm_install_support::StorageProfile::Mdm,
+                                    c,
+                                    &tenant,
+                                    &instance,
                                 )
                                 .await)
                             })

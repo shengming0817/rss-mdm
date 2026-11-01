@@ -292,7 +292,13 @@ impl Groups {
                     Box::pin(async move {
                         Ok(
                             rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
-                                c, &tenant, asset_cut, after, selected, 1000,
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                &tenant,
+                                asset_cut,
+                                after,
+                                selected,
+                                1000,
                             )
                             .await,
                         )
@@ -383,7 +389,11 @@ impl Groups {
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
                     .collect();
-                let reader = assets::planning::SnapshotReader::bind(self.runtime.clone(), tenant);
+                let reader = assets::planning::SnapshotReader::bind(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    self.runtime.clone(),
+                    tenant,
+                );
                 let catalog = tx
                     .with_connection_context(&mut (asset_cut,), move |(asset_cut,), c| {
                         Box::pin(async move {
@@ -437,21 +447,25 @@ impl Groups {
                 let evaluation_progress = self
                     .evaluation(tx, stored(Uuid::parse_str(&operation.to_string()))?)
                     .await?;
-                let data = assets::planning::SnapshotReader::bind(self.runtime.clone(), tenant)
-                    .condition_inputs_in(
-                        tx,
-                        evaluation_progress,
-                        rss_mdm_inventory_service::assets::planning::ConditionRequest {
-                            cut: asset_cut,
-                            devices: &raw,
-                            catalog: &catalog,
-                            authorization: &assets::ReadScope::all(),
-                            selection: condition.selection(),
-                            rule: &rule,
-                            associated: Some(&inputs),
-                        },
-                    )
-                    .await;
+                let data = assets::planning::SnapshotReader::bind(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    self.runtime.clone(),
+                    tenant,
+                )
+                .condition_inputs_in(
+                    tx,
+                    evaluation_progress,
+                    rss_mdm_inventory_service::assets::planning::ConditionRequest {
+                        cut: asset_cut,
+                        devices: &raw,
+                        catalog: &catalog,
+                        authorization: &assets::ReadScope::all(),
+                        selection: condition.selection(),
+                        rule: &rule,
+                        associated: Some(&inputs),
+                    },
+                )
+                .await;
                 let data = match data {
                     Err(rss_mdm_inventory_service::transaction::Fault::Request(
                         rss_mdm_inventory_service::Error::Unavailable(

@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-install-support": "crates/install-support",
     "rss-mdm-script-service": "crates/script-service",
     "rss-mdm-scope-postgres": "crates/scope-postgres",
     "rss-mdm-scope-service": "crates/scope-service",
@@ -195,7 +196,18 @@ def verify_backend_support(data):
     require(len(ids) == 1, "exactly one MDM backend support package required")
     ident = ids[0]
     require(nodes[ident]['features'] == [], "backend support has no feature surface")
-    parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == ident for d in n['deps'])}
+    parents = set()
+    for node in nodes.values():
+        for dependency in node['deps']:
+            if dependency['pkg'] != ident:
+                continue
+            owner = packages[node['id']]
+            # The independent DA host fixture exercises the real admission contract.
+            if owner == 'rss-mdm-agent-channel':
+                require(dependency.get('dep_kinds') and all(kind.get('kind') == 'dev' for kind in dependency['dep_kinds']),
+                        'Agent foundation may consume backend support only in tests')
+            else:
+                parents.add(owner)
     require(parents == adapters | {"rss-mdm-app"}, "only backend adapters and App admission may directly consume support")
     visited, pending = set(), [ident]
     while pending:
@@ -221,7 +233,7 @@ def verify_audit_integration(data):
         if key in visited: continue
         visited.add(key)
         # The independently checked wire closure holds shared activity value types only.
-        require(key == identity or packages[key] == 'rss-mdm-agent-wire' or not packages[key].startswith(('rss-mdm-', 'rss-identity-')), 'audit integration depends on a domain, application or Identity package')
+        require(key == identity or packages[key] in {'rss-mdm-agent-wire', 'rss-mdm-install-support'} or not packages[key].startswith(('rss-mdm-', 'rss-identity-')), 'audit integration depends on a domain, application or Identity package')
         pending.extend(d['pkg'] for d in nodes[key]['deps'])
 
 def verify_agent_wire(data):

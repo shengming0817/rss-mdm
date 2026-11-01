@@ -124,9 +124,17 @@ pub async fn prove_batch(
         .bind(c.tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    let grant = access::snapshot_on(&mut tx, proof.tenant_id(), proof.instance_id()).await?;
+    let grant = access::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await?;
     let result = app
         .configuration
+        .as_ref()
+        .expect("MDM configuration")
         .classify_on(
             &mut tx,
             &proof,

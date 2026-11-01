@@ -1,12 +1,45 @@
 use super::*;
 impl Application {
-    /// A suspended input checkpoint stops configuration convergence even while the task runs.
+    /// A missing configuration participant has no suspended native input checkpoint.
     pub async fn configuration_input_suspended(
         &self,
         cutoff: std::time::Instant,
     ) -> std::result::Result<bool, HealthFailure> {
-        self.runtime
-            .local_tx(self.tenant, health_deadline(cutoff), |tx| {
+        configuration_input_suspended(
+            &self.runtime,
+            self.tenant,
+            self.configuration.as_deref(),
+            cutoff,
+        )
+        .await
+    }
+    /// Counts describe retained product job states, not managed task health or device effects.
+    pub async fn queue_health(
+        &self,
+        cutoff: std::time::Instant,
+    ) -> std::result::Result<[u64; 5], HealthFailure> {
+        queue_health(
+            self.profile(),
+            &self.runtime,
+            self.tenant,
+            self.configuration.as_deref(),
+            cutoff,
+        )
+        .await
+    }
+}
+/// Read native input suspension only when the actual configuration participant exists.
+pub async fn configuration_input_suspended(
+    runtime: &std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    tenant: rss_request_context::TenantId,
+    configuration: Option<&crate::configuration::Transactions>,
+    cutoff: std::time::Instant,
+) -> std::result::Result<bool, HealthFailure> {
+    if configuration.is_none() {
+        return Ok(false);
+    }
+    runtime
+            .local_tx(tenant, health_deadline(cutoff), |tx| {
                 Box::pin(async move {
                     let tenant = tx.tenant_id().to_string();
                     tx.with_connection(move |c| Box::pin(async move {
@@ -22,17 +55,21 @@ impl Application {
                 |_| Err(HealthFailure::SettlementUnknown),
                 |_| Err(HealthFailure::Deadline),
             )
-    }
-
-    /// Counts describe retained product job states, not managed task health or device effects.
-    pub async fn queue_health(
-        &self,
-        cutoff: std::time::Instant,
-    ) -> std::result::Result<[u64; 5], HealthFailure> {
-        self.runtime
-            .local_tx(self.tenant, health_deadline(cutoff), |tx| {
+}
+/// Read common product queue counts, adding native counts only for a configured participant.
+pub async fn queue_health(
+    profile: rss_mdm_install_support::StorageProfile,
+    runtime: &std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    tenant: rss_request_context::TenantId,
+    configuration: Option<&crate::configuration::Transactions>,
+    cutoff: std::time::Instant,
+) -> std::result::Result<[u64; 5], HealthFailure> {
+    let configured = configuration.is_some();
+    runtime
+            .local_tx(tenant, health_deadline(cutoff), |tx| {
                 Box::pin(async move {
-                    let mut counts=rss_mdm_policy_postgres::work::counts_in(tx).await?;
+                    let mut counts=rss_mdm_policy_postgres::work::counts_in(profile, tx).await?;
+                    if !configured { return Ok(counts); }
                     let tenant=tx.tenant_id().to_string();
                     let (pending,failed):(i64,bool)=tx.with_connection(move|c|Box::pin(async move{
                         sqlx::query_as("SELECT (SELECT count(*) FROM(SELECT FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND input_revision>observed_revision LIMIT 1001) p),EXISTS(SELECT FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid AND failure IS NOT NULL)").bind(tenant).fetch_one(c).await
@@ -49,7 +86,6 @@ impl Application {
                 |_| Err(HealthFailure::SettlementUnknown),
                 |_| Err(HealthFailure::Deadline),
             )
-    }
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -100,10 +136,15 @@ pub(crate) struct AutomationObservation {
     truncated: bool,
 }
 impl AutomationObservation {
-    fn scanned(&mut self, scope: &rss_reconcile::Scope, observation: RunObservation) {
+    fn scanned(
+        &mut self,
+        profile: rss_mdm_install_support::StorageProfile,
+        scope: &rss_reconcile::Scope,
+        observation: RunObservation,
+    ) {
         let index = match scope.reconciler() {
-            "mdm.policy" => 0,
-            crate::worker::jobs::EVENT_SCOPE => 1,
+            domain if domain == crate::worker::jobs::domain(profile) => 0,
+            domain if domain == crate::worker::jobs::event_domain(profile) => 1,
             _ => return,
         };
         self.scans[index] = Some(observation);
@@ -160,6 +201,7 @@ impl Application {
             .lock()
             .expect("automation observation")
             .scanned(
+                self.profile(),
                 scope,
                 RunObservation {
                     failure: result.err().map(reconcile_failure),
@@ -255,6 +297,7 @@ mod tests {
         observations.failed(a.clone(), failure(Stage::Apply));
         observations.failed(b.clone(), failure(Stage::Finish));
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             a.scope(),
             RunObservation {
                 failure: None,
@@ -280,11 +323,14 @@ mod tests {
     #[test]
     fn scan_recovery_requires_success_from_the_failed_scope() {
         let assets = target("changes");
-        let events =
-            rss_reconcile::Scope::new(assets.scope().tenant(), crate::worker::jobs::EVENT_SCOPE)
-                .unwrap();
+        let events = rss_reconcile::Scope::new(
+            assets.scope().tenant(),
+            crate::worker::jobs::event_domain(rss_mdm_install_support::StorageProfile::Mdm),
+        )
+        .unwrap();
         let mut observations = AutomationObservation::default();
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &events,
             RunObservation {
                 failure: Some(AutomationFailure::StorageUnavailable),
@@ -292,6 +338,7 @@ mod tests {
             },
         );
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             assets.scope(),
             RunObservation {
                 failure: None,
@@ -303,6 +350,7 @@ mod tests {
             Some(AutomationFailure::StorageUnavailable)
         ));
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &events,
             RunObservation {
                 failure: None,
@@ -311,6 +359,7 @@ mod tests {
         );
         assert!(observations.snapshot().scan.unwrap().failure.is_none());
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             assets.scope(),
             RunObservation {
                 failure: Some(AutomationFailure::SettlementUnknown),
@@ -318,6 +367,7 @@ mod tests {
             },
         );
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &events,
             RunObservation {
                 failure: None,
@@ -329,6 +379,7 @@ mod tests {
             Some(AutomationFailure::SettlementUnknown)
         ));
         observations.scanned(
+            rss_mdm_install_support::StorageProfile::Mdm,
             assets.scope(),
             RunObservation {
                 failure: None,

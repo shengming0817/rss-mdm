@@ -76,25 +76,22 @@ FROM target t
 /// Check the immutable collection/catalog tables for the calling product role.
 /// Runtime pools cannot acquire owner, update/delete, column-only or RLS-bypass privileges.
 pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
-    let role: String = sqlx::query_scalar("SELECT current_user")
+    let name: String = sqlx::query_scalar("SELECT current_user")
         .fetch_one(&mut *c)
         .await?;
-    ensure!(
-        matches!(
-            role.as_str(),
-            "mdm_runtime"
-                | "mdm_api"
-                | "mdm_access"
-                | "mdm_command_runtime"
-                | "mdm_inventory_runtime"
-                | "mdm_scope_runtime"
-                | "mdm_policy_runtime"
-                | "mdm_resource_runtime"
-                | "mdm_software_runtime"
-                | "mdm_telemetry_runtime"
-        ),
-        "unknown collection runtime"
-    );
+    let role = match name.as_str() {
+        "mdm_runtime" | "da_runtime" => CollectionRole::Runtime,
+        "mdm_api" | "da_api" => CollectionRole::Api,
+        "mdm_access" | "da_access" => CollectionRole::Access,
+        "mdm_command_runtime" | "da_command_runtime" => CollectionRole::Command,
+        "mdm_inventory_runtime" | "da_inventory_runtime" => CollectionRole::Inventory,
+        "mdm_scope_runtime" | "da_scope_runtime" => CollectionRole::Scope,
+        "mdm_policy_runtime" | "da_policy_runtime" => CollectionRole::Policy,
+        "mdm_resource_runtime" | "da_resource_runtime" => CollectionRole::Resource,
+        "mdm_software_runtime" | "da_software_runtime" => CollectionRole::Software,
+        "mdm_telemetry_runtime" | "da_telemetry_runtime" => CollectionRole::Telemetry,
+        _ => anyhow::bail!("unknown collection runtime"),
+    };
     for (table, identity, columns) in [
         (
             "retention_policies",
@@ -160,7 +157,7 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
         ),
         (
             "collection_results",
-            "PRIMARY KEY (tenant_id, run)",
+            "PRIMARY KEY (tenant_id, scope, run)",
             serde_json::json!([
                 ["tenant_id", "uuid", true],
                 ["run", "text", true],
@@ -174,53 +171,51 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
         ),
     ] {
         let consumer = matches!(
-            role.as_str(),
-            "mdm_scope_runtime"
-                | "mdm_policy_runtime"
-                | "mdm_resource_runtime"
-                | "mdm_software_runtime"
-                | "mdm_telemetry_runtime"
+            role,
+            CollectionRole::Scope
+                | CollectionRole::Policy
+                | CollectionRole::Resource
+                | CollectionRole::Software
+                | CollectionRole::Telemetry
         );
         let select = if table == "retention_policies" {
-            matches!(
-                role.as_str(),
-                "mdm_inventory_runtime" | "mdm_telemetry_runtime"
-            )
+            matches!(role, CollectionRole::Inventory | CollectionRole::Telemetry)
         } else if consumer {
-            !matches!(
-                role.as_str(),
-                "mdm_resource_runtime" | "mdm_software_runtime"
-            ) || !matches!(table, "array_items" | "array_versions")
+            !matches!(role, CollectionRole::Resource | CollectionRole::Software)
+                || !matches!(table, "array_items" | "array_versions")
         } else {
             table != "collection_results"
                 || matches!(
-                    role.as_str(),
-                    "mdm_runtime" | "mdm_access" | "mdm_command_runtime" | "mdm_inventory_runtime"
+                    role,
+                    CollectionRole::Runtime
+                        | CollectionRole::Access
+                        | CollectionRole::Command
+                        | CollectionRole::Inventory
                 )
         };
         let insert = match table {
             "array_versions" | "array_items" => {
-                matches!(role.as_str(), "mdm_runtime" | "mdm_inventory_runtime")
+                matches!(role, CollectionRole::Runtime | CollectionRole::Inventory)
             }
-            "field_versions" | "retention_policies" => role == "mdm_inventory_runtime",
+            "field_versions" | "retention_policies" => role == CollectionRole::Inventory,
             "collection_definitions" => matches!(
-                role.as_str(),
-                "mdm_access"
-                    | "mdm_command_runtime"
-                    | "mdm_inventory_runtime"
-                    | "mdm_policy_runtime"
-                    | "mdm_telemetry_runtime"
+                role,
+                CollectionRole::Access
+                    | CollectionRole::Command
+                    | CollectionRole::Inventory
+                    | CollectionRole::Policy
+                    | CollectionRole::Telemetry
             ),
             "collection_results" => matches!(
-                role.as_str(),
-                "mdm_access"
-                    | "mdm_command_runtime"
-                    | "mdm_inventory_runtime"
-                    | "mdm_telemetry_runtime"
+                role,
+                CollectionRole::Access
+                    | CollectionRole::Command
+                    | CollectionRole::Inventory
+                    | CollectionRole::Telemetry
             ),
             _ => matches!(
-                role.as_str(),
-                "mdm_access" | "mdm_command_runtime" | "mdm_inventory_runtime"
+                role,
+                CollectionRole::Access | CollectionRole::Command | CollectionRole::Inventory
             ),
         };
         let valid:bool=sqlx::query_scalar(r#"
@@ -242,7 +237,21 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
          AND (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum) FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped) @> $5::jsonb
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm' AND c.relname=$1
         "#).bind(table).bind(select).bind(insert).bind(identity).bind(columns.to_string()).fetch_one(&mut *c).await?;
-        ensure!(valid, "collection table admission rejected: {role}.{table}");
+        ensure!(valid, "collection table admission rejected: {name}.{table}");
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CollectionRole {
+    Runtime,
+    Api,
+    Access,
+    Command,
+    Inventory,
+    Scope,
+    Policy,
+    Resource,
+    Software,
+    Telemetry,
 }

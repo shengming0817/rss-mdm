@@ -248,6 +248,7 @@ pub async fn current_registration(
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::control::device::store::lock_channel(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &t,
                 &d,
@@ -260,6 +261,7 @@ pub async fn current_registration(
     let rows = tx
         .with_connection(move |c| {
             Box::pin(crate::control::device::read::active_channel_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
                 vec![device],
@@ -307,6 +309,7 @@ pub async fn require_source(
     let valid = tx
         .with_connection(move |c| {
             Box::pin(crate::control::device::read::enabled_source_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
                 registration,
@@ -344,7 +347,14 @@ pub async fn bind_native_key(
 ) -> std::result::Result<(), Error> {
     let result = runtime
         .local_tx_with_context(tenant, deadline(), key_id, |key_id, tx| {
-            Box::pin(async move { rss_mdm_native_protection::binding::bind_in(tx, key_id).await })
+            Box::pin(async move {
+                rss_mdm_native_protection::binding::bind_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    tx,
+                    key_id,
+                )
+                .await
+            })
         })
         .await;
     result.fold(

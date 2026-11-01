@@ -59,6 +59,7 @@ impl Service {
             return Ok(receipt);
         }
         let child_audit = RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             self.management.to_string(),
             "tenant_administrator_create",
             rss_mdm_audit_integration::AuditIntent::Management,

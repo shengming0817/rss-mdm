@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 fn dispatch(
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: rss_request_context::TenantId,
     version: Uuid,
     id: Uuid,
@@ -29,7 +30,7 @@ fn dispatch(
             AuthoredMessageMetadata::new(
                 tenant,
                 checked_input(Timepoint::try_from(now))?,
-                messaging_domain(),
+                messaging_domain(profile),
                 checked_input(MessageRoute::parse("agent.task"))?,
                 ContractIdentity::new(
                     checked_input(ContractId::parse("mdm.credential-dispatch"))?,
@@ -65,7 +66,12 @@ impl AdmissionTrigger {
 }
 
 /// Only the authenticated device can cause its own recurring execution to be admitted.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "task acceptance keeps independent authorization, target, deadline and signing evidence"
+)]
 pub(crate) async fn accept_for_device(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
     policy: &crate::tasks::policy::CredentialPolicy,
@@ -91,16 +97,30 @@ pub(crate) async fn accept_for_device(
         policy.frequency,
         policy.entry_source(),
     );
-    let (pending, last) = policy_pending_in(tx, owner, version, target, now).await?;
+    let (pending, last) = policy_pending_in(profile, tx, owner, version, target, now).await?;
     if pending {
         return Ok(());
     }
     let tenant = tx.tenant_id().to_string();
     let device = target.device.clone();
     let allow_explicit = trigger.explicit();
-    let explicit=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(Uuid,i64,i64)>("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND $5 AND NOT EXISTS(SELECT 1 FROM mdm_recovery_tasks.runs r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1").bind(tenant).bind(version).bind(device).bind(now).bind(allow_explicit).fetch_optional(c).await
-    })).await?;
+    let explicit = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_as::<_, (Uuid, i64, i64)>(
+                    crate::storage_profile::sql(profile)
+                        .tasks_actions_production_accept_for_device_1,
+                )
+                .bind(tenant)
+                .bind(version)
+                .bind(device)
+                .bind(now)
+                .bind(allow_explicit)
+                .fetch_optional(c)
+                .await
+            })
+        })
+        .await?;
 
     let (coordinate, event) = if let AdmissionTrigger::Custom { request, at, .. } = trigger {
         (at, format!("event:{request}"))
@@ -155,10 +175,11 @@ pub(crate) async fn accept_for_device(
     if deadline <= available {
         return Ok(());
     }
-    if !occurrence_available_in(service, tx, version, target, &occurrence, now).await? {
+    if !occurrence_available_in(profile, service, tx, version, target, &occurrence, now).await? {
         return Ok(());
     }
     queue_run_in(
+        profile,
         service,
         tx,
         RunInput {
@@ -191,6 +212,7 @@ pub struct RunInput<'a> {
     pub now: i64,
 }
 pub(crate) async fn queue_run_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
     input: RunInput<'_>,
@@ -206,7 +228,7 @@ pub(crate) async fn queue_run_in(
         deadline,
         now,
     } = input;
-    super::agent::lock_device(tx, &target.device).await?;
+    super::agent::lock_device(profile, tx, &target.device).await?;
     if !service
         .capacity
         .available_in(tx, &target.device, now)
@@ -229,11 +251,11 @@ pub(crate) async fn queue_run_in(
         })
         .await??;
     let evidence = checked_input(serde_json::to_value(evidence))?;
-    let message = dispatch(tx.tenant_id(), version, id, target, now)?;
+    let message = dispatch(profile, tx.tenant_id(), version, id, target, now)?;
     let fingerprint = message.fingerprint().as_bytes().to_vec();
     let writer = rss_transactional_messaging_postgres::PgOutboxWriter::new(
         service.runtime.clone(),
-        messaging_domain(),
+        messaging_domain(profile),
     );
     if writer
         .append(tx, message)
@@ -249,13 +271,35 @@ pub(crate) async fn queue_run_in(
     let digest = fingerprint.clone();
     let origin = checked_input(serde_json::to_value(origin))?;
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
-    tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_recovery_tasks.runs(tenant_id,id,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
-            .bind(tenant).bind(id).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).execute(c).await?;Ok(())
-    })).await?;
-    crate::tasks::wake::run_in(&service.reconcile_messaging, tx, id).await?;
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(
+                crate::storage_profile::sql(profile).tasks_actions_production_queue_run_in_1,
+            )
+            .bind(tenant)
+            .bind(id)
+            .bind(version)
+            .bind(target.device)
+            .bind(target.registration)
+            .bind(target.generation)
+            .bind(occurrence)
+            .bind(available)
+            .bind(deadline)
+            .bind(state)
+            .bind(digest)
+            .bind(now)
+            .bind(evidence)
+            .bind(origin)
+            .execute(c)
+            .await?;
+            Ok(())
+        })
+    })
+    .await?;
+    crate::tasks::wake::run_in(profile, &service.reconcile_messaging, tx, id).await?;
 
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        profile,
         tx.tenant_id().to_string(),
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -270,7 +314,7 @@ pub(crate) async fn queue_run_in(
     audit.target(&id.to_string());
     audit.registration(registration);
     let result: Result<()> = async {
-        let run = super::storage::read_run(tx, id).await?;
+        let run = super::storage::read_run(profile, tx, id).await?;
         let fact = Fact::business(&audit, &format!("action:{id}:accept"), 202, "success", None)?
             .with_activity(&super::activity::run(
                 &run,
@@ -292,6 +336,7 @@ pub(crate) async fn queue_run_in(
 /// Unknown writes remain fenced across registration changes. Expired or confirmed
 /// cancelled read-only native collections can admit a fresh observation.
 pub async fn policy_pending_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     owner: Uuid,
     version: Uuid,
@@ -301,10 +346,24 @@ pub async fn policy_pending_in(
     let tenant = tx.tenant_id().to_string();
     let device = target.device.clone();
     let registration = target.registration.to_string();
-    let value=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or(state->>'execution'='unknown' OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_recovery_tasks.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
-            .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).fetch_one(c).await
-    })).await?;
+    let value = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_as::<_, (bool, Option<i64>)>(
+                    crate::storage_profile::sql(profile)
+                        .tasks_actions_production_policy_pending_in_1,
+                )
+                .bind(tenant)
+                .bind(owner.to_string())
+                .bind(device)
+                .bind(now)
+                .bind(registration)
+                .bind(version)
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?;
     Ok(value)
 }
 /// Check-in timing is shared by automatic and targeted admission.
@@ -333,6 +392,7 @@ pub fn policy_occurrence(
     }
 }
 pub(crate) async fn occurrence_available_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
     version: Uuid,
@@ -343,9 +403,22 @@ pub(crate) async fn occurrence_available_in(
     let tenant = tx.tenant_id().to_string();
     let device = target.device.clone();
     let key = occurrence.to_owned();
-    let exists: bool = tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_recovery_tasks.runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4)").bind(tenant).bind(version).bind(device).bind(key).fetch_one(c).await
-    })).await?;
+    let exists: bool = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar(
+                    crate::storage_profile::sql(profile)
+                        .tasks_actions_production_occurrence_available_in_1,
+                )
+                .bind(tenant)
+                .bind(version)
+                .bind(device)
+                .bind(key)
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?;
     Ok(!exists
         && service
             .capacity
@@ -353,7 +426,12 @@ pub(crate) async fn occurrence_available_in(
             .await?)
 }
 
-pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
-    rss_transactional_messaging::message::MessagingDomain::parse("mdm.recovery.credentials.v1")
-        .expect("fixed credential domain")
+pub fn messaging_domain(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> rss_transactional_messaging::message::MessagingDomain {
+    rss_transactional_messaging::message::MessagingDomain::parse(match profile {
+        rss_mdm_install_support::StorageProfile::Mdm => "mdm.recovery.credentials.v1",
+        rss_mdm_install_support::StorageProfile::Da => "da.recovery.credentials.v1",
+    })
+    .expect("fixed credential domain")
 }

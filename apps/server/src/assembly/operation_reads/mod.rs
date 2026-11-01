@@ -450,9 +450,9 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                 if q.selects("evidence"){for row in &page.items{if row["kind"]=="action_run"{run_ids.push(uuid::Uuid::parse_str(row["id"].as_str().ok_or(Error::Malformed)?).map_err(|_|Error::Malformed)?);}}}
                 let execution_ids=rss_mdm_device_service::control::capacity::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let software_ids=rss_mdm_software_service::deployment::capacity::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
-                let enrollment_ids=rss_mdm_registration_service::enrollment::tasks::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
+                let enrollment_ids=rss_mdm_registration_service::enrollment::tasks::storage::owned_ids_on(rss_mdm_install_support::StorageProfile::Mdm, c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let access_ids=rss_mdm_registration_service::device_access::execution::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
-                let credential_ids=rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
+                let credential_ids=rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(rss_mdm_install_support::StorageProfile::Mdm, c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 for id in &run_ids{if [access_ids.contains(id),credential_ids.contains(id),execution_ids.contains(id),software_ids.contains(id),enrollment_ids.contains(id)].into_iter().filter(|v|*v).count()!=1{return Err(Error::Unavailable(Failure::CommandInvariant));}}
                 let mut execution=rss_mdm_device_service::control::directory::run_summaries_on(c,s.tasks.tenant,execution_ids.into_iter().collect()).await.map_err(execution_fault)?;
                 let mut software=rss_mdm_software_service::deployment::directory::run_summaries_on(c,s.tasks.tenant,software_ids.into_iter().collect()).await.map_err(software_fault)?;
@@ -467,8 +467,8 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                             if let Some(v)=execution.remove(&metadata.id){Evidence::Device(v)}
                             else if let Some(v)=software.remove(&metadata.id){Evidence::Software(v)}
                             else if access_ids.contains(&metadata.id){Evidence::Access(rss_mdm_registration_service::device_access::execution::queries::detail_on(c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::access_fault)?)}
-                            else if credential_ids.contains(&metadata.id){Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::credential_fault)?)}
-                            else{Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::enrollment_fault)?)}
+                            else if credential_ids.contains(&metadata.id){Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm, c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::credential_fault)?)}
+                            else{Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm, c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::enrollment_fault)?)}
                         }
                     })};
                     let detail_url=match metadata.kind{KindOfOperation::Command=>format!("/api/v1/devices/{}/operations/{}",url::form_urlencoded::byte_serialize(metadata.device.as_bytes()).collect::<String>().replace('+',"%20"),metadata.id),KindOfOperation::ActionRun=>format!("/api/v1/policies/{}/runs/{}",metadata.policy.ok_or(Error::Conflict)?,metadata.id)};

@@ -371,13 +371,22 @@ async fn rewrap_native(
     rewritten += rss_mdm_content_service::connections::rewrap(&mut *c, tenant, protector)
         .await
         .map_err(|_| Error::Corrupt)?;
-    rewritten +=
-        rss_mdm_registration_service::agent::connections::rewrap(&mut *c, tenant, protector)
-            .await
-            .map_err(|_| Error::Corrupt)?;
-    rewritten += rss_mdm_task_trust::trust::rewrap(&mut *c, tenant, protector)
-        .await
-        .map_err(|_| Error::Corrupt)?;
+    rewritten += rss_mdm_registration_service::agent::connections::rewrap(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut *c,
+        tenant,
+        protector,
+    )
+    .await
+    .map_err(|_| Error::Corrupt)?;
+    rewritten += rss_mdm_task_trust::trust::rewrap(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut *c,
+        tenant,
+        protector,
+    )
+    .await
+    .map_err(|_| Error::Corrupt)?;
     rewritten += rss_mdm_apple_channel::rewrap::run(&mut *c, &tenant.to_string(), protector)
         .await
         .map_err(|_| Error::Corrupt)?;
@@ -399,13 +408,28 @@ async fn rewrap_recovery(
         .ok_or(Error::Corrupt)?
         .open()
         .map_err(|_| Error::Corrupt)?;
-    let prepared =
-        rss_mdm_recovery_credentials::storage::prepare_rewrap_in(c, tenant, &recovery.keys)
-            .await
-            .map_err(|_| Error::Corrupt)?;
-    rss_mdm_recovery_credentials::storage::rewrap_in(c, prepared, &recovery.keys)
-        .await
-        .map_err(|_| Error::Corrupt)
+    let prepared = rss_mdm_recovery_credentials::storage::prepare_rewrap_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        c,
+        tenant,
+        &recovery.keys,
+    )
+    .await
+    .map_err(|_| Error::Corrupt)?;
+    rss_mdm_recovery_credentials::storage::rewrap_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        c,
+        prepared,
+        &recovery.keys,
+    )
+    .await
+    .map_err(|_| Error::Corrupt)
 }
 
 async fn rewrap_host(c: &mut sqlx::PgConnection, host: &Host, purpose: Purpose) -> Result<u64> {

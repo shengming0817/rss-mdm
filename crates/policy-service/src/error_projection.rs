@@ -110,6 +110,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
     fn from(error: rss_mdm_registration_service::Error) -> Self {
         use rss_mdm_registration_service::Error as R;
         match error {
+            R::Unsupported => Self::Unsupported,
             R::Agent(_) => Self::Unauthorized,
             R::Malformed => Self::Malformed,
             R::Unauthorized => Self::Unauthorized,
@@ -162,6 +163,7 @@ impl From<rss_mdm_script_service::Error> for Error {
     fn from(e: rss_mdm_script_service::Error) -> Self {
         use rss_mdm_script_service::Error as S;
         match e {
+            S::Unsupported => Self::Unsupported,
             S::Malformed => Self::Malformed,
             S::Conflict => Self::Conflict,
             S::Forbidden => Self::Forbidden,

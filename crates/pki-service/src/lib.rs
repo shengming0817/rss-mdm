@@ -11,8 +11,18 @@ pub mod rotation;
 pub mod scep;
 pub mod signing;
 pub mod signing_queries;
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
-pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+pub const NATIVE_SQL: &str = include_str!("../schema/native.sql");
+pub const fn install_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).install
+}
+pub const fn object_manifest(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).object_manifest
+}
+pub const ACCESS_CONTRACT: &str =
+    storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm).access_contract;
+pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).access_contract
+}
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::{
     rand::SystemRandom,
@@ -552,3 +562,5 @@ fn csr_input_names(pem: &str) -> Result<Vec<String>, Error> {
 }
 
 pub mod observations;
+
+mod storage_profile;

@@ -39,23 +39,32 @@ fn error(e: rss_mdm_query::Error) -> Error {
     }
 }
 pub async fn list(
+    profile: rss_mdm_install_support::StorageProfile,
     database: &Store,
     proof: &AuthorizedPrincipal,
     device: &str,
     query: &Query,
     codec: &CursorCodec,
 ) -> Result<Page<rss_mdm_query::directory::Projection<Row>>, Error> {
+    if profile != proof.profile() || profile != database.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
     query.require_schema(&SCHEMA).map_err(error)?;
     rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
     proof.credentials(device)?;
     let mut tx = database.snapshot(proof.tenant_id()).await?;
-    let current =
-        rss_mdm_authorization_service::snapshot_on(&mut tx, proof.tenant_id(), proof.instance_id())
-            .await?;
+    let current = rss_mdm_authorization_service::snapshot_on(
+        profile,
+        &mut tx,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await?;
     current
         .require(proof, Permission::Credentials, Some(device))
         .map_err(rss_mdm_authorization_service::Error::from)?;
-    let before = crate::device_access::directory::authorization_binding(&mut tx, proof).await?;
+    let before = current.query_binding(proof)?;
     let binding = query
         .binding(&(
             proof.tenant_id(),
@@ -67,7 +76,7 @@ pub async fn list(
         .map_err(error)?;
     let after = query.after(codec, &binding).map_err(error)?;
     let mut sql = sqlx::QueryBuilder::new(
-        "SELECT jsonb_build_object('registrationId',r.id,'userContextId',CASE WHEN q.windows_profile='Full' THEN r.id END,'enrollmentId',r.request_id,'agentGrantId',r.agent_grant_id,'source',coalesce(q.source,'agent.builtin'),'generation',r.generation,'status',r.state) FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=",
+        crate::storage_profile::sql(profile).enrollment_registrations_list_1,
     );
     sql.push_bind(proof.tenant_id().to_owned())
         .push("::uuid AND r.device=")

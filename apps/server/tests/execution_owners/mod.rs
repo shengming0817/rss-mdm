@@ -26,6 +26,7 @@ fn context() -> w::SoftwareExecutionContext {
 }
 fn request(c: &Context) -> RequestAudit {
     RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         c.tenant.to_string(),
         "agent_task_event",
         AuditIntent::Management,
@@ -220,7 +221,8 @@ impl Harness {
             Arc::new(script::Materials {
                 agent_store: Arc::new(super::agent_facts::AgentFacts),
                 source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
-                    Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
                 )),
                 capacity: Arc::new(super::capacity::Capacity),
                 instance: self.c.inputs.installation.instance_id.clone(),

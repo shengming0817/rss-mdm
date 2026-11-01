@@ -21,6 +21,8 @@ impl Service {
         input: &wire::CertificateRequest,
         a: &RequestAudit,
     ) -> Result<wire::Candidate, Failure> {
+        let profile = self.profile();
+
         version(input.wire_version, input.operation_id)?;
         input.runtime.validate().map_err(|_| Error::Malformed)?;
         let verified = csr(&input.csr)?;
@@ -39,20 +41,17 @@ impl Service {
                 Box::pin(async move {
                     let (service, input, a, digest, spki, csr) = ctx;
                     let tenant = service.tenant.to_string();
-                    configurations::lock_for_grant(c, &tenant, input.grant_id).await?;
-                    let grant = grant_row(c, &tenant, input.grant_id).await?;
+                    configurations::lock_for_grant(profile, c, &tenant, input.grant_id).await?;
+                    let grant = grant_row(profile, c, &tenant, input.grant_id).await?;
                     check_secret(&tenant, &grant, &input.secret)?;
                     a.target(&grant.try_get::<String, _>("device").map_err(db)?);
-                    if let Some(row) = sqlx::query(
-                        r#"
-SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$2 FOR UPDATE
-"#,
-                    )
-                    .bind(&tenant)
-                    .bind(input.grant_id)
-                    .fetch_optional(&mut *c)
-                    .await
-                    .map_err(db)?
+                    if let Some(row) =
+                        sqlx::query(crate::storage_profile::sql(profile).agent_issuance_issue_1)
+                            .bind(&tenant)
+                            .bind(input.grant_id)
+                            .fetch_optional(&mut *c)
+                            .await
+                            .map_err(db)?
                     {
                         if row.try_get::<Uuid, _>("operation_id").map_err(db)? != input.operation_id
                             || row.try_get::<String, _>("request_digest").map_err(db)? != *digest
@@ -77,8 +76,13 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$
                         .map_err(db)?
                         .is_none()
                     {
-                        crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent)
-                            .await?;
+                        crate::admission::require_new_in(
+                            profile,
+                            c,
+                            &tenant,
+                            crate::quotas::Channel::Agent,
+                        )
+                        .await?;
                     }
                     if let Some(authority) = grant
                         .try_get::<Option<serde_json::Value>, _>("native_authority")
@@ -136,52 +140,29 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$
                             &signing,
                         )
                         .await?;
-                    sqlx::query(
-                        r#"
-INSERT INTO
-mdm_access.agent_issuances(tenant_id,
-id,
-grant_id,
-operation_id,
-request_digest,
-csr,
-spki,
-identity,
-profile,
-not_before,
-not_after,
-authority_digest,
-signing_issuer,
-state)
-VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'signing')
-"#,
-                    )
-                    .bind(&tenant)
-                    .bind(attempt)
-                    .bind(input.grant_id)
-                    .bind(input.operation_id)
-                    .bind(&*digest)
-                    .bind(&*csr)
-                    .bind(&*spki)
-                    .bind(&identity)
-                    .bind(serde_json::to_value(&input.runtime).map_err(|_| Error::Malformed)?)
-                    .bind(start)
-                    .bind(end)
-                    .bind(service.issuer.authority_digest(issuer)?)
-                    .bind(hex(issuer))
-                    .execute(&mut *c)
-                    .await
-                    .map_err(db)?;
-                    sqlx::query(
-                        r#"
-UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND id=$2
-"#,
-                    )
-                    .bind(&tenant)
-                    .bind(input.grant_id)
-                    .execute(&mut *c)
-                    .await
-                    .map_err(db)?;
+                    sqlx::query(crate::storage_profile::sql(profile).agent_issuance_issue_2)
+                        .bind(&tenant)
+                        .bind(attempt)
+                        .bind(input.grant_id)
+                        .bind(input.operation_id)
+                        .bind(&*digest)
+                        .bind(&*csr)
+                        .bind(&*spki)
+                        .bind(&identity)
+                        .bind(serde_json::to_value(&input.runtime).map_err(|_| Error::Malformed)?)
+                        .bind(start)
+                        .bind(end)
+                        .bind(service.issuer.authority_digest(issuer)?)
+                        .bind(hex(issuer))
+                        .execute(&mut *c)
+                        .await
+                        .map_err(db)?;
+                    sqlx::query(crate::storage_profile::sql(profile).agent_issuance_issue_3)
+                        .bind(&tenant)
+                        .bind(input.grant_id)
+                        .execute(&mut *c)
+                        .await
+                        .map_err(db)?;
                     Ok(Change {
                         value: Claim::New(signing),
                         replay: false,
@@ -200,7 +181,7 @@ UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND
             .issuer
             .issue(
                 intent,
-                &rss_mdm_pki_service::signing::SigningStore::new(self.audit.clone()),
+                &rss_mdm_pki_service::signing::SigningStore::new(profile, self.audit.clone()),
                 Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Configuration)?,
             )
             .await
@@ -229,6 +210,8 @@ UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND
         id: Uuid,
         a: &RequestAudit,
     ) -> Result<(), Error> {
+        let profile = self.profile();
+
         a.operation(
             input.operation_id,
             "agent_certificate_unknown",
@@ -238,10 +221,7 @@ UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND
             Box::pin(async move {
                 let (service, id) = ctx;
                 let n = sqlx::query(
-                    r#"
-UPDATE mdm_access.agent_issuances SET state='unknown' WHERE tenant_id=$1::uuid AND id=$2 AND
-state='signing'
-"#,
+                    crate::storage_profile::sql(profile).agent_issuance_record_unknown_1,
                 )
                 .bind(service.tenant.to_string())
                 .bind(*id)
@@ -266,6 +246,8 @@ state='signing'
         a: &RequestAudit,
         principal: Option<&AuthorizedPrincipal>,
     ) -> Result<wire::Candidate, Error> {
+        let profile = self.profile();
+
         a.operation(
             operation,
             "agent_certificate_result",
@@ -276,116 +258,181 @@ state='signing'
         } else {
             hex(certificate.csr_digest)
         };
-        self.write(a, (self, grant, id, certificate, digest, principal, operation, a), |ctx, c| {
-            Box::pin(async move {
-                let (service, grant, id, certificate, digest, principal, operation, a) = ctx;
-                let tenant = service.tenant.to_string();
-                if let Some(p)=principal {
-                    p.check_live()?;
-                    rss_mdm_authorization_service::lock_on(c,&tenant,p.instance_id()).await?;
-                }
-                // A reused certificate is not a replay of a new administrator operation.
-                let receipt = principal.map(|p| crate::operations::Operation {
-                    actor: crate::operations::Actor::from_authorized(p),
-                    key: *operation,
-                    digest,
-                });
-                let previous = if let Some(op) = &receipt {
-                    crate::operations::replay(c, op).await?
-                } else {
-                    None
-                };
-                let g = grant_row(c, &tenant, *grant).await?;
-                if let Some(p)=principal {
-                    rss_mdm_authorization_service::snapshot_on(c,&tenant,p.instance_id()).await?
-                        .require(p,rss_mdm_authorization_service::Permission::Credentials,Some(&g.try_get::<String,_>("device").map_err(db)?)).map_err(|_|Error::Forbidden)?;
-                }
-                a.target(&g.try_get::<String, _>("device").map_err(db)?);
-                let old = sqlx::query(
-                    r#"
-SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 AND grant_id=$3 FOR
-UPDATE
-"#,
-                )
-                .bind(&tenant)
-                .bind(*id)
-                .bind(*grant)
-                .fetch_one(&mut *c)
-                .await
-                .map_err(db)?;
-                if let Some(previous) = previous {
-                    if serde_json::from_str::<Uuid>(&previous).map_err(|_| Error::Corrupt)? != *id {
-                        return Err(Error::Corrupt);
+        self.write(
+            a,
+            (
+                self,
+                grant,
+                id,
+                certificate,
+                digest,
+                principal,
+                operation,
+                a,
+            ),
+            |ctx, c| {
+                Box::pin(async move {
+                    let (service, grant, id, certificate, digest, principal, operation, a) = ctx;
+                    let tenant = service.tenant.to_string();
+                    if let Some(p) = principal {
+                        p.check_live()?;
+                        rss_mdm_authorization_service::lock_on(
+                            profile,
+                            c,
+                            &tenant,
+                            p.instance_id(),
+                        )
+                        .await?;
                     }
-                    return Ok(Change {value: candidate(&g, &old)?, replay: true});
-                }
-                if old.try_get::<String, _>("signing_issuer").map_err(db)?
-                    != hex(certificate.metadata.issuer)
-                {
-                    return Err(Error::Forbidden);
-                }
-                if let Some(binding)=sqlx::query_scalar::<_,Vec<u8>>("SELECT binding FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2")
-                    .bind(&tenant).bind(*id).fetch_optional(&mut *c).await.map_err(db)? {
-                    rss_mdm_pki_service::recovery::adopt_in(c,&tenant,*id,&binding,
-                        &serde_json::to_vec(&certificate.chain).map_err(|_|Error::Corrupt)?).await.map_err(|_|Error::Conflict)?;
-                }
-                rss_mdm_pki_service::certificates::record_candidate_in(c,&tenant,"agent",g.try_get::<Option<Uuid>,_>("target_registration").map_err(db)?,
-                    &hex(certificate.metadata.issuer),certificate.chain.first().ok_or(Error::Corrupt)?).await.map_err(|_|Error::Storage)?;
-                if g.try_get::<String,_>("state").map_err(db)?=="revoked" {
-                    rss_mdm_pki_service::certificates::enqueue_in(c,&tenant,"agent",&hex(certificate.metadata.issuer),
-                        &rss_mdm_device_trust::serial(&certificate.metadata.serial)).await.map_err(|_|Error::Storage)?;
-                }
-                let replay = old.try_get::<String, _>("state").map_err(db)? == "issued";
-                if replay
-                    && old.try_get::<String, _>("fingerprint").map_err(db)?
-                        != hex(certificate.metadata.fingerprint)
-                {
-                    return Err(Error::Conflict);
-                }
-                if !replay {
-                    sqlx::query(
-                        r#"
-UPDATE mdm_access.agent_issuances SET
-state='issued',certificate_chain=$3,metadata=$4,fingerprint=$5 WHERE tenant_id=$1::uuid AND
-id=$2
-"#,
+                    // A reused certificate is not a replay of a new administrator operation.
+                    let receipt = principal.map(|p| crate::operations::Operation {
+                        actor: crate::operations::Actor::from_authorized(p),
+                        key: *operation,
+                        digest,
+                    });
+                    let previous = if let Some(op) = &receipt {
+                        crate::operations::replay(profile, c, op).await?
+                    } else {
+                        None
+                    };
+                    let g = grant_row(profile, c, &tenant, *grant).await?;
+                    if let Some(p) = principal {
+                        rss_mdm_authorization_service::snapshot_on(
+                            profile,
+                            c,
+                            &tenant,
+                            p.instance_id(),
+                        )
+                        .await?
+                        .require(
+                            p,
+                            rss_mdm_authorization_service::Permission::Credentials,
+                            Some(&g.try_get::<String, _>("device").map_err(db)?),
+                        )
+                        .map_err(|_| Error::Forbidden)?;
+                    }
+                    a.target(&g.try_get::<String, _>("device").map_err(db)?);
+                    let old = sqlx::query(
+                        crate::storage_profile::sql(profile).agent_issuance_save_certificate_1,
                     )
                     .bind(&tenant)
                     .bind(*id)
-                    .bind(
-                        serde_json::to_value(
-                            certificate
-                                .chain
-                                .iter()
-                                .map(|v| STANDARD.encode(v))
-                                .collect::<Vec<_>>(),
-                        )
-                        .map_err(|_| Error::Corrupt)?,
-                    )
-                    .bind(serde_json::to_value(&certificate.metadata).map_err(|_| Error::Corrupt)?)
-                    .bind(hex(certificate.metadata.fingerprint))
-                    .execute(&mut *c)
+                    .bind(*grant)
+                    .fetch_one(&mut *c)
                     .await
                     .map_err(db)?;
-                }
-                let row = sqlx::query(
-                    r#"
-SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
-"#,
-                )
-                .bind(&tenant)
-                .bind(*id)
-                .fetch_one(&mut *c)
-                .await
-                .map_err(db)?;
-                let value = candidate(&g, &row)?;
-                if let Some(op) = &receipt {
-                    // The immutable issuance owns the chain; the bounded receipt stores its identity only.
-                    crate::operations::save_issuance_recovery(c, op, *id, a).await?;
-                }
-                Ok(Change {value, replay: receipt.is_none() && replay})
-            })
-        })
+                    if let Some(previous) = previous {
+                        if serde_json::from_str::<Uuid>(&previous).map_err(|_| Error::Corrupt)?
+                            != *id
+                        {
+                            return Err(Error::Corrupt);
+                        }
+                        return Ok(Change {
+                            value: candidate(&g, &old)?,
+                            replay: true,
+                        });
+                    }
+                    if old.try_get::<String, _>("signing_issuer").map_err(db)?
+                        != hex(certificate.metadata.issuer)
+                    {
+                        return Err(Error::Forbidden);
+                    }
+                    if let Some(binding) = sqlx::query_scalar::<_, Vec<u8>>(
+                        crate::storage_profile::sql(profile).agent_issuance_save_certificate_4,
+                    )
+                    .bind(&tenant)
+                    .bind(*id)
+                    .fetch_optional(&mut *c)
+                    .await
+                    .map_err(db)?
+                    {
+                        rss_mdm_pki_service::recovery::adopt_in(
+                            profile,
+                            c,
+                            &tenant,
+                            *id,
+                            &binding,
+                            &serde_json::to_vec(&certificate.chain).map_err(|_| Error::Corrupt)?,
+                        )
+                        .await
+                        .map_err(|_| Error::Conflict)?;
+                    }
+                    rss_mdm_pki_service::certificates::record_candidate_in(
+                        profile,
+                        c,
+                        &tenant,
+                        "agent",
+                        g.try_get::<Option<Uuid>, _>("target_registration")
+                            .map_err(db)?,
+                        &hex(certificate.metadata.issuer),
+                        certificate.chain.first().ok_or(Error::Corrupt)?,
+                    )
+                    .await
+                    .map_err(|_| Error::Storage)?;
+                    if g.try_get::<String, _>("state").map_err(db)? == "revoked" {
+                        rss_mdm_pki_service::certificates::enqueue_in(
+                            profile,
+                            c,
+                            &tenant,
+                            "agent",
+                            &hex(certificate.metadata.issuer),
+                            &rss_mdm_device_trust::serial(&certificate.metadata.serial),
+                        )
+                        .await
+                        .map_err(|_| Error::Storage)?;
+                    }
+                    let replay = old.try_get::<String, _>("state").map_err(db)? == "issued";
+                    if replay
+                        && old.try_get::<String, _>("fingerprint").map_err(db)?
+                            != hex(certificate.metadata.fingerprint)
+                    {
+                        return Err(Error::Conflict);
+                    }
+                    if !replay {
+                        sqlx::query(
+                            crate::storage_profile::sql(profile).agent_issuance_save_certificate_2,
+                        )
+                        .bind(&tenant)
+                        .bind(*id)
+                        .bind(
+                            serde_json::to_value(
+                                certificate
+                                    .chain
+                                    .iter()
+                                    .map(|v| STANDARD.encode(v))
+                                    .collect::<Vec<_>>(),
+                            )
+                            .map_err(|_| Error::Corrupt)?,
+                        )
+                        .bind(
+                            serde_json::to_value(&certificate.metadata)
+                                .map_err(|_| Error::Corrupt)?,
+                        )
+                        .bind(hex(certificate.metadata.fingerprint))
+                        .execute(&mut *c)
+                        .await
+                        .map_err(db)?;
+                    }
+                    let row = sqlx::query(
+                        crate::storage_profile::sql(profile).agent_issuance_save_certificate_3,
+                    )
+                    .bind(&tenant)
+                    .bind(*id)
+                    .fetch_one(&mut *c)
+                    .await
+                    .map_err(db)?;
+                    let value = candidate(&g, &row)?;
+                    if let Some(op) = &receipt {
+                        // The immutable issuance owns the chain; the bounded receipt stores its identity only.
+                        crate::operations::save_issuance_recovery(profile, c, op, *id, a).await?;
+                    }
+                    Ok(Change {
+                        value,
+                        replay: receipt.is_none() && replay,
+                    })
+                })
+            },
+        )
         .await
     }
     pub async fn recover_issuance(
@@ -395,20 +442,18 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
         input: &wire::RecoverIssuance,
         a: &RequestAudit,
     ) -> Result<wire::Candidate, Failure> {
+        let profile = self.profile();
+
         self.proof(p, a)?;
         version(input.wire_version, input.operation_id)?;
         let tenant = self.tenant.to_string();
         let mut tx = self.store.begin(&tenant).await?;
-        let i = sqlx::query(
-            r#"
-SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
-"#,
-        )
-        .bind(&tenant)
-        .bind(id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
+        let i = sqlx::query(crate::storage_profile::sql(profile).agent_issuance_recover_issuance_1)
+            .bind(&tenant)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
         let expected: String = i.try_get("signing_issuer").map_err(db)?;
         let bytes = (0..32)
             .map(|i| {
@@ -418,7 +463,7 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
             .collect::<Result<Vec<_>, Error>>()?;
         let expected: [u8; 32] = bytes.try_into().map_err(|_| Error::Corrupt)?;
         let grant = i.try_get::<Uuid, _>("grant_id").map_err(db)?;
-        let g = grant_row(&mut tx, &tenant, grant).await?;
+        let g = grant_row(profile, &mut tx, &tenant, grant).await?;
         p.credentials(&g.try_get::<String, _>("device").map_err(db)?)?;
         let verified = VerifiedAgentCsr::verify(&i.try_get::<Vec<u8>, _>("csr").map_err(db)?)
             .map_err(|_| Error::Corrupt)?;

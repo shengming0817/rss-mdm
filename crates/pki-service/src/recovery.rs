@@ -35,6 +35,12 @@ impl Registry {
         a: &RequestAudit,
         now: i64,
     ) -> Result<Receipt, Error> {
+        if p.profile() != self.profile() {
+            return Err(Error::Forbidden);
+        }
+
+        let profile = self.profile();
+
         p.require_all_devices(Permission::Credentials)
             .map_err(|_| Error::Forbidden)?;
         p.bind_audit(a).map_err(|_| Error::Forbidden)?;
@@ -46,14 +52,13 @@ impl Registry {
             return Err(Error::Request);
         }
         let mut tx = self.begin(p.tenant_id()).await?;
-        let binding: Vec<u8> = sqlx::query_scalar(
-            "SELECT binding FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2",
-        )
-        .bind(p.tenant_id())
-        .bind(input.attempt)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| Error::Storage)?;
+        let binding: Vec<u8> =
+            sqlx::query_scalar(crate::storage_profile::sql(profile).recovery_recover_1)
+                .bind(p.tenant_id())
+                .bind(input.attempt)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| Error::Storage)?;
         tx.rollback().await.map_err(|_| Error::Storage)?;
         let frozen: Frozen = serde_json::from_slice(&binding).map_err(|_| Error::Storage)?;
         let purpose = match frozen.purpose.as_str() {
@@ -118,16 +123,27 @@ impl Registry {
                 Box::pin(async move {
                     let (p, input, binding, hash, bytes, receipt) = ctx;
                     p.check_live().map_err(|_| Error::Forbidden)?;
-                    rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id())
-                        .await
-                        .map_err(|_| Error::Storage)?;
-                    rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
-                        .await
-                        .map_err(|_| Error::Storage)?
-                        .require_all_devices(p, Permission::Credentials)
-                        .map_err(|_| Error::Forbidden)?;
+                    rss_mdm_authorization_service::lock_on(
+                        profile,
+                        c,
+                        p.tenant_id(),
+                        p.instance_id(),
+                    )
+                    .await
+                    .map_err(|_| Error::Storage)?;
+                    rss_mdm_authorization_service::snapshot_on(
+                        profile,
+                        c,
+                        p.tenant_id(),
+                        p.instance_id(),
+                    )
+                    .await
+                    .map_err(|_| Error::Storage)?
+                    .require_all_devices(p, Permission::Credentials)
+                    .map_err(|_| Error::Forbidden)?;
                     let phase = "signing_recover";
                     let old = replay(
+                        profile,
                         c,
                         p.tenant_id(),
                         p.principal_id(),
@@ -144,8 +160,9 @@ impl Registry {
                             key: format!("pki:{}:{phase}", input.operation),
                         });
                     }
-                    adopt_in(c, p.tenant_id(), input.attempt, binding, bytes).await?;
+                    adopt_in(profile, c, p.tenant_id(), input.attempt, binding, bytes).await?;
                     save_signing_recovery(
+                        profile,
                         c,
                         (p.tenant_id(), p.principal_id(), p.instance_id()),
                         input.operation,
@@ -169,14 +186,19 @@ impl Registry {
     }
 }
 pub async fn adopt_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     attempt: Uuid,
     binding: &[u8],
     chain: &[u8],
 ) -> Result<(), Error> {
-    let row=sqlx::query("SELECT binding,state,chain FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2 FOR UPDATE")
-        .bind(tenant).bind(attempt).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).recovery_adopt_in_1)
+        .bind(tenant)
+        .bind(attempt)
+        .fetch_one(&mut *c)
+        .await
+        .map_err(|_| Error::Storage)?;
     if row
         .try_get::<Vec<u8>, _>("binding")
         .map_err(|_| Error::Storage)?
@@ -205,6 +227,7 @@ pub async fn adopt_in(
     let frozen: Frozen = serde_json::from_slice(binding).map_err(|_| Error::Storage)?;
     let certificates: Vec<Vec<u8>> = serde_json::from_slice(chain).map_err(|_| Error::Request)?;
     crate::certificates::record_candidate_in(
+        profile,
         c,
         tenant,
         &frozen.purpose,
@@ -213,7 +236,12 @@ pub async fn adopt_in(
         certificates.first().ok_or(Error::Request)?,
     )
     .await?;
-    sqlx::query("UPDATE mdm_pki.signing SET state='issued',chain=$3 WHERE tenant_id=$1::uuid AND attempt=$2")
-        .bind(tenant).bind(attempt).bind(chain).execute(c).await.map_err(|_|Error::Storage)?;
+    sqlx::query(crate::storage_profile::sql(profile).recovery_adopt_in_2)
+        .bind(tenant)
+        .bind(attempt)
+        .bind(chain)
+        .execute(c)
+        .await
+        .map_err(|_| Error::Storage)?;
     Ok(())
 }

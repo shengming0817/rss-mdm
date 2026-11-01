@@ -11,6 +11,7 @@ fn ring(active: &str, old: bool) -> KeyRing {
 }
 fn coordinate() -> Coordinates {
     Coordinates {
+        profile: rss_mdm_install_support::StorageProfile::Mdm,
         tenant: Uuid::new_v4(),
         material: Uuid::new_v4(),
         binding: Binding {
@@ -44,6 +45,9 @@ fn stored_material_survives_restart_and_rotation_but_not_coordinate_substitution
     );
     assert!(ring("next", false).open("first", &c, &original).is_err());
     let mut mutations = Vec::new();
+    let mut v = c.clone();
+    v.profile = rss_mdm_install_support::StorageProfile::Da;
+    mutations.push(v);
     let mut v = c.clone();
     v.tenant = Uuid::new_v4();
     mutations.push(v);

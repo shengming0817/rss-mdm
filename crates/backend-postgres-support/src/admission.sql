@@ -1,6 +1,6 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
- WHERE n.nspname=$1::text AND c.relkind='r'
+ WHERE n.nspname=$1::text AND c.relkind='r' AND c.relname=ANY($2::text[])
 ), execution_roles AS (
  -- SET ROLE is authorized against session_user, not the current effective role.
  SELECT oid FROM pg_roles WHERE rolname=current_user
@@ -13,10 +13,10 @@ WITH tables AS (
 )
 SELECT
  (SELECT array_agg(relname::text ORDER BY relname)=$2::text[] FROM tables)
- AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
- WHERE n.nspname=$1::text AND c.relkind NOT IN('r','i'))
- AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname=$1::text AND NOT EXISTS(SELECT 1 FROM unnest($5::text[]) f WHERE p.oid=to_regprocedure(f)))
+ AND (NOT $6::boolean OR NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname=$1::text AND (c.relkind NOT IN('r','i') OR c.relkind='r' AND NOT c.relname=ANY($2::text[]))))
+ AND (NOT $6::boolean OR NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname=$1::text AND NOT EXISTS(SELECT 1 FROM unnest($5::text[]) f WHERE p.oid=to_regprocedure(f))))
  AND NOT EXISTS(SELECT 1 FROM unnest($5::text[]) f WHERE to_regprocedure(f) IS NULL)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN (SELECT relowner FROM tables) OR has_schema_privilege(oid,$1::text,'CREATE'))

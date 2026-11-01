@@ -38,7 +38,7 @@ impl Service {
             let mut tx=connection.begin().await.map_err(sql)?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await.map_err(sql)?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await.map_err(sql)?;
-            let grant=rss_mdm_authorization_service::snapshot_on(&mut tx,proof.tenant_id(),proof.instance_id()).await.map_err(|_|Error::Storage)?;
+            let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await.map_err(|_|Error::Storage)?;
             let binding=grant.query_binding(proof).map_err(|_|Error::Denied)?;
             let now=sqlx::query_scalar("SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint").fetch_one(&mut *tx).await.map_err(sql)?;
             let value=operation(&mut context,&mut tx,&grant,now).await?;
@@ -65,8 +65,8 @@ impl Service {
             let mut tx=connection.begin().await.map_err(sql)?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY").execute(&mut *tx).await.map_err(sql)?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await.map_err(sql)?;
-            rss_mdm_authorization_service::lock_shared_on(&mut tx,proof.tenant_id(),proof.instance_id()).await.map_err(|_|Error::Storage)?;
-            let grant=rss_mdm_authorization_service::snapshot_on(&mut tx,proof.tenant_id(),proof.instance_id()).await.map_err(|_|Error::Storage)?;
+            rss_mdm_authorization_service::lock_shared_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await.map_err(|_|Error::Storage)?;
+            let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await.map_err(|_|Error::Storage)?;
             if grant.query_binding(proof).map_err(|_|Error::Denied)?!=binding {return Err(Error::Conflict);}
             proof.check_live().map_err(|_|Error::Denied)?;
             tx.rollback().await.map_err(sql)?;

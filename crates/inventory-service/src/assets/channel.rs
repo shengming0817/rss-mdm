@@ -7,19 +7,23 @@ use uuid::Uuid;
 
 use rss_mdm_inventory::channel::{Current, Observation};
 pub async fn detail_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     registration: Uuid,
     generation: i64,
     source: ReportSource,
 ) -> Result<Observation, Error> {
-    Ok(details_in(c, tenant, &[(registration, generation, source)])
-        .await?
-        .remove(&(registration, generation, source.as_str().to_owned()))
-        .unwrap_or(Observation::Unavailable))
+    Ok(
+        details_in(profile, c, tenant, &[(registration, generation, source)])
+            .await?
+            .remove(&(registration, generation, source.as_str().to_owned()))
+            .unwrap_or(Observation::Unavailable),
+    )
 }
 /// Resolve a fixed authorized page against current registration and source generations.
 pub async fn details_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     targets: &[(Uuid, i64, ReportSource)],
@@ -32,24 +36,24 @@ pub async fn details_in(
         return Ok(BTreeMap::new());
     }
     let ids = targets.iter().map(|t| t.0).collect::<Vec<_>>();
-    let devices: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id,device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=ANY($2)",
-    )
-    .bind(tenant.to_string())
-    .bind(&ids)
-    .fetch_all(&mut *c)
-    .await
-    .map_err(db)?;
+    let devices: Vec<(Uuid, String)> =
+        sqlx::query_as(crate::storage_profile::sql(profile).assets_channel_details_in_1)
+            .bind(tenant.to_string())
+            .bind(&ids)
+            .fetch_all(&mut *c)
+            .await
+            .map_err(db)?;
     let devices = devices.into_iter().collect::<BTreeMap<_, _>>();
     let locks = targets
         .iter()
         .filter_map(|(id, _, source)| devices.get(id).map(|d| (d.clone(), source.channel())))
         .collect::<Vec<_>>();
-    crate::device::store::lock_channels(c, &tenant.to_string(), &locks).await?;
-    snapshot_details_in(c, tenant, targets).await
+    crate::device::store::lock_channels(profile, c, &tenant.to_string(), &locks).await?;
+    snapshot_details_in(profile, c, tenant, targets).await
 }
 /// Resolve the same facts on the caller's consistent snapshot, without acquiring mutation locks.
 pub async fn snapshot_details_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     targets: &[(Uuid, i64, ReportSource)],
@@ -71,7 +75,16 @@ pub async fn snapshot_details_in(
         .iter()
         .map(|t| t.2.channel().as_str().to_owned())
         .collect::<Vec<_>>();
-    let rows:Vec<(Uuid,i64,String,Uuid)>=sqlx::query_as("SELECT r.id,r.generation,s.source,s.epoch FROM unnest($2::uuid[],$3::bigint[],$4::text[],$5::text[]) t(id,generation,source,channel) JOIN mdm_access.registrations r ON r.tenant_id=$1::uuid AND r.id=t.id AND r.generation=t.generation AND r.channel=t.channel AND r.state='active' JOIN mdm_access.report_sources s ON s.tenant_id=r.tenant_id AND s.registration=r.id AND s.source=t.source AND s.enabled").bind(tenant.to_string()).bind(ids).bind(generations).bind(sources).bind(channels).fetch_all(&mut *c).await.map_err(db)?;
+    let rows: Vec<(Uuid, i64, String, Uuid)> =
+        sqlx::query_as(crate::storage_profile::sql(profile).assets_channel_snapshot_details_in_1)
+            .bind(tenant.to_string())
+            .bind(ids)
+            .bind(generations)
+            .bind(sources)
+            .bind(channels)
+            .fetch_all(&mut *c)
+            .await
+            .map_err(db)?;
     let mut by_scope = BTreeMap::new();
     let mut scopes = Vec::new();
     for (registration, generation, source, epoch) in rows {
@@ -81,6 +94,7 @@ pub async fn snapshot_details_in(
             _ => rss_mdm_inventory::builtin::AGENT_INSTALLATION,
         };
         let scope = crate::device::scope_dataset(
+            profile,
             tenant,
             registration,
             source.as_str(),
@@ -94,7 +108,13 @@ pub async fn snapshot_details_in(
         scopes.push(scope);
     }
     let keys = by_scope.keys().cloned().collect::<Vec<_>>();
-    let rows=sqlx::query("WITH selected AS MATERIALIZED(SELECT DISTINCT ON(scope) scope,id,result,attempts,evidence::text AS evidence FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND scope=ANY($2) AND sealed_at IS NOT NULL ORDER BY scope,sequence DESC),budget AS(SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok").bind(tenant.to_string()).bind(keys).fetch_all(&mut *c).await.map_err(db)?;
+    let rows =
+        sqlx::query(crate::storage_profile::sql(profile).assets_channel_snapshot_details_in_2)
+            .bind(tenant.to_string())
+            .bind(keys)
+            .fetch_all(&mut *c)
+            .await
+            .map_err(db)?;
     rss_mdm_query_postgres::observe_rows("assets.channel", &rows).map_err(db)?;
     let facts = rss_mdm_inventory_postgres::read_in(
         c,

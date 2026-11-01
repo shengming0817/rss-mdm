@@ -47,7 +47,11 @@ pub async fn target_in(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(rss_mdm_registration_service::device::endpoints::current_in(
-                    c, &tenant, &device, channel,
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &device,
+                    channel,
                 )
                 .await)
             })

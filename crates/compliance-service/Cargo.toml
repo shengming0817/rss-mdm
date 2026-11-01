@@ -7,6 +7,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+rss-mdm-install-support.workspace = true
 ring.workspace = true
 rss-contract.workspace = true
 rss-mdm-audit-integration.workspace = true

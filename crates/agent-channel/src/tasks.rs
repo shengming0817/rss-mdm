@@ -194,7 +194,7 @@ async fn authenticate_for(
 ) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
     let principal = crate::authenticate(&app.enrollment, headers, peer).await?;
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
-    let binding = crate::Bindings
+    let binding = crate::Bindings::new(principal.profile())
         .binding(
             &mut tx,
             principal.tenant().to_string(),

@@ -63,6 +63,7 @@ impl Authority {
         let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(tenant.to_string()).bind(self.registration).bind(&self.device).bind(self.generation).fetch_one(&mut *c).await.map_err(database::db)?;
         if !active
             || !rss_mdm_registration_service::lifecycle::work_allowed_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &tenant.to_string(),
                 &self.device,
@@ -80,7 +81,15 @@ impl Authority {
             let Some((_, grant)) = self.grants.iter().find(|(p, _)| p == permission) else {
                 return Ok(false);
             };
-            if !grant.valid(c, *permission, now).await? {
+            if !grant
+                .valid(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    *permission,
+                    now,
+                )
+                .await?
+            {
                 return Ok(false);
             }
         }

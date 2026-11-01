@@ -120,9 +120,20 @@ pub(crate) async fn page<Q: rss_mdm_http_contract::query::DirectoryOwner>(
     let q = query.parse().map_err(error)?;
     q.require_schema(kind.schema()).map_err(error)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
-    rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
-    let current =
-        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+    rss_mdm_authorization_service::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    let current = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
     current
         .require(p, Permission::RegistrationConfigurationRead, None)
         .map_err(rss_mdm_authorization_service::Error::from)?;
@@ -197,9 +208,20 @@ pub(crate) async fn detail(
     }
     p.manage(Permission::RegistrationConfigurationRead)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
-    rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
-    let current =
-        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+    rss_mdm_authorization_service::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    let current = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
     current
         .require(p, Permission::RegistrationConfigurationRead, None)
         .map_err(rss_mdm_authorization_service::Error::from)?;

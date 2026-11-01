@@ -1,5 +1,7 @@
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
+    #[error("registration capability is not enabled")]
+    Unsupported,
     #[error("Agent lifecycle rejected: {0:?}")]
     Agent(rss_mdm_agent_wire::enroll::ErrorCode),
     #[error("invalid registration input")]

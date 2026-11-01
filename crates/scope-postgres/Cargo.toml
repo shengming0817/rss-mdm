@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-install-support.workspace = true
 sqlx = { workspace = true, features = ["uuid"] }
 rss-mdm-scope.workspace = true
 rss-mdm-inventory.workspace = true

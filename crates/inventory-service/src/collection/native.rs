@@ -29,10 +29,15 @@ pub async fn start(
         | NativeAdapter::AppleCertificates
         | NativeAdapter::AppleUsers => rss_mdm_inventory::ReportSource::MdmApple,
     };
-    let target =
-        crate::device::store::allocate_collection_in(c, &p.tenant.to_string(), &p.device, source)
-            .await
-            .map_err(Error::from)?;
+    let target = crate::device::store::allocate_collection_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &p.tenant.to_string(),
+        &p.device,
+        source,
+    )
+    .await
+    .map_err(Error::from)?;
     if target.registration != p.registration || target.generation != p.generation {
         return Err(Error::Conflict);
     }
@@ -61,6 +66,7 @@ pub async fn start(
         }
     }
     let scope = crate::device::scope_dataset(
+        rss_mdm_install_support::StorageProfile::Mdm,
         p.tenant,
         p.registration,
         source.as_str(),

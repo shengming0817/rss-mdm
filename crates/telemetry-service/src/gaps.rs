@@ -24,7 +24,7 @@ async fn authenticate_on(
     {
         return Err(Error::Denied);
     }
-    store::revalidate_management(c, principal)
+    store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, principal)
         .await
         .map_err(|_| Error::Denied)?;
     Ok(())

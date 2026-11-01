@@ -71,6 +71,7 @@ impl ScriptPolicy {
             Box::pin(async move {
                 Ok(async {
                     if !rss_mdm_registration_service::lifecycle::work_allowed_in(
+                        rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &tenant.to_string(),
                         &device,

@@ -121,11 +121,17 @@ pub async fn start_in(
     rss_mdm_inventory_postgres::register_collection_in(c, tenant, &definition)
         .await
         .map_err(|_| sqlx::Error::Protocol("invalid task collector".into()))?;
-    let (epoch, sequence) =
-        crate::device::store::allocate_task_report_in(c, &tenant.to_string(), registration, source)
-            .await?;
+    let (epoch, sequence) = crate::device::store::allocate_task_report_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant.to_string(),
+        registration,
+        source,
+    )
+    .await?;
     let encode_error = |_| sqlx::Error::Protocol("invalid enterprise collection".into());
     let scope = crate::device::scope_dataset(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tenant,
         registration,
         source.as_str(),
@@ -183,10 +189,20 @@ pub async fn abandon_in(
     if !exists {
         return Ok(None);
     }
-    let mut run = super::store::load_on(c, &tenant, attempt)
-        .await
-        .map_err(|_| sqlx::Error::Protocol("invalid pending collection".into()))?;
-    super::store::seal(c, &mut run, reason)
-        .await
-        .map_err(|_| sqlx::Error::Protocol("collection termination failed".into()))
+    let mut run = super::store::load_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &tenant,
+        attempt,
+    )
+    .await
+    .map_err(|_| sqlx::Error::Protocol("invalid pending collection".into()))?;
+    super::store::seal(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &mut run,
+        reason,
+    )
+    .await
+    .map_err(|_| sqlx::Error::Protocol("collection termination failed".into()))
 }

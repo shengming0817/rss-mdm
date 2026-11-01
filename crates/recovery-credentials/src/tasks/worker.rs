@@ -19,6 +19,7 @@ pub struct Worker {
 }
 impl Worker {
     pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
         service: Arc<Service>,
         store: rss_reconcile_postgres::PgStore,
         budget: Arc<tokio::sync::Semaphore>,
@@ -34,13 +35,13 @@ impl Worker {
         let outbox = Arc::new(
             PgOutboxStore::new(
                 service.transactions.runtime.clone(),
-                crate::tasks::actions::production::messaging_domain(),
+                crate::tasks::actions::production::messaging_domain(profile),
                 delivery,
             )
             .map_err(|_| Error::Unavailable)?,
         );
         let readiness = rss_mdm_recovery_observation::Readiness::new(
-            crate::tasks::wake::scope(service.transactions.tenant),
+            crate::tasks::wake::scope(profile, service.transactions.tenant),
             true,
             false,
         );
@@ -57,6 +58,8 @@ impl Worker {
         self: Arc<Self>,
         notify: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
+        let profile = self.service.profile();
+
         let (task, status) = rss_runtime::ManagedTask::prepare(
             "mdm-registration-credential-recovery",
             Duration::from_secs(20),
@@ -69,7 +72,7 @@ impl Worker {
                 concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),
                 scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),initial_backoff:Duration::from_secs(5),max_backoff:Duration::from_secs(60),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
-            let result = rss_reconcile::run_with_notify(&self.recovery_store(),self.as_ref(),&crate::tasks::wake::scope(self.service.transactions.tenant),policy,&control,&stop,&notify,|event| {
+            let result = rss_reconcile::run_with_notify(&self.recovery_store(),self.as_ref(),&crate::tasks::wake::scope(profile, self.service.transactions.tenant),policy,&control,&stop,&notify,|event| {
                 self.readiness.observe(&event);
                 match event {
                     rss_reconcile::Observation::ScanFailed { scope, error } => {
@@ -164,8 +167,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
+        let profile = self.service.profile();
+
         control.check()?;
-        if claim.target().scope() != &crate::tasks::wake::scope(self.service.transactions.tenant) {
+        if claim.target().scope()
+            != &crate::tasks::wake::scope(profile, self.service.transactions.tenant)
+        {
             return Err(failure(Error::Invariant));
         }
         let service = &self.service;
@@ -176,7 +183,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
                 control.remaining(),
             ),
             (service.as_ref(), claim.target().entity()),
-            |ctx, tx| Box::pin(async move { pending_in(ctx.0, tx, ctx.1).await }),
+            |ctx, tx| Box::pin(async move { pending_in(profile, ctx.0, tx, ctx.1).await }),
         )
         .await
         .map_err(failure)?;
@@ -192,15 +199,20 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         _: ReconcileDiff<bool>,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
+        let profile = self.service.profile();
+
         control.check()?;
         let Ok(_permit) = self.budget.try_acquire() else {
             return Ok(ReconcileStep::Deferred(Duration::from_millis(50)));
         };
         let service = &self.service;
-        if claim.target().scope() != &crate::tasks::wake::scope(service.transactions.tenant) {
+        if claim.target().scope()
+            != &crate::tasks::wake::scope(profile, service.transactions.tenant)
+        {
             return Err(failure(Error::Invariant));
         }
         let audit = RequestAudit::new(
+            profile,
             service.transactions.tenant.to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -210,11 +222,11 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         let attempt=service.transactions.runtime.local_tx_with_context(service.transactions.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(service,claim,&audit,&error),|ctx,tx|Box::pin(async move {
             let (service,claim,audit,error)=ctx;
             if let Err(e)=service.transactions.audit_store.bind_in(tx).await {return Err(crate::tasks::transaction::rejection(e.into(),error));}
-            let ready=match prepare_in(service,tx,claim.target().entity()).await {Ok(v)=>v,Err(e)=>return Err(crate::tasks::transaction::rejection(e,error))};
+            let ready=match prepare_in(profile, service,tx,claim.target().entity()).await {Ok(v)=>v,Err(e)=>return Err(crate::tasks::transaction::rejection(e,error))};
             service.transactions.reconcile_messaging.protect_in(tx,claim,(service,claim.target().entity(),audit,error,ready),|ctx,tx|Box::pin(async move {
                 let (service,entity,audit,error,ready)=ctx;
                 if matches!(ready, Prepared::Deferred) {audit.mark_commit_started();return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));}
-                match advance_in(service,tx,entity,ready).await {
+                match advance_in(profile, service,tx,entity,ready).await {
                     Ok(delay)=>{audit.mark_commit_started();Ok(match delay {Some(after)=>rss_reconcile_postgres::ProtectedStep::Deferred(after),None=>rss_reconcile_postgres::ProtectedStep::Ready(())})},
                     Err(e)=>Err(crate::tasks::transaction::rejection(e,error)),
                 }
@@ -236,6 +248,7 @@ enum Prepared {
     Policy(Option<Box<crate::tasks::policy_recovery::Prepared>>),
 }
 async fn prepare_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     entity: &str,
@@ -246,7 +259,7 @@ async fn prepare_in(
         .and_then(|s| Uuid::parse_str(s).ok())
     {
         return Ok(Prepared::Policy(
-            crate::tasks::policy_recovery::prepare_in(&service.transactions, tx, id)
+            crate::tasks::policy_recovery::prepare_in(profile, &service.transactions, tx, id)
                 .await?
                 .map(Box::new),
         ));
@@ -255,7 +268,12 @@ async fn prepare_in(
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        Some(crate::tasks::storage::read_run(tx, id).await?.target.device)
+        Some(
+            crate::tasks::storage::read_run(profile, tx, id)
+                .await?
+                .target
+                .device,
+        )
     } else {
         None
     };
@@ -266,6 +284,7 @@ async fn prepare_in(
                 Box::pin(async move {
                     Ok(
                         rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                            profile,
                             c,
                             &tenant,
                             &[device],
@@ -284,6 +303,7 @@ async fn prepare_in(
     Ok(Prepared::Ready)
 }
 async fn advance_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     entity: &str,
@@ -291,13 +311,14 @@ async fn advance_in(
 ) -> crate::tasks::transaction::Result<Option<Duration>> {
     if let Prepared::Policy(policy) = prepared {
         return match policy {
-            Some(policy) => {
-                Ok(
-                    crate::tasks::policy_recovery::advance_in(&service.transactions, tx, policy)
-                        .await?
-                        .then_some(Duration::from_millis(20)),
-                )
-            }
+            Some(policy) => Ok(crate::tasks::policy_recovery::advance_in(
+                profile,
+                &service.transactions,
+                tx,
+                policy,
+            )
+            .await?
+            .then_some(Duration::from_millis(20))),
             None => Ok(None),
         };
     }
@@ -305,8 +326,8 @@ async fn advance_in(
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        crate::tasks::actions::recovery::recover_one(service, tx, id).await?;
-        return Ok(pending_in(service, tx, entity)
+        crate::tasks::actions::recovery::recover_one(profile, service, tx, id).await?;
+        return Ok(pending_in(profile, service, tx, entity)
             .await?
             .then_some(Duration::from_secs(5)));
     }
@@ -315,6 +336,7 @@ async fn advance_in(
 // Read durable owner facts so RSS can finish the current epoch as converged.
 // A concurrent wake increments the epoch and cannot be consumed by this observation.
 async fn pending_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Service,
     tx: &mut PgTransaction<'_>,
     entity: &str,
@@ -325,19 +347,37 @@ async fn pending_in(
         .strip_prefix("policy:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        return Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_recovery_tasks.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND input_revision>input_consumed)")
-                .bind(tenant).bind(id).fetch_one(c).await
-        })).await?);
+        return Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        crate::storage_profile::sql(profile).tasks_worker_pending_in_1,
+                    )
+                    .bind(tenant)
+                    .bind(id)
+                    .fetch_one(c)
+                    .await
+                })
+            })
+            .await?);
     }
     if let Some(id) = entity
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        return Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_recovery_tasks.runs t WHERE tenant_id=$1::uuid AND id=$2 AND (state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed'))")
-                .bind(tenant).bind(id).fetch_one(c).await
-        })).await?);
+        return Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        crate::storage_profile::sql(profile).tasks_worker_pending_in_2,
+                    )
+                    .bind(tenant)
+                    .bind(id)
+                    .fetch_one(c)
+                    .await
+                })
+            })
+            .await?);
     }
 
     Err(Error::Invariant.into())

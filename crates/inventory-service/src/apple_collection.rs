@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub async fn current(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<bool, Error> {
     let row=sqlx::query("SELECT registration,epoch,attempts,deadline>clock_timestamp() AND sealed_at IS NULL AS live,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND source='mdm.apple' FOR UPDATE").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
     let current = crate::device::store::source_current_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         tenant,
         row.try_get("registration").map_err(db)?,

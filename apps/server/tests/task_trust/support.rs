@@ -18,10 +18,18 @@ pub fn protection(c: &Context) -> Result<Arc<Protector>> {
 pub fn service(c: &Context, protection: Arc<Protector>) -> Result<rss_mdm_task_trust::Service> {
     Ok(rss_mdm_task_trust::Service::new(
         c.tenant,
-        Arc::new(rss_mdm_task_trust::Signing::new(c.tenant, None)?),
+        Arc::new(rss_mdm_task_trust::Signing::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c.tenant,
+            None,
+        )?),
         protection,
         c.audit.clone(),
-        Arc::new(rss_mdm_agent_channel::signature_retirement::PendingSignatures),
+        Arc::new(
+            rss_mdm_agent_channel::signature_retirement::PendingSignatures::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
     )?)
 }
 pub async fn seed_trust(c: &Context, protection: &Protector, states: &[KeyState]) -> Result<Trust> {
@@ -274,9 +282,13 @@ pub async fn authenticated_agent(
         .bind(c.tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    let principal =
-        rss_mdm_registration_service::device::authenticate_agent_in(&mut tx, c.tenant, &peer)
-            .await?;
+    let principal = rss_mdm_registration_service::device::authenticate_agent_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        c.tenant,
+        &peer,
+    )
+    .await?;
     tx.commit().await?;
     Ok(principal)
 }

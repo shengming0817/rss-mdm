@@ -282,8 +282,20 @@ pub async fn authorize(
         .with_connection(move |c| {
             Box::pin(async move {
                 let result = async {
-                    rss_mdm_authorization_service::lock_on(c, &tenant, &instance).await?;
-                    rss_mdm_authorization_service::snapshot_on(c, &tenant, &instance).await
+                    rss_mdm_authorization_service::lock_on(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        &tenant,
+                        &instance,
+                    )
+                    .await?;
+                    rss_mdm_authorization_service::snapshot_on(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        &tenant,
+                        &instance,
+                    )
+                    .await
                 }
                 .await;
                 Ok(result)

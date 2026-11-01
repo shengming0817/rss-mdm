@@ -49,7 +49,12 @@ mod tests {
             (LocalTxAttempt::fenced(41), WriteOutcome::CommitNotStarted),
         ];
         for (index, (attempt, expected)) in cases.into_iter().enumerate() {
-            let audit = RequestAudit::new("tenant".into(), "recovery", AuditIntent::Management);
+            let audit = RequestAudit::new(
+                crate::StorageProfile::Mdm,
+                "tenant".into(),
+                "recovery",
+                AuditIntent::Management,
+            );
             if index == 0 {
                 audit.mark_commit_started();
             }

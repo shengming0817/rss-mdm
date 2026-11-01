@@ -31,15 +31,18 @@ impl Service {
         tx: &mut PgTransaction<'_>,
         p: &DevicePrincipal,
     ) -> Result<()> {
+        let profile = self.profile();
+
         self.transactions.validate_in(tx)?;
-        if tx.tenant_id() != p.tenant() {
+        if self.profile() != p.profile() || tx.tenant_id() != p.tenant() {
             return Err(Error::Unauthorized.into());
         }
-        storage::lock_device(tx, p.device()).await?;
+        storage::lock_device(profile, tx, p.device()).await?;
         let checked = p.clone();
         tx.with_connection(move |c| {
             Box::pin(async move {
                 Ok(crate::device::store::revalidate_source(
+                    profile,
                     c,
                     &checked,
                     rss_mdm_inventory::ReportSource::AgentBuiltin,
@@ -49,6 +52,7 @@ impl Service {
         })
         .await??;
         if !crate::enrollment::tasks::agent_facts::agent_binding_in(
+            profile,
             tx,
             self.transactions.agent_store.clone(),
             p.registration(),
@@ -68,17 +72,60 @@ impl Service {
         p: &DevicePrincipal,
         input: &wire::TaskClaimRequest,
     ) -> Result<()> {
+        let profile = self.profile();
+
         self.agent_prepare_in(tx, p).await?;
         let tenant = tx.tenant_id().to_string();
         let registration = p.registration();
-        let versions = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_registration_tasks.agent_admission(tenant_id,registration) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(registration).execute(&mut *c).await?;
-            let after: Option<Uuid> = sqlx::query_scalar("SELECT policy_after FROM mdm_registration_tasks.agent_admission WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(registration).fetch_one(&mut *c).await?;
-            let rows = sqlx::query("SELECT id,current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND state='enabled' AND definition->'action'->>'kind'='enrollment' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 64").bind(&tenant).bind(after).fetch_all(&mut *c).await?;
-            let next = if rows.len()==64 { rows.last().map(|r|r.try_get::<Uuid,_>("id")).transpose()? } else { None };
-            sqlx::query("UPDATE mdm_registration_tasks.agent_admission SET policy_after=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(next).execute(c).await?;
-            rows.into_iter().map(|r|r.try_get::<Uuid,_>("current_version")).collect::<std::result::Result<Vec<_>,sqlx::Error>>()
-        })).await?;
+        let versions = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query(
+                        crate::storage_profile::sql(profile)
+                            .enrollment_tasks_agent_agent_admit_in_1,
+                    )
+                    .bind(&tenant)
+                    .bind(registration)
+                    .execute(&mut *c)
+                    .await?;
+                    let after: Option<Uuid> = sqlx::query_scalar(
+                        crate::storage_profile::sql(profile)
+                            .enrollment_tasks_agent_agent_admit_in_2,
+                    )
+                    .bind(&tenant)
+                    .bind(registration)
+                    .fetch_one(&mut *c)
+                    .await?;
+                    let rows = sqlx::query(
+                        crate::storage_profile::sql(profile)
+                            .enrollment_tasks_agent_agent_admit_in_3,
+                    )
+                    .bind(&tenant)
+                    .bind(after)
+                    .fetch_all(&mut *c)
+                    .await?;
+                    let next = if rows.len() == 64 {
+                        rows.last()
+                            .map(|r| r.try_get::<Uuid, _>("id"))
+                            .transpose()?
+                    } else {
+                        None
+                    };
+                    sqlx::query(
+                        crate::storage_profile::sql(profile)
+                            .enrollment_tasks_agent_agent_admit_in_4,
+                    )
+                    .bind(tenant)
+                    .bind(registration)
+                    .bind(next)
+                    .execute(c)
+                    .await?;
+                    rows.into_iter()
+                        .map(|r| r.try_get::<Uuid, _>("current_version"))
+                        .collect::<std::result::Result<Vec<_>, sqlx::Error>>()
+                })
+            })
+            .await?;
         let now = storage::now(tx).await?;
         let target = Target {
             device: p.device().into(),
@@ -88,6 +135,7 @@ impl Service {
         for version in versions {
             let plan = policy::read_in(&self.transactions, tx, version).await?;
             crate::enrollment::tasks::admission::accept_for_device(
+                profile,
                 &self.transactions,
                 tx,
                 &plan,
@@ -110,13 +158,15 @@ impl Service {
         attempt: Uuid,
         audit: &RequestAudit,
     ) -> Result<Option<(wire::TaskPayload, Fact, i64)>> {
+        let profile = self.profile();
+
         self.agent_prepare_in(tx, p).await?;
         self.transactions
             .audit_store
             .prepare_in(tx, audit, &[])
             .await?;
         let now = storage::now(tx).await?;
-        let mut run = storage::load_run(tx, id).await?;
+        let mut run = storage::load_run(profile, tx, id).await?;
         belongs(&run, p)?;
         let plan = policy::read_in(&self.transactions, tx, run.policy_version).await?;
         let previous = run.state.clone();
@@ -129,7 +179,7 @@ impl Service {
             && now < run.deadline
         {
             crate::enrollment::tasks::self_service::advance_waiting_in(
-                self, tx, &mut run, &plan, now,
+                profile, self, tx, &mut run, &plan, now,
             )
             .await?
         } else {
@@ -172,7 +222,7 @@ impl Service {
         } else {
             None
         };
-        storage::save_run(&self.transactions, tx, &run).await?;
+        storage::save_run(profile, &self.transactions, tx, &run).await?;
         Ok(offer)
     }
     pub async fn agent_replay_offer_in(
@@ -182,8 +232,10 @@ impl Service {
         signed: &wire::SignedTask,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let profile = self.profile();
+
         self.agent_prepare_in(tx, p).await?;
-        let run = storage::load_run(tx, signed.payload.task_id()).await?;
+        let run = storage::load_run(profile, tx, signed.payload.task_id()).await?;
         belongs(&run, p)?;
         audit.plan(run.policy_version);
         audit.target(&run.id.to_string());
@@ -211,8 +263,10 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let profile = self.profile();
+
         self.agent_prepare_in(tx, p).await?;
-        let run = storage::load_run(tx, id).await?;
+        let run = storage::load_run(profile, tx, id).await?;
         belongs(&run, p)?;
         audit.plan(run.policy_version);
         audit.target(&id.to_string());
@@ -244,8 +298,10 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<EventEffects> {
+        let profile = self.profile();
+
         self.agent_prepare_in(tx, p).await?;
-        let mut run = storage::load_run(tx, id).await?;
+        let mut run = storage::load_run(profile, tx, id).await?;
         belongs(&run, p)?;
         self.transactions
             .audit_store
@@ -313,7 +369,7 @@ impl Service {
             }
             _ => return Err(Error::Malformed.into()),
         }
-        storage::save_run(&self.transactions, tx, &run).await?;
+        storage::save_run(profile, &self.transactions, tx, &run).await?;
         let mut activity = crate::enrollment::tasks::activity::run(
             &run,
             crate::enrollment::tasks::activity::phase(input.event()),

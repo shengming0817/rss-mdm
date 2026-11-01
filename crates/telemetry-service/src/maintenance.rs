@@ -216,13 +216,22 @@ async fn authorize(
     if proof.tenant_id() != tenant.to_string() {
         return Err(Error::Denied);
     }
-    rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
-        .await
-        .map_err(|_| Error::Denied)?;
-    let snapshot =
-        rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
-            .await
-            .map_err(|_| Error::Denied)?;
+    rss_mdm_authorization_service::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
+    let snapshot = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
     snapshot
         .require(proof, Permission::InventoryRead, Some(&input.device))
         .map_err(|_| Error::Denied)?;
@@ -276,6 +285,7 @@ async fn authorize(
                 }
             } else {
                 if !rss_mdm_registration_service::device::store::collection_stream_retired_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     tenant,
                     &input.device,
@@ -342,6 +352,7 @@ async fn authorize(
             ..
         } => {
             rss_mdm_registration_service::device::store::lock_channel(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &tenant.to_string(),
                 &input.device,

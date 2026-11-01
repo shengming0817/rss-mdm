@@ -28,6 +28,7 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
     let deadline =
         Deadline::from_timeout(&clock, Duration::from_secs(30)).expect("bounded command budget");
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         config.user.tenant_id.clone(),
         "authorization_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -157,6 +158,7 @@ async fn initialize_owned(
     let authority = async {
         let policy = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 &config.user.instance_id,
             )?,
         );
@@ -203,7 +205,11 @@ async fn initialize_owned(
     };
     if input.expected.tenant_id == management {
         return rss_mdm_authorization_service::initialization::initialize(
-            &authority, &store, input, audit,
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &authority,
+            &store,
+            input,
+            audit,
         )
         .await
         .map_err(Error::from);
@@ -211,7 +217,12 @@ async fn initialize_owned(
     let tenant = uuid::Uuid::parse_str(&input.expected.tenant_id).map_err(|_| Error::Malformed)?;
     let targets = crate::administration::baseline::manifest::build(tenant)?.targets();
     let (receipt, frozen) = rss_mdm_authorization_service::initialization::initialize_baseline(
-        &authority, &store, input, audit, targets,
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &authority,
+        &store,
+        input,
+        audit,
+        targets,
     )
     .await?;
     crate::administration::baseline::reserve(&pool, &store, frozen).await?;
@@ -225,6 +236,7 @@ mod tests {
     #[tokio::test]
     async fn pending_initialization_projects_request_deadline() {
         let audit = super::RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
             uuid::Uuid::new_v4().to_string(),
             "authorization_initialize",
             rss_mdm_audit_integration::AuditIntent::Management,

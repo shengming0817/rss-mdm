@@ -41,6 +41,7 @@ pub(crate) async fn on(
         (
             Owner::Registration,
             rss_mdm_registration_service::enrollment::tasks::storage::owned_ids_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
                 &[id],
@@ -58,7 +59,13 @@ pub(crate) async fn on(
         ),
         (
             Owner::Credential,
-            rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(c, tenant, &[id]).await?,
+            rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                &[id],
+            )
+            .await?,
         ),
     ];
     let mut found = owners

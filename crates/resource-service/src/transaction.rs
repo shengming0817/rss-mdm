@@ -208,7 +208,9 @@ pub async fn current(
     tx: &mut PgTransaction<'_>,
     proof: &crate::authorization::context::AuthorizedPrincipal,
 ) -> Result<crate::authorization::Snapshot> {
-    if proof.tenant_id() != tx.tenant_id().to_string() {
+    if proof.profile() != rss_mdm_install_support::StorageProfile::Mdm
+        || proof.tenant_id() != tx.tenant_id().to_string()
+    {
         return Err(Error::Forbidden.into());
     }
     let tenant = proof.tenant_id().to_owned();
@@ -216,10 +218,21 @@ pub async fn current(
     Ok(tx
         .with_connection(move |c| {
             Box::pin(async move {
-                crate::authorization::lock_shared_on(c, &tenant, &instance)
-                    .await
-                    .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-                Ok(crate::authorization::snapshot_on(c, &tenant, &instance).await)
+                crate::authorization::lock_shared_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await
+                .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
+                Ok(crate::authorization::snapshot_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await)
             })
         })
         .await??)

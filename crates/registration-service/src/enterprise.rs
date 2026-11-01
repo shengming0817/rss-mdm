@@ -210,11 +210,22 @@ async fn authorize(
     permission: Permission,
 ) -> Result<(), Error> {
     actor.check_live()?;
-    rss_mdm_authorization_service::lock_on(c, actor.tenant_id(), actor.instance_id()).await?;
-    rss_mdm_authorization_service::snapshot_on(c, actor.tenant_id(), actor.instance_id())
-        .await?
-        .require(actor, permission, None)
-        .map_err(|_| Error::Forbidden)
+    rss_mdm_authorization_service::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        actor.tenant_id(),
+        actor.instance_id(),
+    )
+    .await?;
+    rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        actor.tenant_id(),
+        actor.instance_id(),
+    )
+    .await?
+    .require(actor, permission, None)
+    .map_err(|_| Error::Forbidden)
 }
 impl Service {
     pub async fn change_enterprise_configuration(
@@ -259,7 +270,7 @@ impl Service {
                 let (actor,input,fingerprint,_,_,digest,audit)=ctx;
                 authorize(c,actor,Permission::EnterpriseApplicationsWrite).await?;
                 let op=Operation{actor:Actor::from_authorized(actor),key:input.operation_id,digest};
-                if crate::operations::replay(c,&op).await?.is_some(){return Err(Error::Conflict);}
+                if crate::operations::replay(rss_mdm_install_support::StorageProfile::Mdm, c,&op).await?.is_some(){return Err(Error::Conflict);}
                 let revision=input.expected_revision.checked_add(1).ok_or(Error::Capacity)?;
                 let record=match &input.configuration {
                     Configuration::WindowsKey{registration}=>Record::WindowsKey(register_key_on(c,actor,input.operation_id,input.expected_revision,registration).await?),
@@ -294,7 +305,7 @@ impl Service {
                         Record::Subject(value)
                     }
                 };
-                crate::operations::save(c,&op,&serde_json::to_string(&record).map_err(|_|Error::Corrupt)?,audit).await?;
+                crate::operations::save(rss_mdm_install_support::StorageProfile::Mdm, c,&op,&serde_json::to_string(&record).map_err(|_|Error::Corrupt)?,audit).await?;
                 Ok(AuditedChange{value:record, replay:false})
             })).await;
         match outcome {
@@ -317,6 +328,7 @@ impl Service {
         let mut tx = self.store.begin(actor.tenant_id()).await?;
         authorize(&mut tx, actor, Permission::EnterpriseApplicationsRead).await?;
         let value = crate::operations::read(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &mut tx,
             &Operation {
                 actor: Actor::from_authorized(actor),
@@ -376,10 +388,15 @@ async fn register_key_on(
     {
         return Err(Error::Conflict);
     }
-    rss_mdm_authorization_service::snapshot_on(c, actor.tenant_id(), actor.instance_id())
-        .await?
-        .require(actor, Permission::AccountWrite, Some(&binding.device))
-        .map_err(|_| Error::Forbidden)?;
+    rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        actor.tenant_id(),
+        actor.instance_id(),
+    )
+    .await?
+    .require(actor, Permission::AccountWrite, Some(&binding.device))
+    .map_err(|_| Error::Forbidden)?;
     let bytes = key
         .signing_bytes(
             tenant,

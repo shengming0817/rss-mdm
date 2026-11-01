@@ -30,18 +30,48 @@ pub async fn now(tx: &mut PgTransaction<'_>) -> Result<i64> {
         })
         .await?)
 }
-pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
-    run_in(tx, id, true).await
+pub async fn load_run(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Run> {
+    run_in(profile, tx, id, true).await
 }
-pub async fn read_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
-    run_in(tx, id, false).await
+pub async fn read_run(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Run> {
+    run_in(profile, tx, id, false).await
 }
-async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, lock: bool) -> Result<Run> {
+async fn run_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+    lock: bool,
+) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move {
-        if lock { sqlx::query("SELECT id FROM mdm_recovery_tasks.runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?; }
-        sqlx::query("SELECT * FROM mdm_recovery_tasks.runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await
-    })).await?.ok_or(Error::NotFound)?;
+    let row = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                if lock {
+                    sqlx::query(
+                        crate::storage_profile::sql(profile).tasks_actions_storage_run_in_1,
+                    )
+                    .bind(&tenant)
+                    .bind(id)
+                    .fetch_optional(&mut *c)
+                    .await?;
+                }
+                sqlx::query(crate::storage_profile::sql(profile).tasks_actions_storage_run_in_2)
+                    .bind(tenant)
+                    .bind(id)
+                    .fetch_optional(c)
+                    .await
+            })
+        })
+        .await?
+        .ok_or(Error::NotFound)?;
     Ok(Run {
         id,
         policy_version: row.try_get("policy_version")?,
@@ -62,6 +92,7 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, lock: bool) -> Result<Run>
     })
 }
 pub async fn save_run(
+    profile: rss_mdm_install_support::StorageProfile,
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     run: &Run,
@@ -75,12 +106,37 @@ pub async fn save_run(
         .map(serde_json::to_value)
         .transpose()
         .map_err(|_| Error::Invariant)?;
-    let previous=tx.with_connection({let tenant=tenant.clone();move|c|Box::pin(async move{sqlx::query_scalar::<_,serde_json::Value>("SELECT state FROM mdm_recovery_tasks.runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})}).await?;
-    let changed=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("UPDATE mdm_recovery_tasks.runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2 AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)").bind(tenant).bind(id).bind(state).bind(result).execute(c).await
-    })).await?;
+    let previous = tx
+        .with_connection({
+            let tenant = tenant.clone();
+            move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar::<_, serde_json::Value>(
+                        crate::storage_profile::sql(profile).tasks_actions_storage_save_run_1,
+                    )
+                    .bind(tenant)
+                    .bind(id)
+                    .fetch_one(c)
+                    .await
+                })
+            }
+        })
+        .await?;
+    let changed = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(crate::storage_profile::sql(profile).tasks_actions_storage_save_run_2)
+                    .bind(tenant)
+                    .bind(id)
+                    .bind(state)
+                    .bind(result)
+                    .execute(c)
+                    .await
+            })
+        })
+        .await?;
     if changed.rows_affected() > 0 {
-        crate::tasks::wake::run_in(reconcile, tx, id).await?;
+        crate::tasks::wake::run_in(profile, reconcile, tx, id).await?;
     }
     let terminal = match run.state.execution {
         rss_mdm_task_state::Execution::Succeeded => Some("succeeded"),
@@ -147,25 +203,30 @@ pub async fn agent_profile_in(
     )
 }
 pub async fn owned_ids_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     ids: &[Uuid],
 ) -> std::result::Result<Vec<Uuid>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT id FROM mdm_recovery_tasks.runs WHERE tenant_id=$1::uuid AND id=ANY($2)",
-    )
-    .bind(tenant.to_string())
-    .bind(ids)
-    .fetch_all(c)
-    .await
+    sqlx::query_scalar(crate::storage_profile::sql(profile).tasks_actions_storage_owned_ids_on_1)
+        .bind(tenant.to_string())
+        .bind(ids)
+        .fetch_all(c)
+        .await
 }
 pub async fn active_count_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     device: &str,
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT count(*) FROM mdm_recovery_tasks.runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running','unknown','waiting_reboot') AND (deadline>$3 OR state->>'startedAt' IS NOT NULL) AND state->>'cancellation'<>'confirmed'").bind(tenant.to_string()).bind(device).bind(now).fetch_one(c).await
+    sqlx::query_scalar(crate::storage_profile::sql(profile).tasks_actions_storage_active_count_on_1)
+        .bind(tenant.to_string())
+        .bind(device)
+        .bind(now)
+        .fetch_one(c)
+        .await
 }
 
 pub async fn load_policy_version(
@@ -176,20 +237,23 @@ pub async fn load_policy_version(
     crate::tasks::policy::read_in(reader, tx, id).await
 }
 
-pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
-    crate::tasks::actions::agent::lock_device(tx, device).await
+pub async fn lock_device(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+) -> Result<()> {
+    crate::tasks::actions::agent::lock_device(profile, tx, device).await
 }
 
 pub async fn association_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
 ) -> std::result::Result<Option<(String, Option<Uuid>)>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT device,NULL::uuid FROM mdm_recovery_tasks.runs WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(tenant)
-    .bind(id)
-    .fetch_optional(c)
-    .await
+    sqlx::query_as(crate::storage_profile::sql(profile).tasks_actions_storage_association_on_1)
+        .bind(tenant)
+        .bind(id)
+        .fetch_optional(c)
+        .await
 }

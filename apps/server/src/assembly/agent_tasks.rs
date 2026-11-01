@@ -86,6 +86,7 @@ pub(super) fn script_error(e: rss_mdm_script_service::Error) -> rss_mdm_agent_ch
     use rss_mdm_agent_channel::{Error as A, Failure};
     use rss_mdm_script_service::Error as S;
     match e {
+        S::Unsupported => A::Unsupported,
         S::Malformed => A::Malformed,
         S::Conflict => A::Conflict,
         S::Forbidden => A::Forbidden,
@@ -120,6 +121,9 @@ pub(super) fn collection_fault(
     }
 }
 impl Tasks for AgentTasks {
+    fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        rss_mdm_install_support::StorageProfile::Mdm
+    }
     fn prepare<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
@@ -136,104 +140,16 @@ impl Tasks for AgentTasks {
         audit: &'a RequestAudit,
     ) -> Pending<'a, Option<(wire::TaskPayload, rss_mdm_audit_integration::Fact, i64)>> {
         Box::pin(async move {
-            let now = rss_mdm_script_service::storage::now(tx)
-                .await
-                .map_err(script_fault)?;
-            let after =
-                rss_mdm_agent_channel::delivery::offer_after_in(tx, p.registration()).await?;
-            let mut candidates: Vec<_> =
-                rss_mdm_device_service::control::actions::poll::offer_candidates(
-                    tx,
-                    p.registration(),
-                    now,
-                    after,
-                )
-                .await
-                .map_err(fault)?
-                .into_iter()
-                .map(|v| (v, Owner::Device))
-                .collect();
-            candidates.extend(
-                rss_mdm_script_service::poll::offer_candidates(tx, p.registration(), now, after)
-                    .await
-                    .map_err(script_fault)?
-                    .into_iter()
-                    .map(|v| (v, Owner::Script)),
-            );
-            candidates.extend(
-                rss_mdm_inventory_service::collection::execution::poll::offer_candidates(
-                    tx,
-                    p.registration(),
-                    now,
-                    after,
-                )
-                .await
-                .map_err(collection_fault)?
-                .into_iter()
-                .map(|v| (v, Owner::Collection)),
-            );
-            candidates.extend(
-                rss_mdm_software_service::deployment::actions::poll::offer_candidates(
-                    tx,
-                    p.registration(),
-                    now,
-                    after,
-                )
-                .await
-                .map_err(software_fault)?
-                .into_iter()
-                .map(|v| (v, Owner::Software)),
-            );
-            candidates.extend(
-                rss_mdm_registration_service::enrollment::tasks::poll::offer_candidates(
-                    tx,
-                    p.registration(),
-                    now,
-                    after,
-                )
-                .await
-                .map_err(registration_fault)?
-                .into_iter()
-                .map(|v| (v, Owner::Registration)),
-            );
-            candidates.extend(
-                rss_mdm_registration_service::device_access::execution::poll::offer_candidates(
-                    tx,
-                    p.registration(),
-                    now,
-                    after,
-                )
-                .await
-                .map_err(access_fault)?
-                .into_iter()
-                .map(|v| (v, Owner::Access)),
-            );
-            candidates.extend(
-                rss_mdm_recovery_credentials::tasks::actions::poll::offer_candidates(
-                    tx,
-                    p.registration(),
-                    now,
-                    after,
-                )
-                .await
-                .map_err(credential_fault)?
-                .into_iter()
-                .map(|v| (v, Owner::Credential)),
-            );
-            candidates.sort_by_key(|(coordinate, _)| *coordinate);
-            if candidates.windows(2).any(|v| v[0].0.1 == v[1].0.1) {
-                return Err(rss_mdm_agent_channel::Error::Conflict);
-            }
-            candidates.truncate(128);
-            // Capture the globally bounded page before admission/relay can expose additional work.
             let tenant = tx.tenant_id().to_string();
             let registration = p.registration();
             let binding = tx
                 .with_connection(move |c| {
                     Box::pin(async move {
-                        Ok(rss_mdm_agent_channel::Bindings
-                            .binding(c, tenant, registration)
-                            .await)
+                        Ok(rss_mdm_agent_channel::Bindings::new(
+                            rss_mdm_install_support::StorageProfile::Mdm,
+                        )
+                        .binding(c, tenant, registration)
+                        .await)
                     })
                 })
                 .await
@@ -243,6 +159,132 @@ impl Tasks for AgentTasks {
                     )
                 })??
                 .ok_or(rss_mdm_agent_channel::Error::Unauthorized)?;
+            let now = rss_mdm_script_service::storage::now(tx)
+                .await
+                .map_err(script_fault)?;
+            let after = rss_mdm_agent_channel::delivery::offer_after_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                tx,
+                p.registration(),
+            )
+            .await?;
+            let mut candidates = Vec::new();
+            if binding
+                .capabilities
+                .contains(&wire::Capability::DeviceUnmanageV1)
+            {
+                candidates.extend(
+                    rss_mdm_device_service::control::actions::poll::offer_candidates(
+                        tx,
+                        p.registration(),
+                        now,
+                        after,
+                    )
+                    .await
+                    .map_err(fault)?
+                    .into_iter()
+                    .map(|v| (v, Owner::Device)),
+                );
+            }
+            if binding.script() {
+                candidates.extend(
+                    rss_mdm_script_service::poll::offer_candidates(
+                        tx,
+                        p.registration(),
+                        now,
+                        after,
+                    )
+                    .await
+                    .map_err(script_fault)?
+                    .into_iter()
+                    .map(|v| (v, Owner::Script)),
+                );
+            }
+            if binding.inventory() {
+                candidates.extend(
+                    rss_mdm_inventory_service::collection::execution::poll::offer_candidates(
+                        tx,
+                        p.registration(),
+                        now,
+                        after,
+                    )
+                    .await
+                    .map_err(collection_fault)?
+                    .into_iter()
+                    .map(|v| (v, Owner::Collection)),
+                );
+            }
+            if binding.software() {
+                candidates.extend(
+                    rss_mdm_software_service::deployment::actions::poll::offer_candidates(
+                        tx,
+                        p.registration(),
+                        now,
+                        after,
+                    )
+                    .await
+                    .map_err(software_fault)?
+                    .into_iter()
+                    .map(|v| (v, Owner::Software)),
+                );
+            }
+            if binding.enrollment() {
+                candidates.extend(
+                    rss_mdm_registration_service::enrollment::tasks::poll::offer_candidates(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        tx,
+                        p.registration(),
+                        now,
+                        after,
+                    )
+                    .await
+                    .map_err(registration_fault)?
+                    .into_iter()
+                    .map(|v| (v, Owner::Registration)),
+                );
+            }
+            if binding
+                .capabilities
+                .contains(&wire::Capability::DeviceAccessV1)
+            {
+                candidates.extend(
+                    rss_mdm_registration_service::device_access::execution::poll::offer_candidates(
+                        tx,
+                        p.registration(),
+                        now,
+                        after,
+                    )
+                    .await
+                    .map_err(access_fault)?
+                    .into_iter()
+                    .map(|v| (v, Owner::Access)),
+                );
+            }
+            if self.credentials.is_some()
+                && binding
+                    .capabilities
+                    .contains(&wire::Capability::CredentialsWindowsV1)
+            {
+                candidates.extend(
+                    rss_mdm_recovery_credentials::tasks::actions::poll::offer_candidates(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        tx,
+                        p.registration(),
+                        now,
+                        after,
+                    )
+                    .await
+                    .map_err(credential_fault)?
+                    .into_iter()
+                    .map(|v| (v, Owner::Credential)),
+                );
+            }
+            candidates.sort_by_key(|(coordinate, _)| *coordinate);
+            if candidates.windows(2).any(|v| v[0].0.1 == v[1].0.1) {
+                return Err(rss_mdm_agent_channel::Error::Conflict);
+            }
+            candidates.truncate(128);
+            // Capture the globally bounded page before admission/relay can expose additional work.
             if binding
                 .capabilities
                 .contains(&wire::Capability::DeviceAccessV1)
@@ -336,8 +378,13 @@ impl Tasks for AgentTasks {
                     break;
                 }
             }
-            rss_mdm_agent_channel::delivery::offer_through_in(tx, p.registration(), inspected)
-                .await?;
+            rss_mdm_agent_channel::delivery::offer_through_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                tx,
+                p.registration(),
+                inspected,
+            )
+            .await?;
             Ok(offer)
         })
     }
@@ -585,6 +632,7 @@ impl Tasks for AgentTasks {
             );
             page.extend(
                 rss_mdm_registration_service::enrollment::tasks::poll::cancellations(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     tx,
                     registration,
                     after,
@@ -603,6 +651,7 @@ impl Tasks for AgentTasks {
             );
             page.extend(
                 rss_mdm_recovery_credentials::tasks::actions::poll::cancellations(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     tx,
                     registration,
                     after,
@@ -812,6 +861,7 @@ pub(super) fn registration_error(
     use rss_mdm_agent_channel::{Error as A, Failure};
     use rss_mdm_registration_service::enrollment::tasks::Error as S;
     match e {
+        S::Unsupported => A::Unsupported,
         S::Malformed => A::Malformed,
         S::Conflict => A::Conflict,
         S::Forbidden => A::Forbidden,
@@ -847,6 +897,7 @@ pub(super) async fn prepare(
         Box::pin(async move {
             Ok(async {
                 rss_mdm_registration_service::device::store::lock_channel(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &tenant,
                     p.device(),
@@ -854,15 +905,18 @@ pub(super) async fn prepare(
                 )
                 .await?;
                 rss_mdm_registration_service::device::store::revalidate_source(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &p,
                     rss_mdm_inventory::ReportSource::AgentBuiltin,
                 )
                 .await?;
-                let binding = rss_mdm_agent_channel::Bindings
-                    .binding(c, tenant, p.registration())
-                    .await?
-                    .ok_or(rss_mdm_agent_channel::Error::Unauthorized)?;
+                let binding = rss_mdm_agent_channel::Bindings::new(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                )
+                .binding(c, tenant, p.registration())
+                .await?
+                .ok_or(rss_mdm_agent_channel::Error::Unauthorized)?;
                 if !binding.inventory() || !binding.task() {
                     return Err(rss_mdm_agent_channel::Error::Forbidden);
                 }

@@ -275,6 +275,7 @@ impl From<crate::deployment::scope::SourceError> for Fault {
     fn from(e: crate::deployment::scope::SourceError) -> Self {
         use crate::deployment::scope::SourceError as S;
         match e {
+            S::Unsupported => Error::Unsupported.into(),
             S::Missing => Error::NotFound.into(),
             S::Capacity => Error::Unavailable(Failure::Capacity).into(),
             S::Conflict => Error::Conflict.into(),
@@ -288,19 +289,6 @@ impl From<crate::deployment::scope::SourceError> for Error {
         match Fault::from(e) {
             Fault::Request(e) => e,
             Fault::Sql(_) | Fault::Storage(_) => Self::Unavailable(Failure::PlanningStorage),
-        }
-    }
-}
-
-impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
-    fn from(e: rss_mdm_audit_integration::operation_receipts::Error) -> Self {
-        use rss_mdm_audit_integration::operation_receipts::Error as Receipt;
-        match e {
-            Receipt::Storage(e) => Self::Storage(e),
-            Receipt::Sql(e) => Self::Sql(e),
-            Receipt::Conflict => Error::Conflict.into(),
-            Receipt::Malformed => Error::Malformed.into(),
-            Receipt::Invariant => Error::Unavailable(Failure::CommandStorage).into(),
         }
     }
 }

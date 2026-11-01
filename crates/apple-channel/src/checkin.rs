@@ -209,10 +209,17 @@ async fn checkin_on(
     let udid = *udid;
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
-    crate::device::store::lock_channel(tx, &tenant, principal.device(), principal.channel())
-        .await?;
+    crate::device::store::lock_channel(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        tx,
+        &tenant,
+        principal.device(),
+        principal.channel(),
+    )
+    .await?;
     // Recheck under the same registration lock used by revoke/replacement, before every mutation.
     crate::device::store::revalidate_source(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tx,
         principal,
         rss_mdm_inventory::ReportSource::MdmApple,
@@ -250,6 +257,7 @@ async fn checkin_on(
                 .await
                 .map_err(|_| crate::Error::Unavailable(crate::Failure::AppleStorage))?;
             rss_mdm_registration_service::retire(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
                 facts,
                 &tenant,

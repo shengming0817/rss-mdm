@@ -52,6 +52,8 @@ impl Events {
         query: &rss_mdm_query::directory::Query,
         audit: &RequestAudit,
     ) -> std::result::Result<ReadResult, Error> {
+        let profile = self.profile();
+
         let (proof, principal) = match reader {
             Requester::Management(proof) => (Some(proof), None),
             Requester::Agent(principal) => (None, Some(principal)),
@@ -89,7 +91,7 @@ impl Events {
                         json!(snapshot.query_binding(proof)?)
                     } else {
                         let target = agent.ok_or(Error::Forbidden)?;
-                        if !event_device_current_in(tx, target).await? {
+                        if !event_device_current_in(profile, tx, target).await? {
                             return Err(Error::Forbidden.into());
                         }
                         json!(target)
@@ -107,20 +109,24 @@ impl Events {
                     let after = q.after(&codec, &binding).map_err(crate::query_error)?;
                     if let Some(id) = batch {
                         let device = device.to_owned();
-                        let exists: bool =
-                            rss_mdm_policy_postgres::directory::batch_exists_in(tx, id, device)
-                                .await?;
+                        let exists: bool = rss_mdm_policy_postgres::directory::batch_exists_in(
+                            profile, tx, id, device,
+                        )
+                        .await?;
                         if !exists {
                             return Err(Error::NotFound.into());
                         }
                     }
                     let items = rss_mdm_policy_postgres::directory::events_in(
+                        profile,
                         tx,
                         q,
                         after.as_ref(),
-                        device,
-                        batch,
-                        agent.map(|t| t.registration),
+                        rss_mdm_policy_postgres::directory::EventTarget {
+                            device,
+                            batch,
+                            registration: agent.map(|t| t.registration),
+                        },
                         members,
                     )
                     .await?;

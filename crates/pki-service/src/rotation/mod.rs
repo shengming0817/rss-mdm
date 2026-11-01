@@ -137,6 +137,10 @@ impl Registry {
         &self,
         p: &AuthorizedPrincipal,
     ) -> Result<(sqlx::Transaction<'_, sqlx::Postgres>, String), Error> {
+        if p.profile() != self.profile() {
+            return Err(Error::Forbidden);
+        }
+
         p.require_all_devices(Permission::Credentials)
             .map_err(|_| Error::Forbidden)?;
         let mut tx = self.pool.begin().await.map_err(db)?;
@@ -145,10 +149,14 @@ impl Registry {
             .await
             .map_err(db)?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true)").bind(p.tenant_id()).execute(&mut *tx).await.map_err(db)?;
-        let auth =
-            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
-                .await
-                .map_err(|_| Error::Storage)?;
+        let auth = rss_mdm_authorization_service::snapshot_on(
+            self.profile(),
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await
+        .map_err(|_| Error::Storage)?;
         auth.require_all_devices(p, Permission::Credentials)
             .map_err(|_| Error::Forbidden)?;
         let binding = auth.query_binding(p).map_err(|_| Error::Forbidden)?;
@@ -159,15 +167,28 @@ impl Registry {
         p: &AuthorizedPrincipal,
         before: &str,
     ) -> Result<(), Error> {
+        if p.profile() != self.profile() {
+            return Err(Error::Forbidden);
+        }
+
         p.check_live().map_err(|_| Error::Forbidden)?;
         let mut tx = self.begin(p.tenant_id()).await?;
-        rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id())
-            .await
-            .map_err(|_| Error::Storage)?;
-        let auth =
-            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
-                .await
-                .map_err(|_| Error::Storage)?;
+        rss_mdm_authorization_service::lock_on(
+            self.profile(),
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await
+        .map_err(|_| Error::Storage)?;
+        let auth = rss_mdm_authorization_service::snapshot_on(
+            self.profile(),
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await
+        .map_err(|_| Error::Storage)?;
         auth.require_all_devices(p, Permission::Credentials)
             .map_err(|_| Error::Forbidden)?;
         if auth.query_binding(p).map_err(|_| Error::Forbidden)? != before {
@@ -183,9 +204,20 @@ impl Registry {
         id: Option<Uuid>,
         now: i64,
     ) -> Result<Option<View>, Error> {
+        if p.profile() != self.profile() {
+            return Err(Error::Forbidden);
+        }
+
+        let profile = self.profile();
+
         let (mut tx, before) = self.rotation_snapshot(p).await?;
-        let row=sqlx::query("SELECT r.id,r.previous,r.candidate,r.revision,r.state,t.body,t.revision AS trust_revision,i.state AS previous_state,j.state AS candidate_state FROM mdm_pki.rotations r JOIN mdm_pki.trust t USING(tenant_id,purpose) JOIN mdm_pki.issuers i ON i.tenant_id=r.tenant_id AND i.purpose=r.purpose AND i.digest=r.previous JOIN mdm_pki.issuers j ON j.tenant_id=r.tenant_id AND j.purpose=r.purpose AND j.digest=r.candidate WHERE r.tenant_id=$1::uuid AND r.purpose=$2 AND ($3::uuid IS NULL OR r.id=$3) ORDER BY r.revision DESC,r.id DESC LIMIT 1")
-            .bind(p.tenant_id()).bind(purpose(purpose_value)).bind(id).fetch_optional(&mut *tx).await.map_err(db)?;
+        let row = sqlx::query(crate::storage_profile::sql(profile).rotation_mod_rotation_1)
+            .bind(p.tenant_id())
+            .bind(purpose(purpose_value))
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
         let value = if let Some(row) = row {
             let id: Uuid = row.try_get("id").map_err(db)?;
             let state = RotationState::parse(row.try_get("state").map_err(db)?)?;
@@ -224,7 +256,12 @@ impl Registry {
                     preconditions.push(Precondition::ProviderNotConfigured);
                 }
             }
-            let records=sqlx::query("SELECT actor,instance,receipt,phase FROM mdm_pki.operations WHERE tenant_id=$1::uuid AND operation=$2 AND phase IN ('distributing','activated','retired') ORDER BY phase,actor LIMIT 4").bind(p.tenant_id()).bind(id).fetch_all(&mut *tx).await.map_err(db)?;
+            let records = sqlx::query(crate::storage_profile::sql(profile).rotation_mod_rotation_2)
+                .bind(p.tenant_id())
+                .bind(id)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(db)?;
             if records.len() > 3 {
                 return Err(Error::Storage);
             }
@@ -263,7 +300,7 @@ impl Registry {
                 },
                 active_issuer,
                 action,
-                blockers: gates::kinds(&mut tx, p.tenant_id(), id, now).await?,
+                blockers: gates::kinds(profile, &mut tx, p.tenant_id(), id, now).await?,
                 preconditions,
                 provider_verification: if matches!(action, Some(Action::Activate)) {
                     ProviderVerification::NotEvaluated
@@ -289,9 +326,23 @@ impl Registry {
         q: &Query,
         codec: &CursorCodec,
     ) -> Result<Page<Projection<Blocker>>, Error> {
+        if p.profile() != self.profile() {
+            return Err(Error::Forbidden);
+        }
+
+        let profile = self.profile();
+
         q.require_schema(&BLOCKERS).map_err(query_error)?;
         let (mut tx, before) = self.rotation_snapshot(p).await?;
-        let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.rotations WHERE tenant_id=$1::uuid AND purpose=$2 AND id=$3)").bind(p.tenant_id()).bind(purpose(purpose_value)).bind(id).fetch_one(&mut *tx).await.map_err(db)?;
+        let exists: bool = sqlx::query_scalar(
+            crate::storage_profile::sql(profile).rotation_mod_rotation_blockers_1,
+        )
+        .bind(p.tenant_id())
+        .bind(purpose(purpose_value))
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
         if !exists {
             return Err(Error::NotFound);
         }
@@ -305,7 +356,8 @@ impl Registry {
                 &before,
             ))
             .map_err(query_error)?;
-        let page = gates::page(&mut tx, p.tenant_id(), id, now, q, codec, &binding).await?;
+        let page =
+            gates::page(profile, &mut tx, p.tenant_id(), id, now, q, codec, &binding).await?;
         tx.rollback().await.map_err(db)?;
         self.confirm_rotation_read(p, &before).await?;
         Ok(page)

@@ -25,6 +25,7 @@ pub(crate) fn decode_world(
 ) -> Result<(identity::World, Catalog, Vec<DeviceSummary>, Vec<Value>)> {
     let catalog = raw_snapshot::catalog(&value["assets"]).map_err(|_| Error::Storage)?;
     let assets = raw_snapshot::decode(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tenant,
         ids,
         &catalog,

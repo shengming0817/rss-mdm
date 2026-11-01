@@ -60,13 +60,19 @@ impl Work {
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use sqlx::Row;
 /// Insert the original work and its commit-delivered notification atomically.
-pub async fn enqueue_in(tx: &mut PgTransaction<'_>, id: Uuid, input: &Work) -> Result<(), PgError> {
+pub async fn enqueue_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+    input: &Work,
+) -> Result<(), PgError> {
     let tenant = tx.tenant_id().to_string();
-    let document = serde_json::to_value(input).map_err(|_| crate::STORAGE.fault("work.input"))?;
+    let document =
+        serde_json::to_value(input).map_err(|_| crate::storage(profile).fault("work.input"))?;
     let kind = input.kind();
     let target = input.target();
     tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_policy.work(tenant_id,id,kind,target,input) VALUES($1::uuid,$2,$3,$4,$5)").bind(tenant).bind(id).bind(kind).bind(target).bind(document).execute(&mut *c).await?;
+        sqlx::query(crate::storage_profile::sql(profile).work_enqueue_in_1).bind(tenant).bind(id).bind(kind).bind(target).bind(document).execute(&mut *c).await?;
         sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'policy')").execute(c).await?;
         Ok(())
     })).await
@@ -85,13 +91,27 @@ pub struct Record {
     pub forwarded: bool,
 }
 /// Read one retained task in the initiating tenant.
-pub async fn read_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Record>, PgError> {
+pub async fn read_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Option<Record>, PgError> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT input,completed,failure,cursor,forwarded FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+    let row = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(crate::storage_profile::sql(profile).work_read_in_1)
+                    .bind(tenant)
+                    .bind(id)
+                    .fetch_optional(c)
+                    .await
+            })
+        })
+        .await?;
     row.map(|r| {
         Ok(Record {
             input: serde_json::from_value(r.try_get("input")?)
-                .map_err(|_| crate::STORAGE.fault("work.decode"))?,
+                .map_err(|_| crate::storage(profile).fault("work.decode"))?,
             completed: r.try_get("completed")?,
             failure: r.try_get("failure")?,
             cursor: r.try_get("cursor")?,
@@ -102,6 +122,7 @@ pub async fn read_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Reco
 }
 /// Advance a page only in the transaction that published its effects.
 pub async fn cursor_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     cursor: Option<String>,
@@ -109,7 +130,7 @@ pub async fn cursor_in(
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query("UPDATE mdm_policy.work SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2")
+            sqlx::query(crate::storage_profile::sql(profile).work_cursor_in_1)
                 .bind(tenant)
                 .bind(id)
                 .bind(cursor)
@@ -122,35 +143,83 @@ pub async fn cursor_in(
 }
 
 /// Pending work whose wake has not yet committed.
-pub async fn pending_in(tx: &mut PgTransaction<'_>) -> Result<Vec<(String, String)>, PgError> {
+pub async fn pending_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+) -> Result<Vec<(String, String)>, PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move {sqlx::query_as("SELECT id::text,kind FROM mdm_policy.work WHERE tenant_id=$1::uuid AND NOT forwarded ORDER BY id LIMIT 64").bind(tenant).fetch_all(c).await})).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_as(crate::storage_profile::sql(profile).work_pending_in_1)
+                .bind(tenant)
+                .fetch_all(c)
+                .await
+        })
+    })
+    .await
 }
 /// Mark forwarding inside the same transaction as the RSS wake.
-pub async fn forwarded_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool, PgError> {
+pub async fn forwarded_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<bool, PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_policy.work SET forwarded=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT forwarded").bind(tenant).bind(id).execute(c).await.map(|r|r.rows_affected()>0)})).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query(crate::storage_profile::sql(profile).work_forwarded_in_1)
+                .bind(tenant)
+                .bind(id)
+                .execute(c)
+                .await
+                .map(|r| r.rows_affected() > 0)
+        })
+    })
+    .await
 }
 /// Transition a task to its terminal result, returning its business audit identity once.
 pub async fn finish_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     failure: Option<String>,
 ) -> Result<Option<(String, String)>, PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move {sqlx::query_as("UPDATE mdm_policy.work SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed RETURNING target,kind").bind(tenant).bind(id).bind(failure).fetch_optional(c).await})).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_as(crate::storage_profile::sql(profile).work_finish_in_1)
+                .bind(tenant)
+                .bind(id)
+                .bind(failure)
+                .fetch_optional(c)
+                .await
+        })
+    })
+    .await
 }
 /// Check an exact task identity, optionally requiring terminal state.
 pub async fn exists_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     completed: bool,
 ) -> Result<bool, PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2 AND (NOT $3 OR completed))").bind(tenant).bind(id).bind(completed).fetch_one(c).await})).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_scalar(crate::storage_profile::sql(profile).work_exists_in_1)
+                .bind(tenant)
+                .bind(id)
+                .bind(completed)
+                .fetch_one(c)
+                .await
+        })
+    })
+    .await
 }
 /// Record a replacement without changing either accepted identity.
 pub async fn replacement_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     old: Uuid,
     new: Uuid,
@@ -158,32 +227,55 @@ pub async fn replacement_in(
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query(
-                "UPDATE mdm_policy.work SET replacement_task=$3 WHERE tenant_id=$1::uuid AND id=$2",
-            )
-            .bind(tenant)
-            .bind(old)
-            .bind(new)
-            .execute(c)
-            .await?;
+            sqlx::query(crate::storage_profile::sql(profile).work_replacement_in_1)
+                .bind(tenant)
+                .bind(old)
+                .bind(new)
+                .execute(c)
+                .await?;
             Ok(())
         })
     })
     .await
 }
 /// Bounded queue counts for health reporting.
-pub async fn counts_in(tx: &mut PgTransaction<'_>) -> Result<[u64; 5], PgError> {
+pub async fn counts_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+) -> Result<[u64; 5], PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move {
- let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND NOT forwarded LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND forwarded LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure IS NULL AND completed LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q)").bind(tenant).fetch_one(c).await?;
- Ok([row.0 as u64,row.1 as u64,row.2 as u64,row.3 as u64,row.4 as u64])
- })).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            let row: (i64, i64, i64, i64, i64) =
+                sqlx::query_as(crate::storage_profile::sql(profile).work_counts_in_1)
+                    .bind(tenant)
+                    .fetch_one(c)
+                    .await?;
+            Ok([
+                row.0 as u64,
+                row.1 as u64,
+                row.2 as u64,
+                row.3 as u64,
+                row.4 as u64,
+            ])
+        })
+    })
+    .await
 }
 
 /// Whether the owner has accepted work not yet registered with RSS.
-pub async fn inputs_pending_in(tx: &mut PgTransaction<'_>) -> Result<bool, PgError> {
+pub async fn inputs_pending_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+) -> Result<bool, PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND NOT forwarded)").bind(tenant).fetch_one(c).await
-    })).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_scalar(crate::storage_profile::sql(profile).work_inputs_pending_in_1)
+                .bind(tenant)
+                .fetch_one(c)
+                .await
+        })
+    })
+    .await
 }

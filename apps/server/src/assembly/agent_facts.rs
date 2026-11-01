@@ -24,23 +24,25 @@ impl Store for AgentFacts {
         registrations: Vec<Uuid>,
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, Binding>> {
         Box::pin(async move {
-            Ok(rss_mdm_agent_channel::Bindings
-                .bindings(c, tenant, registrations)
-                .await
-                .map_err(error)?
-                .into_iter()
-                .map(|(id, b)| {
-                    (
-                        id,
-                        Binding {
-                            platform: b.platform,
-                            architecture: b.architecture,
-                            capabilities: b.capabilities,
-                            execution_context: b.execution_context,
-                        },
-                    )
-                })
-                .collect())
+            Ok(
+                rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)
+                    .bindings(c, tenant, registrations)
+                    .await
+                    .map_err(error)?
+                    .into_iter()
+                    .map(|(id, b)| {
+                        (
+                            id,
+                            Binding {
+                                platform: b.platform,
+                                architecture: b.architecture,
+                                capabilities: b.capabilities,
+                                execution_context: b.execution_context,
+                            },
+                        )
+                    })
+                    .collect(),
+            )
         })
     }
     fn payload<'a>(
@@ -51,9 +53,15 @@ impl Store for AgentFacts {
         attempt: Uuid,
     ) -> Pending<'a, rss_mdm_agent_wire::runtime::TaskPayload> {
         Box::pin(async move {
-            rss_mdm_agent_channel::delivery::payload(c, tenant, run, attempt)
-                .await
-                .map_err(error)
+            rss_mdm_agent_channel::delivery::payload(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                run,
+                attempt,
+            )
+            .await
+            .map_err(error)
         })
     }
     fn announcement<'a>(
@@ -63,7 +71,7 @@ impl Store for AgentFacts {
         registration: Uuid,
     ) -> Pending<'a, Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>> {
         Box::pin(async move {
-            rss_mdm_agent_channel::Bindings
+            rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)
                 .announcement(c, tenant, registration)
                 .await
                 .map_err(error)
@@ -82,23 +90,25 @@ impl rss_mdm_script_service::agent_facts::Store for AgentFacts {
         std::collections::BTreeMap<Uuid, rss_mdm_script_service::agent_facts::Binding>,
     > {
         Box::pin(async move {
-            Ok(rss_mdm_agent_channel::Bindings
-                .bindings(c, tenant, registrations)
-                .await
-                .map_err(script_error)?
-                .into_iter()
-                .map(|(id, b)| {
-                    (
-                        id,
-                        rss_mdm_script_service::agent_facts::Binding {
-                            platform: b.platform,
-                            architecture: b.architecture,
-                            capabilities: b.capabilities,
-                            execution_context: b.execution_context,
-                        },
-                    )
-                })
-                .collect())
+            Ok(
+                rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)
+                    .bindings(c, tenant, registrations)
+                    .await
+                    .map_err(script_error)?
+                    .into_iter()
+                    .map(|(id, b)| {
+                        (
+                            id,
+                            rss_mdm_script_service::agent_facts::Binding {
+                                platform: b.platform,
+                                architecture: b.architecture,
+                                capabilities: b.capabilities,
+                                execution_context: b.execution_context,
+                            },
+                        )
+                    })
+                    .collect(),
+            )
         })
     }
     fn payload<'a>(
@@ -110,9 +120,15 @@ impl rss_mdm_script_service::agent_facts::Store for AgentFacts {
     ) -> rss_mdm_script_service::agent_facts::Pending<'a, rss_mdm_agent_wire::runtime::TaskPayload>
     {
         Box::pin(async move {
-            rss_mdm_agent_channel::delivery::payload(c, tenant, run, attempt)
-                .await
-                .map_err(script_error)
+            rss_mdm_agent_channel::delivery::payload(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                run,
+                attempt,
+            )
+            .await
+            .map_err(script_error)
         })
     }
     fn announcement<'a>(
@@ -125,7 +141,7 @@ impl rss_mdm_script_service::agent_facts::Store for AgentFacts {
         Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>,
     > {
         Box::pin(async move {
-            rss_mdm_agent_channel::Bindings
+            rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)
                 .announcement(c, tenant, registration)
                 .await
                 .map_err(script_error)
@@ -147,13 +163,14 @@ impl rss_mdm_inventory_service::collection::execution::agent_facts::Store for Ag
         >,
     > {
         Box::pin(async move {
-            Ok(rss_mdm_agent_channel::Bindings
-                .bindings(c, tenant, registrations)
-                .await
-                .map_err(collection_error)?
-                .into_iter()
-                .map(|(id, b)| {
-                    (
+            Ok(
+                rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)
+                    .bindings(c, tenant, registrations)
+                    .await
+                    .map_err(collection_error)?
+                    .into_iter()
+                    .map(|(id, b)| {
+                        (
                         id,
                         rss_mdm_inventory_service::collection::execution::agent_facts::Binding {
                             platform: b.platform,
@@ -162,8 +179,9 @@ impl rss_mdm_inventory_service::collection::execution::agent_facts::Store for Ag
                             execution_context: b.execution_context,
                         },
                     )
-                })
-                .collect())
+                    })
+                    .collect(),
+            )
         })
     }
     fn payload<'a>(
@@ -177,9 +195,15 @@ impl rss_mdm_inventory_service::collection::execution::agent_facts::Store for Ag
         rss_mdm_agent_wire::runtime::TaskPayload,
     > {
         Box::pin(async move {
-            rss_mdm_agent_channel::delivery::payload(c, tenant, run, attempt)
-                .await
-                .map_err(collection_error)
+            rss_mdm_agent_channel::delivery::payload(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                run,
+                attempt,
+            )
+            .await
+            .map_err(collection_error)
         })
     }
     fn announcement<'a>(
@@ -192,7 +216,7 @@ impl rss_mdm_inventory_service::collection::execution::agent_facts::Store for Ag
         Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>,
     > {
         Box::pin(async move {
-            rss_mdm_agent_channel::Bindings
+            rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)
                 .announcement(c, tenant, registration)
                 .await
                 .map_err(collection_error)

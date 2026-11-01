@@ -21,7 +21,15 @@ impl AssetService {
         let id = device.to_owned();
         let exists: bool = tx
             .with_connection(move |c| {
-                Box::pin(async move { crate::device::read::exists(c, tenant, id).await })
+                Box::pin(async move {
+                    crate::device::read::exists(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        tenant,
+                        id,
+                    )
+                    .await
+                })
             })
             .await?;
         if !exists {

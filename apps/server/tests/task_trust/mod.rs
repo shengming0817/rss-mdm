@@ -15,15 +15,53 @@ async fn activation_requires_current_generation_ack() -> Result<()> {
     let service = support::service(&c, protection.clone())?;
     let trust =
         support::seed_trust(&c, &protection, &[KeyState::Active, KeyState::Prepared]).await?;
-    let (registration, _, _) = support::seed_registration(&c).await?;
+    let (registration, _, device) = support::seed_registration(&c).await?;
     support::seed_ack(&c, &trust, registration, 1).await?;
     let account = c
         .account(&[
             Permission::RegistrationConfigurationWrite,
             Permission::RegistrationConfigurationRead,
+            Permission::InventoryRead,
         ])
         .await?;
     let proof = c.authenticate(&account).await?;
+    // A real MDM grant cannot authorize reads from another product, even in the same tenant.
+    let da = rss_mdm_install_support::StorageProfile::Da;
+    for operation in [None, Some(Uuid::new_v4())] {
+        assert!(matches!(
+            rss_mdm_task_trust::service::read_task_trust(
+                da,
+                &c.audit,
+                c.tenant,
+                &proof,
+                &c.request(&proof)?,
+                operation,
+            )
+            .await,
+            Err(Error::Forbidden)
+        ));
+    }
+    let da_service = rss_mdm_task_trust::Service::new(
+        c.tenant,
+        std::sync::Arc::new(rss_mdm_task_trust::Signing::new(da, c.tenant, None)?),
+        protection.clone(),
+        c.audit.clone(),
+        std::sync::Arc::new(
+            rss_mdm_agent_channel::signature_retirement::PendingSignatures::new(da),
+        ),
+    )?;
+    assert!(matches!(
+        da_service
+            .task_trust_observation(&proof, &c.request(&proof)?, &device)
+            .await,
+        Err(Error::Forbidden)
+    ));
+    assert!(
+        service
+            .task_trust_observation(&proof, &c.request(&proof)?, &device)
+            .await?
+            .is_none()
+    );
     let operation = Uuid::new_v4();
     let key = trust
         .keys
@@ -159,9 +197,20 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         .bind(c.tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    let loaded = rss_mdm_task_trust::trust::load(&mut tx, c.tenant, 1, &protection).await?;
+    let loaded = rss_mdm_task_trust::trust::load(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        c.tenant,
+        1,
+        &protection,
+    )
+    .await?;
     tx.commit().await?;
-    let signing = rss_mdm_task_trust::Signing::new(c.tenant, Some(loaded))?;
+    let signing = rss_mdm_task_trust::Signing::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c.tenant,
+        Some(loaded),
+    )?;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let payload = w::TaskPayload::Unmanage(Box::new(w::UnmanageTaskSpec {
         wire_version: 1,
@@ -205,6 +254,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         version: 1,
     };
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         c.tenant.to_string(),
         "task-trust",
         rss_mdm_audit_integration::AuditIntent::Management,

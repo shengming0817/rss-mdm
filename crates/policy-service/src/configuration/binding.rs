@@ -23,6 +23,11 @@ impl Transactions {
             channels,
             changes,
         } = dependencies;
+        if source.profile() != rss_mdm_install_support::StorageProfile::Mdm
+            || source.objects.is_none()
+        {
+            return Err(Error::Unsupported);
+        }
         let caller = runtime.clone();
         let audit = audit_store.clone();
         let fingerprint_id = protection.fingerprint_id().to_owned();
@@ -30,7 +35,12 @@ impl Transactions {
             .local_tx(tenant, deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
-                    rss_mdm_native_protection::binding::bind_in(tx, &fingerprint_id).await?;
+                    rss_mdm_native_protection::binding::bind_in(
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        tx,
+                        &fingerprint_id,
+                    )
+                    .await?;
                     let admitted = tx
                         .with_connection(|c| {
                             Box::pin(async move {
@@ -92,7 +102,11 @@ impl Transactions {
                 .map_err(|_| Error::Unavailable(Failure::PolicyAdmission))?;
         Ok(Self {
             outbox,
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                runtime.clone(),
+                tenant,
+            ),
             runtime,
             tenant,
             audit_store,

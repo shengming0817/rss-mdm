@@ -11,13 +11,15 @@ use rss_observation::{Batch, Body, Change, Id, Scope};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub async fn start_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &DevicePrincipal,
     source: ReportSource,
     catalog_digest: [u8; 32],
 ) -> Result<(Uuid, Scope, i64), Error> {
-    let live = device::store::revalidate_source(c, p, source).await?;
+    let live = device::store::revalidate_source(profile, c, p, source).await?;
     let (sequence, _) = device::store::allocate_report_in(
+        profile,
         c,
         &p.tenant().to_string(),
         &p.registration().to_string(),
@@ -30,6 +32,7 @@ pub async fn start_in(
     .map_err(db)?
     .ok_or(Error::Conflict)?;
     let scope = device::scope_dataset(
+        profile,
         p.tenant(),
         p.registration(),
         source.as_str(),
@@ -42,6 +45,7 @@ pub async fn start_in(
         .await
         .map_err(db)?;
     let definition = super::store::freeze_in(
+        profile,
         c,
         &scope,
         1,
@@ -49,11 +53,24 @@ pub async fn start_in(
     )
     .await?;
     let attempt = Attempts::new(definition);
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,evidence,deadline) VALUES($1::uuid,$2,$3,$4,$5::uuid,$6,$7,$8,$9,'pending',$10,CASE WHEN $4='mdm.apple' THEN clock_timestamp()+interval '5 minutes' END)")
-        .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(source.as_str()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(sequence).bind(at).bind(serde_json::to_string(&attempt).map_err(|_|Error::Malformed)?).bind(serde_json::json!({"catalogDigest":catalog_digest})).execute(&mut *c).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).collection_channel_start_in_1)
+        .bind(p.tenant().to_string())
+        .bind(id)
+        .bind(p.registration())
+        .bind(source.as_str())
+        .bind(scope.epoch().as_str())
+        .bind(scope.encode().map_err(|_| Error::Malformed)?)
+        .bind(sequence)
+        .bind(at)
+        .bind(serde_json::to_string(&attempt).map_err(|_| Error::Malformed)?)
+        .bind(serde_json::json!({"catalogDigest":catalog_digest}))
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
     Ok((id, scope, sequence))
 }
 pub async fn finish_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &DevicePrincipal,
     id: Uuid,
@@ -61,9 +78,17 @@ pub async fn finish_in(
     state: AgentInstallation,
     evidence: Option<AgentEvidence>,
 ) -> Result<Option<rss_mdm_audit_integration::Fact>, Error> {
-    let live = device::store::revalidate_source(c, p, source).await?;
-    let row=sqlx::query("SELECT scope,sequence,sealed_at,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND source=$4 AND epoch=$5::uuid FOR UPDATE")
-        .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(source.as_str()).bind(live.epoch().as_str()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+    let live = device::store::revalidate_source(profile, c, p, source).await?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).collection_channel_finish_in_1)
+        .bind(p.tenant().to_string())
+        .bind(id)
+        .bind(p.registration())
+        .bind(source.as_str())
+        .bind(live.epoch().as_str())
+        .fetch_optional(&mut *c)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Conflict)?;
     if row
         .try_get::<Option<i64>, _>("sealed_at")
         .map_err(db)?
@@ -112,10 +137,20 @@ pub async fn finish_in(
     .await
     .map_err(|_| Error::Malformed)?;
     let digest = super::store::fingerprint(&batch, &scope)?;
-    sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3,result='snapshot',reason='complete',batch=$4,digest=$5,sealed_at=$6,delivery_pending=true,evidence=$7::jsonb WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(p.tenant().to_string()).bind(id).bind(serde_json::to_string(&attempt).map_err(|_|Error::Malformed)?).bind(batch.encode()).bind(&digest).bind(at).bind(serde_json::to_string(&evidence).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).collection_channel_finish_in_2)
+        .bind(p.tenant().to_string())
+        .bind(id)
+        .bind(serde_json::to_string(&attempt).map_err(|_| Error::Malformed)?)
+        .bind(batch.encode())
+        .bind(&digest)
+        .bind(at)
+        .bind(serde_json::to_string(&evidence).map_err(|_| Error::Malformed)?)
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
     crate::wake::notify(c).await.map_err(db)?;
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        profile,
         p.tenant().to_string(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -141,6 +176,7 @@ pub async fn finish_in(
 }
 /// End incomplete collection without turning a timeout into an absence observation.
 pub async fn abandon_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     id: Uuid,
@@ -150,15 +186,31 @@ pub async fn abandon_in(
         .fetch_one(&mut *c)
         .await
         .map_err(db)?;
-    let body:String=sqlx::query_scalar("SELECT attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
+    let body: String =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).collection_channel_abandon_in_1)
+            .bind(tenant)
+            .bind(id)
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
     let mut attempt: Attempts = serde_json::from_str(&body).map_err(|_| Error::Malformed)?;
     attempt.finish();
-    let registration=sqlx::query_scalar::<_,Uuid>("UPDATE mdm_access.collection_runs SET attempts=$3,result='failed',reason=$4,sealed_at=$5,delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL RETURNING registration")
-        .bind(tenant).bind(id).bind(serde_json::to_string(&attempt).map_err(|_|Error::Malformed)?).bind(reason).bind(at).fetch_optional(&mut *c).await.map_err(db)?;
+    let registration = sqlx::query_scalar::<_, Uuid>(
+        crate::storage_profile::sql(profile).collection_channel_abandon_in_2,
+    )
+    .bind(tenant)
+    .bind(id)
+    .bind(serde_json::to_string(&attempt).map_err(|_| Error::Malformed)?)
+    .bind(reason)
+    .bind(at)
+    .fetch_optional(&mut *c)
+    .await
+    .map_err(db)?;
     let Some(registration) = registration else {
         return Ok(None);
     };
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        profile,
         tenant.into(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,

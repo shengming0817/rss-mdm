@@ -133,9 +133,14 @@ pub struct Read {
     /// Quantity authority only; expiry and revocation remain separate admission checks.
     pub remaining: Option<u64>,
 }
-async fn read_on(c: &mut PgConnection, tenant: &str, row: &PgRow) -> Result<Read, Error> {
+async fn read_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    row: &PgRow,
+) -> Result<Read, Error> {
     let configuration = document(row)?;
-    let (reserved, consumed) = usage(c, tenant, configuration.configuration_id).await?;
+    let (reserved, consumed) = usage(profile, c, tenant, configuration.configuration_id).await?;
     let state = if row.try_get::<String, _>("state").map_err(db)? == "revoked" {
         "revoked"
     } else if configuration.expires_at <= now(c).await? {
@@ -184,16 +189,36 @@ fn check_configuration_secret(
     }
     Ok(())
 }
-async fn row(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
-    sqlx::query("SELECT * FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
-        .bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?.ok_or(Error::Unauthorized)
+async fn row(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<PgRow, Error> {
+    sqlx::query(crate::storage_profile::sql(profile).agent_configurations_row_1)
+        .bind(tenant)
+        .bind(id)
+        .fetch_optional(c)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)
 }
 fn document(row: &PgRow) -> Result<wire_config::Configuration, Error> {
     serde_json::from_value(row.try_get("document").map_err(db)?).map_err(|_| Error::Corrupt)
 }
-async fn usage(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<(u64, u64), Error> {
-    let counts:(i64,i64)=sqlx::query_as("SELECT count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM mdm_access.agent_issuances i WHERE (i.tenant_id,i.grant_id)=(g.tenant_id,g.id)) AND g.state='available' AND g.expires_at>clock_timestamp()),count(*) FILTER(WHERE EXISTS(SELECT 1 FROM mdm_access.agent_issuances i WHERE (i.tenant_id,i.grant_id)=(g.tenant_id,g.id))) FROM mdm_access.agent_grants g WHERE g.tenant_id=$1::uuid AND g.configuration_id=$2")
-        .bind(tenant).bind(id).fetch_one(c).await.map_err(db)?;
+async fn usage(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<(u64, u64), Error> {
+    let counts: (i64, i64) =
+        sqlx::query_as(crate::storage_profile::sql(profile).agent_configurations_usage_1)
+            .bind(tenant)
+            .bind(id)
+            .fetch_one(c)
+            .await
+            .map_err(db)?;
     Ok((
         u64::try_from(counts.0).map_err(|_| Error::Corrupt)?,
         u64::try_from(counts.1).map_err(|_| Error::Corrupt)?,
@@ -202,12 +227,13 @@ async fn usage(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<(u64, u64
 /// Acquire configuration before grant; hold until the durable issuance claim settles.
 /// Never call after taking a grant lock: expiry/claim/exchange must serialize together.
 pub(super) async fn lock_for_grant(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     id: Uuid,
 ) -> Result<(), Error> {
     let config: Option<Uuid> = sqlx::query_scalar(
-        "SELECT configuration_id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2",
+        crate::storage_profile::sql(profile).agent_configurations_lock_for_grant_1,
     )
     .bind(tenant)
     .bind(id)
@@ -216,7 +242,7 @@ pub(super) async fn lock_for_grant(
     .map_err(db)?
     .ok_or(Error::Unauthorized)?;
     if let Some(config) = config {
-        row(c, tenant, config).await?;
+        row(profile, c, tenant, config).await?;
     }
     Ok(())
 }
@@ -227,6 +253,8 @@ impl Service {
         input: &Create,
         a: &RequestAudit,
     ) -> Result<wire_config::ConfigurationFile, Failure> {
+        let profile = self.profile();
+
         self.proof(p, a)?;
         p.manage(Permission::AgentEnrollmentWrite)?;
         version(wire::API_VERSION, input.operation_id)?;
@@ -244,35 +272,114 @@ impl Service {
             "agent_configuration_create",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let config=self.write(a,(self,p,input,d),|ctx,c|Box::pin(async move {
-            let (service,p,input,d)=ctx;let tenant=service.tenant.to_string();
-            authorize_on(c,p,Permission::AgentEnrollmentWrite).await?;
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2674))")
-                .bind(format!("{tenant}:configuration:{}",input.operation_id)).execute(&mut *c).await.map_err(db)?;
-            if let Some(id)=sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND operation_id=$2")
-                .bind(&tenant).bind(input.operation_id).fetch_optional(&mut *c).await.map_err(db)?{
-                let old=row(c,&tenant,id).await?;check_configuration_secret(&tenant,&old,&input.secret)?;
-                if old.try_get::<String,_>("request_digest").map_err(db)?!=*d || old.try_get::<String,_>("creator").map_err(db)?!=p.principal_id() || old.try_get::<String,_>("instance").map_err(db)?!=p.instance_id(){return Err(Error::Conflict);}
-                return Ok(Change{value:(document(&old)?,old.try_get::<String,_>("signature").map_err(db)?), replay:true});
-            }
-            crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent).await?;
-            let mut defaults=None;
-            for target in &input.targets {defaults=Some(settings::admit_on(c,&tenant,target.platform).await?);}
-            let seconds=input.lifetime_seconds.unwrap_or(defaults.ok_or(Error::Malformed)?.configuration_default_seconds);
-            if !(1..=settings::CONFIGURATION_MAX_SECONDS).contains(&seconds){return Err(Error::Malformed);}
-            super::connections::lock(c, &tenant).await?;
-            let signer = super::connections::signer_on(c, &tenant, &service.protection).await?;
-            let connections = super::connections::current_on(c, &tenant).await?;
-            let id=Uuid::new_v4();let expires_at=now(c).await?+i64::from(seconds);
-            let config=wire_config::Configuration{wire_version:1,configuration_id:id,tenant_id:Uuid::parse_str(&tenant).map_err(|_|Error::Configuration)?,connections,targets:input.targets.clone(),expires_at,quantity:input.quantity.clone(),key_id:signer.key_id.clone()};
-            config.signing_bytes(&input.secret).map_err(|_|Error::Configuration)?;
-            let signature=signer.sign(config.clone(),input.secret.clone())?.signature;
-            let quantity=match input.quantity{wire_config::Quantity::Finite{count}=>Some(i64::from(count.get())),wire_config::Quantity::Unlimited=>None};
-            sqlx::query("INSERT INTO mdm_access.agent_configurations(tenant_id,id,operation_id,creator,instance,secret_digest,request_digest,signature,document,quantity,state,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,'available',to_timestamp($11))")
-                .bind(&tenant).bind(id).bind(input.operation_id).bind(p.principal_id()).bind(p.instance_id()).bind(configuration_secret(&tenant,id,&input.secret)).bind(&*d).bind(&signature).bind(serde_json::to_value(&config).map_err(|_|Error::Malformed)?).bind(quantity).bind(expires_at as f64).execute(&mut *c).await.map_err(db)?;
-            p.manage(Permission::AgentEnrollmentWrite)?;
-            Ok(Change{value:(config,signature), replay:false})
-        })).await?;
+        let config = self
+            .write(a, (self, p, input, d), |ctx, c| {
+                Box::pin(async move {
+                    let (service, p, input, d) = ctx;
+                    let tenant = service.tenant.to_string();
+                    authorize_on(profile, c, p, Permission::AgentEnrollmentWrite).await?;
+                    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2674))")
+                        .bind(format!("{tenant}:configuration:{}", input.operation_id))
+                        .execute(&mut *c)
+                        .await
+                        .map_err(db)?;
+                    if let Some(id) = sqlx::query_scalar::<_, Uuid>(
+                        crate::storage_profile::sql(profile)
+                            .agent_configurations_create_configuration_1,
+                    )
+                    .bind(&tenant)
+                    .bind(input.operation_id)
+                    .fetch_optional(&mut *c)
+                    .await
+                    .map_err(db)?
+                    {
+                        let old = row(profile, c, &tenant, id).await?;
+                        check_configuration_secret(&tenant, &old, &input.secret)?;
+                        if old.try_get::<String, _>("request_digest").map_err(db)? != *d
+                            || old.try_get::<String, _>("creator").map_err(db)? != p.principal_id()
+                            || old.try_get::<String, _>("instance").map_err(db)? != p.instance_id()
+                        {
+                            return Err(Error::Conflict);
+                        }
+                        return Ok(Change {
+                            value: (
+                                document(&old)?,
+                                old.try_get::<String, _>("signature").map_err(db)?,
+                            ),
+                            replay: true,
+                        });
+                    }
+                    crate::admission::require_new_in(
+                        profile,
+                        c,
+                        &tenant,
+                        crate::quotas::Channel::Agent,
+                    )
+                    .await?;
+                    let mut defaults = None;
+                    for target in &input.targets {
+                        defaults =
+                            Some(settings::admit_on(profile, c, &tenant, target.platform).await?);
+                    }
+                    let seconds = input.lifetime_seconds.unwrap_or(
+                        defaults
+                            .ok_or(Error::Malformed)?
+                            .configuration_default_seconds,
+                    );
+                    if !(1..=settings::CONFIGURATION_MAX_SECONDS).contains(&seconds) {
+                        return Err(Error::Malformed);
+                    }
+                    super::connections::lock(profile, c, &tenant).await?;
+                    let signer =
+                        super::connections::signer_on(profile, c, &tenant, &service.protection)
+                            .await?;
+                    let connections = super::connections::current_on(profile, c, &tenant).await?;
+                    let id = Uuid::new_v4();
+                    let expires_at = now(c).await? + i64::from(seconds);
+                    let config = wire_config::Configuration {
+                        wire_version: 1,
+                        configuration_id: id,
+                        tenant_id: Uuid::parse_str(&tenant).map_err(|_| Error::Configuration)?,
+                        connections,
+                        targets: input.targets.clone(),
+                        expires_at,
+                        quantity: input.quantity.clone(),
+                        key_id: signer.key_id.clone(),
+                    };
+                    config
+                        .signing_bytes(&input.secret)
+                        .map_err(|_| Error::Configuration)?;
+                    let signature = signer.sign(config.clone(), input.secret.clone())?.signature;
+                    let quantity = match input.quantity {
+                        wire_config::Quantity::Finite { count } => Some(i64::from(count.get())),
+                        wire_config::Quantity::Unlimited => None,
+                    };
+                    sqlx::query(
+                        crate::storage_profile::sql(profile)
+                            .agent_configurations_create_configuration_2,
+                    )
+                    .bind(&tenant)
+                    .bind(id)
+                    .bind(input.operation_id)
+                    .bind(p.principal_id())
+                    .bind(p.instance_id())
+                    .bind(configuration_secret(&tenant, id, &input.secret))
+                    .bind(&*d)
+                    .bind(&signature)
+                    .bind(serde_json::to_value(&config).map_err(|_| Error::Malformed)?)
+                    .bind(quantity)
+                    .bind(expires_at as f64)
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
+                    p.manage(Permission::AgentEnrollmentWrite)?;
+                    Ok(Change {
+                        value: (config, signature),
+                        replay: false,
+                    })
+                })
+            })
+            .await?;
         Ok(wire_config::ConfigurationFile {
             configuration: config.0,
             signature: config.1,
@@ -284,14 +391,16 @@ impl Service {
         p: &AuthorizedPrincipal,
         id: Uuid,
     ) -> Result<Read, Failure> {
+        let profile = self.profile();
+
         p.manage(Permission::AgentEnrollmentRead)?;
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden.into());
         }
         let mut tx = self.store.begin(p.tenant_id()).await?;
-        authorize_on(&mut tx, p, Permission::AgentEnrollmentRead).await?;
-        let row = row(&mut tx, p.tenant_id(), id).await?;
-        let out = read_on(&mut tx, p.tenant_id(), &row).await?;
+        authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
+        let row = row(profile, &mut tx, p.tenant_id(), id).await?;
+        let out = read_on(profile, &mut tx, p.tenant_id(), &row).await?;
         p.check_live()?;
         tx.commit().await.map_err(db)?;
         Ok(out)
@@ -303,6 +412,8 @@ impl Service {
         p: &AuthorizedPrincipal,
         operation: Uuid,
     ) -> Result<Option<Read>, Failure> {
+        let profile = self.profile();
+
         p.manage(Permission::AgentEnrollmentRead)?;
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden.into());
@@ -311,13 +422,20 @@ impl Service {
             return Err(Error::Malformed.into());
         }
         let mut tx = self.store.begin(p.tenant_id()).await?;
-        authorize_on(&mut tx, p, Permission::AgentEnrollmentRead).await?;
-        let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND operation_id=$2 AND creator=$3 AND instance=$4")
-            .bind(p.tenant_id()).bind(operation).bind(p.principal_id()).bind(p.instance_id())
-            .fetch_optional(&mut *tx).await.map_err(db)?;
+        authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
+        let id: Option<Uuid> = sqlx::query_scalar(
+            crate::storage_profile::sql(profile).agent_configurations_configuration_operation_1,
+        )
+        .bind(p.tenant_id())
+        .bind(operation)
+        .bind(p.principal_id())
+        .bind(p.instance_id())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
         let out = if let Some(id) = id {
-            let row = row(&mut tx, p.tenant_id(), id).await?;
-            Some(read_on(&mut tx, p.tenant_id(), &row).await?)
+            let row = row(profile, &mut tx, p.tenant_id(), id).await?;
+            Some(read_on(profile, &mut tx, p.tenant_id(), &row).await?)
         } else {
             None
         };
@@ -332,6 +450,8 @@ impl Service {
         operation: Uuid,
         a: &RequestAudit,
     ) -> Result<(), Failure> {
+        let profile = self.profile();
+
         self.proof(p, a)?;
         p.manage(Permission::AgentEnrollmentWrite)?;
         version(1, operation)?;
@@ -341,25 +461,53 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let d = digest(&("configuration_revoke", id, operation))?;
-        self.write(a,(self,p,id,d,operation,a),|ctx,c|Box::pin(async move {
-            let (service,p,id,d,operation,a)=ctx;let tenant=service.tenant.to_string();
-            authorize_on(c,p,Permission::AgentEnrollmentWrite).await?;
-            let op=crate::operations::Operation{actor:crate::operations::Actor::from_authorized(p),key:*operation,digest:d};
-            if crate::operations::replay(c,&op).await?.is_some(){return Ok(Change{value:(), replay:true});}
-            row(c,&tenant,*id).await?;
-            sqlx::query("UPDATE mdm_access.agent_configurations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(*id).execute(&mut *c).await.map_err(db)?;
-            crate::operations::save(c,&op,"null",a).await?;
-            Ok(Change{value:(), replay:false})
-        })).await.map_err(Into::into)
+        self.write(a, (self, p, id, d, operation, a), |ctx, c| {
+            Box::pin(async move {
+                let (service, p, id, d, operation, a) = ctx;
+                let tenant = service.tenant.to_string();
+                authorize_on(profile, c, p, Permission::AgentEnrollmentWrite).await?;
+                let op = crate::operations::Operation {
+                    actor: crate::operations::Actor::from_authorized(p),
+                    key: *operation,
+                    digest: d,
+                };
+                if crate::operations::replay(profile, c, &op).await?.is_some() {
+                    return Ok(Change {
+                        value: (),
+                        replay: true,
+                    });
+                }
+                row(profile, c, &tenant, *id).await?;
+                sqlx::query(
+                    crate::storage_profile::sql(profile)
+                        .agent_configurations_revoke_configuration_1,
+                )
+                .bind(&tenant)
+                .bind(*id)
+                .execute(&mut *c)
+                .await
+                .map_err(db)?;
+                crate::operations::save(profile, c, &op, "null", a).await?;
+                Ok(Change {
+                    value: (),
+                    replay: false,
+                })
+            })
+        })
+        .await
+        .map_err(Into::into)
     }
     pub async fn exchange_configuration(
         &self,
         input: &wire_config::Exchange,
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
+        let profile = self.profile();
+
         version(input.file.configuration.wire_version, input.operation_id)?;
         let mut verification = self.store.begin(&self.tenant.to_string()).await?;
         let signer = super::connections::signer_on(
+            profile,
             &mut verification,
             &self.tenant.to_string(),
             &self.protection,
@@ -378,47 +526,153 @@ impl Service {
             "agent_configuration_exchange",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.write(a,(self,input,spki,d),|ctx,c|Box::pin(async move {
-            let (service,input,spki,d)=ctx;let tenant=service.tenant.to_string();let cfg=&input.file.configuration;
-            if cfg.tenant_id.to_string()!=tenant || cfg.connections.configuration.service_id!=service.service_id()?{return Err(Error::Forbidden);}
-            let config=row(c,&tenant,cfg.configuration_id).await?;check_configuration_secret(&tenant,&config,&input.file.secret)?;
-            if serde_json::to_value(cfg).map_err(|_|Error::Malformed)?!=config.try_get::<serde_json::Value,_>("document").map_err(db)?{return Err(Error::Unauthorized);}
-            if let Some(id)=sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='configuration' AND operation_id=$2")
-                .bind(&tenant).bind(input.operation_id).fetch_optional(&mut *c).await.map_err(db)?{
-                let old=grant_row(c,&tenant,id).await?;check_secret(&tenant,&old,&input.secret)?;
-                if old.try_get::<String,_>("request_digest").map_err(db)?!=*d || old.try_get::<Option<Uuid>,_>("configuration_id").map_err(db)?!=Some(cfg.configuration_id){return Err(Error::Conflict);}
-                return Ok(Change{value:receipt(&old)?, replay:true});
-            }
-            if config.try_get::<String,_>("state").map_err(db)?!="available"{return Err(Error::Agent(wire::ErrorCode::GrantRevoked));}
-            if cfg.expires_at<=now(c).await?{return Err(Error::Agent(wire::ErrorCode::GrantExpired));}
-            crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent).await?;
-            let values=settings::admit_on(c,&tenant,input.runtime.platform).await?;
-            let package=service.installations.verify(c,&tenant,&input.installation).await?;
-            let target=wire_config::Target{platform:input.runtime.platform,architecture:input.runtime.architecture};
-            if package.tenant_id!=cfg.tenant_id || package.target!=target || !cfg.targets.contains(&target){return Err(Error::Forbidden);}
-            let reused:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND configuration_id=$2 AND spki=$3)").bind(&tenant).bind(cfg.configuration_id).bind(&*spki).fetch_one(&mut *c).await.map_err(db)?;
-            if reused{return Err(Error::Conflict);}
-            if let wire_config::Quantity::Finite{count}=cfg.quantity {
-                let (reserved,consumed)=usage(c,&tenant,cfg.configuration_id).await?;
-                if reserved+consumed>=u64::from(count.get()){return Err(Error::RegistrationLimit);}
-            }
-            let id=Uuid::new_v4();
-            let binding=serde_json::json!({"runtime":input.runtime,"installation":input.installation});
-            sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,created_at,expires_at,configuration_id,configuration_binding) VALUES($1::uuid,$2,$3,'configuration',$4,$5,$6,$7,$8,$9,$10,'available',statement_timestamp(),statement_timestamp()+make_interval(secs=>$11),$12,$13)")
-                .bind(&tenant).bind(id).bind(input.operation_id).bind(config.try_get::<String,_>("creator").map_err(db)?).bind(config.try_get::<String,_>("instance").map_err(db)?).bind(Uuid::new_v4().to_string()).bind(platform(input.runtime.platform))
-                .bind(secret_digest(&tenant,id,&input.secret)).bind(&*d).bind(&*spki).bind(f64::from(values.grant_seconds)).bind(cfg.configuration_id).bind(binding).execute(&mut *c).await.map_err(db)?;
-            Ok(Change{value:receipt(&grant_row(c,&tenant,id).await?)?, replay:false})
-        })).await.map_err(Into::into)
+        self.write(a, (self, input, spki, d), |ctx, c| {
+            Box::pin(async move {
+                let (service, input, spki, d) = ctx;
+                let tenant = service.tenant.to_string();
+                let cfg = &input.file.configuration;
+                if cfg.tenant_id.to_string() != tenant
+                    || cfg.connections.configuration.service_id != service.service_id()?
+                {
+                    return Err(Error::Forbidden);
+                }
+                let config = row(profile, c, &tenant, cfg.configuration_id).await?;
+                check_configuration_secret(&tenant, &config, &input.file.secret)?;
+                if serde_json::to_value(cfg).map_err(|_| Error::Malformed)?
+                    != config
+                        .try_get::<serde_json::Value, _>("document")
+                        .map_err(db)?
+                {
+                    return Err(Error::Unauthorized);
+                }
+                if let Some(id) = sqlx::query_scalar::<_, Uuid>(
+                    crate::storage_profile::sql(profile)
+                        .agent_configurations_exchange_configuration_1,
+                )
+                .bind(&tenant)
+                .bind(input.operation_id)
+                .fetch_optional(&mut *c)
+                .await
+                .map_err(db)?
+                {
+                    let old = grant_row(profile, c, &tenant, id).await?;
+                    check_secret(&tenant, &old, &input.secret)?;
+                    if old.try_get::<String, _>("request_digest").map_err(db)? != *d
+                        || old
+                            .try_get::<Option<Uuid>, _>("configuration_id")
+                            .map_err(db)?
+                            != Some(cfg.configuration_id)
+                    {
+                        return Err(Error::Conflict);
+                    }
+                    return Ok(Change {
+                        value: receipt(&old)?,
+                        replay: true,
+                    });
+                }
+                if config.try_get::<String, _>("state").map_err(db)? != "available" {
+                    return Err(Error::Agent(wire::ErrorCode::GrantRevoked));
+                }
+                if cfg.expires_at <= now(c).await? {
+                    return Err(Error::Agent(wire::ErrorCode::GrantExpired));
+                }
+                crate::admission::require_new_in(
+                    profile,
+                    c,
+                    &tenant,
+                    crate::quotas::Channel::Agent,
+                )
+                .await?;
+                let values =
+                    settings::admit_on(profile, c, &tenant, input.runtime.platform).await?;
+                let package = service
+                    .installations
+                    .as_ref()
+                    .ok_or(Error::Unsupported)?
+                    .verify(c, &tenant, &input.installation)
+                    .await?;
+                let target = wire_config::Target {
+                    platform: input.runtime.platform,
+                    architecture: input.runtime.architecture,
+                };
+                if package.tenant_id != cfg.tenant_id
+                    || package.target != target
+                    || !cfg.targets.contains(&target)
+                {
+                    return Err(Error::Forbidden);
+                }
+                let reused: bool = sqlx::query_scalar(
+                    crate::storage_profile::sql(profile)
+                        .agent_configurations_exchange_configuration_2,
+                )
+                .bind(&tenant)
+                .bind(cfg.configuration_id)
+                .bind(&*spki)
+                .fetch_one(&mut *c)
+                .await
+                .map_err(db)?;
+                if reused {
+                    return Err(Error::Conflict);
+                }
+                if let wire_config::Quantity::Finite { count } = cfg.quantity {
+                    let (reserved, consumed) =
+                        usage(profile, c, &tenant, cfg.configuration_id).await?;
+                    if reserved + consumed >= u64::from(count.get()) {
+                        return Err(Error::RegistrationLimit);
+                    }
+                }
+                let id = Uuid::new_v4();
+                let binding =
+                    serde_json::json!({"runtime":input.runtime,"installation":input.installation});
+                sqlx::query(
+                    crate::storage_profile::sql(profile)
+                        .agent_configurations_exchange_configuration_3,
+                )
+                .bind(&tenant)
+                .bind(id)
+                .bind(input.operation_id)
+                .bind(config.try_get::<String, _>("creator").map_err(db)?)
+                .bind(config.try_get::<String, _>("instance").map_err(db)?)
+                .bind(Uuid::new_v4().to_string())
+                .bind(platform(input.runtime.platform))
+                .bind(secret_digest(&tenant, id, &input.secret))
+                .bind(&*d)
+                .bind(&*spki)
+                .bind(f64::from(values.grant_seconds))
+                .bind(cfg.configuration_id)
+                .bind(binding)
+                .execute(&mut *c)
+                .await
+                .map_err(db)?;
+                Ok(Change {
+                    value: receipt(&grant_row(profile, c, &tenant, id).await?)?,
+                    replay: false,
+                })
+            })
+        })
+        .await
+        .map_err(Into::into)
     }
     pub async fn configuration_exchange_status(
         &self,
         input: &wire_config::ExchangeStatus,
     ) -> Result<wire::GrantReceipt, Failure> {
+        let profile = self.profile();
+
         version(input.wire_version, input.operation_id)?;
         let tenant = self.tenant.to_string();
         let mut tx = self.store.begin(&tenant).await?;
-        let row=sqlx::query("SELECT *,floor(extract(epoch FROM expires_at))::bigint AS expiry,expires_at>clock_timestamp() AS live FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND configuration_id=$2 AND operation_id=$3 AND source='configuration'")
-            .bind(&tenant).bind(input.configuration_id).bind(input.operation_id).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+        let row = sqlx::query(
+            crate::storage_profile::sql(profile)
+                .agent_configurations_configuration_exchange_status_1,
+        )
+        .bind(&tenant)
+        .bind(input.configuration_id)
+        .bind(input.operation_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)?;
         check_secret(&tenant, &row, &input.secret)?;
         let out = receipt(&row)?;
         tx.commit().await.map_err(db)?;
@@ -429,6 +683,8 @@ impl Service {
         input: &wire_config::Cancel,
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
+        let profile = self.profile();
+
         version(input.wire_version, input.operation_id)?;
         a.operation(
             input.operation_id,
@@ -436,16 +692,45 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
 
-        self.write(a,(self,input),|ctx,c|Box::pin(async move {
-            let (service,input)=ctx;let tenant=service.tenant.to_string();let row=grant_row(c,&tenant,input.grant_id).await?;
-            check_secret(&tenant,&row,&input.secret)?;
-            if row.try_get::<Uuid,_>("operation_id").map_err(db)?!=input.creation_operation_id{return Err(Error::Conflict);}
-            let issued:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$2)").bind(&tenant).bind(input.grant_id).fetch_one(&mut *c).await.map_err(db)?;
-            if issued{return Err(Error::Conflict);}
-            let replay=row.try_get::<String,_>("state").map_err(db)?=="revoked";
-            sqlx::query("UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(input.grant_id).execute(&mut *c).await.map_err(db)?;
-            Ok(Change{value:receipt(&grant_row(c,&tenant,input.grant_id).await?)?, replay})
-        })).await.map_err(Into::into)
+        self.write(a, (self, input), |ctx, c| {
+            Box::pin(async move {
+                let (service, input) = ctx;
+                let tenant = service.tenant.to_string();
+                let row = grant_row(profile, c, &tenant, input.grant_id).await?;
+                check_secret(&tenant, &row, &input.secret)?;
+                if row.try_get::<Uuid, _>("operation_id").map_err(db)?
+                    != input.creation_operation_id
+                {
+                    return Err(Error::Conflict);
+                }
+                let issued: bool = sqlx::query_scalar(
+                    crate::storage_profile::sql(profile).agent_configurations_cancel_reservation_1,
+                )
+                .bind(&tenant)
+                .bind(input.grant_id)
+                .fetch_one(&mut *c)
+                .await
+                .map_err(db)?;
+                if issued {
+                    return Err(Error::Conflict);
+                }
+                let replay = row.try_get::<String, _>("state").map_err(db)? == "revoked";
+                sqlx::query(
+                    crate::storage_profile::sql(profile).agent_configurations_cancel_reservation_2,
+                )
+                .bind(&tenant)
+                .bind(input.grant_id)
+                .execute(&mut *c)
+                .await
+                .map_err(db)?;
+                Ok(Change {
+                    value: receipt(&grant_row(profile, c, &tenant, input.grant_id).await?)?,
+                    replay,
+                })
+            })
+        })
+        .await
+        .map_err(Into::into)
     }
 }
 

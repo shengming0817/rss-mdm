@@ -263,6 +263,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     let mut tx = command::seed_transaction(&h.c).await?;
     assert!(
         !rss_mdm_registration_service::lifecycle::work_allowed_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &mut tx,
             &h.c.tenant.to_string(),
             h.p.device()
@@ -334,6 +335,7 @@ pub(super) async fn native(
     let mut tx = command::seed_transaction(&h.c).await?;
     let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(h.c.tenant.to_string()).bind(target.registration_id).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
+        rss_mdm_install_support::StorageProfile::Mdm,
         h.c.tenant,
         target.registration_id,
         "mdm.windows",

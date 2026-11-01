@@ -159,7 +159,7 @@ impl Associations {
       for device in &devices {
         auth.require(p,Permission::InventoryRead,Some(device))?;
         auth.require(p,match change{Change::Asset{..}=>Permission::InventoryAssign,Change::Force{..}=>Permission::DeviceUnmanage},Some(device))?;
-        rss_mdm_registration_service::lifecycle::lock_device_in(c,p.tenant_id(),device).await?;
+        rss_mdm_registration_service::lifecycle::lock_device_in(rss_mdm_install_support::StorageProfile::Mdm, c,p.tenant_id(),device).await?;
       }
       let old=sqlx::query("SELECT actor,instance,digest,result FROM mdm_devices.operations WHERE tenant_id=$1::uuid AND operation_id=$2")
         .bind(p.tenant_id()).bind(change.operation()).fetch_optional(&mut *c).await?;

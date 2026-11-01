@@ -40,6 +40,11 @@ async fn verify_functions(tx: &mut PgTransaction<'_>) -> Result<Option<String>, 
                 sqlx::query_scalar::<_, String>(include_str!("authority-admission.sql"))
                     .bind(body)
                     .bind(lock_body)
+                    .bind(scope_body("CREATE FUNCTION mdm_group.scope_dependencies("))
+                    .bind(scope_body(
+                        "CREATE FUNCTION mdm_group.lock_scope_dependencies(",
+                    ))
+                    .bind(scope_body("CREATE FUNCTION mdm_group.scope_source("))
                     .fetch_optional(c)
                     .await
             })
@@ -63,4 +68,14 @@ pub(crate) async fn verify_sources(tx: &mut PgTransaction<'_>) -> Result<(), PgE
     } else {
         Err(StorageFault::Contract.error())
     }
+}
+
+fn scope_body(declaration: &str) -> &'static str {
+    crate::SCOPE_FACTS_SQL
+        .split_once(declaration)
+        .expect("owner function")
+        .1
+        .split("$$")
+        .nth(1)
+        .expect("owner body")
 }

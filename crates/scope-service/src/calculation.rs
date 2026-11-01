@@ -89,6 +89,8 @@ impl Scopes {
         id: Uuid,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<()> {
+        let profile = self.profile();
+
         self.store.admit_in(tx).await?;
         let task = self.store.task_in(tx, id).await?;
         self.store.lock_scope_in(tx, task.scope).await?;
@@ -190,9 +192,21 @@ impl Scopes {
                             let tenant = self.tenant.to_string();
                             let device = device.clone();
                             let cut = run.asset_cut.to_json();
-                            successor |= tx.with_connection(move |c|Box::pin(async move {
-                                sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_access.asset_authority_history WHERE tenant_id=$1::uuid AND device=$2 AND NOT mdm.asset_visible($3,revision))").bind(tenant).bind(device).bind(cut).fetch_one(c).await
-                            })).await?;
+                            successor |= tx
+                                .with_connection(move |c| {
+                                    Box::pin(async move {
+                                        sqlx::query_scalar::<_, bool>(
+                                            crate::storage_profile::sql(profile)
+                                                .calculation_advance_in_1,
+                                        )
+                                        .bind(tenant)
+                                        .bind(device)
+                                        .bind(cut)
+                                        .fetch_one(c)
+                                        .await
+                                    })
+                                })
+                                .await?;
                         }
                     }
                 }
@@ -212,6 +226,8 @@ impl Scopes {
         device: &str,
         cut: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<u64> {
+        let profile = self.profile();
+
         let tenant = self.tenant;
         let device = device.to_owned();
         let cut = cut.clone();
@@ -219,7 +235,7 @@ impl Scopes {
             .with_connection(move |c| {
                 Box::pin(async move {
                     rss_mdm_registration_service::device::coordinates::authority_at_on(
-                        c, tenant, &device, &cut,
+                        profile, c, tenant, &device, &cut,
                     )
                     .await
                 })

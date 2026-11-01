@@ -60,13 +60,16 @@ impl Database {
         }
         Ok(Self {
             inventory: std::sync::Arc::new(rss_mdm_inventory_service::Store::from_pool(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 pool.clone(),
             )),
             registration: std::sync::Arc::new(rss_mdm_registration_service::Store::from_pool(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 pool.clone(),
                 std::sync::Arc::new(crate::registration_lifecycle::Bridge),
             )),
             authorization: std::sync::Arc::new(rss_mdm_authorization_service::Store::from_pool(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 pool.clone(),
                 std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
             )),
@@ -197,41 +200,59 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     crate::migration::verify_runtime_installation(connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_authorization_service::verify_authority(connection)
-        .await
-        .map_err(storage_admission_error)?;
+    rss_mdm_authorization_service::verify_authority(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        connection,
+    )
+    .await
+    .map_err(storage_admission_error)?;
     rss_mdm_registration_service::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
     rss_mdm_device_service::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_scope_postgres::verify_authority(connection)
-        .await
-        .map_err(storage_admission_error)?;
-    rss_mdm_policy_postgres::verify_authority(connection)
-        .await
-        .map_err(storage_admission_error)?;
+    rss_mdm_scope_postgres::verify_authority(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        connection,
+    )
+    .await
+    .map_err(storage_admission_error)?;
+    rss_mdm_policy_postgres::verify_authority(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        connection,
+    )
+    .await
+    .map_err(storage_admission_error)?;
     verify_task_storage(connection).await?;
     rss_mdm_apple_channel::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_inventory_service::verify_authority(connection)
+    rss_mdm_inventory_service::verify_authority(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        connection,
+    )
+    .await
+    .map_err(storage_admission_error)?;
+    rss_mdm_scope_postgres::verify_access(rss_mdm_install_support::StorageProfile::Mdm, connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_scope_postgres::verify_access(connection)
-        .await
-        .map_err(storage_admission_error)?;
-    rss_mdm_scope_postgres::verify_projection_access(connection)
-        .await
-        .map_err(storage_admission_error)?;
+    rss_mdm_scope_postgres::verify_projection_access(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        connection,
+    )
+    .await
+    .map_err(storage_admission_error)?;
     Ok(())
 }
 
 async fn verify_task_storage(connection: &mut sqlx::PgConnection) -> Result<(), Error> {
-    rss_mdm_agent_channel::signature_retirement::verify_authority(connection)
-        .await
-        .map_err(storage_admission_error)?;
+    rss_mdm_agent_channel::signature_retirement::verify_authority(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        connection,
+    )
+    .await
+    .map_err(storage_admission_error)?;
     rss_mdm_policy_service::configuration::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
@@ -301,7 +322,12 @@ async fn verify_reader_access(tx: &mut sqlx::PgConnection) -> Result<(), Error> 
             "source",
             rss_mdm_software_service::deployment::NATIVE_SOURCE_ADMISSION_SQL,
         ),
-        ("policy", rss_mdm_policy_postgres::ACCESS_ADMISSION_SQL),
+        (
+            "policy",
+            rss_mdm_policy_postgres::access_admission_sql(
+                rss_mdm_install_support::StorageProfile::Mdm,
+            ),
+        ),
         ("timeline", rss_mdm_timeline_service::ACCESS_ADMISSION_SQL),
     ] {
         let valid: bool = sqlx::query_scalar(statement)
@@ -318,7 +344,10 @@ async fn verify_reader_access(tx: &mut sqlx::PgConnection) -> Result<(), Error> 
 
 impl Database {
     pub(crate) fn agent_store(&self) -> rss_mdm_agent_channel::Store {
-        rss_mdm_agent_channel::Store::from_pool(self.pool.clone())
+        rss_mdm_agent_channel::Store::from_pool(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            self.pool.clone(),
+        )
     }
 }
 

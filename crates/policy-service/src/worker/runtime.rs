@@ -29,6 +29,9 @@ impl std::ops::Deref for Automation {
     }
 }
 impl PolicyWork {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.service.profile()
+    }
     pub fn new(
         service: Arc<Application>,
         events: Arc<crate::events::Events>,
@@ -62,8 +65,13 @@ impl PolicyWork {
         scope: &rss_reconcile::Scope,
     ) -> std::result::Result<(), rss_reconcile::Error> {
         if scope.tenant() != self.service.tenant
-            || !matches!(scope.reconciler(), "mdm.policy" | jobs::EVENT_SCOPE)
-            || (scope.reconciler() == jobs::EVENT_SCOPE && self.execution().is_none())
+            || ![
+                jobs::domain(self.profile()),
+                jobs::event_domain(self.profile()),
+            ]
+            .contains(&scope.reconciler())
+            || (scope.reconciler() == jobs::event_domain(self.profile())
+                && self.execution().is_none())
         {
             return Err(rss_reconcile::Error::new(
                 rss_reconcile::ErrorKind::Invariant,
@@ -77,13 +85,14 @@ impl PolicyWork {
     ) -> std::result::Result<(), rss_reconcile::Error> {
         self.check_scope(claim.target().scope())?;
         if (matches!(claim.target().entity(), "inputs" | "schedules")
-            || crate::configuration::recovery::owns_entity(claim.target().entity()))
-            && claim.target().scope().reconciler() == "mdm.policy"
+            || (self.service.configuration.is_some()
+                && crate::configuration::recovery::owns_entity(claim.target().entity())))
+            && claim.target().scope().reconciler() == jobs::domain(self.profile())
         {
             return Ok(());
         }
         if claim.target().entity().starts_with("event:")
-            != (claim.target().scope().reconciler() == jobs::EVENT_SCOPE)
+            != (claim.target().scope().reconciler() == jobs::event_domain(self.profile()))
             || jobs::target_job(claim.target().entity())
                 .and_then(|id| Uuid::parse_str(id).ok())
                 .is_none()
@@ -136,8 +145,9 @@ impl Automation {
             let event_policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
                 concurrency:EVENT_CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
-            let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.policy").expect("constant domain");
-            for entity in ["inputs", "schedules", "configuration-inputs", "configuration-relay"] {
+            let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::domain(self.profile())).expect("constant domain");
+            let configuration_inputs = self.service.configuration.iter().flat_map(|_| ["configuration-inputs", "configuration-relay"]);
+            for entity in ["inputs", "schedules"].into_iter().chain(configuration_inputs) {
                 self.store.wake(&rss_reconcile::Target::new(scope.clone(),entity).expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
             }
             let runner=async {rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,signals.automation(),|event| {
@@ -148,7 +158,7 @@ impl Automation {
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)};
             let event_runner=async {
                 if self.work.execution().is_none() {cancel.cancelled().await;return Ok(());}
-                let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::EVENT_SCOPE).expect("constant domain");
+                let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::event_domain(self.profile())).expect("constant domain");
                 rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,event_policy,&control,&cancel,signals.events(),|event| {
                     if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
                         eprintln!("{}",serde_json::json!({"event":"mdm_policy_event_failure","diagnostic":format!("{event:?}")}));
@@ -183,6 +193,7 @@ fn reconcile_error(error: Error) -> rss_reconcile::Error {
         Error::Conflict | Error::ReadConflict => rss_reconcile::ErrorKind::Fenced,
         Error::Unavailable(Failure::RequestDeadline) => rss_reconcile::ErrorKind::Deadline,
         Error::Unavailable(Failure::NativeInputIntegrity | Failure::CommandInvariant)
+        | Error::Unsupported
         | Error::Malformed
         | Error::Forbidden
         | Error::Unauthorized => rss_reconcile::ErrorKind::Permanent,
@@ -217,6 +228,8 @@ impl PolicyWork {
     ) -> impl std::future::Future<
         Output = std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error>,
     > + Send {
+        let profile = self.profile();
+
         Box::pin(async move {
             self.check_claim(claim)?;
             control.check()?;
@@ -243,9 +256,9 @@ impl PolicyWork {
                             let result = match jobs::target_job(ctx.1)
                                 .and_then(|s| Uuid::parse_str(s).ok())
                             {
-                                Some(id) => {
-                                    jobs::read_in(tx, id).await.map(|(_, done, _, _, _)| !done)
-                                }
+                                Some(id) => jobs::read_in(profile, tx, id)
+                                    .await
+                                    .map(|(_, done, _, _, _)| !done),
                                 None => Err(Error::Malformed.into()),
                             };
                             result.map_err(|e| fault(e, ctx.2))
@@ -290,6 +303,8 @@ impl PolicyWork {
     ) -> impl std::future::Future<
         Output = std::result::Result<ReconcileStep<()>, rss_reconcile::Error>,
     > + Send {
+        let profile = self.profile();
+
         Box::pin(async move {
             self.check_claim(claim)?;
             if crate::configuration::recovery::owns_entity(claim.target().entity()) {
@@ -328,7 +343,7 @@ impl PolicyWork {
                                     )
                                     .map_err(|_| Error::Malformed)?;
                                     let (job, done, _, cursor, _) =
-                                        crate::worker::jobs::read_in(tx, id).await?;
+                                        crate::worker::jobs::read_in(profile, tx, id).await?;
                                     let assignment = if done {
                                         None
                                     } else if let Work::PolicyReconcile { policy } = &job {
@@ -361,7 +376,7 @@ impl PolicyWork {
                                                     }
                                                     match job {
                                                         ref input @ Work::Lifecycle{..}=>ctx.0.advance_lifecycle_work_in(tx,id,input).await,
-                                                        Work::PolicyScope { scope, .. } => crate::management::scope_changes::advance_in(tx,&ctx.0.audit_store,id,scope,cursor).await,
+                                                        Work::PolicyScope { scope, .. } => crate::management::scope_changes::advance_in(profile, tx,&ctx.0.audit_store,id,scope,cursor).await,
                                                         Work::PolicyEvent { batch } => ctx
                                                             .0
                                                             .advance_event_in(
@@ -462,7 +477,7 @@ impl PolicyWork {
                                     |(service, audit_store), tx| {
                                         Box::pin(async move {
                                             if matches!(
-                                                crate::worker::jobs::read_in(tx, id)
+                                                crate::worker::jobs::read_in(profile, tx, id)
                                                     .await
                                                     .map_err(|e| fault(e, &Mutex::new(None)))?
                                                     .0,
@@ -480,6 +495,7 @@ impl PolicyWork {
                                                     .map_err(|e| fault(e, &Mutex::new(None)));
                                             }
                                             crate::worker::jobs::finish_job_in(
+                                                profile,
                                                 tx,
                                                 audit_store,
                                                 id,
@@ -545,6 +561,8 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
+        let profile = self.profile();
+
         let now = self.service.clock.unix_seconds().map_err(reconcile_error)?;
         let schedules = claim.target().entity() == "schedules";
         let pending = self
@@ -559,9 +577,9 @@ impl PolicyWork {
                 |_, tx| {
                     Box::pin(async move {
                         if schedules {
-                            rss_mdm_policy_postgres::schedules::scan_due_in(tx, now).await
+                            rss_mdm_policy_postgres::schedules::scan_due_in(profile, tx, now).await
                         } else {
-                            rss_mdm_policy_postgres::work::inputs_pending_in(tx).await
+                            rss_mdm_policy_postgres::work::inputs_pending_in(profile, tx).await
                         }
                     })
                 },
@@ -585,6 +603,8 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
+        let profile = self.profile();
+
         self.service
             .runtime
             .local_tx_with_context(
@@ -607,7 +627,12 @@ impl PolicyWork {
                                         let result = if *entity == "schedules" {
                                             s.advance_lifecycle_schedules_in(tx).await
                                         } else {
-                                            jobs::forward_jobs_in(&s.reconcile_messaging, tx).await
+                                            jobs::forward_jobs_in(
+                                                profile,
+                                                &s.reconcile_messaging,
+                                                tx,
+                                            )
+                                            .await
                                         };
                                         result
                                             .map(ProtectedStep::Ready)

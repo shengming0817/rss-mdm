@@ -92,7 +92,11 @@ impl Transactions {
         Ok(Self {
             bootstrap,
             capacity: materials.capacity.clone(),
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                runtime.clone(),
+                tenant,
+            ),
             inputs: Arc::new(Inputs::bind(
                 runtime.clone(),
                 tenant,

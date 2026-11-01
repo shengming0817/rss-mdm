@@ -105,7 +105,7 @@ impl Signing {
         }
         let signer = self.signer.as_ref().ok_or(Error::Unsupported)?;
         self.revalidate(c, p).await?;
-        trust::require_issue(c, p, signer.key_id()).await?;
+        trust::require_issue(self.profile, c, p, signer.key_id()).await?;
         signer.sign_telemetry(configuration)
     }
 }
@@ -129,7 +129,7 @@ impl Signing {
             return Err(Error::Forbidden);
         }
         self.revalidate(c, p).await?;
-        let trust = trust::current(c, self.tenant).await?;
+        let trust = trust::current(self.profile, c, self.tenant).await?;
         let key = trust
             .keys
             .iter()

@@ -126,6 +126,7 @@ pub(super) fn fact(
         return Err(fault());
     }
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         action,
         rss_mdm_audit_integration::AuditIntent::Management,

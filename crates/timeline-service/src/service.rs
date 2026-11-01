@@ -319,13 +319,22 @@ impl Timeline {
         token: Option<&cursor::Cursor>,
     ) -> Result<(bool, Vec<sqlx::postgres::PgRow>), Error> {
         // Authorization is reloaded after acquiring the audit read transaction, before exposing facts.
-        rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
-            .await
-            .map_err(authorization_error)?;
-        let current =
-            rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
-                .await
-                .map_err(authorization_error)?;
+        rss_mdm_authorization_service::lock_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            proof.tenant_id(),
+            proof.instance_id(),
+        )
+        .await
+        .map_err(authorization_error)?;
+        let current = rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            proof.tenant_id(),
+            proof.instance_id(),
+        )
+        .await
+        .map_err(authorization_error)?;
         current
             .require(proof, Permission::AuditRead, None)
             .map_err(|e| authorization_error(e.into()))?;
@@ -423,21 +432,35 @@ async fn correlate(
     }
     let mut devices = std::collections::BTreeSet::new();
     if let Some(device) = &view.device_id
-        && rss_mdm_registration_service::device::read::exists(c, tenant.into(), device.clone())
-            .await?
+        && rss_mdm_registration_service::device::read::exists(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            tenant.into(),
+            device.clone(),
+        )
+        .await?
     {
         devices.insert(device.clone());
     }
     if let Some(reg) = view.registration_id
-        && let Some(device) =
-            rss_mdm_registration_service::device::read::timeline_device_in(c, tenant, reg).await?
+        && let Some(device) = rss_mdm_registration_service::device::read::timeline_device_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            tenant,
+            reg,
+        )
+        .await?
     {
         devices.insert(device);
     }
     if let Some(request) = view.registration_request_id
-        && let Some(device) =
-            rss_mdm_registration_service::device::read::timeline_enrollment_in(c, tenant, request)
-                .await?
+        && let Some(device) = rss_mdm_registration_service::device::read::timeline_enrollment_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            tenant,
+            request,
+        )
+        .await?
     {
         devices.insert(device);
     }
@@ -472,8 +495,13 @@ async fn correlate(
         ));
     if device_target
         && let target = &view.target.id
-        && rss_mdm_registration_service::device::read::exists(c, tenant.into(), target.clone())
-            .await?
+        && rss_mdm_registration_service::device::read::exists(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            tenant.into(),
+            target.clone(),
+        )
+        .await?
     {
         devices.insert(target.clone());
     }

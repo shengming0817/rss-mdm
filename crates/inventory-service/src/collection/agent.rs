@@ -5,22 +5,31 @@ use rss_observation::{Batch, Scope};
 use sqlx::Row;
 const MAX_PENDING_REPORTS_PER_REGISTRATION: i64 = 32;
 pub async fn accept_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     principal: &DevicePrincipal,
     scope: &Scope,
     batch: &Batch,
     report: &rss_mdm_agent_wire::runtime::ReportRequest,
 ) -> Result<(i64, bool), Error> {
+    if principal.profile() != profile {
+        return Err(Error::Unauthorized);
+    }
     use sha2::{Digest, Sha256};
     let canonical = report.canonical().map_err(|_| Error::Malformed)?;
     let digest = format!("{:x}", Sha256::digest(&canonical));
     // Preserve the canonical representation as text: JSONB expands exponent-form
     // numbers and can otherwise inflate a legal 1 MiB report beyond the evidence budget.
     let evidence = serde_json::json!({"agentReport": String::from_utf8(canonical).map_err(|_| Error::Malformed)?});
-    let live_scope =
-        crate::device::store::revalidate_source(tx, principal, InventorySource::AgentBuiltin)
-            .await?;
+    let live_scope = crate::device::store::revalidate_source(
+        profile,
+        tx,
+        principal,
+        InventorySource::AgentBuiltin,
+    )
+    .await?;
     let expected = crate::device::scope_dataset(
+        profile,
         principal.tenant(),
         principal.registration(),
         InventorySource::AgentBuiltin.as_str(),
@@ -46,31 +55,52 @@ pub async fn accept_in(
     // V1 report ids are tenant-global. This lock covers the absent-row case across registrations;
     // revalidate_source already holds the channel lock that serializes capacity and retention.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2467))")
-        .bind(format!("{}:{}", principal.tenant(), batch.id().as_str()))
+        .bind(format!(
+            "{}:{}:{}",
+            profile.name(),
+            principal.tenant(),
+            batch.id().as_str()
+        ))
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    if let Some(row) = sqlx::query("SELECT registration::text,source,epoch::text,input_digest,sealed_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR SHARE")
-        .bind(principal.tenant().to_string()).bind(batch.id().as_str().to_string()).fetch_optional(&mut *tx).await.map_err(db)? {
-        if row.try_get::<String, _>("registration").map_err(db)? != principal.registration().to_string()
-            || row.try_get::<String, _>("source").map_err(db)? != InventorySource::AgentBuiltin.as_str()
+    if let Some(row) =
+        sqlx::query(crate::storage_profile::sql(profile).collection_agent_accept_in_1)
+            .bind(principal.tenant().to_string())
+            .bind(batch.id().as_str().to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+    {
+        if row.try_get::<String, _>("registration").map_err(db)?
+            != principal.registration().to_string()
+            || row.try_get::<String, _>("source").map_err(db)?
+                != InventorySource::AgentBuiltin.as_str()
             || row.try_get::<String, _>("epoch").map_err(db)? != scope.epoch().as_str()
-            || row.try_get::<String, _>("input_digest").map_err(db)? != digest {
+            || row.try_get::<String, _>("input_digest").map_err(db)? != digest
+        {
             return Err(Error::Conflict);
         }
         return Ok((row.try_get("sealed_at").map_err(db)?, false));
     }
-    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND delivery_pending")
-        .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
+    let pending: i64 =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).collection_agent_accept_in_2)
+            .bind(principal.tenant().to_string())
+            .bind(principal.registration().to_string())
+            .bind(scope.epoch().as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
     if pending >= MAX_PENDING_REPORTS_PER_REGISTRATION {
         return Err(Error::Unavailable(Failure::Capacity));
     }
-    let _: i64 = sqlx::query_scalar("SELECT mdm_access.prune_agent_collections($1::uuid,$2::uuid)")
-        .bind(principal.registration().to_string())
-        .bind(scope.epoch().as_str())
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
+    let _: i64 =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).collection_agent_accept_in_3)
+            .bind(principal.registration().to_string())
+            .bind(scope.epoch().as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
     let received_at: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *tx)
@@ -98,11 +128,23 @@ pub async fn accept_in(
     .map_err(|_| Error::Malformed)?;
     let attempts = serde_json::to_string(&progress).map_err(|_| Error::Malformed)?;
     let stored_digest = super::store::fingerprint(&stored_batch, scope)?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending,input_digest,evidence) VALUES($1::uuid,$4::uuid,$2::uuid,'agent.builtin',$3::uuid,$6,$5,$9,$11,$10,'complete',$7,$8,$9,true,$12,$13)")
-        .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(batch.id().as_str().to_string())
-        .bind(i64::try_from(batch.sequence()).map_err(|_| Error::Malformed)?).bind(scope.encode().map_err(|_| Error::Malformed)?)
-        .bind(stored_batch.encode()).bind(&stored_digest).bind(received_at).bind(result)
-        .bind(attempts).bind(&digest).bind(evidence).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).collection_agent_accept_in_4)
+        .bind(principal.tenant().to_string())
+        .bind(principal.registration().to_string())
+        .bind(scope.epoch().as_str())
+        .bind(batch.id().as_str().to_string())
+        .bind(i64::try_from(batch.sequence()).map_err(|_| Error::Malformed)?)
+        .bind(scope.encode().map_err(|_| Error::Malformed)?)
+        .bind(stored_batch.encode())
+        .bind(&stored_digest)
+        .bind(received_at)
+        .bind(result)
+        .bind(attempts)
+        .bind(&digest)
+        .bind(evidence)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     crate::wake::notify(tx).await.map_err(db)?;
     Ok((received_at, true))
 }

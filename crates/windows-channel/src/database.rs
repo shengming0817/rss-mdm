@@ -42,10 +42,20 @@ impl Store {
     ) -> Result<(), Error> {
         p.check_live()?;
         let mut tx = self.begin(p.tenant_id()).await?;
-        rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
-        let auth =
-            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
-                .await?;
+        rss_mdm_authorization_service::lock_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
+        let auth = rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
         if auth.query_binding(p)? != before {
             return Err(Error::Conflict);
         }

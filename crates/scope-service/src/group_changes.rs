@@ -65,9 +65,13 @@ pub struct Receiver {
     binding: rss_mdm_scope_postgres::ScopeBinding,
 }
 impl Receiver {
-    pub fn new(runtime: Arc<PgRuntime>, tenant: TenantId) -> Self {
+    pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
+        runtime: Arc<PgRuntime>,
+        tenant: TenantId,
+    ) -> Self {
         Self {
-            binding: rss_mdm_scope_postgres::ScopeBinding::new(runtime, tenant),
+            binding: rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime, tenant),
         }
     }
 }

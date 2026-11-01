@@ -467,7 +467,13 @@ pub(crate) async fn send_on(
     let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND session=$3)").bind(&tenant).bind(p.registration()).bind(session).fetch_one(&mut *c).await.map_err(db)?;
     let mut pending = false;
     if !exists {
-        let id = crate::device::store::allocate_commands_in(c, p, 2).await?;
+        let id = crate::device::store::allocate_commands_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p,
+            2,
+        )
+        .await?;
         let mut request = response.clone();
         request.commands = vec![get(id, VERSION), get(id + 1, EDITION)];
         let Some(_) =
@@ -814,7 +820,13 @@ pub(crate) async fn send_on(
                 (W::Msi { .. }, _) => 1,
             }
         };
-        let id = crate::device::store::allocate_commands_in(c, p, i64::from(count)).await?;
+        let id = crate::device::store::allocate_commands_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            p,
+            i64::from(count),
+        )
+        .await?;
         let command = match request {
             W::SyncMl { .. } => {
                 let Some(platform) = platform else {

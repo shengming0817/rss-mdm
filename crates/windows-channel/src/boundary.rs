@@ -54,6 +54,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .unwrap_or("");
     let soap = route.starts_with("/EnrollmentServer/");
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         envelope.tenant.clone(),
         route_action(route),
         rss_mdm_audit_integration::AuditIntent::Routine,

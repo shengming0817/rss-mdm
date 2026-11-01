@@ -5,11 +5,6 @@ use sqlx::{Row, postgres::PgRow};
 use uuid::Uuid;
 
 // All restore paths use this shape before minting a Run or recovery capability.
-macro_rules! selection {
-    ($filter:literal) => {
-        concat!("SELECT tenant_id::text,registration::text,source,epoch::text,id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest FROM mdm_access.collection_runs WHERE ", $filter)
-    };
-}
 
 /// Recheck the principal inside the transaction accepting device input. Lock order matches revoke.
 
@@ -122,6 +117,7 @@ pub(super) fn fingerprint(batch: &Batch, scope: &Scope) -> Result<String, Error>
 
 /// Persist a pending native run on the caller's transaction after registration allocation.
 pub async fn start_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     scope: &Scope,
     sequence: i64,
@@ -138,17 +134,36 @@ pub async fn start_in(
         .map_err(|_| corrupt())?;
     let attempts = Attempts::new(definition);
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,floor(extract(epoch FROM clock_timestamp()))::bigint,$8,'pending')")
-        .bind(scope.tenant().to_string()).bind(id.to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_| corrupt())?).bind(sequence)
-        .bind(serde_json::to_string(&attempts).expect("closed attempts")).execute(tx).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).collection_store_start_in_1)
+        .bind(scope.tenant().to_string())
+        .bind(id.to_string())
+        .bind(scope.registration().as_str())
+        .bind(scope.source().as_str())
+        .bind(scope.epoch().as_str())
+        .bind(scope.encode().map_err(|_| corrupt())?)
+        .bind(sequence)
+        .bind(serde_json::to_string(&attempts).expect("closed attempts"))
+        .execute(tx)
+        .await
+        .map_err(db)?;
     Ok(id)
 }
-pub async fn save_attempts_in(tx: &mut sqlx::PgConnection, run: &Run) -> Result<(), Error> {
-    sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND sealed_at IS NULL")
-        .bind(run.scope.tenant().to_string()).bind(run.id.to_string()).bind(serde_json::to_string(&run.attempts).expect("closed attempts")).execute(tx).await.map_err(db)?;
+pub async fn save_attempts_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut sqlx::PgConnection,
+    run: &Run,
+) -> Result<(), Error> {
+    sqlx::query(crate::storage_profile::sql(profile).collection_store_save_attempts_in_1)
+        .bind(run.scope.tenant().to_string())
+        .bind(run.id.to_string())
+        .bind(serde_json::to_string(&run.attempts).expect("closed attempts"))
+        .execute(tx)
+        .await
+        .map_err(db)?;
     Ok(())
 }
 pub async fn seal(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     run: &mut Run,
     reason: &str,
@@ -193,9 +208,20 @@ pub async fn seal(
         .as_ref()
         .map(|b| fingerprint(b, &run.scope))
         .transpose()?;
-    let changed = sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3,result=$4,reason=$5,batch=$6,digest=$7,sealed_at=$8,delivery_pending=$9 WHERE tenant_id=$1::uuid AND id=$2::uuid AND sealed_at IS NULL")
-        .bind(run.scope.tenant().to_string()).bind(run.id.to_string()).bind(serde_json::to_string(&run.attempts).expect("closed attempts")).bind(result).bind(reason)
-        .bind(batch.as_ref().map(|b| b.encode())).bind(&digest).bind(now).bind(batch.is_some()).execute(&mut *tx).await.map_err(db)?.rows_affected();
+    let changed = sqlx::query(crate::storage_profile::sql(profile).collection_store_seal_1)
+        .bind(run.scope.tenant().to_string())
+        .bind(run.id.to_string())
+        .bind(serde_json::to_string(&run.attempts).expect("closed attempts"))
+        .bind(result)
+        .bind(reason)
+        .bind(batch.as_ref().map(|b| b.encode()))
+        .bind(&digest)
+        .bind(now)
+        .bind(batch.is_some())
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?
+        .rows_affected();
     if changed == 0 {
         return Ok(None);
     }
@@ -205,6 +231,7 @@ pub async fn seal(
     // The terminal fact is audited in the caller's transaction. Its owner records commit
     // uncertainty (HTTP envelope or retention task); this helper never commits independently.
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        profile,
         run.scope.tenant().to_string(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -236,16 +263,21 @@ pub async fn seal(
 }
 /// Terminalize accepted facts before disposing protocol state. Never accepts new device input.
 pub async fn terminate(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
     registration: &str,
     reason: &str,
 ) -> Result<(), Error> {
-    let rows = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND sealed_at IS NULL ORDER BY sequence FOR UPDATE"))
-        .bind(tenant).bind(registration).fetch_all(&mut *tx).await.map_err(db)?;
+    let rows = sqlx::query(crate::storage_profile::sql(profile).collection_store_terminate_1)
+        .bind(tenant)
+        .bind(registration)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
     for row in rows {
-        facts.extend(seal(tx, &mut Run::from_row(row)?, reason).await?);
+        facts.extend(seal(profile, tx, &mut Run::from_row(row)?, reason).await?);
     }
     Ok(())
 }
@@ -265,13 +297,20 @@ impl DurableReport {
 }
 
 pub async fn agent_report_in(
+    profile: rss_mdm_install_support::StorageProfile,
     connection: &mut sqlx::PgConnection,
     scope: &Scope,
     id: Uuid,
 ) -> Result<Option<(DurableReport, i64)>, Error> {
-    let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid"))
-            .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.to_string())
-            .fetch_optional(connection).await.map_err(db)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).collection_store_agent_report_in_1)
+        .bind(scope.tenant().to_string())
+        .bind(scope.registration().as_str())
+        .bind(scope.source().as_str())
+        .bind(scope.epoch().as_str())
+        .bind(id.to_string())
+        .fetch_optional(connection)
+        .await
+        .map_err(db)?;
     row.map(|row| {
         let received_at = row.try_get("sealed_at").map_err(db)?;
         Ok((durable_report(row)?, received_at))
@@ -280,14 +319,21 @@ pub async fn agent_report_in(
 }
 
 pub async fn collection(
+    profile: rss_mdm_install_support::StorageProfile,
     database: &crate::Store,
     scope: &Scope,
     id: Option<Uuid>,
 ) -> Result<Option<Run>, Error> {
     let mut tx = database.begin(&scope.tenant().to_string()).await?;
-    let row = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND scope::jsonb->>'dataset'='inventory' AND ($5::uuid IS NULL OR id=$5::uuid) ORDER BY sequence DESC LIMIT 1"))
-            .bind(scope.tenant().to_string()).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(id.map(|v| v.to_string()))
-            .fetch_optional(&mut *tx).await.map_err(db)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).collection_store_collection_1)
+        .bind(scope.tenant().to_string())
+        .bind(scope.registration().as_str())
+        .bind(scope.source().as_str())
+        .bind(scope.epoch().as_str())
+        .bind(id.map(|v| v.to_string()))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
     let run = row.map(Run::from_row).transpose()?;
     tx.commit().await.map_err(db)?;
     Ok(run)
@@ -313,9 +359,14 @@ fn durable_report(row: PgRow) -> Result<DurableReport, Error> {
     Ok(DurableReport { scope, batch })
 }
 
-pub async fn load_on(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Result<Run, Error> {
+pub async fn load_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<Run, Error> {
     Run::from_row(
-        sqlx::query(selection!("tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE"))
+        sqlx::query(crate::storage_profile::sql(profile).collection_store_load_on_1)
             .bind(tenant)
             .bind(id.to_string())
             .fetch_one(c)
@@ -325,9 +376,14 @@ pub async fn load_on(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Resu
 }
 
 /// Restore immutable evidence for an authorized read without taking a mutation lock.
-pub async fn read_on(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Result<Run, Error> {
+pub async fn read_on(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<Run, Error> {
     Run::from_row(
-        sqlx::query(selection!("tenant_id=$1::uuid AND id=$2::uuid"))
+        sqlx::query(crate::storage_profile::sql(profile).collection_store_read_on_1)
             .bind(tenant)
             .bind(id.to_string())
             .fetch_one(c)
@@ -373,6 +429,9 @@ fn acknowledgement_error(error: sqlx::Error, committing: bool) -> DeliveryError 
     }
 }
 impl Delivery {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.database.profile()
+    }
     pub fn new(
         database: std::sync::Arc<crate::Store>,
         audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
@@ -385,28 +444,49 @@ impl Delivery {
 
     /// Bounded count of real pending delivery rows; 1001 is the overflow sentinel.
     pub async fn pending_count(&self, tenant: &str) -> Result<u64, Error> {
+        let profile = self.profile();
+
         let mut tx = self.database.begin_read(tenant).await?;
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND delivery_pending LIMIT 1001) q")
-            .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
+        let count: i64 = sqlx::query_scalar(
+            crate::storage_profile::sql(profile).collection_store_pending_count_1,
+        )
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
         tx.rollback().await.map_err(db)?;
         Ok(count as u64)
     }
     pub async fn pending_reports(&self, tenant: &str) -> Result<Vec<DurableReport>, Error> {
+        let profile = self.profile();
+
         let mut tx = self.database.begin_read(tenant).await?;
-        let rows = sqlx::query(selection!("tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"))
-            .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
+        let rows =
+            sqlx::query(crate::storage_profile::sql(profile).collection_store_pending_reports_1)
+                .bind(tenant)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(db)?;
         tx.rollback().await.map_err(db)?;
         rows.into_iter().map(durable_report).collect()
     }
     pub async fn expire_timed(&self, tenant: &str) -> Result<usize, Error> {
+        let profile = self.profile();
+
         let mut hint = self.database.begin_read(tenant).await?;
-        let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline<=clock_timestamp())")
-            .bind(tenant).fetch_one(&mut *hint).await.map_err(db)?;
+        let due: bool = sqlx::query_scalar(
+            crate::storage_profile::sql(profile).collection_store_expire_timed_1,
+        )
+        .bind(tenant)
+        .fetch_one(&mut *hint)
+        .await
+        .map_err(db)?;
         hint.rollback().await.map_err(db)?;
         if !due {
             return Ok(0);
         }
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            profile,
             tenant.into(),
             "collection_finish",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -426,7 +506,9 @@ impl Delivery {
                             .with_connection_context(
                                 &mut (*tenant, &mut facts),
                                 |(tenant, facts), c| {
-                                    Box::pin(async move { expire_timed(c, facts, tenant).await })
+                                    Box::pin(async move {
+                                        expire_timed(profile, c, facts, tenant).await
+                                    })
                                 },
                             )
                             .await?;
@@ -449,13 +531,21 @@ impl Delivery {
         result
     }
     pub async fn next_expiry(&self, tenant: &str) -> Result<Option<std::time::Duration>, Error> {
+        let profile = self.profile();
+
         let mut tx = self.database.begin_read(tenant).await?;
-        let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(deadline)-clock_timestamp())*1000)::bigint FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline>clock_timestamp()")
-            .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
+        let millis: Option<i64> =
+            sqlx::query_scalar(crate::storage_profile::sql(profile).collection_store_next_expiry_1)
+                .bind(tenant)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
         tx.rollback().await.map_err(db)?;
         Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
     }
     pub async fn delivered(&self, report: &DurableReport) -> Result<(), DeliveryError> {
+        let profile = self.profile();
+
         let digest = fingerprint(&report.batch, &report.scope).map_err(DeliveryError::Permanent)?;
         let scope = report
             .scope
@@ -466,9 +556,12 @@ impl Delivery {
             .begin_delivery(&report.scope.tenant().to_string())
             .await
             .map_err(|e| acknowledgement_error(e, false))?;
-        let row = sqlx::query("SELECT scope,sequence,digest,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE")
-            .bind(report.scope.tenant().to_string()).bind(report.batch.id().as_str())
-            .fetch_optional(&mut *tx).await.map_err(|e| acknowledgement_error(e,false))?
+        let row = sqlx::query(crate::storage_profile::sql(profile).collection_store_delivered_1)
+            .bind(report.scope.tenant().to_string())
+            .bind(report.batch.id().as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| acknowledgement_error(e, false))?
             .ok_or_else(|| DeliveryError::Permanent(corrupt()))?;
         let matching = row
             .try_get::<String, _>("scope")
@@ -497,13 +590,13 @@ impl Delivery {
                 .await
                 .map_err(|e| acknowledgement_error(e, false));
         }
-        sqlx::query("UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending")
+        sqlx::query(crate::storage_profile::sql(profile).collection_store_delivered_2)
             .bind(report.scope.tenant().to_string())
             .bind(report.batch.id().as_str())
             .bind(digest)
             .execute(&mut *tx)
             .await
-            .map_err(|e| acknowledgement_error(e,false))?;
+            .map_err(|e| acknowledgement_error(e, false))?;
         tx.commit()
             .await
             .map_err(|e| acknowledgement_error(e, true))?;
@@ -513,17 +606,24 @@ impl Delivery {
 }
 
 pub async fn expire_timed(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
 ) -> Result<usize, Error> {
-    let ids=sqlx::query_as::<_,(String,String)>("SELECT id::text,scope::jsonb->>'dataset' FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline<=clock_timestamp() ORDER BY deadline,id LIMIT 32 FOR UPDATE SKIP LOCKED")
-        .bind(tenant).fetch_all(&mut *c).await.map_err(db)?;
+    let ids = sqlx::query_as::<_, (String, String)>(
+        crate::storage_profile::sql(profile).collection_store_expire_timed_2,
+    )
+    .bind(tenant)
+    .fetch_all(&mut *c)
+    .await
+    .map_err(db)?;
     let count = ids.len();
     for (id, dataset) in ids {
         if dataset == rss_mdm_inventory::builtin::AGENT_INSTALLATION.as_str() {
             facts.extend(
                 super::channel::abandon_in(
+                    profile,
                     c,
                     tenant,
                     Uuid::parse_str(&id).map_err(|_| super::corrupt())?,
@@ -534,18 +634,20 @@ pub async fn expire_timed(
             continue;
         }
         let mut run = load_on(
+            profile,
             c,
             tenant,
             Uuid::parse_str(&id).map_err(|_| super::corrupt())?,
         )
         .await?;
-        facts.extend(seal(c, &mut run, "timeout").await?);
+        facts.extend(seal(profile, c, &mut run, "timeout").await?);
     }
     Ok(count)
 }
 
 /// Freeze published field versions when a native adapter admits a run.
 pub async fn freeze_in(
+    _profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     scope: &Scope,
     version: u64,

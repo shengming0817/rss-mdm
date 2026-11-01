@@ -12,10 +12,23 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
     let report = plist::Dictionary::from_iter([("PasswordVerified", plist::Value::Boolean(true))]);
     let mut tx = seed(&c).await?;
     assert!(matches!(
-        vault::verify_in(&mut tx, &first, Uuid::new_v4()).await,
+        vault::verify_in(
+            rss_mdm_recovery_credentials::Custody::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                None
+            ),
+            &mut tx,
+            &first,
+            Uuid::new_v4()
+        )
+        .await,
         Err(recovery::Error::Conflict)
     ));
     vault::link_native_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
         &mut tx,
         first.tenant,
         verification,
@@ -61,8 +74,30 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
         )
         .await?;
     let later = Uuid::new_v4();
-    let second = vault::reserve_in(&mut tx, first.tenant, &first.binding, later, 1).await?;
-    vault::ingest_in(&mut tx, keys, &second, later, b"New-owner-Password!43").await?;
+    let second = vault::reserve_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        &mut tx,
+        first.tenant,
+        &first.binding,
+        later,
+        1,
+    )
+    .await?;
+    vault::ingest_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        &mut tx,
+        keys,
+        &second,
+        later,
+        b"New-owner-Password!43",
+    )
+    .await?;
     assert!(matches!(
         receipts
             .receive_in(
@@ -86,11 +121,30 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
     .fetch_one(&mut *tx)
     .await?;
     assert_eq!(current, Some(1));
-    vault::verify_in(&mut tx, &second, later).await?;
+    vault::verify_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        &mut tx,
+        &second,
+        later,
+    )
+    .await?;
     tx.commit().await?;
     let mut tx = seed(&c).await?;
     assert_eq!(
-        vault::secret_in(&mut tx, keys, &second).await?.expose(),
+        vault::secret_in(
+            rss_mdm_recovery_credentials::Custody::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                None
+            ),
+            &mut tx,
+            keys,
+            &second
+        )
+        .await?
+        .expose(),
         b"New-owner-Password!43"
     );
     let current: i64 = sqlx::query_scalar(
@@ -102,7 +156,15 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
     .await?;
     assert_eq!(current, 2);
     assert!(matches!(
-        vault::cleared_in(&mut tx, &first).await,
+        vault::cleared_in(
+            rss_mdm_recovery_credentials::Custody::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                None
+            ),
+            &mut tx,
+            &first
+        )
+        .await,
         Err(recovery::Error::Conflict)
     ));
     tx.rollback().await?;
@@ -173,7 +235,16 @@ async fn expiry_preserves_unresolved_material_then_resumes() -> Result<()> {
     let owner = Owners::open(&c, "shared", p).await?;
     let attempt = input_copy(&c, &coordinate, operation).await?;
     let mut tx = seed(&c).await?;
-    vault::verify_in(&mut tx, &coordinate, operation).await?;
+    vault::verify_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        &mut tx,
+        &coordinate,
+        operation,
+    )
+    .await?;
     sqlx::query("UPDATE mdm_recovery.versions SET validity='revoked',invalidated_at=$3 WHERE tenant_id=$1 AND entry=$2").bind(coordinate.tenant).bind(coordinate.material).bind(now()-7_776_001).execute(&mut *tx).await?;
     tx.commit().await?;
     input_secrets(&c, &coordinate, operation, attempt, true).await?;
@@ -226,11 +297,16 @@ async fn sensitive_disclosure_requires_confirmed_audit_commit() -> Result<()> {
         .await?;
     let proof = c.authenticate(&account).await?;
     let service = recovery::Credentials::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c.database.archive_pool(),
         c.audit.clone(),
         p.keys.clone(),
         None,
-        owner.access.clone(),
+        Some(Arc::new(
+            super::super::recovery_eligibility::AccessEligibility {
+                admission: Some(owner.access.clone()),
+            },
+        )),
     );
     let audit = c.request(&proof)?;
     let result = service
@@ -351,12 +427,58 @@ async fn filevault_receipt(
     let existing_op = Uuid::new_v4();
     let reconcile = Uuid::new_v4();
     let secret = b"ABCD-EFGH-IJKL-MNOP-QRST-UVWX";
-    let existing = vault::reserve_in(&mut tx, tenant, &binding, existing_op, 0).await?;
-    vault::ingest_in(&mut tx, &protection.keys, &existing, existing_op, secret).await?;
-    vault::settled_in(&mut tx, &existing, existing_op).await?;
-    let pending = vault::reserve_in(&mut tx, tenant, &binding, original, 1).await?;
+    let existing = vault::reserve_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        &mut tx,
+        tenant,
+        &binding,
+        existing_op,
+        0,
+    )
+    .await?;
+    vault::ingest_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        &mut tx,
+        &protection.keys,
+        &existing,
+        existing_op,
+        secret,
+    )
+    .await?;
+    vault::settled_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        &mut tx,
+        &existing,
+        existing_op,
+    )
+    .await?;
+    let pending = vault::reserve_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
+        &mut tx,
+        tenant,
+        &binding,
+        original,
+        1,
+    )
+    .await?;
     for operation in [original, reconcile] {
         vault::link_native_in(
+            rss_mdm_recovery_credentials::Custody::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                None,
+            ),
             &mut tx,
             tenant,
             operation,
@@ -387,9 +509,17 @@ async fn filevault_receipt(
     assert_native_coordinates(&mut tx, tenant, reconcile, &binding, &existing).await?;
     assert_native_coordinates(&mut tx, tenant, original, &binding, &pending).await?;
     assert_eq!(
-        vault::secret_in(&mut tx, &protection.keys, &existing)
-            .await?
-            .expose(),
+        vault::secret_in(
+            rss_mdm_recovery_credentials::Custody::new(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                None
+            ),
+            &mut tx,
+            &protection.keys,
+            &existing
+        )
+        .await?
+        .expose(),
         secret
     );
     tx.commit().await?;
@@ -432,6 +562,10 @@ async fn assert_native_coordinates(
     expected: &recovery::Coordinates,
 ) -> Result<()> {
     let action = vault::native_action_in(
+        rss_mdm_recovery_credentials::Custody::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            None,
+        ),
         c,
         tenant,
         operation,

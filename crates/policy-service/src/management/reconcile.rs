@@ -16,8 +16,14 @@ impl crate::application::Application {
         policy: Uuid,
         after: Option<String>,
     ) -> Result<PreparedAssignment> {
+        let profile = self.profile();
+
         let Some(p) = storage::read_in(
-            &rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant),
+            &rss_mdm_policy_postgres::PolicyReader::bind(
+                profile,
+                self.runtime.clone(),
+                self.tenant,
+            ),
             tx,
             policy,
         )
@@ -38,13 +44,16 @@ impl crate::application::Application {
             Some(rss_mdm_policy::SoftwareChannel::Agent) => rss_mdm_inventory::Channel::Agent,
             None => return Err(Error::Malformed.into()),
         };
-        let source = rss_mdm_scope_service::channels::ChannelTargets::new(self.objects.clone());
+        let source = rss_mdm_scope_service::channels::ChannelTargets::new(
+            self.profile(),
+            Some(self.objects.clone()),
+        );
         let scope = p.definition.scope;
         let tenant = tx.tenant_id();
         let mut assignments = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    rss_mdm_scope_postgres::admission_on(c, tenant, scope).await?;
+                    rss_mdm_scope_postgres::admission_on(profile, c, tenant, scope).await?;
                     Ok(source
                         .assignment_objects_on(c, tenant, scope, channel, after.as_deref(), 64)
                         .await)
@@ -68,10 +77,19 @@ impl crate::application::Application {
         task: Uuid,
         prepared: PreparedAssignment,
     ) -> Result<()> {
+        let profile = self.profile();
+
         use rss_mdm_scope_service::channels::Availability;
         let (p, assignments, more, channel) = match prepared {
             PreparedAssignment::Empty => {
-                return crate::worker::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
+                return crate::worker::jobs::finish_job_in(
+                    profile,
+                    tx,
+                    &self.audit_store,
+                    task,
+                    None,
+                )
+                .await;
             }
             PreparedAssignment::Lifecycle(batch) => {
                 return self.advance_lifecycle_assignment_in(tx, task, *batch).await;
@@ -112,6 +130,7 @@ impl crate::application::Application {
             };
             let fact_key = format!("assignment:{task}:{policy}:{version}:{key}:{channel}");
             let changed = rss_mdm_policy_postgres::assignments::upsert_in(
+                profile,
                 tx,
                 rss_mdm_policy_postgres::assignments::Assignment {
                     policy,
@@ -147,27 +166,32 @@ impl crate::application::Application {
         }
         devices.sort();
         devices.dedup();
-        self.configuration.wake_devices_in(tx, &devices).await?;
+        if let Some(configuration) = &self.configuration {
+            configuration.wake_devices_in(tx, &devices).await?;
+        }
         // Removed source objects remain inspectable as unavailable; existing operation targets are immutable.
         let policy = p.id;
         let version = p.version;
         let scope = p.definition.scope;
         let previous =
-            rss_mdm_policy_postgres::assignments::objects_in(tx, policy, version).await?;
+            rss_mdm_policy_postgres::assignments::objects_in(profile, tx, policy, version).await?;
         let targets = previous
             .iter()
             .map(|(_, object)| object.clone())
             .collect::<Vec<_>>();
-        let retained = rss_mdm_scope_postgres::ScopeBinding::new(self.runtime.clone(), self.tenant)
-            .target_members_in(tx, scope, targets)
-            .await?;
+        let retained =
+            rss_mdm_scope_postgres::ScopeBinding::new(profile, self.runtime.clone(), self.tenant)
+                .target_members_in(tx, scope, targets)
+                .await?;
         let missing = previous
             .into_iter()
             .filter(|(_, object)| !retained.contains(object))
             .map(|(key, _)| key)
             .collect();
-        let removed =
-            rss_mdm_policy_postgres::assignments::withdraw_in(tx, policy, version, missing).await?;
+        let removed = rss_mdm_policy_postgres::assignments::withdraw_in(
+            profile, tx, policy, version, missing,
+        )
+        .await?;
 
         for (object, value) in removed {
             let target: Option<
@@ -191,18 +215,20 @@ impl crate::application::Application {
                 .assignment_changed_in(tx, version, &target, false)
                 .await?;
             let device = target.device;
-            self.configuration
-                .wake_devices_in(tx, std::slice::from_ref(&device))
-                .await?;
+            if let Some(configuration) = &self.configuration {
+                configuration
+                    .wake_devices_in(tx, std::slice::from_ref(&device))
+                    .await?;
+            }
         }
         if more {
             {
                 let next = keys.last().cloned();
-                rss_mdm_policy_postgres::work::cursor_in(tx, task, next).await?;
+                rss_mdm_policy_postgres::work::cursor_in(profile, tx, task, next).await?;
                 Ok(())
             }
         } else {
-            crate::worker::jobs::finish_job_in(tx, &self.audit_store, task, None).await
+            crate::worker::jobs::finish_job_in(profile, tx, &self.audit_store, task, None).await
         }
     }
 }
@@ -218,6 +244,7 @@ impl crate::application::Application {
     ) -> Result<()> {
         use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit, activity::*};
         let audit = RequestAudit::new(
+            self.profile(),
             tx.tenant_id().to_string(),
             "policy_assignment",
             AuditIntent::Management,

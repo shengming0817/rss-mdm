@@ -37,6 +37,7 @@ struct Wake {
 }
 fn audit(tenant: &str, id: Uuid, registration: Uuid) -> RequestAudit {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.into(),
         "windows_push",
         rss_mdm_audit_integration::AuditIntent::Management,

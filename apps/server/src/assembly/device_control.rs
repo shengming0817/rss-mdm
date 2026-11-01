@@ -88,6 +88,7 @@ pub(crate) async fn assemble(
             windows_results: windows_results.clone(),
             apple_results: apple_store.clone(),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+                rss_mdm_install_support::StorageProfile::Mdm,
                 storage.runtime.clone(),
                 storage.tenant,
             ),

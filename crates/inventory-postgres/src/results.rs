@@ -61,8 +61,8 @@ pub async fn collection_result_in(
     crate::reader::assert_tenant(c, scope.tenant()).await?;
     definition.validate_scope(scope)?;
     let reference = CollectionReference::from_batch(definition, batch)?;
-    let row=sqlx::query("SELECT scope,coverage,sequence,observed_at,digest,document FROM mdm.collection_results WHERE tenant_id=$1::uuid AND run=$2")
-        .bind(scope.tenant().to_string()).bind(batch.id().as_str()).fetch_one(c).await?;
+    let row=sqlx::query("SELECT scope,coverage,sequence,observed_at,digest,document FROM mdm.collection_results WHERE tenant_id=$1::uuid AND scope=$3 AND run=$2")
+        .bind(scope.tenant().to_string()).bind(batch.id().as_str()).bind(scope.encode()?).fetch_one(c).await?;
     let bytes: Vec<u8> = row.try_get("document")?;
     ensure!(
         bytes.len() <= 33554432

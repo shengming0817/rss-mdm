@@ -2,10 +2,15 @@
 use crate::{Error, database::db};
 use sqlx::Row;
 use uuid::Uuid;
-pub(crate) async fn replay(
+pub async fn replay(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     operation: &Operation<'_>,
 ) -> Result<Option<String>, Error> {
+    if profile != operation.profile() {
+        return Err(Error::Forbidden);
+    }
+
     let Operation {
         actor: proof,
         key,
@@ -23,21 +28,31 @@ pub(crate) async fn replay(
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    read(tx, operation).await
+    read(profile, tx, operation).await
 }
 
 /// Receipt lookup without acquiring a product lock, safe before Identity admission.
-pub(crate) async fn read(
+pub async fn read(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     operation: &Operation<'_>,
 ) -> Result<Option<String>, Error> {
+    if profile != operation.profile() {
+        return Err(Error::Forbidden);
+    }
+
     let Operation {
         actor: proof,
         key,
         digest,
     } = operation;
-    let old = sqlx::query("SELECT digest,result,instance FROM mdm_access.registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).fetch_optional(&mut *tx).await.map_err(db)?;
+    let old = sqlx::query(crate::storage_profile::sql(profile).operations_read_1)
+        .bind(proof.tenant)
+        .bind(proof.subject)
+        .bind(key.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
     old.map(|old| {
         if old.try_get::<String, _>("digest").map_err(db)? != *digest
             || old.try_get::<String, _>("instance").map_err(db)? != proof.instance
@@ -48,21 +63,32 @@ pub(crate) async fn read(
     })
     .transpose()
 }
-pub(crate) async fn save(
+pub async fn save(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     operation: &Operation<'_>,
     result: &str,
     audit: &RequestAudit,
 ) -> Result<(), Error> {
-    save_result(tx, operation, result, None, audit).await
+    if profile != operation.profile() {
+        return Err(Error::Forbidden);
+    }
+
+    save_result(profile, tx, operation, result, None, audit).await
 }
 pub(crate) async fn save_issuance_recovery(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     operation: &Operation<'_>,
     id: Uuid,
     audit: &RequestAudit,
 ) -> Result<(), Error> {
+    if profile != operation.profile() {
+        return Err(Error::Forbidden);
+    }
+
     save_result(
+        profile,
         tx,
         operation,
         &serde_json::to_string(&id).map_err(|_| Error::Corrupt)?,
@@ -72,12 +98,17 @@ pub(crate) async fn save_issuance_recovery(
     .await
 }
 async fn save_result(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     operation: &Operation<'_>,
     result: &str,
     issuance: Option<Uuid>,
     audit: &RequestAudit,
 ) -> Result<(), Error> {
+    if profile != operation.profile() {
+        return Err(Error::Forbidden);
+    }
+
     let Operation {
         actor: proof,
         key,
@@ -91,8 +122,17 @@ async fn save_result(
     {
         return Err(Error::Forbidden);
     }
-    sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6,$7)")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.instance).bind(issuance).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).operations_save_result_1)
+        .bind(proof.tenant)
+        .bind(proof.subject)
+        .bind(key.to_string())
+        .bind(*digest)
+        .bind(result)
+        .bind(proof.instance)
+        .bind(issuance)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     Ok(())
 }
 
@@ -129,14 +169,15 @@ pub(crate) fn settle<R>(
 
 #[derive(Clone, Copy)]
 pub(crate) struct Actor<'a> {
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: &'a str,
     subject: &'a str,
     instance: &'a str,
 }
-pub(crate) struct Operation<'a> {
-    pub actor: Actor<'a>,
-    pub key: Uuid,
-    pub digest: &'a str,
+pub struct Operation<'a> {
+    pub(crate) actor: Actor<'a>,
+    pub(crate) key: Uuid,
+    pub(crate) digest: &'a str,
 }
 
 impl<'a> Actor<'a> {
@@ -144,6 +185,7 @@ impl<'a> Actor<'a> {
         proof: &'a rss_mdm_authorization_service::context::AuthorizedPrincipal,
     ) -> Self {
         Self {
+            profile: proof.profile(),
             tenant: proof.tenant_id(),
             subject: proof.principal_id(),
             instance: proof.instance_id(),
@@ -158,5 +200,26 @@ fn transaction_error(error: rss_mdm_audit_integration::TransactionError<Error>) 
         rss_mdm_audit_integration::TransactionError::Operation(error) => error,
         rss_mdm_audit_integration::TransactionError::Storage(error) => error.into(),
         rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
+    }
+}
+
+impl<'a> Operation<'a> {
+    pub fn new(
+        proof: &'a rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        key: Uuid,
+        digest: &'a str,
+    ) -> Result<Self, Error> {
+        proof.check_live()?;
+        if key.is_nil() || digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Malformed);
+        }
+        Ok(Self {
+            actor: Actor::from_authorized(proof),
+            key,
+            digest,
+        })
+    }
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.actor.profile
     }
 }

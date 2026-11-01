@@ -36,6 +36,7 @@ fn bounded_query_rejects_invalid_input() {
 #[test]
 fn accepted_request_does_not_prove_execution_and_details_are_not_exposed() {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         TENANT.into(),
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -55,6 +56,7 @@ fn accepted_request_does_not_prove_execution_and_details_are_not_exposed() {
 #[test]
 fn unknown_action_and_outcome_never_become_success() {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         TENANT.into(),
         "future_stage",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -74,6 +76,7 @@ fn unknown_action_and_outcome_never_become_success() {
 fn resource_namespace_is_part_of_identity_and_projection() {
     use rss_mdm_audit_integration::TargetKind;
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         TENANT.into(),
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -108,6 +111,7 @@ fn resource_namespace_is_part_of_identity_and_projection() {
 #[test]
 fn missing_targets_project_as_request_resources() {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         TENANT.into(),
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,

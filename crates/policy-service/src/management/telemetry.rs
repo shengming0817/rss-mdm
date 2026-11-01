@@ -2,6 +2,7 @@
 use super::*;
 /// Read and authorize the exact profile/template without publishing collection state.
 pub async fn prepare_in(
+    _profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     binding: &rss_mdm_policy::ExactResourceBinding,
     proof: &AuthorizedPrincipal,
@@ -104,7 +105,12 @@ pub async fn prepare_in(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "frozen telemetry acceptance retains product binding and independent authority and execution facts"
+)]
 pub(super) async fn freeze(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     binding: &rss_mdm_policy::ExactResourceBinding,
     proof: &AuthorizedPrincipal,
@@ -114,7 +120,7 @@ pub(super) async fn freeze(
     version_id: Uuid,
 ) -> Result<Value> {
     use rss_mdm_resource as r;
-    let frozen = prepare_in(tx, binding, proof, snapshot, validator).await?;
+    let frozen = prepare_in(profile, tx, binding, proof, snapshot, validator).await?;
     let definition = &frozen.profile;
     let source = frozen.source;
     if definition.spec().projection != r::TelemetryProjection::History {

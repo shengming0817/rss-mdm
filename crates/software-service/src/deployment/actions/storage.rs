@@ -251,7 +251,10 @@ impl ScheduledPolicy {
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(rss_mdm_registration_service::lifecycle::work_allowed_in(
-                        c, &tenant, &device,
+                        rss_mdm_install_support::StorageProfile::Mdm,
+                        c,
+                        &tenant,
+                        &device,
                     )
                     .await)
                 })
@@ -333,7 +336,10 @@ impl ScheduledPolicy {
                 .with_connection(move |c| {
                     Box::pin(async move {
                         Ok(rss_mdm_registration_service::lifecycle::work_allowed_in(
-                            c, &tenant, &device,
+                            rss_mdm_install_support::StorageProfile::Mdm,
+                            c,
+                            &tenant,
+                            &device,
                         )
                         .await)
                     })

@@ -22,6 +22,7 @@ impl Binding {
     }
 }
 pub trait Store: Send + Sync {
+    fn storage_profile(&self) -> rss_mdm_install_support::StorageProfile;
     fn bindings<'a>(
         &'a self,
         c: &'a mut PgConnection,

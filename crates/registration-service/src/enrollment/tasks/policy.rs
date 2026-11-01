@@ -50,6 +50,8 @@ impl EnrollmentPolicy {
         device: &str,
         now: i64,
     ) -> Result<Option<i64>> {
+        let profile = service.profile();
+
         if !self.active
             || now < self.frozen.schedule.not_before
             || now >= self.frozen.schedule.ends_at()
@@ -63,7 +65,9 @@ impl EnrollmentPolicy {
         tx.with_connection(move |c| {
             Box::pin(async move {
                 Ok(async {
-                    if !crate::lifecycle::work_allowed_in(c, &tenant.to_string(), &device).await? {
+                    if !crate::lifecycle::work_allowed_in(profile, c, &tenant.to_string(), &device)
+                        .await?
+                    {
                         return Ok(None);
                     }
                     Ok(
@@ -100,7 +104,10 @@ impl EnrollmentPolicy {
         tx: &mut PgTransaction<'_>,
         target: &Target,
     ) -> Result<bool> {
-        Ok(self.active && eligibility::require_in(service, tx, target, &self.frozen).await?)
+        let profile = service.profile();
+
+        Ok(self.active
+            && eligibility::require_in(profile, service, tx, target, &self.frozen).await?)
     }
     pub async fn authorized_run_in(
         &self,
@@ -108,6 +115,8 @@ impl EnrollmentPolicy {
         tx: &mut PgTransaction<'_>,
         run: &runs::Run,
     ) -> Result<bool> {
+        let profile = service.profile();
+
         if run.policy_version != self.id {
             return Err(Error::Invariant.into());
         }
@@ -149,7 +158,7 @@ impl EnrollmentPolicy {
         }
         if run.state.started_at.is_some() {
             Ok(self.active
-                && eligibility::capable_in(service, tx, &run.target, &self.frozen).await?)
+                && eligibility::capable_in(profile, service, tx, &run.target, &self.frozen).await?)
         } else {
             self.run_admission_in(service, tx, &run.target).await
         }
@@ -163,8 +172,10 @@ impl EnrollmentPolicy {
         permit: wire::TaskPermit,
         expiry: i64,
     ) -> Result<wire::TaskPayload> {
+        let profile = service.profile();
+
         let (platform, architecture) =
-            agent_facts::profile_in(service, tx, run.target.registration)
+            agent_facts::profile_in(profile, service, tx, run.target.registration)
                 .await?
                 .ok_or(Error::Forbidden)?;
         let entry = self

@@ -53,6 +53,7 @@ impl Deployment {
 }
 impl Service {
     pub fn bootstrap_configuration(&self) -> Result<&Configuration, Failure> {
+        self.native.as_ref().ok_or(Error::Unsupported)?;
         self.bootstrap
             .as_deref()
             .ok_or_else(|| Error::Configuration.into())
@@ -62,6 +63,8 @@ impl Service {
         verified: scep::VerifiedRequest,
         audit: &RequestAudit,
     ) -> Result<scep::ChallengeResponse, Failure> {
+        let profile = self.profile();
+
         let config = self.bootstrap_configuration()?;
         let input = verified.request();
         if input.x509_certificate.is_some() || input.scep_error_code.is_some() {
@@ -89,39 +92,122 @@ impl Service {
             "agent_bootstrap_sign",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.write(audit, (self, &csr, &input, challenge, &active, now), |ctx,c| Box::pin(async move {
-            let (s,csr,input,challenge,active,now)=*ctx;
-            let row = row(c,s.tenant,csr.attempt()).await?;
-            let retained = rss_mdm_pki_service::registry::retained_issuer_on(c,s.tenant,rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,&active.digest).await.map_err(|_|Error::Storage)?;
-            if !retained {return Err(Error::Forbidden);}
-            if !row.try_get::<bool,_>("active").map_err(db)?
-                || row.try_get::<Uuid,_>("installation").map_err(db)? != csr.installation()
-                || row.try_get::<i64,_>("deadline").map_err(db)? <= now
-                || input.provisioner_name.as_deref() != Some(active.provisioner.as_str())
-                || row.try_get::<String,_>("issuer").map_err(db)? != active.digest
-                || row.try_get::<String,_>("provisioner").map_err(db)? != active.provisioner
-                || row.try_get::<Vec<u8>,_>("challenge").map_err(db)?.as_slice() != Sha256::digest(challenge.as_bytes()).as_slice() { return Err(Error::Forbidden); }
-            let state: String = row.try_get("state").map_err(db)?;
-            let replay = state == "signing"
-                && row.try_get::<Option<String>,_>("transaction_id").map_err(db)?.as_deref() == Some(input.transaction.as_str())
-                && row.try_get::<Option<Vec<u8>>,_>("csr_digest").map_err(db)?.as_deref() == Some(csr.digest().as_slice())
-                && row.try_get::<Option<Vec<u8>>,_>("spki").map_err(db)?.as_deref() == Some(csr.spki().as_slice());
-            if state != "prepared" && !replay { return Err(Error::Forbidden); }
-            let source = native::source(c,s.tenant,row.try_get("source").map_err(db)?).await?;
-            require_delivery(c,s.tenant,source.bootstrap()).await?;
-            s.native.bootstrap(c,&source).await?;
-            let stored_deadline: i64 = row.try_get("deadline").map_err(db)?;
-            let deadline = if replay { stored_deadline } else { stored_deadline.min(now + 1800) };
-            if !replay { sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='signing',transaction_id=$3,csr_digest=$4,spki=$5,deadline=$6 WHERE tenant_id=$1::uuid AND id=$2")
-                .bind(s.tenant.to_string()).bind(csr.attempt()).bind(&input.transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(deadline).execute(c).await.map_err(db)?; }
-            Ok(Change {value: scep::ChallengeResponse { allow:true, data:scep::ChallengeData { subject:scep::ChallengeSubject { common_name:rss_mdm_certificate::apple::subject(csr.installation(),csr.attempt()), organizational_unit:vec![certificate::PURPOSE.into()] }, not_after:time::OffsetDateTime::from_unix_timestamp(deadline).map_err(|_|Error::Corrupt)?.format(&time::format_description::well_known::Rfc3339).map_err(|_|Error::Corrupt)? } }, replay})
-        })).await.map_err(Into::into)
+        self.write(
+            audit,
+            (self, &csr, &input, challenge, &active, now),
+            |ctx, c| {
+                Box::pin(async move {
+                    let (s, csr, input, challenge, active, now) = *ctx;
+                    let row = row(profile, c, s.tenant, csr.attempt()).await?;
+                    let retained = rss_mdm_pki_service::registry::retained_issuer_on(
+                        profile,
+                        c,
+                        s.tenant,
+                        rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,
+                        &active.digest,
+                    )
+                    .await
+                    .map_err(|_| Error::Storage)?;
+                    if !retained {
+                        return Err(Error::Forbidden);
+                    }
+                    if !row.try_get::<bool, _>("active").map_err(db)?
+                        || row.try_get::<Uuid, _>("installation").map_err(db)? != csr.installation()
+                        || row.try_get::<i64, _>("deadline").map_err(db)? <= now
+                        || input.provisioner_name.as_deref() != Some(active.provisioner.as_str())
+                        || row.try_get::<String, _>("issuer").map_err(db)? != active.digest
+                        || row.try_get::<String, _>("provisioner").map_err(db)?
+                            != active.provisioner
+                        || row
+                            .try_get::<Vec<u8>, _>("challenge")
+                            .map_err(db)?
+                            .as_slice()
+                            != Sha256::digest(challenge.as_bytes()).as_slice()
+                    {
+                        return Err(Error::Forbidden);
+                    }
+                    let state: String = row.try_get("state").map_err(db)?;
+                    let replay = state == "signing"
+                        && row
+                            .try_get::<Option<String>, _>("transaction_id")
+                            .map_err(db)?
+                            .as_deref()
+                            == Some(input.transaction.as_str())
+                        && row
+                            .try_get::<Option<Vec<u8>>, _>("csr_digest")
+                            .map_err(db)?
+                            .as_deref()
+                            == Some(csr.digest().as_slice())
+                        && row
+                            .try_get::<Option<Vec<u8>>, _>("spki")
+                            .map_err(db)?
+                            .as_deref()
+                            == Some(csr.spki().as_slice());
+                    if state != "prepared" && !replay {
+                        return Err(Error::Forbidden);
+                    }
+                    let source =
+                        native::source(profile, c, s.tenant, row.try_get("source").map_err(db)?)
+                            .await?;
+                    require_delivery(profile, c, s.tenant, source.bootstrap()).await?;
+                    s.native
+                        .as_ref()
+                        .ok_or(Error::Unsupported)?
+                        .bootstrap(c, &source)
+                        .await?;
+                    let stored_deadline: i64 = row.try_get("deadline").map_err(db)?;
+                    let deadline = if replay {
+                        stored_deadline
+                    } else {
+                        stored_deadline.min(now + 1800)
+                    };
+                    if !replay {
+                        sqlx::query(
+                            crate::storage_profile::sql(profile)
+                                .agent_bootstrap_bootstrap_challenge_1,
+                        )
+                        .bind(s.tenant.to_string())
+                        .bind(csr.attempt())
+                        .bind(&input.transaction)
+                        .bind(csr.digest().as_slice())
+                        .bind(csr.spki().as_slice())
+                        .bind(deadline)
+                        .execute(c)
+                        .await
+                        .map_err(db)?;
+                    }
+                    Ok(Change {
+                        value: scep::ChallengeResponse {
+                            allow: true,
+                            data: scep::ChallengeData {
+                                subject: scep::ChallengeSubject {
+                                    common_name: rss_mdm_certificate::apple::subject(
+                                        csr.installation(),
+                                        csr.attempt(),
+                                    ),
+                                    organizational_unit: vec![certificate::PURPOSE.into()],
+                                },
+                                not_after: time::OffsetDateTime::from_unix_timestamp(deadline)
+                                    .map_err(|_| Error::Corrupt)?
+                                    .format(&time::format_description::well_known::Rfc3339)
+                                    .map_err(|_| Error::Corrupt)?,
+                            },
+                        },
+                        replay,
+                    })
+                })
+            },
+        )
+        .await
+        .map_err(Into::into)
     }
     pub async fn bootstrap_notify(
         &self,
         verified: scep::VerifiedRequest,
         audit: &RequestAudit,
     ) -> Result<(), Failure> {
+        let profile = self.profile();
+
         let config = self.bootstrap_configuration()?;
         let input = verified.request();
         if input.scep_error_code.is_some() {
@@ -164,27 +250,83 @@ impl Service {
             "agent_bootstrap_issued",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.write(audit,(self,id,installation,&issuer,&input,&der,&fingerprint,&spki,end), |ctx,c| Box::pin(async move {
-            let (s,id,installation,issuer,input,der,fingerprint,spki,end)=*ctx;
-            let row=row(c,s.tenant,id).await?;
-            if row.try_get::<Uuid,_>("installation").map_err(db)? != installation
-                || row.try_get::<String,_>("issuer").map_err(db)? != issuer.digest
-                || row.try_get::<Option<String>,_>("transaction_id").map_err(db)?.as_deref()!=Some(input.transaction.as_str())
-                || row.try_get::<Option<Vec<u8>>,_>("spki").map_err(db)?.as_ref()!=Some(spki)
-                || end>row.try_get::<i64,_>("deadline").map_err(db)? { return Err(Error::Forbidden); }
-            let state: String=row.try_get("state").map_err(db)?;
-            let replay=state=="issued" || state=="consumed";
-            if replay {
-                if row.try_get::<Option<Vec<u8>>,_>("fingerprint").map_err(db)?.as_ref()!=Some(fingerprint) {return Err(Error::Conflict);}
-            } else if state=="signing" {
-                let source=native::source(c,s.tenant,row.try_get("source").map_err(db)?).await?;
-                require_delivery(c,s.tenant,source.bootstrap()).await?;
-            s.native.bootstrap(c,&source).await?;
-                sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='issued',fingerprint=$3,certificate=$4 WHERE tenant_id=$1::uuid AND id=$2")
-                    .bind(s.tenant.to_string()).bind(id).bind(fingerprint).bind(der).execute(c).await.map_err(db)?;
-            } else {return Err(Error::Forbidden);}
-            Ok(Change {value:(), replay})
-        })).await.map_err(Into::into)
+        self.write(
+            audit,
+            (
+                self,
+                id,
+                installation,
+                &issuer,
+                &input,
+                &der,
+                &fingerprint,
+                &spki,
+                end,
+            ),
+            |ctx, c| {
+                Box::pin(async move {
+                    let (s, id, installation, issuer, input, der, fingerprint, spki, end) = *ctx;
+                    let row = row(profile, c, s.tenant, id).await?;
+                    if row.try_get::<Uuid, _>("installation").map_err(db)? != installation
+                        || row.try_get::<String, _>("issuer").map_err(db)? != issuer.digest
+                        || row
+                            .try_get::<Option<String>, _>("transaction_id")
+                            .map_err(db)?
+                            .as_deref()
+                            != Some(input.transaction.as_str())
+                        || row
+                            .try_get::<Option<Vec<u8>>, _>("spki")
+                            .map_err(db)?
+                            .as_ref()
+                            != Some(spki)
+                        || end > row.try_get::<i64, _>("deadline").map_err(db)?
+                    {
+                        return Err(Error::Forbidden);
+                    }
+                    let state: String = row.try_get("state").map_err(db)?;
+                    let replay = state == "issued" || state == "consumed";
+                    if replay {
+                        if row
+                            .try_get::<Option<Vec<u8>>, _>("fingerprint")
+                            .map_err(db)?
+                            .as_ref()
+                            != Some(fingerprint)
+                        {
+                            return Err(Error::Conflict);
+                        }
+                    } else if state == "signing" {
+                        let source = native::source(
+                            profile,
+                            c,
+                            s.tenant,
+                            row.try_get("source").map_err(db)?,
+                        )
+                        .await?;
+                        require_delivery(profile, c, s.tenant, source.bootstrap()).await?;
+                        s.native
+                            .as_ref()
+                            .ok_or(Error::Unsupported)?
+                            .bootstrap(c, &source)
+                            .await?;
+                        sqlx::query(
+                            crate::storage_profile::sql(profile).agent_bootstrap_bootstrap_notify_1,
+                        )
+                        .bind(s.tenant.to_string())
+                        .bind(id)
+                        .bind(fingerprint)
+                        .bind(der)
+                        .execute(c)
+                        .await
+                        .map_err(db)?;
+                    } else {
+                        return Err(Error::Forbidden);
+                    }
+                    Ok(Change { value: (), replay })
+                })
+            },
+        )
+        .await
+        .map_err(Into::into)
     }
     pub async fn native_grant(
         &self,
@@ -192,6 +334,8 @@ impl Service {
         input: &wire::NativeGrantRequest,
         audit: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
+        let profile = self.profile();
+
         input.validate().map_err(|_| Error::Malformed)?;
         let config = self.bootstrap_configuration()?;
         config
@@ -219,54 +363,67 @@ impl Service {
         );
         self.write(audit,(self,id,input,&fingerprint),|ctx,c|Box::pin(async move {
             let(s,id,input,fingerprint)=*ctx;
-            let row=row(c,s.tenant,id).await?;
+            let row=row(profile, c,s.tenant,id).await?;
             if !row.try_get::<bool,_>("active").map_err(db)? || !matches!(row.try_get::<String,_>("state").map_err(db)?.as_str(),"issued"|"consumed")
                 || row.try_get::<i64,_>("deadline").map_err(db)?<=s.clock.unix_seconds()?
                 || row.try_get::<Option<Vec<u8>>,_>("fingerprint").map_err(db)?.as_ref()!=Some(fingerprint) {return Err(Error::Forbidden);}
             let mut proof: serde_json::Value=row.try_get("source").map_err(db)?;
             proof["runtime"]=serde_json::to_value(&input.runtime).map_err(|_|Error::Malformed)?;
-            let source=native::source(c,s.tenant,proof).await?;
-            let authority = s.native.validate(c, &source).await?;
+            let source=native::source(profile, c,s.tenant,proof).await?;
+            let authority = s.native.as_ref().ok_or(Error::Unsupported)?.validate(c, &source).await?;
             let native = serde_json::json!({"installation":source.installation(),"registration":source.principal().registration(),"credential":source.principal().credential(),"generation":source.principal().generation(),"source":source.report_source(),"runtime":input.runtime,"bootstrap":source.bootstrap()});
-            let (value,replay)=native::create_in(c,authority,input,&native).await?;
-            sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='consumed' WHERE tenant_id=$1::uuid AND id=$2")
+            let (value,replay)=native::create_in(profile, c,authority,input,&native).await?;
+            sqlx::query(crate::storage_profile::sql(profile).agent_bootstrap_native_grant_1)
                 .bind(s.tenant.to_string()).bind(id).execute(c).await.map_err(db)?;
             Ok(Change {value, replay})
         })).await.map_err(Into::into)
     }
 }
 async fn row(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: rss_request_context::TenantId,
     id: Uuid,
 ) -> Result<PgRow, Error> {
     // Match coordinator order: endpoint before bootstrap row. The frozen endpoint cannot change.
-    let device:String=sqlx::query_scalar("SELECT installation_facts->>'device' FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let device: String =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).agent_bootstrap_row_1)
+            .bind(tenant.to_string())
+            .bind(id)
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(db)?
+            .ok_or(Error::Unauthorized)?;
     crate::device::store::lock_channel(
+        profile,
         c,
         &tenant.to_string(),
         &device,
         rss_mdm_inventory::Channel::Mdm,
     )
     .await?;
-    sqlx::query(
-        "SELECT * FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE",
-    )
-    .bind(tenant.to_string())
-    .bind(id)
-    .fetch_optional(c)
-    .await
-    .map_err(db)?
-    .ok_or(Error::Unauthorized)
+    sqlx::query(crate::storage_profile::sql(profile).agent_bootstrap_row_2)
+        .bind(tenant.to_string())
+        .bind(id)
+        .fetch_optional(c)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)
 }
 
 async fn require_delivery(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: rss_request_context::TenantId,
     bootstrap: Uuid,
 ) -> Result<(), Error> {
-    let delivered:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b WHERE b.tenant_id=$1::uuid AND b.id=$2 AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute' AND a.state<>'pending')))").bind(tenant.to_string()).bind(bootstrap).fetch_one(c).await.map_err(db)?;
+    let delivered: bool =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).agent_bootstrap_require_delivery_1)
+            .bind(tenant.to_string())
+            .bind(bootstrap)
+            .fetch_one(c)
+            .await
+            .map_err(db)?;
     if !delivered {
         return Err(Error::Forbidden);
     }

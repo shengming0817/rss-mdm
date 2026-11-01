@@ -165,7 +165,7 @@ pub enum ProcessError {
         kind: std::io::ErrorKind,
     },
     #[error(transparent)]
-    Migration(#[from] crate::migration::MigrationError),
+    Migration(#[from] rss_mdm_install_support::Error),
     #[error(transparent)]
     TenantRegistry(#[from] crate::administration::tenants::RegistryError),
 }
@@ -395,6 +395,7 @@ impl From<rss_mdm_registration_service::Error> for OwnerDiagnostic {
     fn from(e: rss_mdm_registration_service::Error) -> Self {
         use rss_mdm_registration_service::Error as E;
         match e {
+            E::Unsupported => Self::Unsupported,
             E::Agent(_) => Self::Unauthorized,
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,

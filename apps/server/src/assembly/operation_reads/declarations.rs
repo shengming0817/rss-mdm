@@ -33,6 +33,7 @@ impl Operations {
                         let device_owned = device.to_owned();
                         let registration =
                             rss_mdm_registration_service::device::endpoints::current_in(
+                                rss_mdm_install_support::StorageProfile::Mdm,
                                 c,
                                 &tenant,
                                 &device_owned,

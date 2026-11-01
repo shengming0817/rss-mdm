@@ -3,12 +3,17 @@ use crate::{Error, Permission, context::AuthorizedPrincipal};
 use serde::Serialize;
 
 pub struct IdentityManagementPolicy {
+    profile: rss_mdm_install_support::StorageProfile,
     instance: String,
 }
 impl IdentityManagementPolicy {
-    pub fn new(instance: &str) -> Result<Self, Error> {
+    pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
+        instance: &str,
+    ) -> Result<Self, Error> {
         crate::canonical_uuid(instance).map_err(|_| Error::Configuration)?;
         Ok(Self {
+            profile,
             instance: instance.into(),
         })
     }
@@ -17,7 +22,7 @@ impl IdentityManagementPolicy {
         proof: &AuthorizedPrincipal,
     ) -> Result<IdentityNavigation, Error> {
         proof.check_live()?;
-        if proof.instance_id() != self.instance {
+        if proof.profile() != self.profile || proof.instance_id() != self.instance {
             return Err(Error::Unauthorized);
         }
         // Require the loaded snapshot even when neither capability is granted.
@@ -54,6 +59,8 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
                 + 'a,
         >,
     > {
+        let profile = self.profile;
+
         Box::pin(async move {
             use rss_identity_postgres::{
                 ManagementDenied, ManagementOperation as Op, ReauthenticationRequirement as Auth,
@@ -89,10 +96,10 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
                 };
             }
             let tenant = context.actor().tenant.to_string();
-            crate::store::lock(connection, &tenant, &self.instance)
+            crate::store::lock(profile, connection, &tenant, &self.instance)
                 .await
                 .map_err(|_| ManagementDenied)?;
-            let snapshot = crate::snapshot_on(connection, &tenant, &self.instance)
+            let snapshot = crate::snapshot_on(profile, connection, &tenant, &self.instance)
                 .await
                 .map_err(|_| ManagementDenied)?;
             if context.operation() == Op::ReadLatestProfile
@@ -142,9 +149,15 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
                 .is_management(&tenant)
                 && let Some(target) = context.target()
             {
-                let protected: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.authorization_initializations WHERE tenant_id=$1::uuid AND instance=$2::uuid AND principal=$3::uuid)")
-                        .bind(&tenant).bind(&self.instance).bind(target.principal.as_uuid().to_string())
-                        .fetch_one(connection).await.map_err(|_| ManagementDenied)?;
+                let protected: bool = sqlx::query_scalar(
+                    crate::storage_profile::sql(profile).identity_management_authorize_1,
+                )
+                .bind(&tenant)
+                .bind(&self.instance)
+                .bind(target.principal.as_uuid().to_string())
+                .fetch_one(connection)
+                .await
+                .map_err(|_| ManagementDenied)?;
                 if protected {
                     return Err(ManagementDenied);
                 }

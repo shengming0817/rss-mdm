@@ -544,7 +544,13 @@ pub(crate) async fn prepare_target_reconciliation_in(
     let work_allowed = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                Ok(crate::lifecycle::work_allowed_in(c, &tenant_name, &device_name).await)
+                Ok(crate::lifecycle::work_allowed_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant_name,
+                    &device_name,
+                )
+                .await)
             })
         })
         .await??;

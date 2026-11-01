@@ -8,6 +8,7 @@ pub(crate) async fn current(
     if proof.tenant_id() != tx.tenant_id().to_string() {
         return Err(crate::Error::Forbidden.into());
     }
+    let profile = proof.profile();
     let tenant = proof.tenant_id().to_owned();
     let instance = proof.instance_id().to_owned();
     let snapshot = tx
@@ -15,10 +16,10 @@ pub(crate) async fn current(
             Box::pin(async move {
                 // Native writers already hold these fences when revalidating authority.
                 // Policy publication must take the same order before its authorization lock.
-                crate::authorization::lock_shared_on(c, &tenant, &instance)
+                crate::authorization::lock_shared_on(profile, c, &tenant, &instance)
                     .await
                     .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-                Ok(crate::authorization::snapshot_on(c, &tenant, &instance).await)
+                Ok(crate::authorization::snapshot_on(profile, c, &tenant, &instance).await)
             })
         })
         .await??;

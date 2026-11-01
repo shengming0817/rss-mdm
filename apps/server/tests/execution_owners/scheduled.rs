@@ -7,6 +7,7 @@ fn rejected(error: impl std::fmt::Debug) -> rss_transactional_messaging_postgres
 }
 async fn probe(h: &Harness, version: Uuid) -> Result<(bool, bool)> {
     let reader = rss_mdm_policy_postgres::PolicyReader::bind(
+        rss_mdm_install_support::StorageProfile::Mdm,
         h.a.resources.storage.runtime.clone(),
         h.c.tenant,
     );
@@ -43,6 +44,7 @@ async fn wake(
     rollback: bool,
 ) -> Result<()> {
     let reader = rss_mdm_policy_postgres::PolicyReader::bind(
+        rss_mdm_install_support::StorageProfile::Mdm,
         h.a.resources.storage.runtime.clone(),
         h.c.tenant,
     );

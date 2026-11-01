@@ -125,18 +125,17 @@ fn member_column(name: &str) -> &'static str {
         _ => unreachable!("checked member field"),
     }
 }
-const BATCH_SELECT: &str = "SELECT jsonb_build_object('request',b.input,'id',b.id,'operationId',b.request,'event',b.input->>'event','createdAt',b.created_at,'deadline',b.deadline,'processingFailure',(SELECT failure FROM mdm_policy.work WHERE tenant_id=b.tenant_id AND id=b.id),'members',(SELECT count(*) FROM mdm_policy.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)),'admission',(SELECT coalesce(jsonb_object_agg(state,n),'{}'::jsonb) FROM(SELECT decision->>'state' state,count(*) n FROM mdm_policy.event_members WHERE tenant_id=b.tenant_id AND batch=b.id GROUP BY decision->>'state') counts)) FROM mdm_policy.event_batches b WHERE b.tenant_id=";
 
 /// Read a bounded management directory page from a checked query.
 pub async fn policies_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     q: &Query,
     after: Option<&Position>,
 ) -> Result<Vec<Value>, Error> {
     q.require_schema(&SCHEMA)?;
-    let mut sql = sqlx::QueryBuilder::new(
-        "SELECT jsonb_build_object('id',id,'toolName','policy_' || replace(id::text,'-',''),'alias',definition->>'alias','customEvent',definition->>'customEvent','revision',revision,'version',version_number,'versionId',current_version,'state',state,'definition',definition,'action',definition->'action'->>'kind','scope',definition->>'scope','resource',definition->'action'->'resource'->>'id','category',definition->'selfService'->'presentation'->>'category') FROM mdm_policy.policies WHERE tenant_id=",
-    );
+    let mut sql =
+        sqlx::QueryBuilder::new(crate::storage_profile::sql(profile).directory_policies_in_1);
     sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
     if !q.mentions("state") {
         sql.push(" AND state<>'archived'");
@@ -148,21 +147,34 @@ pub async fn policies_in(
         })
         .await?)
 }
+/// Device and optional batch/registration coordinates already authorized by the caller.
+pub struct EventTarget<'a> {
+    /// Visible device identity.
+    pub device: &'a str,
+    /// Optional accepted batch identity.
+    pub batch: Option<Uuid>,
+    /// Optional caller registration restriction.
+    pub registration: Option<Uuid>,
+}
 /// Read a bounded device-specific batch or member page. Authorization remains with the caller.
 pub async fn events_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     q: &Query,
     after: Option<&Position>,
-    device: &str,
-    batch: Option<Uuid>,
-    registration: Option<Uuid>,
+    target: EventTarget<'_>,
     members: bool,
 ) -> Result<Vec<Value>, Error> {
+    let EventTarget {
+        device,
+        batch,
+        registration,
+    } = target;
     q.require_schema(if members { &MEMBERS } else { &BATCHES })?;
     let prefix = if members {
-        "SELECT jsonb_build_object('id',m.id,'policyId',m.policy,'versionId',m.version,'revision',m.revision,'state',m.decision->>'state','decision',m.decision) FROM mdm_policy.event_members m JOIN mdm_policy.event_batches b ON(b.tenant_id,b.id)=(m.tenant_id,m.batch) WHERE b.tenant_id="
+        crate::storage_profile::sql(profile).directory_events_in_1
     } else {
-        BATCH_SELECT
+        crate::storage_profile::sql(profile).directory_event_batches
     };
     let mut sql = sqlx::QueryBuilder::new(prefix);
     sql.push_bind(tx.tenant_id().to_string())
@@ -189,10 +201,21 @@ pub async fn events_in(
 }
 /// Check a batch belongs to the visible device before returning a detail page.
 pub async fn batch_exists_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     device: String,
 ) -> Result<bool, PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.event_batches WHERE tenant_id=$1::uuid AND id=$2 AND device=$3)").bind(tenant).bind(id).bind(device).fetch_one(c).await})).await
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_scalar(crate::storage_profile::sql(profile).directory_batch_exists_in_1)
+                .bind(tenant)
+                .bind(id)
+                .bind(device)
+                .fetch_one(c)
+                .await
+        })
+    })
+    .await
 }

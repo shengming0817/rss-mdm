@@ -592,3 +592,5 @@ impl AssetService {
         })).await.fold(Ok,|_|Err(Error::Unavailable(Failure::AssetsStorage)),|_|Err(Error::Unavailable(Failure::AssetsStorage)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|_|Err(Error::Conflict))
     }
 }
+
+pub mod enrollment;

@@ -298,19 +298,6 @@ impl From<catalog::Error> for Fault {
     }
 }
 
-impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
-    fn from(e: rss_mdm_audit_integration::operation_receipts::Error) -> Self {
-        use rss_mdm_audit_integration::operation_receipts::Error as Receipt;
-        match e {
-            Receipt::Storage(e) => Self::Storage(e),
-            Receipt::Sql(e) => Self::Sql(e),
-            Receipt::Conflict => Error::Conflict.into(),
-            Receipt::Malformed => Error::Malformed.into(),
-            Receipt::Invariant => Error::Unavailable(Failure::PolicyStorage).into(),
-        }
-    }
-}
-
 impl From<rss_mdm_scope_postgres::BindingError> for Fault {
     fn from(e: rss_mdm_scope_postgres::BindingError) -> Self {
         use rss_mdm_scope_postgres::BindingError as E;
@@ -336,6 +323,7 @@ impl From<rss_mdm_scope_service::channels::SourceError> for Fault {
     fn from(e: rss_mdm_scope_service::channels::SourceError) -> Self {
         use rss_mdm_scope_service::channels::SourceError as S;
         match e {
+            S::Unsupported => Error::Unsupported.into(),
             S::Missing => Error::NotFound.into(),
             S::Capacity => Error::Unavailable(Failure::Capacity).into(),
             S::Conflict => Error::Conflict.into(),

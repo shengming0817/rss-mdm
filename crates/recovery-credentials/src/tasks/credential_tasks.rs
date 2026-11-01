@@ -32,6 +32,8 @@ impl FrozenCredential {
         target: &Target,
         _now: i64,
     ) -> Result<bool> {
+        let profile = service.profile();
+
         let operation = self.operation.clone();
         let target = target.clone();
         let agent_store = service.agent_store.clone();
@@ -97,7 +99,7 @@ impl FrozenCredential {
                     {
                         return Ok(false);
                     }
-                    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1 AND id=$2 AND state='enabled')")
+                    let enabled: bool = sqlx::query_scalar(crate::storage_profile::sql(profile).tasks_credential_tasks_authorized_in_1)
                         .bind(tenant).bind(b.policy).fetch_one(c).await?;
                     if !enabled { return Ok(false); }
                 }
@@ -173,6 +175,7 @@ fn operation(value: &Operation) -> wire::CredentialOperation {
     }
 }
 pub(crate) async fn task(
+    profile: rss_mdm_install_support::StorageProfile,
     policy: &super::policy::CredentialPolicy,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
@@ -194,6 +197,7 @@ pub(crate) async fn task(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(materials::revisions_in(
+                    crate::Custody::new(profile, None),
                     c,
                     tenant,
                     &target_owned.device,
@@ -217,7 +221,7 @@ pub(crate) async fn task(
         })
         .collect::<Result<Vec<_>>>()?;
     expected.sort_by(|a, b| a.subject.cmp(&b.subject));
-    let run = actions::storage::load_run(tx, issue.run).await?;
+    let run = actions::storage::load_run(profile, tx, issue.run).await?;
     let operation = operation(&policy.frozen.operation);
     let recovery = if matches!(
         operation,
@@ -230,13 +234,20 @@ pub(crate) async fn task(
         let guard = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    Ok(materials::agent_guard_in(c, tenant, registration, generation).await)
+                    Ok(materials::agent_guard_in(
+                        crate::Custody::new(profile, None),
+                        c,
+                        tenant,
+                        registration,
+                        generation,
+                    )
+                    .await)
                 })
             })
             .await?
             .map_err(Error::from)?;
         if let Some((task_id, attempt_id)) = guard {
-            let original = actions::storage::load_run(tx, task_id).await?;
+            let original = actions::storage::load_run(profile, tx, task_id).await?;
             let actions::evidence::Material::Credential {
                 task: original_task,
             } = actions::evidence::load_in(service.agent_store.clone(), tx, task_id, attempt_id)
@@ -389,6 +400,7 @@ fn allowed_subject(task: &wire::CredentialTaskSpec, value: &wire::CredentialSubj
     }
 }
 pub(crate) async fn escrow(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
     run: &actions::storage::Run,
@@ -442,6 +454,7 @@ pub(crate) async fn escrow(
                     );
                     let coordinates = if let Some(recovery) = &task.recovery {
                         if materials::agent_guard_in(
+                            crate::Custody::new(profile, None),
                             c,
                             task.tenant_id,
                             task.registration_id,
@@ -453,6 +466,7 @@ pub(crate) async fn escrow(
                             return Err(vault::Error::Conflict);
                         }
                         materials::recovery_secret_in(
+                            crate::Custody::new(profile, None),
                             c,
                             &protection.keys,
                             task.tenant_id,
@@ -464,6 +478,7 @@ pub(crate) async fn escrow(
                         .await?
                     } else if verifying {
                         materials::verify_existing_secret_in(
+                            crate::Custody::new(profile, None),
                             c,
                             &protection.keys,
                             task.tenant_id,
@@ -474,6 +489,7 @@ pub(crate) async fn escrow(
                         .await?
                     } else {
                         let coordinates = materials::reserve_in(
+                            crate::Custody::new(profile, None),
                             c,
                             task.tenant_id,
                             &binding,
@@ -485,9 +501,16 @@ pub(crate) async fn escrow(
                             task.operation,
                             wire::CredentialOperation::RotateLocalAdministrator { .. }
                         ) {
-                            materials::unknown_in(c, task.tenant_id, task.task_id).await?;
+                            materials::unknown_in(
+                                crate::Custody::new(profile, None),
+                                c,
+                                task.tenant_id,
+                                task.task_id,
+                            )
+                            .await?;
                         }
                         materials::ingest_in(
+                            crate::Custody::new(profile, None),
                             c,
                             &protection.keys,
                             &coordinates,
@@ -497,8 +520,14 @@ pub(crate) async fn escrow(
                         .await?;
                         coordinates
                     };
-                    materials::link_agent_in(c, task.task_id, task.attempt_id, &coordinates)
-                        .await?;
+                    materials::link_agent_in(
+                        crate::Custody::new(profile, None),
+                        c,
+                        task.task_id,
+                        task.attempt_id,
+                        &coordinates,
+                    )
+                    .await?;
                     receipts.push(wire::CredentialReceipt {
                         subject: item.subject.clone(),
                         material: coordinates.material,
@@ -516,6 +545,7 @@ pub(crate) async fn escrow(
     .map_err(Into::into)
 }
 pub(crate) async fn finish(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
     run: &actions::storage::Run,
@@ -547,6 +577,7 @@ pub(crate) async fn finish(
                                 .iter()
                                 .all(|i| i.outcome == wire::CredentialOutcome::Verified));
                     let escrowed = materials::agent_materials_in(
+                        crate::Custody::new(profile, None),
                         c,
                         task.tenant_id,
                         task.task_id,
@@ -577,6 +608,7 @@ pub(crate) async fn finish(
                                 .find(|m| m.binding.subject == subject(&item.subject))
                                 .ok_or(vault::Error::Conflict)?;
                             let coordinates = vault::Coordinates {
+                                profile,
                                 tenant: task.tenant_id,
                                 material: material.id,
                                 version: material.version,
@@ -586,6 +618,7 @@ pub(crate) async fn finish(
                                 if let Some(recovery) = &task.recovery {
                                     if value.recovery.is_none()
                                         || materials::agent_guard_in(
+                                            crate::Custody::new(profile, None),
                                             c,
                                             task.tenant_id,
                                             task.registration_id,
@@ -596,26 +629,54 @@ pub(crate) async fn finish(
                                     {
                                         return Err(vault::Error::Conflict);
                                     }
-                                    materials::reconcile_in(c, &coordinates, recovery.task_id)
-                                        .await?;
+                                    materials::reconcile_in(
+                                        crate::Custody::new(profile, None),
+                                        c,
+                                        &coordinates,
+                                        recovery.task_id,
+                                    )
+                                    .await?;
                                 } else {
-                                    materials::verify_in(c, &coordinates, material.operation)
-                                        .await?;
+                                    materials::verify_in(
+                                        crate::Custody::new(profile, None),
+                                        c,
+                                        &coordinates,
+                                        material.operation,
+                                    )
+                                    .await?;
                                 }
                             } else if requires_verification {
-                                materials::unknown_in(c, task.tenant_id, material.operation)
-                                    .await?;
+                                materials::unknown_in(
+                                    crate::Custody::new(profile, None),
+                                    c,
+                                    task.tenant_id,
+                                    material.operation,
+                                )
+                                .await?;
                             } else {
-                                materials::settled_in(c, &coordinates, material.operation).await?;
+                                materials::settled_in(
+                                    crate::Custody::new(profile, None),
+                                    c,
+                                    &coordinates,
+                                    material.operation,
+                                )
+                                .await?;
                             }
                         } else {
                             success = false;
-                            materials::unknown_in(c, task.tenant_id, task.task_id).await?;
+                            materials::unknown_in(
+                                crate::Custody::new(profile, None),
+                                c,
+                                task.tenant_id,
+                                task.task_id,
+                            )
+                            .await?;
                         }
                     }
                     if let Some(recovery) = &task.recovery {
                         if value.recovery == Some(wire::CredentialRecoveryOutcome::NotAttempted) {
                             if !materials::agent_materials_in(
+                                crate::Custody::new(profile, None),
                                 c,
                                 task.tenant_id,
                                 recovery.task_id,
@@ -624,6 +685,7 @@ pub(crate) async fn finish(
                             .await?
                             .is_empty()
                                 || materials::agent_guard_in(
+                                    crate::Custody::new(profile, None),
                                     c,
                                     task.tenant_id,
                                     task.registration_id,
@@ -631,8 +693,13 @@ pub(crate) async fn finish(
                                 )
                                 .await?
                                     != Some((recovery.task_id, recovery.attempt_id))
-                                || materials::finish_agent_in(c, task.tenant_id, recovery.task_id)
-                                    .await?
+                                || materials::finish_agent_in(
+                                    crate::Custody::new(profile, None),
+                                    c,
+                                    task.tenant_id,
+                                    recovery.task_id,
+                                )
+                                .await?
                                     != Some(recovery.attempt_id)
                             {
                                 return Err(vault::Error::Conflict);
@@ -670,6 +737,7 @@ pub(crate) async fn finish(
                                         .map(|v| v.revision)
                                         .unwrap_or(0);
                                     materials::supersede_in(
+                                        crate::Custody::new(profile, None),
                                         c,
                                         task.tenant_id,
                                         &vault::Binding {
@@ -683,8 +751,13 @@ pub(crate) async fn finish(
                                     .await?;
                                 }
                             }
-                            if materials::finish_agent_in(c, task.tenant_id, recovery.task_id)
-                                .await?
+                            if materials::finish_agent_in(
+                                crate::Custody::new(profile, None),
+                                c,
+                                task.tenant_id,
+                                recovery.task_id,
+                            )
+                            .await?
                                 != Some(recovery.attempt_id)
                             {
                                 return Err(vault::Error::Conflict);
@@ -713,6 +786,7 @@ pub(crate) async fn finish(
                             .map(|v| v.revision)
                             .unwrap_or(0);
                         materials::supersede_in(
+                            crate::Custody::new(profile, None),
                             c,
                             task.tenant_id,
                             &vault::Binding {
@@ -748,7 +822,13 @@ pub(crate) async fn finish(
                         .any(|i| i.outcome == wire::CredentialOutcome::Unknown)
                         || (requires_verification && !success && !no_effect);
                     if success || no_effect {
-                        materials::finish_agent_in(c, task.tenant_id, task.task_id).await?;
+                        materials::finish_agent_in(
+                            crate::Custody::new(profile, None),
+                            c,
+                            task.tenant_id,
+                            task.task_id,
+                        )
+                        .await?;
                     }
                     Ok::<_, vault::Error>((success, uncertain, recovered))
                 }
@@ -759,7 +839,7 @@ pub(crate) async fn finish(
         .await?
         .map_err(Error::from)?;
     for (id, attempt, effect) in recovered {
-        let mut original = actions::storage::load_run(tx, id).await?;
+        let mut original = actions::storage::load_run(profile, tx, id).await?;
         if original.target.device != run.target.device
             || original.target.registration != run.target.registration
             || original.target.generation != run.target.generation
@@ -780,7 +860,8 @@ pub(crate) async fn finish(
                     recovered_by_attempt: run.state.attempt(),
                 },
             ));
-            actions::storage::save_run(&service.reconcile_messaging, tx, &original).await?;
+            actions::storage::save_run(profile, &service.reconcile_messaging, tx, &original)
+                .await?;
         }
     }
     Ok(if uncertain {
@@ -793,6 +874,7 @@ pub(crate) async fn finish(
 }
 
 pub(crate) async fn start(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
     run: &actions::storage::Run,
@@ -810,6 +892,7 @@ pub(crate) async fn start(
         tx.with_connection(move |c| {
             Box::pin(async move {
                 Ok(materials::start_agent_in(
+                    crate::Custody::new(profile, None),
                     c,
                     task.tenant_id,
                     task.registration_id,

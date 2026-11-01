@@ -36,7 +36,11 @@ impl Transactions {
         .await
         .map_err(|_| Error::Unavailable(Failure::PlanningStorage))?;
         Ok(Self {
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                runtime.clone(),
+                tenant,
+            ),
             runtime,
             tenant,
             audit_store,

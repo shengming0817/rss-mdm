@@ -22,7 +22,11 @@ async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result
             .await?;
             let registration =
                 rss_mdm_registration_service::enrollment::tasks::storage::active_count_on(
-                    c, tenant, &device, now,
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    tenant,
+                    &device,
+                    now,
                 )
                 .await?;
             let access =
@@ -34,7 +38,11 @@ async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result
                 rss_mdm_recovery_credentials::native::storage::active_count_on(c, tenant, &device)
                     .await?;
             let credential = rss_mdm_recovery_credentials::tasks::storage::active_count_on(
-                c, tenant, &device, now,
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                &device,
+                now,
             )
             .await?;
             Ok(execution

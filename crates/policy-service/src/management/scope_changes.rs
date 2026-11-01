@@ -5,12 +5,24 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::sync::Arc;
 use uuid::Uuid;
 pub struct ScopeChanges {
+    profile: rss_mdm_install_support::StorageProfile,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
 }
 impl ScopeChanges {
-    pub fn new(runtime: Arc<PgRuntime>, tenant: TenantId) -> Self {
-        Self { runtime, tenant }
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
+    pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
+        runtime: Arc<PgRuntime>,
+        tenant: TenantId,
+    ) -> Self {
+        Self {
+            profile,
+            runtime,
+            tenant,
+        }
     }
     fn validate(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
@@ -20,8 +32,10 @@ impl ScopeChanges {
         Ok(())
     }
     pub async fn used_in(&self, tx: &mut PgTransaction<'_>, scope: Uuid) -> Result<bool> {
+        let profile = self.profile();
+
         self.validate(tx)?;
-        Ok(rss_mdm_policy_postgres::scope::used_in(tx, scope).await?)
+        Ok(rss_mdm_policy_postgres::scope::used_in(profile, tx, scope).await?)
     }
     pub async fn publication_recorded_in(
         &self,
@@ -29,8 +43,11 @@ impl ScopeChanges {
         scope: Uuid,
         run: Uuid,
     ) -> Result<()> {
+        let profile = self.profile();
+
         self.validate(tx)?;
         crate::worker::jobs::enqueue_job_in(
+            profile,
             tx,
             run,
             &crate::worker::Work::PolicyScope { scope, run },
@@ -40,15 +57,17 @@ impl ScopeChanges {
     }
 }
 pub async fn advance_in(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     audit: &rss_mdm_audit_integration::AuditStore,
     task: Uuid,
     scope: Uuid,
     after: Option<String>,
 ) -> Result<()> {
-    let policies = rss_mdm_policy_postgres::scope::dependents_in(tx, scope, after).await?;
+    let policies = rss_mdm_policy_postgres::scope::dependents_in(profile, tx, scope, after).await?;
     for policy in policies.iter().take(64) {
         crate::worker::jobs::enqueue_job_in(
+            profile,
             tx,
             Uuid::new_v4(),
             &crate::worker::Work::PolicyReconcile { policy: *policy },
@@ -56,8 +75,9 @@ pub async fn advance_in(
         .await?;
     }
     if policies.len() <= 64 {
-        return crate::worker::jobs::finish_job_in(tx, audit, task, None).await;
+        return crate::worker::jobs::finish_job_in(profile, tx, audit, task, None).await;
     }
-    rss_mdm_policy_postgres::work::cursor_in(tx, task, Some(policies[63].to_string())).await?;
+    rss_mdm_policy_postgres::work::cursor_in(profile, tx, task, Some(policies[63].to_string()))
+        .await?;
     Ok(())
 }

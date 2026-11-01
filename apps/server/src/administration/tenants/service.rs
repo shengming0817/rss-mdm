@@ -124,13 +124,22 @@ impl Service {
             return Err(Reason::Forbidden);
         }
         scope(c, proof.tenant_id()).await?;
-        rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
-            .await
-            .map_err(|_| Reason::Storage)?;
-        let rules =
-            rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
-                .await
-                .map_err(|_| Reason::Storage)?;
+        rss_mdm_authorization_service::lock_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            proof.tenant_id(),
+            proof.instance_id(),
+        )
+        .await
+        .map_err(|_| Reason::Storage)?;
+        let rules = rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            proof.tenant_id(),
+            proof.instance_id(),
+        )
+        .await
+        .map_err(|_| Reason::Storage)?;
         rules
             .require(proof, permission, None)
             .map_err(|_| Reason::Forbidden)?;

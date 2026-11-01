@@ -13,6 +13,7 @@ pub fn context() -> w::SoftwareExecutionContext {
 }
 pub fn audit(c: &Context) -> RequestAudit {
     RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Mdm,
         c.tenant.to_string(),
         "software_admission",
         AuditIntent::Management,
@@ -205,8 +206,11 @@ pub(super) async fn decision(
             )
             .await?,
     );
-    let reader =
-        rss_mdm_policy_postgres::PolicyReader::bind(a.resources.storage.runtime.clone(), c.tenant);
+    let reader = rss_mdm_policy_postgres::PolicyReader::bind(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        a.resources.storage.runtime.clone(),
+        c.tenant,
+    );
     let request = audit_request(c);
     let saved = std::sync::Mutex::new(None);
     let result = owner::transaction::run(
@@ -400,6 +404,7 @@ async fn native_observation(c: &Context, registration: Uuid) -> Result<()> {
     )?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, tenant, &definition).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
+        rss_mdm_install_support::StorageProfile::Mdm,
         tenant,
         registration,
         "mdm.windows",
@@ -417,6 +422,7 @@ async fn native_observation(c: &Context, registration: Uuid) -> Result<()> {
         at,
     )?;
     let (sequence, _) = rss_mdm_registration_service::device::store::allocate_report_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         &mut tx,
         &tenant.to_string(),
         &registration.to_string(),

@@ -21,6 +21,8 @@ impl Service {
         input: &Acknowledgement,
         a: &RequestAudit,
     ) -> Result<(), Failure> {
+        let profile = self.profile();
+
         input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
         a.identify_device(p.registration());
@@ -36,6 +38,7 @@ impl Service {
             Box::pin(async move {
                 let (service, p, input, trust, d, a) = ctx;
                 crate::device::store::revalidate_source(
+                    profile,
                     c,
                     p,
                     rss_mdm_inventory::ReportSource::AgentBuiltin,
@@ -45,6 +48,7 @@ impl Service {
                 let actor = p.registration().to_string();
                 let hash = Sha256::digest(d.as_bytes()).to_vec();
                 let replay = rss_mdm_pki_service::mutation::replay(
+                    profile,
                     c,
                     &tenant,
                     &actor,
@@ -63,6 +67,7 @@ impl Service {
                     });
                 }
                 rss_mdm_pki_service::registry::Registry::acknowledge_in(
+                    profile,
                     c,
                     &service.tenant.to_string(),
                     p.registration(),
@@ -75,6 +80,7 @@ impl Service {
                     _ => Error::Storage,
                 })?;
                 rss_mdm_pki_service::mutation::save(
+                    profile,
                     c,
                     (&tenant, &actor, ""),
                     input.operation,
@@ -103,6 +109,8 @@ impl Service {
         input: &rss_mdm_agent_wire::pki::Observation,
         a: &RequestAudit,
     ) -> Result<(), Failure> {
+        let profile = self.profile();
+
         input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
         if input.registration != p.registration() || input.generation != p.generation() as u64 {
@@ -119,12 +127,14 @@ impl Service {
             Box::pin(async move {
                 let (service, p, input) = ctx;
                 crate::device::store::revalidate_source(
+                    profile,
                     c,
                     p,
                     rss_mdm_inventory::ReportSource::AgentBuiltin,
                 )
                 .await?;
                 let replay = rss_mdm_pki_service::observations::record_in(
+                    profile,
                     c,
                     &service.tenant.to_string(),
                     input,

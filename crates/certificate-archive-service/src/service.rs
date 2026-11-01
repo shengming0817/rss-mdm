@@ -518,10 +518,20 @@ impl Archive {
     pub async fn entry(&self, p: &AuthorizedPrincipal, id: Uuid) -> Result<Entry, Error> {
         p.manage(P::CertificateArchiveRead)?;
         let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
-        rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
-        let current =
-            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
-                .await?;
+        rss_mdm_authorization_service::lock_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
+        let current = rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
         current
             .require(p, P::CertificateArchiveRead, None)
             .map_err(rss_mdm_authorization_service::Error::from)?;
@@ -549,10 +559,20 @@ impl Archive {
             .map_err(directory::error)?;
         p.manage(P::CertificateArchiveRead)?;
         let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
-        rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
-        let current =
-            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
-                .await?;
+        rss_mdm_authorization_service::lock_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
+        let current = rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
         current
             .require(p, P::CertificateArchiveRead, None)
             .map_err(rss_mdm_authorization_service::Error::from)?;
@@ -609,10 +629,20 @@ impl Archive {
             return Err(Error::Malformed);
         }
         let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
-        rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
-        let current =
-            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
-                .await?;
+        rss_mdm_authorization_service::lock_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
+        let current = rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
         current
             .require(p, P::CertificateArchiveRead, None)
             .map_err(rss_mdm_authorization_service::Error::from)?;

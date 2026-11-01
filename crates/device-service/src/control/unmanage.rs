@@ -23,7 +23,7 @@ impl RetirementPlan {
         let generation = target.generation;
         let version = self.version;
         Ok(tx.with_connection(move|c|Box::pin(async move {
-            rss_mdm_registration_service::lifecycle::lock_device_in(c,&tenant,&device).await.map_err(Error::from).map_err(|_|sqlx::Error::Protocol("retirement fence".into()))?;
+            rss_mdm_registration_service::lifecycle::lock_device_in(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant,&device).await.map_err(Error::from).map_err(|_|sqlx::Error::Protocol("retirement fence".into()))?;
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.retirements o JOIN mdm_devices.retirement_channels t ON(t.tenant_id,t.operation)=(o.tenant_id,o.id) JOIN mdm_access.devices d ON(d.tenant_id,d.id,d.retirement)=(t.tenant_id,t.device,t.operation) JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(t.tenant_id,t.registration,t.generation) WHERE t.tenant_id=$1::uuid AND t.device=$2 AND t.registration=$3 AND t.generation=$4 AND o.version=$5 AND t.channel='agent' AND t.stage='unenroll' AND r.state='active' AND ($6::uuid IS NULL OR t.execution=$6))")
                 .bind(tenant).bind(device).bind(registration).bind(generation).bind(version).bind(execution).fetch_one(c).await
         })).await?)
@@ -166,7 +166,13 @@ impl Service {
         let instance = self.transactions.instance.clone();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                Ok(crate::control::authorization::lock_shared_on(c, &t, &instance).await)
+                Ok(crate::control::authorization::lock_shared_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &t,
+                    &instance,
+                )
+                .await)
             })
         })
         .await??;

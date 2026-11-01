@@ -23,8 +23,14 @@ fn ensure_authority(authority: &JournalAuthority<'_>, tenant: TenantId, token: &
         )
         .is_err()
     );
-    let scope =
-        crate::device::scope(tenant, Uuid::new_v4(), "mdm.windows", Uuid::new_v4()).unwrap();
+    let scope = crate::device::scope(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        tenant,
+        Uuid::new_v4(),
+        "mdm.windows",
+        Uuid::new_v4(),
+    )
+    .unwrap();
     assert!(LifecycleGrant::verify(authority, scope.clone()).is_err());
     assert!(ReadGrant::verify(authority, scope).is_err());
     token.cancel();

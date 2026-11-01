@@ -180,10 +180,21 @@ pub(crate) async fn current(
     let snapshot = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                rss_mdm_authorization_service::lock_on(c, &tenant, &instance)
-                    .await
-                    .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-                Ok(rss_mdm_authorization_service::snapshot_on(c, &tenant, &instance).await)
+                rss_mdm_authorization_service::lock_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await
+                .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
+                Ok(rss_mdm_authorization_service::snapshot_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await)
             })
         })
         .await??;

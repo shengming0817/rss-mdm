@@ -9,7 +9,7 @@ pub mod enrollment;
 pub mod enterprise;
 mod error;
 pub mod lifecycle;
-mod operations;
+pub mod operations;
 pub mod quotas;
 pub mod windows_entra;
 pub mod windows_receipts;
@@ -23,19 +23,32 @@ use rss_mdm_authorization_service as authorization;
 
 /// Fresh product schema owned by this capability.
 pub const AGENT_NATIVE_SQL: &str = include_str!("../schema/agent-native.sql");
-pub const AGENT_BOOTSTRAP_SQL: &str = include_str!("../schema/agent-bootstrap.sql");
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const fn agent_bootstrap_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).agent_bootstrap
+}
+pub const fn install_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).install
+}
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
-pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
+pub const fn relations_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).relations
+}
 
 /// This capability's closed privileges in the shared access connection.
-pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+pub const ACCESS_CONTRACT: &str =
+    crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm).access_contract;
 
 /// Current quota schema; installation remains fresh-only.
-pub const QUOTAS_SQL: &str = include_str!("../schema/quotas.sql");
+pub const fn quotas_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).quotas
+}
 
 /// Registration settings and reusable administrator configurations.
-pub const AGENT_CONFIGURATIONS_SQL: &str = include_str!("../schema/agent-configurations.sql");
+pub const fn agent_configurations_sql(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).agent_configurations
+}
 
 /// Windows operation receipts owned by registration; install after the Windows schema namespace.
 pub const WINDOWS_RECEIPTS_SQL: &str = include_str!("../schema/windows-receipts.sql");
@@ -43,28 +56,65 @@ pub const WINDOWS_RECEIPTS_SQL: &str = include_str!("../schema/windows-receipts.
 pub const WINDOWS_ENTRA_POLICY_SQL: &str = include_str!("../schema/windows-entra-policy.sql");
 
 /// Dynamic new-registration admission schema.
-pub const ADMISSION_SQL: &str = include_str!("../schema/admission.sql");
+pub const fn admission_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).admission
+}
 
 mod webhook;
+pub use webhook::{EventSink, WebhookEvents};
 
 /// Fixed read relation used by authorized same-database directory queries.
-pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");
+pub const fn directory_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).directory
+}
 
 mod storage_authority;
-pub use storage_authority::verify_authority;
+pub use storage_authority::{verify_authority, verify_common_authority};
 
 pub mod command_authority;
 pub const COMMAND_AUTHORITIES_SQL: &str = include_str!("../schema/command-authorities.sql");
 
 pub mod installation;
 
-pub const TASKS_SQL: &str = concat!(
-    include_str!("../schema/tasks/enrollment.sql"),
-    "\n",
-    include_str!("../schema/tasks/installation.sql"),
-    "\n",
-    include_str!("../schema/tasks/task-retirement.sql")
-);
+pub const NATIVE_TASKS_SQL: &str = include_str!("../schema/tasks/installation.sql");
 pub const TASKS_RELATIONS_SQL: &str = include_str!("../schema/tasks/relations.sql");
 
 pub mod participants;
+
+mod storage_profile;
+
+pub const fn enrollment_tasks_sql(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).enrollment_tasks
+}
+
+/// Shared Agent task relationships and retirement fence.
+pub const fn task_relations_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).task_relations
+}
+pub const fn enrollment_retirement_sql(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).enrollment_retirement
+}
+
+pub const fn member_authority_sql(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).member_authority
+}
+
+/// Shared owner objects, combined by the host for complete schema admission.
+pub const fn object_manifest(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).object_manifest
+}
+/// Exact access-role contract for this installation.
+pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    storage_profile::sql(profile).access_contract
+}
+pub const fn enrollment_access_contract(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).enrollment_access_contract
+}

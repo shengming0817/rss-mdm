@@ -36,7 +36,13 @@ pub async fn authorize_on(
     if source == ReportSource::AgentBuiltin || installation.is_nil() {
         return Err(Error::Forbidden);
     }
-    crate::device::store::revalidate_source(c, p, source).await?;
+    crate::device::store::revalidate_source(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p,
+        source,
+    )
+    .await?;
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *c)

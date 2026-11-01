@@ -118,13 +118,22 @@ async fn read_on(
     proof: &AuthorizedPrincipal,
     input: &Request,
 ) -> Result<Page, Error> {
-    rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
-        .await
-        .map_err(|_| Error::Denied)?;
-    let authorization =
-        rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
-            .await
-            .map_err(|_| Error::Denied)?;
+    rss_mdm_authorization_service::lock_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
+    let authorization = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
     authorization
         .require(proof, Permission::InventoryRead, Some(&input.device))
         .map_err(|_| Error::Denied)?;

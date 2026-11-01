@@ -1,20 +1,27 @@
 use super::*;
 use rss_transactional_messaging_postgres::PgTransaction;
 pub async fn capable_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     target: &Target,
     frozen: &FrozenEnrollment,
 ) -> Result<bool> {
-    let Some(binding) =
-        agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.registration).await?
+    let Some(binding) = agent_facts::agent_binding_in(
+        profile,
+        tx,
+        service.agent_store.clone(),
+        target.registration,
+    )
+    .await?
     else {
         return Ok(false);
     };
     if !binding.inventory() || !binding.enrollment() {
         return Ok(false);
     }
-    let Some((platform, _)) = agent_facts::profile_in(service, tx, target.registration).await?
+    let Some((platform, _)) =
+        agent_facts::profile_in(profile, service, tx, target.registration).await?
     else {
         return Ok(false);
     };
@@ -24,12 +31,13 @@ pub async fn capable_in(
     Ok(true)
 }
 pub async fn require_in(
+    profile: rss_mdm_install_support::StorageProfile,
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     target: &Target,
     frozen: &FrozenEnrollment,
 ) -> Result<bool> {
-    if !capable_in(service, tx, target, frozen).await? {
+    if !capable_in(profile, service, tx, target, frozen).await? {
         return Ok(false);
     }
     let inventory = service.inventory.clone();

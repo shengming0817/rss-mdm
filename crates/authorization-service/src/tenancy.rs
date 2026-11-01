@@ -5,24 +5,30 @@ use sqlx::{PgConnection, Row};
 pub const MANAGEMENT_EPOCH: i64 = 1;
 
 pub struct InstallationTenants {
+    profile: rss_mdm_install_support::StorageProfile,
     instance: String,
     management: String,
 }
 impl InstallationTenants {
     /// Load immutable coordinates from the installation, on the caller's scoped connection.
-    pub async fn load(connection: &mut PgConnection) -> Result<Self, Error> {
-        let row = sqlx::query(
-            "SELECT instance_id::text,management_tenant_id::text FROM public.mdm_installation",
-        )
-        .fetch_one(connection)
-        .await
-        .map_err(crate::database::db)?;
+    pub async fn load(
+        profile: rss_mdm_install_support::StorageProfile,
+        connection: &mut PgConnection,
+    ) -> Result<Self, Error> {
+        let row = sqlx::query(crate::storage_profile::sql(profile).tenancy_load_1)
+            .fetch_one(connection)
+            .await
+            .map_err(crate::database::db)?;
         Ok(Self {
+            profile,
             instance: row.try_get("instance_id").map_err(crate::database::db)?,
             management: row
                 .try_get("management_tenant_id")
                 .map_err(crate::database::db)?,
         })
+    }
+    pub(crate) fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
     }
     pub fn management_tenant(&self) -> &str {
         &self.management
@@ -36,6 +42,9 @@ impl InstallationTenants {
         permission: Permission,
     ) -> Result<(), Error> {
         proof.check_live()?;
+        if self.profile != proof.profile() {
+            return Err(Error::Forbidden);
+        }
         self.require_identity(proof.instance_id(), proof.tenant_id(), permission)
     }
     pub(crate) fn require_identity(

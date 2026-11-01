@@ -204,6 +204,7 @@ pub(crate) async fn receive(
         }));
     }
     rss_mdm_pki_service::registry::Registry::acknowledge_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &p.tenant().to_string(),
         p.registration(),

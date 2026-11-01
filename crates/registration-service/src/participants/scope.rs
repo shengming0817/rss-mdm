@@ -34,6 +34,8 @@ pub struct ScopePreview {
 }
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
+    #[error("source capability is not configured for this product")]
+    Unsupported,
     #[error("source read budget exceeded")]
     Capacity,
     #[error("source missing")]
@@ -113,6 +115,7 @@ impl ObjectRef {
 }
 
 pub trait Sources: Send + Sync {
+    fn storage_profile(&self) -> rss_mdm_install_support::StorageProfile;
     fn preview_scope_on<'a>(
         &'a self,
         c: &'a mut PgConnection,

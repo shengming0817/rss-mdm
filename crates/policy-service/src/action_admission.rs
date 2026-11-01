@@ -29,15 +29,16 @@ pub async fn current(
     if proof.tenant_id() != tx.tenant_id().to_string() {
         return Err(crate::Error::Forbidden.into());
     }
+    let profile = proof.profile();
     let tenant = proof.tenant_id().to_owned();
     let instance = proof.instance_id().to_owned();
     let snapshot = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                crate::authorization::lock_shared_on(c, &tenant, &instance)
+                crate::authorization::lock_shared_on(profile, c, &tenant, &instance)
                     .await
                     .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-                Ok(crate::authorization::snapshot_on(c, &tenant, &instance).await)
+                Ok(crate::authorization::snapshot_on(profile, c, &tenant, &instance).await)
             })
         })
         .await??;

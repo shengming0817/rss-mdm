@@ -92,6 +92,9 @@ pub struct Quotas {
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 impl Quotas {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.store.profile()
+    }
     pub fn new(store: Arc<Store>, audit: Arc<rss_mdm_audit_integration::AuditStore>) -> Self {
         Self { store, audit }
     }
@@ -100,16 +103,20 @@ impl Quotas {
         p: &AuthorizedPrincipal,
         user: Option<&User>,
     ) -> Result<Configuration, Error> {
+        let profile = self.profile();
+
         p.manage(Permission::RegistrationConfigurationRead)?;
         let subject = subject(p, user)?;
         let mut tx = self.store.begin(p.tenant_id()).await?;
-        configuration_on(&mut tx, p.tenant_id(), &subject).await
+        configuration_on(profile, &mut tx, p.tenant_id(), &subject).await
     }
     pub async fn usage(
         &self,
         p: &AuthorizedPrincipal,
         user: Option<&User>,
     ) -> Result<Usage, Error> {
+        let profile = self.profile();
+
         p.check_live()?;
         if user.is_some() {
             p.manage(Permission::RegistrationConfigurationRead)?;
@@ -125,10 +132,12 @@ impl Quotas {
         user.validate(p.tenant_id(), p.instance_id())
             .map_err(|_| Error::Malformed)?;
         let mut tx = self.store.begin(p.tenant_id()).await?;
-        lock_on(&mut tx, p.tenant_id()).await?;
-        let defaults = configuration_on(&mut tx, p.tenant_id(), "tenant").await?;
-        let overrides = configuration_on(&mut tx, p.tenant_id(), &user_subject(user)).await?;
+        lock_on(profile, &mut tx, p.tenant_id()).await?;
+        let defaults = configuration_on(profile, &mut tx, p.tenant_id(), "tenant").await?;
+        let overrides =
+            configuration_on(profile, &mut tx, p.tenant_id(), &user_subject(user)).await?;
         let counts = counts_on(
+            profile,
             &mut tx,
             p.tenant_id(),
             &user.instance_id,
@@ -185,7 +194,11 @@ fn user_subject(user: &User) -> String {
 }
 /// Acquired after Audit/authorization admission, before registration business locks.
 /// Reads never acquire Audit while holding this lock.
-pub(crate) async fn lock_on(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
+pub(crate) async fn lock_on(
+    _profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+) -> Result<(), Error> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2670))")
         .bind(tenant)
         .execute(c)
@@ -194,12 +207,17 @@ pub(crate) async fn lock_on(c: &mut PgConnection, tenant: &str) -> Result<(), Er
     Ok(())
 }
 async fn configuration_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     subject: &str,
 ) -> Result<Configuration, Error> {
-    let row = sqlx::query("SELECT revision,agent,windows_mdm,macos_mdm FROM mdm_access.registration_quota_settings WHERE tenant_id=$1::uuid AND subject=$2")
-        .bind(tenant).bind(subject).fetch_optional(c).await.map_err(db)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).quotas_configuration_on_1)
+        .bind(tenant)
+        .bind(subject)
+        .fetch_optional(c)
+        .await
+        .map_err(db)?;
     if let Some(row) = row {
         let field = |name| -> Result<Option<u32>, Error> {
             row.try_get::<Option<i64>, _>(name)
@@ -228,12 +246,13 @@ async fn configuration_on(
     }
 }
 async fn counts_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     instance: &str,
     actor: &str,
 ) -> Result<[(u64, u64); 3], Error> {
-    let rows = sqlx::query(include_str!("../schema/quota-usage.sql"))
+    let rows = sqlx::query(crate::storage_profile::sql(profile).quota_usage)
         .bind(tenant)
         .bind(instance)
         .bind(actor)
@@ -258,21 +277,22 @@ async fn counts_on(
 }
 /// Freeze admission in the existing grant/request transaction. Activation does not re-admit.
 pub(crate) async fn admit_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
     instance: &str,
     actor: &str,
     channel: Channel,
 ) -> Result<(), Error> {
-    lock_on(c, tenant).await?;
+    lock_on(profile, c, tenant).await?;
     let subject = format!("user:{instance}:{actor}");
-    let default = configuration_on(c, tenant, "tenant").await?.limits;
-    let override_ = configuration_on(c, tenant, &subject).await?.limits;
+    let default = configuration_on(profile, c, tenant, "tenant").await?.limits;
+    let override_ = configuration_on(profile, c, tenant, &subject).await?.limits;
     let limit = override_
         .get(channel)
         .or(default.get(channel))
         .unwrap_or(20);
-    let counts = counts_on(c, tenant, instance, actor).await?;
+    let counts = counts_on(profile, c, tenant, instance, actor).await?;
     let i = Channel::ALL
         .iter()
         .position(|v| *v == channel)

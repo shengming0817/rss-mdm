@@ -130,8 +130,14 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         content: None,
     };
     let input = w::TaskClaimRequest::new(Uuid::new_v4(), vec![], context)?;
-    let request =
-        || RequestAudit::new(c.tenant.to_string(), "agent_claim", AuditIntent::Management);
+    let request = || {
+        RequestAudit::new(
+            rss_mdm_audit_integration::StorageProfile::Mdm,
+            c.tenant.to_string(),
+            "agent_claim",
+            AuditIntent::Management,
+        )
+    };
     let response = delivery.claim(&p, &input, &request()).await?;
     let signed = response.task().expect("accepted target must be offered");
     assert_eq!(signed.payload.task_id(), target);

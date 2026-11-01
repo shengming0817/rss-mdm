@@ -62,7 +62,7 @@ impl Reads {
             let mut tx=connection.begin().await.map_err(sql)?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await.map_err(sql)?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await.map_err(sql)?;
-            let grant=rss_mdm_authorization_service::snapshot_on(&mut tx,proof.tenant_id(),proof.instance_id()).await?;
+            let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
             let binding=grant.query_binding(proof)?;
             let now=sqlx::query_scalar("SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint").fetch_one(&mut *tx).await.map_err(sql)?;
             let mut registration=None;
@@ -90,13 +90,13 @@ impl Reads {
             let mut tx=connection.begin().await.map_err(sql)?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY").execute(&mut *tx).await.map_err(sql)?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await.map_err(sql)?;
-            rss_mdm_authorization_service::lock_shared_on(&mut tx,proof.tenant_id(),proof.instance_id()).await?;
-            let grant=rss_mdm_authorization_service::snapshot_on(&mut tx,proof.tenant_id(),proof.instance_id()).await?;
+            rss_mdm_authorization_service::lock_shared_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
+            let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
             if grant.query_binding(proof)?!=binding {return Err(Error::QueryReadConflict);}
             if let Some((device,expected))=&registration {
                 use rss_mdm_registration_service::device::endpoints;
-                endpoints::lock_in(&mut tx,proof.tenant_id(),device,rss_mdm_inventory::Channel::Mdm).await?;
-                if endpoints::current_in(&mut tx,proof.tenant_id(),device,rss_mdm_inventory::Channel::Mdm).await? != *expected { return Err(Error::QueryReadConflict); }
+                endpoints::lock_in(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),device,rss_mdm_inventory::Channel::Mdm).await?;
+                if endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),device,rss_mdm_inventory::Channel::Mdm).await? != *expected { return Err(Error::QueryReadConflict); }
             }
             proof.check_live()?;
             tx.rollback().await.map_err(sql)?;

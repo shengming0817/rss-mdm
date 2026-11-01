@@ -552,6 +552,7 @@ async fn enrollment(
             return Ok(response);
         }
         let auth = crate::enrollment::store::enrollment_authorization(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &app.access.registration(),
             &app.identity.tenant().to_string(),
             id,

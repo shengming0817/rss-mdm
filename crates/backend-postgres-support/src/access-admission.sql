@@ -29,7 +29,7 @@ SELECT current_user=$1 AND session_user=current_user
    AND reloptions @> ARRAY['security_barrier=true']
    AND NOT has_table_privilege(current_user,oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
    AND NOT has_any_column_privilege(current_user,oid,'INSERT,UPDATE,REFERENCES')))
-  OR relkind='r' AND oid NOT IN(SELECT oid FROM owned))
+  OR relkind='r' AND oid NOT IN(SELECT oid FROM owned) AND NOT ($2->'external_relations' ? (schema||'.'||relname)) AND (schema<>'rss_da' OR has_table_privilege(current_user,oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM owned WHERE NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR has_table_privilege(current_user,oid,'SELECT')<>(read_write OR read_only)
   OR NOT (read_write OR read_only) AND has_any_column_privilege(current_user,oid,'SELECT')

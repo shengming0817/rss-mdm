@@ -6,11 +6,16 @@ use sqlx::Row;
 
 /// Create an enrollment request from a real current parent, without a browser grant.
 pub async fn request_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     parent: &DevicePrincipal,
     id: Uuid,
     operation: Uuid,
 ) -> Result<(), Error> {
+    if profile != parent.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
     if parent.purpose() != Purpose::Primary
         || parent.channel() != Channel::Mdm
         || id.is_nil()
@@ -18,15 +23,36 @@ pub async fn request_in(
     {
         return Err(Error::Forbidden);
     }
-    crate::lifecycle::require_work_in(c, &parent.tenant().to_string(), parent.device()).await?;
-    store::revalidate_management(c, parent).await?;
+    crate::lifecycle::require_work_in(profile, c, &parent.tenant().to_string(), parent.device())
+        .await?;
+    store::revalidate_management(profile, c, parent).await?;
     let tenant = parent.tenant().to_string();
-    let profile: String = sqlx::query_scalar("SELECT windows_profile FROM mdm_access.requests q JOIN mdm_access.registrations r ON(r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND q.source='mdm.windows'")
-        .bind(&tenant).bind(parent.registration()).fetch_one(&mut *c).await.map_err(db)?;
-    let expected: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND purpose='windows_declared'")
-        .bind(&tenant).bind(parent.device()).fetch_one(&mut *c).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,parent_id,parent_generation,parent_credential,state,expected_generation,expires_at,issuance_operation,source,windows_profile) VALUES($1::uuid,$2,'parent_certificate',$3,$4,$5,'pending',$6,clock_timestamp()+interval '5 minutes',$7,'mdm.windows',$8)")
-        .bind(tenant).bind(id).bind(parent.registration()).bind(parent.generation()).bind(parent.credential()).bind(expected).bind(operation).bind(profile).execute(c).await.map_err(db)?;
+    let windows_profile: String =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_request_in_1)
+            .bind(&tenant)
+            .bind(parent.registration())
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+    let expected: i64 =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_request_in_2)
+            .bind(&tenant)
+            .bind(parent.device())
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_linked_request_in_3)
+        .bind(tenant)
+        .bind(id)
+        .bind(parent.registration())
+        .bind(parent.generation())
+        .bind(parent.credential())
+        .bind(expected)
+        .bind(operation)
+        .bind(windows_profile)
+        .execute(c)
+        .await
+        .map_err(db)?;
     Ok(())
 }
 /// Bind certificate and child registration in the caller's audit transaction; no report source.
@@ -35,6 +61,7 @@ pub async fn request_in(
     reason = "explicit parent proof and certificate receipt identities in one borrowed transaction"
 )]
 pub async fn bind_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     parent: &DevicePrincipal,
     credential: &VerifiedChannelCredential,
@@ -43,44 +70,88 @@ pub async fn bind_in(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     retirement: &dyn crate::Retirement,
 ) -> Result<RegistrationReceipt, Error> {
+    if profile != credential.profile {
+        return Err(crate::Error::Forbidden);
+    }
+
+    if profile != parent.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
     if credential.tenant != parent.tenant()
         || credential.purpose != Purpose::WindowsDeclared
         || credential.source != ReportSource::MdmWindows
     {
         return Err(Error::Forbidden);
     }
-    crate::lifecycle::require_work_in(c, &parent.tenant().to_string(), parent.device()).await?;
-    store::revalidate_management(c, parent).await?;
+    crate::lifecycle::require_work_in(profile, c, &parent.tenant().to_string(), parent.device())
+        .await?;
+    store::revalidate_management(profile, c, parent).await?;
     let tenant = parent.tenant().to_string();
-    let row = sqlx::query("SELECT expected_generation,issuance_operation FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2 AND authority_kind='parent_certificate' AND parent_id=$3 AND parent_generation=$4 AND parent_credential=$5 AND state='pending' AND expires_at>clock_timestamp() FOR UPDATE")
-        .bind(&tenant).bind(request).bind(parent.registration()).bind(parent.generation()).bind(parent.credential()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    let current: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND purpose='windows_declared'")
-        .bind(&tenant).bind(parent.device()).fetch_one(&mut *c).await.map_err(db)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_1)
+        .bind(&tenant)
+        .bind(request)
+        .bind(parent.registration())
+        .bind(parent.generation())
+        .bind(parent.credential())
+        .fetch_optional(&mut *c)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)?;
+    let current: i64 =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_bind_in_2)
+            .bind(&tenant)
+            .bind(parent.device())
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
     if current != row.try_get::<i64, _>("expected_generation").map_err(db)? {
         return Err(Error::Conflict);
     }
-    let old = sqlx::query_scalar::<_, Uuid>("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND purpose='windows_declared' AND state='active' FOR UPDATE")
-        .bind(&tenant).bind(parent.device()).fetch_optional(&mut *c).await.map_err(db)?;
+    let old =
+        sqlx::query_scalar::<_, Uuid>(crate::storage_profile::sql(profile).device_linked_bind_in_3)
+            .bind(&tenant)
+            .bind(parent.device())
+            .fetch_optional(&mut *c)
+            .await
+            .map_err(db)?;
     if let Some(old) = old {
-        crate::lifecycle::retire(c, facts, &tenant, old, "superseded", retirement).await?;
+        crate::lifecycle::retire(profile, c, facts, &tenant, old, "superseded", retirement).await?;
     }
     let generation = current.checked_add(1).ok_or(Error::Conflict)?;
-    sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch,parent_id,parent_generation) VALUES($1::uuid,$2,$3,'mdm',$4,$5,'active','windows_declared',$6,$7,$8)")
-        .bind(&tenant).bind(ids[0]).bind(parent.device()).bind(generation).bind(request).bind(ids[2]).bind(parent.registration()).bind(parent.generation()).execute(&mut *c).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_4)
+        .bind(&tenant)
+        .bind(ids[0])
+        .bind(parent.device())
+        .bind(generation)
+        .bind(request)
+        .bind(ids[2])
+        .bind(parent.registration())
+        .bind(parent.generation())
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
     let locator: String = credential
         .locator
         .iter()
         .map(|v| format!("{v:02x}"))
         .collect();
-    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2,$3,'mdm',$4,'active')")
-        .bind(&tenant).bind(ids[1]).bind(ids[0]).bind(locator).execute(&mut *c).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2")
+    sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_5)
+        .bind(&tenant)
+        .bind(ids[1])
+        .bind(ids[0])
+        .bind(locator)
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_6)
         .bind(&tenant)
         .bind(request)
         .execute(&mut *c)
         .await
         .map_err(db)?;
     crate::webhook::registration(
+        Some(&crate::WebhookEvents),
         c,
         &tenant,
         parent.device(),
@@ -102,11 +173,27 @@ pub async fn bind_in(
     })
 }
 /// Publish readiness only after a real authenticated SyncML exchange.
-pub async fn ready_in(c: &mut sqlx::PgConnection, p: &DevicePrincipal) -> Result<bool, Error> {
-    store::revalidate_management(c, p).await?;
+pub async fn ready_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+    p: &DevicePrincipal,
+) -> Result<bool, Error> {
+    if profile != p.profile() {
+        return Err(crate::Error::Forbidden);
+    }
+
+    store::revalidate_management(profile, c, p).await?;
     if p.purpose() == Purpose::WindowsDeclared {
-        return Ok(sqlx::query("UPDATE mdm_access.registrations SET ready=true WHERE tenant_id=$1::uuid AND id=$2 AND purpose='windows_declared' AND NOT ready")
-            .bind(p.tenant().to_string()).bind(p.registration()).execute(c).await.map_err(db)?.rows_affected() == 1);
+        return Ok(
+            sqlx::query(crate::storage_profile::sql(profile).device_linked_ready_in_1)
+                .bind(p.tenant().to_string())
+                .bind(p.registration())
+                .execute(c)
+                .await
+                .map_err(db)?
+                .rows_affected()
+                == 1,
+        );
     }
     Ok(false)
 }

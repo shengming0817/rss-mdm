@@ -1,8 +1,18 @@
 use crate::*;
 use rss_reconcile::{Scope, Target};
-pub fn target(tenant: rss_request_context::TenantId, id: Uuid) -> Target {
+pub const fn domain(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
+    match profile {
+        rss_mdm_install_support::StorageProfile::Mdm => "mdm.scopes",
+        rss_mdm_install_support::StorageProfile::Da => "da.scopes",
+    }
+}
+pub fn target(
+    profile: rss_mdm_install_support::StorageProfile,
+    tenant: rss_request_context::TenantId,
+    id: Uuid,
+) -> Target {
     Target::new(
-        Scope::new(tenant, "mdm.scopes").expect("constant Scope domain"),
+        Scope::new(tenant, domain(profile)).expect("constant Scope domain"),
         format!("task:{id}"),
     )
     .expect("UUID task")
@@ -15,7 +25,7 @@ impl Scopes {
         scope: Uuid,
     ) -> transaction::Result<Uuid> {
         let id = self.store.enqueue_in(tx, id, scope).await?;
-        self.reconcile_messaging.wake_in(tx,&target(self.tenant,id), &rss_reconcile::ResourceSet::empty(self.tenant),(),|_,tx|Box::pin(async {
+        self.reconcile_messaging.wake_in(tx,&target(self.profile(),self.tenant,id), &rss_reconcile::ResourceSet::empty(self.tenant),(),|_,tx|Box::pin(async {
             tx.with_connection(|c|Box::pin(async {
                 sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'scopes')").execute(c).await?;
                 Ok(())
@@ -39,6 +49,7 @@ impl Scopes {
             Some(_) => "automation_failed",
         };
         let audit = RequestAudit::new(
+            self.profile(),
             self.tenant.to_string(),
             action,
             rss_mdm_audit_integration::AuditIntent::Management,

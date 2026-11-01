@@ -193,7 +193,8 @@ async fn manage_on(
     };
     if authenticated
         && p.purpose() == crate::device::Purpose::WindowsDeclared
-        && crate::device::linked::ready_in(c, p).await?
+        && crate::device::linked::ready_in(rss_mdm_install_support::StorageProfile::Mdm, c, p)
+            .await?
     {
         source.wake_configuration(c, p).await?;
     }

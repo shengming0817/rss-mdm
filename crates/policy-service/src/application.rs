@@ -8,6 +8,7 @@ pub(crate) use std::sync::Arc;
 pub(crate) use uuid::Uuid;
 
 pub struct Application {
+    pub(crate) profile: rss_mdm_install_support::StorageProfile,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) automation_observation:
         std::sync::Mutex<crate::worker::health::AutomationObservation>,
@@ -19,10 +20,11 @@ pub struct Application {
     pub tenant: TenantId,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub changes: Arc<dyn crate::inputs::ExecutionChanges>,
-    pub configuration: Arc<crate::configuration::Transactions>,
+    pub configuration: Option<std::sync::Arc<crate::configuration::Transactions>>,
 }
 pub(crate) use crate::transaction::*;
 pub struct Dependencies<'a> {
+    pub profile: rss_mdm_install_support::StorageProfile,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
@@ -30,11 +32,15 @@ pub struct Dependencies<'a> {
     pub cursor_key: &'a [u8],
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     pub changes: Arc<dyn crate::inputs::ExecutionChanges>,
-    pub configuration: Arc<crate::configuration::Transactions>,
+    pub configuration: Option<std::sync::Arc<crate::configuration::Transactions>>,
 }
 impl Application {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub async fn new(dependencies: Dependencies<'_>) -> std::result::Result<Self, Error> {
         let Dependencies {
+            profile,
             audit_store,
             runtime,
             tenant,
@@ -49,6 +55,7 @@ impl Application {
                 .await
                 .map_err(|_| Error::Unavailable(Failure::PolicyAdmission))?;
         Ok(Self {
+            profile,
             audit_store: audit_store.clone(),
             automation_observation: std::sync::Mutex::new(Default::default()),
             automation_task: std::sync::OnceLock::new(),
@@ -74,6 +81,15 @@ impl Application {
     }
 }
 
-pub(crate) async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
-    crate::storage::verify_contract(tx, crate::ADMISSION_SQL, Failure::PolicyAdmission).await
+pub(crate) async fn admit_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+) -> Result<()> {
+    crate::storage::verify_contract(
+        profile,
+        tx,
+        crate::storage_profile::sql(profile).admission,
+        Failure::PolicyAdmission,
+    )
+    .await
 }

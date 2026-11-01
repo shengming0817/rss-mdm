@@ -216,12 +216,19 @@ async fn receive_cms(
 ) -> Result<Coordinates, Error> {
     let secret = protection.recipient(recipient)?.decrypt(recipient, cms)?;
     // Receiving a carrier cannot resurrect a material version explicitly invalidated by its owner.
-    let invalidated=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1 AND e.subject=$2 AND NOT e.retired AND v.invalidated_at IS NOT NULL AND v.sealed IS NOT NULL"))
-        .bind(tenant).bind(serde_json::to_value(&binding.subject).map_err(|_|Error::Malformed)?).fetch_all(&mut *c).await?;
+    let invalidated = sqlx::query(
+        crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm)
+            .filevault_material_112,
+    )
+    .bind(tenant)
+    .bind(serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?)
+    .fetch_all(&mut *c)
+    .await?;
     for row in invalidated {
         use subtle::ConstantTimeEq;
         let material = storage::decode(&row)?;
         let old = Coordinates {
+            profile: rss_mdm_install_support::StorageProfile::Mdm,
             tenant,
             material: material.id,
             binding: material.binding,
@@ -238,6 +245,7 @@ async fn receive_cms(
     }
 
     let value = storage::recovery_secret_in(
+        crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
         c,
         &protection.keys,
         tenant,
@@ -248,8 +256,21 @@ async fn receive_cms(
     )
     .await?;
     // Only settle the newly reserved operation; unrelated pending mutations retain their barrier.
-    if storage::source_operation_in(c, &value).await? == operation {
-        storage::settled_in(c, &value, operation).await?;
+    if storage::source_operation_in(
+        crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+        c,
+        &value,
+    )
+    .await?
+        == operation
+    {
+        storage::settled_in(
+            crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+            c,
+            &value,
+            operation,
+        )
+        .await?;
     }
     Ok(value)
 }
@@ -378,14 +399,21 @@ pub async fn merge(
     if pending {
         return Err(Error::Conflict);
     }
-    let rows=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1 AND e.subject=$2 AND NOT e.retired ORDER BY v.version FOR UPDATE OF e,v"))
-        .bind(tenant).bind(serde_json::to_value(&remove.subject).map_err(|_|Error::Malformed)?).fetch_all(&mut *c).await?;
+    let rows = sqlx::query(
+        crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm)
+            .filevault_material_111,
+    )
+    .bind(tenant)
+    .bind(serde_json::to_value(&remove.subject).map_err(|_| Error::Malformed)?)
+    .fetch_all(&mut *c)
+    .await?;
     for row in rows {
         let old = storage::decode(&row)?;
         let Some(sealed) = row.try_get::<Option<Vec<u8>>, _>("sealed")? else {
             continue;
         };
         let original = Coordinates {
+            profile: rss_mdm_install_support::StorageProfile::Mdm,
             tenant,
             material: old.id,
             binding: old.binding.clone(),
@@ -395,8 +423,14 @@ pub async fn merge(
             protection
                 .keys
                 .open(&row.try_get::<String, _>("key_id")?, &original, &sealed)?;
-        let target_rows=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1 AND e.subject=$2 AND NOT e.retired ORDER BY v.version FOR UPDATE OF e,v"))
-            .bind(tenant).bind(serde_json::to_value(&keep.subject).map_err(|_|Error::Malformed)?).fetch_all(&mut *c).await?;
+        let target_rows = sqlx::query(
+            crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm)
+                .filevault_material_110,
+        )
+        .bind(tenant)
+        .bind(serde_json::to_value(&keep.subject).map_err(|_| Error::Malformed)?)
+        .fetch_all(&mut *c)
+        .await?;
         let mut duplicate = false;
         for target in target_rows {
             let m = storage::decode(&target)?;
@@ -405,6 +439,7 @@ pub async fn merge(
                 target.try_get::<Option<Vec<u8>>, _>("sealed")?,
             ) {
                 let coord = Coordinates {
+                    profile: rss_mdm_install_support::StorageProfile::Mdm,
                     tenant,
                     material: m.id,
                     binding: m.binding,
@@ -433,10 +468,31 @@ pub async fn merge(
             let revision:Option<i64>=sqlx::query_scalar("SELECT revision FROM mdm_recovery.entries WHERE tenant_id=$1 AND subject=$2 AND NOT retired")
                 .bind(tenant).bind(serde_json::to_value(&keep.subject).map_err(|_|Error::Malformed)?).fetch_optional(&mut *c).await?;
             let operation = Uuid::new_v4();
-            let next =
-                storage::reserve_in(c, tenant, &keep, operation, revision.unwrap_or(0)).await?;
-            storage::ingest_in(c, &protection.keys, &next, operation, secret.expose()).await?;
-            storage::settled_in(c, &next, operation).await?;
+            let next = storage::reserve_in(
+                crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                c,
+                tenant,
+                &keep,
+                operation,
+                revision.unwrap_or(0),
+            )
+            .await?;
+            storage::ingest_in(
+                crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                c,
+                &protection.keys,
+                &next,
+                operation,
+                secret.expose(),
+            )
+            .await?;
+            storage::settled_in(
+                crate::Custody::new(rss_mdm_install_support::StorageProfile::Mdm, None),
+                c,
+                &next,
+                operation,
+            )
+            .await?;
             if matches!(
                 old.validity,
                 crate::Validity::Revoked | crate::Validity::Superseded
@@ -512,9 +568,10 @@ pub async fn material_coordinates(
     version: i64,
 ) -> Result<Coordinates, Error> {
     active(c, tenant, binding).await?;
-    let row = sqlx::query(storage::select_material!(
-        " WHERE e.tenant_id=$1 AND e.subject=$2 AND e.id=$3 AND v.version=$4 AND NOT e.retired"
-    ))
+    let row = sqlx::query(
+        crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm)
+            .filevault_material_109,
+    )
     .bind(tenant)
     .bind(serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?)
     .bind(id)
@@ -527,6 +584,7 @@ pub async fn material_coordinates(
         return Err(Error::Conflict);
     }
     Ok(Coordinates {
+        profile: rss_mdm_install_support::StorageProfile::Mdm,
         tenant,
         material: id,
         binding: material.binding,

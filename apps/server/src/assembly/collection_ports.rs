@@ -115,6 +115,8 @@ fn scope_error(
 ) -> rss_mdm_inventory_service::transaction::Fault {
     use rss_mdm_scope_service::channels::SourceError as S;
     match e {
+        // Collection requires a configured Scope participant from its host.
+        S::Unsupported => Error::Unavailable(Failure::PlanningStorage).into(),
         S::Storage(e) => e.into(),
         S::Missing => Error::NotFound.into(),
         S::Conflict => Error::Conflict.into(),

@@ -156,8 +156,13 @@ async fn authorize(
     device: &str,
 ) -> Result<String, Error> {
     p.credentials(device)?;
-    let auth =
-        rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id()).await?;
+    let auth = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
     auth.require(p, Permission::Credentials, Some(device))?;
     Ok(auth.query_binding(p)?)
 }
@@ -257,6 +262,7 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| Error::Unavailable(Failure::Database))?;
         let mut signing = pki::read_many_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
             &mut tx,
             p.tenant_id(),
             &rows.iter().map(|r| r.attempt).collect::<Vec<_>>(),
@@ -287,9 +293,14 @@ impl Store {
         let mut tx = self.snapshot(p.tenant_id()).await?;
         let before = authorize(&mut tx, p, device).await?;
         let context = context(&mut tx, p.tenant_id(), device, attempt).await?;
-        let signing = pki::read_in(&mut tx, p.tenant_id(), attempt)
-            .await
-            .map_err(pki_error)?;
+        let signing = pki::read_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            attempt,
+        )
+        .await
+        .map_err(pki_error)?;
         let result = view(context, signing, now);
         tx.rollback().await.map_err(db)?;
         self.confirm_certificate_query(p, &before).await?;
@@ -316,9 +327,17 @@ impl Store {
                 &before,
             ))
             .map_err(query_error)?;
-        let page = pki::operations_in(&mut tx, p.tenant_id(), attempt, q, codec, &binding)
-            .await
-            .map_err(pki_error)?;
+        let page = pki::operations_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            attempt,
+            q,
+            codec,
+            &binding,
+        )
+        .await
+        .map_err(pki_error)?;
         tx.rollback().await.map_err(db)?;
         self.confirm_certificate_query(p, &before).await?;
         Ok(page)
@@ -334,9 +353,16 @@ impl Store {
         let mut tx = self.snapshot(p.tenant_id()).await?;
         let before = authorize(&mut tx, p, device).await?;
         context(&mut tx, p.tenant_id(), device, attempt).await?;
-        let result = pki::operation_in(&mut tx, p.tenant_id(), attempt, operation, identity)
-            .await
-            .map_err(pki_error)?;
+        let result = pki::operation_in(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            attempt,
+            operation,
+            identity,
+        )
+        .await
+        .map_err(pki_error)?;
         tx.rollback().await.map_err(db)?;
         self.confirm_certificate_query(p, &before).await?;
         Ok(result)

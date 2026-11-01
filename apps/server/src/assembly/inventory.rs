@@ -21,7 +21,12 @@ impl Services {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
-                            rss_mdm_inventory_service::admit_storage_in(c, tenant).await?;
+                            rss_mdm_inventory_service::admit_storage_in(
+                                rss_mdm_install_support::StorageProfile::Mdm,
+                                c,
+                                tenant,
+                            )
+                            .await?;
                             rss_mdm_compliance_service::admit_storage_in(c, tenant).await?;
                             Ok(())
                         })

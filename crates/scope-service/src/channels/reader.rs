@@ -6,11 +6,25 @@ use sqlx::PgConnection;
 use std::sync::Arc;
 use uuid::Uuid;
 pub struct ChannelTargets {
-    pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
+    profile: rss_mdm_install_support::StorageProfile,
+    pub objects: Option<Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>>,
 }
 impl ChannelTargets {
-    pub fn new(objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>) -> Self {
-        Self { objects }
+    pub fn required_objects(
+        &self,
+    ) -> Result<&Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>, sqlx::Error> {
+        self.objects
+            .as_ref()
+            .ok_or_else(|| sqlx::Error::Protocol("object participant is not configured".into()))
+    }
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
+    pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
+        objects: Option<Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>>,
+    ) -> Self {
+        Self { profile, objects }
     }
 }
 impl ChannelTargets {
@@ -20,7 +34,7 @@ impl ChannelTargets {
         tenant: TenantId,
         scope: Uuid,
     ) -> Pending<'a, String> {
-        Box::pin(query_coordinate_on(c, tenant, scope))
+        Box::pin(query_coordinate_on(self.profile(), c, tenant, scope))
     }
 
     pub fn lifecycle_objects_on<'a>(
@@ -31,8 +45,11 @@ impl ChannelTargets {
         after: Option<&'a str>,
         limit: usize,
     ) -> Pending<'a, Vec<DeviceAssignment>> {
+        let profile = self.profile();
+
         Box::pin(super::targets::lifecycle_objects_on(
-            self.objects.as_ref(),
+            profile,
+            self.objects.as_deref(),
             c,
             tenant,
             scope,
@@ -47,14 +64,23 @@ impl ChannelTargets {
         scopes: &'a [Uuid],
         channel: Channel,
     ) -> Pending<'a, Option<Vec<ScopeResult>>> {
+        let profile = self.profile();
+
         Box::pin(async move {
             let mut runs = Vec::new();
             for scope in scopes {
-                let status = rss_mdm_scope_postgres::state_on(c, tenant, *scope).await?;
+                let status = rss_mdm_scope_postgres::state_on(profile, c, tenant, *scope).await?;
                 if status["state"] != "fresh" {
                     return Ok(None);
                 }
-                let (run,revision)=sqlx::query_as::<_,(Uuid,i64)>(sqlx::AssertSqlSafe(format!("SELECT s.resolution,CASE WHEN $3='mdm' THEN p.mdm_revision ELSE p.agent_revision END FROM ({}) s JOIN mdm_scope.scope_projection_runs p ON(p.tenant_id,p.id)=(s.tenant_id,s.resolution) ",crate::results::PUBLISHED_SCOPE_FACTS_SQL).as_str())).bind(tenant.to_string()).bind(scope).bind(channel.as_str()).fetch_one(&mut *c).await?;
+                let (run, revision) = sqlx::query_as::<_, (Uuid, i64)>(
+                    crate::storage_profile::sql(profile).channels_reader_rollout_input_on_1,
+                )
+                .bind(tenant.to_string())
+                .bind(scope)
+                .bind(channel.as_str())
+                .fetch_one(&mut *c)
+                .await?;
                 runs.push(ScopeResult { run, revision });
             }
             Ok(Some(runs))
@@ -68,12 +94,24 @@ impl ChannelTargets {
         channel: Channel,
         after: Option<&'a str>,
     ) -> Pending<'a, RolloutPage> {
+        let profile = self.profile();
+
         Box::pin(async move {
             let (root, stage) = match runs {
                 [root, stage, ..] => (root, stage),
                 _ => return Err(SourceError::Invariant),
             };
-            let mut rows=sqlx::query_as::<_,(String,Value,bool)>("WITH page AS (SELECT * FROM mdm_scope.scope_channel_results WHERE tenant_id=$1::uuid AND run=$3 AND channel=$6 AND device>coalesce($5,'') COLLATE \"C\" ORDER BY device LIMIT 17) SELECT s.device,s.target,s.matched AND NOT s.pending AND EXISTS(SELECT 1 FROM mdm_scope.scope_channel_results r WHERE r.tenant_id=s.tenant_id AND r.run=$2 AND r.device=s.device AND r.channel=s.channel AND r.target=s.target AND r.matched AND NOT r.pending) AND NOT EXISTS(SELECT 1 FROM mdm_scope.scope_channel_results e WHERE e.tenant_id=s.tenant_id AND e.run=ANY($4) AND e.channel=s.channel AND e.device=s.device AND (e.matched OR e.pending)) FROM page s ORDER BY s.device").bind(tenant.to_string()).bind(root).bind(stage).bind(&runs[2..]).bind(after).bind(channel.as_str()).fetch_all(c).await?;
+            let mut rows = sqlx::query_as::<_, (String, Value, bool)>(
+                crate::storage_profile::sql(profile).channels_reader_rollout_devices_on_1,
+            )
+            .bind(tenant.to_string())
+            .bind(root)
+            .bind(stage)
+            .bind(&runs[2..])
+            .bind(after)
+            .bind(channel.as_str())
+            .fetch_all(c)
+            .await?;
             let has_more = rows.len() > 16;
             rows.truncate(16);
             let after = rows.last().map(|r| r.0.clone());
@@ -99,7 +137,11 @@ impl ChannelTargets {
         channel: Channel,
         after: Option<&'a str>,
     ) -> Pending<'a, ScopePreview> {
-        Box::pin(super::targets::devices_on(c, tenant, scope, channel, after))
+        let profile = self.profile();
+
+        Box::pin(super::targets::devices_on(
+            profile, c, tenant, scope, channel, after,
+        ))
     }
 
     pub fn assignment_objects_on<'a>(
@@ -111,8 +153,11 @@ impl ChannelTargets {
         after: Option<&'a str>,
         limit: usize,
     ) -> Pending<'a, Vec<AssignmentObject>> {
+        let profile = self.profile();
+
         Box::pin(super::targets::objects_on(
-            self.objects.as_ref(),
+            profile,
+            self.objects.as_deref(),
             c,
             tenant,
             scope,
@@ -129,8 +174,11 @@ impl ChannelTargets {
         channel: Channel,
         device: &'a str,
     ) -> Pending<'a, Vec<DeviceObject>> {
+        let profile = self.profile();
+
         Box::pin(super::targets::evidence_on(
-            self.objects.as_ref(),
+            profile,
+            self.objects.as_deref(),
             c,
             tenant,
             scope,
@@ -147,7 +195,8 @@ impl ChannelTargets {
         evidence: &'a [DeviceObject],
     ) -> Pending<'a, bool> {
         Box::pin(super::targets::evidence_valid_on(
-            self.objects.as_ref(),
+            self.profile(),
+            self.objects.as_deref(),
             c,
             tenant,
             channel,
@@ -164,8 +213,11 @@ impl ChannelTargets {
         channel: Channel,
         device: &'a str,
     ) -> Pending<'a, ScopeAdmission> {
+        let profile = self.profile();
+
         Box::pin(super::targets::admission_on(
-            self.objects.as_ref(),
+            profile,
+            self.objects.as_deref(),
             c,
             tenant,
             scope,
@@ -177,21 +229,17 @@ impl ChannelTargets {
 
 /// Scope and source coordinates share the caller's transaction; no result-set scan is needed.
 pub async fn query_coordinate_on(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: TenantId,
     scope: Uuid,
 ) -> Result<String, SourceError> {
-    let stamp: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(
-        format!(
-            "SELECT jsonb_build_array(s.revision,s.resolution) FROM ({}) s",
-            crate::results::PUBLISHED_SCOPE_FACTS_SQL
-        )
-        .as_str(),
-    ))
-    .bind(tenant.to_string())
-    .bind(scope)
-    .fetch_optional(c)
-    .await?
-    .ok_or(SourceError::Missing)?;
+    let stamp: Value =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).channels_query_coordinate)
+            .bind(tenant.to_string())
+            .bind(scope)
+            .fetch_optional(c)
+            .await?
+            .ok_or(SourceError::Missing)?;
     rss_mdm_query::cursor::fingerprint(&stamp).map_err(|_| SourceError::Invariant)
 }

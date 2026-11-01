@@ -7,6 +7,8 @@ impl Service {
         input: &wire::AccessRecoveryUse,
         audit: &RequestAudit,
     ) -> std::result::Result<(), Error> {
+        let profile = self.profile();
+
         if device.tenant() != self.transactions.tenant {
             return Err(Error::Forbidden);
         }
@@ -27,7 +29,7 @@ impl Service {
                 Box::pin(async move {
                     let (service, device, input, audit) = *ctx;
 
-                    super::actions::agent::lock_device(tx, device.device()).await?;
+                    super::actions::agent::lock_device(profile, tx, device.device()).await?;
                     super::transaction::prepare_audit_in(
                         &service.transactions.audit_store,
                         tx,
@@ -39,9 +41,15 @@ impl Service {
                     let value = input.clone();
                     let replay = tx
                         .with_connection(move |c| {
-                            Box::pin(
-                                async move { Ok(crate::storage::rss_use_in(c, &p, &value).await) },
-                            )
+                            Box::pin(async move {
+                                Ok(crate::storage::rss_use_in(
+                                    crate::Custody::new(profile, None),
+                                    c,
+                                    &p,
+                                    &value,
+                                )
+                                .await)
+                            })
                         })
                         .await?
                         .map_err(Error::from)?;

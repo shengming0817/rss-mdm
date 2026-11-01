@@ -284,10 +284,21 @@ pub async fn query_authority(
     let snapshot = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                crate::authorization::lock_on(c, &tenant, &instance)
-                    .await
-                    .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
-                Ok(crate::authorization::snapshot_on(c, &tenant, &instance).await)
+                crate::authorization::lock_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await
+                .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
+                Ok(crate::authorization::snapshot_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    &tenant,
+                    &instance,
+                )
+                .await)
             })
         })
         .await??;

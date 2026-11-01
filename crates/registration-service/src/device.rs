@@ -51,6 +51,7 @@ impl Purpose {
 /// let proof = rss_mdm_registration_service::VerifiedChannelCredential::new("fingerprint");
 /// ```
 pub struct VerifiedChannelCredential {
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     channel: Channel,
     source: ReportSource,
@@ -60,13 +61,23 @@ pub struct VerifiedChannelCredential {
 /// A composition-time authority bound to one tenant and report source.
 #[derive(Clone)]
 pub struct ChannelMount {
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     source: ReportSource,
     purpose: Purpose,
 }
 impl ChannelMount {
-    pub fn new(tenant: TenantId, source: ReportSource, purpose: Purpose) -> Self {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
+    pub fn new(
+        profile: rss_mdm_install_support::StorageProfile,
+        tenant: TenantId,
+        source: ReportSource,
+        purpose: Purpose,
+    ) -> Self {
         Self {
+            profile,
             tenant,
             source,
             purpose,
@@ -80,6 +91,7 @@ impl ChannelMount {
             return Err(Error::Forbidden);
         }
         Ok(VerifiedChannelCredential {
+            profile: self.profile,
             tenant: self.tenant,
             channel: self.source.channel(),
             source: self.source,
@@ -94,6 +106,7 @@ impl ChannelMount {
 /// ```
 #[derive(Clone)]
 pub struct DevicePrincipal {
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     device: String,
     registration: Uuid,
@@ -106,6 +119,9 @@ pub struct DevicePrincipal {
     epoch: Uuid,
 }
 impl DevicePrincipal {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
+    }
     pub fn purpose(&self) -> Purpose {
         self.purpose
     }
@@ -172,6 +188,9 @@ pub struct DeviceService {
     tenant: String,
 }
 impl DeviceService {
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.access.profile()
+    }
     pub fn retirement(&self) -> &dyn crate::Retirement {
         self.access.retirement.as_ref()
     }
@@ -196,22 +215,26 @@ impl DeviceService {
         &self,
         credential: &VerifiedChannelCredential,
     ) -> Result<DevicePrincipal, Error> {
-        if self.tenant != credential.tenant.to_string() {
+        let profile = self.profile();
+
+        if self.profile() != credential.profile || self.tenant != credential.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let mut tx = self.access.snapshot(&self.tenant).await?;
-        let principal = management::read(&mut tx, credential).await?;
+        let principal = management::read(profile, &mut tx, credential).await?;
         tx.commit().await.map_err(crate::database::db)?;
         Ok(principal)
     }
 }
 pub fn scope(
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     registration: Uuid,
     source: &str,
     epoch: Uuid,
 ) -> Result<Scope, DeviceError> {
     scope_dataset(
+        profile,
         tenant,
         registration,
         source,
@@ -220,6 +243,7 @@ pub fn scope(
     )
 }
 pub fn scope_dataset(
+    profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     registration: Uuid,
     source: &str,
@@ -231,9 +255,17 @@ pub fn scope_dataset(
         // Lifecycle CAS is object-wide. Each independently activated fixed dataset
         // has its own subject within the registration; Device identity stays in our mapping.
         Id::new(if dataset == rss_mdm_inventory::DATASET {
-            registration.to_string()
+            match profile {
+                rss_mdm_install_support::StorageProfile::Mdm => registration.to_string(),
+                rss_mdm_install_support::StorageProfile::Da => format!("da:{registration}"),
+            }
         } else {
-            format!("{registration}:{dataset}")
+            match profile {
+                rss_mdm_install_support::StorageProfile::Mdm => format!("{registration}:{dataset}"),
+                rss_mdm_install_support::StorageProfile::Da => {
+                    format!("da:{registration}:{dataset}")
+                }
+            }
         })
         .map_err(|_| DeviceError::InvalidSource)?,
         Registration::new(registration.to_string()).map_err(|_| DeviceError::InvalidSource)?,
@@ -271,7 +303,10 @@ impl DeviceService {
         ids: [Uuid; 3],
         facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     ) -> Result<RegistrationReceipt, Error> {
+        let profile = self.profile();
+
         store::bind_in(
+            profile,
             tx,
             proof,
             credential,
@@ -296,7 +331,10 @@ impl DeviceService {
         ids: [Uuid; 3],
         facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     ) -> Result<RegistrationReceipt, Error> {
+        let profile = self.profile();
+
         store::bind_native_in(
+            profile,
             tx,
             admission,
             credential,
@@ -310,6 +348,7 @@ impl DeviceService {
 
 /// Resolve an Agent only from the certificate owner's sealed TLS verification result.
 pub async fn authenticate_agent_in(
+    profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     peer: &rss_mdm_device_trust::agent::VerifiedAgentPeer,
@@ -323,10 +362,17 @@ pub async fn authenticate_agent_in(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let row=sqlx::query("SELECT r.id,r.device,r.generation,r.epoch,r.state,k.id AS credential,k.state AS credential_state,i.identity FROM mdm_access.agent_issuances i JOIN mdm_access.credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(k.tenant_id,k.registration) WHERE i.tenant_id=$1::uuid AND i.fingerprint=$2 AND r.channel='agent'").bind(tenant.to_string()).bind(fingerprint).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let row = sqlx::query(crate::storage_profile::sql(profile).device_authenticate_agent_in_1)
+        .bind(tenant.to_string())
+        .bind(fingerprint)
+        .fetch_optional(&mut *c)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)?;
     let device: String = row.try_get("device").map_err(db)?;
-    store::lock_channel(c, &tenant.to_string(), &device, Channel::Agent).await?;
+    store::lock_channel(profile, c, &tenant.to_string(), &device, Channel::Agent).await?;
     let p = DevicePrincipal {
+        profile,
         tenant,
         device,
         registration: row.try_get("id").map_err(db)?,
@@ -350,6 +396,6 @@ pub async fn authenticate_agent_in(
         "superseded" => return Err(Error::Agent(C::CredentialRetired)),
         _ => {}
     }
-    management::revalidate(c, &p).await?;
+    management::revalidate(profile, c, &p).await?;
     Ok(p)
 }

@@ -3,12 +3,24 @@ use sqlx::{PgPool, Postgres, Transaction};
 use std::sync::Arc;
 
 pub struct Store {
+    profile: rss_mdm_install_support::StorageProfile,
     pool: PgPool,
     pub(crate) retirement: Arc<dyn Retirement>,
 }
 impl Store {
-    pub fn from_pool(pool: PgPool, retirement: Arc<dyn Retirement>) -> Self {
-        Self { pool, retirement }
+    pub fn from_pool(
+        profile: rss_mdm_install_support::StorageProfile,
+        pool: PgPool,
+        retirement: Arc<dyn Retirement>,
+    ) -> Self {
+        Self {
+            profile,
+            pool,
+            retirement,
+        }
+    }
+    pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.profile
     }
     pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         self.begin_mode(tenant, false).await
@@ -22,11 +34,20 @@ impl Store {
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
         expected: &str,
     ) -> Result<(), Error> {
+        if proof.profile() != self.profile {
+            return Err(Error::Forbidden);
+        }
         proof.check_live()?;
         let mut tx = self.begin(proof.tenant_id()).await?;
-        rss_mdm_authorization_service::lock_on(&mut tx, proof.tenant_id(), proof.instance_id())
-            .await?;
+        rss_mdm_authorization_service::lock_on(
+            self.profile,
+            &mut tx,
+            proof.tenant_id(),
+            proof.instance_id(),
+        )
+        .await?;
         let current = rss_mdm_authorization_service::snapshot_on(
+            self.profile,
             &mut tx,
             proof.tenant_id(),
             proof.instance_id(),
@@ -34,6 +55,9 @@ impl Store {
         .await?;
         if current.query_binding(proof)? != expected {
             return Err(Error::ReadConflict);
+        }
+        if proof.profile() != self.profile {
+            return Err(Error::Forbidden);
         }
         proof.check_live()?;
         tx.rollback().await.map_err(db)

@@ -138,7 +138,13 @@ pub(crate) async fn send(
     // One authority per message fits negotiated device budgets; progress survives message/session changes.
     let authorities = [authority];
     let count = 1;
-    let first = crate::device::store::allocate_commands_in(c, p, (count * 2) as i64).await?;
+    let first = crate::device::store::allocate_commands_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p,
+        (count * 2) as i64,
+    )
+    .await?;
     let mut commands = Vec::new();
     for (i, (cert, remove)) in authorities.iter().enumerate() {
         use rss_mdm_windows_mdm::provisioning::AuthorityStore;
@@ -394,6 +400,7 @@ pub(crate) async fn receive(
             });
             if complete {
                 rss_mdm_pki_service::registry::Registry::acknowledge_in(
+                    rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &p.tenant().to_string(),
                     p.registration(),

@@ -11,6 +11,9 @@ pub async fn authorization_snapshot(
     database: &crate::Store,
     proof: &AuthorizedPrincipal,
 ) -> Result<Snapshot, Error> {
+    if proof.profile() != database.profile() {
+        return Err(Error::Forbidden);
+    }
     use sqlx::Acquire;
     let mut connection = None;
     let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -171,6 +174,8 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
     tx: &mut sqlx::PgConnection,
     context: &ChangeContext<'_, T>,
 ) -> Result<(Receipt, bool), Error> {
+    let profile = context.proof.profile();
+
     let ChangeContext {
         proof,
         table,
@@ -182,7 +187,7 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
     } = context;
     let table = *table;
     let id = *id;
-    lock(tx, proof.tenant_id(), proof.instance_id()).await?;
+    lock(profile, tx, proof.tenant_id(), proof.instance_id()).await?;
     let replay = crate::operations::replay(tx, operation).await?;
     // The tenant/instance lock serializes writes; authorize the version now locked.
     let current = read_snapshot(tx, proof).await?;
@@ -200,11 +205,11 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
     if let Some(result) = replay {
         return Ok((decode(&result)?, true));
     }
-    let query = format!(
-        "SELECT revision,document IS NULL AS deleted FROM mdm_access.{} WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3::uuid FOR UPDATE",
-        table.name()
-    );
-    let old = sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
+    let query = match table {
+        Table::Rules => crate::storage_profile::sql(profile).read_rule,
+        Table::Groups => crate::storage_profile::sql(profile).read_group,
+    };
+    let old = sqlx::query(query)
         .bind(proof.tenant_id())
         .bind(proof.instance_id())
         .bind(id.to_string())
@@ -224,14 +229,14 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
         return Err(Error::Conflict);
     }
     if revision == 0 {
-        require_insert_capacity(tx, table, proof.tenant_id(), proof.instance_id()).await?;
+        require_insert_capacity(profile, tx, table, proof.tenant_id(), proof.instance_id()).await?;
     }
 
-    let query = format!(
-        "INSERT INTO mdm_access.{}(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb) ON CONFLICT(tenant_id,instance,id) DO UPDATE SET revision=excluded.revision,document=excluded.document",
-        table.name()
-    );
-    sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
+    let query = match table {
+        Table::Rules => crate::storage_profile::sql(profile).write_rule,
+        Table::Groups => crate::storage_profile::sql(profile).write_group,
+    };
+    sqlx::query(query)
         .bind(proof.tenant_id())
         .bind(proof.instance_id())
         .bind(id.to_string())
@@ -240,7 +245,7 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    require_document_capacity(tx, proof.tenant_id(), proof.instance_id()).await?;
+    require_document_capacity(profile, tx, proof.tenant_id(), proof.instance_id()).await?;
     if current
         .installation
         .as_ref()
@@ -267,6 +272,7 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
 /// Add a complete business administrator inside the caller's target transaction.
 /// The host owns source authentication and must roll back on any error.
 pub async fn grant_tenant_administrator_on(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     user: User,
     id: Uuid,
@@ -278,15 +284,20 @@ pub async fn grant_tenant_administrator_on(
     let instance = user.instance_id.clone();
     let rule = tenant_administrator_rule(user);
     rule.validate(&tenant, &instance)?;
-    let installation = crate::tenancy::InstallationTenants::load(tx).await?;
+    let installation = crate::tenancy::InstallationTenants::load(profile, tx).await?;
     installation.require_identity(&instance, &tenant, Permission::InventoryRead)?;
     installation.validate_rule(&tenant, &rule)?;
-    lock(tx, &tenant, &instance).await?;
-    require_insert_capacity(tx, Table::Rules, &tenant, &instance).await?;
-    sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
-        .bind(&tenant).bind(&instance).bind(id).bind(serde_json::to_value(rule).map_err(|_| Error::Malformed)?)
-        .execute(&mut *tx).await.map_err(db)?;
-    require_document_capacity(tx, &tenant, &instance).await?;
+    lock(profile, tx, &tenant, &instance).await?;
+    require_insert_capacity(profile, tx, Table::Rules, &tenant, &instance).await?;
+    sqlx::query(crate::storage_profile::sql(profile).store_grant_tenant_administrator_on_1)
+        .bind(&tenant)
+        .bind(&instance)
+        .bind(id)
+        .bind(serde_json::to_value(rule).map_err(|_| Error::Malformed)?)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    require_document_capacity(profile, tx, &tenant, &instance).await?;
     Ok(Receipt {
         id,
         revision: 1,
@@ -294,15 +305,16 @@ pub async fn grant_tenant_administrator_on(
     })
 }
 async fn require_insert_capacity(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     table: Table,
     tenant: &str,
     instance: &str,
 ) -> Result<(), Error> {
-    let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT count(*) FROM mdm_access.{} WHERE tenant_id=$1::uuid AND instance=$2::uuid",
-        table.name()
-    )))
+    let count: i64 = sqlx::query_scalar(match table {
+        Table::Rules => crate::storage_profile::sql(profile).count_rules,
+        Table::Groups => crate::storage_profile::sql(profile).count_groups,
+    })
     .bind(tenant)
     .bind(instance)
     .fetch_one(tx)
@@ -314,11 +326,18 @@ async fn require_insert_capacity(
     Ok(())
 }
 async fn require_document_capacity(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     instance: &str,
 ) -> Result<(), Error> {
-    let bounded: bool = sqlx::query_scalar("SELECT (SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid)+(SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid)<=8388608").bind(tenant).bind(instance).fetch_one(&mut *tx).await.map_err(db)?;
+    let bounded: bool =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).store_require_document_capacity_1)
+            .bind(tenant)
+            .bind(instance)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
     if !bounded {
         return Err(Error::Conflict);
     }
@@ -329,20 +348,27 @@ async fn read_snapshot(
     tx: &mut sqlx::PgConnection,
     proof: &AuthorizedPrincipal,
 ) -> Result<Snapshot, Error> {
-    let snapshot = snapshot_on(tx, proof.tenant_id(), proof.instance_id()).await?;
+    let profile = proof.profile();
+
+    let snapshot = snapshot_on(profile, tx, proof.tenant_id(), proof.instance_id()).await?;
     proof.check_live()?;
     Ok(snapshot)
 }
 pub async fn snapshot_on(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     instance: &str,
 ) -> Result<Snapshot, Error> {
-    let json: String = sqlx::query_scalar("WITH rules AS MATERIALIZED (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001), groups AS MATERIALIZED (SELECT * FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001), keys AS MATERIALIZED (SELECT * FROM mdm_access.api_keys WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 1001) SELECT CASE WHEN (SELECT coalesce(sum(octet_length(document::text)),0) FROM rules)+(SELECT coalesce(sum(octet_length(document::text)),0) FROM groups)<=8388608 AND (SELECT coalesce(sum(octet_length(metadata::text)+octet_length(created_by::text)),0) FROM keys)<=2097152 THEN jsonb_build_object('rules',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM rules),'[]'::jsonb),'groups',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM groups),'[]'::jsonb),'keys',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'authorityRevision',authority_revision,'credentialRevision',credential_revision,'metadata',metadata,'createdBy',created_by,'createdAt',created_at,'revoked',revoked)) FROM keys),'[]'::jsonb)) ELSE NULL END::text")
-        .bind(tenant).bind(instance).fetch_one(&mut *tx).await.map_err(db)?;
+    let json: String = sqlx::query_scalar(crate::storage_profile::sql(profile).store_snapshot_on_1)
+        .bind(tenant)
+        .bind(instance)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
     let mut snapshot: Snapshot = decode(&json)?;
     snapshot.validate(tenant, instance)?;
-    let installation = crate::tenancy::InstallationTenants::load(tx).await?;
+    let installation = crate::tenancy::InstallationTenants::load(profile, tx).await?;
     for rule in snapshot.rules.iter().filter_map(|r| r.value.as_ref()) {
         installation
             .validate_rule(tenant, rule)
@@ -357,9 +383,17 @@ async fn protect_management_initializer(
     tx: &mut sqlx::PgConnection,
     proof: &AuthorizedPrincipal,
 ) -> Result<(), Error> {
+    let profile = proof.profile();
+
     let projected = read_snapshot(tx, proof).await?;
-    let principal: String = sqlx::query_scalar("SELECT principal::text FROM mdm_access.authorization_initializations WHERE tenant_id=$1::uuid AND instance=$2::uuid")
-        .bind(proof.tenant_id()).bind(proof.instance_id()).fetch_one(tx).await.map_err(db)?;
+    let principal: String = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).store_protect_management_initializer_1,
+    )
+    .bind(proof.tenant_id())
+    .bind(proof.instance_id())
+    .fetch_one(tx)
+    .await
+    .map_err(db)?;
     for permission in [
         Permission::AuthorizationRead,
         Permission::AuthorizationWrite,
@@ -409,9 +443,14 @@ impl Table {
 fn decode<T: DeserializeOwned>(value: &str) -> Result<T, Error> {
     serde_json::from_str(value).map_err(|_| Error::Storage)
 }
-pub async fn lock(tx: &mut sqlx::PgConnection, tenant: &str, instance: &str) -> Result<(), Error> {
+pub async fn lock(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    instance: &str,
+) -> Result<(), Error> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2363))")
-        .bind(format!("{tenant}:{instance}"))
+        .bind(format!("{}:{tenant}:{instance}", profile.name()))
         .execute(&mut *tx)
         .await
         .map_err(db)?;
@@ -421,12 +460,13 @@ pub async fn lock(tx: &mut sqlx::PgConnection, tenant: &str, instance: &str) -> 
 /// Read authorization while an effect transaction is in flight. Writers use `lock`.
 /// Never upgrade this shared lock to the exclusive writer lock in the same transaction.
 pub async fn lock_shared(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     instance: &str,
 ) -> Result<(), Error> {
     sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2363))")
-        .bind(format!("{tenant}:{instance}"))
+        .bind(format!("{}:{tenant}:{instance}", profile.name()))
         .execute(tx)
         .await
         .map_err(db)?;
@@ -434,6 +474,7 @@ pub async fn lock_shared(
 }
 
 pub(crate) async fn initialize_verified_user(
+    profile: rss_mdm_install_support::StorageProfile,
     store: &rss_mdm_audit_integration::AuditStore,
     user: User,
     key: Uuid,
@@ -459,7 +500,7 @@ pub(crate) async fn initialize_verified_user(
         )
     );
     let operation = Operation {
-        actor: Actor::for_initialization(&user),
+        actor: Actor::for_initialization(profile, &user),
         key,
         digest: &digest,
     };
@@ -513,21 +554,43 @@ async fn initialize_on(
     operation: &Operation<'_>,
     audit: &RequestAudit,
 ) -> Result<(Receipt, bool), Error> {
+    let profile = operation.actor.profile;
+
     let key = operation.key;
-    lock(tx, &user.tenant_id, &user.instance_id).await?;
+    lock(profile, tx, &user.tenant_id, &user.instance_id).await?;
     if let Some(receipt) = crate::operations::replay(tx, operation).await? {
         return Ok((decode(&receipt)?, true));
     }
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.authorization_initializations WHERE tenant_id=$1::uuid AND instance=$2::uuid)").bind(&user.tenant_id).bind(&user.instance_id).fetch_one(&mut *tx).await.map_err(db)?;
+    let exists: bool =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).store_initialize_on_1)
+            .bind(&user.tenant_id)
+            .bind(&user.instance_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
     if exists {
         return Err(Error::Conflict);
     }
     let id = Uuid::new_v4();
-    let installation = crate::tenancy::InstallationTenants::load(tx).await?;
+    let installation = crate::tenancy::InstallationTenants::load(profile, tx).await?;
     let rule = administrator_rule(user.clone(), installation.is_management(&user.tenant_id));
     installation.validate_rule(&user.tenant_id, &rule)?;
-    sqlx::query("INSERT INTO mdm_access.authorization_initializations(tenant_id,instance,operation_id,principal) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid)").bind(&user.tenant_id).bind(&user.instance_id).bind(key.to_string()).bind(&user.principal_id).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3::uuid,1,$4::jsonb)").bind(&user.tenant_id).bind(&user.instance_id).bind(id.to_string()).bind(serde_json::to_string(&rule).map_err(|_| Error::Malformed)?).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).store_initialize_on_2)
+        .bind(&user.tenant_id)
+        .bind(&user.instance_id)
+        .bind(key.to_string())
+        .bind(&user.principal_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    sqlx::query(crate::storage_profile::sql(profile).store_initialize_on_3)
+        .bind(&user.tenant_id)
+        .bind(&user.instance_id)
+        .bind(id.to_string())
+        .bind(serde_json::to_string(&rule).map_err(|_| Error::Malformed)?)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
     let receipt = Receipt {
         id,
         revision: 1,
@@ -574,24 +637,37 @@ pub(crate) fn administrator_rule(user: User, platform: bool) -> Rule {
 }
 /// Only called by the exact locally authenticated offline-transfer owner.
 pub(crate) async fn grant_verified_administrator_on(
+    profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     user: User,
     id: Uuid,
 ) -> Result<Receipt, Error> {
-    let installation = crate::tenancy::InstallationTenants::load(tx).await?;
+    let installation = crate::tenancy::InstallationTenants::load(profile, tx).await?;
     let platform = installation.is_management(&user.tenant_id);
     if !platform {
-        return grant_tenant_administrator_on(tx, user, id).await;
+        return grant_tenant_administrator_on(profile, tx, user, id).await;
     }
     let rule = administrator_rule(user.clone(), true);
     rule.validate(&user.tenant_id, &user.instance_id)?;
     installation.require_identity(&user.instance_id, &user.tenant_id, Permission::TenantCreate)?;
     installation.validate_rule(&user.tenant_id, &rule)?;
-    require_insert_capacity(tx, Table::Rules, &user.tenant_id, &user.instance_id).await?;
-    sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
-        .bind(&user.tenant_id).bind(&user.instance_id).bind(id).bind(serde_json::to_value(rule).map_err(|_|Error::Malformed)?)
-        .execute(&mut *tx).await.map_err(db)?;
-    require_document_capacity(tx, &user.tenant_id, &user.instance_id).await?;
+    require_insert_capacity(
+        profile,
+        tx,
+        Table::Rules,
+        &user.tenant_id,
+        &user.instance_id,
+    )
+    .await?;
+    sqlx::query(crate::storage_profile::sql(profile).store_grant_verified_administrator_on_1)
+        .bind(&user.tenant_id)
+        .bind(&user.instance_id)
+        .bind(id)
+        .bind(serde_json::to_value(rule).map_err(|_| Error::Malformed)?)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    require_document_capacity(profile, tx, &user.tenant_id, &user.instance_id).await?;
     Ok(Receipt {
         id,
         revision: 1,

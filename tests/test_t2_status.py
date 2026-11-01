@@ -22,6 +22,82 @@ def listing(cases):
 
 
 class T2Status(unittest.TestCase):
+    def test_foundation_discovery_uses_its_independent_binary(self):
+        module = 'agent.foundation'
+        name = MODULES[module]['prefix'] + 'independent_enrollment_delivery'
+        def independent(cases):
+            return {'rust-suites': {'foundation': {
+                'package-name': 'rss-mdm-agent-channel', 'binary-name': 'foundation',
+                'status': 'listed', 'testcases': cases}}}
+        self.assertEqual(discover(independent({name: {'ignored': True}}), [module]),
+                         {module: [name]})
+        for cases in ({}, {name: {'ignored': False}}):
+            with self.assertRaises(RuntimeError):
+                discover(independent(cases), [module])
+
+    def test_foundation_selects_real_scope_provider_changes(self):
+        for path in ('crates/scope-service/src/registration.rs',
+                     'crates/scope-service/src/channels.rs',
+                     'crates/scope-service/src/channels/enrollment.rs',
+                     'crates/scope-service/src/storage_profile.rs'):
+            with self.subTest(path=path):
+                self.assertIn('agent.foundation', affected([path]))
+        self.assertNotIn('agent.foundation', affected(['crates/scope-service/src/management.rs']))
+
+    def test_foundation_selects_its_protection_and_admission_inputs(self):
+        for path in ('crates/native-protection/src/storage_profile.rs',
+                     'crates/native-protection/src/lib.rs',
+                     'crates/backend-postgres-support/src/access_admission.rs',
+                     'crates/backend-postgres-support/src/access-admission.sql'):
+            with self.subTest(path=path):
+                self.assertIn('agent.foundation', affected([path]))
+        self.assertNotIn('agent.foundation', affected(['crates/backend-postgres-support/src/document.rs']))
+
+    def test_multiple_owners_preserve_evidence_and_collect_failures(self):
+        import ci
+        modules = ['foundation.tenants', 'agent.foundation']
+        for fail, drift in ((False, False), (True, False), (False, True)):
+            with self.subTest(fail=fail, drift=drift), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary)
+                (output / 'junit.xml').write_text('stale')
+                calls = []
+                def group(selected, path):
+                    calls.extend(selected)
+                    case = selected[0] + '.proof'
+                    result = dict(status='passed', sourceState='state', executedCases=1,
+                                  resources=[{'identity': selected[0]}],
+                                  discovered={selected[0]: [case]}, cases=[{'name': case, 'status': 'passed'}])
+                    if fail and selected[0] == modules[0]:
+                        result['status'] = 'failed'
+                        path.mkdir()
+                        (path / 'result.json').write_text(json.dumps(result))
+                        raise RuntimeError('first owner failed')
+                    return result
+                with (patch.object(t2, 'require_lease'), patch.object(t2, 'run_group', side_effect=group),
+                      patch.object(t2.subprocess, 'check_output', return_value='head'),
+                      patch.object(ci, 'working_source_state', side_effect=['state', 'drift' if drift else 'state'])):
+                    if fail or drift:
+                        with self.assertRaises(RuntimeError):
+                            t2.run_modules(modules, output)
+                    else:
+                        t2.run_modules(modules, output)
+                receipt = json.loads((output / 'result.json').read_text())
+                self.assertEqual(calls, modules)
+                self.assertEqual(receipt['status'], 'failed' if fail or drift else 'passed')
+                self.assertEqual(receipt['executedCases'], 2)
+                self.assertEqual(set(receipt['discovered']), set(modules))
+                self.assertEqual(len(receipt['resources']), 2)
+                self.assertEqual(receipt['sourceRevision'], 'head')
+                self.assertFalse((output / 'junit.xml').exists())
+
+    def test_aggregate_rejects_symlink_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'target').mkdir()
+            (root / 'link').symlink_to(root / 'target', target_is_directory=True)
+            with patch.object(t2, 'require_lease'), self.assertRaisesRegex(RuntimeError, 'symlink'):
+                t2.run_modules(['foundation.tenants', 'agent.foundation'], root / 'link')
+
     def test_discovery_owns_names_and_rejects_missing_unowned_and_nonignored(self):
         module = 'foundation.tenants'
         name = MODULES[module]['prefix'] + 'current_behavior'
@@ -50,7 +126,7 @@ class T2Status(unittest.TestCase):
                 self.assertEqual(affected(['crates/device-service/schema/control-' + schema]),
                                  ['agent.delivery', 'apple.protocol', 'device.control', 'device.retirement', 'policy.configuration', 'windows.protocol'])
                 self.assertEqual(affected(['crates/agent-channel/schema/' + schema]),
-                                 ['agent.delivery', 'device.retirement', 'inventory.collection', 'script.delivery', 'task.composition', 'task.locking', 'task.recovery', 'task_trust'])
+                                 ['agent.delivery', 'agent.foundation', 'device.retirement', 'inventory.collection', 'script.delivery', 'task.composition', 'task.locking', 'task.recovery', 'task_trust'])
         for path in ('crates/device-service/src/lifecycle.rs',
                      'crates/device-service/src/control/retirement.rs',
                      'crates/device-service/src/control/recovery.rs',

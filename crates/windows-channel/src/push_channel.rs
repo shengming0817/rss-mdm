@@ -60,7 +60,13 @@ pub(crate) async fn send(
                 || (matches!(v.status, Some(200 | 214)) && v.value.is_none())
         }));
     }
-    let id = crate::device::store::allocate_commands_in(c, p, 1).await?;
+    let id = crate::device::store::allocate_commands_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        p,
+        1,
+    )
+    .await?;
     let command = s::Command::Get {
         id,
         meta: None,

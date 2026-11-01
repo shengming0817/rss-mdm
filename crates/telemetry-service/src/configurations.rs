@@ -194,13 +194,22 @@ async fn read_on(
     proof: &AuthorizedPrincipal,
     device: &str,
 ) -> Result<Configurations, Error> {
-    rss_mdm_authorization_service::lock_shared_on(c, proof.tenant_id(), proof.instance_id())
-        .await
-        .map_err(|_| Error::Denied)?;
-    let authorization =
-        rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
-            .await
-            .map_err(|_| Error::Denied)?;
+    rss_mdm_authorization_service::lock_shared_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
+    let authorization = rss_mdm_authorization_service::snapshot_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Denied)?;
     for permission in [Permission::PolicyRead, Permission::ResourceRead] {
         authorization
             .require(proof, permission, None)
@@ -220,15 +229,32 @@ async fn read_on(
         return Err(Error::NotFound);
     }
     let eligible = eligible_on(service, c, device).await?;
-    endpoints::lock_in(c, &service.tenant.to_string(), device, Channel::Agent)
-        .await
-        .map_err(|_| Error::Storage)?;
-    let primary = endpoints::current_in(c, &service.tenant.to_string(), device, Channel::Agent)
-        .await
-        .map_err(|_| Error::Storage)?;
-    let live = store::live_collection_streams_on(c, service.tenant, device)
-        .await
-        .map_err(|_| Error::Storage)?;
+    endpoints::lock_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &service.tenant.to_string(),
+        device,
+        Channel::Agent,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    let primary = endpoints::current_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        &service.tenant.to_string(),
+        device,
+        Channel::Agent,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    let live = store::live_collection_streams_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        service.tenant,
+        device,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
     let primary = primary.filter(|p| live.iter().any(|(id, _, _)| *id == p.registration_id));
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint")

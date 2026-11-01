@@ -75,6 +75,8 @@ impl Scopes {
         request: &PageRequest,
         authority: &str,
     ) -> transaction::Result<Value> {
+        let profile = self.profile();
+
         let PageRequest {
             scope,
             result,
@@ -83,8 +85,13 @@ impl Scopes {
         } = request;
         let (scope, result, kind) = (*scope, *result, *kind);
         let head = sqlx::query_as::<_, (i64, Option<Uuid>, bool)>(
-            "SELECT revision,resolution,deleted FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2"
-        ).bind(self.tenant.to_string()).bind(scope).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
+            crate::storage_profile::sql(profile).pages_scope_page_on_1,
+        )
+        .bind(self.tenant.to_string())
+        .bind(scope)
+        .fetch_optional(&mut *c)
+        .await?
+        .ok_or(Error::NotFound)?;
         let binding = ResultBinding::Scope {
             scope,
             kind,

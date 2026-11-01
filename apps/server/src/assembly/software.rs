@@ -82,7 +82,11 @@ pub(crate) async fn assemble(
             agent_store: agent,
             windows_results: windows,
             apple_results: apple,
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                runtime.clone(),
+                tenant,
+            ),
             runtime: runtime.clone(),
             tenant,
             inputs,

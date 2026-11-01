@@ -94,6 +94,7 @@ pub async fn apple(
         now,
     )?;
     let credential = rss_mdm_registration_service::device::ChannelMount::new(
+        rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
         rss_mdm_inventory::ReportSource::MdmApple,
         rss_mdm_registration_service::Purpose::Primary,
