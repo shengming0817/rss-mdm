@@ -6,6 +6,12 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'agent.foundation': dict(package='rss-mdm-agent-channel', target='foundation', installer=None,
+        prefix='foundation::', profiles=('agent_foundation',),
+        inputs=('crates/install-support/*','crates/agent-channel/*','crates/registration-service/*',
+                'crates/authorization-service/*','crates/pki-service/*','crates/inventory-postgres/*','crates/task-trust/*','crates/recovery-credentials/*',
+                'crates/policy-postgres/*','crates/scope-postgres/*','crates/inventory-service/*')),
+
     'task.command_owners': dict(prefix='assembly::execution_owners_t2::command_recovery::', profiles=('shared',),
         inputs=('crates/software-service/*','crates/device-service/src/control/*','crates/registration-service/src/installation/*','crates/recovery-credentials/src/native/*','apps/server/tests/execution_owners/*','apps/server/tests/credential_owners/*')),
 
@@ -195,7 +201,7 @@ def affected(paths):
 
 def owners(package, target, name):
     return [module for module, value in MODULES.items()
-            if package == PACKAGE and target == PACKAGE.replace('-', '_')
+            if package == value.get('package', PACKAGE) and target == value.get('target', PACKAGE.replace('-', '_'))
             and name.startswith(value['prefix'])]
 
 

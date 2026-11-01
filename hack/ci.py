@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-install-support": "crates/install-support",
     "rss-mdm-script-service": "crates/script-service",
     "rss-mdm-scope-postgres": "crates/scope-postgres",
     "rss-mdm-scope-service": "crates/scope-service",
