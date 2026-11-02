@@ -2,14 +2,18 @@
 //! A task ACK, browser input or an unverified observation cannot create this fact.
 use crate::{Error, database::db};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rss_mdm_agent_wire::da;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_device_access::deployment::{Observation, PlatformConfiguration};
 use rss_mdm_registration_service::device::endpoints::{self, DaRegistration};
+use rss_mdm_task_trust::configuration::ConfigurationService;
 use rss_request_context::TenantId;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+/// Historical locks are bounded by the two setting groups per immutable Policy.
+pub(crate) type Mandatory = BTreeMap<Uuid, BTreeMap<da::ConfigurationField, Uuid>>;
 #[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SignedObservation {
@@ -69,9 +73,10 @@ impl Authorities {
         o.validate(o.issued_at)?;
         Ok(o)
     }
-    pub async fn record_on(
+    async fn record_on(
         &self,
         c: &mut PgConnection,
+        signing: &ConfigurationService,
         tenant: TenantId,
         installation: Uuid,
         signed: &SignedObservation,
@@ -88,8 +93,10 @@ impl Authorities {
         if current.registration_id != o.registration || current.generation != o.generation {
             return Err(Error::Forbidden);
         }
-        let old:Option<(i64,String)>=sqlx::query_as("SELECT sequence,payload FROM rss_da.deployment_evidence WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND authority=$4 FOR UPDATE").bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).fetch_optional(&mut *c).await.map_err(db)?;
-        if let Some((sequence, payload)) = old {
+        let old:Option<(i64,String,serde_json::Value)>=sqlx::query_as("SELECT sequence,payload,mandatory FROM rss_da.deployment_evidence WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND authority=$4 FOR UPDATE").bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).fetch_optional(&mut *c).await.map_err(db)?;
+        let mut mandatory = Mandatory::new();
+        if let Some((sequence, payload, previous)) = old {
+            mandatory = serde_json::from_value(previous).map_err(|_| Error::Corrupt)?;
             if o.sequence < sequence || (o.sequence == sequence && payload != signed.payload) {
                 return Err(Error::Conflict);
             }
@@ -101,18 +108,36 @@ impl Authorities {
             .fingerprints()
             .remove(&o.authority)
             .ok_or(Error::Configuration)?;
-        // Keep the latest mandatory artifact per immutable Policy independently of the
-        // latest complete observation. Missing/ordinary/revoked snapshots cannot erase it.
-        let mandatory = match &o.configuration {
-            Some(proof)
-                if proof.delivery
-                    == rss_mdm_agent_wire::da::DeliveryPermission::ManagedMandatory =>
+        if let Some(proof) = &o.configuration {
+            // The configured authority proves transport; the original issued artifact proves
+            // field authority. Neither a claimed delivery nor a Policy ID is sufficient.
+            let artifact = signing.read_on(c, proof.artifact).await?;
+            let config = artifact.decode().map_err(|_| Error::Corrupt)?;
+            let identity = da::ReportIdentity {
+                service_id: installation,
+                tenant: o.tenant,
+                registration: current.registration_id,
+                generation: current.generation,
+            };
+            if artifact.digest != proof.digest
+                || config.native.digest != proof.native_digest
+                || config.delivery != proof.delivery
+                || config.id != o.policy
+                || !config.permits(&identity, &o.device)
             {
-                serde_json::json!({o.policy.to_string(): proof.artifact})
+                return Err(Error::Forbidden);
             }
-            _ => serde_json::json!({}),
-        };
-        sqlx::query("INSERT INTO rss_da.deployment_evidence(tenant_id,registration,generation,authority,sequence,fingerprint,payload,signature,document,received_at,mandatory) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(tenant_id,registration,generation,authority) DO UPDATE SET sequence=excluded.sequence,fingerprint=excluded.fingerprint,payload=excluded.payload,signature=excluded.signature,document=excluded.document,received_at=excluded.received_at,mandatory=rss_da.deployment_evidence.mandatory || excluded.mandatory")
+            if config.delivery == da::DeliveryPermission::ManagedMandatory {
+                let locked = mandatory.entry(config.id).or_default();
+                for field in config.managed_fields {
+                    locked.insert(field, proof.artifact);
+                }
+            }
+        }
+        // A narrower old artifact updates only the fields it owns; other established
+        // locks survive until the current issuer explicitly releases those fields.
+        let mandatory = serde_json::to_value(mandatory).map_err(|_| Error::Corrupt)?;
+        sqlx::query("INSERT INTO rss_da.deployment_evidence(tenant_id,registration,generation,authority,sequence,fingerprint,payload,signature,document,received_at,mandatory) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(tenant_id,registration,generation,authority) DO UPDATE SET sequence=excluded.sequence,fingerprint=excluded.fingerprint,payload=excluded.payload,signature=excluded.signature,document=excluded.document,received_at=excluded.received_at,mandatory=excluded.mandatory")
             .bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).bind(o.sequence).bind(&fingerprint).bind(&signed.payload).bind(&signed.signature).bind(serde_json::to_value(&o).map_err(|_|Error::Malformed)?).bind(now).bind(mandatory).execute(&mut *c).await.map_err(db)?;
         if !o.revoked {
             for report in &o.applications {
@@ -216,6 +241,7 @@ impl crate::Service {
     pub async fn record_deployment(
         &self,
         authorities: &Authorities,
+        signing: &ConfigurationService,
         value: &SignedObservation,
         a: &RequestAudit,
     ) -> Result<(), Error> {
@@ -227,14 +253,21 @@ impl crate::Service {
         );
         self.write(
             a,
-            (authorities, value, self.tenant, self.service_id()?, a),
+            (
+                authorities,
+                value,
+                self.tenant,
+                self.service_id()?,
+                a,
+                signing,
+            ),
             |ctx, c| {
                 Box::pin(async move {
                     let now = super::platform_sso::store::now(c).await?;
                     let verified = ctx.0.verify(ctx.1, now)?;
                     ctx.4
                         .identify_service(&format!("da-deployment:{}", verified.authority));
-                    let changed = ctx.0.record_on(c, ctx.2, ctx.3, ctx.1).await?;
+                    let changed = ctx.0.record_on(c, ctx.5, ctx.2, ctx.3, ctx.1).await?;
                     Ok(crate::service::Change {
                         value: (),
                         replay: !changed,

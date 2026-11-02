@@ -132,15 +132,16 @@ pub async fn verify(
     .await?;
     assert_eq!(next["items"][0]["receipt"]["sequence"], 3);
     assert!(next["nextCursor"].is_null());
+    let invalidated = client
+        .get(&history)
+        .bearer_auth(token)
+        .query(&[("kind", "application"), ("limit", "1"), ("cursor", cursor)])
+        .send()
+        .await?;
+    assert_eq!(invalidated.status(), 409);
     assert_eq!(
-        client
-            .get(&history)
-            .bearer_auth(token)
-            .query(&[("kind", "application"), ("limit", "1"), ("cursor", cursor)])
-            .send()
-            .await?
-            .status(),
-        409
+        invalidated.json::<serde_json::Value>().await?["code"],
+        "query_cursor_invalidated"
     );
     assert_eq!(
         client

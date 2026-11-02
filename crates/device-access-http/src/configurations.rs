@@ -1,4 +1,5 @@
 //! Device reports and management reads share the production query declarations.
+use crate::business_error::Error as BusinessError;
 use crate::{Body, Error, Services, body, boundary::Administrator, peer};
 use axum::{
     Extension, Json,
@@ -34,8 +35,8 @@ impl WindowOwner for Reports {
         &reports::WINDOW
     }
 }
-fn service(s: &Services) -> Result<&crate::Business, Error> {
-    s.business.as_deref().ok_or(Error::Unavailable)
+fn service(s: &Services) -> Result<&crate::Business, BusinessError> {
+    s.business.as_deref().ok_or(BusinessError::Unavailable)
 }
 pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     rss_mdm_http_contract::route_module! {struct Configurations for [Da]{status,application,current,list,detail,versions,latest,history,diagnostics,publication_operation}}
@@ -104,7 +105,8 @@ async fn status(
 ) -> Result<Json<reports::Receipt>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
     Ok(Json(
-        service(&s)?
+        service(&s)
+            .map_err(|_| Error::Unavailable)?
             .service
             .report_status(&p, &body(v)?, &a)
             .await?,
@@ -118,7 +120,8 @@ async fn application(
 ) -> Result<Json<reports::Receipt>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
     Ok(Json(
-        service(&s)?
+        service(&s)
+            .map_err(|_| Error::Unavailable)?
             .service
             .report_application(&s.configurations, &p, &body(v)?, &a)
             .await?,
@@ -131,7 +134,8 @@ async fn current(
 ) -> Result<Json<config::CurrentConfiguration>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
     Ok(Json(
-        service(&s)?
+        service(&s)
+            .map_err(|_| Error::Unavailable)?
             .service
             .retrieve_configuration(&s.configurations, &p, None, &a)
             .await?,
@@ -141,8 +145,8 @@ async fn list(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
     q: OwnedQuery<Window<Directory>>,
-) -> Result<CollectionResponse<Json<config::ConfigurationPage>>, Error> {
-    let (q, extra) = q.parse().map_err(|_| Error::Malformed)?;
+) -> Result<CollectionResponse<Json<config::ConfigurationPage>>, BusinessError> {
+    let (q, extra) = q.parse()?;
     let input = config::DirectoryQuery {
         cursor: q.cursor().clone(),
         limit: Some(q.limit() as u16),
@@ -158,7 +162,7 @@ async fn detail(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
     Path(id): Path<Uuid>,
-) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, Error> {
+) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
     Ok(Json(service(&s)?.service.configuration(&p, id).await?))
 }
 async fn versions(
@@ -166,8 +170,8 @@ async fn versions(
     Administrator(p): Administrator,
     Path(id): Path<Uuid>,
     q: OwnedQuery<Window<Versions>>,
-) -> Result<CollectionResponse<Json<config::ConfigurationPage>>, Error> {
-    let (q, _) = q.parse().map_err(|_| Error::Malformed)?;
+) -> Result<CollectionResponse<Json<config::ConfigurationPage>>, BusinessError> {
+    let (q, _) = q.parse()?;
     Ok(CollectionResponse(Json(
         service(&s)?
             .service
@@ -186,7 +190,7 @@ async fn latest(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
     Path(device): Path<String>,
-) -> Result<Json<Option<reports::View>>, Error> {
+) -> Result<Json<Option<reports::View>>, BusinessError> {
     Ok(Json(
         service(&s)?
             .service
@@ -199,12 +203,12 @@ async fn history(
     Administrator(p): Administrator,
     Path(device): Path<String>,
     q: OwnedQuery<Window<Reports>>,
-) -> Result<CollectionResponse<Json<reports::Page>>, Error> {
-    let (q, extra) = q.parse().map_err(|_| Error::Malformed)?;
+) -> Result<CollectionResponse<Json<reports::Page>>, BusinessError> {
+    let (q, extra) = q.parse()?;
     let kind = match extra.get("kind").map(String::as_str) {
         Some("status") | None => reports::Kind::Status,
         Some("application") => reports::Kind::Application,
-        _ => return Err(Error::Malformed),
+        _ => return Err(BusinessError::Malformed),
     };
     Ok(CollectionResponse(Json(
         service(&s)?
@@ -226,7 +230,7 @@ async fn diagnostics(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
     Path(device): Path<String>,
-) -> Result<Json<config::Diagnostics>, Error> {
+) -> Result<Json<config::Diagnostics>, BusinessError> {
     let b = service(&s)?;
     Ok(Json(
         b.service
@@ -239,7 +243,7 @@ async fn publication_operation(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
     Path(id): Path<Uuid>,
-) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, Error> {
+) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, BusinessError> {
     Ok(Json(
         service(&s)?.service.publication_operation(&p, id).await?,
     ))

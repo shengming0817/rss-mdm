@@ -87,7 +87,11 @@ pub fn resolve(
             }
             if let Some(previous) = selected {
                 let conflict = match field {
-                    ConfigurationField::Mac => previous.content.mac != candidate.content.mac,
+                    ConfigurationField::Mac => {
+                        previous.content.mac != candidate.content.mac
+                            || previous.native.mac != candidate.native.mac
+                            || previous.native.bindings != candidate.native.bindings
+                    }
                     ConfigurationField::Windows => {
                         previous.content.windows != candidate.content.windows
                     }
@@ -180,6 +184,76 @@ mod tests {
         assert!(!actual.self_enrollment);
         assert!(result.fields[1].locked && result.fields[1].backend_ignored);
         assert!(!result.fields[0].locked);
+    }
+    #[test]
+    fn mac_conflicts_include_native_inputs_but_not_independent_windows_settings() {
+        use rss_mdm_agent_wire::{
+            da::{MacNativeInput, NativeBinding},
+            platform_sso,
+        };
+        let mut first = managed();
+        first.managed_fields = vec![ConfigurationField::Mac];
+        first.content.mac = Some(platform_sso::LoginConfiguration::default());
+        let native = MacNativeInput {
+            deployment: platform_sso::Configuration {
+                team_id: "ABCDEFGHIJ".into(),
+                extension_id: "com.example.extension".into(),
+                application_id: "com.example.app".into(),
+                application_version: "1.0".into(),
+                client_id: Uuid::from_u128(10),
+            },
+            origin: "https://example.test".into(),
+        };
+        let bindings = vec![
+            NativeBinding {
+                schema: "Configuration".into(),
+                identifier: "profile".into(),
+                uuid: Uuid::from_u128(11),
+                version: 1,
+            },
+            NativeBinding {
+                schema: "extension".into(),
+                identifier: "extension".into(),
+                uuid: Uuid::from_u128(12),
+                version: 1,
+            },
+        ];
+        first.native = NativeExpectation::new(&first.content, bindings, Some(native)).unwrap();
+        let backend = backend();
+        let mut other = first.clone();
+        other.content.windows = AccessWindowsConfiguration::Whfb;
+        other.native = NativeExpectation::new(
+            &other.content,
+            other.native.bindings.clone(),
+            other.native.mac.clone(),
+        )
+        .unwrap();
+        assert!(
+            resolve(Some(&backend), &[&first, &other], SourceState::Present, &[])
+                .unwrap()
+                .blocked
+                .is_none()
+        );
+        for change_binding in [false, true] {
+            let mut other = first.clone();
+            if change_binding {
+                other.native.bindings[0].uuid = Uuid::from_u128(13);
+            } else {
+                other.native.mac.as_mut().unwrap().origin = "https://another.test".into();
+            }
+            other.native = NativeExpectation::new(
+                &other.content,
+                other.native.bindings.clone(),
+                other.native.mac.clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                resolve(Some(&backend), &[&first, &other], SourceState::Present, &[])
+                    .unwrap()
+                    .blocked,
+                Some(SourceState::Conflict)
+            );
+        }
     }
     #[test]
     fn unavailable_or_conflicting_protected_sources_never_fall_back() {

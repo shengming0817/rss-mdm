@@ -226,6 +226,102 @@ pub async fn verify_sources(
             .await?,
     )
     .await?;
+    // A -> B -> A: a narrower, still valid old managed package cannot erase a
+    // Windows lock established by the newer package without a protected release.
+    publication
+        .managed_fields
+        .push(da::ConfigurationField::Windows);
+    publication.revision += 1;
+    publication.version = Uuid::new_v4();
+    publish_protected(
+        c,
+        m,
+        &Change {
+            operation_id: Uuid::new_v4(),
+            expected_revision: publication.revision - 1,
+            publication: publication.clone(),
+        },
+    )
+    .await?;
+    let broader: da::SignedConfiguration = material::success(
+        client
+            .post(format!("{base}/configurations"))
+            .bearer_auth(token)
+            .json(&da::Export {
+                operation_id: Uuid::new_v4(),
+                policy: publication.id,
+                version: publication.version,
+                delivery: da::DeliveryPermission::ManagedMandatory,
+                lifetime_seconds: 600,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let content = broader.decode()?;
+    observation.configuration = Some(ConfigurationDeployment {
+        artifact: content.operation_id,
+        digest: broader.digest,
+        native_digest: content.native.digest,
+        delivery: da::DeliveryPermission::ManagedMandatory,
+        state: da::SourceState::Present,
+    });
+    observation.policy_version = publication.version;
+    observation.sequence += 1;
+    material::empty(
+        client
+            .post(&url)
+            .json(&business::signed(observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    let locked = diagnostic(client, base, token, &observation.device).await?;
+    assert_eq!(locked["resolution"]["fields"][1]["locked"], true);
+    for candidate in [managed.clone(), None] {
+        observation.configuration = candidate;
+        observation.sequence += 1;
+        material::empty(
+            client
+                .post(&url)
+                .json(&business::signed(observation)?)
+                .send()
+                .await?,
+        )
+        .await?;
+        let blocked = diagnostic(client, base, token, &observation.device).await?;
+        assert!(!blocked["resolution"]["blocked"].is_null());
+        assert!(
+            blocked["resolution"]["configuration"].is_null(),
+            "old narrow package cannot release Windows"
+        );
+    }
+    publication.managed_fields = vec![da::ConfigurationField::Mac];
+    publication.revision += 1;
+    publication.version = Uuid::new_v4();
+    publish_protected(
+        c,
+        m,
+        &Change {
+            operation_id: Uuid::new_v4(),
+            expected_revision: publication.revision - 1,
+            publication: publication.clone(),
+        },
+    )
+    .await?;
+    observation.configuration = managed.clone();
+    observation.sequence += 1;
+    material::empty(
+        client
+            .post(&url)
+            .json(&business::signed(observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    let released = diagnostic(client, base, token, &observation.device).await?;
+    assert!(released["resolution"]["blocked"].is_null());
+    assert_eq!(released["resolution"]["fields"][1]["locked"], false);
     // Ordinary V2 changes differ in both groups. The managed Mac V1 stays locked while
     // Windows takes V2; this must not make old evidence current for native login.
     publication.version = Uuid::new_v4();

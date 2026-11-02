@@ -163,6 +163,7 @@ async fn evidence(
         .service
         .record_deployment(
             &business.evidence,
+            &s.configurations,
             &body.map_err(|_| Error::Malformed)?.0,
             &a,
         )

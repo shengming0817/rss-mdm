@@ -8,8 +8,6 @@ use rss_mdm_policy_postgres::device_access as policy;
 use rss_mdm_registration_service::device::endpoints;
 use rss_mdm_task_trust::configuration::ConfigurationService;
 use sqlx::PgConnection;
-use std::collections::BTreeMap;
-use uuid::Uuid;
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -66,16 +64,17 @@ impl Service {
                 .fetch_all(&mut *c).await.map_err(crate::database::db)?;
             let mut locked = Vec::new();
             for value in previous {
-                let refs: BTreeMap<Uuid, Uuid> = serde_json::from_value(value).map_err(|_| Error::Corrupt)?;
-                for (policy, artifact) in refs {
+                let refs: crate::evidence::Mandatory = serde_json::from_value(value).map_err(|_| Error::Corrupt)?;
+                for (policy, fields_by_artifact) in refs {
+                  for (field, artifact) in fields_by_artifact {
                     let config = signing.read_on(c, artifact).await?.decode().map_err(|_| Error::Corrupt)?;
                     if config.id != policy || !config.permits(&identity, device)
-                        || config.delivery != da::DeliveryPermission::ManagedMandatory {
+                        || config.delivery != da::DeliveryPermission::ManagedMandatory
+                        || !config.managed_fields.contains(&field) {
                         return Err(Error::Corrupt);
                     }
-                    for field in fields(c, &config).await? {
-                        if !locked.contains(&field) { locked.push(field); }
-                    }
+                    if fields(c, &config).await?.contains(&field) && !locked.contains(&field) { locked.push(field); }
+                  }
                 }
             }
 
