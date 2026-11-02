@@ -166,6 +166,38 @@
     },
     {
       "schema": "rss_da",
+      "table": "report_budget",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "bytes",
+        "minute",
+        "reports"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "report_heads",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "document",
+        "integrity",
+        "receipt"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "report_history",
+      "read_write": true,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": "tenant"
+    },
+    {
+      "schema": "rss_da",
       "table": "results",
       "read_write": true,
       "read_only": false,

@@ -143,7 +143,8 @@ impl Authorities {
                 return Err(Error::Forbidden);
             }
             if selected.as_ref().is_some_and(|old: &Observation| {
-                old.local_session != o.local_session
+                old.configuration != o.configuration
+                    || old.local_session != o.local_session
                     || old.policy != o.policy
                     || old.policy_version != o.policy_version
                     || serde_json::to_value(&old.deployment).ok()

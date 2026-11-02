@@ -8,6 +8,7 @@ use sqlx::PgConnection;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 pub struct Assembly {
+    pub report_limits: crate::reports::Limits,
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub tenant: TenantId,
     pub instance: Uuid,
@@ -17,6 +18,7 @@ pub struct Assembly {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
 }
 pub struct Service {
+    pub(crate) report_limits: crate::reports::Limits,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) tenant: TenantId,
     instance: Uuid,
@@ -34,7 +36,9 @@ impl Service {
         if a.store.profile() != StorageProfile::Da || a.instance.is_nil() {
             return Err(Error::Configuration);
         }
+        a.report_limits.validate()?;
         Ok(Self {
+            report_limits: a.report_limits,
             cursor: a.cursor,
             tenant: a.tenant,
             instance: a.instance,

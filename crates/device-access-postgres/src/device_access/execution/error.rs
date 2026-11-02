@@ -68,7 +68,8 @@ impl From<crate::Error> for Error {
             R::Corrupt | R::Configuration => Self::Invariant,
             R::Audit(e) => Self::Audit(e),
             R::Agent(_) => Self::Unauthorized,
-            R::Storage
+            R::Signing(_)
+            | R::Storage
             | R::Deadline
             | R::RegistrationLimit
             | R::Capacity
