@@ -69,7 +69,7 @@ pub async fn capture(journal: &Journal, database: &Database<'_>) -> Result<Datab
         .mode(0o600)
         .open(&stage)
         .map_err(|_| Error::Storage)?;
-    let password = crate::files::secret(&database.password_file).map_err(|_| Error::Input)?;
+    let password = crate::files::secret(database.password_file).map_err(|_| Error::Input)?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3600),
         tokio::process::Command::new(client(database, false).await?)
@@ -78,20 +78,20 @@ pub async fn capture(journal: &Journal, database: &Database<'_>) -> Result<Datab
                 database.exclude_marker(),
                 "--no-password",
                 "--host",
-                &database.host,
+                database.host,
                 "--port",
                 &database.port.to_string(),
                 "--username",
-                &database.user,
+                database.user,
                 "--dbname",
-                &database.name,
+                database.name,
             ])
             .env_remove("PGSERVICE")
             .env_remove("PGSERVICEFILE")
             .env_remove("PGOPTIONS")
             .env("PGPASSWORD", password.as_str())
             .env("PGSSLMODE", "verify-full")
-            .env("PGSSLROOTCERT", &database.ca_file)
+            .env("PGSSLROOTCERT", database.ca_file)
             .env("PGCONNECT_TIMEOUT", "5")
             .stdin(std::process::Stdio::null())
             .stdout(file)
@@ -301,7 +301,7 @@ pub async fn restore_database(journal: &Journal, database: &Database<'_>) -> Res
     if expected.sha256 != actual.sha256 || expected.bytes != actual.bytes {
         return Err(Error::Corrupt);
     }
-    let password = crate::files::secret(&database.password_file).map_err(|_| Error::Input)?;
+    let password = crate::files::secret(database.password_file).map_err(|_| Error::Input)?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3600),
         tokio::process::Command::new(client(database, true).await?)
@@ -310,13 +310,13 @@ pub async fn restore_database(journal: &Journal, database: &Database<'_>) -> Res
                 "--exit-on-error",
                 "--no-password",
                 "--host",
-                &database.host,
+                database.host,
                 "--port",
                 &database.port.to_string(),
                 "--username",
-                &database.user,
+                database.user,
                 "--dbname",
-                &database.name,
+                database.name,
             ])
             .arg(path)
             .env_remove("PGSERVICE")
@@ -324,7 +324,7 @@ pub async fn restore_database(journal: &Journal, database: &Database<'_>) -> Res
             .env_remove("PGOPTIONS")
             .env("PGPASSWORD", password.as_str())
             .env("PGSSLMODE", "verify-full")
-            .env("PGSSLROOTCERT", &database.ca_file)
+            .env("PGSSLROOTCERT", database.ca_file)
             .env("PGCONNECT_TIMEOUT", "5")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -337,6 +337,26 @@ pub async fn restore_database(journal: &Journal, database: &Database<'_>) -> Res
         return Err(Error::Storage);
     }
     Ok(())
+}
+
+/// Exact process connection inputs for PostgreSQL archive tools.
+pub struct Database<'a> {
+    pub options: sqlx::postgres::PgConnectOptions,
+    pub host: &'a str,
+    pub port: u16,
+    pub name: &'a str,
+    pub user: &'a str,
+    pub password_file: &'a Path,
+    pub ca_file: &'a Path,
+    pub profile: crate::StorageProfile,
+}
+impl Database<'_> {
+    fn exclude_marker(&self) -> &'static str {
+        match self.profile {
+            crate::StorageProfile::Mdm => "--exclude-table=public.mdm_restore_operation",
+            crate::StorageProfile::Da => "--exclude-table=public.da_restore_operation",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -371,25 +391,5 @@ mod tests {
         std::fs::rename(&directory, &moved).unwrap();
         std::os::unix::fs::symlink(&moved, &directory).unwrap();
         assert!(matches!(verify(&journal, &hash), Err(Error::Corrupt)));
-    }
-}
-
-/// Exact process connection inputs for PostgreSQL archive tools.
-pub struct Database<'a> {
-    pub options: sqlx::postgres::PgConnectOptions,
-    pub host: &'a str,
-    pub port: u16,
-    pub name: &'a str,
-    pub user: &'a str,
-    pub password_file: &'a Path,
-    pub ca_file: &'a Path,
-    pub profile: crate::StorageProfile,
-}
-impl Database<'_> {
-    fn exclude_marker(&self) -> &'static str {
-        match self.profile {
-            crate::StorageProfile::Mdm => "--exclude-table=public.mdm_restore_operation",
-            crate::StorageProfile::Da => "--exclude-table=public.da_restore_operation",
-        }
     }
 }

@@ -17,6 +17,8 @@ pub enum Error {
     Identity,
     #[error("DA owner admission rejected")]
     Admission,
+    #[error("DA admission rejected at {0}")]
+    AdmissionAt(&'static str),
     #[error("DA lifecycle did not complete")]
     Lifecycle,
     #[error("DA operation result unknown")]

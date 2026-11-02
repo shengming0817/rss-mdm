@@ -259,7 +259,9 @@ class Environment:
         return self
 
     def roles(self):
-        sources = sorted((ROOT/'apps/server/schema').glob('*-roles.sql'))
+        sources = [ROOT/f'apps/server/schema/{name}-roles.sql'
+                   for name in ('business','software-publication','commands','identity','audit','webhook')]
+        sources.append(ROOT/'crates/device-access-runtime/schema/roles.sql')
         fingerprint = hashlib.sha256(b''.join(p.read_bytes() for p in sources)).hexdigest()
         marker = self.root/'roles.sha256'
         present = self.sql("SELECT count(*) FROM pg_roles WHERE rolname='mdm_owner'") == '1'
@@ -271,8 +273,8 @@ class Environment:
         for role, password in [('mdm_runtime','runtime-fixture'),('mdm_api','api-fixture'),('mdm_access','access-fixture')]:
             sql += f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOBYPASSRLS;"
         # Publication defines the borrowed relay role required by subsequent role files.
-        for name in ('business','software-publication','commands','identity','audit','webhook','device-access'):
-            sql += (ROOT/f'apps/server/schema/{name}-roles.sql').read_text()
+        for source in sources:
+            sql += source.read_text()
         for role in ('mdm_policy_runtime','mdm_resource_runtime','mdm_software_release_runtime','mdm_group_runtime',
                      'mdm_inventory_runtime','mdm_scope_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator','mdm_scope_group_consumer'):
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"

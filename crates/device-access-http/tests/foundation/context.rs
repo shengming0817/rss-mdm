@@ -87,6 +87,7 @@ impl rss_request_context::ExecutionTimer for Timer {
     }
 }
 pub struct Context {
+    pub browser_origin: std::sync::OnceLock<String>,
     pub platform: Arc<rss_mdm_device_access_postgres::platform_sso::bridge::Verifier>,
     pub business: std::sync::OnceLock<Arc<rss_mdm_device_access_http::Business>>,
     pub inputs: Inputs,
@@ -214,6 +215,7 @@ impl Context {
             Arc::new(Timer),
         ));
         Ok(Self {
+            browser_origin: std::sync::OnceLock::new(),
             platform,
             business: std::sync::OnceLock::new(),
             proof_audit,

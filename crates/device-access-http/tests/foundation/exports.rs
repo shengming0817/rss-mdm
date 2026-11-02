@@ -65,6 +65,18 @@ pub async fn verify(
             .await?,
     )
     .await?;
+
+    // CMS and native codecs are synchronous CPU work. Keep their debug frames off the
+    // nested protocol future stack while exercising the same production functions.
+    let signed = signed.clone();
+    let trust = trust.clone();
+    tokio::task::spawn_blocking(move || verify_templates(response, &signed, &trust)).await?
+}
+fn verify_templates(
+    response: serde_json::Value,
+    signed: &da::SignedConfiguration,
+    trust: &da::ConfigurationTrust,
+) -> Result<()> {
     assert_eq!(response["digest"], signed.digest);
     assert_eq!(
         response["mac"]["legacyUnavailable"],
@@ -84,7 +96,9 @@ pub async fn verify(
         access_rights: &[],
     };
     let bytes = response["mac"]["mobileconfig"].as_str().unwrap().as_bytes();
+
     let first = rewrap(bytes)?;
+
     let mut profile = plist::Value::from_reader(std::io::Cursor::new(first))?;
     profile
         .as_dictionary_mut()
@@ -93,6 +107,7 @@ pub async fn verify(
     let mut changed = Vec::new();
     profile.to_writer_xml(&mut changed)?;
     let second = rewrap(&changed)?;
+
     let extracted = rss_mdm_apple_mdm::da::extract(&second, &target)?;
     assert_eq!(extracted.payload, signed.payload);
     assert_eq!(extracted.signature, signed.signature);

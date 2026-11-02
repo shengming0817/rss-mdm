@@ -1,5 +1,6 @@
 //! Concrete standalone application: initialize its management account, serve TLS and drain.
 use super::*;
+use anyhow::Context as _;
 use std::{os::unix::fs::PermissionsExt, path::Path};
 
 pub(super) fn private(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -26,6 +27,9 @@ pub async fn verify(
     let browser_address = browser.local_addr()?;
     let protocol_address = protocol.local_addr()?;
     let origin = format!("https://localhost:{}", browser_address.port());
+    c.browser_origin
+        .set(origin.clone())
+        .expect("one host origin");
     let trust = registration.trust().trust.public()?;
     let trust_file = m.directory.join("host-trust.json");
     private(&trust_file, &serde_json::to_vec(&trust)?)?;
@@ -78,7 +82,8 @@ pub async fn verify(
             },
             rss_da_app::maintenance::AccountOperation::Initialize,
         )
-        .await?;
+        .await
+        .context("initialize standalone account and authorization")?;
     }
     let mut damaged = value.clone();
     damaged["browser"]["private_key_file"] = serde_json::json!(m.directory.join("device1.key"));
@@ -87,7 +92,9 @@ pub async fn verify(
             .await
             .is_err()
     );
-    rss_da_app::maintenance::diagnose(rss_da_app::config::load(&runtime_file)?).await?;
+    rss_da_app::maintenance::diagnose(rss_da_app::config::load(&runtime_file)?)
+        .await
+        .context("diagnose initialized standalone host")?;
     drop((browser, protocol));
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let config = rss_da_app::config::load(&runtime_file)?;

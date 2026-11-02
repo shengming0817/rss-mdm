@@ -62,10 +62,10 @@ pub async fn verify(
             .await?;
     assert!(revoked > 0);
     connection.close().await?;
-    backup::capture(serde_json::from_value(request.clone())?).await?;
+    Box::pin(backup::capture(serde_json::from_value(request.clone())?)).await?;
     // Reconstruct a crash after Complete, before the final local cleanup.
     Journal::open(&material.directory)?.save("backup-operation.json", &Some(operation))?;
-    backup::capture(serde_json::from_value(request)?).await?;
+    Box::pin(backup::capture(serde_json::from_value(request)?)).await?;
     assert_eq!(
         Journal::open(&material.directory)?.load::<Option<Uuid>>("backup-operation.json")?,
         Some(None)
@@ -109,7 +109,7 @@ pub async fn verify(
         accounts,
     })?;
     assert!(
-        backup::restore(serde_json::from_value(restore.clone())?)
+        Box::pin(backup::restore(serde_json::from_value(restore.clone())?))
             .await
             .is_err()
     );
@@ -142,13 +142,13 @@ pub async fn verify(
     let mut other = restore.clone();
     other["operation_id"] = serde_json::json!(Uuid::new_v4());
     assert!(
-        backup::restore(serde_json::from_value(other)?)
+        Box::pin(backup::restore(serde_json::from_value(other)?))
             .await
             .is_err()
     );
     host::private(&verification_password, &password)?;
-    backup::restore(serde_json::from_value(restore.clone())?).await?;
-    backup::restore(serde_json::from_value(restore)?).await?;
+    Box::pin(backup::restore(serde_json::from_value(restore.clone())?)).await?;
+    Box::pin(backup::restore(serde_json::from_value(restore)?)).await?;
     let mut connection = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
     let preserved: i64 =
         sqlx::query_scalar("SELECT count(*) FROM rss_da.registrations WHERE state='revoked'")
@@ -159,6 +159,9 @@ pub async fn verify(
         "recovery must not reactivate revoked registrations"
     );
     connection.close().await?;
-    rss_da_app::maintenance::diagnose(config::load(&installed.runtime_file)?).await?;
+    Box::pin(rss_da_app::maintenance::diagnose(config::load(
+        &installed.runtime_file,
+    )?))
+    .await?;
     Ok(())
 }

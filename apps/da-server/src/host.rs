@@ -204,7 +204,7 @@ pub async fn assemble(
             .map_err(|_| Error::Storage)?;
     if restoring {
         let complete: bool = sqlx::query_scalar("SELECT count(complete)=1 AND coalesce(bool_and(complete),false) FROM public.da_restore_operation")
-            .fetch_one(&pool).await.map_err(|_|Error::Admission)?;
+            .fetch_one(&pool).await.map_err(|_| Error::AdmissionAt("restore state"))?;
         if !complete {
             return Err(Error::Admission);
         }
@@ -230,11 +230,11 @@ pub async fn assemble(
 
     da::installation::verify_standalone_access(&mut c, config.audit.ledger())
         .await
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::AdmissionAt("owner contracts"))?;
 
     rss_identity_postgres::verify_platform_subject_admission(&mut c, instance)
         .await
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::AdmissionAt("Identity subject admission"))?;
 
     let expected = crate::installation::composition(&config.installation, config.audit.ledger())?;
 
@@ -244,7 +244,7 @@ pub async fn assemble(
         &da::installation::standalone_units(config.audit.ledger()),
     )
     .await
-    .map_err(|_| Error::Admission)?;
+    .map_err(|_| Error::AdmissionAt("installation binding"))?;
 
     use rss_mdm_install_support::Host;
 
@@ -255,7 +255,7 @@ pub async fn assemble(
     expected
         .check_existing(&mut c, &receipts)
         .await
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::AdmissionAt("installation identity"))?;
 
     drop(c);
 
@@ -270,14 +270,14 @@ pub async fn assemble(
             &audit_budget.control(),
         )
         .await
-        .map_err(|_| Error::Admission)?,
+        .map_err(|_| Error::AdmissionAt("Audit runtime"))?,
     );
 
     let proof_audit = Arc::new(
         audit
             .on_runtime(identity_runtime.clone(), tenant, &audit_budget.control())
             .await
-            .map_err(|_| Error::Admission)?,
+            .map_err(|_| Error::AdmissionAt("Identity Audit"))?,
     );
 
     let platform = da::Runtime::prepare(&config.browser.origin);
@@ -416,7 +416,7 @@ pub async fn assemble(
     authorization
         .require_management_initializer()
         .await
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::AdmissionAt("management initializer"))?;
 
     let protection = config.protection.load()?;
 
@@ -478,7 +478,7 @@ pub async fn assemble(
 
     pki.admit(tenant, now())
         .await
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::AdmissionAt("PKI registry"))?;
 
     let trust = Arc::new(
         rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
@@ -518,7 +518,7 @@ pub async fn assemble(
             &protection,
         )
         .await
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::AdmissionAt("configuration signing trust"))?;
 
         tx.rollback().await.map_err(|_| Error::Storage)?;
 
@@ -560,11 +560,11 @@ pub async fn assemble(
         },
         Some(inputs),
     )
-    .map_err(|_| Error::Admission)?;
+    .map_err(|_| Error::AdmissionAt("DA runtime"))?;
 
     runtime
         .bind(&platform, &enterprise)
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::AdmissionAt("Identity provider binding"))?;
 
     let recovery = config
         .recovery
@@ -759,7 +759,7 @@ pub async fn serve(
 
   let launch=startup.commit();
 
-  let _lease=launch.finish();
+  launch.finish();
 
   std::future::pending().await
  })},stop).await.map_err(|_|Error::Lifecycle)?;

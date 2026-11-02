@@ -88,7 +88,7 @@ startup.stage_resource(DynManagedResource::new_box(host::RuntimeResource(transac
 
   let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
 
-  let store=rss_mdm_audit_integration::AuditStore::new(pool,config.audit.integrity()?,transactions,tenant,&budget.control()).await.map_err(|_|Error::Admission)?;
+  let store=rss_mdm_audit_integration::AuditStore::new(pool,config.audit.integrity()?,transactions,tenant,&budget.control()).await.map_err(|_| Error::AdmissionAt("account Audit"))?;
 
   let audit=rss_mdm_audit_integration::RequestAudit::new(StorageProfile::Da,tenant.to_string(),"da_initialize",rss_mdm_audit_integration::AuditIntent::Management);
 
@@ -96,7 +96,7 @@ startup.stage_resource(DynManagedResource::new_box(host::RuntimeResource(transac
 
   audit.finalize(result.as_ref().err().map(|_|rss_mdm_audit_integration::FailureReason::Transaction));
 
-  result.map_err(|_|Error::Admission)?;
+  result.map_err(|_| Error::AdmissionAt("authorization initialization"))?;
 startup.commit().finish();
 Ok(())
  })},std::future::pending()).await.map_err(|_|Error::Lifecycle)?;
@@ -184,7 +184,7 @@ pub async fn verify_account(config: &Config, input: &OriginalAccount) -> Result<
 
   let user=rss_mdm_authorization_service::User{instance_id:installation.instance.to_string(),tenant_id:input.tenant.to_string(),principal_id:input.principal.to_string()};
 
-  let verified=rss_mdm_authorization_service::initialization::verify_local(&authority,user,LoginKey::parse(&input.login).map_err(|_|Error::Configuration)?,Password::new(secret(&input.password_file).map_err(|_|Error::Configuration)?.to_string()).map_err(|_|Error::Configuration)?).await.map_err(|_|Error::Admission)?;
+  let verified=rss_mdm_authorization_service::initialization::verify_local(&authority,user,LoginKey::parse(&input.login).map_err(|_|Error::Configuration)?,Password::new(secret(&input.password_file).map_err(|_|Error::Configuration)?.to_string()).map_err(|_|Error::Configuration)?).await.map_err(|_| Error::AdmissionAt("original account authentication"))?;
 
   use sqlx::Connection;
 
@@ -195,7 +195,7 @@ pub async fn verify_account(config: &Config, input: &OriginalAccount) -> Result<
 
    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(input.tenant.to_string()).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
 
-   let rules=rss_mdm_authorization_service::snapshot_on(StorageProfile::Da,&mut tx,&input.tenant.to_string(),&installation.instance.to_string()).await.map_err(|_|Error::Admission)?;
+   let rules=rss_mdm_authorization_service::snapshot_on(StorageProfile::Da,&mut tx,&input.tenant.to_string(),&installation.instance.to_string()).await.map_err(|_| Error::AdmissionAt("original authorization"))?;
 
    let allowed=rules.rules.iter().filter_map(|r|r.value.as_ref()).any(|r|matches!(&r.subject,rss_mdm_authorization_service::Subject::User{user} if user==verified.user())&&r.grants.iter().any(|g|g.operation==rss_mdm_authorization_service::Permission::AuthorizationWrite&&g.scope==rss_mdm_authorization_service::Scope::Tenant));
 

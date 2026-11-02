@@ -298,6 +298,11 @@ impl Host for Standalone {
                 if name == "messaging-v1" {
                     sqlx::query("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)").bind(self.target.as_slice()).bind(self.lineage.as_slice()).execute(&mut **tx).await.map_err(|_|Error::at(name,"storage lineage"))?;
                     for (tenant, epoch) in &self.tenants {
+                        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                            .bind(tenant.to_string())
+                            .execute(&mut **tx)
+                            .await
+                            .map_err(|_| Error::at(name, "tenant context"))?;
                         sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,$2)").bind(tenant.to_string()).bind(epoch).execute(&mut **tx).await.map_err(|_|Error::at(name,"tenant fencing"))?;
                     }
                 }
