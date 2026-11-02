@@ -145,6 +145,43 @@ pub fn profile(
         ],
     })
 }
+/// Render only the public generator inputs frozen in a verified DA configuration.
+/// The consumer verifies the inner signature before calling this mapping. Outer CMS signing
+/// remains with its existing owner; all bound profile/payload identities must survive wrapping.
+pub fn from_da_configuration(
+    value: &rss_mdm_agent_wire::da::Configuration,
+) -> Result<ProfileInput, Error> {
+    value.validate().map_err(|_| Error::Malformed)?;
+    let native = value.native.mac.as_ref().ok_or(Error::Malformed)?;
+    let login = value.content.mac.as_ref().ok_or(Error::Malformed)?;
+    let bindings = &value.native.bindings;
+    let mut output = profile(
+        &native.deployment,
+        login,
+        &native.origin,
+        value.tenant,
+        bindings[0].uuid,
+        bindings[1].uuid,
+    )?;
+    output.identifier = bindings[0].identifier.clone();
+    if bindings[0].schema != "Configuration"
+        || bindings[0].version != 1
+        || output.payloads.len() + 1 != bindings.len()
+    {
+        return Err(Error::Malformed);
+    }
+    for (payload, binding) in output.payloads.iter().zip(&bindings[1..]) {
+        if payload.schema != binding.schema
+            || payload.identifier != binding.identifier
+            || payload.uuid != binding.uuid
+            || binding.version != 1
+        {
+            return Err(Error::Malformed);
+        }
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,41 +260,4 @@ mod tests {
             assert!(bad.validate().is_err());
         }
     }
-}
-
-/// Render only the public generator inputs frozen in a verified DA configuration.
-/// The consumer verifies the inner signature before calling this mapping. Outer CMS signing
-/// remains with its existing owner; all bound profile/payload identities must survive wrapping.
-pub fn from_da_configuration(
-    value: &rss_mdm_agent_wire::da::Configuration,
-) -> Result<ProfileInput, Error> {
-    value.validate().map_err(|_| Error::Malformed)?;
-    let native = value.native.mac.as_ref().ok_or(Error::Malformed)?;
-    let login = value.content.mac.as_ref().ok_or(Error::Malformed)?;
-    let bindings = &value.native.bindings;
-    let mut output = profile(
-        &native.deployment,
-        login,
-        &native.origin,
-        value.tenant,
-        bindings[0].uuid,
-        bindings[1].uuid,
-    )?;
-    output.identifier = bindings[0].identifier.clone();
-    if bindings[0].schema != "Configuration"
-        || bindings[0].version != 1
-        || output.payloads.len() + 1 != bindings.len()
-    {
-        return Err(Error::Malformed);
-    }
-    for (payload, binding) in output.payloads.iter().zip(&bindings[1..]) {
-        if payload.schema != binding.schema
-            || payload.identifier != binding.identifier
-            || payload.uuid != binding.uuid
-            || binding.version != 1
-        {
-            return Err(Error::Malformed);
-        }
-    }
-    Ok(output)
 }

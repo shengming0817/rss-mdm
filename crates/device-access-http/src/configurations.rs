@@ -9,7 +9,7 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_certificate::ClientCertificateEvidence;
 use rss_mdm_device_access_postgres::{configuration as config, reports};
 use rss_mdm_http_contract::{
-    Operation, Router, catalog,
+    CollectionResponse, Operation, Router, catalog,
     module::Route,
     query::{OwnedQuery, Window, WindowOwner},
     routing::{get, post},
@@ -141,18 +141,18 @@ async fn list(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
     q: OwnedQuery<Window<Directory>>,
-) -> Result<Json<config::ConfigurationPage>, Error> {
+) -> Result<CollectionResponse<Json<config::ConfigurationPage>>, Error> {
     let (q, extra) = q.parse().map_err(|_| Error::Malformed)?;
     let input = config::DirectoryQuery {
         cursor: q.cursor().clone(),
         limit: Some(q.limit() as u16),
     };
-    Ok(Json(
+    Ok(CollectionResponse(Json(
         service(&s)?
             .service
             .configurations(&p, extra.get("device").map(String::as_str), &input)
             .await?,
-    ))
+    )))
 }
 async fn detail(
     State(s): State<Arc<Services>>,
@@ -166,9 +166,9 @@ async fn versions(
     Administrator(p): Administrator,
     Path(id): Path<Uuid>,
     q: OwnedQuery<Window<Versions>>,
-) -> Result<Json<config::ConfigurationPage>, Error> {
+) -> Result<CollectionResponse<Json<config::ConfigurationPage>>, Error> {
     let (q, _) = q.parse().map_err(|_| Error::Malformed)?;
-    Ok(Json(
+    Ok(CollectionResponse(Json(
         service(&s)?
             .service
             .configuration_history(
@@ -180,7 +180,7 @@ async fn versions(
                 },
             )
             .await?,
-    ))
+    )))
 }
 async fn latest(
     State(s): State<Arc<Services>>,
@@ -199,14 +199,14 @@ async fn history(
     Administrator(p): Administrator,
     Path(device): Path<String>,
     q: OwnedQuery<Window<Reports>>,
-) -> Result<Json<reports::Page>, Error> {
+) -> Result<CollectionResponse<Json<reports::Page>>, Error> {
     let (q, extra) = q.parse().map_err(|_| Error::Malformed)?;
     let kind = match extra.get("kind").map(String::as_str) {
         Some("status") | None => reports::Kind::Status,
         Some("application") => reports::Kind::Application,
         _ => return Err(Error::Malformed),
     };
-    Ok(Json(
+    Ok(CollectionResponse(Json(
         service(&s)?
             .service
             .report_history(
@@ -219,7 +219,7 @@ async fn history(
                 },
             )
             .await?,
-    ))
+    )))
 }
 
 async fn diagnostics(

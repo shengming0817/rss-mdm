@@ -416,7 +416,7 @@ pub static DIRECTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Sch
     context: &["device"],
 };
 pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
-    id: "da_configuration_versions",
+    id: "da_configuration_history",
     default_limit: 64,
     max_limit: 100,
     order: "revision desc",

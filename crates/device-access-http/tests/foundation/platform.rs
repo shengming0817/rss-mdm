@@ -407,39 +407,6 @@ pub async fn verify(
     let account = access::AccessAccount::Macos {
         generated_uid: Uuid::new_v4(),
     };
-    let id = Uuid::new_v4();
-    let change = pg::device_access::Change {
-        operation_id: Uuid::new_v4(),
-        expected_revision: 0,
-        action: pg::device_access::Action::Put {
-            person: rss_mdm_device_access::Person {
-                instance: Uuid::parse_str(&c.inputs.installation.instance_id)?,
-                principal,
-            },
-            intent: rss_mdm_device_access::AccountIntent::Existing {
-                account: account.clone(),
-            },
-            policy: publication.id,
-        },
-    };
-    let fingerprints = std::collections::BTreeMap::new();
-    let proof = Box::pin(business::operation_proof(
-        c,
-        &secret,
-        change.step_up_context(&actor, &registration.device, id, &fingerprints)?,
-    ))
-    .await?;
-    let binding = Box::pin(b.service.change_device_access(
-        &actor,
-        &registration.device,
-        id,
-        &change,
-        Some(&proof),
-        &fingerprints,
-        b.admission.as_ref(),
-        &business::audit(c),
-    ))
-    .await?;
     let configuration = rt.qualification_configuration()?;
     let mut observation = Observation {
         tenant: Uuid::parse_str(&c.tenant.to_string())?,
@@ -500,6 +467,39 @@ pub async fn verify(
         &mut observation,
         &exported,
     )
+    .await?;
+    let id = Uuid::new_v4();
+    let change = pg::device_access::Change {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        action: pg::device_access::Action::Put {
+            person: rss_mdm_device_access::Person {
+                instance: Uuid::parse_str(&c.inputs.installation.instance_id)?,
+                principal,
+            },
+            intent: rss_mdm_device_access::AccountIntent::Existing {
+                account: account.clone(),
+            },
+            policy: publication.id,
+        },
+    };
+    let fingerprints = std::collections::BTreeMap::new();
+    let proof = Box::pin(business::operation_proof(
+        c,
+        &secret,
+        change.step_up_context(&actor, &registration.device, id, &fingerprints)?,
+    ))
+    .await?;
+    let binding = Box::pin(b.service.change_device_access(
+        &actor,
+        &registration.device,
+        id,
+        &change,
+        Some(&proof),
+        &fingerprints,
+        b.admission.as_ref(),
+        &business::audit(c),
+    ))
     .await?;
     let device = Key::new()?;
     let user = Key::new()?;
@@ -632,8 +632,8 @@ pub async fn verify(
         "removing the configured authority rejects persisted application evidence"
     );
     tx.rollback().await?;
-    let token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
-    let session = Box::pin(browser_session(c, id, &source, &user, token)).await?;
+    let native_token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
+    let session = Box::pin(browser_session(c, id, &source, &user, native_token)).await?;
     let mut revoked = observation.clone();
     revoked.sequence += 1;
     revoked.revoked = true;
@@ -684,6 +684,6 @@ pub async fn verify(
             .await?,
     )
     .await?;
-    let token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
-    Box::pin(browser_session(c, id, &source, &user, token)).await
+    let native_token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
+    Box::pin(browser_session(c, id, &source, &user, native_token)).await
 }
