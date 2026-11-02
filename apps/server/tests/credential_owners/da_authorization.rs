@@ -83,6 +83,10 @@ async fn counts(c: &Context) -> Result<(i64, i64, i64)> {
         .bind(c.tenant.to_string()).fetch_one(&c.operator).await?)
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one real Identity proof must survive a rejected target, authorize once, replay and lose authority after Mdm rule revocation"
+)]
 pub(super) async fn authorize(
     c: &Context,
     agent: &DevicePrincipal,
@@ -150,7 +154,7 @@ pub(super) async fn authorize(
         expected_revision: 0,
         enabled: true,
     };
-    let grant = proof(c, &account, authorization.step_up_context(&actor)?).await?;
+    let grant = Box::pin(proof(c, &account, authorization.step_up_context(&actor)?)).await?;
     let before = counts(c).await?;
     let mut substituted = authorization.clone();
     substituted.agent.generation += 1;

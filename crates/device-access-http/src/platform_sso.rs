@@ -143,7 +143,7 @@ async fn bootstrap(
 ) -> Result<Json<rss_mdm_agent_wire::platform_sso::BootstrapResponse>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
     service::mutate(
-        &s.app.context.as_ref(),
+        s.app.context.as_ref(),
         Some(&p),
         &audit,
         Action::Bootstrap(body.map_err(|_| Error::Malformed)?.0),
@@ -165,7 +165,7 @@ async fn register(
 ) -> Result<Json<rss_mdm_agent_wire::platform_sso::RegistrationReceipt>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
     service::mutate(
-        &s.app.context.as_ref(),
+        s.app.context.as_ref(),
         Some(&p),
         &audit,
         Action::Register(body.map_err(|_| Error::Malformed)?.0),
@@ -188,7 +188,7 @@ async fn revoke(
 ) -> Result<Json<rss_mdm_agent_wire::platform_sso::RevocationReceipt>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
     service::mutate(
-        &s.app.context.as_ref(),
+        s.app.context.as_ref(),
         Some(&p),
         &audit,
         Action::Revoke(id, body.map_err(|_| Error::Malformed)?.0),
@@ -211,7 +211,7 @@ async fn nonce(
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<service::Nonce>, Error> {
     tenant(&app, t)?;
-    service::mutate(&app.context.as_ref(), None, &audit, Action::Nonce)
+    service::mutate(app.context.as_ref(), None, &audit, Action::Nonce)
         .await
         .and_then(service::Outcome::nonce)
         .map(Json)
@@ -243,10 +243,10 @@ async fn token(
     }
     let assertion = zeroize::Zeroizing::new(std::mem::take(&mut input.assertion));
     let context = app.context.as_ref();
-    let result = if psso::password::is_password(&context, &assertion).await? {
-        psso::password::login(&context, &audit, &assertion).await?
+    let result = if psso::password::is_password(context, &assertion).await? {
+        psso::password::login(context, &audit, &assertion).await?
     } else {
-        service::mutate(&context, None, &audit, Action::Login(assertion.to_string()))
+        service::mutate(context, None, &audit, Action::Login(assertion.to_string()))
             .await?
             .login()?
     };
@@ -488,7 +488,7 @@ async fn status(
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<rss_mdm_agent_wire::platform_sso::Status>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
-    psso::status::read(&s.app.context.as_ref(), &p, query.binding_id)
+    psso::status::read(s.app.context.as_ref(), &p, query.binding_id)
         .await
         .map(Json)
         .map_err(Into::into)

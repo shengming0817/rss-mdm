@@ -344,7 +344,10 @@ def verify_capability_boundaries(data):
             invalid |= {name for name in dependencies if name.startswith('rss-mdm-')
                         and name != 'rss-mdm-agent-wire'}
         if owner in {'query', 'http-contract'}:
-            invalid |= {name for name in dependencies if name.startswith(('rss-mdm-', 'rss-identity-')) and not (owner == 'http-contract' and name == 'rss-mdm-query')}
+            # Ingress shares canonical Agent wire projections here; the wire closure is
+            # independently checked and carries no authentication or business authority.
+            invalid |= {name for name in dependencies if name.startswith(('rss-mdm-', 'rss-identity-'))
+                        and not (owner == 'http-contract' and name in {'rss-mdm-query', 'rss-mdm-agent-wire'})}
         require(not invalid, f'{owner}: forbidden production dependencies: {sorted(invalid)}')
 
 def verify_metadata(data, root, mode, pin):

@@ -155,6 +155,10 @@ impl Authorities {
         }
         selected.ok_or(Error::Forbidden)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Borrowed transaction, tenant/installation/registration boundary and expected platform/profile/time are independently qualified"
+    )]
     pub async fn current_on(
         &self,
         c: &mut PgConnection,

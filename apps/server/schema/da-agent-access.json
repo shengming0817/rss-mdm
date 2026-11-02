@@ -30,6 +30,10 @@
   ],
   "functions": [
     {
+      "name": "rss_da.binding_application_current",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
       "name": "rss_da.current_da_registration",
       "search_path": "search_path=pg_catalog"
     },
@@ -43,7 +47,8 @@
     }
   ],
   "external_relations": [
-    "rss_da.installation_binding"
+    "rss_da.installation_binding",
+    "rss_da.pki_current_certificates"
   ],
   "verified_schemas": []
 }

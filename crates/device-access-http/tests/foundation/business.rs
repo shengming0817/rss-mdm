@@ -75,25 +75,21 @@ pub(super) async fn login(
     c: &Context,
     principal: Uuid,
 ) -> Result<(AuthorizedPrincipal, SessionSecret)> {
-    let issued = c
-        .authority
-        .login_local(
-            c.tenant,
-            LoginKey::parse(&format!("da-{principal}"))?,
-            Password::new("foundation-only-valid-password".into())?,
-            rss_identity_postgres::AttemptSource::parse("da-business")?,
-            None,
-            deadline(),
-        )
-        .await?;
+    let issued = Box::pin(c.authority.login_local(
+        c.tenant,
+        LoginKey::parse(&format!("da-{principal}"))?,
+        Password::new("foundation-only-valid-password".into())?,
+        rss_identity_postgres::AttemptSource::parse("da-business")?,
+        None,
+        deadline(),
+    ))
+    .await?;
     let secret = SessionSecret::parse(issued.secret().expose().into())?;
-    let actor = c
-        .sessions
-        .authenticate(
-            &c.authorization,
-            RequestCredential::Cookie(SessionSecret::parse(secret.expose().into())?),
-        )
-        .await?;
+    let actor = Box::pin(c.sessions.authenticate(
+        &c.authorization,
+        RequestCredential::Cookie(SessionSecret::parse(secret.expose().into())?),
+    ))
+    .await?;
     Ok((actor, secret))
 }
 pub(super) fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
@@ -113,8 +109,14 @@ pub(super) fn signed(value: &Observation) -> Result<pg::evidence::SignedObservat
         signature: URL_SAFE_NO_PAD.encode(key().sign(&message).as_ref()),
     })
 }
+// Committed DA business effects; Identity and request-completion facts have separate owners.
 async fn counts(c: &Context) -> Result<(i64, i64, i64, i64)> {
-    Ok(sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.bindings),(SELECT count(*) FROM rss_da.operations),(SELECT count(*) FROM rss_audit.records),(SELECT count(*) FROM rss_transactional_messaging.outbox)").fetch_one(&c.operator).await?)
+    Ok(sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.bindings WHERE tenant_id=$1::uuid),(SELECT count(*) FROM rss_da.operations WHERE tenant_id=$1::uuid),(SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='da.business'),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid)")
+        .bind(c.tenant.to_string()).fetch_one(&c.operator).await?)
+}
+async fn request_audits(c: &Context) -> Result<i64> {
+    Ok(sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='da.request'")
+        .bind(c.tenant.to_string()).fetch_one(&c.operator).await?)
 }
 pub async fn verify(
     c: &Context,
@@ -131,7 +133,7 @@ pub async fn verify(
         .inspect_bearer(c.tenant, BearerSecret::parse(token)?, deadline())
         .await?;
     let principal = bearer.account().principal.as_uuid();
-    let (actor, session_secret) = login(c, principal).await?;
+    let (actor, session_secret) = Box::pin(login(c, principal)).await?;
     let configuration = wire::AccessConfiguration {
         mac: None,
         windows: wire::AccessWindowsConfiguration::Whfb,
@@ -180,23 +182,21 @@ pub async fn verify(
     };
     let fingerprints = std::collections::BTreeMap::new();
     let context = change.step_up_context(&actor, &receipt.device, binding, &fingerprints)?;
-    let proof = operation_proof(c, &session_secret, context).await?;
+    let proof = Box::pin(operation_proof(c, &session_secret, context)).await?;
     let before = counts(c).await?;
     // Failure occurs after binding, receipt and outbox writes, within the original Identity transaction.
     sqlx::raw_sql("CREATE FUNCTION public.reject_da_business_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'DA receipt rollback probe'; END $$; CREATE TRIGGER rollback_probe AFTER INSERT ON rss_da.operations FOR EACH ROW EXECUTE FUNCTION public.reject_da_business_receipt();").execute(&c.operator).await?;
-    let failed = business
-        .service
-        .change_device_access(
-            &actor,
-            &receipt.device,
-            binding,
-            &change,
-            Some(&proof),
-            &fingerprints,
-            business.admission.as_ref(),
-            &audit(c),
-        )
-        .await;
+    let failed = Box::pin(business.service.change_device_access(
+        &actor,
+        &receipt.device,
+        binding,
+        &change,
+        Some(&proof),
+        &fingerprints,
+        business.admission.as_ref(),
+        &audit(c),
+    ))
+    .await;
     sqlx::raw_sql("DROP TRIGGER rollback_probe ON rss_da.operations; DROP FUNCTION public.reject_da_business_receipt();").execute(&c.operator).await?;
     assert!(failed.is_err());
     assert_eq!(
@@ -204,19 +204,17 @@ pub async fn verify(
         before,
         "business, receipt, Audit and outbox roll back together"
     );
-    let accepted = business
-        .service
-        .change_device_access(
-            &actor,
-            &receipt.device,
-            binding,
-            &change,
-            Some(&proof),
-            &fingerprints,
-            business.admission.as_ref(),
-            &audit(c),
-        )
-        .await?;
+    let accepted = Box::pin(business.service.change_device_access(
+        &actor,
+        &receipt.device,
+        binding,
+        &change,
+        Some(&proof),
+        &fingerprints,
+        business.admission.as_ref(),
+        &audit(c),
+    ))
+    .await?;
     assert_eq!(accepted.registration, receipt.registration);
     assert_eq!(accepted.registration_generation, receipt.generation as i64);
     let settled = counts(c).await?;
@@ -224,19 +222,17 @@ pub async fn verify(
     assert_eq!(settled.1, before.1 + 1);
     assert_eq!(settled.2, before.2 + 1);
     assert_eq!(settled.3, before.3 + 1);
-    let replay = business
-        .service
-        .change_device_access(
-            &actor,
-            &receipt.device,
-            binding,
-            &change,
-            None,
-            &fingerprints,
-            business.admission.as_ref(),
-            &audit(c),
-        )
-        .await?;
+    let replay = Box::pin(business.service.change_device_access(
+        &actor,
+        &receipt.device,
+        binding,
+        &change,
+        None,
+        &fingerprints,
+        business.admission.as_ref(),
+        &audit(c),
+    ))
+    .await?;
     assert_eq!(
         serde_json::to_value(&replay)?,
         serde_json::to_value(&accepted)?
@@ -255,20 +251,18 @@ pub async fn verify(
         )
         .await?;
     assert!(
-        business
-            .service
-            .change_device_access(
-                &actor,
-                &receipt.device,
-                binding,
-                &change,
-                None,
-                &fingerprints,
-                business.admission.as_ref(),
-                &audit(c)
-            )
-            .await
-            .is_err(),
+        Box::pin(business.service.change_device_access(
+            &actor,
+            &receipt.device,
+            binding,
+            &change,
+            None,
+            &fingerprints,
+            business.admission.as_ref(),
+            &audit(c)
+        ))
+        .await
+        .is_err(),
         "stale in-memory actor cannot replay after Identity revocation"
     );
     assert!(
@@ -278,7 +272,7 @@ pub async fn verify(
             .await
             .is_err()
     );
-    let (current, _) = login(c, principal).await?;
+    let (current, _) = Box::pin(login(c, principal)).await?;
     let recovered = business
         .service
         .device_access_operation(&current, &receipt.device, change.operation_id)
@@ -315,6 +309,7 @@ pub async fn verify(
         applications: Vec::new(),
     };
     let url = format!("{base}/deployment-evidence");
+    let before_evidence = counts(c).await?;
     material::empty(
         client
             .post(&url)
@@ -324,6 +319,16 @@ pub async fn verify(
     )
     .await?;
     let evidence_count = counts(c).await?;
+    assert_eq!(
+        evidence_count,
+        (
+            before_evidence.0,
+            before_evidence.1,
+            before_evidence.2 + 1,
+            before_evidence.3
+        ),
+        "accepted deployment evidence appends its DA business Audit fact"
+    );
     material::empty(
         client
             .post(&url)
@@ -369,6 +374,7 @@ pub async fn verify(
     v.revoked = true;
     invalid.push(v); // same sequence with changed content
     for v in invalid {
+        let requests_before = request_audits(c).await?;
         assert!(
             client
                 .post(&url)
@@ -378,14 +384,30 @@ pub async fn verify(
                 .status()
                 .is_client_error()
         );
+        assert_eq!(
+            counts(c).await?,
+            evidence_count,
+            "rejected evidence commits no DA business effects"
+        );
+        assert_eq!(
+            request_audits(c).await?,
+            requests_before + 1,
+            "rejected evidence retains its request Audit fact"
+        );
     }
     let mut tampered = signed(&observation)?;
     tampered.signature = URL_SAFE_NO_PAD.encode([0; 64]);
+    let requests_before = request_audits(c).await?;
     assert_eq!(
         client.post(&url).json(&tampered).send().await?.status(),
         403
     );
     assert_eq!(counts(c).await?, evidence_count);
+    assert_eq!(
+        request_audits(c).await?,
+        requests_before + 1,
+        "invalid signature retains its denial Audit fact"
+    );
     let mut tx = c.seed().await?;
     assert!(
         pg::evidence::Authorities::default()
@@ -449,6 +471,8 @@ pub async fn verify(
     Ok(())
 }
 
+// The WebAuthn and Identity owner futures are large in debug builds. Heap-pin each
+// ceremony step so neither this proof nor its enclosing business scenario embeds them.
 pub(super) async fn operation_proof(
     c: &Context,
     session_secret: &SessionSecret,
@@ -456,71 +480,52 @@ pub(super) async fn operation_proof(
 ) -> Result<wire::Secret> {
     use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
     let origin = url::Url::parse("https://localhost")?;
-    let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
+    let webauthn = Box::pin(rss_identity_postgres::WebauthnAuthority::connect(
         c.authority.clone(),
         "localhost".into(),
         origin.clone(),
         deadline(),
-    )
+    ))
     .await?;
     let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
-    let registration = webauthn
-        .begin_registration(
-            c.authority
-                .inspect_session(
-                    c.tenant,
-                    SessionSecret::parse(session_secret.expose().into())?,
-                    deadline(),
-                )
-                .await?,
-            "DA business proof".into(),
-            false,
-            rss_identity_postgres::RegistrationAuthorization::First,
-            deadline(),
-        )
-        .await?;
+    let session = Box::pin(c.authority.inspect_session(
+        c.tenant,
+        SessionSecret::parse(session_secret.expose().into())?,
+        deadline(),
+    ))
+    .await?;
+    let registration = Box::pin(webauthn.begin_registration(
+        session,
+        "DA business proof".into(),
+        false,
+        rss_identity_postgres::RegistrationAuthorization::First,
+        deadline(),
+    ))
+    .await?;
     let response = authenticator.do_registration(origin.clone(), registration.options)?;
-    webauthn
-        .finish_registration(
-            c.authority
-                .inspect_session(
-                    c.tenant,
-                    SessionSecret::parse(session_secret.expose().into())?,
-                    deadline(),
-                )
-                .await?,
-            registration.id,
-            response,
-            deadline(),
-        )
-        .await?;
-    let challenge = webauthn
-        .begin_authentication(
-            c.authority
-                .inspect_session(
-                    c.tenant,
-                    SessionSecret::parse(session_secret.expose().into())?,
-                    deadline(),
-                )
-                .await?,
-            context,
-            deadline(),
-        )
-        .await?;
+    let session = Box::pin(c.authority.inspect_session(
+        c.tenant,
+        SessionSecret::parse(session_secret.expose().into())?,
+        deadline(),
+    ))
+    .await?;
+    Box::pin(webauthn.finish_registration(session, registration.id, response, deadline())).await?;
+    let session = Box::pin(c.authority.inspect_session(
+        c.tenant,
+        SessionSecret::parse(session_secret.expose().into())?,
+        deadline(),
+    ))
+    .await?;
+    let challenge = Box::pin(webauthn.begin_authentication(session, context, deadline())).await?;
     let response = authenticator.do_authentication(origin, challenge.options)?;
-    let grant = webauthn
-        .finish_authentication(
-            c.authority
-                .inspect_session(
-                    c.tenant,
-                    SessionSecret::parse(session_secret.expose().into())?,
-                    deadline(),
-                )
-                .await?,
-            challenge.id,
-            response,
-            deadline(),
-        )
-        .await?;
+    let session = Box::pin(c.authority.inspect_session(
+        c.tenant,
+        SessionSecret::parse(session_secret.expose().into())?,
+        deadline(),
+    ))
+    .await?;
+    let grant =
+        Box::pin(webauthn.finish_authentication(session, challenge.id, response, deadline()))
+            .await?;
     Ok(wire::Secret::parse(grant.expose())?)
 }

@@ -608,6 +608,10 @@ impl Service {
 }
 
 impl Service {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Identity authority, RP client, release proof and current product admission are independently rechecked in one snapshot"
+    )]
     async fn broker_authorized_snapshot(
         &self,
         authority: &rss_identity_postgres::Authority,
@@ -659,6 +663,10 @@ impl Service {
         Ok((context, row.try_get("sealed").map_err(db)?))
     }
     /// Receipt settlement alone is not authorization. Release uses one current Identity/product snapshot.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Identity authority, RP client, release proof and current product admission are independently rechecked in one snapshot"
+    )]
     pub async fn broker_release(
         &self,
         authority: &rss_identity_postgres::Authority,

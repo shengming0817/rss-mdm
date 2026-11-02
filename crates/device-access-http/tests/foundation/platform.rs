@@ -253,17 +253,15 @@ async fn browser_session(
     token: String,
 ) -> Result<SessionSecret> {
     let browser = crypto::random()?;
-    let challenge = c
-        .authority
-        .begin_platform_login(
-            c.tenant,
-            binding,
-            rss_identity_postgres::platform::PlatformPurpose::BrowserLogin,
-            browser.clone(),
-            rss_identity_postgres::AttemptSource::parse("independent-da-psso")?,
-            deadline(),
-        )
-        .await?;
+    let challenge = Box::pin(c.authority.begin_platform_login(
+        c.tenant,
+        binding,
+        rss_identity_postgres::platform::PlatformPurpose::BrowserLogin,
+        browser.clone(),
+        rss_identity_postgres::AttemptSource::parse("independent-da-psso")?,
+        deadline(),
+    ))
+    .await?;
     let proof = user.signer.sign(
         wire::BRIDGE_TYPE,
         &serde_json::to_value(wire::BrowserClaims {
@@ -276,26 +274,23 @@ async fn browser_session(
             exp: now() + 120,
         })?,
     )?;
-    let result = c
-        .authority
-        .complete_platform_login(
-            c.tenant,
-            challenge.id,
-            challenge.nonce,
-            browser,
-            proof.into_bytes(),
-            deadline(),
-        )
-        .await?;
+    let result = Box::pin(c.authority.complete_platform_login(
+        c.tenant,
+        challenge.id,
+        challenge.nonce,
+        browser,
+        proof.into_bytes(),
+        deadline(),
+    ))
+    .await?;
     assert!(result.assertion.is_none());
     let secret = SessionSecret::parse(result.session.secret().expose().into())?;
-    c.authority
-        .inspect_session(
-            c.tenant,
-            SessionSecret::parse(secret.expose().into())?,
-            deadline(),
-        )
-        .await?;
+    Box::pin(c.authority.inspect_session(
+        c.tenant,
+        SessionSecret::parse(secret.expose().into())?,
+        deadline(),
+    ))
+    .await?;
     Ok(secret)
 }
 
@@ -317,7 +312,7 @@ pub async fn verify(
         .account()
         .principal
         .as_uuid();
-    let (actor, secret) = business::login(c, principal).await?;
+    let (actor, secret) = Box::pin(business::login(c, principal)).await?;
     let old: Value = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND definition#>>'{target,device}'=$2")
         .bind(c.tenant.to_string()).bind(&registration.device).fetch_one(&c.operator).await?;
     let mut publication: rss_mdm_policy_postgres::device_access::Publication =
@@ -373,25 +368,23 @@ pub async fn verify(
         },
     };
     let fingerprints = std::collections::BTreeMap::new();
-    let proof = business::operation_proof(
+    let proof = Box::pin(business::operation_proof(
         c,
         &secret,
         change.step_up_context(&actor, &registration.device, id, &fingerprints)?,
-    )
+    ))
     .await?;
-    let binding = b
-        .service
-        .change_device_access(
-            &actor,
-            &registration.device,
-            id,
-            &change,
-            Some(&proof),
-            &fingerprints,
-            b.admission.as_ref(),
-            &business::audit(c),
-        )
-        .await?;
+    let binding = Box::pin(b.service.change_device_access(
+        &actor,
+        &registration.device,
+        id,
+        &change,
+        Some(&proof),
+        &fingerprints,
+        b.admission.as_ref(),
+        &business::audit(c),
+    ))
+    .await?;
     let configuration = rt.qualification_configuration()?;
     let mut observation = Observation {
         tenant: Uuid::parse_str(&c.tenant.to_string())?,
@@ -565,8 +558,8 @@ pub async fn verify(
         "removing the configured authority rejects persisted application evidence"
     );
     tx.rollback().await?;
-    let token = native_login(c, &b, &source, &device, &user).await?;
-    let session = browser_session(c, id, &source, &user, token).await?;
+    let token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
+    let session = Box::pin(browser_session(c, id, &source, &user, token)).await?;
     let mut revoked = observation.clone();
     revoked.sequence += 1;
     revoked.revoked = true;
@@ -580,7 +573,9 @@ pub async fn verify(
     )
     .await?;
     assert!(
-        native_login(c, &b, &source, &device, &user).await.is_err(),
+        Box::pin(native_login(c, &b, &source, &device, &user))
+            .await
+            .is_err(),
         "revoked evidence rejects a fresh native login"
     );
     assert!(
@@ -612,6 +607,6 @@ pub async fn verify(
             .await?,
     )
     .await?;
-    let token = native_login(c, &b, &source, &device, &user).await?;
-    browser_session(c, id, &source, &user, token).await
+    let token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
+    Box::pin(browser_session(c, id, &source, &user, token)).await
 }

@@ -48,9 +48,7 @@
       "search_path": "search_path=pg_catalog"
     }
   ],
-  "external_relations": [
-    "mdm.inventory"
-  ],
+  "external_relations": [],
   "verified_schemas": [
     "mdm_apple"
   ]

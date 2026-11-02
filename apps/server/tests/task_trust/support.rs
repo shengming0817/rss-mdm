@@ -154,6 +154,7 @@ pub async fn peer_material(
             &c.tenant.to_string(),
             device,
             purpose_name,
+            &c.inputs.installation.instance_id,
         ])
         .output()
         .await?;

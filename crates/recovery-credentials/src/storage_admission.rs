@@ -46,7 +46,8 @@ pub async fn verify_storage(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Erro
     Ok(())
 }
 
-/// Common Agent retirement authority; native installation is not required.
+/// Verify credential task retirement for the selected product.
+/// DA authority requires explicit product delivery; this is not an Agent-only installation.
 pub async fn verify_agent_authority(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,

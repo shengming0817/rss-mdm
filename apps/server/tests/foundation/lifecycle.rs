@@ -56,6 +56,8 @@ async fn host_reports_its_binding_then_releases_listener_and_database_resources(
         serde_json::to_value(inputs.database("lifecycle", "mdm_identity_runtime"))?;
     configuration["access_database"] =
         serde_json::to_value(inputs.database("lifecycle", "mdm_access"))?;
+    configuration["device_access"]["database"] =
+        serde_json::to_value(inputs.database("lifecycle", "da_access"))?;
     configuration["runtime_database"] =
         serde_json::to_value(inputs.database("lifecycle", "mdm_runtime"))?;
     configuration["command_database"] =

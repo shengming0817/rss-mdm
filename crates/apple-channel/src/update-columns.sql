@@ -33,4 +33,4 @@
 ('mdm_apple.ade_enrollments','revoked'),
 ('mdm_apple.account_flows','revoked'),
 ('mdm_apple.account_flows','material'),
-('mdm_apple.account_flows','profile'),
+('mdm_apple.account_flows','profile')

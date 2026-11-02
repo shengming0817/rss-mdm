@@ -11,7 +11,6 @@ pub async fn access(c: &Context) -> Result<()> {
         rss_mdm_pki_service::access_contract(DA),
         rss_mdm_policy_postgres::access_contract(DA),
         rss_mdm_scope_postgres::access_contract(DA),
-        rss_mdm_recovery_credentials::access_contract(DA),
         rss_mdm_inventory_service::access_contract(DA),
         rss_mdm_audit_integration::ACCESS_CONTRACT,
         include_str!("access-contract.json"),

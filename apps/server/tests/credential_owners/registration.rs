@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context as _;
 use rss_mdm_agent_wire::runtime as w;
 #[tokio::test]
 #[ignore = "T2: explicit DA delivery authorization and RSS material custody across distinct real endpoints"]
@@ -12,12 +13,13 @@ async fn access_binding_requires_current_registration_generation() -> Result<()>
         &device,
         vec![
             w::Capability::InventoryCollectionV1,
+            w::Capability::CredentialsWindowsV1,
             w::Capability::DeviceAccessV1,
             w::Capability::DeviceAccessWhfbV1,
-            w::Capability::CredentialsWindowsV1,
         ],
     )
-    .await?;
+    .await
+    .context("authenticate the Agent runtime profile")?;
     let mut tx = seed(&c).await?;
     rss_mdm_registration_service::device::require_use_in(
         &mut tx,
@@ -54,13 +56,20 @@ async fn access_binding_requires_current_registration_generation() -> Result<()>
             .fetch_one(&c.operator)
             .await?;
     assert_eq!(before, after);
-    delivery_lifecycle(&c, &p, &device).await?;
+    // Keep the full proof's nested async state off the test thread's stack.
+    Box::pin(delivery_lifecycle(&c, &p, &device))
+        .await
+        .context("prove delivery between distinct DA and Agent registrations")?;
     c.close().await;
     Ok(())
 }
 
 /// Registrar facts are legal prerequisites; independent DA TLS issuance is proved by foundation.
 /// This seam authenticates two different real certificates and never substitutes the Agent peer.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one pair of authenticated DA and Agent identities proves explicit authorization then rejects disabled, stale and revoked delivery facts"
+)]
 async fn delivery_lifecycle(
     c: &Context,
     agent: &rss_mdm_registration_service::DevicePrincipal,
@@ -74,7 +83,9 @@ async fn delivery_lifecycle(
     let device = format!("da-{}", Uuid::new_v4());
     let device = device.as_str();
     let (peer, certificate, csr) =
-        material::peer_material(c, device, rss_mdm_agent_wire::pki::Purpose::DaDevice).await?;
+        material::peer_material(c, device, rss_mdm_agent_wire::pki::Purpose::DaDevice)
+            .await
+            .context("verify the purpose-bound DA device certificate")?;
     let meta = peer.metadata();
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
     let registration = Uuid::new_v4();
@@ -141,8 +152,12 @@ async fn delivery_lifecycle(
         registration_id: registration,
         generation: 7,
     };
-    let person = super::da_authorization::authorize(c, agent, &anchor).await?;
-    super::da_materials::verify(c, agent, &anchor, person).await?;
+    let person = Box::pin(super::da_authorization::authorize(c, agent, &anchor))
+        .await
+        .context("authorize Agent delivery using the real Identity proof")?;
+    Box::pin(super::da_materials::verify(c, agent, &anchor, person))
+        .await
+        .context("prove RSS custody and recovery across distinct DA and Agent identities")?;
     let mut tx = c.database.archive_pool().begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())

@@ -6,7 +6,6 @@ pub(crate) struct Assembly {
     pub service: Arc<access::Service>,
     pub worker: Arc<access::worker::Worker>,
 }
-#[expect(clippy::too_many_arguments, reason = "explicit shared host resources")]
 pub(crate) async fn assemble(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     tenant: rss_request_context::TenantId,

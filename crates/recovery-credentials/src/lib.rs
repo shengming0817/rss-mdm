@@ -42,7 +42,8 @@ pub use eligibility::Custody;
 
 mod storage_profile;
 
-/// Shared Agent task relationships and retirement fence.
+/// Product credential task relationships and retirement authority.
+/// DA tasks require the product's explicit Agent delivery installation.
 pub const fn task_relations_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
     match profile {
         rss_mdm_install_support::StorageProfile::Mdm => {

@@ -180,7 +180,15 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
     assert_eq!(receipt.device, grant.device);
-    business::verify(&c, &material, &receipt, &client, &server.origin).await?;
+    // Keep the independent business/protocol state machines out of this long TLS scenario.
+    Box::pin(business::verify(
+        &c,
+        &material,
+        &receipt,
+        &client,
+        &server.origin,
+    ))
+    .await?;
     let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.registrations WHERE purpose='da_device' AND channel IS NULL),(SELECT count(*) FROM rss_da.report_sources),(SELECT count(*) FROM rss_da.requests)").fetch_one(&c.operator).await?;
     assert_eq!(counts, (1, 0, 0));
     assert!(
@@ -500,14 +508,14 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .status(),
         401
     );
-    let platform_session = platform::verify(
+    let platform_session = Box::pin(platform::verify(
         &c,
         &material,
         &renewed_receipt,
         &renewed_peer,
         &client,
         base2,
-    )
+    ))
     .await?;
     material::empty(
         client

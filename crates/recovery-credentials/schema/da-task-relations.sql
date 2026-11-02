@@ -17,7 +17,16 @@ CREATE FUNCTION rss_da.credential_save_retired_run(p_registration uuid,p_run uui
  AND a.state->>'execution' IN ('not_started','running','waiting_reboot','unknown')
  AND a.state->>'cancellation'='none'
  AND p_state=jsonb_set(p_previous,'{cancellation}',to_jsonb(CASE WHEN p_previous->>'execution'='not_started' THEN 'confirmed'::text ELSE 'requested'::text END))
- AND EXISTS(SELECT FROM rss_da.agent_delivery d WHERE d.tenant_id=a.tenant_id AND d.agent_registration=a.registration AND NOT d.enabled)
+ AND EXISTS(
+  SELECT FROM rss_da.agent_delivery d
+  WHERE (d.tenant_id,d.agent_device,d.agent_registration,d.agent_generation)=
+   (a.tenant_id,a.device,a.registration,a.generation)
+   AND a.material_binding @> jsonb_build_object(
+    'device',d.da_device,'registration',d.da_registration,'generation',d.da_generation,
+    'subject',jsonb_build_object('kind','rss_login'))
+   AND NOT d.enabled
+  FOR SHARE OF d
+ )
  RETURNING a.id
  ) SELECT EXISTS(SELECT 1 FROM changed);
 $$;

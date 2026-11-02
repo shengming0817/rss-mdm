@@ -37,7 +37,7 @@ impl Admission {
             rss_mdm_device_access::deployment::Deployment::Windows { .. }
                 if value.windows_session(now) =>
             {
-                ()
+                // reason: windows_session already verified the broker and local session.
             }
             rss_mdm_device_access::deployment::Deployment::Macos { .. } => {
                 let rt = self.platform.as_deref().ok_or(Error::Forbidden)?;

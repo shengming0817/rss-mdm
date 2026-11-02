@@ -83,6 +83,7 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
             &[
                 "da_access",
                 "da_command_runtime",
+                "da_identity_runtime",
                 "da_inventory_runtime",
                 "da_policy_runtime",
                 "da_scope_runtime",
@@ -115,6 +116,7 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
             &[
                 "da_access",
                 "da_command_runtime",
+                "da_identity_runtime",
                 "da_inventory_runtime",
                 "da_policy_runtime",
                 "da_scope_runtime",

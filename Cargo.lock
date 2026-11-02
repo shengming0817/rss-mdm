@@ -4333,7 +4333,6 @@ dependencies = [
  "rss-mdm-compliance-service",
  "rss-mdm-content-service",
  "rss-mdm-device-access",
- "rss-mdm-device-access-http",
  "rss-mdm-device-access-postgres",
  "rss-mdm-device-service",
  "rss-mdm-group-service",

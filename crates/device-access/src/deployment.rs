@@ -121,8 +121,7 @@ impl Observation {
             architecture,
             ..
         } = &self.deployment
-        {
-            if configuration.is_empty()
+            && (configuration.is_empty()
                 || configuration.len() > 256
                 || application_id.is_empty()
                 || application_id.len() > 256
@@ -131,10 +130,9 @@ impl Observation {
                 || profile_identifier.is_empty()
                 || profile_identifier.len() > 256
                 || profile_uuid.is_nil()
-                || architecture.len() > 32
-            {
-                return Err(crate::Error);
-            }
+                || architecture.len() > 32)
+        {
+            return Err(crate::Error);
         }
         Ok(())
     }
