@@ -49,6 +49,14 @@ async fn run(command: &str, path: &std::path::Path) -> Result<(), ProcessError> 
                 .options()
                 .map_err(|e| ProcessError::at("migration.database_configuration", e))?;
             crate::migration::migrate(&options, &config.installation).await?;
+            crate::migration::device_access::install(
+                &config
+                    .device_access_database
+                    .options()
+                    .map_err(|e| ProcessError::at("migration.da_database_configuration", e))?,
+                &config.installation,
+            )
+            .await?;
             Ok(())
         }
         "tenant-get" => {

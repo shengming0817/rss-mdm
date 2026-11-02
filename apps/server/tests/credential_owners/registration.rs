@@ -1,133 +1,171 @@
 use super::*;
 use rss_mdm_agent_wire::runtime as w;
-use rss_mdm_registration_service::device_access as da;
-use serde_json::json;
 #[tokio::test]
-#[ignore = "T2: Registration consumes only a current-generation access binding without rejection side effects"]
+#[ignore = "T2: a current authenticated Agent cannot become DA through device-name coincidence"]
 async fn access_binding_requires_current_registration_generation() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let owner = Owners::open(&c, "shared", protection(&c, "old")?).await?;
     let (registration, grant, device) = material::seed_registration(&c).await?;
-    let caps = vec![
-        w::Capability::InventoryCollectionV1,
-        w::Capability::DeviceAccessV1,
-        w::Capability::DeviceAccessWhfbV1,
-    ];
-    let p = material::authenticated_agent(&c, registration, grant, &device, caps.clone()).await?;
-    let object = serde_json::from_value(
-        json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent","registrationId":registration,"generation":2}]}),
-    )?;
-    let scope = crate::planning_t2_support::published(&c, &object)
-        .await?
-        .scope;
-    let policy = Uuid::new_v4();
-    let version = Uuid::new_v4();
-    let account = w::AccessAccount::Windows {
-        sid: "S-1-12-1-1-2-3-4".into(),
-        authority: w::AccessWindowsAuthority::Entra {
-            tenant_id: Uuid::new_v4(),
-            object_id: Uuid::new_v4(),
-        },
-    };
-    let mut tx = seed(&c).await?;
-    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2,1,$3,'windows','x86_64',$4)").bind(c.tenant.to_string()).bind(registration).bind(serde_json::to_string(&caps)?).bind(json!({"revision":1,"msixSideload":false,"msixUnsigned":false,"osVersion":[10,0,26100,0],"systemBroker":true,"userHelper":true,"interactiveUser":{"identity":"S-1-12-1-1-2-3-4","windowsAuthority":match &account { w::AccessAccount::Windows { authority, .. } => Some(authority), _=>None },"generatedUid":null,"sessionId":Uuid::new_v4(),"administrator":false},"sourceCredentials":[]})).execute(&mut *tx).await?;
-    tx.commit().await?;
-    let configuration = w::AccessConfiguration {
-        mac: None,
-        windows: w::AccessWindowsConfiguration::Whfb,
-        self_enrollment: false,
-        enabled: true,
-        role: None,
-    };
-    let mut binding = da::Binding {
-        operation_id: Uuid::new_v4(),
-        account_disposition: w::AccessAccountDisposition::Keep,
-        id: Uuid::new_v4(),
-        tenant: Uuid::parse_str(&c.tenant.to_string())?,
-        device: device.clone(),
+    let p = material::authenticated_agent(
+        &c,
         registration,
-        registration_generation: 1,
-        person: da::Person {
-            instance: Uuid::parse_str(&c.inputs.installation.instance_id)?,
-            principal: Uuid::new_v4(),
-        },
-        origin: da::Origin::SelfEnrollment,
-        generation: 1,
-        factor_generation: 1,
-        revision: 1,
-        state: da::State::Pending,
-        intent: da::AccountIntent::Existing {
-            account: account.clone(),
-        },
-        account: Some(account),
-        policy,
-        policy_version: version,
-        configuration: configuration.clone(),
-        received_revision: None,
-        applied_revision: None,
-        effect: None,
-        applied_windows: None,
-        created_by_rss: false,
-    };
-    binding.validate()?;
-    let mut tx = seed(&c).await?;
-    let definition: rss_mdm_policy::Definition = serde_json::from_value(
-        json!({"scope":scope,"action":{"kind":"device_access","mac":null,"windows":{"kind":"whfb"},"selfEnrollment":false,"role":null}}),
-    )?;
-    definition.validate()?;
-    let frozen = serde_json::to_value(da::publication::Frozen::DeviceAccess { configuration })?;
-    let author = rss_mdm_authorization_service::Actor::Account {
-        user: c.user(binding.person.principal),
-    };
-    sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(author)?).bind(now()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'device_access',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(frozen).bind(vec![4u8;32]).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.device_access_bindings(tenant_id,id,device,registration,registration_generation,instance,principal,generation,revision,state,account,document) VALUES($1,$2,$3,$4,1,$5,$6,1,1,'pending',$7,$8)").bind(binding.tenant).bind(binding.id).bind(&device).bind(registration).bind(binding.person.instance).bind(binding.person.principal).bind(serde_json::to_value(&binding.account)?).bind(serde_json::to_value(&binding)?).execute(&mut *tx).await?;
-    tx.commit().await?;
-    let binding_id = binding.id;
-    let consume = || async {
-        access::transaction::inspect(&owner.runtime, c.tenant, (&owner.access, &p), |ctx, tx| {
-            Box::pin(async move {
-                let value = tx
-                    .with_connection_context(ctx, |(service, principal), c| {
-                        Box::pin(async move {
-                            Ok(service
-                                .registration_access_binding_on(c, principal, binding_id, 1)
-                                .await)
-                        })
-                    })
-                    .await??;
-                Ok(value)
-            })
-        })
-        .await
-    };
-    let before_document = serde_json::to_value(&binding)?;
-    let before: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1")
-            .bind(binding.tenant)
-            .fetch_one(&c.operator)
-            .await?;
-    assert!(matches!(consume().await, Err(access::Error::Conflict)));
-    let persisted: serde_json::Value = sqlx::query_scalar(
-        "SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND id=$2",
+        grant,
+        &device,
+        vec![
+            w::Capability::InventoryCollectionV1,
+            w::Capability::DeviceAccessV1,
+            w::Capability::DeviceAccessWhfbV1,
+        ],
     )
-    .bind(binding.tenant)
-    .bind(binding.id)
-    .fetch_one(&c.operator)
     .await?;
-    assert_eq!(persisted, before_document);
-    let after: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1")
-            .bind(binding.tenant)
+    let mut tx = seed(&c).await?;
+    rss_mdm_registration_service::device::require_use_in(
+        &mut tx,
+        &p,
+        rss_mdm_registration_service::device::ConsumerUse::AgentTask,
+    )
+    .await?;
+    sqlx::query("INSERT INTO rss_da.devices(tenant_id,id) VALUES($1::uuid,$2)")
+        .bind(c.tenant.to_string())
+        .bind(&device)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
+            .bind(c.tenant.to_string())
             .fetch_one(&c.operator)
             .await?;
-    assert_eq!(after, before);
-
-    binding.registration_generation = 2;
-    sqlx::query("UPDATE mdm_access.device_access_bindings SET registration_generation=2,document=$3 WHERE tenant_id=$1 AND id=$2")
-        .bind(binding.tenant).bind(binding.id).bind(serde_json::to_value(&binding)?).execute(&c.operator).await?;
-    assert_eq!(consume().await?.registration_generation, 2);
-    owner.close().await;
+    let mut tx = seed(&c).await?;
+    assert!(matches!(
+        rss_mdm_device_access_postgres::delivery::resolve_on(&mut tx, &p).await,
+        Err(rss_mdm_device_access_postgres::Error::Forbidden)
+    ));
+    let delivered: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid")
+            .bind(c.tenant.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+    assert_eq!(delivered, 0);
+    tx.rollback().await?;
+    let after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
+            .bind(c.tenant.to_string())
+            .fetch_one(&c.operator)
+            .await?;
+    assert_eq!(before, after);
+    delivery_lifecycle(&c, &p, &device).await?;
     c.close().await;
+    Ok(())
+}
+
+/// Registrar facts are legal prerequisites; independent DA TLS issuance is proved by foundation.
+/// This seam authenticates two different real certificates and never substitutes the Agent peer.
+async fn delivery_lifecycle(
+    c: &Context,
+    agent: &rss_mdm_registration_service::DevicePrincipal,
+    device: &str,
+) -> Result<()> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use rss_mdm_device_access_postgres::delivery;
+    use rss_mdm_install_support::StorageProfile;
+    use rss_mdm_registration_service::device::{self, endpoints::DaRegistration};
+    use sha2::{Digest, Sha256};
+    let (peer, certificate, csr) =
+        material::peer_material(c, device, rss_mdm_agent_wire::pki::Purpose::DaDevice).await?;
+    let meta = peer.metadata();
+    let tenant = Uuid::parse_str(&c.tenant.to_string())?;
+    let registration = Uuid::new_v4();
+    let grant = Uuid::new_v4();
+    let credential = Uuid::new_v4();
+    let issuance = Uuid::new_v4();
+    let operation = Uuid::new_v4();
+    let receipt = rss_mdm_agent_wire::da::Registration {
+        service_id: Uuid::parse_str(&c.inputs.installation.instance_id)?,
+        tenant,
+        device: device.into(),
+        registration,
+        generation: 7,
+        credential,
+        issuance_id: issuance,
+        operation_id: operation,
+    };
+    let mut tx = seed(c).await?;
+    sqlx::query("INSERT INTO rss_da.certificate_grants(certificate_purpose,tenant_id,id,operation_id,source,actor,instance,device,secret_digest,request_digest,state,expires_at) VALUES('da_device',$1,$2,$2,'administrator','seed',$3,$4,repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')")
+        .bind(tenant).bind(grant).bind(&c.inputs.installation.instance_id).bind(device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.registrations(tenant_id,id,device,channel,generation,certificate_grant_id,state,purpose,epoch) VALUES($1,$2,$3,NULL,7,$4,'active','da_device',$5)")
+        .bind(tenant).bind(registration).bind(device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+    let fingerprint = format!("{:x}", Sha256::digest(&certificate));
+    sqlx::query("INSERT INTO rss_da.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1,$2,$3,NULL,$4,'active')")
+        .bind(tenant).bind(credential).bind(registration).bind(&fingerprint).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.certificate_issuances(tenant_id,id,grant_id,operation_id,request_digest,authority_digest,csr,spki,identity,profile,not_before,not_after,state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) VALUES($1,$2,$3,$4,repeat('1',64),repeat('2',64),$5,$6,$7,'{}',$8,$9,'issued',$10,$11,$12,$4,repeat('3',64),$13,$14)")
+        .bind(tenant).bind(issuance).bind(grant).bind(operation).bind(csr)
+        .bind(meta.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).bind(&meta.identity)
+        .bind(meta.not_before).bind(meta.not_after).bind(serde_json::json!([STANDARD.encode(certificate)]))
+        .bind(serde_json::to_value(meta)?).bind(fingerprint)
+        .bind(serde_json::json!({"kind":"da_device","receipt":receipt})).bind(credential).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let da_pool = c.inputs.pool("shared", "da_access").await?;
+    let mut tx = da_pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let da = device::authenticate_endpoint_in(StorageProfile::Da, &mut tx, c.tenant, &peer).await?;
+    assert_eq!(da.kind(), device::RegistrationKind::DaDevice);
+    assert_eq!(agent.kind(), device::RegistrationKind::Agent);
+    assert_ne!(da.registration(), agent.registration());
+    assert!(
+        device::require_use_in(&mut tx, &da, device::ConsumerUse::AgentTask)
+            .await
+            .is_err()
+    );
+    let resolved = delivery::resolve_on(&mut tx, &da).await?;
+    assert_eq!(resolved.registration(), registration);
+    tx.rollback().await?;
+    // No name-based bridge even when both credentials are valid and device strings coincide.
+    let mut tx = seed(c).await?;
+    assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
+    sqlx::query("INSERT INTO rss_da.agent_delivery(tenant_id,da_device,da_registration,da_generation,agent_installation,agent_device,agent_registration,agent_generation,enabled,revision) VALUES($1,$2,$3,7,$4,$2,$5,$6,true,1)")
+        .bind(tenant).bind(device).bind(registration).bind(agent.installation()).bind(agent.registration()).bind(agent.generation()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let anchor = DaRegistration {
+        device: device.into(),
+        registration_id: registration,
+        generation: 7,
+    };
+    let mut tx = c.database.archive_pool().begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let resolved = delivery::resolve_on(&mut tx, agent).await?;
+    assert_eq!(
+        (resolved.registration(), resolved.generation()),
+        (registration, 7)
+    );
+    tx.rollback().await?;
+    let mut tx = seed(c).await?;
+    assert_eq!(
+        delivery::for_da_on(&mut tx, tenant, &anchor)
+            .await?
+            .unwrap()
+            .registration,
+        agent.registration()
+    );
+    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=false,revision=2 WHERE tenant_id=$1 AND da_registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await?;
+    assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
+    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=true,revision=3,da_generation=8 WHERE tenant_id=$1 AND da_registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await?;
+    assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
+    sqlx::query("UPDATE rss_da.agent_delivery SET da_generation=7,agent_generation=agent_generation+1 WHERE tenant_id=$1 AND da_registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await?;
+    assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
+    sqlx::query("UPDATE rss_da.agent_delivery SET agent_generation=$3 WHERE tenant_id=$1 AND da_registration=$2").bind(tenant).bind(registration).bind(agent.generation()).execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_da.credentials SET state='revoked' WHERE tenant_id=$1 AND id=$2")
+        .bind(tenant)
+        .bind(credential)
+        .execute(&mut *tx)
+        .await?;
+    assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
+    tx.rollback().await?;
+    da_pool.close().await;
     Ok(())
 }

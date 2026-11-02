@@ -9,7 +9,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 
 pub(crate) async fn principal(
-    profile: rss_mdm_install_support::StorageProfile,
+    _profile: rss_mdm_install_support::StorageProfile,
     service: &crate::tasks::Transactions,
     tx: &mut PgTransaction<'_>,
     principal: &DevicePrincipal,
@@ -23,7 +23,7 @@ pub(crate) async fn principal(
         Box::pin(async move {
             Ok(
                 rss_mdm_registration_service::device::store::revalidate_source(
-                    profile,
+                    checked.profile(),
                     c,
                     &checked,
                     rss_mdm_inventory::ReportSource::AgentBuiltin,
@@ -85,6 +85,8 @@ impl Service {
         input: &wire::TaskClaimRequest,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let owner_audit = audit.product_fact_copy(self.profile());
+        let audit = &owner_audit;
         let profile = self.profile();
 
         let service = self;
@@ -143,6 +145,8 @@ impl Service {
         attempt: Uuid,
         audit: &RequestAudit,
     ) -> Result<Option<(wire::TaskPayload, Fact, i64)>> {
+        let owner_audit = audit.product_fact_copy(self.profile());
+        let audit = &owner_audit;
         let profile = self.profile();
 
         self.agent_prepare_in(tx, p).await?;
@@ -222,6 +226,8 @@ impl Service {
         signed: &wire::SignedTask,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let owner_audit = audit.product_fact_copy(self.profile());
+        let audit = &owner_audit;
         let profile = self.profile();
 
         let run = db::load_run(profile, tx, signed.payload.task_id()).await?;
@@ -254,6 +260,8 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let owner_audit = audit.product_fact_copy(self.profile());
+        let audit = &owner_audit;
         let profile = self.profile();
 
         let run = db::load_run(profile, tx, id).await?;
@@ -295,6 +303,8 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<EventEffects> {
+        let owner_audit = audit.product_fact_copy(self.profile());
+        let audit = &owner_audit;
         let profile = self.profile();
 
         let service = self;
@@ -482,7 +492,7 @@ impl Service {
 use rss_mdm_audit_integration::RequestAudit;
 
 pub(crate) async fn lock_device(
-    profile: rss_mdm_install_support::StorageProfile,
+    _profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     device: &str,
 ) -> Result<()> {
@@ -491,7 +501,7 @@ pub(crate) async fn lock_device(
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(rss_mdm_registration_service::lifecycle::lock_devices_in(
-                profile,
+                rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 &tenant,
                 &[device],

@@ -14,6 +14,8 @@ use std::{
 use uuid::Uuid;
 
 pub(super) const ROLES: &[&str] = &[
+    "da_owner",
+    "da_access",
     "mdm_owner",
     "mdm_identity_maintenance",
     "mdm_identity_runtime",
@@ -495,30 +497,38 @@ async fn initialize_account(
         true,
     )
     .await;
-    let verified =
+    for profile in [
+        rss_mdm_install_support::StorageProfile::Mdm,
+        rss_mdm_install_support::StorageProfile::Da,
+    ] {
         crate::authorization_bootstrap::initialize(crate::authorization_bootstrap::Initialize {
-            database: input.database("mdm_access")?,
+            profile,
+            database: input.database(match profile {
+                rss_mdm_install_support::StorageProfile::Mdm => "mdm_access",
+                rss_mdm_install_support::StorageProfile::Da => "da_access",
+            })?,
             audit: input.audit(journal)?,
             identity_database: input.database("mdm_identity_runtime")?,
             installation: coordinates(input, saved),
             expected_epoch: 1,
             login: login.into(),
-            password_file,
-            operation_id: operation,
+            password_file: password_file.clone(),
+            operation_id: if profile == rss_mdm_install_support::StorageProfile::Da {
+                Uuid::new_v5(&operation, b"da-authorization")
+            } else {
+                operation
+            },
             user: rss_mdm_authorization_service::User {
                 instance_id: saved.receipt.instance_id.to_string(),
                 tenant_id: tenant.into(),
                 principal_id: principal.to_string(),
             },
         })
-        .await;
-    match verified {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            let _ = initialized;
-            Err(Error::Storage)
-        }
+        .await
+        .map_err(|_| Error::Storage)?;
     }
+    let _ = initialized;
+    Ok(())
 }
 fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json::Value> {
     let audit = match input.audit_mode {
@@ -530,6 +540,7 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
     Ok(serde_json::json!({
         "background":{"device_concurrency":4,"database_connection_budget":128*(input.additional_hosts.len()+1),"database_host_instances":input.additional_hosts.len()+1},
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
+        "device_access":{"database":input.database("da_access")?,"deployment_authorities":[],"platform_sso":null,"registration":null},
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},
         "audit":audit,"listen":input.listen,"product_origin":input.origin,"trusted_gateway":input.trusted_gateway,
         "identity":{"instance_id":saved.receipt.instance_id,"tenant_id":saved.receipt.tenant_id,"database":input.database("mdm_identity_runtime")?,"oidc":null},
@@ -555,6 +566,12 @@ async fn initialize_platform(input: &Input, journal: &Journal, saved: &mut Saved
     }
     crate::migration::migrate(
         &input.database("mdm_owner")?.options().map_err(invalid)?,
+        &coordinates(input, saved),
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    crate::migration::device_access::install(
+        &input.database("da_owner")?.options().map_err(invalid)?,
         &coordinates(input, saved),
     )
     .await

@@ -4,7 +4,7 @@ use rss_identity_core::{
     enterprise::EnterpriseTarget,
     federation::{ClaimMapping, ProviderCredentials, ProviderSettings, ProviderSettingsInput},
 };
-use rss_mdm_registration_service::{
+use rss_mdm_device_access_postgres::{
     Error as BusinessError,
     enterprise::broker::{Client, ExchangeToken, Pending},
 };

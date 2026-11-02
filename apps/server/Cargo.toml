@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-device-access-runtime.workspace = true
+rss-mdm-device-access-http.workspace = true
+rss-mdm-device-access.workspace = true
+rss-mdm-device-access-postgres.workspace = true
 rss-mdm-install-support.workspace = true
 rss-mdm-group-service.workspace = true
 rss-mdm-compliance-service.workspace = true

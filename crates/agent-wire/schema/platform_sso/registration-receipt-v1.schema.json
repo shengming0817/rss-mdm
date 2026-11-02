@@ -22,6 +22,11 @@
           "const": "mdm_bootstrap_pop",
           "description": "Device-authenticated bootstrap and key possession.",
           "type": "string"
+        },
+        {
+          "const": "da_device_pop",
+          "description": "Independent DA device bootstrap and key possession.",
+          "type": "string"
         }
       ]
     }

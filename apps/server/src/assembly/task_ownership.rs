@@ -5,7 +5,7 @@ use uuid::Uuid;
 pub(crate) enum Owner {
     Device,
     Access,
-    Credential,
+    Credential(rss_mdm_install_support::StorageProfile),
     Script,
     Collection,
     Software,
@@ -50,7 +50,7 @@ pub(crate) async fn on(
         ),
         (
             Owner::Access,
-            rss_mdm_registration_service::device_access::execution::storage::owned_ids_on(
+            rss_mdm_device_access_postgres::device_access::execution::storage::owned_ids_on(
                 c,
                 tenant,
                 &[id],
@@ -58,9 +58,19 @@ pub(crate) async fn on(
             .await?,
         ),
         (
-            Owner::Credential,
+            Owner::Credential(rss_mdm_install_support::StorageProfile::Mdm),
             rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(
                 rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                &[id],
+            )
+            .await?,
+        ),
+        (
+            Owner::Credential(rss_mdm_install_support::StorageProfile::Da),
+            rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(
+                rss_mdm_install_support::StorageProfile::Da,
                 c,
                 tenant,
                 &[id],

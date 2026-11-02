@@ -1,0 +1,505 @@
+//! Independent business proof: real Identity guard/proof, DA rows, Audit and signed native evidence.
+use super::*;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use ring::signature::{Ed25519KeyPair, KeyPair};
+use rss_identity_core::{
+    account::{LoginKey, Password},
+    session::{BearerSecret, SessionSecret},
+};
+use rss_mdm_agent_wire::{da, runtime as wire};
+use rss_mdm_authorization_service::{context::AuthorizedPrincipal, credential::RequestCredential};
+use rss_mdm_device_access::deployment::{Deployment, Observation};
+use rss_mdm_device_access_postgres as pg;
+fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
+    rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(10))
+}
+fn key() -> Ed25519KeyPair {
+    Ed25519KeyPair::from_seed_unchecked(&[49; 32]).unwrap()
+}
+fn authority_id() -> Uuid {
+    Uuid::from_u128(0x229df54fe9804bc1aa8f006c14890c15)
+}
+fn authorities() -> Result<Arc<pg::evidence::Authorities>> {
+    Ok(Arc::new(pg::evidence::Authorities::new(vec![
+        pg::evidence::Authority {
+            id: authority_id(),
+            public_key: key().public_key().as_ref().try_into()?,
+        },
+    ])?))
+}
+pub fn assemble(
+    c: &Context,
+    m: &material::Material,
+) -> Result<rss_mdm_device_access_http::Business> {
+    let evidence = authorities()?;
+    let runtime = rss_mdm_device_access_runtime::Runtime::assemble(
+        rss_mdm_device_access_runtime::Resources {
+            tenant: c.tenant,
+            installation: Uuid::parse_str(&c.inputs.installation.instance_id)?,
+            identity_instance: rss_identity_core::InstanceId::parse(
+                &c.inputs.installation.instance_id,
+            )?,
+            pool: c.access.clone(),
+            audit: c.access_audit.clone(),
+            proof_audit: c.proof_audit.clone(),
+            cursor: rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
+            protection: m.protection.clone(),
+            platform: None,
+            evidence: evidence.clone(),
+            broker_query: None,
+            agent_facts: None,
+        },
+        None,
+    )?;
+    Ok(rss_mdm_device_access_http::Business {
+        evidence,
+        service: runtime.business,
+        admission: runtime.admission,
+        platform: Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
+            context: runtime.platform,
+            authority: c.authority.clone(),
+            origin: "https://localhost".into(),
+        }),
+    })
+}
+async fn login(c: &Context, principal: Uuid) -> Result<(AuthorizedPrincipal, SessionSecret)> {
+    let issued = c
+        .authority
+        .login_local(
+            c.tenant,
+            LoginKey::parse(&format!("da-{principal}"))?,
+            Password::new("foundation-only-valid-password".into())?,
+            rss_identity_postgres::AttemptSource::parse("da-business")?,
+            None,
+            deadline(),
+        )
+        .await?;
+    let secret = SessionSecret::parse(issued.secret().expose().into())?;
+    let actor = c
+        .sessions
+        .authenticate(
+            &c.authorization,
+            RequestCredential::Cookie(SessionSecret::parse(secret.expose().into())?),
+        )
+        .await?;
+    Ok((actor, secret))
+}
+fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
+    rss_mdm_audit_integration::RequestAudit::new(
+        DA,
+        c.tenant.to_string(),
+        "da-business-proof",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    )
+}
+fn signed(value: &Observation) -> Result<pg::evidence::SignedObservation> {
+    let payload = serde_json::to_vec(value)?;
+    let mut message = b"rss.da.deployment.v1\0".to_vec();
+    message.extend_from_slice(&payload);
+    Ok(pg::evidence::SignedObservation {
+        payload: URL_SAFE_NO_PAD.encode(&payload),
+        signature: URL_SAFE_NO_PAD.encode(key().sign(&message).as_ref()),
+    })
+}
+async fn counts(c: &Context) -> Result<(i64, i64, i64, i64)> {
+    Ok(sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.bindings),(SELECT count(*) FROM rss_da.operations),(SELECT count(*) FROM rss_audit.records),(SELECT count(*) FROM rss_transactional_messaging.outbox)").fetch_one(&c.operator).await?)
+}
+pub async fn verify(
+    c: &Context,
+    m: &material::Material,
+    receipt: &da::Registration,
+    client: &reqwest::Client,
+    base: &str,
+) -> Result<()> {
+    use rss_mdm_policy_postgres::device_access::{Publication, Target};
+    use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
+    let business = assemble(c, m)?;
+    let token = material::administrator(c).await?;
+    let bearer = c
+        .authority
+        .inspect_bearer(c.tenant, BearerSecret::parse(token)?, deadline())
+        .await?;
+    let principal = bearer.account().principal.as_uuid();
+    let (actor, session_secret) = login(c, principal).await?;
+    let configuration = wire::AccessConfiguration {
+        mac: None,
+        windows: wire::AccessWindowsConfiguration::Whfb,
+        self_enrollment: true,
+        enabled: true,
+        role: None,
+    };
+    let publication = Publication {
+        id: Uuid::new_v4(),
+        revision: 1,
+        version: Uuid::new_v4(),
+        target: Target::TenantDefault,
+        enabled: true,
+        configuration,
+    };
+    let publish = pg::configuration::Change {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        publication: publication.clone(),
+    };
+    business
+        .service
+        .publish_configuration(&actor, &publish, &audit(c))
+        .await?;
+    let account = wire::AccessAccount::Windows {
+        sid: "S-1-12-1-1-2-3-4".into(),
+        authority: wire::AccessWindowsAuthority::Entra {
+            tenant_id: Uuid::new_v4(),
+            object_id: Uuid::new_v4(),
+        },
+    };
+    let binding = Uuid::new_v4();
+    let change = pg::device_access::Change {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        action: pg::device_access::Action::Put {
+            person: rss_mdm_device_access::Person {
+                instance: Uuid::parse_str(&c.inputs.installation.instance_id)?,
+                principal,
+            },
+            intent: rss_mdm_device_access::AccountIntent::Existing {
+                account: account.clone(),
+            },
+            policy: publication.id,
+        },
+    };
+    let fingerprints = std::collections::BTreeMap::new();
+    let context = change.step_up_context(&actor, &receipt.device, binding, &fingerprints)?;
+    let origin = url::Url::parse("https://localhost")?;
+    let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
+        c.authority.clone(),
+        "localhost".into(),
+        origin.clone(),
+        deadline(),
+    )
+    .await?;
+    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
+    let registration = webauthn
+        .begin_registration(
+            c.authority
+                .inspect_session(
+                    c.tenant,
+                    SessionSecret::parse(session_secret.expose().into())?,
+                    deadline(),
+                )
+                .await?,
+            "DA business proof".into(),
+            false,
+            rss_identity_postgres::RegistrationAuthorization::First,
+            deadline(),
+        )
+        .await?;
+    let response = authenticator.do_registration(origin.clone(), registration.options)?;
+    webauthn
+        .finish_registration(
+            c.authority
+                .inspect_session(
+                    c.tenant,
+                    SessionSecret::parse(session_secret.expose().into())?,
+                    deadline(),
+                )
+                .await?,
+            registration.id,
+            response,
+            deadline(),
+        )
+        .await?;
+    let challenge = webauthn
+        .begin_authentication(
+            c.authority
+                .inspect_session(
+                    c.tenant,
+                    SessionSecret::parse(session_secret.expose().into())?,
+                    deadline(),
+                )
+                .await?,
+            context,
+            deadline(),
+        )
+        .await?;
+    let response = authenticator.do_authentication(origin, challenge.options)?;
+    let grant = webauthn
+        .finish_authentication(
+            c.authority
+                .inspect_session(
+                    c.tenant,
+                    SessionSecret::parse(session_secret.expose().into())?,
+                    deadline(),
+                )
+                .await?,
+            challenge.id,
+            response,
+            deadline(),
+        )
+        .await?;
+    let proof = wire::Secret::parse(grant.expose())?;
+    let before = counts(c).await?;
+    // Failure occurs after binding, receipt and outbox writes, within the original Identity transaction.
+    sqlx::raw_sql("CREATE FUNCTION public.reject_da_business_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'DA receipt rollback probe'; END $$; CREATE TRIGGER rollback_probe AFTER INSERT ON rss_da.operations FOR EACH ROW EXECUTE FUNCTION public.reject_da_business_receipt();").execute(&c.operator).await?;
+    let failed = business
+        .service
+        .change_device_access(
+            &actor,
+            &receipt.device,
+            binding,
+            &change,
+            Some(&proof),
+            &fingerprints,
+            business.admission.as_ref(),
+            &audit(c),
+        )
+        .await;
+    sqlx::raw_sql("DROP TRIGGER rollback_probe ON rss_da.operations; DROP FUNCTION public.reject_da_business_receipt();").execute(&c.operator).await?;
+    assert!(failed.is_err());
+    assert_eq!(
+        counts(c).await?,
+        before,
+        "business, receipt, Audit and outbox roll back together"
+    );
+    let accepted = business
+        .service
+        .change_device_access(
+            &actor,
+            &receipt.device,
+            binding,
+            &change,
+            Some(&proof),
+            &fingerprints,
+            business.admission.as_ref(),
+            &audit(c),
+        )
+        .await?;
+    assert_eq!(accepted.registration, receipt.registration);
+    assert_eq!(accepted.registration_generation, receipt.generation as i64);
+    let settled = counts(c).await?;
+    assert_eq!(settled.0, before.0 + 1);
+    assert_eq!(settled.1, before.1 + 1);
+    assert_eq!(settled.2, before.2 + 1);
+    assert_eq!(settled.3, before.3 + 1);
+    let replay = business
+        .service
+        .change_device_access(
+            &actor,
+            &receipt.device,
+            binding,
+            &change,
+            None,
+            &fingerprints,
+            business.admission.as_ref(),
+            &audit(c),
+        )
+        .await?;
+    assert_eq!(
+        serde_json::to_value(&replay)?,
+        serde_json::to_value(&accepted)?
+    );
+    assert_eq!(counts(c).await?, settled);
+    c.authority
+        .revoke_current_session(
+            c.authority
+                .inspect_session(
+                    c.tenant,
+                    SessionSecret::parse(session_secret.expose().into())?,
+                    deadline(),
+                )
+                .await?,
+            deadline(),
+        )
+        .await?;
+    assert!(
+        business
+            .service
+            .change_device_access(
+                &actor,
+                &receipt.device,
+                binding,
+                &change,
+                None,
+                &fingerprints,
+                business.admission.as_ref(),
+                &audit(c)
+            )
+            .await
+            .is_err(),
+        "stale in-memory actor cannot replay after Identity revocation"
+    );
+    assert!(
+        business
+            .service
+            .device_access_operation(&actor, &receipt.device, change.operation_id)
+            .await
+            .is_err()
+    );
+    let (current, _) = login(c, principal).await?;
+    let recovered = business
+        .service
+        .device_access_operation(&current, &receipt.device, change.operation_id)
+        .await?;
+    assert_eq!(
+        serde_json::to_value(&recovered)?,
+        serde_json::to_value(&accepted)?
+    );
+    let anchor = registration::device::endpoints::DaRegistration {
+        device: receipt.device.clone(),
+        registration_id: receipt.registration,
+        generation: receipt.generation as i64,
+    };
+    let observation = Observation {
+        tenant: Uuid::parse_str(&c.tenant.to_string())?,
+        installation: Uuid::parse_str(&c.inputs.installation.instance_id)?,
+        device: receipt.device.clone(),
+        registration: receipt.registration,
+        generation: receipt.generation as i64,
+        authority: authority_id(),
+        sequence: 1,
+        issued_at: now() - 1,
+        expires_at: now() + 600,
+        revoked: false,
+        policy: publication.id,
+        policy_version: publication.version,
+        deployment: Deployment::Windows {
+            interactive_broker: true,
+        },
+        local_session: Some(wire::AccessLocalSession {
+            account,
+            session_id: Uuid::new_v4(),
+        }),
+    };
+    let url = format!("{base}/deployment-evidence");
+    material::empty(
+        client
+            .post(&url)
+            .json(&signed(&observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    let evidence_count = counts(c).await?;
+    material::empty(
+        client
+            .post(&url)
+            .json(&signed(&observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        counts(c).await?,
+        evidence_count,
+        "same signed observation appends no second fact"
+    );
+    let mut tx = c.seed().await?;
+    assert!(
+        business
+            .evidence
+            .native_on(&mut tx, c.tenant, observation.installation, &anchor, now())
+            .await?
+            .windows_session(now())
+    );
+    tx.rollback().await?;
+    let mut invalid = Vec::new();
+    let mut v = observation.clone();
+    v.expires_at = now() - 1;
+    invalid.push(v);
+    let mut v = observation.clone();
+    v.installation = Uuid::new_v4();
+    invalid.push(v);
+    let mut v = observation.clone();
+    v.tenant = Uuid::new_v4();
+    invalid.push(v);
+    let mut v = observation.clone();
+    v.registration = Uuid::new_v4();
+    invalid.push(v);
+    let mut v = observation.clone();
+    v.generation += 1;
+    invalid.push(v);
+    let mut v = observation.clone();
+    v.authority = Uuid::new_v4();
+    invalid.push(v);
+    let mut v = observation.clone();
+    v.revoked = true;
+    invalid.push(v); // same sequence with changed content
+    for v in invalid {
+        assert!(
+            client
+                .post(&url)
+                .json(&signed(&v)?)
+                .send()
+                .await?
+                .status()
+                .is_client_error()
+        );
+    }
+    let mut tampered = signed(&observation)?;
+    tampered.signature = URL_SAFE_NO_PAD.encode([0; 64]);
+    assert_eq!(
+        client.post(&url).json(&tampered).send().await?.status(),
+        403
+    );
+    assert_eq!(counts(c).await?, evidence_count);
+    let mut tx = c.seed().await?;
+    assert!(
+        pg::evidence::Authorities::default()
+            .native_on(&mut tx, c.tenant, observation.installation, &anchor, now())
+            .await
+            .is_err()
+    );
+    tx.rollback().await?;
+    let override_config = pg::configuration::Change {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        publication: Publication {
+            id: Uuid::new_v4(),
+            version: Uuid::new_v4(),
+            target: Target::Device {
+                device: receipt.device.clone(),
+            },
+            enabled: false,
+            ..publication.clone()
+        },
+    };
+    business
+        .service
+        .publish_configuration(&current, &override_config, &audit(c))
+        .await?;
+    let mut tx = c.seed().await?;
+    assert!(
+        business
+            .admission
+            .policy(&mut tx, observation.tenant, &receipt.device, publication.id)
+            .await
+            .is_err(),
+        "disabled override must block tenant-default fallback"
+    );
+    assert!(
+        business
+            .admission
+            .policy(
+                &mut tx,
+                observation.tenant,
+                "another-da-device",
+                publication.id
+            )
+            .await
+            .is_ok()
+    );
+    assert!(
+        business
+            .evidence
+            .native_on(&mut tx, c.tenant, observation.installation, &anchor, now())
+            .await
+            .is_err(),
+        "old deployment evidence cannot survive current configuration revocation"
+    );
+    tx.rollback().await?;
+    let absent:bool=sqlx::query_scalar("SELECT to_regclass('mdm_agent.bindings') IS NULL AND to_regclass('mdm_apple.devices') IS NULL AND to_regclass('mdm_windows.devices') IS NULL AND to_regclass('mdm_webhook.events') IS NULL").fetch_one(&c.operator).await?;
+    assert!(
+        absent,
+        "independent DA business never requires an MDM deployment"
+    );
+    Ok(())
+}

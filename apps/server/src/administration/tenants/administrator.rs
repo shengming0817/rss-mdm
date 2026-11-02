@@ -189,6 +189,10 @@ impl Service {
                     let targets=crate::administration::baseline::manifest::build(uuid::Uuid::parse_str(&user.tenant_id).map_err(|_|Error::Malformed)?)?.targets();
                     tx.with_connection(move |c| Box::pin(async move {
                         Ok(async {
+                            rss_mdm_authorization_service::store::grant_tenant_administrator_on(
+                                rss_mdm_install_support::StorageProfile::Da, c, user.clone(),
+                                Uuid::new_v5(&rule_id, b"device-access"),
+                            ).await?;
                             let (_,authority)=rss_mdm_authorization_service::baseline::grant_administrator_on(rss_mdm_install_support::StorageProfile::Mdm, c,user,rule_id,targets).await?;
                             crate::administration::baseline::reserve_on(c,&authority).await
                         }.await)

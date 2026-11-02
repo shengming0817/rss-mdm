@@ -30,8 +30,6 @@ pub struct Policies {
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
     script: Option<std::sync::Arc<rss_mdm_script_service::inputs::Inputs>>,
-    access:
-        Option<std::sync::Arc<rss_mdm_registration_service::device_access::publication::Inputs>>,
     credentials: Option<std::sync::Arc<rss_mdm_recovery_credentials::tasks::publication::Inputs>>,
     collections:
         Option<std::sync::Arc<rss_mdm_inventory_service::collection::execution::inputs::Inputs>>,
@@ -49,8 +47,6 @@ pub struct Dependencies {
     pub policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     pub inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
     pub script: Option<std::sync::Arc<rss_mdm_script_service::inputs::Inputs>>,
-    pub access:
-        Option<std::sync::Arc<rss_mdm_registration_service::device_access::publication::Inputs>>,
     pub credentials:
         Option<std::sync::Arc<rss_mdm_recovery_credentials::tasks::publication::Inputs>>,
     pub collections:
@@ -75,7 +71,6 @@ impl Policies {
             inputs,
             script,
             collections,
-            access,
             credentials,
             configuration,
             changes,
@@ -92,7 +87,6 @@ impl Policies {
             inputs,
             script,
             collections,
-            access,
             credentials,
             configuration,
             changes,
@@ -226,8 +220,10 @@ impl Policies {
                         } else if let Action::UnmanageDevice{schedule,run_lifetime_seconds}=&policy.definition.action {
                             checked_input(serde_json::to_value(rss_mdm_device_service::control::frozen::Frozen::UnmanageDevice{schedule:schedule.clone(),run_lifetime_seconds:*run_lifetime_seconds,actor:p.actor()}))?
                         } else if let Action::DeviceAccess{mac,windows,self_enrollment,role}=&policy.definition.action {
-                            let configuration=rss_mdm_agent_wire::runtime::AccessConfiguration {mac:mac.clone(),windows:windows.clone(),self_enrollment:*self_enrollment,enabled:true,role:role.map(|r|match r {rss_mdm_policy::AccessRole::Standard=>rss_mdm_agent_wire::runtime::AccessRole::Standard,rss_mdm_policy::AccessRole::Administrator=>rss_mdm_agent_wire::runtime::AccessRole::Administrator})};
-                            checked_input(serde_json::to_value(s.access.as_ref().ok_or(Error::Unsupported)?.publish_in(tx,configuration,p,&authorization)?))?
+                            let configuration=rss_mdm_agent_wire::runtime::AccessConfiguration{mac:mac.clone(),windows:windows.clone(),self_enrollment:*self_enrollment,enabled:true,role:role.map(|r|match r {rss_mdm_policy::AccessRole::Standard=>rss_mdm_agent_wire::runtime::AccessRole::Standard,rss_mdm_policy::AccessRole::Administrator=>rss_mdm_agent_wire::runtime::AccessRole::Administrator})};
+                            configuration.validate().map_err(|_|Error::Malformed)?;
+                            // MDM owns this publication; DA consumes only explicitly qualified sources.
+                            serde_json::json!({"kind":"device_access","configuration":configuration})
                         } else if matches!(policy.definition.action,Action::Credential{..}) {
                             checked_input(serde_json::to_value(s.credentials.as_ref().ok_or(Error::Unsupported)?.publish_in(tx,&policy.definition.action,p,&authorization)?))?
                         } else if let Action::Execution {resource,parameters,schedule,frequency,run_lifetime_seconds}=&policy.definition.action {

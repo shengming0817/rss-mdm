@@ -1,0 +1,11 @@
+SELECT current_user IN('mdm_identity_runtime','da_identity_runtime') AND session_user=current_user
+AND NOT EXISTS(SELECT FROM pg_roles WHERE rolname=current_user AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication))
+AND NOT pg_has_role(current_user,'da_owner','MEMBER')
+AND has_schema_privilege(current_user,'rss_da','USAGE')
+AND has_table_privilege(current_user,'rss_da.bindings','SELECT')
+AND has_table_privilege(current_user,'rss_da.psso_sources','SELECT')
+AND has_column_privilege(current_user,'rss_da.psso_sources','tenant_id','UPDATE')
+AND has_table_privilege(current_user,'rss_da.deployment_evidence','SELECT')
+AND has_function_privilege(current_user,'rss_da.current_da_registration(text)','EXECUTE')
+AND has_function_privilege(current_user,'rss_da.platform_session_qualifications(uuid,jsonb,bigint)','EXECUTE')
+AND has_function_privilege(current_user,'rss_da.active_access_binding(uuid,bigint,bigint)','EXECUTE')

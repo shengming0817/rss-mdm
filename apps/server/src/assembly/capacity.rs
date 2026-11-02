@@ -30,7 +30,7 @@ async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result
                 )
                 .await?;
             let access =
-                rss_mdm_registration_service::device_access::execution::storage::active_count_on(
+                rss_mdm_device_access_postgres::device_access::execution::storage::active_count_on(
                     c, tenant, &device, now,
                 )
                 .await?;
@@ -45,7 +45,16 @@ async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result
                 now,
             )
             .await?;
+            let da_credential = rss_mdm_recovery_credentials::tasks::storage::active_count_on(
+                rss_mdm_install_support::StorageProfile::Da,
+                c,
+                tenant,
+                &device,
+                now,
+            )
+            .await?;
             Ok(execution
+                + da_credential
                 + script
                 + collection
                 + software

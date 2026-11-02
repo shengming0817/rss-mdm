@@ -1,7 +1,8 @@
 //! Agent runtime V1 ingress; request fields carry no tenant or registration authority.
+use rss_mdm_http_contract::agent::{credential_response, status_for};
 use rss_mdm_http_contract::signature::WithStatus;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
-mod contract;
+pub mod contract;
 mod diagnostic;
 mod error;
 pub mod filevault;
@@ -145,7 +146,7 @@ use axum::{
     Extension, Json,
     body::Bytes,
     extract::{Path, State, rejection::BytesRejection},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
 use rss_mdm_agent_wire::runtime as wire;
@@ -233,29 +234,6 @@ impl IntoResponse for AgentError {
             response.extensions_mut().insert(error);
         }
         response
-    }
-}
-fn status_for(code: wire::ErrorCode) -> StatusCode {
-    match code {
-        wire::ErrorCode::MalformedRequest
-        | wire::ErrorCode::UnsupportedWire
-        | wire::ErrorCode::UnsupportedCapability => StatusCode::BAD_REQUEST,
-        wire::ErrorCode::InvalidIdentity
-        | wire::ErrorCode::CredentialRevoked
-        | wire::ErrorCode::CertificateExpired
-        | wire::ErrorCode::CredentialRetired => StatusCode::UNAUTHORIZED,
-        wire::ErrorCode::ActivityNotFound
-        | wire::ErrorCode::CapabilityNotFound
-        | wire::ErrorCode::ReportNotFound
-        | wire::ErrorCode::TaskNotFound => StatusCode::NOT_FOUND,
-        wire::ErrorCode::PermissionDenied => StatusCode::FORBIDDEN,
-        wire::ErrorCode::RangeNotSatisfiable => StatusCode::RANGE_NOT_SATISFIABLE,
-        wire::ErrorCode::OperationConflict | wire::ErrorCode::ActivityCursorInvalidated => {
-            StatusCode::CONFLICT
-        }
-        wire::ErrorCode::OperationUnknown | wire::ErrorCode::ServiceUnavailable => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
     }
 }
 
@@ -627,19 +605,6 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         AgentError::Service(self).into_response()
     }
-}
-
-fn credential_response(code: rss_mdm_agent_wire::enroll::ErrorCode) -> Response {
-    use rss_mdm_agent_wire::enroll::ErrorCode as C;
-    let code = match code {
-        C::CredentialRevoked => wire::ErrorCode::CredentialRevoked,
-        C::CertificateExpired => wire::ErrorCode::CertificateExpired,
-        C::CredentialRetired => wire::ErrorCode::CredentialRetired,
-        C::PermissionDenied => wire::ErrorCode::PermissionDenied,
-        C::ServiceUnavailable | C::ActivationUnknown => wire::ErrorCode::ServiceUnavailable,
-        _ => wire::ErrorCode::InvalidIdentity,
-    };
-    (status_for(code), Json(wire::ErrorBody { code })).into_response()
 }
 
 struct ReportDecoder;

@@ -40,8 +40,7 @@ pub(crate) async fn events(
     materials: Arc<EventInputs>,
     software_materials: Arc<rss_mdm_software_service::deployment::Materials>,
     enrollment_materials: Arc<rss_mdm_registration_service::enrollment::tasks::Materials>,
-    access_materials: Arc<rss_mdm_registration_service::device_access::execution::Materials>,
-    credential_materials: Option<Arc<rss_mdm_recovery_credentials::tasks::Materials>>,
+    credential_materials: Vec<Arc<rss_mdm_recovery_credentials::tasks::Materials>>,
 ) -> Result<Arc<Events>, crate::Error> {
     let scripts = Arc::new(
         rss_mdm_script_service::Transactions::bind(
@@ -97,20 +96,16 @@ pub(crate) async fn events(
         .await
         .map_err(super::owner_errors::enrollment)?,
     );
-    let access = Arc::new(
-        rss_mdm_registration_service::device_access::execution::Transactions::bind(
-            application.runtime.clone(),
-            application.tenant,
-            application.audit_store.clone(),
-            access_materials,
-        )
-        .await
-        .map_err(super::owner_errors::access)?,
-    );
-    let credentials = match credential_materials {
-        Some(materials) => Some(Arc::new(
+    let mut credentials = Vec::new();
+    for materials in credential_materials {
+        let profile = if materials.product.is_some() {
+            rss_mdm_install_support::StorageProfile::Da
+        } else {
+            rss_mdm_install_support::StorageProfile::Mdm
+        };
+        credentials.push(Arc::new(
             rss_mdm_recovery_credentials::tasks::Transactions::bind(
-                rss_mdm_install_support::StorageProfile::Mdm,
+                profile,
                 application.runtime.clone(),
                 application.tenant,
                 application.audit_store.clone(),
@@ -118,13 +113,11 @@ pub(crate) async fn events(
             )
             .await
             .map_err(super::owner_errors::credential)?,
-        )),
-        None => None,
-    };
+        ));
+    }
     let participants = Arc::new(super::policy_ports::Events {
         software,
         enrollment,
-        access,
         credentials,
         scripts,
         collections,
@@ -179,13 +172,6 @@ pub(crate) async fn management(
                 enrollment_entries,
                 signing_enabled,
             }),
-            access: Some(Arc::new(
-                rss_mdm_registration_service::device_access::publication::Inputs::bind(
-                    application.runtime.clone(),
-                    application.tenant,
-                    signing_enabled,
-                ),
-            )),
             credentials: Some(Arc::new(
                 rss_mdm_recovery_credentials::tasks::publication::Inputs::bind(
                     application.runtime.clone(),

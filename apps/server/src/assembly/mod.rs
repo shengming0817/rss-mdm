@@ -4,6 +4,7 @@ pub(crate) mod agent_tasks;
 pub(crate) mod apple_business;
 mod apple_facts;
 mod capacity;
+pub(crate) mod device_access;
 pub(crate) mod self_service;
 mod task_ownership;
 pub(crate) mod task_relay;
@@ -33,6 +34,7 @@ pub(crate) mod software;
 pub(crate) mod task_trust;
 pub(crate) mod webhooks;
 pub(crate) struct Assembly {
+    pub(crate) da: Arc<device_access::Assembly>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
     pub(crate) collection_work:
         Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
@@ -43,7 +45,6 @@ pub(crate) struct Assembly {
     pub(crate) configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
     pub(crate) resources: Arc<rss_mdm_resource_service::ResourceCatalog>,
-    pub(crate) access_audit: Option<Arc<rss_mdm_audit_integration::AuditStore>>,
     pub(crate) channels: Arc<crate::channel_status::Channels>,
     pub(crate) telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub(crate) runtime_observation: crate::installation::host::Observation,
@@ -93,13 +94,14 @@ pub(crate) struct Assembly {
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) apple: Option<Arc<crate::apple::Apple>>,
     pub(crate) platform_configuration:
-        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+        Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     pub(crate) windows: Option<Arc<crate::windows::Windows>>,
     pub(crate) access: Arc<Database>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
 }
 
 pub(crate) struct AssemblyDependencies {
+    pub(crate) da: Arc<device_access::Assembly>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
     pub(crate) collection_work:
         Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
@@ -157,23 +159,6 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) resources: Arc<rss_mdm_resource_service::ResourceCatalog>,
     pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
 }
-async fn device_access_audit(
-    identity: &Identity,
-    audit_store: &rss_mdm_audit_integration::AuditStore,
-    enabled: bool,
-) -> Result<Option<Arc<rss_mdm_audit_integration::AuditStore>>, Error> {
-    if !enabled {
-        return Ok(None);
-    }
-    let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-    Ok(Some(Arc::new(
-        audit_store
-            .on_runtime(identity.runtime.clone(), identity.tenant, &budget.control())
-            .await?,
-    )))
-}
-
 pub(crate) async fn from_compiled(
     compiled: crate::config::Compiled,
     dependencies: AssemblyDependencies,
@@ -183,6 +168,7 @@ pub(crate) async fn from_compiled(
         identity_management,
     } = compiled;
     let AssemblyDependencies {
+        da,
         script_work,
         collection_work,
         telemetry,
@@ -338,7 +324,6 @@ pub(crate) async fn from_compiled(
     )?;
     let roots_available = roots.is_some();
     let apple_material_roots = Arc::new(roots.unwrap_or_default());
-    let platform_origin = config.product_origin.clone();
     let mut apple = if let Some(config) = config.native_protocols.apple {
         if !roots_available {
             None
@@ -361,7 +346,6 @@ pub(crate) async fn from_compiled(
                             config,
                             materials,
                             clock.unix_seconds()?,
-                            (&platform_origin, identity.tenant),
                             providers.clone(),
                             credential_receipts.clone(),
                         ),
@@ -450,7 +434,6 @@ pub(crate) async fn from_compiled(
     {
         channels.mounted(name)?;
     }
-    let access_audit = device_access_audit(&identity, &audit_store, agent_pki.is_some()).await?;
     let agent_enrollment = agent_pki
         .as_ref()
         .map(|pki| {
@@ -463,7 +446,6 @@ pub(crate) async fn from_compiled(
                     tenant: identity.tenant,
                     store: access.registration(),
                     audit: audit_store.clone(),
-                    access_audit: access_audit.clone().ok_or(Error::Malformed)?,
                     issuer: pki.issuer.clone(),
                     clock: pki.pki_clock.clone(),
                     binding: Arc::new(rss_mdm_agent_channel::Bindings::new(
@@ -503,11 +485,14 @@ pub(crate) async fn from_compiled(
         rss_mdm_query::cursor::CursorCodec::new(&cursor_key).map_err(|_| Error::Malformed)?,
     )
     .await?;
-    let platform_configuration = apple
+    let platform_configuration = da
+        .runtime
+        .platform
+        .platform_sso
         .as_ref()
-        .and_then(|apple| apple.platform_sso.as_ref())
         .map(|runtime| runtime.qualification_configuration())
-        .transpose()?;
+        .transpose()
+        .map_err(|_| Error::Configuration(crate::ConfigIssue::DeviceAccess))?;
     let protocol_audit = Arc::new(
         audit_store
             .on_runtime(
@@ -544,7 +529,6 @@ pub(crate) async fn from_compiled(
             software.service.clone(),
             registration.native.clone(),
             credential_execution.as_ref().map(|v| v.native.clone()),
-            access_execution.service.clone(),
         )),
         facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: protection.clone(),
@@ -552,7 +536,10 @@ pub(crate) async fn from_compiled(
     });
     let agent_tasks = Arc::new(agent_tasks::AgentTasks {
         access: access_execution.service.clone(),
-        credentials: credential_execution.as_ref().map(|v| v.tasks.clone()),
+        credentials: credential_execution
+            .as_ref()
+            .map(|v| v.tasks.clone())
+            .unwrap_or_default(),
         requests: self_service,
         software: software.service.clone(),
         registration: registration.enrollment.clone(),
@@ -579,6 +566,7 @@ pub(crate) async fn from_compiled(
         execution: execution.clone(),
     });
     let state = Arc::new(Assembly {
+        da,
         script_work,
         collection_work,
         access_execution,
@@ -603,7 +591,6 @@ pub(crate) async fn from_compiled(
         apple_material_roots,
         webhooks,
         pki,
-        access_audit,
         agent_enrollment,
         agent_pki,
         certificate_archive,
@@ -882,5 +869,3 @@ mod device_t2;
 #[cfg(test)]
 #[path = "../../tests/owner_boundaries/mod.rs"]
 mod owner_boundaries_t2;
-
-mod recovery_eligibility;

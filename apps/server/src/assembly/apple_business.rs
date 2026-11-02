@@ -14,7 +14,6 @@ pub(crate) struct AppleBusiness(
     pub Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub Arc<rss_mdm_registration_service::installation::Service>,
     pub Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
-    pub Arc<rss_mdm_registration_service::device_access::execution::Service>,
 );
 pub(super) fn error(e: rss_mdm_device_service::control::Error) -> rss_mdm_apple_channel::Error {
     use rss_mdm_apple_channel::Missing;
@@ -643,47 +642,6 @@ impl Business for AppleBusiness {
                 complete: v.complete,
                 digest,
             })
-        })
-    }
-}
-impl PlatformAccess for AppleBusiness {
-    fn supported_on<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        registration: Uuid,
-    ) -> Pending<'a, bool> {
-        Box::pin(async move {
-            self.6
-                .platform_sso_supported_on(c, registration)
-                .await
-                .map_err(Into::into)
-        })
-    }
-    fn registration_binding_on<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        p: &'a DevicePrincipal,
-        binding: Uuid,
-        generation: i64,
-    ) -> Pending<'a, rss_mdm_registration_service::device_access::Binding> {
-        Box::pin(async move {
-            self.6
-                .registration_access_binding_on(c, p, binding, generation)
-                .await
-                .map_err(Into::into)
-        })
-    }
-    fn active_binding_on<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        binding: Uuid,
-        generation: i64,
-    ) -> Pending<'a, rss_mdm_registration_service::device_access::Binding> {
-        Box::pin(async move {
-            self.6
-                .active_access_binding_on(c, binding, generation)
-                .await
-                .map_err(Into::into)
         })
     }
 }

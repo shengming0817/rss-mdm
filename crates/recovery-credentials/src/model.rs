@@ -257,6 +257,11 @@ impl Coordinates {
         if self.tenant.is_nil() || self.material.is_nil() || self.version < 1 {
             return Err(Error::Malformed);
         }
+        if matches!(self.binding.subject, Subject::RssLogin { .. })
+            != (self.profile == rss_mdm_install_support::StorageProfile::Da)
+        {
+            return Err(Error::Unsupported);
+        }
         self.binding.validate()
     }
 }

@@ -42,7 +42,6 @@ async fn delivery(c: &Context, a: &Fixture) -> Result<rss_mdm_apple_channel::del
             a.software.service.clone(),
             a.registration.native.clone(),
             None,
-            a.access_execution.service.clone(),
         )),
         facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: a.resources.protection.clone(),

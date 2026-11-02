@@ -1,0 +1,244 @@
+{
+  "tables": [
+    {
+      "schema": "rss_da",
+      "table": "access_runs",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "agent_delivery",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "agent_device",
+        "agent_generation",
+        "agent_installation",
+        "agent_registration",
+        "da_generation",
+        "enabled",
+        "revision"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "bindings",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "account",
+        "document",
+        "generation",
+        "instance",
+        "principal",
+        "revision",
+        "state"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "brokers",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "document",
+        "expires_at",
+        "phase",
+        "sealed"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "business_revision",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "ceremonies",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "consumed"
+      ],
+      "delete_policy": "expires_at<clock_timestampandconsumedisnull"
+    },
+    {
+      "schema": "rss_da",
+      "table": "deployment_evidence",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "document",
+        "fingerprint",
+        "payload",
+        "received_at",
+        "sequence",
+        "signature"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "lifecycles",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "operations",
+      "read_write": true,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "psso_challenges",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "consumed"
+      ],
+      "delete_policy": "tenant"
+    },
+    {
+      "schema": "rss_da",
+      "table": "psso_password_attempts",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "state"
+      ],
+      "delete_policy": "expires_at<floorextractepochfromclock_timestamp::bigint-86400"
+    },
+    {
+      "schema": "rss_da",
+      "table": "psso_password_providers",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "fingerprint",
+        "revision"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "psso_sources",
+      "read_write": true,
+      "read_only": false,
+      "updates": [
+        "document",
+        "parent",
+        "registration",
+        "revoked",
+        "signing_kid",
+        "version"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "psso_tokens",
+      "read_write": true,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": "tenant"
+    },
+    {
+      "schema": "rss_da",
+      "table": "relying_parties",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "results",
+      "read_write": true,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "subject_denials",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "subject_owners",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "subject_versions",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "subjects",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "windows_sources",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "rss_da.deployment_valid_until",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.platform_session_qualifications",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.access_policy",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.active_access_binding",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.save_retired_access_run",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.access_binding_ready",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [],
+  "verified_schemas": []
+}

@@ -6,6 +6,7 @@ pub struct Run {
     pub id: Uuid,
     pub policy_version: Uuid,
     pub target: Target,
+    pub material: Option<crate::Binding>,
     pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
     pub available_at: i64,
     pub deadline: i64,
@@ -75,6 +76,11 @@ async fn run_in(
     Ok(Run {
         id,
         policy_version: row.try_get("policy_version")?,
+        material: row
+            .try_get::<Option<serde_json::Value>, _>("material_binding")?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| Error::Invariant)?,
         target: Target {
             device: row.try_get("device")?,
             registration: row.try_get("registration")?,

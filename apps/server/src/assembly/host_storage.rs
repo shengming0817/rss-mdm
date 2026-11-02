@@ -41,7 +41,7 @@ pub(super) async fn admit(
             rss_mdm_agent_channel::verify_delivery(rss_mdm_install_support::StorageProfile::Mdm, c)
                 .await?;
             rss_mdm_script_service::verify_storage(c).await?;
-            rss_mdm_registration_service::device_access::execution::verify_storage(c).await?;
+            rss_mdm_device_access_postgres::device_access::execution::verify_storage(c).await?;
             rss_mdm_recovery_credentials::verify_storage(c).await?;
             rss_mdm_inventory_service::collection::execution::verify_storage(c).await?;
             rss_mdm_windows_channel::verify_delivery(c).await?;

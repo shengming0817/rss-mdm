@@ -1,0 +1,17 @@
+{
+  "tables": [
+    "rss_da.recovery_agent_guards",
+    "rss_da.recovery_agent_materials",
+    "rss_da.recovery_entries",
+    "rss_da.recovery_versions",
+    "rss_da.recovery_rss_login_uses",
+    "rss_da.recovery_disclosures",
+    "rss_da.credential_runs",
+    "rss_da.credential_policy_recovery",
+    "rss_da.credential_agent_admission"
+  ],
+  "functions": [
+    "rss_da.credential_save_retired_run"
+  ],
+  "views": []
+}

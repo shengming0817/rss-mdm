@@ -1,0 +1,119 @@
+//! Minimal DA configuration publications in the existing Policy provider.
+//! These publications have no Scope identity or Group backend dependency.
+use serde::{Deserialize, Serialize};
+use sqlx::{PgConnection, Row};
+use uuid::Uuid;
+/// The only supported DA assignment selectors.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Target {
+    /// Default for DA registrations without an explicit override.
+    TenantDefault,
+    /// An override applies to exactly one DA device.
+    Device {
+        /// DA device identity, never an Inventory object or Group ID.
+        device: String,
+    },
+}
+/// One current publication; previous immutable versions remain queryable.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Publication {
+    /// Policy identity.
+    pub id: Uuid,
+    /// Configuration CAS.
+    pub revision: i64,
+    /// Immutable definition version.
+    pub version: Uuid,
+    /// Closed assignment selector.
+    pub target: Target,
+    /// Disabled overrides deliberately block fallback to the tenant default.
+    pub enabled: bool,
+    /// Validated device access configuration.
+    pub configuration: rss_mdm_agent_wire::runtime::AccessConfiguration,
+}
+/// Errors before persistence; the host owns audit and settlement.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Invalid publication.
+    #[error("invalid DA configuration")]
+    Malformed,
+    /// Concurrent publication changed the expected revision or assignment.
+    #[error("DA configuration changed")]
+    Conflict,
+    /// PostgreSQL operation failed; its transaction must roll back.
+    #[error(transparent)]
+    Storage(#[from] sqlx::Error),
+}
+/// Borrow the Policy aggregate lock without reading an MDM Scope definition.
+pub async fn lock_on(c: &mut PgConnection, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT rss_da.lock_policy($1)")
+        .bind(id)
+        .execute(c)
+        .await?;
+    Ok(())
+}
+/// Persist current DA configuration and its immutable version in the caller's transaction.
+pub async fn publish_on(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    value: &Publication,
+    expected: i64,
+    author: serde_json::Value,
+    now: i64,
+) -> Result<(), Error> {
+    use sha2::{Digest, Sha256};
+    if value.id.is_nil()
+        || value.version.is_nil()
+        || expected < 0
+        || expected.checked_add(1) != Some(value.revision)
+        || now < 0
+    {
+        return Err(Error::Malformed);
+    }
+    value
+        .configuration
+        .validate()
+        .map_err(|_| Error::Malformed)?;
+    if matches!(&value.target,Target::Device{device} if device.is_empty() || device.len()>256) {
+        return Err(Error::Malformed);
+    }
+    lock_on(c, value.id).await?;
+    let row=sqlx::query("SELECT revision,version_number FROM rss_da.policies WHERE tenant_id=$1 AND id=$2 FOR UPDATE").bind(tenant).bind(value.id).fetch_optional(&mut *c).await?;
+    let (revision, number) = match row {
+        Some(r) => (
+            r.try_get::<i64, _>("revision")?,
+            r.try_get::<i64, _>("version_number")?,
+        ),
+        None => (0, 0),
+    };
+    if revision != expected {
+        return Err(Error::Conflict);
+    }
+    let number = number.checked_add(1).ok_or(Error::Malformed)?;
+    let definition = serde_json::to_value(value).map_err(|_| Error::Malformed)?;
+    let frozen = serde_json::json!({"kind":"device_access","configuration":value.configuration});
+    let fingerprint = Sha256::digest(serde_json::to_vec(&frozen).map_err(|_| Error::Malformed)?);
+    let result=sqlx::query("INSERT INTO rss_da.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,state=excluded.state,definition=excluded.definition,author=excluded.author,updated_at=excluded.updated_at")
+        .bind(tenant).bind(value.id).bind(value.revision).bind(value.version).bind(number).bind(if value.enabled{"enabled"}else{"disabled"}).bind(definition).bind(author).bind(now).execute(&mut *c).await;
+    match result {
+        Err(e)
+            if e.as_database_error()
+                .is_some_and(|e| e.is_unique_violation()) =>
+        {
+            return Err(Error::Conflict);
+        }
+        Err(e) => return Err(e.into()),
+        Ok(_) => (),
+    }
+    sqlx::query("INSERT INTO rss_da.policy_versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1,$2,$3,$4,'device_access',$5,$6)").bind(tenant).bind(value.version).bind(value.id).bind(number).bind(frozen).bind(fingerprint.as_slice()).execute(c).await?;
+    Ok(())
+}
+/// Assignment uniqueness is independent of enablement, so a disabled override cannot widen scope.
+pub const INSTALL_SQL:&str="GRANT SELECT,INSERT ON rss_da.policies,rss_da.policy_versions TO da_access,da_identity_runtime;
+GRANT UPDATE(revision,current_version,version_number,state,definition,author,updated_at) ON rss_da.policies TO da_access,da_identity_runtime;
+GRANT EXECUTE ON FUNCTION rss_da.lock_policy(uuid) TO da_access,da_policy_runtime,da_identity_runtime;
+CREATE UNIQUE INDEX da_configuration_target ON rss_da.policies(tenant_id,(definition#>>'{target,kind}'),(coalesce(definition#>>'{target,device}',''))) WHERE definition->'target' IS NOT NULL;";
+
+/// Access profile for the minimal DA publication consumer.
+pub const ACCESS_CONTRACT: &str = include_str!("../schema/da-device-access.json");

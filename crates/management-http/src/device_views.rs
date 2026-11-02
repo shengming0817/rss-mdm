@@ -16,7 +16,7 @@ use uuid::Uuid;
 pub fn routes(
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     identity: rss_identity_postgres::Authority,
-    platform: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    platform: Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
 ) -> Router<Arc<Associations>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     register(Some((sessions, identity, platform)))
 }
@@ -24,7 +24,7 @@ pub(crate) fn register(
     runtime: Option<(
         Arc<rss_mdm_authorization_service::session::SessionAuthority>,
         rss_identity_postgres::Authority,
-        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+        Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     )>,
 ) -> Router<Arc<Associations>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     let router = {
@@ -153,7 +153,7 @@ async fn list(
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
     Extension(platform): Extension<
-        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+        Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -195,7 +195,7 @@ async fn statistics(
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
     Extension(platform): Extension<
-        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+        Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
@@ -232,7 +232,7 @@ async fn detail(
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
     Extension(platform): Extension<
-        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+        Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,

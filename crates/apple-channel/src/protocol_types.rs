@@ -151,12 +151,6 @@ pub enum AppleEvidence {
 pub trait AppleResults: Send + Sync {
     /// Correlate native PSSO readback before projecting a Password completion.
     /// Registration qualification deliberately does not require an already-Applied binding.
-    fn platform_sso_observation<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        binding: &'a rss_mdm_registration_service::device_access::Binding,
-        facts: &'a rss_mdm_agent_wire::runtime::AccessMacPlatformSsoFacts,
-    ) -> Pending<'a, bool>;
 
     /// Bounded evidence for one authorized page; all native decoding stays with Apple.
     fn evidence_page<'a>(

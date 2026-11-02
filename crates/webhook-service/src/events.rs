@@ -116,6 +116,14 @@ pub(crate) async fn emit_derived_on(
     event: &Event,
     origin: Option<Uuid>,
 ) -> Result<(), Error> {
+    record_on(c, event, origin).await?;
+    publish_on(c, event).await
+}
+pub(crate) async fn record_on(
+    c: &mut PgConnection,
+    event: &Event,
+    origin: Option<Uuid>,
+) -> Result<(), Error> {
     event.validate()?;
     let body = serde_json::to_vec(event)?;
     let insert = if origin.is_some() {
@@ -143,6 +151,12 @@ pub(crate) async fn emit_derived_on(
             return Err(Error::Conflict);
         }
     }
+    Ok(())
+}
+/// Publish an already validated product event in the initiating RSS transaction.
+/// The webhook consumer materializes its own delivery record when it consumes it.
+pub async fn publish_on(c: &mut PgConnection, event: &Event) -> Result<(), Error> {
+    event.validate()?;
     append_on(
         c,
         message(
@@ -155,6 +169,7 @@ pub(crate) async fn emit_derived_on(
     )
     .await
 }
+
 pub async fn emit_in(tx: &mut PgTransaction<'_>, event: Event) -> Result<(), Error> {
     if tx.tenant_id().to_string() != event.tenant_id.to_string() {
         return Err(Error::Denied);

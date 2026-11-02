@@ -133,23 +133,6 @@ pub struct DetectionCatalog {
     pub complete: bool,
     pub digest: [u8; 32],
 }
-pub trait PlatformAccess: Send + Sync {
-    fn supported_on<'a>(&'a self, c: &'a mut PgConnection, registration: Uuid)
-    -> Pending<'a, bool>;
-    fn registration_binding_on<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        p: &'a DevicePrincipal,
-        binding: Uuid,
-        generation: i64,
-    ) -> Pending<'a, rss_mdm_registration_service::device_access::Binding>;
-    fn active_binding_on<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        binding: Uuid,
-        generation: i64,
-    ) -> Pending<'a, rss_mdm_registration_service::device_access::Binding>;
-}
 pub trait Departure: Send + Sync {
     fn departed<'a>(
         &'a self,

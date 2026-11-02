@@ -4,9 +4,7 @@ pub mod agent;
 pub mod certificate_issuance;
 mod database;
 pub mod device;
-pub mod device_access;
 pub mod enrollment;
-pub mod enterprise;
 mod error;
 pub mod lifecycle;
 pub mod operations;
@@ -132,3 +130,6 @@ pub const fn identity_access_contract(
 ) -> &'static str {
     storage_profile::sql(profile).identity_access_contract
 }
+
+pub const DA_IDENTITY_PROJECTION_MANIFEST: &str =
+    r#"{"tables":[],"functions":["rss_da.current_da_registration"],"views":[]}"#;

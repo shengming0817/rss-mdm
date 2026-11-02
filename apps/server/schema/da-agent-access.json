@@ -1,0 +1,49 @@
+{
+  "tables": [
+    {
+      "schema": "rss_da",
+      "table": "agent_delivery",
+      "read_write": false,
+      "read_only": true,
+      "updates": [
+        "enabled",
+        "revision"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "access_runs",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "credential_runs",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "rss_da.current_da_registration",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.save_retired_access_run",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.credential_save_retired_run",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [
+    "rss_da.installation_binding"
+  ],
+  "verified_schemas": []
+}

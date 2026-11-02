@@ -28,6 +28,8 @@ impl Prepared {
             serde_json::to_value(c.inputs.database("shared", "mdm_identity_runtime"))?;
         config["access_database"] =
             serde_json::to_value(c.inputs.database("shared", "mdm_access"))?;
+        config["device_access"]["database"] =
+            serde_json::to_value(c.inputs.database("shared", "da_access"))?;
         config["command_database"] =
             serde_json::to_value(c.inputs.database("shared", "mdm_command_runtime"))?;
         config["storage_binding"] = json!({"target":c.inputs.installation.target,"lineage":c.inputs.installation.lineage,"epoch":1});

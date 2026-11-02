@@ -39,6 +39,49 @@ pub fn units() -> Vec<Unit> {
             "authorization-relations",
             rss_mdm_authorization_service::relations_sql(DA),
         ),
+        (
+            "current-da",
+            registration::device::endpoints::DA_INSTALL_SQL,
+        ),
+        ("policy", rss_mdm_policy_postgres::migration_sql(DA)),
+        (
+            "policy-targets",
+            rss_mdm_policy_postgres::device_access::INSTALL_SQL,
+        ),
+        (
+            "bindings",
+            rss_mdm_device_access_postgres::device_access::INSTALL_SQL,
+        ),
+        (
+            "business-authority",
+            rss_mdm_device_access_postgres::AUTHORITY_SQL,
+        ),
+        (
+            "enterprise",
+            rss_mdm_device_access_postgres::enterprise::INSTALL_SQL,
+        ),
+        (
+            "access-tasks",
+            rss_mdm_device_access_postgres::device_access::execution::INSTALL_SQL,
+        ),
+        (
+            "platform-sso",
+            rss_mdm_device_access_postgres::platform_sso::INSTALL_SQL,
+        ),
+        ("recovery", rss_mdm_recovery_credentials::install_sql(DA)),
+        (
+            "credential-tasks",
+            rss_mdm_recovery_credentials::tasks_sql(DA),
+        ),
+        (
+            "credential-relations",
+            rss_mdm_recovery_credentials::task_relations_sql(DA),
+        ),
+        (
+            "business-directory",
+            rss_mdm_device_access_postgres::DIRECTORY_SQL,
+        ),
+        ("identity-proof", rss_mdm_device_access_postgres::PROOF_SQL),
         ("host-grants", include_str!("grants.sql")),
     ]
 }
@@ -133,6 +176,10 @@ impl Host for Installation<'_> {
                 DA,
                 &[
                     registration::identity_object_manifest(DA),
+                    registration::DA_IDENTITY_PROJECTION_MANIFEST,
+                    rss_mdm_policy_postgres::object_manifest(DA),
+                    rss_mdm_recovery_credentials::object_manifest(DA),
+                    rss_mdm_device_access_postgres::admission::OBJECTS,
                     rss_mdm_pki_service::object_manifest(DA),
                     rss_mdm_authorization_service::object_manifest(DA),
                     rss_mdm_task_trust::object_manifest(DA),

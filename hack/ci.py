@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-device-access":"crates/device-access",
+    "rss-mdm-device-access-postgres":"crates/device-access-postgres",
+    "rss-mdm-device-access-runtime":"crates/device-access-runtime",
     "rss-mdm-device-access-http": "crates/device-access-http",
     "rss-mdm-install-support": "crates/install-support",
     "rss-mdm-script-service": "crates/script-service",
@@ -226,7 +229,7 @@ def verify_audit_integration(data):
     require(len(ids) == 1, 'exactly one product audit integration package is required')
     identity = ids[0]
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
-    require(parents == {'rss-mdm-group-service', 'rss-mdm-compliance-service', 'rss-mdm-script-service','rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',   'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
+    require(parents == {'rss-mdm-device-access-postgres','rss-mdm-device-access-runtime','rss-mdm-group-service', 'rss-mdm-compliance-service', 'rss-mdm-script-service','rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',   'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
     require(set(nodes[identity]['features']) <= {'default'}, 'audit integration exposes an unsupported feature')
     pending, visited = [identity], set()
     while pending:
@@ -298,10 +301,11 @@ def verify_capability_boundaries(data):
         name for name in packages if name.endswith('-service')}
     forbidden['group-postgres'] = ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'} | {
         name for name in packages if name.endswith('-service')}
-    for owner in ('group', 'scope', 'policy', 'resource'):
+    for owner in ('group', 'scope', 'policy', 'resource', 'device-access'):
         forbidden.setdefault(owner, set()).update(
             ingress | {'sqlx', 'axum', 'rss-mdm-app', 'rss-mdm-http-contract'} |
             {name for name in packages if name.endswith(('-service', '-postgres'))})
+    forbidden['device-access-postgres'] = ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'}
     forbidden['task-state'] = set()  # Pure transition values have a closed dependency set below.
     # Registration and authorization are the real signing/ACK authority participants.
     forbidden['task-trust'] = ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'} | {
@@ -329,7 +333,7 @@ def verify_capability_boundaries(data):
         invalid = dependencies & denied
         if owner == 'task-state':
             invalid |= dependencies - {'serde', 'schemars', 'uuid', 'thiserror'}
-        if owner in {'group', 'scope', 'policy', 'resource'}:
+        if owner in {'group', 'scope', 'policy', 'resource', 'device-access'}:
             # Include external RSS providers, not only workspace package names.
             invalid |= {name for name in dependencies
                         if name.endswith(('-service', '-postgres')) or

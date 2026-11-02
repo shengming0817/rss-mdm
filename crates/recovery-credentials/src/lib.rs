@@ -27,7 +27,6 @@ pub const NATIVE_SQL: &str = concat!(
 pub const ACCESS_CONTRACT: &str =
     crate::storage_profile::sql(rss_mdm_install_support::StorageProfile::Mdm).access_contract;
 
-pub mod access;
 pub mod cleanup;
 pub mod lock_pin;
 pub mod maintenance;
@@ -45,14 +44,31 @@ mod storage_profile;
 
 /// Shared Agent task relationships and retirement fence.
 pub const fn task_relations_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
-    storage_profile::sql(profile).task_relations
+    match profile {
+        rss_mdm_install_support::StorageProfile::Mdm => {
+            storage_profile::sql(profile).task_relations
+        }
+        rss_mdm_install_support::StorageProfile::Da => {
+            include_str!("../schema/da-task-relations.sql")
+        }
+    }
 }
 
 /// Shared owner objects, combined by the host for complete schema admission.
 pub const fn object_manifest(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
-    storage_profile::sql(profile).object_manifest
+    match profile {
+        rss_mdm_install_support::StorageProfile::Da => include_str!("../schema/da-objects.json"),
+        rss_mdm_install_support::StorageProfile::Mdm => {
+            storage_profile::sql(profile).object_manifest
+        }
+    }
 }
 /// Exact access-role contract for this installation.
 pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
-    storage_profile::sql(profile).access_contract
+    match profile {
+        rss_mdm_install_support::StorageProfile::Da => include_str!("../schema/da-access.json"),
+        rss_mdm_install_support::StorageProfile::Mdm => {
+            storage_profile::sql(profile).access_contract
+        }
+    }
 }

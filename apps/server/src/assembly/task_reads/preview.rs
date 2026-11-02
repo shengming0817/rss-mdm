@@ -376,7 +376,7 @@ async fn access_credentials(
                     let admission = if let Some(target) = &object.target {
                         let binding=s.enrollment.agent_store.binding(c,s.tenant.to_string(),target.registration_id).await.map_err(|_|Error::Unavailable(Failure::Database))?;
                         let allowed=binding.is_some_and(|b|match &input.definition.action {
-                            Action::DeviceAccess{windows,..}=>rss_mdm_registration_service::device_access::execution::admission::capable(&b,windows),
+                            Action::DeviceAccess{windows,..}=>rss_mdm_device_access_postgres::device_access::execution::admission::capable(&b,windows),
                             Action::Credential{architecture,..}=>rss_mdm_recovery_credentials::tasks::credential_tasks::capable(&b,*architecture),_=>false
                         });
                         use rss_mdm_policy::pages::{TaskAdmission,TaskAdmissionState};

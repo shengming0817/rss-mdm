@@ -49,11 +49,3 @@ pub trait Installation: Send + Sync {
         audit: &'a RequestAudit,
     ) -> Pending<'a, rss_mdm_content_service::Verified>;
 }
-pub trait RecoveryUse: Send + Sync {
-    fn record<'a>(
-        &'a self,
-        p: &'a DevicePrincipal,
-        input: &'a wire::AccessRecoveryUse,
-        audit: &'a RequestAudit,
-    ) -> Pending<'a, ()>;
-}

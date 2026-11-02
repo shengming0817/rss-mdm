@@ -93,6 +93,7 @@ pub struct Context {
     pub access: sqlx::PgPool,
     pub runtime: Arc<PgRuntime>,
     identity_runtime: Arc<PgRuntime>,
+    pub proof_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     access_runtime: Arc<PgRuntime>,
     pub access_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     audit_pool: sqlx::PgPool,
@@ -194,6 +195,11 @@ impl Context {
                 .await?,
         );
         let identity_runtime = inputs.runtime("da_identity_runtime", tenant).await?;
+        let proof_audit = Arc::new(
+            audit
+                .on_runtime(identity_runtime.clone(), tenant, &budget.control())
+                .await?,
+        );
         let authority = rss_identity_postgres::Authority::connect_runtime(
             identity_runtime.clone(),
             Arc::new(rss_identity_core::account::PasswordKdf::new()),
@@ -226,6 +232,7 @@ impl Context {
             Arc::new(Timer),
         ));
         Ok(Self {
+            proof_audit,
             authority,
             authorization,
             inputs,

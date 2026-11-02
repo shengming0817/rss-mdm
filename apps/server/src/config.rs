@@ -77,6 +77,7 @@ impl Database {
 #[serde(deny_unknown_fields)]
 pub struct MigrationConfig {
     pub database: Database,
+    pub device_access_database: Database,
     pub installation: crate::migration::Installation,
 }
 #[derive(Deserialize)]
@@ -132,6 +133,7 @@ impl NativeProtection {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub device_access: crate::assembly::device_access::config::Config,
     pub background: crate::background::BackgroundConfig,
     pub telemetry: Option<crate::telemetry::Config>,
     pub runtime_binding: crate::installation::host::Binding,
@@ -195,15 +197,6 @@ impl Config {
             .is_some_and(|s| s.revision == 0 || s.revision > i64::MAX as u64)
         {
             return Err(Error::Configuration(ConfigIssue::AgentPki));
-        }
-        if self
-            .native_protocols
-            .apple
-            .as_ref()
-            .is_some_and(|a| a.platform_sso.is_some())
-            && matches!(self.agent_pki, crate::agent_pki::Config::Disabled {})
-        {
-            return Err(Error::Configuration(ConfigIssue::ApplePlatformSso));
         }
         if self.apple_material_roots.len() > 16 {
             return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));

@@ -115,7 +115,6 @@ pub fn service(
         tenant: c.tenant,
         store: c.database.registration(),
         audit: c.audit.clone(),
-        access_audit: c.audit.clone(),
         issuer,
         clock,
         binding: Arc::new(rss_mdm_agent_channel::Bindings::new(

@@ -54,11 +54,11 @@ pub(super) async fn assignments(
                         let state=s.software.assignment_state_on(c,&p,target,channel,now).await.map_err(software_fault)?;
                         task_admission=state.task_admission;operations=state.operations;state.diagnosis
                     },
-                    Action::DeviceAccess{..}=>{operations=rss_mdm_registration_service::device_access::execution::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(access_fault)?;None},
-                    Action::Credential{..}=>{operations=rss_mdm_recovery_credentials::tasks::queries::assignment_ids_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,id,target,channel).await.map_err(credential_fault)?;None},
+                    Action::DeviceAccess{..}=>{operations=rss_mdm_device_access_postgres::device_access::execution::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(access_fault)?;None},
+                    Action::Credential{..}=>{operations=rss_mdm_recovery_credentials::tasks::queries::assignment_ids_on(super::super::policy_ports::credential_profile(&p.definition.action), c,tenant,id,target,channel).await.map_err(credential_fault)?;None},
                     Action::RequestMdmEnrollment{..}=>{
                         task_admission=Some(rss_mdm_registration_service::enrollment::tasks::queries::assignment_state_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,&s.enrollment,&p,device,now).await.map_err(enrollment_fault)?);
-                        operations=rss_mdm_registration_service::enrollment::tasks::queries::assignment_ids_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,id,target,channel).await.map_err(enrollment_fault)?;None
+                        operations=rss_mdm_registration_service::enrollment::tasks::queries::assignment_ids_on(super::super::policy_ports::credential_profile(&p.definition.action), c,tenant,id,target,channel).await.map_err(enrollment_fault)?;None
                     },
                     Action::Configuration{..}=>{let state=s.configuration.assignment_on(c,p.id,target).await.map_err(super::configuration_fault)?;operations=state.operations;state.diagnosis},
                     _=>None

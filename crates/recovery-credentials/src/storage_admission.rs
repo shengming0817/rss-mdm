@@ -59,8 +59,13 @@ pub async fn verify_agent_authority(
         .split("$$")
         .nth(1)
         .expect("owner body");
+    let host_roles: &[&str] = match profile {
+        rss_mdm_install_support::StorageProfile::Da => &["mdm_access", "mdm_command_runtime"],
+        rss_mdm_install_support::StorageProfile::Mdm => &[],
+    };
     let rejected: Option<String> = sqlx::query_scalar(sql.agent_authority_admission)
         .bind(body)
+        .bind(host_roles)
         .fetch_optional(c)
         .await?;
     if let Some(name) = rejected {

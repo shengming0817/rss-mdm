@@ -1,7 +1,7 @@
 //! Static adapters; task business remains with its current owner.
 use rss_mdm_agent_channel::{
     delivery::{EventEffects, Pending, Tasks},
-    participants::{Installation, RecoveryUse, SelfService},
+    participants::{Installation, SelfService},
 };
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::RequestAudit;
@@ -12,8 +12,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 #[derive(Clone)]
 pub(crate) struct AgentTasks {
-    pub access: Arc<rss_mdm_registration_service::device_access::execution::Service>,
-    pub credentials: Option<Arc<rss_mdm_recovery_credentials::tasks::Service>>,
+    pub access: Arc<rss_mdm_device_access_postgres::device_access::execution::Service>,
+    pub credentials: Vec<Arc<rss_mdm_recovery_credentials::tasks::Service>>,
     pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub registration: Arc<rss_mdm_registration_service::enrollment::tasks::Service>,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
@@ -248,7 +248,7 @@ impl Tasks for AgentTasks {
                 .contains(&wire::Capability::DeviceAccessV1)
             {
                 candidates.extend(
-                    rss_mdm_registration_service::device_access::execution::poll::offer_candidates(
+                    rss_mdm_device_access_postgres::device_access::execution::poll::offer_candidates(
                         tx,
                         p.registration(),
                         now,
@@ -260,24 +260,26 @@ impl Tasks for AgentTasks {
                     .map(|v| (v, Owner::Access)),
                 );
             }
-            if self.credentials.is_some()
-                && binding
-                    .capabilities
-                    .contains(&wire::Capability::CredentialsWindowsV1)
+            if binding
+                .capabilities
+                .contains(&wire::Capability::CredentialsWindowsV1)
             {
-                candidates.extend(
-                    rss_mdm_recovery_credentials::tasks::actions::poll::offer_candidates(
-                        rss_mdm_install_support::StorageProfile::Mdm,
-                        tx,
-                        p.registration(),
-                        now,
-                        after,
-                    )
-                    .await
-                    .map_err(credential_fault)?
-                    .into_iter()
-                    .map(|v| (v, Owner::Credential)),
-                );
+                for owner in &self.credentials {
+                    let profile = owner.profile();
+                    candidates.extend(
+                        rss_mdm_recovery_credentials::tasks::actions::poll::offer_candidates(
+                            profile,
+                            tx,
+                            p.registration(),
+                            now,
+                            after,
+                        )
+                        .await
+                        .map_err(credential_fault)?
+                        .into_iter()
+                        .map(|v| (v, Owner::Credential(profile))),
+                    );
+                }
             }
             candidates.sort_by_key(|(coordinate, _)| *coordinate);
             if candidates.windows(2).any(|v| v[0].0.1 == v[1].0.1) {
@@ -297,12 +299,13 @@ impl Tasks for AgentTasks {
             if binding
                 .capabilities
                 .contains(&wire::Capability::CredentialsWindowsV1)
-                && let Some(credentials) = &self.credentials
             {
-                credentials
-                    .agent_admit_in(tx, p, input, audit)
-                    .await
-                    .map_err(credential_fault)?;
+                for credentials in &self.credentials {
+                    credentials
+                        .agent_admit_in(tx, p, input, audit)
+                        .await
+                        .map_err(credential_fault)?;
+                }
             }
             if binding.script() {
                 self.scripts
@@ -340,9 +343,10 @@ impl Tasks for AgentTasks {
                         .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
                         .await
                         .map_err(access_fault)?,
-                    Owner::Credential => self
+                    Owner::Credential(profile) => self
                         .credentials
-                        .as_ref()
+                        .iter()
+                        .find(|s| s.profile() == profile)
                         .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
                         .agent_offer_one_in(tx, p, input, coordinate.1, attempt, audit)
                         .await
@@ -402,9 +406,10 @@ impl Tasks for AgentTasks {
                     .agent_replay_offer_in(tx, p, signed, audit)
                     .await
                     .map_err(access_fault),
-                Owner::Credential => self
+                Owner::Credential(profile) => self
                     .credentials
-                    .as_ref()
+                    .iter()
+                    .find(|s| s.profile() == profile)
                     .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
                     .agent_replay_offer_in(tx, p, signed, audit)
                     .await
@@ -452,9 +457,10 @@ impl Tasks for AgentTasks {
                     .agent_replay_event_in(tx, p, task, input, audit)
                     .await
                     .map_err(access_fault),
-                Owner::Credential => self
+                Owner::Credential(profile) => self
                     .credentials
-                    .as_ref()
+                    .iter()
+                    .find(|s| s.profile() == profile)
                     .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
                     .agent_replay_event_in(tx, p, task, input, audit)
                     .await
@@ -510,10 +516,11 @@ impl Tasks for AgentTasks {
                         fact: e.fact,
                     }
                 }
-                Owner::Credential => {
+                Owner::Credential(profile) => {
                     let e = self
                         .credentials
-                        .as_ref()
+                        .iter()
+                        .find(|s| s.profile() == profile)
                         .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
                         .agent_event_in(tx, p, task, input, audit)
                         .await
@@ -641,7 +648,7 @@ impl Tasks for AgentTasks {
                 .map_err(registration_fault)?,
             );
             page.extend(
-                rss_mdm_registration_service::device_access::execution::poll::cancellations(
+                rss_mdm_device_access_postgres::device_access::execution::poll::cancellations(
                     tx,
                     registration,
                     after,
@@ -649,16 +656,18 @@ impl Tasks for AgentTasks {
                 .await
                 .map_err(access_fault)?,
             );
-            page.extend(
-                rss_mdm_recovery_credentials::tasks::actions::poll::cancellations(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    tx,
-                    registration,
-                    after,
-                )
-                .await
-                .map_err(credential_fault)?,
-            );
+            for credentials in &self.credentials {
+                page.extend(
+                    rss_mdm_recovery_credentials::tasks::actions::poll::cancellations(
+                        credentials.profile(),
+                        tx,
+                        registration,
+                        after,
+                    )
+                    .await
+                    .map_err(credential_fault)?,
+                );
+            }
             page.sort_by_key(|v| v.task_id());
             if page.windows(2).any(|v| v[0].task_id() == v[1].task_id()) {
                 return Err(rss_mdm_agent_channel::Error::Conflict);
@@ -679,7 +688,7 @@ impl Tasks for AgentTasks {
         Box::pin(async move {
             match owner_in(tx, task).await? {
                 Owner::Access => Err(rss_mdm_agent_channel::Error::Forbidden),
-                Owner::Credential => Err(rss_mdm_agent_channel::Error::Forbidden),
+                Owner::Credential(_) => Err(rss_mdm_agent_channel::Error::Forbidden),
                 Owner::Device => Err(rss_mdm_agent_channel::Error::Forbidden),
                 Owner::Software => self
                     .software
@@ -777,24 +786,6 @@ impl Installation for AgentTasks {
         })
     }
 }
-impl RecoveryUse for AgentTasks {
-    fn record<'a>(
-        &'a self,
-        p: &'a DevicePrincipal,
-        input: &'a wire::AccessRecoveryUse,
-        audit: &'a RequestAudit,
-    ) -> Pending<'a, ()> {
-        Box::pin(async move {
-            self.credentials
-                .as_ref()
-                .ok_or(rss_mdm_agent_channel::Error::Unsupported)?
-                .record_access_recovery_use(p, input, audit)
-                .await
-                .map_err(credential_error)
-        })
-    }
-}
-
 pub(super) struct SelfServiceQuery;
 impl rss_mdm_http_contract::query::QueryOwner for SelfServiceQuery {
     type Parsed = String;
@@ -932,10 +923,10 @@ pub(super) async fn prepare(
 }
 
 pub(super) fn access_error(
-    e: rss_mdm_registration_service::device_access::execution::Error,
+    e: rss_mdm_device_access_postgres::device_access::execution::Error,
 ) -> rss_mdm_agent_channel::Error {
     use rss_mdm_agent_channel::{Error as A, Failure};
-    use rss_mdm_registration_service::device_access::execution::Error as S;
+    use rss_mdm_device_access_postgres::device_access::execution::Error as S;
     match e {
         S::Unsupported => A::Unsupported,
         S::Malformed => A::Malformed,
@@ -950,9 +941,9 @@ pub(super) fn access_error(
     }
 }
 pub(super) fn access_fault(
-    e: rss_mdm_registration_service::device_access::execution::transaction::Fault,
+    e: rss_mdm_device_access_postgres::device_access::execution::transaction::Fault,
 ) -> rss_mdm_agent_channel::Error {
-    use rss_mdm_registration_service::device_access::execution::transaction::Fault as F;
+    use rss_mdm_device_access_postgres::device_access::execution::transaction::Fault as F;
     match e {
         F::Request(e) => access_error(e),
         F::Storage(e) => e.into(),

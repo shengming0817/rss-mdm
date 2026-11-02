@@ -1,0 +1,37 @@
+{
+  "tables": [
+    "rss_da.access_policy_recovery",
+    "rss_da.access_runs",
+    "rss_da.agent_delivery",
+    "rss_da.bindings",
+    "rss_da.brokers",
+    "rss_da.business_revision",
+    "rss_da.ceremonies",
+    "rss_da.deployment_evidence",
+    "rss_da.lifecycles",
+    "rss_da.operations",
+    "rss_da.psso_challenges",
+    "rss_da.psso_password_attempts",
+    "rss_da.psso_password_providers",
+    "rss_da.psso_sources",
+    "rss_da.psso_tokens",
+    "rss_da.relying_parties",
+    "rss_da.results",
+    "rss_da.subject_denials",
+    "rss_da.subject_owners",
+    "rss_da.subject_versions",
+    "rss_da.subjects",
+    "rss_da.windows_sources"
+  ],
+  "functions": [
+    "rss_da.access_binding_ready",
+    "rss_da.access_policy",
+    "rss_da.active_access_binding",
+    "rss_da.capture_business_change",
+    "rss_da.deployment_valid_until",
+    "rss_da.platform_registration_matches",
+    "rss_da.platform_session_qualifications",
+    "rss_da.save_retired_access_run"
+  ],
+  "views": []
+}

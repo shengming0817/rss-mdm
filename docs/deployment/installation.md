@@ -248,7 +248,7 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 
 `migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际业务及 Identity runtime/maintenance/provisioning 权限，脚本成功不代表角色准入成功。
 
-迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建唯一保留管理租户及 epoch=1，不创建账户、密码或权限；重放只核稳定安装身份、保留管理租户绑定、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予实际业务与 Identity 写角色权限，模式不能随重放改变。
+新安装输入含 `database`（`mdm_owner`）、`device_access_database`（`da_owner`）和 `installation`；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建唯一保留管理租户及 epoch=1，不创建账户、密码或权限；重放只核稳定安装身份、保留管理租户绑定、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予实际业务与 Identity 写角色权限，模式不能随重放改变。
 
 新增租户统一使用平台会话调用 `POST /api/v1/tenant-administration/provisionings`，包含 `name`、`administratorLogin`、`administratorPassword`，并提供 UUID `Idempotency-Key`。返回可查询开通回执；202 表示管理员或宿主阶段尚未完成，不能解释为租户已启用。旧裸创建 HTTP 入口与 `tenant-create` 命令已移除。元数据维护、查询和追加管理员保留独立用途。
 
@@ -272,7 +272,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 账户初始化、授权初始化和 serve 在后续工作前，通过受限数据库能力核验安装身份、当前期望 epoch 和租户状态，并提交永久 used 标记。标记不改变元数据版本，后续初始化或启动失败也不会恢复可删除性。删除与首次使用共用安装锁；先删除则使用被拒绝，先声明使用则删除返回 InUse。运行角色仅有该固定函数 EXECUTE，不能直接更新租户表。
 
-账户初始化输入另含 tenant_id、expected_epoch、principal_id、login、password_file；授权初始化沿用 user.tenantId 并显式提供 expectedEpoch。两者从数据库核验登记及当前 epoch，使用各自受限角色。日常账户与 IdP 管理使用受保护 HTTP 接口。
+账户初始化输入另含 tenant_id、expected_epoch、principal_id、login、password_file；授权初始化沿用 user.tenantId，并显式提供 `expectedEpoch` 和 `profile`（`mdm` 或 `da`）；连接角色分别为 `mdm_access`、`da_access`。完整安装为同一 Identity 管理员分别初始化两份产品授权。两者从数据库核验登记及当前 epoch，使用各自受限角色。日常账户与 IdP 管理使用受保护 HTTP 接口。
 
 通过 `tenant-list` 找到 `management=true` 的唯一管理租户。部署方沿用现有 `initialize` 配置，把 tenant_id 填为该 ID、expected_epoch 填 1，显式创建初始账户；随后用同一账户执行 `initialize-authorization`，其 user.tenantId 也填该 ID。初始规则授予租户 CRUD、创建租户管理员、账户管理与授权读写，不授予设备业务权限。
 
@@ -575,3 +575,12 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 运行诊断的 `initialization` 分量区分资产待配置、遥测待配置和依赖阻塞；`configured` 只表示配置发布完成，设备是否产出数据应查看 CollectionRun、Observation、Inventory 和遥测历史。完成步骤不会因对象被编辑、禁用或删除而重建；未完成步骤若遇到 CAS 冲突，应按原对象和操作回执诊断，不能强制覆盖管理员变更。授权被撤销时恢复必须重新验证原授权依据，不能替换成服务管理员。
 
 设备指标（CPU、内存）与文件系统分别发布普通采样模板和 Profile，保持每个 Profile 的 128 resources 预算，同时完整支持最多 64 个文件系统；两类均采用 60 秒采样、5 分钟上传及当前值/历史双投影，可通过普通资源和策略分别管理。
+
+
+### Device Access 业务装配
+
+当前安装直接创建 `rss_da` 的注册、业务、配置、PSSO 与 RSS Login 恢复材料；没有历史数据迁移或旧部署升级路径。Identity、Audit 与 RSS 事务组件在同一数据库内由原 owner 唯一安装。`device_access.database` 使用 `da_access`，并与宿主 Identity/MDM 数据库保持同一物理数据库；DA 数据池和事务池各占 4 个连接。
+
+`device_access.registration` 显式配置独立 DA TLS listener、设备 PKI 与配置签名版本；未提供时不启动注册 listener。`deployment_authorities` 是部署方预置的 Ed25519 验证公钥，不从请求或 Agent ACK 导入。部署观测绑定租户、安装实例、当前 DA 注册代际、配置版本和有效期；Windows 原生会话不要求 macOS PSSO runtime。Mac PSSO 另需匹配应用、配置描述文件、平台版本与辅助进程的完整可信观测。
+
+DA 最小配置支持租户默认与单设备覆盖；禁用覆盖会阻断默认回退。Agent 作为可选投递通道，须通过当前 DA 管理员的 step-up 显式授权到具体安装、注册和代际。DA 业务与 RSS 恢复材料保持 DA 锚点，任务签名、wire、ACK 和密文投递 AAD 继续使用真实 Agent 身份。MDM Policy 的强制配置优先裁决由 #3129 的配置闭环完成。

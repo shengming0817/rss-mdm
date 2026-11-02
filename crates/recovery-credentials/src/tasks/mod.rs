@@ -4,13 +4,13 @@ pub mod credential_tasks;
 mod error;
 pub mod policy;
 pub mod policy_recovery;
+pub mod product;
 pub mod publication;
 mod service;
 pub mod transaction;
 pub mod wake;
 pub mod worker;
 pub use error::Error;
-use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service as authorization;
 use rss_mdm_registration_service::participants::agent as agent_facts;
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -26,7 +26,6 @@ pub struct Target {
 }
 pub use actions::production::messaging_domain;
 pub use actions::storage;
-mod access_use;
 
 pub mod events;
 

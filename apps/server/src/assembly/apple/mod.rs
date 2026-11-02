@@ -4,7 +4,6 @@ use crate::{ConfigIssue, Error};
 use std::sync::Arc;
 
 pub(crate) struct Apple {
-    pub(crate) platform_sso: Option<Arc<rss_mdm_apple_channel::platform_sso::Runtime>>,
     pub(crate) channel: Arc<rss_mdm_apple_channel::Apple>,
     pub(crate) config: config::Config,
 }
@@ -14,7 +13,6 @@ impl Apple {
         config: config::Config,
         materials: rss_mdm_apple_channel::runtime_materials::runtime::Loaded,
         now: i64,
-        platform: (&str, rss_request_context::TenantId),
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
         credential_receipts: Option<
             Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>,
@@ -48,11 +46,6 @@ impl Apple {
                 notify_id: config.identity_seed.notify_id.clone(),
             },
         };
-        let platform_sso = config
-            .platform_sso
-            .as_ref()
-            .map(|c| c.load(platform.0, platform.1))
-            .transpose()?;
         let channel = Arc::new(
             rss_mdm_apple_channel::Apple::new(
                 protection,
@@ -65,14 +58,9 @@ impl Apple {
                 providers,
             )
             .with_credential_receipts(credential_receipts)
-            .with_account_keys(materials.accounts)
-            .with_platform_sso(platform_sso.clone()),
+            .with_account_keys(materials.accounts),
         );
-        Ok(Self {
-            config,
-            channel,
-            platform_sso,
-        })
+        Ok(Self { config, channel })
     }
 }
 fn load_push(
@@ -121,25 +109,4 @@ pub(crate) fn router(
         origins: vec![apple.config.management.origin.clone()],
         router: router.into_checked_axum(rss_mdm_http_contract::module::Listener::Apple),
     })
-}
-
-/// Product composition retains platform-session rechecks even when enrollment is disabled.
-pub(crate) async fn identity_platform(
-    config: &crate::config::Config,
-) -> Result<Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>, Error> {
-    use sqlx::Connection;
-    let invalid = || Error::Configuration(ConfigIssue::IdentityConfiguration);
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        let mut connection = sqlx::PgConnection::connect_with(&config.identity.database.options()?)
-            .await
-            .map_err(|_| invalid())?;
-        let result = rss_mdm_apple_channel::platform_sso::verify_runtime(&mut connection).await;
-        connection.close().await.map_err(|_| invalid())?;
-        result.map_err(|_| invalid())
-    })
-    .await
-    .map_err(|_| invalid())??;
-    Ok(Arc::new(
-        rss_mdm_apple_channel::platform_sso::bridge::Verifier::new(&config.product_origin),
-    ))
 }

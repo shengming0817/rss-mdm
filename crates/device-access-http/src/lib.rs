@@ -1,5 +1,6 @@
 //! Standalone Device Access ingress. The host supplies shared owners and authenticated TLS evidence.
 //! No Agent/native runtime or MDM application is assembled here.
+mod agent_transport;
 mod boundary;
 mod error;
 pub mod tls;
@@ -23,6 +24,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct Services {
+    pub business: Option<Arc<Business>>,
     pub registrations: Arc<RegistrationService>,
     pub configurations: Arc<ConfigurationService>,
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
@@ -42,14 +44,36 @@ static PROTOCOL: rss_mdm_http_contract::Resource = rss_mdm_http_contract::Resour
 pub fn router(
     service: Arc<Services>,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    declarations()
-        .bind_with(Some(&service), Arc::clone)
-        .layer(axum::extract::DefaultBodyLimit::max(131072))
-        .layer(axum::middleware::from_fn_with_state(
-            service,
-            boundary::admit,
-        ))
+    let business = service.business.as_ref();
+    let authentication = platform_sso::Authentication::Da(service.registrations.clone());
+    let access = agent_access::routes(business.map(|b| {
+        Arc::new(agent_access::Services {
+            authentication: authentication.clone(),
+            identity: service.sessions.clone(),
+            authorization: service.authorization.clone(),
+            business: b.service.clone(),
+            admission: b.admission.clone(),
+        })
+    }));
+    let psso = platform_sso::mount_agent(business.map(|b| (b.platform.clone(), authentication)));
+    rss_mdm_http_contract::route_module! {struct DaBusinessProtocol for [Da]{access,psso}}
+    let business = DaBusinessProtocol { access, psso }
+        .assemble()
+        .when("device_access_business", business.is_some());
+    rss_mdm_http_contract::route_module! {struct DaProtocol for [Da]{foundation,business [optional] at "/api/v1/da",evidence}}
+    DaProtocol {
+        foundation: declarations().bind_with(Some(&service), Arc::clone),
+        business,
+        evidence: administration::evidence_routes().bind_with(Some(&service), Arc::clone),
+    }
+    .assemble()
+    .layer(axum::extract::DefaultBodyLimit::max(131072))
+    .layer(axum::middleware::from_fn_with_state(
+        service,
+        boundary::admit,
+    ))
 }
+
 fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>>
 {
     rss_mdm_http_contract::route_module! { struct DaRoutes for [Da] { grant, issue, recover_issuance, activate, status, renew, recover, revoke, pki_trust, pki_ack, configuration_trust, configuration_ack, trust_read, trust_change, trust_operation, export, export_operation, retrieve } }
@@ -332,4 +356,20 @@ async fn recover_issuance(
             .recover_issuance(&p, id, &body(v)?, &a)
             .await?,
     ))
+}
+
+pub mod agent_access;
+pub mod business_error;
+pub mod device_access;
+pub mod enterprise_broker;
+pub mod identity;
+pub mod platform_sso;
+
+pub mod administration;
+mod identity_contract;
+pub struct Business {
+    pub evidence: Arc<rss_mdm_device_access_postgres::evidence::Authorities>,
+    pub service: Arc<rss_mdm_device_access_postgres::Service>,
+    pub admission: Arc<dyn rss_mdm_device_access_postgres::device_access::Admission>,
+    pub platform: Arc<platform_sso::HttpState>,
 }

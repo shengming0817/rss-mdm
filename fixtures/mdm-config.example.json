@@ -240,5 +240,18 @@
       "password_file": "/run/mdm/mdm-planning-password",
       "ca_file": "/run/mdm/database-ca.pem"
     }
+  },
+  "device_access": {
+    "database": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "da_access",
+      "password_file": "/run/mdm/da-access-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "deployment_authorities": [],
+    "registration": null,
+    "platform_sso": null
   }
 }

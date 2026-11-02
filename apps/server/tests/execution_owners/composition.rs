@@ -67,7 +67,7 @@ async fn original_self_service_receipt_replays_after_policy_kind_changes() -> Re
     tx.commit().await?;
     let tasks = super::super::agent_tasks::AgentTasks {
         access: h.a.access_execution.service.clone(),
-        credentials: None,
+        credentials: Vec::new(),
         software: h.a.software.service.clone(),
         registration: h.a.registration.enrollment.clone(),
         content: None,

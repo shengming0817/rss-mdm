@@ -7,6 +7,8 @@ publish.workspace = true
 [dependencies]
 rss-mdm-install-support.workspace = true
 serde.workspace = true
+schemars.workspace = true
+sha2.workspace = true
 rss-mdm-query.workspace = true
 rss-mdm-query-postgres.workspace = true
 rss-mdm-agent-wire.workspace = true

@@ -1,4 +1,5 @@
 //! Product route ownership. Axum remains the only dispatcher and middleware implementation.
+pub mod agent;
 pub mod artifact;
 pub mod authentication;
 pub mod catalog;

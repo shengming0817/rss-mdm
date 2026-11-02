@@ -6,7 +6,6 @@ pub(super) struct Fixture {
     pub(super) resources: Prepared,
     pub(super) software: crate::assembly::software::Assembly,
     pub(super) registration: crate::assembly::registration::Assembly,
-    pub(super) access_execution: crate::assembly::access_execution::Assembly,
     pub(super) materials: Arc<crate::assembly::policy::EventInputs>,
 }
 impl Fixture {
@@ -67,33 +66,19 @@ impl Fixture {
             )
             .await?;
 
-            let access_execution = Box::pin(assembly::access_execution::assemble(
-                storage.runtime.clone(),
-                storage.tenant,
-                storage.audit.clone(),
-                protection.clone(),
-                source.clone(),
-                None,
-                storage.reconcile.clone(),
-                storage.worker_budget.clone(),
-                config.background.device_concurrency,
-            ))
-            .await?;
             let materials = Arc::new(assembly::policy::EventInputs {
                 source: source.clone(),
                 protection: protection.clone(),
                 instance: config.identity.instance_id.clone(),
             });
-            Ok((software, registration, access_execution, materials))
+            Ok((software, registration, materials))
         }
         .await;
-        let (resources, (software, registration, access_execution, materials)) =
-            resources.finish(result).await?;
+        let (resources, (software, registration, materials)) = resources.finish(result).await?;
         Ok(Self {
             resources,
             software,
             registration,
-            access_execution,
             materials,
         })
     }

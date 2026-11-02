@@ -10,7 +10,7 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/platform_sso/manifest.json");
 /// SHA-256 of the ordered generated schema bytes.
 pub const SCHEMA_FINGERPRINT: &str =
-    "271c10c87f099d92f3c42cc2bb0df03b3237755e250c392db63b494101dc1ec4";
+    "ddd4e68061e9716ffbc89d6d1a12ba70f0ba9ee7e78c7bccc059f0cf8c60a12d";
 
 /// One-use nonce lifetime in seconds.
 pub const NONCE_SECONDS: i64 = 120;
@@ -231,6 +231,8 @@ pub struct RegistrationClaims {
 pub enum RegistrationTrust {
     /// Device-authenticated bootstrap and key possession.
     MdmBootstrapPop,
+    /// Independent DA device bootstrap and key possession.
+    DaDevicePop,
 }
 /// Successful registration receipt, not native system registration evidence.
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]

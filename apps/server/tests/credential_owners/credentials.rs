@@ -302,11 +302,7 @@ async fn sensitive_disclosure_requires_confirmed_audit_commit() -> Result<()> {
         c.audit.clone(),
         p.keys.clone(),
         None,
-        Some(Arc::new(
-            super::super::recovery_eligibility::AccessEligibility {
-                admission: Some(owner.access.clone()),
-            },
-        )),
+        None,
     );
     let audit = c.request(&proof)?;
     let result = service

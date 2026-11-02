@@ -7,7 +7,6 @@ pub(super) struct Fixture {
     pub(super) service: Arc<rss_mdm_device_service::control::Service>,
     pub(super) software: crate::assembly::software::Assembly,
     pub(super) registration: crate::assembly::registration::Assembly,
-    pub(super) access_execution: crate::assembly::access_execution::Assembly,
     pub(super) collections:
         Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
     pub(super) configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
@@ -88,41 +87,19 @@ impl Fixture {
                 rss_device_command_postgres::CommandClock::Postgres,
             )
             .await?;
-            let access_execution = Box::pin(assembly::access_execution::assemble(
-                storage.runtime.clone(),
-                storage.tenant,
-                storage.audit.clone(),
-                protection.clone(),
-                source.clone(),
-                None,
-                storage.reconcile.clone(),
-                storage.worker_budget.clone(),
-                config.background.device_concurrency,
-            ))
-            .await?;
             let (collections, _) =
                 assembly::collection::assemble(config, storage, source.clone(), protection.clone())
                     .await?;
-            Ok((
-                service,
-                software,
-                registration,
-                access_execution,
-                collections,
-                configuration,
-            ))
+            Ok((service, software, registration, collections, configuration))
         }
         .await;
-        let (
-            resources,
-            (service, software, registration, access_execution, collections, configuration),
-        ) = resources.finish(result).await?;
+        let (resources, (service, software, registration, collections, configuration)) =
+            resources.finish(result).await?;
         Ok(Self {
             resources,
             service,
             software,
             registration,
-            access_execution,
             collections,
             configuration,
         })

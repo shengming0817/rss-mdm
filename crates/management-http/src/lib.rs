@@ -63,10 +63,6 @@ pub mod mail;
 
 pub mod telemetry;
 
-pub mod device_access;
-
-pub mod enterprise_broker;
-
 pub mod policy_events;
 
 #[cfg(test)]

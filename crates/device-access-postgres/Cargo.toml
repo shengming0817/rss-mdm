@@ -1,0 +1,59 @@
+[package]
+name = "rss-mdm-device-access-postgres"
+autotests = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+openssl.workspace = true
+rss-mdm-registration-service.workspace = true
+rss-mdm-device-access.workspace = true
+rss-mdm-recovery-credentials.workspace = true
+rss-mdm-install-support.workspace = true
+rss-mdm-recovery-observation.workspace = true
+rss-runtime.workspace = true
+tokio-util.workspace = true
+rss-mdm-policy-postgres.workspace = true
+rss-mdm-task-state.workspace = true
+rss-mdm-apple-mdm.workspace = true
+rss-reconcile.workspace = true
+rss-reconcile-postgres.workspace = true
+rss-mdm-policy.workspace = true
+rss-contract.workspace = true
+rss-mdm-query-postgres.workspace = true
+rss-mdm-query.workspace = true
+schemars.workspace = true
+rss-mdm-webhook-service.workspace = true
+rss-mdm-native-protection.workspace = true
+rss-mdm-agent-wire.workspace = true
+ring.workspace = true
+url.workspace = true
+time = { workspace = true, features = ["formatting"] }
+reqwest = { workspace = true, features = ["json"] }
+rss-mdm-authorization-service.workspace = true
+rss-mdm-inventory.workspace = true
+rss-identity-core.workspace = true
+rss-identity-postgres.workspace = true
+rss-request-context.workspace = true
+rss-mdm-audit-integration.workspace = true
+rss-transactional-messaging.workspace = true
+rss-transactional-messaging-postgres.workspace = true
+sqlx = { workspace = true, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[features]
+default = []
+
+[lints]
+workspace = true

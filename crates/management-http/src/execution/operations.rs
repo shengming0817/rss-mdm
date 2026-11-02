@@ -125,7 +125,7 @@ pub enum Evidence {
     Device(rss_mdm_device_service::control::queries::records::RunEvidence),
     Software(rss_mdm_software_service::deployment::queries::records::RunEvidence),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
-    Access(rss_mdm_registration_service::device_access::execution::queries::Record),
+    Access(rss_mdm_device_access_postgres::device_access::execution::queries::Record),
     Credential(rss_mdm_recovery_credentials::tasks::queries::Record),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]

@@ -53,13 +53,15 @@ default_crl_days=30
     return root
 
 
-def leaf(directory, tenant, device):
+def leaf(directory, tenant, device, purpose):
     root=directory/'task-trust-ca'
-    destination=directory/('task-trust-'+tenant)
+    destination=directory/('task-trust-'+purpose+'-'+tenant)
     destination.mkdir(mode=0o700)
-    identity='urn:rss-mdm:agent:v1:'+tenant+':'+base64.urlsafe_b64encode(device.encode()).decode().rstrip('=')
-    # DER SEQUENCE { INTEGER 1, OCTET STRING rss-agent, OCTET STRING task-trust }.
-    marker=bytes.fromhex('020101')+bytes([4,9])+b'rss-agent'+bytes([4,10])+b'task-trust'
+    assert purpose in ('agent', 'da_device')
+    prefix = 'urn:rss-mdm:agent:v1:' if purpose == 'agent' else 'urn:rss:da:device:v1:'
+    identity=prefix+tenant+':'+base64.urlsafe_b64encode(device.encode()).decode().rstrip('=')
+    provisioner = b'rss-agent' if purpose == 'agent' else b'rss-da-device'
+    marker=bytes.fromhex('020101')+bytes([4,len(provisioner)])+provisioner+bytes([4,10])+b'task-trust'
     marker=bytes([0x30,len(marker)])+marker
     ext=destination/'leaf.conf'
     ext.write_text('basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nsubjectAltName=URI:'+identity+'\n1.3.6.1.4.1.37476.9000.64.1=DER:'+marker.hex(':')+'\n')
@@ -69,4 +71,4 @@ def leaf(directory, tenant, device):
     print(json.dumps(dict(leaf=str(destination/'leaf.pem'),root=str(root/'ca.pem'),crl=str(root/'ca.crl'),identity=identity)))
 
 if __name__ == '__main__':
-    leaf(Path(sys.argv[1]),sys.argv[2],sys.argv[3])
+    leaf(Path(sys.argv[1]),sys.argv[2],sys.argv[3],sys.argv[4] if len(sys.argv)>4 else 'agent')

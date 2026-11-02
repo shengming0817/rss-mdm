@@ -137,7 +137,6 @@ impl Material {
                 tenant: c.tenant,
                 store: Arc::new(registration::Store::for_device_access(c.access.clone())),
                 audit: c.access_audit.clone(),
-                access_audit: c.access_audit.clone(),
                 issuer,
                 clock,
                 protection: self.protection.clone(),
@@ -222,6 +221,7 @@ pub fn state(
         )?,
     );
     Ok(rss_mdm_device_access_http::Services {
+        business: Some(Arc::new(super::business::assemble(c, m)?)),
         registrations: registration,
         configurations,
         authorization: c.authorization.clone(),
@@ -328,6 +328,7 @@ async fn administrator_for(c: &Context, device: Option<&str>) -> Result<String> 
             }]
         } else {
             [
+                access::Permission::AccountWrite,
                 access::Permission::Enrollment,
                 access::Permission::Credentials,
                 access::Permission::ConfigurationWrite,

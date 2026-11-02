@@ -23,6 +23,12 @@ async fn desired(c: &mut PgConnection, tenant: Uuid, runtime: &mut Value) -> Res
     if let Some(revision) = signing {
         runtime["task_signing"] = json!({"revision":revision});
     }
+    if runtime["device_access"]["registration"].is_object() {
+        let revision:Option<i64>=sqlx::query_scalar("SELECT h.revision FROM rss_da.signing_heads h JOIN rss_da.signing_versions v USING(tenant_id,revision) WHERE h.tenant_id=$1 AND EXISTS(SELECT FROM jsonb_array_elements(v.body->'keys') k WHERE k->>'state'='active')").bind(tenant).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
+        if let Some(revision) = revision {
+            runtime["device_access"]["registration"]["configuration_revision"] = json!(revision);
+        }
+    }
     // Explicit S3 installation has no content binding yet. This is bootstrap only;
     // an initialized tenant's backend is owned exclusively by its active generation.
     if runtime["content"].is_null() {

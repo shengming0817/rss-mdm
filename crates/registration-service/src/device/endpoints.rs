@@ -257,3 +257,58 @@ pub async fn current_members_on(
         })
         .transpose()
 }
+
+/// Independent DA registration, without an Inventory channel or a paired endpoint.
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DaRegistration {
+    pub device: String,
+    pub registration_id: Uuid,
+    pub generation: i64,
+}
+/// Uses the registrar's lifecycle fence; callers retain it until their transaction settles.
+pub async fn lock_da_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<(), Error> {
+    super::store::lock_registration(
+        rss_mdm_install_support::StorageProfile::Da,
+        c,
+        tenant,
+        device,
+        super::RegistrationKind::DaDevice,
+    )
+    .await
+}
+pub async fn current_da_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<Option<DaRegistration>, Error> {
+    let value: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT rss_da.current_da_registration($1) WHERE current_setting('rss.tenant_id',true)=$2",
+    )
+    .bind(device)
+    .bind(tenant)
+    .fetch_one(c)
+    .await
+    .map_err(db)?;
+    value
+        .map(|v| serde_json::from_value(v).map_err(|_| Error::Corrupt))
+        .transpose()
+}
+
+/// Shared registrar projection installed only for DA's independent registration profile.
+pub const DA_INSTALL_SQL: &str = r#"
+CREATE FUNCTION rss_da.current_da_registration(p_device text) RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT jsonb_build_object('device',r.device,'registrationId',r.id,'generation',r.generation)
+ FROM rss_da.registrations r JOIN rss_da.devices d ON(d.tenant_id,d.id)=(r.tenant_id,r.device)
+ WHERE r.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND r.device=p_device AND r.channel IS NULL AND r.purpose='da_device' AND r.state='active' AND d.retirement IS NULL
+ AND EXISTS(SELECT FROM rss_da.credentials k JOIN rss_da.certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id)
+  WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active' AND i.not_before<=extract(epoch FROM statement_timestamp()) AND i.not_after>extract(epoch FROM statement_timestamp()))
+$$;
+REVOKE ALL ON FUNCTION rss_da.current_da_registration(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rss_da.current_da_registration(text) TO da_access,da_command_runtime,da_policy_runtime,da_identity_runtime;
+"#;

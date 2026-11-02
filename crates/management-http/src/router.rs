@@ -12,7 +12,7 @@ use rss_mdm_http_contract::{
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
-    pub access_execution: Arc<rss_mdm_registration_service::device_access::execution::Service>,
+    pub access_execution: Arc<rss_mdm_device_access_postgres::device_access::execution::Service>,
     pub query_cursor: rss_mdm_query::cursor::CursorCodec,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub mail: Arc<rss_mdm_mail_service::authority::Authority>,
@@ -20,7 +20,7 @@ pub struct Services {
     pub webhooks: Arc<rss_mdm_webhook_service::management::Service>,
     pub registration_channels: Arc<dyn crate::enrollment::channels::Source>,
     pub associations: Arc<rss_mdm_device_service::Associations>,
-    pub platform_configuration: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    pub platform_configuration: Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     pub windows_entra: Option<Arc<rss_mdm_registration_service::windows_entra::Management>>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::certificate_issuance::Clock>,
@@ -89,14 +89,12 @@ pub fn device_action_routes() -> Router<(), impl rss_mdm_http_contract::module::
 /// unavailable are deliberately not represented here.
 #[derive(Clone, Copy)]
 pub struct Mounts {
-    pub agent_enrollment: bool,
     pub filevault: bool,
     pub recovery_credentials: bool,
 }
 impl Mounts {
     fn from_services(state: &Services) -> Self {
         Self {
-            agent_enrollment: state.agent_enrollment.is_some(),
             filevault: state.filevault.is_some(),
             recovery_credentials: state.recovery_credentials.is_some(),
         }
@@ -228,22 +226,8 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
     let public_packages = crate::software_catalog::register_agent_packages()
         .bind_with(context, |(s, _)| s.software_catalog.clone());
     let operations = {
-        rss_mdm_http_contract::route_module! { struct AssembleModule3 for [Browser] { device_access_mount [optional], agent_enrollment_register, windows_entra_register, http_register, http_register_2, http_register_previews, software_catalog_routes, http_routes, http_register_3, directory_routes, timeline_routes, device_views_register } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule3 for [Browser] { agent_enrollment_register, windows_entra_register, http_register, http_register_2, http_register_previews, software_catalog_routes, http_routes, http_register_3, directory_routes, timeline_routes, device_views_register } }
         AssembleModule3 {
-            device_access_mount: crate::device_access::mount(
-                runtime.and_then(|(s, _)| {
-                    s.agent_enrollment.as_ref().map(|registration| {
-                        Arc::new(crate::device_access::Services {
-                            cursor: s.query_cursor.clone(),
-                            recovery: s.recovery_credentials.clone(),
-                            registration: registration.clone(),
-                            admission: s.access_execution.clone(),
-                            identity: s.identity.clone(),
-                        })
-                    })
-                }),
-                mounts.agent_enrollment,
-            ),
             agent_enrollment_register: crate::agent_enrollment::register()
                 .bind_with(context, |(s, _)| Arc::new(s.agent_enrollment.clone())),
             windows_entra_register: crate::windows_entra::register()
@@ -351,27 +335,11 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
     let host_context =
         crate::authorization::http::mount_protection(host_context, authentication.clone(), false);
     let protected = crate::authorization::http::mount_protection(protected, authentication, false);
-    let broker = crate::enterprise_broker::mount(
-        runtime.and_then(|(s, envelope)| {
-            s.agent_enrollment.as_ref().map(|registration| {
-                Arc::new(crate::enterprise_broker::Services {
-                    registration: registration.clone(),
-                    admission: s.access_execution.clone(),
-                    identity: s.identity.clone(),
-                    origin: format!("https://{}", envelope.host),
-                    platform_configuration: serde_json::to_value(&s.platform_configuration)
-                        .expect("closed platform configuration"),
-                })
-            })
-        }),
-        mounts.agent_enrollment,
-    );
     let software_content = crate::software_content::register()
         .bind_with(context, |(s, _)| s.software_downloads.clone());
     {
-        rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { broker [optional], software_content, host_context, api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1 at "/api/v1" } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { software_content, host_context, api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1 at "/api/v1" } }
         AssembleModule4 {
-            broker,
             software_content,
             host_context,
             api_v1_agent_enroll: public_packages,

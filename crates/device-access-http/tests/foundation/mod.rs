@@ -1,5 +1,6 @@
 //! Fresh PostgreSQL, Identity, actual provider dispatch and the production DA TLS listener.
 mod admission;
+mod business;
 mod context;
 mod installation;
 mod material;
@@ -178,6 +179,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
     assert_eq!(receipt.device, grant.device);
+    business::verify(&c, &material, &receipt, &client, &server.origin).await?;
     let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.registrations WHERE purpose='da_device' AND channel IS NULL),(SELECT count(*) FROM rss_da.report_sources),(SELECT count(*) FROM rss_da.requests)").fetch_one(&c.operator).await?;
     assert_eq!(counts, (1, 0, 0));
     assert!(
