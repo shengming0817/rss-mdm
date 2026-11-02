@@ -3,7 +3,7 @@
 mod read;
 mod storage;
 use crate::{Error, Service, service::Change};
-pub use read::{Page, Query, View, WINDOW};
+pub use read::{Page, Query, Report, View, WINDOW};
 use rss_mdm_agent_wire::da;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_install_support::StorageProfile;

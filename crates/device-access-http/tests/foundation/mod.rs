@@ -1,6 +1,7 @@
 //! Fresh PostgreSQL, Identity, actual provider dispatch and the production DA TLS listener.
 mod admission;
 mod business;
+mod configuration;
 mod context;
 mod installation;
 mod material;
@@ -229,6 +230,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         delivery: da::DeliveryPermission::Da,
         lifetime_seconds: 600,
     };
+    configuration::concurrent_export(&c, &client, base, &token, &proof, &export).await?;
     let signed: da::SignedConfiguration = material::success(
         client
             .post(format!("{base}/configurations"))

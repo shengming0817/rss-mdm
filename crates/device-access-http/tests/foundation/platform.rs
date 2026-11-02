@@ -338,18 +338,18 @@ pub async fn verify(
         enabled: true,
         role: Some(access::AccessRole::Standard),
     };
-    b.service
-        .publish_configuration(
-            &actor,
-            &pg::configuration::Change {
-                operation_id: Uuid::new_v4(),
-                expected_revision,
-                publication: publication.clone(),
-            },
-            None,
-            &business::audit(c),
-        )
-        .await?;
+    publication.managed_fields = vec![da::ConfigurationField::Mac];
+    super::configuration::publish_protected(
+        c,
+        m,
+        &pg::configuration::Change {
+            operation_id: Uuid::new_v4(),
+            expected_revision,
+            publication: publication.clone(),
+        },
+    )
+    .await?;
+    super::configuration::reject_account_change(c, m, &registration.device, &publication).await?;
     // The real DA export freezes every public native generator input and bound identity.
     let exported: da::SignedConfiguration = material::success(
         client
@@ -360,6 +360,21 @@ pub async fn verify(
                 policy: publication.id,
                 version: publication.version,
                 delivery: da::DeliveryPermission::Da,
+                lifetime_seconds: 600,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let managed: da::SignedConfiguration = material::success(
+        client
+            .post(format!("{base}/configurations"))
+            .bearer_auth(&token)
+            .json(&da::Export {
+                operation_id: Uuid::new_v4(),
+                policy: publication.id,
+                version: publication.version,
+                delivery: da::DeliveryPermission::ManagedMandatory,
                 lifetime_seconds: 600,
             })
             .send()
@@ -439,7 +454,13 @@ pub async fn verify(
         revoked: false,
         policy: publication.id,
         policy_version: publication.version,
-        configuration: None,
+        configuration: Some(rss_mdm_device_access::deployment::ConfigurationDeployment {
+            artifact: managed.decode()?.operation_id,
+            digest: managed.digest.clone(),
+            native_digest: managed.decode()?.native.digest,
+            delivery: da::DeliveryPermission::ManagedMandatory,
+            state: da::SourceState::Present,
+        }),
         deployment: Deployment::Macos {
             configuration: configuration.configuration,
             application_id: configuration.application_id,
@@ -466,6 +487,18 @@ pub async fn verify(
             .json(&business::signed(&observation)?)
             .send()
             .await?,
+    )
+    .await?;
+    super::configuration::verify_sources(
+        c,
+        m,
+        client,
+        base,
+        &token,
+        &actor,
+        &mut publication,
+        &mut observation,
+        &exported,
     )
     .await?;
     let device = Key::new()?;
@@ -613,6 +646,9 @@ pub async fn verify(
             .await?,
     )
     .await?;
+    let diagnostic =
+        super::configuration::diagnostic(client, base, &token, &registration.device).await?;
+    assert_eq!(diagnostic["resolution"]["blocked"], "withdrawn");
     assert!(
         Box::pin(native_login(c, &b, &source, &device, &user))
             .await

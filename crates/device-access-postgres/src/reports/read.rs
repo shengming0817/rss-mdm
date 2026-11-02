@@ -17,12 +17,19 @@ pub struct Query {
     pub limit: Option<u16>,
     pub cursor: Option<String>,
 }
+/// Closed wire snapshots; persistence is decoded according to the requested stream.
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum Report {
+    Status(da::StatusReport),
+    Application(da::ApplicationReport),
+}
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct View {
     pub receipt: Receipt,
     pub stale: bool,
-    pub report: serde_json::Value,
+    pub report: Report,
 }
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -72,7 +79,7 @@ impl Service {
             let row=sqlx::query("SELECT document,receipt FROM rss_da.report_heads WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND kind=$4")
                 .bind(p.tenant_id()).bind(r.registration_id).bind(r.generation).bind(kind.name()).fetch_optional(&mut *c).await.map_err(db)?;
             let now=crate::platform_sso::store::now(c).await?;
-            row.map(|r|view(&r,now,service.report_limits.stale_seconds)).transpose()
+            row.map(|r|view(&r,kind,now,service.report_limits.stale_seconds)).transpose()
         })).await
     }
     pub async fn report_history(
@@ -95,16 +102,25 @@ impl Service {
                 .bind(p.tenant_id()).bind(r.registration_id).bind(r.generation).bind(input.kind.name()).bind(now-i64::from(service.report_limits.history_seconds)).bind(after).bind(q.limit() as i64+1).fetch_all(c).await.map_err(db)?;
             let more=rows.len()>q.limit();rows.truncate(q.limit());
             let next_cursor=if more {Some(service.cursor.encode_bounded(&binding,&rows.last().ok_or(Error::Corrupt)?.try_get::<i64,_>("sequence").map_err(db)?,4096).map_err(query_error)?)}else{None};
-            Ok(Page{items:rows.iter().map(|r|view(r,now,service.report_limits.stale_seconds)).collect::<Result<_,_>>()?,next_cursor})
+            Ok(Page{items:rows.iter().map(|r|view(r,input.kind,now,service.report_limits.stale_seconds)).collect::<Result<_,_>>()?,next_cursor})
         })).await
     }
 }
-fn view(r: &sqlx::postgres::PgRow, now: i64, stale: u32) -> Result<View, Error> {
+fn view(r: &sqlx::postgres::PgRow, kind: Kind, now: i64, stale: u32) -> Result<View, Error> {
     let receipt: Receipt =
         serde_json::from_value(r.try_get("receipt").map_err(db)?).map_err(|_| Error::Corrupt)?;
     Ok(View {
         stale: now >= receipt.received_at + i64::from(stale),
         receipt,
-        report: r.try_get("document").map_err(db)?,
+        report: match kind {
+            Kind::Status => Report::Status(
+                serde_json::from_value(r.try_get("document").map_err(db)?)
+                    .map_err(|_| Error::Corrupt)?,
+            ),
+            Kind::Application => Report::Application(
+                serde_json::from_value(r.try_get("document").map_err(db)?)
+                    .map_err(|_| Error::Corrupt)?,
+            ),
+        },
     })
 }

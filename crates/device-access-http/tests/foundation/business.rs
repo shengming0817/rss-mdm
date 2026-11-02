@@ -449,6 +449,13 @@ pub async fn verify(
         .service
         .publish_configuration(&current, &override_config, None, &audit(c))
         .await?;
+    super::configuration::reject_account_change(
+        c,
+        m,
+        &receipt.device,
+        &override_config.publication,
+    )
+    .await?;
     let mut tx = c.seed().await?;
     assert!(
         business

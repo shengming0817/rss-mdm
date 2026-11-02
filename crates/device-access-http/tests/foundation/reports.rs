@@ -190,12 +190,40 @@ pub async fn verify(
     let current: serde_json::Value =
         material::success(peer.get(format!("{base}/configuration")).send().await?).await?;
     assert_eq!(current["state"], "present");
-    // The fixed per-tenant host budget is shared across status and application reports.
-    for sequence in 5..=9 {
-        report.sequence = sequence;
-        material::success::<serde_json::Value>(peer.post(&url).json(&report).send().await?).await?;
+    // Establish the current database window explicitly; exercise both streams, and only
+    // rebuild this prerequisite if the server clock actually crosses a minute boundary.
+    let mut application = application;
+    report.sequence = 5;
+    for attempt in 0..3 {
+        let minute: i64 = sqlx::query_scalar("UPDATE rss_da.report_budget SET minute=floor(extract(epoch FROM clock_timestamp()))::bigint/60,reports=9,bytes=0 WHERE tenant_id=$1::uuid RETURNING minute")
+            .bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+        application.sequence += 1;
+        application.operation_id = Uuid::new_v4();
+        let accepted: serde_json::Value = material::success(
+            peer.post(format!("{base}/configuration-reports"))
+                .json(&application)
+                .send()
+                .await?,
+        )
+        .await?;
+        let response = peer.post(&url).json(&report).send().await?;
+        if response.status() == 429 && accepted["receivedAt"].as_i64().unwrap() / 60 == minute {
+            return Ok(());
+        }
+        let current: i64 =
+            sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint/60")
+                .fetch_one(&c.operator)
+                .await?;
+        anyhow::ensure!(
+            current != minute && attempt < 2,
+            "quota must reject inside the same window: {}",
+            response.status()
+        );
+        if response.status().is_success() {
+            report.sequence += 1;
+        } else {
+            anyhow::ensure!(response.status() == 429, "unexpected budget response");
+        }
     }
-    report.sequence = 10;
-    assert_eq!(peer.post(&url).json(&report).send().await?.status(), 429);
-    Ok(())
+    unreachable!("bounded quota proof exits with a result")
 }

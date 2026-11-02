@@ -45,6 +45,11 @@ impl Authorities {
             .collect()
     }
     fn verify(&self, signed: &SignedObservation, now: i64) -> Result<Observation, Error> {
+        let o = self.decode_verified(signed)?;
+        o.validate(now)?;
+        Ok(o)
+    }
+    fn decode_verified(&self, signed: &SignedObservation) -> Result<Observation, Error> {
         if signed.payload.len() > 32768 || signed.signature.len() > 128 {
             return Err(Error::Malformed);
         }
@@ -61,7 +66,7 @@ impl Authorities {
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
             .verify(&message, &signature)
             .map_err(|_| Error::Forbidden)?;
-        o.validate(now)?;
+        o.validate(o.issued_at)?;
         Ok(o)
     }
     pub async fn record_on(
@@ -96,8 +101,19 @@ impl Authorities {
             .fingerprints()
             .remove(&o.authority)
             .ok_or(Error::Configuration)?;
-        sqlx::query("INSERT INTO rss_da.deployment_evidence(tenant_id,registration,generation,authority,sequence,fingerprint,payload,signature,document,received_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,registration,generation,authority) DO UPDATE SET sequence=excluded.sequence,fingerprint=excluded.fingerprint,payload=excluded.payload,signature=excluded.signature,document=excluded.document,received_at=excluded.received_at")
-            .bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).bind(o.sequence).bind(&fingerprint).bind(&signed.payload).bind(&signed.signature).bind(serde_json::to_value(&o).map_err(|_|Error::Malformed)?).bind(now).execute(&mut *c).await.map_err(db)?;
+        // Keep the latest mandatory artifact per immutable Policy independently of the
+        // latest complete observation. Missing/ordinary/revoked snapshots cannot erase it.
+        let mandatory = match &o.configuration {
+            Some(proof)
+                if proof.delivery
+                    == rss_mdm_agent_wire::da::DeliveryPermission::ManagedMandatory =>
+            {
+                serde_json::json!({o.policy.to_string(): proof.artifact})
+            }
+            _ => serde_json::json!({}),
+        };
+        sqlx::query("INSERT INTO rss_da.deployment_evidence(tenant_id,registration,generation,authority,sequence,fingerprint,payload,signature,document,received_at,mandatory) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(tenant_id,registration,generation,authority) DO UPDATE SET sequence=excluded.sequence,fingerprint=excluded.fingerprint,payload=excluded.payload,signature=excluded.signature,document=excluded.document,received_at=excluded.received_at,mandatory=rss_da.deployment_evidence.mandatory || excluded.mandatory")
+            .bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).bind(o.sequence).bind(&fingerprint).bind(&signed.payload).bind(&signed.signature).bind(serde_json::to_value(&o).map_err(|_|Error::Malformed)?).bind(now).bind(mandatory).execute(&mut *c).await.map_err(db)?;
         if !o.revoked {
             for report in &o.applications {
                 crate::device_access::storage::deployment_result_in(c, &o, report, &fingerprint)
@@ -105,6 +121,37 @@ impl Authorities {
             }
         }
         Ok(true)
+    }
+    pub(crate) async fn configurations_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: TenantId,
+        installation: Uuid,
+        anchor: &DaRegistration,
+    ) -> Result<Vec<Observation>, Error> {
+        let rows=sqlx::query("SELECT payload,signature FROM rss_da.deployment_evidence WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 ORDER BY authority LIMIT 17")
+            .bind(tenant.to_string()).bind(anchor.registration_id).bind(anchor.generation).fetch_all(&mut *c).await.map_err(db)?;
+        if rows.len() > 16 {
+            return Err(Error::Capacity);
+        }
+        let mut values = Vec::new();
+        for r in rows {
+            let signed = SignedObservation {
+                payload: r.try_get("payload").map_err(db)?,
+                signature: r.try_get("signature").map_err(db)?,
+            };
+            let o = self.decode_verified(&signed)?;
+            if o.tenant.to_string() != tenant.to_string()
+                || o.installation != installation
+                || o.device != anchor.device
+                || o.registration != anchor.registration_id
+                || o.generation != anchor.generation
+            {
+                return Err(Error::Forbidden);
+            }
+            values.push(o);
+        }
+        Ok(values)
     }
     pub async fn native_on(
         &self,
@@ -114,25 +161,13 @@ impl Authorities {
         anchor: &DaRegistration,
         now: i64,
     ) -> Result<Observation, Error> {
-        let rows=sqlx::query("SELECT payload,signature FROM rss_da.deployment_evidence WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 ORDER BY authority LIMIT 17")
-            .bind(tenant.to_string()).bind(anchor.registration_id).bind(anchor.generation).fetch_all(&mut *c).await.map_err(db)?;
-        if rows.len() > 16 {
-            return Err(Error::Capacity);
-        }
+        let values = self
+            .configurations_on(c, tenant, installation, anchor)
+            .await?;
         let mut selected = None;
-        for r in rows {
-            let signed = SignedObservation {
-                payload: r.try_get("payload").map_err(db)?,
-                signature: r.try_get("signature").map_err(db)?,
-            };
-            let o = self.verify(&signed, now)?;
-            if o.tenant.to_string() != tenant.to_string()
-                || o.installation != installation
-                || o.device != anchor.device
-                || o.registration != anchor.registration_id
-                || o.generation != anchor.generation
-                || o.revoked
-            {
+        for o in values {
+            o.validate(now)?;
+            if o.revoked {
                 return Err(Error::Forbidden);
             }
             let selection = crate::device_access::execution::admission::policy_on(

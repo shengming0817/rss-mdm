@@ -141,7 +141,7 @@ impl Service {
             policy::lock_publications_on(c,tenant).await.map_err(fault)?;
             let previous=policy::get_on(c,tenant,input.publication.id).await.map_err(fault)?;
             if let Some(old)=&previous {authorize(c,p,&old.target,true,false).await?;if old.target!=input.publication.target{return Err(Error::Conflict);}}
-            let account_change=previous.as_ref().is_none_or(|old|old.configuration.role!=input.publication.configuration.role || old.configuration.self_enrollment!=input.publication.configuration.self_enrollment || old.configuration.enabled!=input.publication.configuration.enabled);
+            let account_change=previous.as_ref().is_none_or(|old|old.enabled!=input.publication.enabled || old.configuration.role!=input.publication.configuration.role || old.configuration.self_enrollment!=input.publication.configuration.self_enrollment || old.configuration.enabled!=input.publication.configuration.enabled);
             if account_change {authorize(c,p,&input.publication.target,true,true).await?;}
             let managed_change=previous.as_ref().map(|v|&v.managed_fields)!=Some(&input.publication.managed_fields)
                 && (previous.as_ref().is_some_and(|v|!v.managed_fields.is_empty())||!input.publication.managed_fields.is_empty());
@@ -197,6 +197,7 @@ impl Service {
                         .await
                         .map_err(fault)?
                         .ok_or(Error::NotFound)?;
+                    authorize(c, p, &hint.target, true, false).await?;
                     if let Target::Device { device } = &hint.target {
                         endpoints::lock_da_in(c, p.tenant_id(), device).await?;
                     }
@@ -207,8 +208,10 @@ impl Service {
                         .await
                         .map_err(fault)?
                         .ok_or(Error::NotFound)?;
-                    authorize(c, p, &publication.target, true, false).await?;
-                    if !publication.enabled || publication.version != input.version {
+                    if publication.target != hint.target
+                        || !publication.enabled
+                        || publication.version != input.version
+                    {
                         return Err(Error::Conflict);
                     }
                     let audience = match &publication.target {

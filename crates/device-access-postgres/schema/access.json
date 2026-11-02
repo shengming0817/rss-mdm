@@ -79,6 +79,7 @@
       "updates": [
         "document",
         "fingerprint",
+        "mandatory",
         "payload",
         "received_at",
         "sequence",
