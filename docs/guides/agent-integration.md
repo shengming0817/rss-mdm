@@ -274,7 +274,9 @@ Windows RSS 恢复后续轮换/核对使用既有 Credential task 的 `rotate_rs
 本后端契约不证明 Agent、Windows CP 或 Apple PSSO 的真实执行；对应消费和平台证据由 #2870–#2876 承接。
 
 平台 verifier 的 resolve/recheck 必须在 Identity 提供的原 PG connection 上调用
-Registration Device Access 的 `active_access_binding_on`，同时核对当前注册、绑定代际和 Policy/Scope。
+DA owner 的当前资格查询，同时核对当前 DA 注册、绑定代际、匹配的 DA 配置及有效部署证据。
+DA 配置由 `POST /api/v1/device-access/configurations` 发布，仅支持租户默认和单台 DA 设备覆盖；
+禁用设备覆盖会阻止回退到默认配置。完整配置/状态闭环及 MDM 强制配置优先级由 #3129 承接。
 普通 Binding JSON、清单或历史状态不能作为有效会话证明；Identity 继续独占账户/成员有效性与会话签发。
 
 ## 管理目录查询

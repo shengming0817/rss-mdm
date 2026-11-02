@@ -303,24 +303,6 @@ impl channels::AppleCollections for Store {
     }
 }
 impl channels::AppleResults for Store {
-    fn platform_sso_observation<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        binding: &'a rss_mdm_registration_service::device_access::Binding,
-        facts: &'a rss_mdm_agent_wire::runtime::AccessMacPlatformSsoFacts,
-    ) -> Pending<'a, bool> {
-        Box::pin(async move {
-            let binding = serde_json::to_value(binding).map_err(|_| Error::Malformed)?;
-            sqlx::query_scalar("SELECT mdm_apple.platform_registration_matches($1,$2,$3)")
-                .bind(facts.user_source_id)
-                .bind(facts.user_source_version)
-                .bind(binding)
-                .fetch_one(c)
-                .await
-                .map_err(storage)
-        })
-    }
-
     fn evidence_page<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -626,11 +608,6 @@ async fn send_command(
         match &command.request {
             A::Command { command } => command.compile(&target),
             A::InstallProfile { profile } => {
-                if !crate::platform_sso::deployment::admit_profile(c, apple, p, profile, now)
-                    .await?
-                {
-                    return Ok(AppleDispatch::Waiting);
-                }
                 let profile = match profile.compile(&target) {
                     Ok(profile) => profile,
                     Err(error) => return Ok(AppleDispatch::Rejected(error)),

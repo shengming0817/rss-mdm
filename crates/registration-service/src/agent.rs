@@ -100,7 +100,6 @@ pub struct Service {
     pub(crate) tenant: rss_request_context::TenantId,
     pub(crate) store: Arc<Store>,
     audit: Arc<AuditStore>,
-    pub(crate) access_audit: Arc<AuditStore>,
     issuer: Arc<DeviceIssuer>,
     clock: Arc<dyn Clock>,
     binding: Option<Arc<dyn RuntimeBinding>>,
@@ -114,7 +113,6 @@ pub struct Assembly {
     pub tenant: rss_request_context::TenantId,
     pub store: Arc<Store>,
     pub audit: Arc<AuditStore>,
-    pub access_audit: Arc<AuditStore>,
     pub issuer: Arc<DeviceIssuer>,
     pub clock: Arc<dyn Clock>,
     pub binding: Arc<dyn RuntimeBinding>,
@@ -143,7 +141,6 @@ impl Service {
             cursor: a.cursor,
             store: a.store,
             audit: a.audit,
-            access_audit: a.access_audit,
             issuer: a.issuer,
             clock: a.clock,
             binding: Some(a.binding),
@@ -404,11 +401,22 @@ async fn authorize_on(
     }
 
     p.check_live()?;
-    rss_mdm_authorization_service::lock_on(profile, c, p.tenant_id(), p.instance_id()).await?;
-    rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
-        .await?
-        .require(p, permission, None)
-        .map_err(|_| Error::Forbidden)
+    rss_mdm_authorization_service::lock_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?
+    .require(p, permission, None)
+    .map_err(|_| Error::Forbidden)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -2,10 +2,11 @@
 use crate::{authority_t2_support::Context, device_material_support as material};
 use anyhow::Result;
 use rss_mdm_recovery_credentials as recovery;
-use rss_mdm_registration_service::device_access::execution as access;
 use std::sync::Arc;
 use uuid::Uuid;
 mod credentials;
+mod da_authorization;
+mod da_materials;
 mod registration;
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
@@ -41,7 +42,6 @@ pub(super) fn protection(c: &Context, active: &str) -> Result<Arc<recovery::Prot
 }
 struct Owners {
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    access: Arc<access::Service>,
     maintenance: recovery::maintenance::Maintenance,
 }
 impl Owners {
@@ -72,30 +72,6 @@ impl Owners {
                 .await?,
         );
         let native = material::protection(c)?;
-        let source = Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            Some(Arc::new(rss_mdm_device_service::planning::PlanningObjects)),
-        ));
-        let materials = Arc::new(access::Materials {
-            agent_store: Arc::new(super::registration_agent_facts::AgentFacts::new(
-                rss_mdm_install_support::StorageProfile::Mdm,
-            )),
-            source: Arc::new(super::registration_sources::Source(source)),
-            capacity: Arc::new(super::capacity::Capacity),
-            recovery: Some(Arc::new(recovery::access::AccessMaterials::new(
-                rss_mdm_install_support::StorageProfile::Mdm,
-                credentials.clone(),
-                Arc::new(super::recovery_eligibility::AccessEligibility { admission: None }),
-            ))),
-            platform: Arc::new(super::access_execution::Platform(
-                rss_mdm_apple_channel::flow_store::Store {
-                    protection: native.clone(),
-                },
-            )),
-        });
-        let access = Arc::new(access::Service::new(
-            access::Transactions::bind(runtime.clone(), c.tenant, audit.clone(), materials).await?,
-        ));
         let copies = recovery::native::inputs::Copies::bind(
             runtime.clone(),
             c.tenant,
@@ -111,13 +87,10 @@ impl Owners {
             credentials,
             Some(Arc::new(copies)),
             Arc::new(tokio::sync::Semaphore::new(2)),
-            Some(Arc::new(super::recovery_eligibility::AccessEligibility {
-                admission: None,
-            })),
+            None,
         );
         Ok(Self {
             runtime,
-            access,
             maintenance,
         })
     }

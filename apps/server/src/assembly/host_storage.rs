@@ -41,7 +41,7 @@ pub(super) async fn admit(
             rss_mdm_agent_channel::verify_delivery(rss_mdm_install_support::StorageProfile::Mdm, c)
                 .await?;
             rss_mdm_script_service::verify_storage(c).await?;
-            rss_mdm_registration_service::device_access::execution::verify_storage(c).await?;
+            rss_mdm_device_access_postgres::device_access::execution::verify_storage(c).await?;
             rss_mdm_recovery_credentials::verify_storage(c).await?;
             rss_mdm_inventory_service::collection::execution::verify_storage(c).await?;
             rss_mdm_windows_channel::verify_delivery(c).await?;
@@ -49,9 +49,10 @@ pub(super) async fn admit(
             rss_mdm_device_service::control::verify_authority(c)
                 .await
                 .inspect_err(|e| eprintln!("command authority admission: {e}"))?;
-            rss_mdm_authorization_service::verify_authority(
+            rss_mdm_authorization_service::verify_authority_for_host(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 c,
+                &["da_access"],
             )
             .await
             .inspect_err(|e| eprintln!("command authorization admission: {e}"))?;

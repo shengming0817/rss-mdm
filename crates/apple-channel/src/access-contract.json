@@ -44,21 +44,11 @@
       "search_path": "search_path=pg_catalog"
     },
     {
-      "name": "mdm_apple.application_valid_until",
-      "search_path": "search_path=pg_catalog"
-    },
-    {
-      "name": "mdm_apple.platform_session_qualifications",
-      "search_path": "search_path=pg_catalog"
-    },
-    {
       "name": "mdm_apple.profile_qualifications",
       "search_path": "search_path=pg_catalog"
     }
   ],
-  "external_relations": [
-    "mdm.inventory"
-  ],
+  "external_relations": [],
   "verified_schemas": [
     "mdm_apple"
   ]

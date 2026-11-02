@@ -185,8 +185,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         command.materials.clone(),
         command.software.materials.clone(),
         command.registration.materials.clone(),
-        command.access_execution.materials.clone(),
-        None,
+        Vec::new(),
     )
     .await?;
     let worker = rss_mdm_policy_service::worker::PolicyWork::new(
@@ -218,8 +217,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         command.materials.clone(),
         command.software.materials.clone(),
         command.registration.materials.clone(),
-        command.access_execution.materials.clone(),
-        None,
+        Vec::new(),
     )
     .await?;
     let worker = rss_mdm_policy_service::worker::PolicyWork::new(

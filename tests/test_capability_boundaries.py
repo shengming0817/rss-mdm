@@ -9,7 +9,7 @@ from ci import verify_capability_boundaries
 class CapabilityBoundaries(unittest.TestCase):
     def test_target_optional_renamed_and_build_edges_cannot_hide_forbidden_packages(self):
         names = ('group-service compliance-service recovery-observation certificate apple-mdm inventory-service software-service authorization-service '
-                 'registration-service script-service device-service content-service webhook-service management-http device-access-http '
+                 'registration-service script-service device-service content-service webhook-service management-http device-access-http device-access device-access-postgres '
                  'task-state task-trust agent-channel windows-channel apple-channel query http-contract resource resource-postgres group group-postgres scope policy scope-postgres scope-service policy-service resource-service').split()
         packages = [dict(id=n, name='rss-mdm-' + n, dependencies=[]) for n in names]
         data = dict(packages=packages, workspace_members=names)
@@ -26,6 +26,9 @@ class CapabilityBoundaries(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'apple-mdm'):
             verify_capability_boundaries(data)
         apple['dependencies'] = []
+        contract = next(p for p in packages if p['id'] == 'http-contract')
+        contract['dependencies'] = [dict(name='rss-mdm-agent-wire', kind=None)]
+        verify_capability_boundaries(data)
         for owner, name in (('task-state', 'rss-mdm-script-service'),
                             ('task-state', 'rss-reconcile'), ('task-state', 'sqlx'),
                             ('task-trust', 'rss-mdm-device-service'),
@@ -36,6 +39,8 @@ class CapabilityBoundaries(unittest.TestCase):
                             ('software-service', 'rss-mdm-apple-channel'),
                             ('device-access-http','rss-mdm-agent-channel'), ('agent-channel','rss-mdm-device-access-http'), ('task-trust','rss-mdm-device-access-http'), ('agent-channel','rss-mdm-device-service'), ('windows-channel','rss-mdm-device-service'), ('webhook-service','rss-mdm-management-http'), ('webhook-service','rss-mdm-inventory-service'), ('inventory-service', 'axum'), ('query', 'rss-identity-core'),
                             ('http-contract', 'rss-mdm-resource'), ('resource', 'rss-mdm-http-contract'),
+                            ('device-access', 'rss-mdm-registration-service'),
+                            ('device-access-postgres', 'rss-mdm-device-access-http'),
                             ('scope', 'rss-mdm-policy-service'),
                             ('scope', 'rss-transactional-messaging-postgres'),
                             ('group', 'reqwest'),

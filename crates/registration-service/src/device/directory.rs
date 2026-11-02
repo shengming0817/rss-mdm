@@ -69,9 +69,14 @@ async fn authority(
         return Err(crate::Error::Forbidden);
     }
 
-    rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
-        .await
-        .map_err(Into::into)
+    rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(Into::into)
 }
 const PAGE_SOURCES: i64 = 1_048_576;
 const STATISTICS_SOURCES: i64 = 4_194_304;

@@ -5,12 +5,12 @@ use rss_transactional_messaging_postgres::{PgOutboxStore, PgRuntime};
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
 pub(crate) struct Assembly {
-    pub tasks: Arc<tasks::Service>,
-    pub worker: Arc<tasks::worker::Worker>,
-    pub materials: Arc<tasks::Materials>,
+    pub tasks: Vec<Arc<tasks::Service>>,
+    pub worker: Vec<Arc<tasks::worker::Worker>>,
+    pub materials: Vec<Arc<tasks::Materials>>,
     pub native: Arc<native::Service>,
     pub native_materials: Arc<native::Materials>,
-    pub maintenance: Arc<rss_mdm_recovery_credentials::maintenance::Maintenance>,
+    pub maintenance: Vec<Arc<rss_mdm_recovery_credentials::maintenance::Maintenance>>,
 }
 #[expect(clippy::too_many_arguments, reason = "explicit shared host resources")]
 pub(crate) async fn assemble(
@@ -36,6 +36,7 @@ pub(crate) async fn assemble(
         apple_results: apple,
     });
     let materials = Arc::new(tasks::Materials {
+        product: None,
         agent_store: Arc::new(super::registration_agent_facts::AgentFacts::new(
             rss_mdm_install_support::StorageProfile::Mdm,
         )),
@@ -43,27 +44,50 @@ pub(crate) async fn assemble(
         capacity: Arc::new(super::capacity::Capacity),
         recovery_credentials: credentials.clone(),
     });
-    let tasks = Arc::new(tasks::Service::new(
-        tasks::Transactions::bind(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            runtime.clone(),
-            tenant,
-            audit.clone(),
-            materials.clone(),
-        )
-        .await
-        .map_err(super::owner_errors::credential)?,
-    ));
-    let worker = Arc::new(
-        tasks::worker::Worker::new(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            tasks.clone(),
-            reconcile.clone(),
-            budget.clone(),
-            config.background.device_concurrency,
-        )
-        .map_err(super::owner_errors::credential)?,
-    );
+    let da_materials = Arc::new(tasks::Materials {
+        product: Some(Arc::new(
+            rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
+                admission: None,
+            },
+        )),
+        agent_store: materials.agent_store.clone(),
+        source: materials.source.clone(),
+        capacity: materials.capacity.clone(),
+        recovery_credentials: credentials.clone(),
+    });
+    let materials = vec![materials, da_materials];
+    let mut tasks = Vec::new();
+    let mut worker = Vec::new();
+    for (profile, resources) in [
+        rss_mdm_install_support::StorageProfile::Mdm,
+        rss_mdm_install_support::StorageProfile::Da,
+    ]
+    .into_iter()
+    .zip(&materials)
+    {
+        let service = Arc::new(tasks::Service::new(
+            tasks::Transactions::bind(
+                profile,
+                runtime.clone(),
+                tenant,
+                audit.clone(),
+                resources.clone(),
+            )
+            .await
+            .map_err(super::owner_errors::credential)?,
+        ));
+        worker.push(Arc::new(
+            tasks::worker::Worker::new(
+                profile,
+                service.clone(),
+                reconcile.clone(),
+                budget.clone(),
+                config.background.device_concurrency,
+            )
+            .map_err(super::owner_errors::credential)?,
+        ));
+        tasks.push(service);
+    }
     let transactions = native::Transactions::bind(
         runtime.clone(),
         tenant,
@@ -107,20 +131,37 @@ pub(crate) async fn assemble(
     });
     let maintenance = Arc::new(rss_mdm_recovery_credentials::maintenance::Maintenance::new(
         rss_mdm_install_support::StorageProfile::Mdm,
-        runtime,
+        runtime.clone(),
         tenant,
-        audit,
-        credentials,
+        audit.clone(),
+        credentials.clone(),
         Some(copies),
-        budget,
-        Some(Arc::new(super::recovery_eligibility::AccessEligibility {
-            admission: None,
-        })),
+        budget.clone(),
+        None,
     ));
     maintenance
         .validate_keys()
         .await
         .map_err(super::owner_errors::credential)?;
+    let da_maintenance = Arc::new(rss_mdm_recovery_credentials::maintenance::Maintenance::new(
+        rss_mdm_install_support::StorageProfile::Da,
+        runtime,
+        tenant,
+        audit,
+        credentials,
+        None,
+        budget,
+        Some(Arc::new(
+            rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
+                admission: None,
+            },
+        )),
+    ));
+    da_maintenance
+        .validate_keys()
+        .await
+        .map_err(super::owner_errors::credential)?;
+    let maintenance = vec![maintenance, da_maintenance];
     Ok(Assembly {
         tasks,
         worker,

@@ -371,14 +371,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             ),
         ),
         (
-            "registration-device-access-v1",
-            rss_mdm_registration_service::device_access::INSTALL_SQL,
-        ),
-        (
-            "registration-access-tasks-v1",
-            rss_mdm_registration_service::device_access::execution::INSTALL_SQL,
-        ),
-        (
             "timeline-service-schema-v1",
             rss_mdm_timeline_service::INSTALL_SQL,
         ),
@@ -430,14 +422,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             ),
         ),
         ("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL),
-        (
-            "enterprise-access-v1",
-            rss_mdm_registration_service::enterprise::INSTALL_SQL,
-        ),
-        (
-            "apple-platform-sso-v1",
-            rss_mdm_apple_channel::platform_sso::INSTALL_SQL,
-        ),
         (
             "windows-entra-policy-v1",
             rss_mdm_registration_service::WINDOWS_ENTRA_POLICY_SQL,
@@ -516,10 +500,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("first-use-v1", include_str!("../../schema/first-use.sql")),
         (
-            "platform-sso-identity-v1",
-            include_str!("../../schema/platform-sso-identity.sql"),
-        ),
-        (
             "inventory-source-facts-v1",
             rss_mdm_inventory_service::SOURCE_FACTS_SQL,
         ),
@@ -540,5 +520,9 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             ),
         ),
         ("device-directory-v1", rss_mdm_device_service::DIRECTORY_SQL),
+        (
+            "da-shared-owner-grants-v1",
+            include_str!("../../schema/da-shared-grants.sql"),
+        ),
     ]
 }

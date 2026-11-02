@@ -65,15 +65,16 @@ impl IdentityRoutes {
 pub(crate) struct Identity {
     pub(crate) enterprise_administrators: BTreeMap<
         uuid::Uuid,
-        Arc<rss_mdm_registration_service::enterprise::keycloak::Administrator>,
+        Arc<rss_mdm_device_access_postgres::enterprise::keycloak::Administrator>,
     >,
     pub(crate) enterprise_platform:
-        Arc<rss_mdm_registration_service::enterprise::platform::Verifier>,
+        Arc<rss_mdm_device_access_postgres::enterprise::platform::Verifier>,
     pub(crate) enterprise_clients:
-        BTreeMap<String, Arc<dyn rss_mdm_registration_service::enterprise::broker::Client>>,
+        BTreeMap<String, Arc<dyn rss_mdm_device_access_postgres::enterprise::broker::Client>>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) webauthn: rss_identity_postgres::WebauthnAuthority,
-    pub(crate) platform: Option<Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>>,
+    pub(crate) platform:
+        Option<Arc<rss_mdm_device_access_postgres::platform_sso::bridge::Verifier>>,
     pub(crate) instance: InstanceId,
     pub(crate) authority: Authority,
     pub(crate) tenant: TenantId,
@@ -85,8 +86,8 @@ pub(crate) struct Identity {
     http: rss_identity_http_axum::HttpConfig,
 }
 impl Identity {
-    pub(crate) fn browser(&self) -> Arc<rss_mdm_management_http::identity::Identity> {
-        Arc::new(rss_mdm_management_http::identity::Identity {
+    pub(crate) fn da_browser(&self) -> Arc<rss_mdm_device_access_http::identity::Identity> {
+        Arc::new(rss_mdm_device_access_http::identity::Identity {
             enterprise_clients: self.enterprise_clients.clone(),
             enterprise_administrators: self.enterprise_administrators.clone(),
             authority: self.authority.clone(),
@@ -95,10 +96,17 @@ impl Identity {
             tenant: self.tenant,
         })
     }
+
+    pub(crate) fn browser(&self) -> Arc<rss_mdm_management_http::identity::Identity> {
+        Arc::new(rss_mdm_management_http::identity::Identity {
+            authority: self.authority.clone(),
+            webauthn: self.webauthn.clone(),
+            http: self.http.clone(),
+            tenant: self.tenant,
+        })
+    }
     pub(crate) fn management_browser(&self) -> Arc<rss_mdm_management_http::identity::Identity> {
         Arc::new(rss_mdm_management_http::identity::Identity {
-            enterprise_clients: self.enterprise_clients.clone(),
-            enterprise_administrators: self.enterprise_administrators.clone(),
             authority: self.authority.clone(),
             webauthn: self.webauthn.clone(),
             http: self.http.clone(),
@@ -108,7 +116,7 @@ impl Identity {
     pub(crate) async fn connect(
         config: &Config,
         policy: Arc<IdentityManagementPolicy>,
-        platform: Option<Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>>,
+        platform: Option<Arc<rss_mdm_device_access_postgres::platform_sso::bridge::Verifier>>,
         acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
     ) -> Result<Self, Error> {
         Self::connect_using(
@@ -125,7 +133,7 @@ impl Identity {
     async fn connect_using(
         config: &Config,
         policy: Arc<IdentityManagementPolicy>,
-        platform: Option<Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>>,
+        platform: Option<Arc<rss_mdm_device_access_postgres::platform_sso::bridge::Verifier>>,
         mut acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
         configure_authority: impl FnOnce(Authority) -> Authority,
         federation: impl FnOnce(
@@ -169,7 +177,7 @@ impl Identity {
         )?;
         let mut enterprise_clients: BTreeMap<
             String,
-            Arc<dyn rss_mdm_registration_service::enterprise::broker::Client>,
+            Arc<dyn rss_mdm_device_access_postgres::enterprise::broker::Client>,
         > = BTreeMap::new();
         if let Some(deployment) = &config.identity.enterprise {
             if deployment.clients.is_empty() || deployment.clients.len() > 64 {
@@ -216,12 +224,13 @@ impl Identity {
                     .as_ref()
                     .map(|p| config::read(p, 65536, false))
                     .transpose()?;
-                let admin = rss_mdm_registration_service::enterprise::keycloak::Administrator::new(
-                    entry.configuration.clone(),
-                    secret,
-                    ca.as_deref().map(|v| v.as_slice()),
-                )
-                .map_err(|_| invalid())?;
+                let admin =
+                    rss_mdm_device_access_postgres::enterprise::keycloak::Administrator::new(
+                        entry.configuration.clone(),
+                        secret,
+                        ca.as_deref().map(|v| v.as_slice()),
+                    )
+                    .map_err(|_| invalid())?;
                 if enterprise_administrators
                     .insert(admin.provider, Arc::new(admin))
                     .is_some()
@@ -238,7 +247,7 @@ impl Identity {
             .as_ref()
             .map(|p| p.clone() as Arc<dyn rss_identity_postgres::platform::PlatformVerifier>);
         let enterprise_platform = Arc::new(
-            rss_mdm_registration_service::enterprise::platform::Verifier::new(
+            rss_mdm_device_access_postgres::enterprise::platform::Verifier::new(
                 &config.product_origin,
                 tenant,
                 runtime.clone(),
@@ -660,7 +669,7 @@ pub struct EnterpriseDeployment {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnterpriseAdministrator {
-    pub configuration: rss_mdm_registration_service::enterprise::keycloak::Configuration,
+    pub configuration: rss_mdm_device_access_postgres::enterprise::keycloak::Configuration,
     pub client_secret_file: PathBuf,
     pub private_ca_file: Option<PathBuf>,
 }

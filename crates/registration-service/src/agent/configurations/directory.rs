@@ -80,7 +80,7 @@ impl Service {
         let mut tx = self.store.begin(p.tenant_id()).await?;
         authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
         let current = rss_mdm_authorization_service::snapshot_on(
-            profile,
+            p.authority_profile(),
             &mut tx,
             p.tenant_id(),
             p.instance_id(),

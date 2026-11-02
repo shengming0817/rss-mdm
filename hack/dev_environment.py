@@ -271,13 +271,15 @@ class Environment:
         for role, password in [('mdm_runtime','runtime-fixture'),('mdm_api','api-fixture'),('mdm_access','access-fixture')]:
             sql += f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOBYPASSRLS;"
         # Publication defines the borrowed relay role required by subsequent role files.
-        for name in ('business','software-publication','commands','identity','audit','webhook'):
+        for name in ('business','software-publication','commands','identity','audit','webhook','device-access'):
             sql += (ROOT/f'apps/server/schema/{name}-roles.sql').read_text()
         for role in ('mdm_policy_runtime','mdm_resource_runtime','mdm_software_release_runtime','mdm_group_runtime',
                      'mdm_inventory_runtime','mdm_scope_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_scheduler_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator','mdm_scope_group_consumer'):
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
         for role, password in [('mdm_identity_runtime','identity-runtime-fixture'),('mdm_identity_maintenance','identity-maintenance-fixture'),('mdm_tenant_registry','tenant-registry-fixture'),('mdm_identity_provisioning','identity-provisioning-fixture')]:
             sql += f"ALTER ROLE {role} LOGIN PASSWORD '{password}';"
+        for role in ['da_owner', 'da_access', 'da_command_runtime', 'da_policy_runtime', 'da_inventory_runtime', 'da_scope_runtime', 'da_telemetry_runtime', 'da_identity_runtime', 'da_identity_maintenance', 'da_identity_provisioning', 'da_resource_runtime', 'da_software_runtime', 'da_content_runtime', 'da_software_driver', 'da_runtime', 'da_api']:
+            sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
         sql += 'CREATE ROLE mdm_group_owner NOLOGIN NOSUPERUSER NOBYPASSRLS; GRANT rss_tmsg_relay TO mdm_group_owner;'
         self.sql('BEGIN;'+sql+' COMMIT;')
         private(marker,fingerprint)
@@ -386,6 +388,7 @@ class Environment:
         config['native_protection']=dict(active_file=path(runtime,'native-data.key'),historical_files=[],fingerprint_file=path(runtime,'native-data.key'))
         config.update(listen=(ingress['MDM_BACKEND_ADDRESS'] if mode=='container' else '127.0.0.1')+f':{backend_port}',product_origin=origin,trusted_gateway=ingress['MDM_GATEWAY_ADDRESS'] if mode=='container' else '127.0.0.1',native_protocols={},device_pki=[])
         config['agent_pki']={'mode':'disabled'}
+        config['device_access']['database']=database(runtime,'da_access')
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime')
         config['command_database']=database(runtime,'mdm_command_runtime')
@@ -398,7 +401,7 @@ class Environment:
         password=self.root/'account-password'
         if not password.exists():private(password,secrets.token_urlsafe(32))
         private(operator/'account-password',password.read_text())
-        private(operator/'migrate.json',dict(installation=installation(),database=database(operator,'mdm_owner')))
+        private(operator/'migrate.json',dict(installation=installation(),database=database(operator,'mdm_owner'),device_access_database=database(operator,'da_owner')))
 
         private(operator/'initialize.json',dict(audit={'mode':'plain'},installation=installation(),database=database(operator,'mdm_identity_maintenance'),
                 tenant_id=TENANTS[0],expected_epoch=1,principal_id=ADMIN,login='admin',password_file=path(operator,'account-password')))
@@ -406,11 +409,11 @@ class Environment:
         operation_file=self.root/'authorization-operation'
         if not operation_file.exists():private(operation_file,str(uuid.uuid4()))
         operation=operation_file.read_text()
-        private(auth,dict(audit={'mode':'plain'},database=database(operator,'mdm_access'),identityDatabase=database(operator,'mdm_identity_runtime'),
+        private(auth,dict(profile='mdm',audit={'mode':'plain'},database=database(operator,'mdm_access'),identityDatabase=database(operator,'mdm_identity_runtime'),
                          installation=installation(),expectedEpoch=1,login='admin',passwordFile=path(operator,'account-password'),operationId=operation,
                          user=dict(instanceId=INSTANCE,tenantId=TENANTS[0],principalId=ADMIN)))
         if self.sql("SELECT count(*) FROM pg_database WHERE datname='mdm_dev'")=='0':self.sql('CREATE DATABASE mdm_dev OWNER mdm_owner')
-        self.sql('GRANT CREATE ON DATABASE mdm_dev TO mdm_owner,mdm_audit_owner,mdm_ledger_owner; GRANT CREATE ON SCHEMA public TO mdm_owner','mdm_dev')
+        self.sql('GRANT CREATE ON DATABASE mdm_dev TO mdm_owner,da_owner,mdm_audit_owner,mdm_ledger_owner; GRANT CREATE ON SCHEMA public TO mdm_owner,da_owner','mdm_dev')
         if mode!='container' or not tls['origin']:
             self.issue_leaf(self.root/'gateway-cert'/mode,['localhost','mdm.example.test'])
             for name in ('server.crt','server.key'):private(gateway/name,(self.root/'gateway-cert'/mode/name).read_text())

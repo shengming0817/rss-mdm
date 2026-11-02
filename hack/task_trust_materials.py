@@ -1,10 +1,11 @@
-"""Minimal real Agent certificate material for Task Trust's signing admission proof."""
+"""Minimal purpose-bound endpoint certificates for Task Trust and DA admission proofs."""
 import base64
 from datetime import datetime, timezone
 import json
 import subprocess
 import sys
 from pathlib import Path
+from uuid import UUID
 
 
 def run(*args):
@@ -53,20 +54,30 @@ default_crl_days=30
     return root
 
 
-def leaf(directory, tenant, device):
+def leaf(directory, tenant, device, purpose, service=None):
     root=directory/'task-trust-ca'
-    destination=directory/('task-trust-'+tenant)
+    destination=directory/('task-trust-'+purpose+'-'+tenant)
     destination.mkdir(mode=0o700)
-    identity='urn:rss-mdm:agent:v1:'+tenant+':'+base64.urlsafe_b64encode(device.encode()).decode().rstrip('=')
-    # DER SEQUENCE { INTEGER 1, OCTET STRING rss-agent, OCTET STRING task-trust }.
-    marker=bytes.fromhex('020101')+bytes([4,9])+b'rss-agent'+bytes([4,10])+b'task-trust'
+    assert purpose in ('agent', 'da_device')
+    prefix = 'urn:rss-mdm:agent:v1:' if purpose == 'agent' else 'urn:rss:da:device:v1:'
+    authority = tenant
+    subject = 'rss-mdm-agent'
+    if purpose == 'da_device':
+        service_id = UUID(service)
+        if service_id.int == 0:
+            raise ValueError('DA certificate requires a non-nil installation instance')
+        authority = str(service_id)+':'+tenant
+        subject = 'rss-da-device'
+    identity=prefix+authority+':'+base64.urlsafe_b64encode(device.encode()).decode().rstrip('=')
+    provisioner = b'rss-agent' if purpose == 'agent' else b'rss-da-device'
+    marker=bytes.fromhex('020101')+bytes([4,len(provisioner)])+provisioner+bytes([4,10])+b'task-trust'
     marker=bytes([0x30,len(marker)])+marker
     ext=destination/'leaf.conf'
     ext.write_text('basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nsubjectAltName=URI:'+identity+'\n1.3.6.1.4.1.37476.9000.64.1=DER:'+marker.hex(':')+'\n')
-    run('req','-new','-newkey','rsa:2048','-nodes','-subj','/CN=rss-mdm-agent','-keyout',destination/'leaf.key','-out',destination/'leaf.csr')
+    run('req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+subject,'-keyout',destination/'leaf.key','-out',destination/'leaf.csr')
     (destination/'leaf.key').chmod(0o600)
     run('x509','-req','-in',destination/'leaf.csr','-CA',root/'ca.pem','-CAkey',root/'ca.key','-set_serial',str(int(tenant.replace('-',''),16)),'-days','1','-sha256','-extfile',ext,'-out',destination/'leaf.pem')
     print(json.dumps(dict(leaf=str(destination/'leaf.pem'),root=str(root/'ca.pem'),crl=str(root/'ca.crl'),identity=identity)))
 
 if __name__ == '__main__':
-    leaf(Path(sys.argv[1]),sys.argv[2],sys.argv[3])
+    leaf(Path(sys.argv[1]),sys.argv[2],sys.argv[3],sys.argv[4] if len(sys.argv)>4 else 'agent',sys.argv[5] if len(sys.argv)>5 else None)

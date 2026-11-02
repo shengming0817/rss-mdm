@@ -3,26 +3,13 @@
 use crate::{Error, Result};
 use rss_identity_postgres::{Authority, AuthorityError, PersonnelRevision};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
+use rss_mdm_device_access::deployment::PlatformConfiguration;
 use rss_request_context::{Clock, TenantId};
 use rss_transactional_messaging::policy::OperationDeadline;
-use serde::Serialize;
 use serde_json::Value;
 use sqlx::postgres::{PgArguments, PgRow};
 use std::time::Instant;
 
-/// Current host configuration for the MDM-owned Platform SSO qualification relation.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlatformConfiguration {
-    /// Current configuration and endpoint fingerprint.
-    pub configuration: String,
-    /// Expected application identifier.
-    pub application_id: String,
-    /// Expected installed application version.
-    pub application_version: String,
-    /// Expected native profile identifier.
-    pub profile_identifier: String,
-}
 pub struct Reader<'a> {
     authority: &'a Authority,
     deadline: Instant,

@@ -4,6 +4,7 @@ use rss_identity_postgres::AuthenticatedSession;
 
 pub struct AuthorizedPrincipal {
     profile: rss_mdm_install_support::StorageProfile,
+    authority_profile: rss_mdm_install_support::StorageProfile,
     identity: Principal,
     authorization: Option<crate::Snapshot>,
 }
@@ -14,6 +15,7 @@ impl AuthorizedPrincipal {
     ) -> Self {
         Self {
             profile,
+            authority_profile: profile,
             identity,
             authorization: None,
         }
@@ -45,6 +47,7 @@ impl AuthorizedPrincipal {
         let user = authority.user().clone();
         Self {
             profile: authority.profile(),
+            authority_profile: authority.profile(),
             identity: Principal {
                 subject: user.principal_id.clone(),
                 actor: crate::Actor::Account { user },
@@ -98,6 +101,10 @@ impl AuthorizedPrincipal {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
+    /// Rules and credentials source bound by the host's Store during authorization loading.
+    pub fn authority_profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.authority_profile
+    }
     pub fn instance_id(&self) -> &str {
         self.identity.instance_id()
     }
@@ -112,8 +119,9 @@ impl AuthorizedPrincipal {
     }
     pub fn credential_binding(&self) -> String {
         format!(
-            "{}:{}",
+            "{}:{}:{}",
             self.profile.name(),
+            self.authority_profile.name(),
             self.identity.credential_binding()
         )
     }
@@ -128,13 +136,19 @@ impl AuthorizedPrincipal {
     }
     pub async fn load_authorization(mut self, access: &crate::Store) -> Result<Self, Error> {
         if self.profile != access.profile()
+            || (self.authorization.is_some()
+                && self.authority_profile != access.authority_profile())
             || self
                 .identity
                 .key_proof()
-                .is_some_and(|k| k.profile != self.profile)
+                .is_some_and(|k| k.authority_profile != access.authority_profile())
+            || self
+                .initialization_authority()
+                .is_some_and(|a| a.profile() != access.authority_profile())
         {
             return Err(Error::Forbidden);
         }
+        self.authority_profile = access.authority_profile();
         self.authorization = Some(crate::store::authorization_snapshot(access, &self).await?);
         Ok(self)
     }
@@ -370,5 +384,114 @@ mod recent_tests {
         }
         assert!(super::recent_authentication(Some(700), 1000, 300));
         assert!(super::recent_authentication(Some(1000), 1000, 300));
+    }
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+    use rss_mdm_install_support::StorageProfile;
+    use uuid::Uuid;
+
+    struct Clock(std::time::Instant);
+    impl rss_request_context::Clock for Clock {
+        fn now(&self) -> std::time::Instant {
+            self.0
+        }
+    }
+
+    #[allow(clippy::disallowed_methods, reason = "fixed test clock origin")]
+    fn key_principal(
+        product: StorageProfile,
+        source: StorageProfile,
+    ) -> (AuthorizedPrincipal, crate::Snapshot) {
+        let user = crate::User {
+            tenant_id: Uuid::from_u128(1).to_string(),
+            instance_id: Uuid::from_u128(2).to_string(),
+            principal_id: Uuid::from_u128(3).to_string(),
+        };
+        let now = std::time::Instant::now();
+        let id = Uuid::from_u128(4);
+        let key = crate::api_key::KeyProof {
+            authority_profile: source,
+            instance: user.instance_id.clone(),
+            tenant: user.tenant_id.clone(),
+            id,
+            credential_revision: 1,
+            deadline: now + std::time::Duration::from_secs(10),
+            clock: Arc::new(Clock(now)),
+            authority_revision: 1,
+        };
+        let principal = AuthorizedPrincipal {
+            profile: product,
+            authority_profile: source,
+            identity: Principal::from_key(key),
+            authorization: None,
+        };
+        let snapshot = crate::Snapshot {
+            rules: vec![],
+            groups: vec![],
+            keys: vec![crate::api_key::KeyRecord {
+                id,
+                revision: 1,
+                authority_revision: 1,
+                credential_revision: 1,
+                metadata: crate::api_key::KeyMetadata {
+                    name: "operator".into(),
+                    enabled: true,
+                    expires_at: None,
+                    grants: vec![crate::Grant {
+                        operation: Permission::AccountWrite,
+                        scope: crate::Scope::AllDevices,
+                    }],
+                },
+                created_by: user,
+                created_at: 1,
+                revoked: false,
+            }],
+            installation: None,
+        };
+        (principal, snapshot)
+    }
+
+    #[test]
+    fn product_audit_and_authority_source_remain_distinct() {
+        let (mut proof, snapshot) = key_principal(StorageProfile::Da, StorageProfile::Mdm);
+        let evidence =
+            crate::OperationAuthority::all_devices(&snapshot, &proof, Permission::AccountWrite)
+                .unwrap();
+        let document = serde_json::to_value(evidence).unwrap();
+        assert_eq!(document["profile"], "da");
+        assert_eq!(document["source"], "mdm");
+
+        let audit = |product| {
+            rss_mdm_audit_integration::RequestAudit::new(
+                product,
+                proof.tenant_id().into(),
+                "test",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            )
+        };
+        assert!(proof.bind_audit(&audit(StorageProfile::Da)).is_ok());
+        assert!(proof.bind_audit(&audit(StorageProfile::Mdm)).is_err());
+
+        let bound = snapshot.query_binding(&proof).unwrap();
+        let credential = proof.credential_binding();
+        for (product, source) in [
+            (StorageProfile::Mdm, StorageProfile::Mdm),
+            (StorageProfile::Da, StorageProfile::Da),
+        ] {
+            let (other, snapshot) = key_principal(product, source);
+            assert_ne!(snapshot.query_binding(&other).unwrap(), bound);
+            assert_ne!(other.credential_binding(), credential);
+        }
+
+        // A matching key ID and grants from another source cannot validate this credential.
+        proof.authority_profile = StorageProfile::Da;
+        assert!(snapshot.query_binding(&proof).is_err());
+        assert!(
+            crate::OperationAuthority::all_devices(&snapshot, &proof, Permission::AccountWrite)
+                .is_err()
+        );
     }
 }

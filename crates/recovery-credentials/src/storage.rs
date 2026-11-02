@@ -9,14 +9,33 @@ use uuid::Uuid;
 pub async fn rss_use_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
-    device: &rss_mdm_registration_service::DevicePrincipal,
+    tenant: Uuid,
+    device: &rss_mdm_registration_service::device::endpoints::DaRegistration,
     input: &rss_mdm_agent_wire::runtime::AccessRecoveryUse,
 ) -> Result<bool, Error> {
     let profile = custody.profile();
 
     input.validate().map_err(|_| Error::Malformed)?;
-    rss_mdm_registration_service::device::store::revalidate_management(profile, c, device).await?;
-    let tenant = Uuid::parse_str(&device.tenant().to_string()).map_err(|_| Error::Malformed)?;
+    if profile != rss_mdm_install_support::StorageProfile::Da {
+        return Err(Error::Unsupported);
+    }
+    rss_mdm_registration_service::device::endpoints::lock_da_in(
+        c,
+        &tenant.to_string(),
+        &device.device,
+    )
+    .await?;
+    if rss_mdm_registration_service::device::endpoints::current_da_in(
+        c,
+        &tenant.to_string(),
+        &device.device,
+    )
+    .await?
+    .as_ref()
+        != Some(device)
+    {
+        return Err(Error::Forbidden);
+    }
     let row = sqlx::query(crate::storage_profile::sql(profile).storage_rss_use_in_1)
         .bind(tenant)
         .bind(input.material)
@@ -25,9 +44,9 @@ pub async fn rss_use_in(
         .await?
         .ok_or(Error::NotFound)?;
     let material = decode(&row)?;
-    if material.binding.device != device.device()
-        || material.binding.registration != device.registration()
-        || material.binding.generation != device.generation()
+    if material.binding.device != device.device
+        || material.binding.registration != device.registration_id
+        || material.binding.generation != device.generation
         || !matches!(material.binding.subject, Subject::RssLogin { .. })
     {
         return Err(Error::Forbidden);
@@ -83,6 +102,38 @@ pub async fn active_in(
     let profile = custody.profile();
 
     binding.validate()?;
+    if matches!(binding.subject, Subject::RssLogin { .. })
+        != (profile == rss_mdm_install_support::StorageProfile::Da)
+    {
+        return Err(Error::Unsupported);
+    }
+    if profile == rss_mdm_install_support::StorageProfile::Da {
+        custody.active(c, tenant, binding).await?;
+        rss_mdm_registration_service::device::endpoints::lock_da_in(
+            c,
+            &tenant.to_string(),
+            &binding.device,
+        )
+        .await?;
+        let expected = rss_mdm_registration_service::device::endpoints::DaRegistration {
+            device: binding.device.clone(),
+            registration_id: binding.registration,
+            generation: binding.generation,
+        };
+        return if rss_mdm_registration_service::device::endpoints::current_da_in(
+            c,
+            &tenant.to_string(),
+            &binding.device,
+        )
+        .await?
+        .as_ref()
+            == Some(&expected)
+        {
+            Ok(())
+        } else {
+            Err(Error::Conflict)
+        };
+    }
     if matches!(binding.subject, Subject::Filevault { .. }) {
         if profile != rss_mdm_install_support::StorageProfile::Mdm {
             return Err(Error::Unsupported);

@@ -6,7 +6,7 @@ pub(crate) async fn replay(
     tx: &mut sqlx::PgConnection,
     operation: &Operation<'_>,
 ) -> Result<Option<String>, Error> {
-    let profile = operation.actor.profile;
+    let profile = operation.actor.authority_profile;
 
     let Operation {
         actor: proof,
@@ -49,7 +49,7 @@ pub(crate) async fn save(
     result: &str,
     audit: &RequestAudit,
 ) -> Result<(), Error> {
-    let profile = operation.actor.profile;
+    let profile = operation.actor.authority_profile;
 
     let Operation {
         actor: proof,
@@ -57,7 +57,8 @@ pub(crate) async fn save(
         digest,
     } = operation;
     let facts = audit.snapshot();
-    if audit.tenant() != proof.tenant
+    if audit.profile() != proof.profile
+        || audit.tenant() != proof.tenant
         || facts.actor.as_deref() != Some(proof.subject)
         || facts.instance.as_deref() != Some(proof.instance)
         || facts.operation_id != Some(*key)
@@ -111,6 +112,7 @@ pub(crate) fn settle<R>(
 #[derive(Clone, Copy)]
 pub(crate) struct Actor<'a> {
     pub(crate) profile: rss_mdm_install_support::StorageProfile,
+    pub(crate) authority_profile: rss_mdm_install_support::StorageProfile,
     tenant: &'a str,
     subject: &'a str,
     instance: &'a str,
@@ -125,6 +127,7 @@ impl<'a> Actor<'a> {
     pub(crate) fn from_authorized(proof: &'a crate::context::AuthorizedPrincipal) -> Self {
         Self {
             profile: proof.profile(),
+            authority_profile: proof.authority_profile(),
             tenant: proof.tenant_id(),
             subject: proof.principal_id(),
             instance: proof.instance_id(),
@@ -137,6 +140,7 @@ impl<'a> Actor<'a> {
     ) -> Self {
         Self {
             profile,
+            authority_profile: profile,
             tenant: &user.tenant_id,
             subject: &user.principal_id,
             instance: &user.instance_id,

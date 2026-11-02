@@ -106,9 +106,9 @@ pub(super) fn enrollment_fault(
 mod projections;
 
 pub(super) fn access_fault(
-    e: rss_mdm_registration_service::device_access::execution::transaction::Fault,
+    e: rss_mdm_device_access_postgres::device_access::execution::transaction::Fault,
 ) -> Error {
-    use rss_mdm_registration_service::device_access::execution::{
+    use rss_mdm_device_access_postgres::device_access::execution::{
         Error as E, transaction::Fault as F,
     };
     match e {

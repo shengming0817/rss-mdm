@@ -81,7 +81,6 @@ pub async fn assemble(
             Arc::new(Retire),
         )),
         audit: c.access_audit.clone(),
-        access_audit: c.access_audit.clone(),
         issuer,
         clock,
         binding: Arc::new(rss_mdm_agent_channel::Bindings::new(DA)),

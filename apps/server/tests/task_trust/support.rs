@@ -128,9 +128,10 @@ pub async fn seed_ack(
     Ok(())
 }
 
-async fn agent_material(
+pub async fn peer_material(
     c: &Context,
     device: &str,
+    purpose: rss_mdm_agent_wire::pki::Purpose,
 ) -> Result<(
     rss_mdm_device_trust::device_identity::VerifiedDevicePeer,
     Vec<u8>,
@@ -138,6 +139,11 @@ async fn agent_material(
 )> {
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
+    let (purpose_name, provisioner) = match purpose {
+        rss_mdm_agent_wire::pki::Purpose::Agent => ("agent", "rss-agent"),
+        rss_mdm_agent_wire::pki::Purpose::DaDevice => ("da_device", "rss-da-device"),
+        _ => anyhow::bail!("device peer purpose"),
+    };
     let output = tokio::process::Command::new("python3")
         .args([
             concat!(
@@ -147,6 +153,8 @@ async fn agent_material(
             c.inputs.directory.to_str().unwrap(),
             &c.tenant.to_string(),
             device,
+            purpose_name,
+            &c.inputs.installation.instance_id,
         ])
         .output()
         .await?;
@@ -168,15 +176,11 @@ async fn agent_material(
     let crl = der("crl", paths["crl"].as_str().unwrap()).await?;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let trust: rss_mdm_agent_wire::pki::Trust = serde_json::from_value(serde_json::json!({
-        "version":1,"service_id":c.inputs.installation.instance_id,"origin":"https://mdm.example.test","tenant":c.tenant.to_string(),"purpose":"agent","revision":1,
-        "issuers":[{"digest":format!("{:x}",Sha256::digest(&root)),"mode":"active","certificate":STANDARD.encode(&root),"root":STANDARD.encode(&root),"crl":STANDARD.encode(&crl),"root_crl":STANDARD.encode(&crl),"provisioner":"rss-agent","kid":"task-trust"}]
+        "version":1,"service_id":c.inputs.installation.instance_id,"origin":"https://mdm.example.test","tenant":c.tenant.to_string(),"purpose":purpose_name,"revision":1,
+        "issuers":[{"digest":format!("{:x}",Sha256::digest(&root)),"mode":"active","certificate":STANDARD.encode(&root),"root":STANDARD.encode(&root),"crl":STANDARD.encode(&crl),"root_crl":STANDARD.encode(&crl),"provisioner":provisioner,"kid":"task-trust"}]
     }))?;
     let trust = rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
-        rss_mdm_device_trust::DeviceTrust::new(
-            trust,
-            rss_mdm_agent_wire::pki::Purpose::Agent,
-            now,
-        )?,
+        rss_mdm_device_trust::DeviceTrust::new(trust, purpose, now)?,
         2,
     )?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -213,7 +217,8 @@ pub async fn authenticated_agent(
 ) -> Result<rss_mdm_registration_service::DevicePrincipal> {
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
-    let (peer, certificate, csr) = agent_material(c, device).await?;
+    let (peer, certificate, csr) =
+        peer_material(c, device, rss_mdm_agent_wire::pki::Purpose::Agent).await?;
     let meta = peer.metadata();
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
     let credential = Uuid::new_v4();

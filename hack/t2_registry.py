@@ -8,7 +8,7 @@ PACKAGE = 'rss-mdm-app'
 MODULES = {
     'device_access.foundation': dict(package='rss-mdm-device-access-http', target='foundation', installer=None,
         prefix='foundation::',profiles=('da_foundation',),
-        inputs=('crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs',
+        inputs=('crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs',
                 'crates/agent-wire/src/enroll.rs','crates/agent-wire/src/pki.rs','crates/agent-wire/src/task_trust.rs',
                 'crates/agent-wire/src/runtime.rs','crates/agent-wire/src/device_access.rs','crates/agent-wire/src/platform_sso.rs',
                 'crates/native-protection/*',
@@ -20,7 +20,7 @@ MODULES = {
         inputs=('crates/install-support/*','crates/agent-channel/*','crates/registration-service/*',
                 'crates/native-protection/*','crates/backend-postgres-support/src/access_admission.rs',
                 'crates/backend-postgres-support/src/access-admission.sql',
-                'crates/authorization-service/*','crates/pki-service/*','crates/inventory-postgres/*','crates/task-trust/*','crates/recovery-credentials/*',
+                'crates/authorization-service/*','crates/pki-service/*','crates/inventory-postgres/*','crates/task-trust/*',
                 'crates/policy-postgres/*','crates/scope-postgres/*','crates/inventory-service/*',
                 'crates/scope-service/src/registration.rs','crates/scope-service/src/channels/*',
                 'crates/scope-service/src/channels.rs','crates/scope-service/src/storage_profile.rs',
@@ -36,7 +36,7 @@ MODULES = {
     'task.scheduled_owners': dict(prefix='assembly::execution_owners_t2::scheduled::', profiles=('shared',),
         inputs=('crates/policy-postgres/*','crates/policy-service/*','crates/software-service/*','crates/inventory-service/src/collection/*','apps/server/src/assembly/policy*','apps/server/tests/execution_owners/*')),
 
-    "registration.device_access": dict(prefix="assembly::credential_owners_t2::registration::", profiles=("shared",), inputs=("crates/registration-service/src/device_access*", "crates/registration-service/schema/device-access*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/access_execution.rs", "apps/server/src/assembly/registration_agent_facts.rs", "apps/server/src/assembly/registration_sources.rs", "crates/agent-channel/src/bindings.rs", "apps/server/tests/support/planning.rs", "apps/server/tests/task_trust/support.rs", "hack/task_trust_materials.py")),
+    "registration.device_access": dict(prefix="assembly::credential_owners_t2::registration::", profiles=("shared",), inputs=("crates/device-access*/*", "crates/recovery-credentials/*", "apps/server/schema/da-*", "apps/server/src/migration/device_access.rs", "apps/server/src/assembly/device_access/*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/access_execution.rs", "apps/server/src/assembly/registration_agent_facts.rs", "apps/server/src/assembly/registration_sources.rs", "crates/agent-channel/src/bindings.rs", "apps/server/tests/support/planning.rs", "apps/server/tests/task_trust/support.rs", "hack/task_trust_materials.py")),
     "recovery.credentials": dict(prefix="assembly::credential_owners_t2::credentials::", profiles=("shared", "recovery_maintenance", "recovery_audit"), inputs=("crates/recovery-credentials/*", "apps/server/tests/credential_owners/*", "apps/server/src/assembly/credential*", "crates/device-service/src/control/credential_inputs.rs", "crates/apple-channel/src/recovery_credentials.rs", "crates/apple-channel/src/flow_store.rs", "crates/apple-channel/src/protection.rs", "apps/server/tests/support/native_identity.rs", "apps/server/tests/task_trust/support.rs", "hack/native_protocol_materials.py", "hack/task_trust_materials.py")),
     'software.deployment': dict(prefix='assembly::software_t2::', profiles=('shared',),
         inputs=('crates/software-service/*', 'crates/device-service/src/control/source_changes.rs',

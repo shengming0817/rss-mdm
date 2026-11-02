@@ -237,6 +237,11 @@ pub(crate) async fn queue_run_in(
         return Err(Error::Conflict.into());
     }
     let policy = crate::tasks::policy::read_in(&service.policy_reader, tx, version).await?;
+    let material = super::super::product::anchor(service, tx, &policy.frozen.operation, target)
+        .await?
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| Error::Invariant)?;
     let reader = service.source.clone();
     let tenant = tx.tenant_id();
     let scope = policy.policy.definition.scope;
@@ -290,6 +295,7 @@ pub(crate) async fn queue_run_in(
             .bind(now)
             .bind(evidence)
             .bind(origin)
+            .bind(material)
             .execute(c)
             .await?;
             Ok(())

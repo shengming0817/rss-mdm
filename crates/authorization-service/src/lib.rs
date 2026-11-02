@@ -51,7 +51,7 @@ pub const ACCESS_CONTRACT: &str =
 pub mod entra;
 
 mod storage_authority;
-pub use storage_authority::verify_authority;
+pub use storage_authority::{verify_authority, verify_authority_for_host};
 
 pub mod native;
 

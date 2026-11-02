@@ -4,6 +4,9 @@ async fn accepted(c: &Context) -> Result<bool> {
     let mut tx = c.access.begin().await?;
     let contracts = [
         registration::identity_access_contract(DA),
+        rss_mdm_policy_postgres::device_access::ACCESS_CONTRACT,
+        rss_mdm_recovery_credentials::access_contract(DA),
+        rss_mdm_device_access_postgres::admission::ACCESS_CONTRACT,
         rss_mdm_authorization_service::access_contract(DA),
         rss_mdm_task_trust::access_contract(DA),
         rss_mdm_pki_service::access_contract(DA),

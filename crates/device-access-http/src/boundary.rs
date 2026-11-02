@@ -93,7 +93,13 @@ pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: N
         let failure = response
             .extensions()
             .get::<Error>()
-            .and_then(Error::failure);
+            .and_then(Error::failure)
+            .or_else(|| {
+                response
+                    .extensions()
+                    .get::<rss_mdm_audit_integration::completion::ResponseFailure>()
+                    .copied()
+            });
         if let Some(replacement) = complete(&s.audit, &a, response.status().as_u16(), failure).await
         {
             response = match replacement {

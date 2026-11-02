@@ -52,6 +52,8 @@ impl BackgroundConfig {
         // One entry per physical pool. Audit and domain adapters borrow these pools.
         let mut pools = vec![
             ("access", 4),
+            ("da-access", 4),
+            ("da-transactions", 4),
             ("observation", 4),
             ("projection", 4),
             ("identity", IDENTITY_CONNECTIONS),

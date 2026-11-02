@@ -51,7 +51,9 @@ impl Credentials {
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<crate::Material>>, Error>
     {
         let profile = self.profile();
-
+        if principal.profile() != profile {
+            return Err(Error::Forbidden);
+        }
         principal.require(Permission::InventoryRead, Some(device))?;
         let mut tx = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -59,7 +61,7 @@ impl Credentials {
             .await?;
         configure(profile, &mut tx, principal.tenant_id()).await?;
         let snapshot = rss_mdm_authorization_service::snapshot_on(
-            profile,
+            principal.authority_profile(),
             &mut tx,
             principal.tenant_id(),
             principal.instance_id(),
@@ -84,7 +86,7 @@ impl Credentials {
         )
         .await?;
         let snapshot = rss_mdm_authorization_service::snapshot_on(
-            profile,
+            principal.authority_profile(),
             &mut current,
             principal.tenant_id(),
             principal.instance_id(),
@@ -353,12 +355,26 @@ pub(crate) async fn authorize(
     device: &str,
     permission: Permission,
 ) -> Result<(), Error> {
+    if p.profile() != profile {
+        return Err(Error::Forbidden);
+    }
     p.check_live()?;
-    rss_mdm_authorization_service::lock_on(profile, c, p.tenant_id(), p.instance_id()).await?;
-    rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
-        .await?
-        .require(p, permission, Some(device))
-        .map_err(|_| Error::Forbidden)?;
+    rss_mdm_authorization_service::lock_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?
+    .require(p, permission, Some(device))
+    .map_err(|_| Error::Forbidden)?;
     Ok(())
 }
 async fn read_locked(

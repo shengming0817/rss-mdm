@@ -1,0 +1,229 @@
+//! Borrowed, tenant-fenced transactions. Audit owns all mutation settlement.
+use super::*;
+use crate::database::db;
+use crate::device_access::Binding;
+use rss_mdm_agent_wire::platform_sso::PublicKey;
+use rss_mdm_registration_service::device::endpoints::DaRegistration;
+use serde::{Deserialize, Serialize};
+use sqlx::{PgConnection, Row};
+use uuid::Uuid;
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Source {
+    pub id: Uuid,
+    pub kind: rss_mdm_agent_wire::platform_sso::Kind,
+    pub registration: Uuid,
+    pub object: DaRegistration,
+    pub binding: Option<Uuid>,
+    pub binding_generation: i64,
+    pub parent: Option<Uuid>,
+    pub parent_version: i64,
+    pub version: i64,
+    pub revoked: bool,
+    pub configuration: String,
+    pub login_configuration: rss_mdm_agent_wire::platform_sso::LoginConfiguration,
+    pub profile_uuid: Uuid,
+    pub password_provider_revision: Option<u64>,
+    pub password_provider_fingerprint: Option<String>,
+    pub password_identity: Option<crate::enterprise::Subject>,
+    pub signing: Option<PublicKey>,
+    pub encryption: PublicKey,
+    pub subject: Option<rss_identity_postgres::platform::PlatformBinding>,
+    pub subject_version: Option<rss_identity_postgres::platform::PlatformSubjectVersion>,
+}
+pub async fn now(c: &mut PgConnection) -> Result<i64, Error> {
+    sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+        .fetch_one(c)
+        .await
+        .map_err(db)
+}
+pub async fn fence(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3032))")
+        .bind(format!("{tenant}:platform-sso"))
+        .execute(c)
+        .await
+        .map_err(db)?;
+    Ok(())
+}
+pub async fn source(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<Source, Error> {
+    let row=sqlx::query("SELECT version,revoked,document FROM rss_da.psso_sources WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let mut source: Source =
+        serde_json::from_value(row.try_get("document").map_err(db)?).map_err(|_| Error::Storage)?;
+    source.version = row.try_get("version").map_err(db)?;
+    source.revoked = row.try_get("revoked").map_err(db)?;
+    if source.id != id {
+        return Err(Error::Unauthorized);
+    }
+    Ok(source)
+}
+pub async fn put(c: &mut PgConnection, tenant: &str, s: &Source) -> Result<(), Error> {
+    sqlx::query("INSERT INTO rss_da.psso_sources(tenant_id,id,kind,registration,binding,parent,version,revoked,signing_kid,document) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,id) DO UPDATE SET registration=excluded.registration,parent=excluded.parent,version=excluded.version,revoked=excluded.revoked,signing_kid=excluded.signing_kid,document=excluded.document")
+        .bind(tenant).bind(s.id).bind(s.kind.as_str()).bind(s.registration).bind(s.binding).bind(s.parent).bind(s.version).bind(s.revoked).bind(s.signing.as_ref().map(crypto::kid).transpose()?).bind(serde_json::to_value(s).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
+    Ok(())
+}
+pub async fn current_object(
+    app: &Context,
+    c: &mut PgConnection,
+    object: &DaRegistration,
+    registration: Uuid,
+) -> Result<(), Error> {
+    let tenant = app.tenant;
+    crate::delivery::lock_da_target(c, &tenant.to_string(), &object.device, None).await?;
+    fence(c, &tenant.to_string()).await?;
+    if object.registration_id != registration
+        || rss_mdm_registration_service::device::endpoints::current_da_in(
+            c,
+            &tenant.to_string(),
+            &object.device,
+        )
+        .await?
+        .as_ref()
+            != Some(object)
+    {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
+}
+pub async fn current_user(
+    app: &Context,
+    c: &mut PgConnection,
+    id: Uuid,
+    login: bool,
+) -> Result<(Source, Source, Binding), Error> {
+    let tenant = app.tenant.to_string();
+    let candidate = read(c, &tenant, id).await?;
+    current_object(app, c, &candidate.object, candidate.registration).await?;
+    let user = source(c, &tenant, id).await?;
+    if user.object != candidate.object || user.version != candidate.version {
+        return Err(Error::ReadConflict);
+    }
+    if user.kind != rss_mdm_agent_wire::platform_sso::Kind::User
+        || user.revoked
+        || user.configuration != app.runtime()?.fingerprint()?
+    {
+        return Err(Error::Unauthorized);
+    }
+    current_object(app, c, &user.object, user.registration).await?;
+    let desired = super::deployment::configuration_for_object(c, app.tenant, &user.object).await?;
+    if desired.authentication == rss_mdm_agent_wire::platform_sso::AuthenticationMode::Password {
+        app.runtime()?
+            .password_provider(&desired)?
+            .check_on(c, app.tenant)
+            .await?;
+    }
+    if user.login_configuration != desired
+        || user.profile_uuid != app.runtime()?.profile(&desired)?.uuid
+    {
+        return Err(Error::Unauthorized);
+    }
+    if login {
+        let now = now(c).await?;
+        super::deployment::ready(app, c, &user.object, now).await?;
+    }
+    let device = source(c, &tenant, user.parent.ok_or(Error::Unauthorized)?).await?;
+    if device.kind != rss_mdm_agent_wire::platform_sso::Kind::Device
+        || device.revoked
+        || device.version != user.parent_version
+        || device.registration != user.registration
+        || device.object != user.object
+        || device.configuration != user.configuration
+        || device.login_configuration != user.login_configuration
+        || device.profile_uuid != user.profile_uuid
+    {
+        return Err(Error::Unauthorized);
+    }
+    let binding = if login {
+        app.active_binding_on(
+            c,
+            user.binding.ok_or(Error::Unauthorized)?,
+            user.binding_generation,
+        )
+        .await?
+    } else {
+        crate::device_access::storage::locked_in(
+            c,
+            Uuid::parse_str(&tenant).map_err(|_| Error::Malformed)?,
+            user.binding.ok_or(Error::Unauthorized)?,
+        )
+        .await?
+    };
+    if binding.generation != user.binding_generation
+        || binding.state == rss_mdm_device_access::State::Revoked
+        || user.object.registration_id != binding.registration
+        || user.object.generation != binding.registration_generation
+        || user.object.device != binding.device
+    {
+        return Err(Error::Unauthorized);
+    }
+    if user.login_configuration.authentication
+        == rss_mdm_agent_wire::platform_sso::AuthenticationMode::Password
+    {
+        let provider = user
+            .login_configuration
+            .password_provider
+            .ok_or(Error::Unauthorized)?;
+        let identity =
+            crate::enterprise::subject_on(c, binding.tenant, provider, &binding.person).await?;
+        if user.password_identity.as_ref() != Some(&identity) {
+            return Err(Error::Unauthorized);
+        }
+    } else if user.password_identity.is_some() {
+        return Err(Error::Unauthorized);
+    }
+    let selected = crate::device_access::Admission::policy(
+        app.access_admission.as_ref(),
+        c,
+        Uuid::parse_str(&tenant).map_err(|_| Error::Malformed)?,
+        &binding.device,
+        binding.policy,
+    )
+    .await?;
+    if selected.version != binding.policy_version
+        || selected.configuration != binding.configuration
+        || !selected.configuration.enabled
+    {
+        return Err(Error::Unauthorized);
+    }
+    if login {
+        let config = serde_json::to_value(app.runtime()?.qualification_configuration()?)
+            .map_err(|_| Error::Malformed)?;
+        let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.platform_session_qualifications($1,$2,$3) WHERE source_version=$4)")
+            .bind(id).bind(config).bind(now(c).await?).bind(user.version).fetch_one(&mut *c).await.map_err(db)?;
+        if !valid {
+            return Err(Error::Unauthorized);
+        }
+    }
+    Ok((user, device, binding))
+}
+pub async fn cleanup(c: &mut PgConnection, tenant: &str, time: i64) -> Result<(), Error> {
+    for table in ["psso_challenges", "psso_tokens"] {
+        // Closed owner table set; no request-controlled SQL identifiers.
+        let sql = format!(
+            "DELETE FROM rss_da.{table} WHERE ctid IN (SELECT ctid FROM rss_da.{table} WHERE tenant_id=$1::uuid AND expires_at<$2 ORDER BY expires_at LIMIT 128)"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(tenant)
+            .bind(time)
+            .execute(&mut *c)
+            .await
+            .map_err(db)?;
+    }
+    Ok(())
+}
+pub async fn read(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<Source, Error> {
+    let value: serde_json::Value = sqlx::query_scalar(
+        "SELECT document FROM rss_da.psso_sources WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant)
+    .bind(id)
+    .fetch_optional(c)
+    .await
+    .map_err(db)?
+    .ok_or(Error::Unauthorized)?;
+    let source: Source = serde_json::from_value(value).map_err(|_| Error::Storage)?;
+    if source.id != id {
+        return Err(Error::Unauthorized);
+    }
+    Ok(source)
+}

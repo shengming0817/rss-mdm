@@ -20,8 +20,6 @@ pub(crate) fn from_state(
             ring::hmac::HMAC_SHA256,
             &state.cursor_key,
         )),
-        platform_sso: state.apple.as_ref().and_then(|a| a.platform_sso.clone()),
-        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
         material_roots: state.apple_material_roots.clone(),
         account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
         authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
@@ -41,19 +39,6 @@ pub(crate) fn from_state(
         clock: Arc::new(crate::clock::InventoryClock(state.clock.clone())),
         delivery: state.apple_delivery.clone(),
         enrollment_authority: state.registration.enrollment.clone(),
-        access_admission: state.access_execution.service.clone(),
-        platform_access: Arc::new(super::apple_business::AppleBusiness(
-            state.execution.clone(),
-            state.configuration.clone(),
-            state.agent_tasks.collections.clone(),
-            state.software.service.clone(),
-            state.registration.native.clone(),
-            state
-                .credential_execution
-                .as_ref()
-                .map(|v| v.native.clone()),
-            state.access_execution.service.clone(),
-        )),
         departure: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
             state.configuration.clone(),
@@ -64,7 +49,6 @@ pub(crate) fn from_state(
                 .credential_execution
                 .as_ref()
                 .map(|v| v.native.clone()),
-            state.access_execution.service.clone(),
         )),
         protection: state.protection.clone(),
         credentials: state.credentials.clone(),
@@ -80,11 +64,11 @@ pub(crate) fn from_state(
     state
         .identity
         .enterprise_platform
-        .bind(state.access_execution.service.clone())
+        .bind(state.da.runtime.admission.clone())
         .expect("single enterprise platform composition");
     if let Some(platform) = &state.identity.platform {
         platform
-            .bind(&apple_state)
+            .bind(&state.da.runtime.platform)
             .expect("single platform composition");
     }
     let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
@@ -147,7 +131,8 @@ pub(crate) fn from_state(
         credential_tasks: state
             .credential_execution
             .as_ref()
-            .map(|v| v.worker.clone()),
+            .map(|v| v.worker.clone())
+            .unwrap_or_default(),
         recovery: state
             .credential_execution
             .as_ref()
@@ -167,6 +152,7 @@ pub(crate) fn from_state(
     });
     let admission = Arc::new(tokio::sync::Semaphore::new(32));
     let management_boundary = rss_mdm_management_http::boundary::Envelope {
+        profile: rss_mdm_install_support::StorageProfile::Mdm,
         admission: admission.clone(),
         host: host.clone(),
         clock: monotonic.clone(),
@@ -376,10 +362,8 @@ pub(crate) fn from_state(
                         state.access.archive_pool(),
                         state.audit_store.clone(),
                         p.keys.clone(),
-                        state.access_audit.clone(),
-                        Some(Arc::new(super::recovery_eligibility::AccessEligibility {
-                            admission: Some(state.access_execution.service.clone()),
-                        })),
+                        None,
+                        None,
                     ))
                 }),
             certificate_archive: state.certificate_archive.clone(),
@@ -430,7 +414,7 @@ pub(crate) fn from_state(
             windows: state.windows.is_some(),
             apple: state.apple.is_some(),
         },
-        management_boundary,
+        management_boundary.clone(),
         crate::administration::http::mount(Some(crate::administration::http::Services {
             profiles: &directory.user_profiles,
             first_use: &first_use,
@@ -476,8 +460,6 @@ pub(crate) fn from_state(
             delivery: state.agent_delivery.clone(),
             self_service: participant.clone(),
             installation: participant.clone(),
-            recovery_use: participant,
-            access_admission: state.access_execution.service.clone(),
         });
         let agent_services = rss_mdm_agent_channel::RuntimeServices {
             http: Arc::new(crate::agent::HttpState {
@@ -506,7 +488,7 @@ pub(crate) fn from_state(
         };
         let router = mount_agent(
             Some(&agent_services),
-            rss_mdm_apple_channel::platform_sso::agent_routes(apple_state.clone(), service.clone()),
+            da_agent_routes(&state, service.clone(), &host, monotonic.clone()),
             rss_mdm_management_http::software_catalog::agent_packages_public(
                 state.software_catalog.clone(),
             ),
@@ -527,6 +509,7 @@ pub(crate) fn from_state(
     }
     let apple = state.apple.clone();
     let browser = BrowserRoutes {
+        device_access: super::device_access::browser(Some((&state, &management_boundary))),
         tenants: tenant_administration,
         management,
         windows_management: wns_management,
@@ -654,7 +637,7 @@ fn mount_agent<
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1>> {
     let (platform_sso, packages) = match runtime {
         Some(runtime) => (
-            rss_mdm_agent_channel::boundary::wrap(platform_sso, runtime.envelope.clone()),
+            platform_sso,
             rss_mdm_agent_channel::boundary::wrap_enroll(packages, runtime.envelope.clone()),
         ),
         None => (platform_sso, packages),
@@ -755,7 +738,7 @@ fn windows_management_routes(
 
 // One final browser combination; each field is produced by its actual ingress owner.
 rss_mdm_http_contract::route_module! {
-    struct BrowserRoutes for [Browser] {
+    struct BrowserRoutes for [Browser] { device_access,
         tenants, management, windows_management, apple_management,
         apple_browser, windows_browser, host, software_native
     }
@@ -764,13 +747,13 @@ rss_mdm_http_contract::route_module! {
 /// Third-party Identity routers retain their external owner; product adapters remain included.
 pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<String>> {
     let browser = BrowserRoutes {
+        device_access: super::device_access::browser(None),
         tenants: rss_mdm_management_http::tenant_administration::contract_routes(
             crate::administration::tenants::http::mount_registry(None, true),
             crate::administration::settings::http::platform_routes(None),
         ),
         management: rss_mdm_management_http::contract_routes(
             rss_mdm_management_http::Mounts {
-                agent_enrollment: true,
                 filevault: true,
                 recovery_credentials: true,
             },
@@ -797,7 +780,7 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
     .assemble();
     let agent = mount_agent(
         None,
-        rss_mdm_apple_channel::platform_sso::mount_agent(None),
+        empty_da_agent_routes(),
         rss_mdm_management_http::software_catalog::mount_agent_packages(None),
         true,
     );
@@ -834,4 +817,57 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
     ])?;
     document["externalOwners"] = serde_json::json!([{"owner":"rss-identity-http-axum","entry":"Identity::http_routes","scope":"Identity SDK routers; RSS product adapters are included in endpoints"}]);
     Ok(document)
+}
+
+fn da_agent_routes(
+    state: &Arc<Assembly>,
+    service: Arc<rss_mdm_registration_service::agent::Service>,
+    host: &str,
+    clock: Arc<dyn rss_observation::Clock>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let authentication = rss_mdm_device_access_http::platform_sso::Authentication::Agent(service);
+    let psso = Arc::new(rss_mdm_device_access_http::platform_sso::HttpState {
+        context: state.da.runtime.platform.clone(),
+        authority: state.identity.authority.clone(),
+        origin: format!("https://{host}"),
+    });
+    rss_mdm_http_contract::route_module! {struct DaAgentRoutes for [Agent]{access,psso}}
+    let router = DaAgentRoutes {
+        access: rss_mdm_device_access_http::agent_access::routes(Some(Arc::new(
+            rss_mdm_device_access_http::agent_access::Services {
+                authentication: authentication.clone(),
+                identity: Arc::new(
+                    rss_mdm_authorization_service::session::SessionAuthority::new(
+                        state.identity.authority.clone(),
+                        state.identity.tenant,
+                    ),
+                ),
+                authorization: state.da.authorization.clone(),
+                business: state.da.runtime.business.clone(),
+                admission: state.da.runtime.admission.clone(),
+            },
+        ))),
+        psso: rss_mdm_device_access_http::platform_sso::agent_routes(psso, authentication),
+    }
+    .assemble();
+    rss_mdm_agent_channel::boundary::wrap(
+        router,
+        rss_mdm_agent_channel::boundary::Envelope {
+            profile: rss_mdm_install_support::StorageProfile::Da,
+            admission: Arc::new(tokio::sync::Semaphore::new(64)),
+            host: String::new(),
+            clock,
+            audit_store: state.da.audit.clone(),
+            requests: state.requests.clone(),
+            tenant: state.identity.tenant.to_string(),
+        },
+    )
+}
+fn empty_da_agent_routes() -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    rss_mdm_http_contract::route_module! {struct DaAgentCatalog for [Agent]{access,psso}}
+    DaAgentCatalog {
+        access: rss_mdm_device_access_http::agent_access::routes(None),
+        psso: rss_mdm_device_access_http::platform_sso::mount_agent(None),
+    }
+    .assemble()
 }

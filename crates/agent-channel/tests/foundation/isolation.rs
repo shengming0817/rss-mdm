@@ -64,7 +64,16 @@ pub async fn authority(c: &Context) -> Result<()> {
     rss_mdm_authorization_service::verify_authority(DA, &mut runtime).await?;
     rss_mdm_inventory_service::verify_authority(DA, &mut runtime).await?;
     rss_mdm_agent_channel::signature_retirement::verify_authority(DA, &mut runtime).await?;
-    rss_mdm_recovery_credentials::verify_agent_authority(DA, &mut runtime).await?;
+    // This host consumes Enrollment tasks, without DA business or credential execution.
+    let product_tables: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM unnest(ARRAY['rss_da.agent_delivery','rss_da.bindings','rss_da.access_runs','rss_da.recovery_entries','rss_da.recovery_versions','rss_da.credential_runs','rss_da.credential_agent_admission','rss_da.credential_policy_recovery']) name WHERE to_regclass(name) IS NOT NULL",
+    )
+    .fetch_all(&mut *runtime)
+    .await?;
+    assert!(
+        product_tables.is_empty(),
+        "unconsumed product tables installed: {product_tables:?}"
+    );
     runtime.rollback().await?;
     // Function metadata drift must reject the same real runtime before it can expose work.
     let mut altered = c.operator.begin().await?;

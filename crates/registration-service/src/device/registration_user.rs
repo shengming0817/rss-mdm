@@ -83,8 +83,8 @@ impl DeviceService {
             let (store,p,device,change,op,audit) = *ctx;
             let (value,replayed) = tx.with_connection_context(&mut (p,device,change,op,audit), |ctx,c| Box::pin(async move {
                 let (p,device,change,op,audit) = *ctx;
-                rss_mdm_authorization_service::lock_on(profile, c,p.tenant_id(),p.instance_id()).await?;
-                rss_mdm_authorization_service::snapshot_on(profile, c,p.tenant_id(),p.instance_id()).await?.require(p,rss_mdm_authorization_service::Permission::Enrollment,Some(device)).map_err(rss_mdm_authorization_service::Error::from)?;
+                rss_mdm_authorization_service::lock_on(p.authority_profile(), c,p.tenant_id(),p.instance_id()).await?;
+                rss_mdm_authorization_service::snapshot_on(p.authority_profile(), c,p.tenant_id(),p.instance_id()).await?.require(p,rss_mdm_authorization_service::Permission::Enrollment,Some(device)).map_err(rss_mdm_authorization_service::Error::from)?;
                 lock_on(profile, c,p.tenant_id(),device).await?;
                 target_on(profile, c,p,device).await?;
                 if let Some(old) = crate::operations::replay(profile, c,op).await? {

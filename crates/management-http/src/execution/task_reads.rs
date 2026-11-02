@@ -52,7 +52,7 @@ pub static RUNS_SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::S
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunSummary {
     Software(rss_mdm_software_service::deployment::queries::records::RunSummary),
-    Access(rss_mdm_registration_service::device_access::execution::queries::Record),
+    Access(rss_mdm_device_access_postgres::device_access::execution::queries::Record),
     Credential(rss_mdm_recovery_credentials::tasks::queries::Record),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
     Execution(rss_mdm_device_service::control::queries::records::RunSummary),
@@ -79,7 +79,7 @@ impl RunSummary {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunDetail {
     Software(rss_mdm_software_service::deployment::queries::records::RunDetail),
-    Access(rss_mdm_registration_service::device_access::execution::queries::Record),
+    Access(rss_mdm_device_access_postgres::device_access::execution::queries::Record),
     Credential(rss_mdm_recovery_credentials::tasks::queries::Record),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
     Execution(rss_mdm_device_service::control::queries::records::RunDetail),

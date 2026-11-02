@@ -97,8 +97,6 @@ impl Fixture {
                 storage.runtime.clone(),
                 storage.tenant,
                 storage.audit.clone(),
-                protection.clone(),
-                source.clone(),
                 None,
                 storage.reconcile.clone(),
                 storage.worker_budget.clone(),

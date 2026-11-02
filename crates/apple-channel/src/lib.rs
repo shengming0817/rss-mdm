@@ -20,7 +20,6 @@ mod material;
 mod native;
 mod operations;
 mod organizations;
-pub mod platform_sso;
 mod profiles;
 mod protection;
 pub mod push;
@@ -59,7 +58,6 @@ pub struct IdentitySeed {
 pub struct Apple {
     pub(crate) credential_receipts:
         Option<Arc<rss_mdm_recovery_credentials::native_receipts::NativeReceipts>>,
-    pub(crate) platform_sso: Option<Arc<platform_sso::Runtime>>,
 
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) config: Config,
@@ -165,7 +163,6 @@ impl Apple {
     ) -> Self {
         let configuration = protocol_identity(&config);
         Self {
-            platform_sso: None,
             credential_receipts: None,
 
             protection,
@@ -190,10 +187,7 @@ impl Apple {
         self.credential_receipts = receipts;
         self
     }
-    pub fn with_platform_sso(mut self, runtime: Option<Arc<platform_sso::Runtime>>) -> Self {
-        self.platform_sso = runtime;
-        self
-    }
+
     pub fn with_account_keys(
         mut self,
         keys: std::collections::BTreeMap<String, certificate::ManagedAccountTokenSigner>,
@@ -252,11 +246,11 @@ pub fn mount_management(
     app: Option<Arc<HttpState>>,
 ) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
- rss_mdm_http_contract::route_module! { struct MountManagementModule101 for [Browser] { base, ade_management_routes, runtime_materials_routes, platform_sso_management_routes } }
+ rss_mdm_http_contract::route_module! { struct MountManagementModule101 for [Browser] { base, ade_management_routes, runtime_materials_routes } }
  MountManagementModule101 { base: account_enrollment::management_routes(),
 ade_management_routes: ade::management_routes(),
 runtime_materials_routes: runtime_materials::routes(),
-platform_sso_management_routes: platform_sso::management_routes() }.assemble()
+ }.assemble()
 }
         .bind_with(app.as_ref(), Clone::clone)
 }
@@ -271,7 +265,7 @@ pub fn mount_browser(
 ) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     use rss_mdm_http_contract::routing::post;
     let mut routes = {
-        rss_mdm_http_contract::route_module! { struct MountBrowserModule1 for [Browser] { post_download, post_challenge, post_notify, account_enrollment_routes, platform_sso_browser_routes, ade_routes } }
+        rss_mdm_http_contract::route_module! { struct MountBrowserModule1 for [Browser] { post_download, post_challenge, post_notify, account_enrollment_routes, ade_routes } }
         MountBrowserModule1 {
             post_download: rss_mdm_http_contract::module::Route::new(
                 "/api/v1/enrollments/{id}/profile",
@@ -298,7 +292,6 @@ pub fn mount_browser(
                 ),
             ),
             account_enrollment_routes: account_enrollment::routes(),
-            platform_sso_browser_routes: platform_sso::browser_routes(),
             ade_routes: ade::routes(),
         }
         .assemble()
@@ -448,8 +441,6 @@ impl Apple {
 
 pub struct HttpState {
     pub query_cursor: rss_mdm_query::cursor::CursorCodec,
-    pub platform_sso: Option<Arc<platform_sso::Runtime>>,
-    pub platform_objects: Arc<rss_mdm_device_service::planning::PlanningObjects>,
     /// Deployment-approved signing roots; tenant requests cannot add trust anchors.
     pub material_roots: Arc<Vec<Vec<u8>>>,
     pub authentication: account_enrollment::Authentication,
@@ -463,8 +454,6 @@ pub struct HttpState {
     pub delivery: Arc<crate::delivery::Delivery>,
     pub enrollment_authority:
         Arc<dyn rss_mdm_registration_service::enrollment::native::AgentPolicyAuthority>,
-    pub access_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
-    pub platform_access: Arc<dyn crate::participants::PlatformAccess>,
     pub departure: Arc<dyn crate::participants::Departure>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub credentials:
@@ -488,8 +477,6 @@ pub async fn retire_in(
     sqlx::query("UPDATE mdm_apple.ade_enrollments SET revoked=true WHERE tenant_id=$1::uuid AND enrollment=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.account_flows SET revoked=true,material=NULL,profile=NULL WHERE tenant_id=$1::uuid AND enrollment=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)")
         .bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.psso_sources SET revoked=true,version=version+1,document=jsonb_set(jsonb_set(document,'{revoked}','true'::jsonb),'{version}',to_jsonb(version+1)) WHERE tenant_id=$1::uuid AND registration=$2 AND NOT revoked").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("DELETE FROM mdm_apple.psso_tokens WHERE tenant_id=$1::uuid AND source IN(SELECT id FROM mdm_apple.psso_sources WHERE tenant_id=$1::uuid AND registration=$2)").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.devices SET state='retired',bootstrap=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.channels SET state='retired',material=NULL,material_digest=NULL,push_lease_until=NULL WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;

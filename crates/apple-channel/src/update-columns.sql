@@ -1,5 +1,3 @@
-('mdm_apple.psso_password_providers','revision'),
-('mdm_apple.psso_password_providers','fingerprint'),
 ('mdm_apple.attempts','request'),
 ('mdm_apple.attempts','native_outcome'),
 ('mdm_apple.attempts','accepted'),
@@ -35,7 +33,4 @@
 ('mdm_apple.ade_enrollments','revoked'),
 ('mdm_apple.account_flows','revoked'),
 ('mdm_apple.account_flows','material'),
-('mdm_apple.account_flows','profile'),
-('mdm_apple.psso_sources','revoked'),
-('mdm_apple.psso_sources','version'),
-('mdm_apple.psso_sources','document')
+('mdm_apple.account_flows','profile')

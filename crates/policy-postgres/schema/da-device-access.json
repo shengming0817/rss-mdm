@@ -1,0 +1,43 @@
+{
+  "tables": [
+    {
+      "schema": "rss_da",
+      "table": "policies",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "current_version",
+        "version_number",
+        "state",
+        "definition",
+        "author",
+        "updated_at"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "policy_versions",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "rss_da.lock_policy",
+      "search_path": "search_path=pg_catalog",
+      "security_definer": true
+    }
+  ],
+  "external_relations": [
+    "rss_da.policy_assignments",
+    "rss_da.policy_triggers",
+    "rss_da.policy_requests",
+    "rss_da.policy_work",
+    "rss_da.policy_schedule_scan",
+    "rss_da.policy_event_batches",
+    "rss_da.policy_event_members"
+  ],
+  "verified_schemas": []
+}

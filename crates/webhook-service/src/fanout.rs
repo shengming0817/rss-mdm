@@ -88,7 +88,11 @@ impl<H: Eligibility> Publisher<Vec<u8>> for Fanout<H> {
                         Box::pin(async move {
                             Ok(match source {
                                 events::Source::Event(event) => {
-                                    step(c, host.as_ref(), &event).await
+                                    async {
+                                        events::record_on(c, &event, None).await?;
+                                        step(c, host.as_ref(), &event).await
+                                    }
+                                    .await
                                 }
                                 events::Source::Compliance(source) => {
                                     compliance_step(c, host.as_ref(), &source).await

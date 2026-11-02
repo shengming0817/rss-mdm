@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [dependencies]
+rss-mdm-agent-wire.workspace = true
 uuid.workspace = true
 rss-mdm-query.workspace = true
 axum.workspace = true

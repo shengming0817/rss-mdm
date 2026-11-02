@@ -70,11 +70,6 @@ pub fn units() -> Vec<Unit> {
             "enrollment-retirement",
             registration::enrollment_retirement_sql(DA),
         ),
-        ("recovery", rss_mdm_recovery_credentials::install_sql(DA)),
-        (
-            "credential-tasks",
-            rss_mdm_recovery_credentials::tasks_sql(DA),
-        ),
         ("protection", rss_mdm_native_protection::install_sql(DA)),
         ("signing", rss_mdm_task_trust::trust::install_sql(DA)),
         (
@@ -97,10 +92,6 @@ pub fn units() -> Vec<Unit> {
             rss_mdm_scope_postgres::projection_relations_sql(DA),
         ),
         ("enrollment-relations", registration::task_relations_sql(DA)),
-        (
-            "credential-relations",
-            rss_mdm_recovery_credentials::task_relations_sql(DA),
-        ),
         (
             "inventory-snapshot",
             rss_mdm_inventory_service::read_snapshot_sql(DA),
@@ -217,7 +208,6 @@ impl Host for Installation<'_> {
                     rss_mdm_policy_postgres::object_manifest(DA),
                     rss_mdm_scope_postgres::object_manifest(DA),
                     rss_mdm_inventory_service::object_manifest(DA),
-                    rss_mdm_recovery_credentials::object_manifest(DA),
                     rss_mdm_authorization_service::installation::DA_OBJECT_MANIFEST,
                     rss_mdm_native_protection::object_manifest(DA),
                 ],

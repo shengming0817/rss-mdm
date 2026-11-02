@@ -109,12 +109,10 @@ pub(crate) fn prepare(
 }
 
 pub(crate) fn registration(
+    name: &'static str,
     pki: std::sync::Arc<rss_mdm_pki_service::registry::Registry>,
 ) -> rss_runtime::ManagedTaskRegistration {
-    let (task, _) = rss_runtime::ManagedTask::prepare(
-        "device-pki-maintenance",
-        std::time::Duration::from_secs(10),
-    );
+    let (task, _) = rss_runtime::ManagedTask::prepare(name, std::time::Duration::from_secs(10));
     task.into_registration(move |token|async move {
         let mut failures=0_u64;
         loop {

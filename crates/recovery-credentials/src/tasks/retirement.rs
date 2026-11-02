@@ -1,4 +1,4 @@
-//! Cancel exact registration work without a second transaction or terminal-result mirror.
+//! Cancel exact Agent work using the initiating product's retirement authority and transaction.
 use crate::tasks::{Error, transaction::Result};
 use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit};
 use sqlx::Row;
@@ -18,9 +18,13 @@ pub async fn retire_in(
     );
     audit.identify_service("credential-retirement");
     audit.registration(registration);
+    let candidates = match profile {
+        rss_mdm_install_support::StorageProfile::Mdm => include_str!("retirement-mdm.sql"),
+        rss_mdm_install_support::StorageProfile::Da => include_str!("retirement-da.sql"),
+    };
     let mut after = Uuid::nil();
     loop {
-        let rows = sqlx::query(crate::storage_profile::sql(profile).tasks_retirement_retire_in_1)
+        let rows = sqlx::query(candidates)
             .bind(tenant)
             .bind(registration)
             .bind(after)

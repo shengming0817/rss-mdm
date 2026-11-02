@@ -162,6 +162,21 @@ impl RequestAudit {
             }),
         }))
     }
+    /// A host may compose a product-owned fact in its original transport transaction.
+    /// This copies authenticated actor coordinates; it creates no authorization proof.
+    pub fn product_fact_copy(&self, profile: crate::StorageProfile) -> Self {
+        let mut snapshot = self.snapshot();
+        snapshot.target_type = profile.name();
+        Self(Arc::new(Context {
+            profile,
+            request_id: self.0.request_id,
+            tenant: self.0.tenant.clone(),
+            state: Mutex::new(State {
+                snapshot,
+                finalized: true,
+            }),
+        }))
+    }
     /// Product source chosen by the owner, never by request payload data.
     pub fn profile(&self) -> crate::StorageProfile {
         self.0.profile

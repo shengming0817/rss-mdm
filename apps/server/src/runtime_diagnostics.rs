@@ -27,8 +27,8 @@ pub(crate) struct RuntimeDiagnostics {
     pub scripts: Arc<rss_mdm_script_service::worker::Worker>,
     pub collections: Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::worker::Worker>,
-    pub access_tasks: Arc<rss_mdm_registration_service::device_access::execution::worker::Worker>,
-    pub credential_tasks: Option<Arc<rss_mdm_recovery_credentials::tasks::worker::Worker>>,
+    pub access_tasks: Arc<rss_mdm_device_access_postgres::device_access::execution::worker::Worker>,
+    pub credential_tasks: Vec<Arc<rss_mdm_recovery_credentials::tasks::worker::Worker>>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
     pub instance: String,
@@ -102,7 +102,7 @@ impl RuntimeDiagnostics {
         if let Some(recovery) = &self.recovery {
             statuses.push(recovery.health());
         }
-        if let Some(credentials) = &self.credential_tasks {
+        for credentials in &self.credential_tasks {
             statuses.push(credentials.health());
         }
         recovery_component(&statuses)

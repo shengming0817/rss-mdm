@@ -259,7 +259,7 @@ let scope_group_health=Arc::new(crate::scope_group_changes::Health::default());
                             &compiled.config,
                             compiled.identity_management.clone(),
                             Some(
-                                crate::apple::identity_platform(&compiled.config)
+                                crate::assembly::device_access::identity_platform(&compiled.config)
                                     .await
                                     .map_err(assembly_error)?,
                             ),
@@ -267,6 +267,9 @@ let scope_group_health=Arc::new(crate::scope_group_changes::Health::default());
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity", error))?;
+                        let da=Arc::new(crate::assembly::device_access::open(&compiled.config,&identity,&access.authorization_store(),protection.clone(),&cursor_key,|resource|startup.stage_resource(resource)).await.map_err(assembly_error)?);
+                        if let Some(pki)=&da.pki {startup.stage_task_with_token(crate::device_pki::registration("da-device-pki-maintenance",pki.clone()));}
+                        if let Some(listener)=crate::assembly::device_access::listener(&compiled.config,&identity,&da).await.map_err(assembly_error)? {startup.stage_task_with_token(listener.critical());}
                         let audit_budget =
                             rss_mdm_audit_integration::budget::AuditBudget::with_cancellation(
                                 Duration::from_secs(5),
@@ -407,8 +410,6 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             commands.runtime.clone(),
                             commands.tenant,
                             commands.audit.clone(),
-                            protection.clone(),
-                            source.clone(),
                             recovery_materials.clone(),
                             commands.reconcile.clone(),
                             commands.worker_budget.clone(),
@@ -514,8 +515,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             materials.clone(),
                             software_owner.materials.clone(),
                             registration_owner.materials.clone(),
-                            access_execution.materials.clone(),
-                            credential_execution.as_ref().map(|v| v.materials.clone()),
+                            credential_execution.as_ref().map(|v| v.materials.clone()).unwrap_or_default(),
                         )
                         .await
                         .map_err(assembly_error)?;
@@ -633,14 +633,8 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                     .critical(),
                             ];
                             if let Some(credentials) = &credential_execution {
-                                tasks.push(credentials.maintenance.clone().registration().critical());
-                                tasks.push(
-                                    credentials
-                                        .worker
-                                        .clone()
-                                        .registration(signals.handle(Work::CredentialRecovery))
-                                        .critical(),
-                                );
+                                for maintenance in &credentials.maintenance {tasks.push(maintenance.clone().registration().critical());}
+                                for worker in &credentials.worker {tasks.push(worker.clone().registration(signals.handle(Work::CredentialRecovery)).critical());}
                                 tasks.push(
                                     credentials
                                         .native
@@ -687,7 +681,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                     registration_owner.native.clone(),
                                     registration_owner.worker.clone(),
                                     access_execution.worker.clone(),
-                                    credential_execution.as_ref().map(|v| v.worker.clone()),
+                                    credential_execution.as_ref().map(|v| v.worker.clone()).unwrap_or_default(),
                                     credential_execution.as_ref().map(|v| v.native.clone()),
                                     signals.handle(Work::CommandRelay),
                                 )
@@ -707,6 +701,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                         let mut app = crate::assembly::from_compiled(
                             compiled,
                             crate::assembly::AssemblyDependencies {
+                                da:da.clone(),
                                 script_work,
                                 collection_work,
 
@@ -821,7 +816,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         crate::assembly::webhooks::registration(app.webhooks.clone()).critical(),
                     );
                     launch.stage_task_with_token(
-                        crate::device_pki::registration(app.pki.clone()).critical(),
+                        crate::device_pki::registration("device-pki-maintenance",app.pki.clone()).critical(),
                     );
                     if let Some(agent_pki) = app.agent_pki.clone() {
                         launch.stage_task_with_token(agent_pki.registration().critical());

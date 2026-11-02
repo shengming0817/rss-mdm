@@ -1,4 +1,4 @@
-use crate::{ConfigIssue, Database, Error, Failure, config, identity};
+use crate::{ConfigIssue, Error, Failure, config, identity};
 use rss_identity_core::{
     InstanceId,
     account::{LoginKey, Password, PasswordKdf},
@@ -11,6 +11,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Initialize {
+    pub profile: rss_mdm_install_support::StorageProfile,
     pub database: config::Database,
     pub audit: config::AuditConfig,
     pub identity_database: config::Database,
@@ -21,6 +22,37 @@ pub struct Initialize {
     pub operation_id: uuid::Uuid,
     pub user: User,
 }
+impl Initialize {
+    fn validate(&self) -> Result<(), Error> {
+        if self.database.user
+            != match self.profile {
+                rss_mdm_install_support::StorageProfile::Mdm => "mdm_access",
+                rss_mdm_install_support::StorageProfile::Da => "da_access",
+            }
+        {
+            return Err(Error::Configuration(ConfigIssue::AccessDatabase));
+        }
+        if self.operation_id.is_nil() {
+            return Err(Error::Malformed);
+        }
+        canonical_uuid(&self.user.instance_id)?;
+        canonical_uuid(&self.user.tenant_id)?;
+        self.user
+            .validate(&self.user.tenant_id, &self.user.instance_id)?;
+        let invalid = || Error::Configuration(ConfigIssue::IdentityConfiguration);
+        if self.identity_database.user != "mdm_identity_runtime"
+            || self.identity_database.host != self.database.host
+            || self.identity_database.port != self.database.port
+            || self.identity_database.name != self.database.name
+            || self.installation.instance_id != self.user.instance_id
+        {
+            return Err(invalid());
+        }
+        self.installation.validate().map_err(|_| invalid())?;
+        Ok(())
+    }
+}
+
 /// Explicit operator command. The target must authenticate against this installed Identity.
 /// No caller-selected UUID can permanently seed a rule for an absent or foreign account.
 pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
@@ -28,7 +60,7 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
     let deadline =
         Deadline::from_timeout(&clock, Duration::from_secs(30)).expect("bounded command budget");
     let audit = RequestAudit::new(
-        rss_mdm_audit_integration::StorageProfile::Mdm,
+        config.profile,
         config.user.tenant_id.clone(),
         "authorization_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -41,8 +73,8 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
     let mut owned = Resources {
         runtime: None,
         source_runtime: None,
-        kdf: Arc::new(PasswordKdf::new()),
         access: None,
+        kdf: Arc::new(PasswordKdf::new()),
     };
     // One total deadline, reserving five seconds for resources owned by this command.
     let mut result = bounded(
@@ -91,7 +123,7 @@ struct Resources {
     source_runtime: Option<Arc<rss_transactional_messaging_postgres::PgRuntime>>,
     runtime: Option<Arc<rss_transactional_messaging_postgres::PgRuntime>>,
     kdf: Arc<PasswordKdf>,
-    access: Option<Database>,
+    access: Option<sqlx::PgPool>,
 }
 pub(crate) async fn bounded<T, E: Into<Error>>(
     audit: &RequestAudit,
@@ -108,27 +140,8 @@ async fn initialize_owned(
     owned: &mut Resources,
     audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
-    if config.database.user != "mdm_access" {
-        return Err(Error::Configuration(ConfigIssue::AccessDatabase));
-    }
-    if config.operation_id.is_nil() {
-        return Err(Error::Malformed);
-    }
-    canonical_uuid(&config.user.instance_id)?;
-    canonical_uuid(&config.user.tenant_id)?;
-    config
-        .user
-        .validate(&config.user.tenant_id, &config.user.instance_id)?;
+    config.validate()?;
     let invalid = || Error::Configuration(ConfigIssue::IdentityConfiguration);
-    if config.identity_database.user != "mdm_identity_runtime"
-        || config.identity_database.host != config.database.host
-        || config.identity_database.port != config.database.port
-        || config.identity_database.name != config.database.name
-        || config.installation.instance_id != config.user.instance_id
-    {
-        return Err(invalid());
-    }
-    config.installation.validate().map_err(|_| invalid())?;
     let tenant = TenantId::parse(&config.user.tenant_id).map_err(|_| invalid())?;
     let instance = InstanceId::parse(&config.user.instance_id).map_err(|_| invalid())?;
     let login = LoginKey::parse(&config.login).map_err(|_| invalid())?;
@@ -158,7 +171,7 @@ async fn initialize_owned(
     let authority = async {
         let policy = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
-                rss_mdm_install_support::StorageProfile::Mdm,
+                config.profile,
                 &config.user.instance_id,
             )?,
         );
@@ -174,11 +187,19 @@ async fn initialize_owned(
         Ok::<_, Error>(authority)
     }
     .await?;
-    owned.access = Some(Database::connect(config.database.options()?, &config.audit).await?);
+    owned.access = Some(
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .acquire_timeout(Duration::from_secs(2))
+            .connect_with(config.database.options()?)
+            .await
+            .map_err(crate::database::db)?,
+    );
     let database = owned
         .access
         .as_ref()
         .ok_or(Error::Unavailable(Failure::Database))?;
+    admit(database, &config).await?;
     let source_runtime = identity::open_runtime(
         &config.database,
         &config.installation.target,
@@ -188,10 +209,16 @@ async fn initialize_owned(
     )
     .await?;
     owned.source_runtime = Some(source_runtime.clone());
-    let store = database
-        .audit_store(&config.audit, source_runtime, tenant)
-        .await?;
-    let pool = database.archive_pool();
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let store = rss_mdm_audit_integration::AuditStore::new(
+        database.clone(),
+        config.audit.integrity()?,
+        source_runtime,
+        tenant,
+        &budget.control(),
+    )
+    .await?;
+    let pool = database.clone();
     let management: String =
         sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")
             .fetch_one(&pool)
@@ -203,9 +230,11 @@ async fn initialize_owned(
         password,
         operation_id: config.operation_id,
     };
-    if input.expected.tenant_id == management {
+    if config.profile == rss_mdm_install_support::StorageProfile::Da
+        || input.expected.tenant_id == management
+    {
         return rss_mdm_authorization_service::initialization::initialize(
-            rss_mdm_install_support::StorageProfile::Mdm,
+            config.profile,
             &authority,
             &store,
             input,
@@ -227,6 +256,24 @@ async fn initialize_owned(
     .await?;
     crate::administration::baseline::reserve(&pool, &store, frozen).await?;
     Ok(receipt)
+}
+
+async fn admit(database: &sqlx::PgPool, config: &Initialize) -> Result<(), Error> {
+    match config.profile {
+        rss_mdm_install_support::StorageProfile::Mdm => {
+            crate::database::admission(database, &config.audit).await?
+        }
+        rss_mdm_install_support::StorageProfile::Da => {
+            let mut c = database.acquire().await.map_err(crate::database::db)?;
+            crate::migration::device_access::verify_runtime(&mut c)
+                .await
+                .map_err(crate::database::db)?;
+            crate::migration::device_access::verify_access(&mut c, &config.audit)
+                .await
+                .map_err(crate::database::db)?;
+        }
+    }
+    Ok(())
 }
 
 use rss_mdm_audit_integration::{FailureReason, RequestAudit};

@@ -1,8 +1,10 @@
 //! Fresh PostgreSQL, Identity, actual provider dispatch and the production DA TLS listener.
 mod admission;
+mod business;
 mod context;
 mod installation;
 mod material;
+mod platform;
 mod transport;
 use anyhow::Result;
 use context::{Context, Inputs};
@@ -178,6 +180,15 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
     assert_eq!(receipt.device, grant.device);
+    // Keep the independent business/protocol state machines out of this long TLS scenario.
+    Box::pin(business::verify(
+        &c,
+        &material,
+        &receipt,
+        &client,
+        &server.origin,
+    ))
+    .await?;
     let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.registrations WHERE purpose='da_device' AND channel IS NULL),(SELECT count(*) FROM rss_da.report_sources),(SELECT count(*) FROM rss_da.requests)").fetch_one(&c.operator).await?;
     assert_eq!(counts, (1, 0, 0));
     assert!(
@@ -497,6 +508,15 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .status(),
         401
     );
+    let platform_session = Box::pin(platform::verify(
+        &c,
+        &material,
+        &renewed_receipt,
+        &renewed_peer,
+        &client,
+        base2,
+    ))
+    .await?;
     material::empty(
         client
             .post(format!(
@@ -516,6 +536,22 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .await?
             .status(),
         401
+    );
+    assert!(
+        c.authority
+            .inspect_session(c.tenant, platform_session, platform::deadline())
+            .await
+            .is_err(),
+        "registration revocation invalidates the existing platform session"
+    );
+    assert_eq!(
+        renewed_peer
+            .get(format!("{base2}/platform-sso/status"))
+            .send()
+            .await?
+            .status(),
+        401,
+        "revoked DA registration cannot access the PSSO channel"
     );
     unknown_recovery(&c, &material, &client, base2, &token, export.operation_id).await?;
     next_server.shutdown().await?;

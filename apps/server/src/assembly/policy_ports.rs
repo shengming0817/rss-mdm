@@ -217,22 +217,19 @@ impl ExecutionChanges for Changes {
                 .await
                 .map_err(enrollment_fault)?;
             }
-            if kinds.contains(&K::DeviceAccess) {
-                rss_mdm_registration_service::device_access::execution::wake::policy_in(
-                    &self.messaging,
-                    tx,
-                    id,
-                )
-                .await?;
-            }
             if kinds.contains(&K::Credential) {
-                rss_mdm_recovery_credentials::tasks::wake::policy_in(
+                for profile in [
                     rss_mdm_install_support::StorageProfile::Mdm,
-                    &self.messaging,
-                    tx,
-                    id,
-                )
-                .await?;
+                    rss_mdm_install_support::StorageProfile::Da,
+                ] {
+                    rss_mdm_recovery_credentials::tasks::wake::policy_in(
+                        profile,
+                        &self.messaging,
+                        tx,
+                        id,
+                    )
+                    .await?;
+                }
             }
             if kinds.contains(&K::Execution) {
                 rss_mdm_script_service::wake::policy_in(&self.messaging, tx, id).await?;
@@ -331,8 +328,7 @@ impl ExecutionChanges for Changes {
 pub(super) struct Events {
     pub software: Arc<rss_mdm_software_service::deployment::Transactions>,
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::Transactions>,
-    pub access: Arc<rss_mdm_registration_service::device_access::execution::Transactions>,
-    pub credentials: Option<Arc<rss_mdm_recovery_credentials::tasks::Transactions>>,
+    pub credentials: Vec<Arc<rss_mdm_recovery_credentials::tasks::Transactions>>,
     pub scripts: Arc<rss_mdm_script_service::Transactions>,
     pub collections: Arc<rss_mdm_inventory_service::collection::execution::Transactions>,
     pub configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
@@ -432,22 +428,16 @@ impl ExecutionEvents for Events {
                     .event_parent_current_in(tx, &software_target(value), source)
                     .await
                     .map_err(software_fault),
-                Owner::Access => self
-                    .access
-                    .event_parent_current_in(
-                        tx,
-                        &rss_mdm_registration_service::device_access::execution::Target {
-                            device: value.device.clone(),
-                            registration: value.registration,
-                            generation: value.generation,
-                        },
-                        id,
-                    )
-                    .await
-                    .map_err(Into::into),
-                Owner::Credential => self
+                Owner::Access => {
+                    let device = value.device.clone();
+                    let registration = value.registration;
+                    let generation = value.generation;
+                    tx.with_connection(move|c|Box::pin(async move{rss_mdm_device_access_postgres::device_access::execution::events::parent_current_on(c,&device,registration,generation,id).await})).await.map_err(Into::into)
+                }
+                Owner::Credential(profile) => self
                     .credentials
-                    .as_ref()
+                    .iter()
+                    .find(|s| s.profile() == profile)
                     .ok_or(Error::Unsupported)?
                     .event_parent_current_in(
                         tx,
@@ -529,27 +519,16 @@ impl ExecutionEvents for Events {
                         .map_err(software_fault);
                 }
                 rss_mdm_policy::ActionKind::DeviceAccess => {
-                    return self
-                        .access
-                        .accept_event_in(
-                            tx,
-                            policy,
-                            &rss_mdm_registration_service::device_access::execution::Target {
-                                device: value.device.clone(),
-                                registration: value.registration,
-                                generation: value.generation,
-                            },
-                            cause,
-                            deadline,
-                            audit,
-                        )
-                        .await
-                        .map_err(Into::into);
+                    return Ok(wire::PolicyEventDecision::NoChange {
+                        reason: "managed_configuration_publication".into(),
+                    });
                 }
                 rss_mdm_policy::ActionKind::Credential => {
+                    let profile = credential_profile(&policy.definition.action);
                     return self
                         .credentials
-                        .as_ref()
+                        .iter()
+                        .find(|s| s.profile() == profile)
                         .ok_or(Error::Unsupported)?
                         .accept_event_in(
                             tx,
@@ -663,8 +642,8 @@ impl ExecutionProgress for Events {
                             }
                         });
                     }
-                    super::task_ownership::Owner::Access=>return Ok(EventOperationProgress::Run{reference:reference.clone(),state:rss_mdm_registration_service::device_access::execution::storage::read_run(tx,id).await?.state,allowed_actions:[]}),
-                    super::task_ownership::Owner::Credential=>return Ok(EventOperationProgress::Run{reference:reference.clone(),state:rss_mdm_recovery_credentials::tasks::storage::read_run(rss_mdm_install_support::StorageProfile::Mdm, tx,id).await?.state,allowed_actions:[]}),
+                    super::task_ownership::Owner::Access=>return Ok(EventOperationProgress::Run{reference:reference.clone(),state:rss_mdm_device_access_postgres::device_access::execution::storage::read_run(tx,id).await.map_err(access_fault)?.state,allowed_actions:[]}),
+                    super::task_ownership::Owner::Credential(profile)=>return Ok(EventOperationProgress::Run{reference:reference.clone(),state:rss_mdm_recovery_credentials::tasks::storage::read_run(profile, tx,id).await?.state,allowed_actions:[]}),
                     super::task_ownership::Owner::Registration => {
                         return Ok(EventOperationProgress::Run {
                             reference: reference.clone(),
@@ -1000,4 +979,41 @@ fn registration_input_error(e: rss_mdm_registration_service::Error) -> Fault {
         _ => Error::Unsupported,
     }
     .into()
+}
+
+pub(super) fn credential_profile(
+    action: &rss_mdm_policy::Action,
+) -> rss_mdm_install_support::StorageProfile {
+    if let rss_mdm_policy::Action::Credential { operation, .. } = action
+        && rss_mdm_recovery_credentials::tasks::product::rss(operation)
+    {
+        rss_mdm_install_support::StorageProfile::Da
+    } else {
+        rss_mdm_install_support::StorageProfile::Mdm
+    }
+}
+
+fn access_fault(
+    e: rss_mdm_device_access_postgres::device_access::execution::transaction::Fault,
+) -> Fault {
+    use rss_mdm_device_access_postgres::device_access::execution::{
+        Error as E, transaction::Fault as F,
+    };
+    match e {
+        F::Storage(e) => Fault::Storage(e),
+        F::Sql(e) => Fault::Sql(e),
+        F::Request(e) => Fault::Request(match e {
+            E::Malformed => Error::Malformed,
+            E::Unsupported => Error::Unsupported,
+            E::Unauthorized => Error::Unauthorized,
+            E::Forbidden => Error::Forbidden,
+            E::Conflict => Error::Conflict,
+            E::NotFound => Error::NotFound,
+            E::CommitUnknown => Error::CommitUnknown,
+            E::RollbackFailed => Error::RollbackFailed,
+            E::Audit(e) => Error::from(e.as_ref()),
+            E::Invariant => Error::Unavailable(Failure::PreparationContract),
+            E::Unavailable => Error::Unavailable(Failure::Preparation),
+        }),
+    }
 }

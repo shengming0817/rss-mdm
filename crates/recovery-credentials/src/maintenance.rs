@@ -80,7 +80,12 @@ impl Maintenance {
     }
     pub fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
         let (task, _) = rss_runtime::ManagedTask::prepare(
-            "recovery-credential-maintenance",
+            match self.profile() {
+                rss_mdm_install_support::StorageProfile::Mdm => {
+                    "mdm-recovery-credential-maintenance"
+                }
+                rss_mdm_install_support::StorageProfile::Da => "da-recovery-credential-maintenance",
+            },
             Duration::from_secs(8),
         );
         task.into_registration(move|stop|async move{

@@ -5,7 +5,7 @@ use axum::{
     http::HeaderMap,
 };
 use rss_mdm_agent_wire::runtime as wire;
-use rss_mdm_http_contract::signature::{NoStore, WithStatus};
+use rss_mdm_http_contract::signature::WithStatus;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
     Router,
@@ -25,40 +25,8 @@ pub(crate) fn routes<
         + 'static,
 >() -> Router<Arc<TaskState>, impl rss_mdm_http_contract::module::Declaration + use<Q>> {
     {
-        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Agent] { get_access_directory, post_access_begin, post_access_confirm, post_access_recovery_use, post_observe_task_trust, get_task_trust, post_acknowledge_task_trust, post_claim, post_native_enrollment, get_current_user, put_login_user, delete_logout_user, get_directory, post_resolve, post_invoke, get_invocation_status, post_event, get_download } }
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Agent] { post_observe_task_trust, get_task_trust, post_acknowledge_task_trust, post_claim, post_native_enrollment, get_current_user, put_login_user, delete_logout_user, get_directory, post_resolve, post_invoke, get_invocation_status, post_event, get_download } }
         RoutesModule1 {
-            get_access_directory: rss_mdm_http_contract::module::Route::new(
-                "/device-access",
-                get(
-                    access_directory,
-                    &contracts::PROTOCOL_AGENT_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            ),
-            post_access_begin: rss_mdm_http_contract::module::Route::new(
-                "/device-access/begin",
-                post(
-                    access_begin,
-                    &contracts::PROTOCOL_AGENT_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            ),
-            post_access_confirm: rss_mdm_http_contract::module::Route::new(
-                "/device-access/confirm",
-                post(
-                    access_confirm,
-                    &contracts::PROTOCOL_AGENT_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            ),
-            post_access_recovery_use: rss_mdm_http_contract::module::Route::new(
-                "/device-access/recovery-uses",
-                post(
-                    access_recovery_use,
-                    &contracts::PROTOCOL_AGENT_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            ),
             post_observe_task_trust: rss_mdm_http_contract::module::Route::new(
                 "/task-trust/observations",
                 post(
@@ -313,8 +281,6 @@ pub struct TaskState {
     pub delivery: Arc<crate::delivery::Delivery>,
     pub self_service: Arc<dyn crate::participants::SelfService>,
     pub installation: Arc<dyn crate::participants::Installation>,
-    pub recovery_use: Arc<dyn crate::participants::RecoveryUse>,
-    pub access_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
     pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub identity: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
@@ -627,124 +593,9 @@ async fn logout_user(
     result.map(Json).map_err(|e| Error::from(e).into())
 }
 
-async fn access_begin(
-    State(app): State<Arc<TaskState>>,
-    Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
-    input: Body<wire::AccessBegin>,
-) -> Result<NoStore<Json<wire::AccessChallenge>>, crate::AgentError> {
-    crate::bounded(async {
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
-        let employee = employee(&app, &headers, &audit)
-            .await?
-            .ok_or(Error::Unauthorized)?;
-        let input = body(input)?;
-        let value = app
-            .enrollment
-            .begin_device_access(&p, &employee, &input, app.access_admission.as_ref(), &audit)
-            .await
-            .map_err(Error::from)?;
-        Ok(NoStore(Json(wire::AccessChallenge {
-            id: value.id,
-            nonce: value.nonce,
-            expires_at: value.expires_at,
-            local_session: value.local_session,
-        })))
-    })
-    .await
-}
-async fn access_confirm(
-    State(app): State<Arc<TaskState>>,
-    Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
-    input: Body<wire::AccessConfirm>,
-) -> Result<Json<wire::AccessBindingStatus>, crate::AgentError> {
-    crate::bounded(async {
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
-        let employee = employee(&app, &headers, &audit)
-            .await?
-            .ok_or(Error::Unauthorized)?;
-        let input = body(input)?;
-        let value = app
-            .enrollment
-            .confirm_device_access(&p, &employee, &input, app.access_admission.as_ref(), &audit)
-            .await
-            .map_err(Error::from)?;
-        Ok(Json(value.status()))
-    })
-    .await
-}
-
-async fn access_recovery_use(
-    State(app): State<Arc<TaskState>>,
-    Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
-    input: Body<wire::AccessRecoveryUse>,
-) -> Result<Json<RecoveryUseAccepted>, crate::AgentError> {
-    crate::bounded(async {
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
-        app.recovery_use
-            .record(&p, &body(input)?, &audit)
-            .await
-            .map_err(task_error)?;
-        Ok(Json(RecoveryUseAccepted { accepted: true }))
-    })
-    .await
-}
-
-async fn access_directory(
-    State(app): State<Arc<TaskState>>,
-    Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
-    query: rss_mdm_http_contract::query::OwnedQuery<
-        rss_mdm_http_contract::query::Window<AccessDirectory>,
-    >,
-) -> Result<NoStore<Json<wire::AccessDirectory>>, crate::AgentError> {
-    crate::bounded(async {
-        let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
-        let employee = employee(&app, &headers, &audit)
-            .await?
-            .ok_or(Error::Unauthorized)?;
-        let value = app
-            .enrollment
-            .device_access_directory(
-                &p,
-                &employee,
-                &page,
-                app.access_admission.as_ref(),
-                &app.identity,
-            )
-            .await
-            .map_err(Error::from)?;
-        Ok(NoStore(Json(value)))
-    })
-    .await
-}
-
 fn current_user_stage(audit: &RequestAudit, stage: &'static str) {
     eprintln!(
         "{}",
         serde_json::json!({"event":"mdm_current_user_stage","request_id":audit.request_id(),"stage":stage})
     );
-}
-
-struct AccessDirectory;
-impl rss_mdm_http_contract::query::WindowOwner for AccessDirectory {
-    fn schema() -> &'static rss_mdm_query::window::Schema {
-        &rss_mdm_registration_service::device_access::DISCOVERY
-    }
-}
-
-#[derive(serde::Serialize, schemars::JsonSchema)]
-struct RecoveryUseAccepted {
-    accepted: bool,
 }

@@ -2,6 +2,7 @@
 use rss_mdm_install_support::{Error as MigrationError, StorageProfile, execute_schema};
 use sqlx::{Connection, PgConnection, postgres::PgConnectOptions};
 type Result<T> = std::result::Result<T, MigrationError>;
+pub(crate) mod device_access;
 mod units;
 use units::units;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -198,6 +199,7 @@ async fn install_identity_in(
 ) -> std::result::Result<(), sqlx::Error> {
     rss_identity_postgres::install(tx, instance).await?;
     rss_identity_postgres::grant_platform_subject_admission(tx, "mdm_access").await?;
+    rss_identity_postgres::grant_platform_subject_admission(tx, "da_access").await?;
     rss_identity_postgres::grant_profile(
         tx,
         "mdm_identity_runtime",

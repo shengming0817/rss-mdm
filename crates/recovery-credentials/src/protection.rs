@@ -133,7 +133,11 @@ fn aad(c: &Coordinates) -> Result<rss_mdm_native_protection::DerivedAad, Error> 
     ProtectionContext::new(
         TenantId::parse(&c.tenant.to_string()).map_err(|_| Error::Malformed)?,
         &owner,
-        "recovery-credential/material",
+        if matches!(c.binding.subject, crate::Subject::RssLogin { .. }) {
+            "rss-da.recovery.material"
+        } else {
+            "recovery-credential/material"
+        },
         1,
     )
     .map(|v| v.derive())

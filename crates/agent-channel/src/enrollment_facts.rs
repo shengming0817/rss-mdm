@@ -67,3 +67,7 @@ impl Store for EnrollmentFacts {
         })
     }
 }
+
+/// Host-installed Agent snapshot for the DA enterprise broker.
+pub const DA_BROKER_QUERY: &str =
+    rss_mdm_device_access_postgres::broker_release_query!(include_str!("current-sessions.sql"));

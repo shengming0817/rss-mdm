@@ -4,12 +4,14 @@ use rss_mdm_registration_service::participants::{capacity::DeviceCapacity, scope
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgRuntime;
 pub struct Materials {
+    pub product: Option<Arc<dyn super::product::Product>>,
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub source: Arc<dyn Sources>,
     pub capacity: Arc<dyn DeviceCapacity>,
     pub recovery_credentials: Arc<crate::Protection>,
 }
 pub struct Transactions {
+    pub(crate) product: Option<Arc<dyn super::product::Product>>,
     profile: rss_mdm_install_support::StorageProfile,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
@@ -32,8 +34,14 @@ impl Transactions {
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         materials: Arc<Materials>,
     ) -> std::result::Result<Self, Error> {
-        if materials.agent_store.storage_profile() != profile
-            || materials.source.storage_profile() != profile
+        if materials.agent_store.storage_profile() != rss_mdm_install_support::StorageProfile::Mdm
+            || materials.source.storage_profile() != materials.agent_store.storage_profile()
+            || (profile == rss_mdm_install_support::StorageProfile::Da)
+                != materials.product.is_some()
+            || materials
+                .product
+                .as_ref()
+                .is_some_and(|p| p.storage_profile() != profile)
         {
             return Err(Error::Forbidden);
         }
@@ -74,9 +82,10 @@ impl Transactions {
         .await
         .map_err(|_| Error::Unavailable)?;
         Ok(Self {
+            product: materials.product.clone(),
             profile,
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
-                profile,
+                materials.source.storage_profile(),
                 runtime.clone(),
                 tenant,
             ),

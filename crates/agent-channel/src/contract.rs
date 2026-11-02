@@ -1,57 +1,12 @@
 //! Descriptions share the runtime error projection and authentication owner.
-use crate::{AgentError, wire};
-use axum::{
-    extract::FromRequestParts,
-    http::{HeaderMap, request::Parts},
-};
-use rss_mdm_http_contract::signature::{Direction, Input, Output, Request, Response, Schema};
-use std::convert::Infallible;
+use crate::AgentError;
+use axum::http::HeaderMap;
+use rss_mdm_http_contract::signature::{Input, Output, Request, Response, Schema};
 
-/// The original headers passed to runtime device authentication, never a bearer identity.
-pub(crate) struct RuntimeHeaders(pub HeaderMap);
-impl<S: Send + Sync> FromRequestParts<S> for RuntimeHeaders {
-    type Rejection = Infallible;
-    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
-        Ok(Self(parts.headers.clone()))
-    }
-}
-impl Input for RuntimeHeaders {
-    fn request() -> Request {
-        // authenticate() rejects any Authorization header; the peer certificate is transport-owned.
-        Request {
-            headers: [(
-                "authorization".into(),
-                Schema {
-                    direction: Direction::Request,
-                    value: false.into(),
-                },
-            )]
-            .into(),
-            ..Request::default()
-        }
-    }
-}
-
+pub use rss_mdm_http_contract::agent::RuntimeHeaders;
 impl Output for AgentError {
     fn responses() -> Vec<Response> {
-        let codes = Schema::response::<wire::ErrorCode>();
-        codes
-            .string_values()
-            .iter()
-            .map(|value| {
-                let code: wire::ErrorCode =
-                    serde_json::from_value(value.clone()).expect("actual runtime error code");
-                let mut response =
-                    Response::json::<wire::ErrorBody>(crate::status_for(code).as_u16());
-                response
-                    .body
-                    .as_mut()
-                    .expect("JSON error body")
-                    .schema
-                    .value["properties"]["code"]["const"] = value.clone();
-                response
-            })
-            .collect()
+        rss_mdm_http_contract::agent::responses()
     }
 }
 impl Output for crate::Error {

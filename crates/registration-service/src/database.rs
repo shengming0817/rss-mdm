@@ -30,14 +30,14 @@ impl Store {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
-    pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
+    pub async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         self.begin_mode(tenant, false).await
     }
-    pub(crate) async fn snapshot(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
+    pub async fn snapshot(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         self.begin_mode(tenant, true).await
     }
     /// Check current authorization only after the data snapshot has been released.
-    pub(crate) async fn confirm_query(
+    pub async fn confirm_query(
         &self,
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
         expected: &str,
@@ -48,14 +48,14 @@ impl Store {
         proof.check_live()?;
         let mut tx = self.begin(proof.tenant_id()).await?;
         rss_mdm_authorization_service::lock_on(
-            self.profile,
+            proof.authority_profile(),
             &mut tx,
             proof.tenant_id(),
             proof.instance_id(),
         )
         .await?;
         let current = rss_mdm_authorization_service::snapshot_on(
-            self.profile,
+            proof.authority_profile(),
             &mut tx,
             proof.tenant_id(),
             proof.instance_id(),

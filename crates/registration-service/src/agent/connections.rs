@@ -968,7 +968,7 @@ impl Service {
             return Err(Error::Conflict.into());
         }
         let snapshot = rss_mdm_authorization_service::snapshot_on(
-            profile,
+            p.authority_profile(),
             &mut tx,
             p.tenant_id(),
             p.instance_id(),
@@ -1043,10 +1043,15 @@ impl Service {
             return Err(Error::Forbidden.into());
         }
         let mut tx = self.store.begin(p.tenant_id()).await?;
-        rss_mdm_authorization_service::lock_on(profile, &mut tx, p.tenant_id(), p.instance_id())
-            .await?;
+        rss_mdm_authorization_service::lock_on(
+            p.authority_profile(),
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
         rss_mdm_authorization_service::snapshot_on(
-            profile,
+            p.authority_profile(),
             &mut tx,
             p.tenant_id(),
             p.instance_id(),

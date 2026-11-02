@@ -8,14 +8,6 @@ use rss_mdm_authorization_service::context::Principal;
 use rss_mdm_authorization_service::credential::{ApiKeySecret, RequestCredential};
 use rss_request_context::TenantId;
 pub struct Identity {
-    pub enterprise_administrators: std::collections::BTreeMap<
-        uuid::Uuid,
-        std::sync::Arc<rss_mdm_registration_service::enterprise::keycloak::Administrator>,
-    >,
-    pub enterprise_clients: std::collections::BTreeMap<
-        String,
-        std::sync::Arc<dyn rss_mdm_registration_service::enterprise::broker::Client>,
-    >,
     pub authority: Authority,
     pub webauthn: rss_identity_postgres::WebauthnAuthority,
     pub http: rss_identity_http_axum::HttpConfig,
@@ -39,34 +31,6 @@ pub(crate) fn failure(e: AuthorityError) -> Error {
     }
 }
 impl Identity {
-    /// Reborrow a request credential when a component ceremony requires an owned session proof.
-    pub(crate) async fn ceremony_actor(
-        &self,
-        headers: &HeaderMap,
-    ) -> Result<rss_identity_postgres::AuthenticatedSession, Error> {
-        rss_identity_http_axum::authenticate_request(
-            &self.authority,
-            &self.http,
-            self.tenant,
-            headers,
-            rss_identity_http_axum::SessionActivity::Active,
-            deadline(),
-        )
-        .await
-        .map(|(session, _)| session)
-        .map_err(|response| {
-            match response
-                .extensions()
-                .get::<rss_identity_http_axum::HttpFailure>()
-            {
-                Some(rss_identity_http_axum::HttpFailure::Authority(error)) => failure(*error),
-                _ if response.status().is_server_error() => {
-                    Error::Unavailable(Failure::IdentityStorage)
-                }
-                _ => Error::Unauthorized,
-            }
-        })
-    }
     pub async fn authenticate_request(
         &self,
         headers: &HeaderMap,
@@ -164,23 +128,6 @@ fn project_failure(mut response: Response) -> Response {
         response.extensions_mut().insert(failure(error));
     }
     response
-}
-
-pub(crate) struct CeremonyHeaders(pub(crate) axum::http::HeaderMap);
-impl<S: Send + Sync> axum::extract::FromRequestParts<S> for CeremonyHeaders {
-    type Rejection = std::convert::Infallible;
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(Self(parts.headers.clone()))
-    }
-}
-impl rss_mdm_http_contract::signature::Input for CeremonyHeaders {
-    fn request() -> rss_mdm_http_contract::signature::Request {
-        use rss_mdm_http_contract::signature::{Direction, Request, Schema};
-        Request { headers:[("cookie".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "description":"Identity session cookie; validated by Identity Active authentication"}) }), ("origin".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "format":"uri"}) }), ("x-identity-request".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "const":"1"}) }), ("x-csrf-token".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string"}) })].into(), required_headers:vec!["cookie", "origin", "x-identity-request", "x-csrf-token"], ..Request::default() }
-    }
 }
 
 /// Credential transport of this adapter and its pinned Identity SDK owner.

@@ -46,7 +46,8 @@ pub async fn verify_storage(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Erro
     Ok(())
 }
 
-/// Common Agent retirement authority; native installation is not required.
+/// Verify credential task retirement for the selected product.
+/// DA authority requires explicit product delivery; this is not an Agent-only installation.
 pub async fn verify_agent_authority(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
@@ -59,8 +60,13 @@ pub async fn verify_agent_authority(
         .split("$$")
         .nth(1)
         .expect("owner body");
+    let host_roles: &[&str] = match profile {
+        rss_mdm_install_support::StorageProfile::Da => &["mdm_access", "mdm_command_runtime"],
+        rss_mdm_install_support::StorageProfile::Mdm => &[],
+    };
     let rejected: Option<String> = sqlx::query_scalar(sql.agent_authority_admission)
         .bind(body)
+        .bind(host_roles)
         .fetch_optional(c)
         .await?;
     if let Some(name) = rejected {

@@ -3,8 +3,10 @@ use crate::{Error, context::AuthorizedPrincipal, database::db, *};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct OperationAuthority {
     profile: rss_mdm_install_support::StorageProfile,
+    source: rss_mdm_install_support::StorageProfile,
     permission: Permission,
     actor: crate::Actor,
     scope: Scope,
@@ -47,6 +49,7 @@ impl OperationAuthority {
         };
         Ok(Self {
             profile: proof.profile(),
+            source: proof.authority_profile(),
             permission,
             actor: proof.actor(),
             scope,
@@ -75,6 +78,7 @@ impl OperationAuthority {
         };
         Ok(Self {
             profile: proof.profile(),
+            source: proof.authority_profile(),
             permission,
             actor: proof.actor(),
             scope,
@@ -100,12 +104,14 @@ impl OperationAuthority {
         };
         Ok(Self {
             profile: proof.profile(),
+            source: proof.authority_profile(),
             permission,
             actor: proof.actor(),
             scope,
             basis,
         })
     }
+    /// Match the consuming business product, then recheck the frozen authority source.
     pub async fn valid(
         &self,
         profile: rss_mdm_install_support::StorageProfile,
@@ -117,7 +123,7 @@ impl OperationAuthority {
             return Ok(false);
         }
         super::store::lock_shared(
-            profile,
+            self.source,
             conn,
             self.actor.tenant_id(),
             self.actor.instance_id(),
@@ -138,7 +144,7 @@ impl OperationAuthority {
                     return Ok(false);
                 }
                 let raw = sqlx::query_scalar::<_, serde_json::Value>(
-                    crate::storage_profile::sql(profile).authority_valid_1,
+                    crate::storage_profile::sql(self.source).authority_valid_1,
                 )
                 .bind(tenant)
                 .bind(instance)
@@ -160,7 +166,7 @@ impl OperationAuthority {
                         continue;
                     }
                     let raw = sqlx::query_scalar::<_, Option<serde_json::Value>>(
-                        crate::storage_profile::sql(profile).authority_valid_2,
+                        crate::storage_profile::sql(self.source).authority_valid_2,
                     )
                     .bind(&user.tenant_id)
                     .bind(&user.instance_id)
@@ -175,7 +181,7 @@ impl OperationAuthority {
                             serde_json::from_value(raw).map_err(|_| Error::Forbidden)?;
                         if let Subject::UserGroup { id } = rule.subject {
                             let group = sqlx::query_scalar::<_, Option<serde_json::Value>>(
-                                crate::storage_profile::sql(profile).authority_valid_3,
+                                crate::storage_profile::sql(self.source).authority_valid_3,
                             )
                             .bind(&user.tenant_id)
                             .bind(&user.instance_id)
@@ -195,8 +201,9 @@ impl OperationAuthority {
             _ => return Err(Error::Corrupt),
         }
         let requested = serde_json::to_value(permission).map_err(|_| Error::Corrupt)?;
-        sqlx::query_scalar(crate::storage_profile::sql(profile).authority_valid_4)
+        sqlx::query_scalar(crate::storage_profile::sql(self.source).authority_valid_4)
             .bind(serde_json::to_value(self).map_err(|_| Error::Corrupt)?)
+            .bind(profile.name())
             .bind(requested.as_str().ok_or(Error::Corrupt)?)
             .bind(now)
             .fetch_one(conn)

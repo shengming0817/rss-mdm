@@ -61,7 +61,10 @@ impl Worker {
         let profile = self.service.profile();
 
         let (task, status) = rss_runtime::ManagedTask::prepare(
-            "mdm-registration-credential-recovery",
+            match profile {
+                rss_mdm_install_support::StorageProfile::Mdm => "mdm-credential-recovery",
+                rss_mdm_install_support::StorageProfile::Da => "da-credential-recovery",
+            },
             Duration::from_secs(20),
         );
         self.readiness.bind(status);

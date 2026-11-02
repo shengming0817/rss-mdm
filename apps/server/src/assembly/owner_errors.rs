@@ -83,9 +83,9 @@ pub(super) fn installation_http(
 }
 
 pub(super) fn access(
-    e: rss_mdm_registration_service::device_access::execution::Error,
+    e: rss_mdm_device_access_postgres::device_access::execution::Error,
 ) -> crate::Error {
-    use rss_mdm_registration_service::device_access::execution::Error as E;
+    use rss_mdm_device_access_postgres::device_access::execution::Error as E;
     match e {
         E::CommitUnknown => crate::Error::CommitUnknown,
         E::RollbackFailed => crate::Error::RollbackFailed,

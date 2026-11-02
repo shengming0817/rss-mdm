@@ -6,6 +6,20 @@ rust-version.workspace = true
 publish.workspace = true
 autotests = false
 [dependencies]
+webauthn-rs-proto.workspace = true
+base64.workspace = true
+http.workspace = true
+rss-identity-http-axum.workspace = true
+rss-identity-postgres.workspace = true
+rss-mdm-apple-mdm.workspace = true
+rss-mdm-policy-postgres.workspace = true
+rss-mdm-query.workspace = true
+rss-mdm-recovery-credentials.workspace = true
+rss-transactional-messaging.workspace = true
+time.workspace = true
+zeroize.workspace = true
+rss-mdm-device-access.workspace = true
+rss-mdm-device-access-postgres.workspace = true
 rss-mdm-install-support.workspace = true
 rss-mdm-registration-service.workspace = true
 rss-mdm-task-trust.workspace = true
@@ -32,6 +46,11 @@ workspace = true
 name = "foundation"
 path = "tests/foundation.rs"
 [dev-dependencies]
+openssl.workspace = true
+jsonschema.workspace = true
+rss-mdm-device-access-runtime.workspace = true
+url.workspace = true
+webauthn-authenticator-rs = {version="=0.5.5", default-features=false, features=["softpasskey"]}
 anyhow.workspace = true
 base64.workspace = true
 ring.workspace = true

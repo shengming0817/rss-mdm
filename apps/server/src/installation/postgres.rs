@@ -93,6 +93,7 @@ async fn prepare_roles(input: &Input, tag: &str, secrets: &str) -> Result<()> {
         for sql in [
             "CREATE ROLE mdm_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION; CREATE ROLE mdm_api NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION; CREATE ROLE mdm_access NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;",
             include_str!("../../schema/business-roles.sql"),
+            include_str!("../../schema/device-access-roles.sql"),
             include_str!("../../schema/software-publication-roles.sql"),
             include_str!("../../schema/commands-roles.sql"),
             include_str!("../../schema/identity-roles.sql"),
@@ -113,7 +114,7 @@ BEGIN
   EXECUTE format('ALTER ROLE %I LOGIN PASSWORD %L',role_name,secret);
   EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',current_database(),role_name);
  END LOOP;
- EXECUTE format('GRANT CREATE ON DATABASE %I TO mdm_owner,mdm_audit_owner,mdm_ledger_owner,mdm_group_owner',current_database());
+ EXECUTE format('GRANT CREATE ON DATABASE %I TO mdm_owner,mdm_audit_owner,mdm_ledger_owner,mdm_group_owner,da_owner',current_database());
  EXECUTE format('COMMENT ON ROLE mdm_owner IS %L',current_setting('rss.installation.identity')||':ready');
 END $profiles$;"#).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
     } else if marker.as_deref() != Some(format!("{tag}:ready").as_str()) {

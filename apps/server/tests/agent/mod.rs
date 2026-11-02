@@ -118,7 +118,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         signing: a.resources.signing.clone(),
         tasks: Arc::new(crate::assembly::agent_tasks::AgentTasks {
             access: a.access_execution.service.clone(),
-            credentials: None,
+            credentials: Vec::new(),
             software: a.software.service.clone(),
             registration: a.registration.enrollment.clone(),
             content: None,

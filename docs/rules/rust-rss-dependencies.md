@@ -39,6 +39,7 @@ schema/Git/制品摘要与业务 revision、执行版本各自独立。身份、
 `rss-mdm-query-postgres` 仅适配已校验字段的绑定参数、过滤和 keyset SQL；不持有表、连接、事务或 CRUD。
 `http-contract` 读取 `query` 的字段描述，真实 List 注册必须绑定执行所用的同一目录声明。
 `rss-mdm-http-contract` 仅供 App 与 ingress 持有原生 Axum Router 的方法归属和组合描述；不负责匹配、认证、
-中间件策略、业务执行或持久化。应用服务和领域不得反向依赖该包。
+中间件策略、业务执行或持久化。Agent ingress 的公共 header 描述与错误响应投影在此消费 canonical wire，
+避免 ingress 相互依赖；协议值仍由 agent-wire 唯一持有。应用服务和领域不得反向依赖该包。
 资源类别、实际注册、最终挂载及行为证明分别校验；存量迁移项只能缩小，完成后删除，不能用类别或任意开关
 隐藏普通资源的必需操作。字段契约从实际 owner 输出，不维护第二份手写类型表。

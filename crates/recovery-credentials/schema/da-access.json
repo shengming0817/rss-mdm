@@ -1,0 +1,90 @@
+{
+  "tables": [
+    {
+      "schema": "rss_da",
+      "table": "recovery_agent_guards",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "recovery_agent_materials",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "recovery_entries",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "current_version",
+        "retired"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "recovery_versions",
+      "read_write": true,
+      "updates": [
+        "validity",
+        "key_id",
+        "sealed",
+        "invalidated_at",
+        "pending",
+        "cleanup_checked_at"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "recovery_rss_login_uses",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "recovery_disclosures",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null,
+      "read_only": true
+    },
+    {
+      "schema": "rss_da",
+      "table": "credential_runs",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "credential_policy_recovery",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "rss_da",
+      "table": "credential_agent_admission",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "rss_da.credential_save_retired_run",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [],
+  "verified_schemas": []
+}

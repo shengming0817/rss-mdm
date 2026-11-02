@@ -327,7 +327,7 @@ impl Service {
                     if let Some(p) = principal {
                         p.check_live()?;
                         rss_mdm_authorization_service::lock_on(
-                            profile,
+                            p.authority_profile(),
                             c,
                             &tenant,
                             p.instance_id(),
@@ -348,7 +348,7 @@ impl Service {
                     let g = grant_row(profile, c, &tenant, *grant).await?;
                     if let Some(p) = principal {
                         rss_mdm_authorization_service::snapshot_on(
-                            profile,
+                            p.authority_profile(),
                             c,
                             &tenant,
                             p.instance_id(),

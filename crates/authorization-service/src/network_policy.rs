@@ -77,7 +77,7 @@ async fn read_on(
 }
 impl Store {
     async fn installation_network_policy(&self) -> Result<NetworkPolicy, Error> {
-        let profile = self.profile;
+        let profile = self.authority_profile();
 
         let mut connection = None;
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -228,7 +228,7 @@ async fn change_on(
     c: &mut sqlx::PgConnection,
     context: &NetworkWrite<'_>,
 ) -> Result<(NetworkPolicy, bool), Error> {
-    let profile = context.proof.profile();
+    let profile = context.proof.authority_profile();
 
     let NetworkWrite {
         proof,

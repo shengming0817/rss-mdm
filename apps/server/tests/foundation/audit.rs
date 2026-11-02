@@ -40,6 +40,7 @@ async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()
     let router = rss_mdm_management_http::boundary::wrap(
         routes,
         rss_mdm_management_http::boundary::Envelope {
+            profile: rss_mdm_install_support::StorageProfile::Mdm,
             admission: Arc::new(tokio::sync::Semaphore::new(2)),
             host: "mdm.example.test".into(),
             clock: Arc::new(crate::Monotonic(std::time::Instant::now)),

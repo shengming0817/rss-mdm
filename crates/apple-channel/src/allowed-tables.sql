@@ -1,4 +1,3 @@
-('mdm_apple.psso_password_providers',true,true,false),
 ('mdm_apple.trust_deliveries',true,true,false),
 ('mdm_apple.declarations',true,true,false),
 ('mdm_apple.status_reports',true,true,false),
@@ -8,6 +7,4 @@
 ('mdm_apple.channels',true,false,false),
 ('mdm_apple.ade_enrollments',false,false,false),
 ('mdm_apple.account_flows',false,false,false),
-('mdm_apple.psso_sources',false,false,false),
-('mdm_apple.psso_tokens',false,false,true),
 ('mdm_apple.scep_attempts',false,false,false)

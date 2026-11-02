@@ -87,12 +87,15 @@ impl rss_request_context::ExecutionTimer for Timer {
     }
 }
 pub struct Context {
+    pub platform: Arc<rss_mdm_device_access_postgres::platform_sso::bridge::Verifier>,
+    pub business: std::sync::OnceLock<Arc<rss_mdm_device_access_http::Business>>,
     pub inputs: Inputs,
     pub tenant: rss_request_context::TenantId,
     pub operator: sqlx::PgPool,
     pub access: sqlx::PgPool,
     pub runtime: Arc<PgRuntime>,
     identity_runtime: Arc<PgRuntime>,
+    pub proof_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     access_runtime: Arc<PgRuntime>,
     pub access_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     audit_pool: sqlx::PgPool,
@@ -194,6 +197,16 @@ impl Context {
                 .await?,
         );
         let identity_runtime = inputs.runtime("da_identity_runtime", tenant).await?;
+        let proof_audit = Arc::new(
+            audit
+                .on_runtime(identity_runtime.clone(), tenant, &budget.control())
+                .await?,
+        );
+        let platform = Arc::new(
+            rss_mdm_device_access_postgres::platform_sso::bridge::Verifier::new(
+                "https://localhost",
+            ),
+        );
         let authority = rss_identity_postgres::Authority::connect_runtime(
             identity_runtime.clone(),
             Arc::new(rss_identity_core::account::PasswordKdf::new()),
@@ -202,7 +215,8 @@ impl Context {
                 vec![tenant],
                 rss_identity_core::session::SessionPolicy::new(900, 14400)?,
                 rss_audit_postgres::Integrity::Plain,
-            )?,
+            )?
+            .with_platform(platform.clone()),
             Arc::new(
                 rss_mdm_authorization_service::identity_management::IdentityManagementPolicy::new(
                     DA,
@@ -226,6 +240,9 @@ impl Context {
             Arc::new(Timer),
         ));
         Ok(Self {
+            platform,
+            business: std::sync::OnceLock::new(),
+            proof_audit,
             authority,
             authorization,
             inputs,

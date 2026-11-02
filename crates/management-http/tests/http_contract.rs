@@ -4,7 +4,6 @@ use crate::{Mounts, contract_routes};
 fn offline_management_contract_is_complete_without_runtime_services() {
     let routes = contract_routes(
         Mounts {
-            agent_enrollment: true,
             filevault: true,
             recovery_credentials: true,
         },
@@ -21,7 +20,6 @@ fn offline_management_contract_is_complete_without_runtime_services() {
 fn disabled_conditions_remove_only_their_actual_mounts() {
     let routes = contract_routes(
         Mounts {
-            agent_enrollment: false,
             filevault: false,
             recovery_credentials: false,
         },
@@ -55,7 +53,6 @@ fn disabled_conditions_remove_only_their_actual_mounts() {
 fn authentication_owner_resolves_final_paths_and_cookie_activity() {
     let routes = contract_routes(
         Mounts {
-            agent_enrollment: true,
             filevault: true,
             recovery_credentials: true,
         },
@@ -136,24 +133,16 @@ fn offline_authentication_mount_cannot_serve_without_runtime_owner() {
 
 #[test]
 fn each_presence_switch_changes_only_its_declared_module() {
-    for (agent, filevault, recovery) in [
-        (false, false, false),
-        (true, false, false),
-        (false, true, false),
-        (false, false, true),
-        (false, true, true),
-        (true, true, true),
-    ] {
+    for (filevault, recovery) in [(false, false), (true, false), (false, true), (true, true)] {
         let routes = contract_routes(
             Mounts {
-                agent_enrollment: agent,
                 filevault,
                 recovery_credentials: recovery,
             },
             application_routes(),
         );
         let has = |path: &str| routes.endpoints().iter().any(|e| e.path == path);
-        assert_eq!(has("/api/v1/device-access/broker"), agent);
+
         assert_eq!(
             has("/api/v1/devices/{device}/recovery-credentials/filevault/configuration"),
             filevault

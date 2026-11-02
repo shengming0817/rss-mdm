@@ -36,14 +36,6 @@ def prepared(root, modules, binary, command, resources):
             resources.append(dict(kind='roles', identity=environment.project,
                                   action='reused' if had_roles else 'created'))
         if set(profiles(modules)) & {'agent_foundation','da_foundation'}:
-            # Closed local fixture identities; production units still own every object/grant.
-            for role in ('da_owner', 'da_access', 'da_command_runtime', 'da_policy_runtime',
-                         'da_inventory_runtime', 'da_scope_runtime', 'da_telemetry_runtime',
-                         'da_identity_runtime', 'da_identity_maintenance', 'da_identity_provisioning',
-                         'da_resource_runtime', 'da_software_runtime', 'da_content_runtime',
-                         'da_software_driver', 'da_runtime', 'da_api'):
-                if environment.sql("SELECT count(*) FROM pg_roles WHERE rolname='" + role + "'") == '0':
-                    environment.sql("CREATE ROLE " + role + " LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD 'runtime-fixture'")
             environment.sql('GRANT rss_tmsg_relay,mdm_audit_owner TO da_owner WITH INHERIT TRUE, SET TRUE;')
         system = environment.sql('SELECT system_identifier FROM pg_control_system()')
         installation = dict(audit_mode='plain', instance_id='33333333-3333-4333-8333-333333333333',
@@ -97,12 +89,12 @@ def prepared(root, modules, binary, command, resources):
                 else:
                     environment.sql('CREATE DATABASE ' + name + ' OWNER mdm_owner TEMPLATE template0;')
                     created.append(name)
-                    environment.sql('GRANT CREATE ON SCHEMA public TO mdm_owner,mdm_group_owner; '
-                                    'GRANT CREATE ON DATABASE ' + name + ' TO mdm_audit_owner,mdm_ledger_owner,mdm_group_owner;', name)
+                    environment.sql('GRANT CREATE ON SCHEMA public TO mdm_owner,da_owner,mdm_group_owner; '
+                                    'GRANT CREATE ON DATABASE ' + name + ' TO da_owner,mdm_audit_owner,mdm_ledger_owner,mdm_group_owner;', name)
                 resources.append(dict(kind='database', identity=name, profile=profile,
                                       action='reused' if present else 'created'))
                 values[profile] = {role: database(name, role) for role in (
-                    'postgres', 'mdm_owner', 'mdm_access', 'mdm_runtime', 'mdm_command_runtime',
+                    'postgres', 'mdm_owner', 'da_owner', 'da_access', 'mdm_access', 'mdm_runtime', 'mdm_command_runtime',
                     'mdm_identity_runtime', 'mdm_identity_maintenance', 'mdm_tenant_registry',
                     'mdm_identity_provisioning', 'mdm_inventory_runtime', 'mdm_scope_runtime',
                     'mdm_policy_runtime', 'mdm_resource_runtime', 'mdm_software_runtime',
@@ -115,7 +107,7 @@ def prepared(root, modules, binary, command, resources):
                         'da_identity_runtime','da_identity_maintenance','da_identity_provisioning','da_runtime')})
                 if profile not in ('recovery', 'agent_foundation', 'da_foundation'):
                     config = directory / (name + '-migrate.json')
-                    private(config, dict(database=database(name, 'mdm_owner'), installation=installation))
+                    private(config, dict(database=database(name, 'mdm_owner'),device_access_database=database(name,'da_owner'),installation=installation))
                     command([str(binary), 'migrate', '--config', str(config)], name + '-migrate.log')
                     resources.append(dict(kind='schema', identity=name, action='validated' if present else 'installed'))
                     if shared:

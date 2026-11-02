@@ -151,6 +151,7 @@ pub(crate) fn db(error: sqlx::Error) -> Error {
 
 fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
     let mut contracts = vec![
+        include_str!("../schema/da-agent-access.json"),
         crate::administration::first_use::ACCESS_CONTRACT,
         crate::administration::user_profiles::ACCESS_CONTRACT,
         crate::administration::tenants::ACCESS_CONTRACT,
@@ -200,9 +201,10 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     crate::migration::verify_runtime_installation(connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_authorization_service::verify_authority(
+    rss_mdm_authorization_service::verify_authority_for_host(
         rss_mdm_install_support::StorageProfile::Mdm,
         connection,
+        &["da_access"],
     )
     .await
     .map_err(storage_admission_error)?;
@@ -268,7 +270,10 @@ async fn verify_task_storage(connection: &mut sqlx::PgConnection) -> Result<(), 
     Ok(())
 }
 
-async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<(), Error> {
+pub(crate) async fn admission(
+    pool: &PgPool,
+    audit: &crate::config::AuditConfig,
+) -> Result<(), Error> {
     let mut tx = pool.begin().await.map_err(db)?;
     sqlx::query("SET LOCAL statement_timeout='1s'")
         .execute(&mut *tx)
