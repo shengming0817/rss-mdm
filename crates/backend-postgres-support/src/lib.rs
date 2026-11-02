@@ -65,7 +65,4 @@ impl BackendStorage {
     }
 }
 
-/// Composition of capability-owned access-role contracts.
-pub mod access_admission;
-
 mod statements;

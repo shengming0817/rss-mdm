@@ -65,13 +65,13 @@ def snapshot_ui(reference, output):
     metadata['archive']={'file':output.name,'sha256':sha(output)}
     return metadata
 
-def build(out, header, web_image=None, target_platform=None):
+def build(out, header, web_image=None, target_platform=None, product="mdm"):
     if out.exists():
         raise ValueError("candidate output must be new")
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".mdm-candidate-", dir=out.parent) as temporary:
         staged = Path(temporary) / "candidate"
-        build_staged(staged, header, web_image, target_platform)
+        build_staged(staged, header, web_image, target_platform, product)
         staged.rename(out)
     print("candidate: " + str(out / "candidate.json"))
 
@@ -79,6 +79,12 @@ RUNTIME_TOOLS = ("ingress_network.py", "gateway_fixture.py", "release.py", "cand
 ROLE_NAMES = ("business", "software-publication", "identity", "commands", "audit", "webhook", "device-access")
 DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/tenant.compose.yaml', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/render_gateway.py", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
+
+DA_DEPLOYMENT_FILES=("deployment/da.compose.yaml","deployment/initialize_da.py","deployment/providers.lock.json","deployment/device-access-roles.sql","deployment/da-config.example.json")
+def deployment_files(product):
+    if product=="mdm":return DEPLOYMENT_FILES
+    if product=="da":return DA_DEPLOYMENT_FILES
+    raise ValueError("unknown product")
 
 def source_inputs(root, header=None):
     """Git index admits paths; bytes always come from the current working tree."""
@@ -131,7 +137,8 @@ def copy_source(root, destination, header=None):
     content = {name: state[:2] for name, state in inputs.items()}
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
-def build_staged(out, header, web_image=None, target_platform=None):
+def build_staged(out, header, web_image=None, target_platform=None, product="mdm"):
+    if product not in ("mdm","da"): raise ValueError("unknown product")
     if target_platform is not None and target_platform not in ("linux/arm64", "linux/amd64"):
         raise ValueError("supported container platform required")
     platform_args = ["--platform", target_platform] if target_platform else []
@@ -149,7 +156,7 @@ def build_staged(out, header, web_image=None, target_platform=None):
             raise ValueError("build providers must be pinned")
         ui = snapshot_ui(web_image, out / "identity-ui.image.tar") if web_image is not None else None
         shutil.copy(source / "deployment/Dockerfile", context / "Dockerfile")
-        image = "rss-mdm/server:build-" + uuid.uuid4().hex
+        image = "rss-"+product+"/server:build-" + uuid.uuid4().hex
         output = out / "server.oci.tar"
         from dev_environment import project_name
         jobs = os.environ.get('CARGO_BUILD_JOBS','4')
@@ -161,7 +168,7 @@ def build_staged(out, header, web_image=None, target_platform=None):
                         "--build-arg", "RUST_IMAGE=" + providers["rust"],
                         "--build-arg", "RUNTIME_IMAGE=" + providers["runtime"],
                         "--build-arg", "POSTGRES_IMAGE=" + providers["postgres"],
-                        "--target", "server", "--tag", image, "--output",
+                        "--build-arg","PRODUCT="+product,"--target", "da-server" if product=="da" else "server", "--tag", image, "--output",
                         "type=oci,dest=" + str(output), str(context)], check=True)
         digest, config = oci_identity(output)
         if platform(config) not in ("linux/arm64", "linux/amd64") or (target_platform and platform(config) != target_platform):
@@ -169,7 +176,7 @@ def build_staged(out, header, web_image=None, target_platform=None):
         if ui is not None and platform(ui) != platform(config):
             raise ValueError("UI container platform mismatch")
         subprocess.run(["docker", "load", "--input", str(output)], check=True)
-        operator_image="rss-mdm/installer:build-"+uuid.uuid4().hex
+        operator_image="rss-"+product+"/installer:build-"+uuid.uuid4().hex
         operator_archive=out/"installer.oci.tar"
         subprocess.run(["docker","buildx","build",*platform_args,"--build-arg","CACHE_NAMESPACE="+project_name(ROOT),
                         "--build-arg","CARGO_BUILD_JOBS="+jobs,"--provenance=false",
@@ -177,7 +184,7 @@ def build_staged(out, header, web_image=None, target_platform=None):
                         "--build-arg","RUST_IMAGE="+providers["rust"],
                         "--build-arg","RUNTIME_IMAGE="+providers["runtime"],
                         "--build-arg","POSTGRES_IMAGE="+providers["postgres"],
-                        "--target","installer","--tag",operator_image,"--output","type=oci,dest="+str(operator_archive),str(context)],check=True)
+                        "--build-arg","PRODUCT="+product,"--target","da-installer" if product=="da" else "installer","--tag",operator_image,"--output","type=oci,dest="+str(operator_archive),str(context)],check=True)
         operator_digest,operator_config=oci_identity(operator_archive, expected_user="10001:10001")
         if platform(operator_config)!=platform(config):raise ValueError("installer platform mismatch")
         subprocess.run(["docker","load","--input",str(operator_archive)],check=True)
@@ -187,26 +194,32 @@ def build_staged(out, header, web_image=None, target_platform=None):
             raise ValueError("server and installer installation manifests differ")
         version = run(["docker", "run", "--rm", "--network", "none", image, "--version"])
         deployment = {}
-        for name in DEPLOYMENT_FILES:
-            original = (source / "fixtures/mdm-config.example.json" if name == "mdm-config.example.json"
+        for name in deployment_files(product):
+            original = (source / "crates/device-access-runtime/schema/roles.sql" if name == "deployment/device-access-roles.sql"
+                        else source / "fixtures/mdm-config.example.json" if name == "mdm-config.example.json"
                         else source / ("apps/server/schema/" + Path(name).name) if name.endswith("-roles.sql")
                         else source / name)
             target = out / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(original, target)
             deployment[name] = sha(target)
+        if product=="da":
+            for command, filename in [("http-contract","http-contract.json"),("status-mapping","status-mapping.json")]:
+                artifact=out/filename
+                artifact.write_text(run(["docker","run","--rm","--network","none",image,command])+"\n")
+                deployment[filename]=sha(artifact)
         build = out / "build"
         build.mkdir()
         for name in ("Cargo.lock", "rust-toolchain.toml"):
             shutil.copy(source / name, build / name)
         tools = {}
-        for tool in RUNTIME_TOOLS:
+        for tool in (RUNTIME_TOOLS if product=="mdm" else ()):
             target = out / "tools" / tool
             target.parent.mkdir(exist_ok=True)
             shutil.copy(ROOT / "hack" / tool, target)
             tools[tool] = sha(target)
         manifest = {
-            "format_version": 1,
+            "format_version": 1, "product":product,
             "installer": {"image":operator_image+"@"+operator_digest,
                           "archive":{"file":operator_archive.name,"sha256":sha(operator_archive),"manifest_digest":operator_digest}},
             "source": {"inputs_sha256": inputs_sha256},
@@ -224,6 +237,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--git-auth-header-file", type=Path, required=True)
     parser.add_argument("--web-image", help="optional immutable UI image ID or repository digest for combined delivery")
+    parser.add_argument("--product",choices=["mdm","da"],default="mdm")
     parser.add_argument("--platform", choices=["linux/arm64", "linux/amd64"])
     args = parser.parse_args()
-    build(args.output.resolve(), args.git_auth_header_file.absolute(), args.web_image, args.platform)
+    build(args.output.resolve(), args.git_auth_header_file.absolute(), args.web_image, args.platform,args.product)

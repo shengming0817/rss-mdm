@@ -203,3 +203,6 @@ impl<T> std::fmt::Debug for Secret<T> {
         f.write_str("[REDACTED]")
     }
 }
+
+/// Application-owned DA policy templates.
+pub mod da;

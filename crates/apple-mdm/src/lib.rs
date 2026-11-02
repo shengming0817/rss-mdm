@@ -18,3 +18,6 @@ pub enum Error {
 #[cfg(test)]
 #[path = "../tests/software.rs"]
 mod software_tests;
+
+/// Native managed DA configuration carriers.
+pub mod da;

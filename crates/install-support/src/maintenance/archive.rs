@@ -1,10 +1,10 @@
 //! 停写后的 PostgreSQL 原样归档；数据库备份不是内容卷、对象版本和密钥的替代品。
-use crate::installation::{Error, Result, local::Journal};
+use super::{Error, Result, journal::Journal};
 use serde::{Deserialize, Serialize};
 use std::{io::Read, os::unix::fs::OpenOptionsExt, path::Path};
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(in crate::installation) struct DatabaseBackup {
+pub struct DatabaseBackup {
     pub sha256: String,
     pub bytes: u64,
 }
@@ -17,12 +17,11 @@ fn database_digest(path: &Path) -> Result<DatabaseBackup> {
 }
 
 /// The archive and restore client major must match the server, including telemetry (all use PostgreSQL 17).
-async fn client(database: &crate::config::Database, restore: bool) -> Result<&'static str> {
+async fn client(database: &Database<'_>, restore: bool) -> Result<&'static str> {
     use sqlx::Connection;
-    let mut connection =
-        sqlx::PgConnection::connect_with(&database.options().map_err(|_| Error::Input)?)
-            .await
-            .map_err(|_| Error::Storage)?;
+    let mut connection = sqlx::PgConnection::connect_with(&database.options)
+        .await
+        .map_err(|_| Error::Storage)?;
     let major: i32 =
         sqlx::query_scalar("SELECT current_setting('server_version_num')::integer/10000")
             .fetch_one(&mut connection)
@@ -54,10 +53,7 @@ async fn client(database: &crate::config::Database, restore: bool) -> Result<&'s
     Ok(tool)
 }
 
-pub(in crate::installation) async fn capture(
-    journal: &Journal,
-    database: &crate::config::Database,
-) -> Result<DatabaseBackup> {
+pub async fn capture(journal: &Journal, database: &Database<'_>) -> Result<DatabaseBackup> {
     let path = journal.path("database.dump")?;
     if let Some(previous) = journal.load::<DatabaseBackup>("database-backup.json")? {
         let actual = database_digest(&path)?;
@@ -73,29 +69,29 @@ pub(in crate::installation) async fn capture(
         .mode(0o600)
         .open(&stage)
         .map_err(|_| Error::Storage)?;
-    let password = crate::config::secret(&database.password_file).map_err(|_| Error::Input)?;
+    let password = crate::files::secret(database.password_file).map_err(|_| Error::Input)?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3600),
         tokio::process::Command::new(client(database, false).await?)
             .args([
                 "--format=custom",
-                "--exclude-table=public.mdm_restore_operation",
+                database.exclude_marker(),
                 "--no-password",
                 "--host",
-                &database.host,
+                database.host,
                 "--port",
                 &database.port.to_string(),
                 "--username",
-                &database.user,
+                database.user,
                 "--dbname",
-                &database.name,
+                database.name,
             ])
             .env_remove("PGSERVICE")
             .env_remove("PGSERVICEFILE")
             .env_remove("PGOPTIONS")
             .env("PGPASSWORD", password.as_str())
             .env("PGSSLMODE", "verify-full")
-            .env("PGSSLROOTCERT", &database.ca_file)
+            .env("PGSSLROOTCERT", database.ca_file)
             .env("PGCONNECT_TIMEOUT", "5")
             .stdin(std::process::Stdio::null())
             .stdout(file)
@@ -126,7 +122,7 @@ struct FileRecord {
     sha256: String,
     bytes: u64,
 }
-pub(in crate::installation) fn file_digest(path: &Path) -> Result<DatabaseBackup> {
+pub fn file_digest(path: &Path) -> Result<DatabaseBackup> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -161,13 +157,13 @@ pub(in crate::installation) fn file_digest(path: &Path) -> Result<DatabaseBackup
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(in crate::installation) struct Bundle {
+pub struct Bundle {
     pub format: u32,
     pub operation: uuid::Uuid,
     files: Vec<FileRecord>,
 }
 /// 清单只包含停写快照及其原保管文件，不包含仍会推进的操作检查点。
-pub(in crate::installation) fn seal(journal: &Journal, operation: uuid::Uuid) -> Result<String> {
+pub fn seal(journal: &Journal, operation: uuid::Uuid) -> Result<String> {
     let name = "backup-manifest.json";
     if let Some(bundle) = journal.load::<Bundle>(name)? {
         if bundle.operation != operation {
@@ -235,7 +231,7 @@ pub(in crate::installation) fn seal(journal: &Journal, operation: uuid::Uuid) ->
     Ok(file_digest(&journal.path(name)?)?.sha256)
 }
 /// 期望摘要必须来自独立保存的备份回执，不能从待恢复目录自我取信。
-pub(in crate::installation) fn verify(journal: &Journal, expected: &str) -> Result<Bundle> {
+pub fn verify(journal: &Journal, expected: &str) -> Result<Bundle> {
     if expected.len() != 64
         || file_digest(&journal.path("backup-manifest.json")?)?.sha256 != expected
     {
@@ -296,10 +292,7 @@ pub(in crate::installation) fn verify(journal: &Journal, expected: &str) -> Resu
     Ok(bundle)
 }
 
-pub(in crate::installation) async fn restore_database(
-    journal: &Journal,
-    database: &crate::config::Database,
-) -> Result<()> {
+pub async fn restore_database(journal: &Journal, database: &Database<'_>) -> Result<()> {
     let expected: DatabaseBackup = journal
         .load("database-backup.json")?
         .ok_or(Error::Corrupt)?;
@@ -308,7 +301,7 @@ pub(in crate::installation) async fn restore_database(
     if expected.sha256 != actual.sha256 || expected.bytes != actual.bytes {
         return Err(Error::Corrupt);
     }
-    let password = crate::config::secret(&database.password_file).map_err(|_| Error::Input)?;
+    let password = crate::files::secret(database.password_file).map_err(|_| Error::Input)?;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3600),
         tokio::process::Command::new(client(database, true).await?)
@@ -317,13 +310,13 @@ pub(in crate::installation) async fn restore_database(
                 "--exit-on-error",
                 "--no-password",
                 "--host",
-                &database.host,
+                database.host,
                 "--port",
                 &database.port.to_string(),
                 "--username",
-                &database.user,
+                database.user,
                 "--dbname",
-                &database.name,
+                database.name,
             ])
             .arg(path)
             .env_remove("PGSERVICE")
@@ -331,7 +324,7 @@ pub(in crate::installation) async fn restore_database(
             .env_remove("PGOPTIONS")
             .env("PGPASSWORD", password.as_str())
             .env("PGSSLMODE", "verify-full")
-            .env("PGSSLROOTCERT", &database.ca_file)
+            .env("PGSSLROOTCERT", database.ca_file)
             .env("PGCONNECT_TIMEOUT", "5")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -344,6 +337,26 @@ pub(in crate::installation) async fn restore_database(
         return Err(Error::Storage);
     }
     Ok(())
+}
+
+/// Exact process connection inputs for PostgreSQL archive tools.
+pub struct Database<'a> {
+    pub options: sqlx::postgres::PgConnectOptions,
+    pub host: &'a str,
+    pub port: u16,
+    pub name: &'a str,
+    pub user: &'a str,
+    pub password_file: &'a Path,
+    pub ca_file: &'a Path,
+    pub profile: crate::StorageProfile,
+}
+impl Database<'_> {
+    fn exclude_marker(&self) -> &'static str {
+        match self.profile {
+            crate::StorageProfile::Mdm => "--exclude-table=public.mdm_restore_operation",
+            crate::StorageProfile::Da => "--exclude-table=public.da_restore_operation",
+        }
+    }
 }
 
 #[cfg(test)]

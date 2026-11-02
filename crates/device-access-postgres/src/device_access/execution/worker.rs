@@ -103,6 +103,9 @@ impl Worker {
     }
     /// Host polls each concrete owner once in the single existing relay loop.
     pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
+        if !self.service.accepts_new_work() {
+            return Ok(0);
+        }
         let claims = self
             .outbox
             .claim_partition_heads(
@@ -250,6 +253,9 @@ async fn prepare_in(
     entity: &str,
 ) -> crate::device_access::execution::transaction::Result<Prepared> {
     service.transactions.validate_in(tx)?;
+    if !service.accepts_new_work() && entity.starts_with("policy:") {
+        return Ok(Prepared::Policy(None));
+    }
     if let Some(id) = entity
         .strip_prefix("policy:")
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -341,6 +347,9 @@ async fn pending_in(
     entity: &str,
 ) -> crate::device_access::execution::transaction::Result<bool> {
     service.transactions.validate_in(tx)?;
+    if !service.accepts_new_work() && entity.starts_with("policy:") {
+        return Ok(false);
+    }
     let tenant = tx.tenant_id().to_string();
     if let Some(id) = entity
         .strip_prefix("policy:")

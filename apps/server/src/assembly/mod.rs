@@ -34,7 +34,7 @@ pub(crate) mod software;
 pub(crate) mod task_trust;
 pub(crate) mod webhooks;
 pub(crate) struct Assembly {
-    pub(crate) da: Arc<device_access::Assembly>,
+    pub(crate) da: Option<Arc<device_access::Assembly>>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
     pub(crate) collection_work:
         Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
@@ -101,7 +101,7 @@ pub(crate) struct Assembly {
 }
 
 pub(crate) struct AssemblyDependencies {
-    pub(crate) da: Arc<device_access::Assembly>,
+    pub(crate) da: Option<Arc<device_access::Assembly>>,
     pub(crate) script_work: Arc<rss_mdm_script_service::worker::Worker>,
     pub(crate) collection_work:
         Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
@@ -486,10 +486,8 @@ pub(crate) async fn from_compiled(
     )
     .await?;
     let platform_configuration = da
-        .runtime
-        .platform
-        .platform_sso
         .as_ref()
+        .and_then(|d| d.runtime.platform.platform_sso.as_ref())
         .map(|runtime| runtime.qualification_configuration())
         .transpose()
         .map_err(|_| Error::Configuration(crate::ConfigIssue::DeviceAccess))?;

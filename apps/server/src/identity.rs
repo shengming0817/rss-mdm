@@ -1,4 +1,4 @@
-pub mod enterprise;
+use rss_mdm_device_access_runtime::enterprise;
 // Product assembly of the four public Identity components. The database is the authority.
 use crate::{
     ConfigIssue, Error, Failure,
@@ -68,7 +68,7 @@ pub(crate) struct Identity {
         Arc<rss_mdm_device_access_postgres::enterprise::keycloak::Administrator>,
     >,
     pub(crate) enterprise_platform:
-        Arc<rss_mdm_device_access_postgres::enterprise::platform::Verifier>,
+        Option<Arc<rss_mdm_device_access_postgres::enterprise::platform::Verifier>>,
     pub(crate) enterprise_clients:
         BTreeMap<String, Arc<dyn rss_mdm_device_access_postgres::enterprise::broker::Client>>,
     pub(crate) runtime: Arc<PgRuntime>,
@@ -126,7 +126,10 @@ impl Identity {
             acquire,
             |authority| authority,
             OidcConfig::federation,
-            enterprise::Backend::load,
+            |input, tenant| {
+                enterprise::Backend::load(input, tenant)
+                    .map_err(|_| Error::Configuration(ConfigIssue::IdentityConfiguration))
+            },
         )
         .await
     }
@@ -179,7 +182,12 @@ impl Identity {
             String,
             Arc<dyn rss_mdm_device_access_postgres::enterprise::broker::Client>,
         > = BTreeMap::new();
-        if let Some(deployment) = &config.identity.enterprise {
+        if let Some(deployment) = config
+            .identity
+            .enterprise
+            .as_ref()
+            .filter(|_| config.device_access.is_some())
+        {
             if deployment.clients.is_empty() || deployment.clients.len() > 64 {
                 return Err(invalid());
             }
@@ -213,7 +221,12 @@ impl Identity {
             );
         }
         let mut enterprise_administrators = BTreeMap::new();
-        if let Some(deployment) = &config.identity.enterprise {
+        if let Some(deployment) = config
+            .identity
+            .enterprise
+            .as_ref()
+            .filter(|_| config.device_access.is_some())
+        {
             if deployment.administrators.len() > 64 {
                 return Err(invalid());
             }
@@ -246,16 +259,20 @@ impl Identity {
         let apple = platform
             .as_ref()
             .map(|p| p.clone() as Arc<dyn rss_identity_postgres::platform::PlatformVerifier>);
-        let enterprise_platform = Arc::new(
-            rss_mdm_device_access_postgres::enterprise::platform::Verifier::new(
-                &config.product_origin,
-                tenant,
-                runtime.clone(),
-                apple,
-                target_fingerprints,
-            ),
-        );
-        options = options.with_platform(enterprise_platform.clone());
+        let enterprise_platform = config.device_access.as_ref().map(|_| {
+            Arc::new(
+                rss_mdm_device_access_postgres::enterprise::platform::Verifier::new(
+                    &config.product_origin,
+                    tenant,
+                    runtime.clone(),
+                    apple,
+                    target_fingerprints,
+                ),
+            )
+        });
+        if let Some(verifier) = &enterprise_platform {
+            options = options.with_platform(verifier.clone());
+        }
         let authority = Authority::connect_runtime(
             runtime.clone(),
             kdf.clone(),

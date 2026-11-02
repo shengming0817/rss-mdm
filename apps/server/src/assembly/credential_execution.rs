@@ -36,6 +36,7 @@ pub(crate) async fn assemble(
         apple_results: apple,
     });
     let materials = Arc::new(tasks::Materials {
+        accepting: true,
         product: None,
         agent_store: Arc::new(super::registration_agent_facts::AgentFacts::new(
             rss_mdm_install_support::StorageProfile::Mdm,
@@ -45,6 +46,7 @@ pub(crate) async fn assemble(
         recovery_credentials: credentials.clone(),
     });
     let da_materials = Arc::new(tasks::Materials {
+        accepting: config.device_access.is_some(),
         product: Some(Arc::new(
             rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
                 admission: None,
@@ -143,25 +145,28 @@ pub(crate) async fn assemble(
         .validate_keys()
         .await
         .map_err(super::owner_errors::credential)?;
-    let da_maintenance = Arc::new(rss_mdm_recovery_credentials::maintenance::Maintenance::new(
-        rss_mdm_install_support::StorageProfile::Da,
-        runtime,
-        tenant,
-        audit,
-        credentials,
-        None,
-        budget,
-        Some(Arc::new(
-            rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
-                admission: None,
-            },
-        )),
-    ));
-    da_maintenance
-        .validate_keys()
-        .await
-        .map_err(super::owner_errors::credential)?;
-    let maintenance = vec![maintenance, da_maintenance];
+    let mut maintenance = vec![maintenance];
+    if config.device_access.is_some() {
+        let da_maintenance = Arc::new(rss_mdm_recovery_credentials::maintenance::Maintenance::new(
+            rss_mdm_install_support::StorageProfile::Da,
+            runtime,
+            tenant,
+            audit,
+            credentials,
+            None,
+            budget,
+            Some(Arc::new(
+                rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
+                    admission: None,
+                },
+            )),
+        ));
+        da_maintenance
+            .validate_keys()
+            .await
+            .map_err(super::owner_errors::credential)?;
+        maintenance.push(da_maintenance);
+    }
     Ok(Assembly {
         tasks,
         worker,

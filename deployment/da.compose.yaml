@@ -1,0 +1,36 @@
+# Operator supplies immutable images and complete production material at the same absolute path.
+services:
+  server:
+    image: ${DA_SERVER_IMAGE:?}
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: [serve, --config, "${DA_INSTALLATION_ROOT:?}/runtime/runtime.json"]
+    ports:
+      - "${DA_BROWSER_PUBLISH:?}:8443"
+      - "${DA_DEVICE_PUBLISH:?}:8444"
+    volumes:
+      - type: bind
+        source: ${DA_INSTALLATION_ROOT:?}/runtime
+        target: ${DA_INSTALLATION_ROOT:?}/runtime
+        read_only: true
+        bind: {create_host_path: false}
+    restart: unless-stopped
+    stop_grace_period: 50s
+  installer:
+    profiles: [operator]
+    image: ${DA_INSTALLER_IMAGE:?}
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - type: bind
+        source: ${DA_INSTALLATION_ROOT:?}
+        target: ${DA_INSTALLATION_ROOT:?}
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${DA_ARCHIVE_ROOT:?}
+        target: ${DA_ARCHIVE_ROOT:?}
+        bind: {create_host_path: false}
+    restart: "no"

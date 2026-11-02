@@ -2,6 +2,7 @@
 //! No Agent/native runtime or MDM application is assembled here.
 mod agent_transport;
 mod boundary;
+pub mod browser;
 mod configurations;
 mod error;
 pub mod tls;
@@ -11,7 +12,7 @@ use axum::{
 };
 use boundary::Administrator;
 pub use error::Error;
-use rss_mdm_agent_wire::{da, enroll, pki, task_trust};
+use rss_mdm_agent_wire::{da, enroll, pki as wire_pki, task_trust};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_certificate::ClientCertificateEvidence;
 use rss_mdm_http_contract::{
@@ -45,40 +46,57 @@ static PROTOCOL: rss_mdm_http_contract::Resource = rss_mdm_http_contract::Resour
 pub fn router(
     service: Arc<Services>,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    let business = service.business.as_ref();
-    let authentication = platform_sso::Authentication::Da(service.registrations.clone());
+    protocol(Some(service))
+}
+fn protocol(
+    service: Option<Arc<Services>>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let business = service.as_ref().and_then(|s| s.business.as_ref());
+    let authentication = service
+        .as_ref()
+        .map(|s| platform_sso::Authentication::Da(s.registrations.clone()));
     let access = agent_access::routes(business.map(|b| {
         Arc::new(agent_access::Services {
-            authentication: authentication.clone(),
-            identity: service.sessions.clone(),
-            authorization: service.authorization.clone(),
+            authentication: authentication.clone().expect("runtime service"),
+            identity: service.as_ref().expect("runtime service").sessions.clone(),
+            authorization: service
+                .as_ref()
+                .expect("runtime service")
+                .authorization
+                .clone(),
             business: b.service.clone(),
             admission: b.admission.clone(),
         })
     }));
-    let psso = platform_sso::mount_agent(business.map(|b| (b.platform.clone(), authentication)));
+    let psso = platform_sso::mount_agent(
+        business.map(|b| (b.platform.clone(), authentication.expect("runtime service"))),
+    );
     rss_mdm_http_contract::route_module! {struct DaBusinessProtocol for [Da]{access,psso}}
-    let business = DaBusinessProtocol { access, psso }
-        .assemble()
-        .when("device_access_business", business.is_some());
+    let business = DaBusinessProtocol { access, psso }.assemble().when(
+        "device_access_business",
+        service.as_ref().is_none_or(|s| s.business.is_some()),
+    );
     rss_mdm_http_contract::route_module! {struct DaProtocol for [Da]{foundation,configuration_reports,business [optional] at "/api/v1/da",evidence}}
-    DaProtocol {
-        configuration_reports: configurations::routes().bind_with(Some(&service), Arc::clone),
-        foundation: declarations().bind_with(Some(&service), Arc::clone),
+    let routes = DaProtocol {
+        configuration_reports: configurations::routes().bind_with(service.as_ref(), Arc::clone),
+        foundation: declarations().bind_with(service.as_ref(), Arc::clone),
         business,
-        evidence: administration::evidence_routes().bind_with(Some(&service), Arc::clone),
+        evidence: administration::evidence_routes().bind_with(service.as_ref(), Arc::clone),
     }
     .assemble()
-    .layer(axum::extract::DefaultBodyLimit::max(131072))
-    .layer(axum::middleware::from_fn_with_state(
-        service,
-        boundary::admit,
-    ))
+    .layer(axum::extract::DefaultBodyLimit::max(131072));
+    match service {
+        Some(service) => routes.layer(axum::middleware::from_fn_with_state(
+            service,
+            boundary::admit,
+        )),
+        None => routes,
+    }
 }
 
 fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>>
 {
-    rss_mdm_http_contract::route_module! { struct DaRoutes for [Da] { grant, issue, recover_issuance, activate, status, renew, recover, revoke, pki_trust, pki_ack, configuration_trust, configuration_ack, trust_read, trust_change, trust_operation, export, export_operation, retrieve } }
+    rss_mdm_http_contract::route_module! { struct DaRoutes for [Da] { grant, issue, recover_issuance, activate, status, renew, recover, revoke, pki_trust, pki_ack, configuration_trust, configuration_ack, trust_read, trust_change, trust_operation, export, export_operation, templates, retrieve } }
     DaRoutes {
         grant: Route::new(
             "/api/v1/da/grants",
@@ -147,6 +165,10 @@ fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::D
         export_operation: Route::new(
             "/api/v1/da/configuration-operations/{operation}",
             get(export_operation, &PROTOCOL, &[Operation::Action]),
+        ),
+        templates: Route::new(
+            "/api/v1/da/configuration-operations/{operation}/templates",
+            get(exports::templates, &PROTOCOL, &[Operation::Action]),
         ),
         retrieve: Route::new(
             "/api/v1/da/configurations/{operation}",
@@ -243,7 +265,7 @@ async fn revoke(
 async fn pki_trust(
     State(s): State<Arc<Services>>,
     tls: Option<Extension<ClientCertificateEvidence>>,
-) -> Result<Json<pki::Trust>, Error> {
+) -> Result<Json<wire_pki::Trust>, Error> {
     Ok(Json(
         s.registrations
             .device_trust(tls.as_ref().map(|v| &v.0))
@@ -254,7 +276,7 @@ async fn pki_ack(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     tls: Option<Extension<ClientCertificateEvidence>>,
-    v: Body<pki::Acknowledgement>,
+    v: Body<wire_pki::Acknowledgement>,
 ) -> Result<(), Error> {
     s.registrations
         .acknowledge_trust(&peer(tls)?, &body(v)?, &a)
@@ -394,4 +416,27 @@ pub struct Business {
     pub service: Arc<rss_mdm_device_access_postgres::Service>,
     pub admission: Arc<dyn rss_mdm_device_access_postgres::device_access::Admission>,
     pub platform: Arc<platform_sso::HttpState>,
+}
+
+pub mod exports;
+pub mod pki;
+
+/// Offline projection from the exact DA production declarations.
+pub fn contract() -> Result<serde_json::Value, Error> {
+    let routes = protocol(None);
+    let browser = browser::router(None);
+    if !routes
+        .validate(rss_mdm_http_contract::module::Listener::Da)
+        .is_empty()
+        || !browser
+            .validate(rss_mdm_http_contract::module::Listener::Browser)
+            .is_empty()
+    {
+        return Err(Error::Unavailable);
+    }
+    rss_mdm_http_contract::artifact::document([
+        ("da", routes.into_endpoints()),
+        ("browser", browser.into_endpoints()),
+    ])
+    .map_err(|_| Error::Unavailable)
 }

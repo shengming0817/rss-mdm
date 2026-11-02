@@ -1,5 +1,5 @@
 //! Exact cold filesystem snapshots; no symlink traversal or overwrite of different restored bytes.
-use super::{Error, Result, backup::archive::file_digest, local::Journal};
+use super::{Error, Result, archive::file_digest, journal::Journal};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
@@ -21,6 +21,7 @@ struct Node {
 struct Tree {
     source: PathBuf,
     nodes: Vec<Node>,
+    excluded: Vec<PathBuf>,
 }
 fn absolute(path: &Path) -> Result<()> {
     if !path.is_absolute()
@@ -89,15 +90,30 @@ fn copy(source: &Path, target: &Path) -> Result<()> {
         .and_then(|f| f.sync_all())
         .map_err(|_| Error::Storage)
 }
-pub(super) fn capture(journal: &Journal, name: &str, source: &Path) -> Result<()> {
+pub fn capture(journal: &Journal, name: &str, source: &Path) -> Result<()> {
+    capture_excluding(journal, name, source, &[])
+}
+/// Exclude host-owned mutable checkpoints, never silently overwrite them during restore.
+pub fn capture_excluding(
+    journal: &Journal,
+    name: &str,
+    source: &Path,
+    excluded: &[PathBuf],
+) -> Result<()> {
     absolute(source)?;
+    for path in excluded {
+        relative(path)?;
+        if path.as_os_str().is_empty() {
+            return Err(Error::Input);
+        }
+    }
     let archive = journal.path(name)?;
     if archive.starts_with(source) || source.starts_with(&archive) {
         return Err(Error::Input);
     }
     let manifest = format!("{name}.json");
     if let Some(tree) = journal.load::<Tree>(&manifest)? {
-        if tree.source != source {
+        if tree.source != source || tree.excluded != excluded {
             return Err(Error::Conflict);
         }
         return verify(&archive, &tree);
@@ -132,6 +148,9 @@ pub(super) fn capture(journal: &Journal, name: &str, source: &Path) -> Result<()
                 continue;
             }
             let path = path.join(entry.file_name());
+            if excluded.contains(&path) {
+                continue;
+            }
             relative(&path)?;
             let metadata = std::fs::symlink_metadata(entry.path()).map_err(|_| Error::Storage)?;
             if metadata.is_dir() {
@@ -158,6 +177,7 @@ pub(super) fn capture(journal: &Journal, name: &str, source: &Path) -> Result<()
     }
     nodes.sort_by(|a, b| a.relative.cmp(&b.relative));
     let tree = Tree {
+        excluded: excluded.to_vec(),
         source: source.into(),
         nodes,
     };
@@ -191,7 +211,7 @@ fn verify(archive: &Path, tree: &Tree) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn restore(journal: &Journal, name: &str) -> Result<()> {
+pub fn restore(journal: &Journal, name: &str) -> Result<()> {
     let tree: Tree = journal
         .load(&format!("{name}.json"))?
         .ok_or(Error::Corrupt)?;
@@ -250,7 +270,7 @@ struct ExternalFile {
     source: PathBuf,
     node: Node,
 }
-pub(super) fn capture_inputs(journal: &Journal, values: &[serde_json::Value]) -> Result<()> {
+pub fn capture_inputs(journal: &Journal, values: &[serde_json::Value]) -> Result<()> {
     fn collect(
         value: &serde_json::Value,
         paths: &mut std::collections::BTreeSet<PathBuf>,
@@ -260,7 +280,10 @@ pub(super) fn capture_inputs(journal: &Journal, values: &[serde_json::Value]) ->
                 for (name, value) in object {
                     if name.ends_with("_file") && value.is_string() {
                         paths.insert(PathBuf::from(value.as_str().ok_or(Error::Input)?));
-                    } else if matches!(name.as_str(), "key_files" | "credential_keys") {
+                    } else if matches!(
+                        name.as_str(),
+                        "key_files" | "credential_keys" | "signing_keys"
+                    ) {
                         for value in value.as_object().ok_or(Error::Input)?.values() {
                             paths.insert(PathBuf::from(value.as_str().ok_or(Error::Input)?));
                         }
@@ -335,7 +358,7 @@ fn verify_external(journal: &Journal, file: &ExternalFile) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn restore_inputs(journal: &Journal) -> Result<()> {
+pub fn restore_inputs(journal: &Journal) -> Result<()> {
     let files: Vec<ExternalFile> = journal.load("inputs.json")?.ok_or(Error::Corrupt)?;
     for file in files {
         verify_external(journal, &file)?;
@@ -397,16 +420,35 @@ mod tests {
         let source = root.join("source");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(root.join("secret"), b"original key").unwrap();
+        let signing_key = root.join("psso-private-key");
+        std::fs::write(&signing_key, b"original signing identity").unwrap();
+        std::fs::set_permissions(&signing_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let original = std::fs::metadata(&signing_key).unwrap();
         std::os::unix::fs::symlink(root.join("secret"), source.join("link")).unwrap();
         let journal = Journal::open(&root.join("archive")).unwrap();
         assert!(capture(&journal, "tree", &source).is_err());
         capture_inputs(
             &journal,
-            &[serde_json::json!({"key_files":{"original":root.join("secret")}})],
+            &[serde_json::json!({
+                "key_files":{"original":root.join("secret")},
+                "platform_sso":{"signing_keys":{"active":signing_key}}
+            })],
         )
         .unwrap();
         std::fs::remove_file(root.join("secret")).unwrap();
+        std::fs::remove_file(&signing_key).unwrap();
         restore_inputs(&journal).unwrap();
         assert_eq!(std::fs::read(root.join("secret")).unwrap(), b"original key");
+        assert_eq!(
+            std::fs::read(&signing_key).unwrap(),
+            b"original signing identity"
+        );
+        let restored = std::fs::metadata(&signing_key).unwrap();
+        assert_eq!(restored.mode(), original.mode());
+        assert_eq!(restored.uid(), original.uid());
+        assert_eq!(restored.gid(), original.gid());
+        restore_inputs(&journal).unwrap();
+        std::fs::write(&signing_key, b"another signing identity").unwrap();
+        assert!(matches!(restore_inputs(&journal), Err(Error::Conflict)));
     }
 }

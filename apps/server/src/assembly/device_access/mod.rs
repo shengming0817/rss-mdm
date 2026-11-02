@@ -43,7 +43,7 @@ pub(crate) async fn open(
     cursor: &[u8],
     mut acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
 ) -> Result<Assembly, Error> {
-    let d = &config.device_access;
+    let d = config.device_access.as_ref().ok_or_else(invalid)?;
     if d.database.user != "da_access"
         || d.database.host != config.access_database.host
         || d.database.port != config.access_database.port
@@ -104,7 +104,8 @@ pub(crate) async fn open(
         .platform_sso
         .as_ref()
         .map(|p| p.load(&config.product_origin, identity.tenant, &evidence))
-        .transpose()?;
+        .transpose()
+        .map_err(|_| invalid())?;
     let mut pki = None;
     let inputs = if let Some(r) = &d.registration {
         use crate::clock::Clock as _;
@@ -229,7 +230,7 @@ pub(crate) async fn open(
     let recovery = config
         .recovery_credentials
         .as_ref()
-        .map(crate::recovery_credentials::Config::open)
+        .map(crate::recovery_credentials::open)
         .transpose()?
         .map(|p| {
             Arc::new(rss_mdm_recovery_credentials::Credentials::new(
@@ -280,12 +281,20 @@ pub(crate) fn browser(
         &Arc<super::Assembly>,
         &rss_mdm_management_http::boundary::Envelope,
     )>,
+    enabled: bool,
 ) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     use rss_mdm_device_access_http as http;
+    let runtime = runtime.filter(|(s, _)| s.da.is_some());
     let state = runtime.map(|(s, _)| s);
     let psso = state.map(|s| {
         Arc::new(http::platform_sso::HttpState {
-            context: s.da.runtime.platform.clone(),
+            context: s
+                .da
+                .as_ref()
+                .expect("enabled DA assembly")
+                .runtime
+                .platform
+                .clone(),
             authority: s.identity.authority.clone(),
             origin: format!("https://{}", runtime.unwrap().1.host),
         })
@@ -294,9 +303,21 @@ pub(crate) fn browser(
         Arc::new(http::device_access::Services {
             cursor: rss_mdm_query::cursor::CursorCodec::new(&s.cursor_key)
                 .expect("admitted cursor"),
-            recovery: s.da.recovery.clone(),
-            registration: s.da.runtime.business.clone(),
-            admission: s.da.runtime.admission.clone(),
+            recovery: s.da.as_ref().expect("enabled DA assembly").recovery.clone(),
+            registration: s
+                .da
+                .as_ref()
+                .expect("enabled DA assembly")
+                .runtime
+                .business
+                .clone(),
+            admission: s
+                .da
+                .as_ref()
+                .expect("enabled DA assembly")
+                .runtime
+                .admission
+                .clone(),
             identity: s.identity.da_browser(),
         })
     });
@@ -306,7 +327,12 @@ pub(crate) fn browser(
         Arc::new(
             rss_mdm_management_http::authorization::http::AuthenticationState {
                 identity: s.identity.browser(),
-                access: s.da.authorization.clone(),
+                access: s
+                    .da
+                    .as_ref()
+                    .expect("enabled DA assembly")
+                    .authorization
+                    .clone(),
                 requests: s.requests.clone(),
             },
         )
@@ -329,19 +355,20 @@ pub(crate) fn browser(
         false,
     );
     rss_mdm_http_contract::route_module! {struct DaBrowser for [Browser]{protected,broker [optional],browser}}
-    let router=DaBrowser{protected,broker:http::enterprise_broker::mount(state.map(|s|Arc::new(http::enterprise_broker::Services{registration:s.da.runtime.business.clone(),admission:s.da.runtime.admission.clone(),identity:s.identity.da_browser(),origin:format!("https://{}",runtime.unwrap().1.host),platform_configuration:match &s.platform_configuration {Some(c)=>serde_json::to_value(c).expect("closed configuration"),None=>serde_json::json!({"authorities":s.da.runtime.admission.evidence.fingerprints()})}})),true),browser:http::platform_sso::browser_routes().bind_with(psso.as_ref(),Arc::clone)}.assemble();
-    if let Some((s, envelope)) = runtime {
+    let router=DaBrowser{protected,broker:http::enterprise_broker::mount(state.map(|s|Arc::new(http::enterprise_broker::Services{registration:s.da.as_ref().expect("enabled DA assembly").runtime.business.clone(),admission:s.da.as_ref().expect("enabled DA assembly").runtime.admission.clone(),identity:s.identity.da_browser(),origin:format!("https://{}",runtime.unwrap().1.host),platform_configuration:match &s.platform_configuration {Some(c)=>serde_json::to_value(c).expect("closed configuration"),None=>serde_json::json!({"authorities":s.da.as_ref().expect("enabled DA assembly").runtime.admission.evidence.fingerprints()})}})),true),browser:http::platform_sso::browser_routes().bind_with(psso.as_ref(),Arc::clone)}.assemble();
+    let router = if let Some((s, envelope)) = runtime {
         rss_mdm_management_http::boundary::wrap(
             router,
             rss_mdm_management_http::boundary::Envelope {
                 profile: StorageProfile::Da,
-                audit_store: s.da.audit.clone(),
+                audit_store: s.da.as_ref().expect("enabled DA assembly").audit.clone(),
                 ..envelope.clone()
             },
         )
     } else {
         router
-    }
+    };
+    router.when("device_access", enabled)
 }
 
 pub(crate) async fn listener(
@@ -350,7 +377,12 @@ pub(crate) async fn listener(
     assembly: &Assembly,
 ) -> Result<Option<rss_runtime::ManagedTaskRegistration>, Error> {
     use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-    let Some(input) = &config.device_access.registration else {
+    let Some(input) = &config
+        .device_access
+        .as_ref()
+        .ok_or_else(invalid)?
+        .registration
+    else {
         return Ok(None);
     };
     let origin = crate::config::https_url(&input.origin).map_err(|_| invalid())?;

@@ -14,7 +14,7 @@ pub mod host;
 #[cfg(unix)]
 pub mod install;
 #[cfg(unix)]
-mod local;
+use rss_mdm_install_support::maintenance::journal as local;
 pub mod model;
 #[cfg(unix)]
 mod postgres;
@@ -26,20 +26,7 @@ pub mod public_configuration;
 #[cfg(unix)]
 pub mod runtime_files;
 #[cfg(unix)]
-mod snapshot_tree;
+use rss_mdm_install_support::maintenance::snapshot_tree;
 #[cfg(unix)]
 pub mod tenant_hosts;
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("installation input rejected")]
-    Input,
-    #[error("installation journal is busy")]
-    Busy,
-    #[error("installation input conflicts with the original operation")]
-    Conflict,
-    #[error("installation journal is incomplete or corrupt; restore its original state")]
-    Corrupt,
-    #[error("installation storage unavailable; query the original operation")]
-    Storage,
-}
-pub type Result<T> = std::result::Result<T, Error>;
+pub use rss_mdm_install_support::maintenance::{Error, Result};

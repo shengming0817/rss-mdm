@@ -241,7 +241,9 @@ impl Service {
                     let mut mac = None;
                     if let Some(login) = &publication.configuration.mac {
                         let platform = platform.ok_or(Error::Unsupported)?;
-                        let profile = platform.profile(login)?;
+                        let mut profile = platform.profile(login)?;
+                        rss_mdm_apple_mdm::da::bind(&mut profile)
+                            .map_err(|_| Error::Configuration)?;
                         let origin = platform
                             .endpoints
                             .base

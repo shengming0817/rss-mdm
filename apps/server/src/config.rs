@@ -5,7 +5,6 @@ use crate::Error;
 use serde::Deserialize;
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
 use std::{
-    io::Read,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -133,7 +132,7 @@ impl NativeProtection {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub device_access: crate::assembly::device_access::config::Config,
+    pub device_access: Option<crate::assembly::device_access::config::Config>,
     pub background: crate::background::BackgroundConfig,
     pub telemetry: Option<crate::telemetry::Config>,
     pub runtime_binding: crate::installation::host::Binding,
@@ -143,9 +142,9 @@ pub struct Config {
     #[serde(default)]
     pub software_distribution: rss_mdm_software_service::deployment::SoftwareDistribution,
     pub agent_pki: crate::agent_pki::Config,
-    pub device_pki: Vec<crate::device_pki::Provider>,
+    pub device_pki: Vec<rss_mdm_pki_service::configuration::Provider>,
     pub native_protection: NativeProtection,
-    pub recovery_credentials: Option<crate::recovery_credentials::Config>,
+    pub recovery_credentials: Option<rss_mdm_recovery_credentials::configuration::Config>,
     pub audit: AuditConfig,
     pub listen: SocketAddr,
     pub product_origin: String,
@@ -312,40 +311,41 @@ pub fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, crate::Pro
         column: e.column(),
     })
 }
+fn file_error(e: rss_mdm_install_support::files::Error) -> Error {
+    use rss_mdm_install_support::files::Error as E;
+    Error::Configuration(match e {
+        E::Access => ConfigIssue::FileAccess,
+        E::Shape => ConfigIssue::FileShape,
+        E::Size => ConfigIssue::FileSize,
+        E::Encoding => ConfigIssue::SecretEncoding,
+        E::Contents => ConfigIssue::SecretContents,
+    })
+}
 pub(crate) fn read(path: &Path, limit: u64, private: bool) -> Result<Zeroizing<Vec<u8>>, Error> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    // Open without following symlinks; inspect the same opened file before reading secrets.
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|_| Error::Configuration(ConfigIssue::FileAccess))?;
-    let meta = file
-        .metadata()
-        .map_err(|_| Error::Configuration(ConfigIssue::FileAccess))?;
-    if !meta.is_file() || (private && meta.permissions().mode() & 0o077 != 0) {
-        return Err(Error::Configuration(ConfigIssue::FileShape));
-    }
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| Error::Configuration(ConfigIssue::FileAccess))?;
-    if bytes.len() as u64 > limit {
-        return Err(Error::Configuration(ConfigIssue::FileSize));
-    }
-    Ok(bytes)
+    rss_mdm_install_support::files::read(path, limit, private).map_err(file_error)
 }
 pub(crate) fn secret(path: &Path) -> Result<Zeroizing<String>, Error> {
-    let bytes = read(path, 16384, true)?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| Error::Configuration(ConfigIssue::SecretEncoding))?
-        .trim_end_matches('\n');
-    if text.is_empty() || text.chars().any(char::is_control) {
-        return Err(Error::Configuration(ConfigIssue::SecretContents));
-    }
-    Ok(Zeroizing::new(text.to_owned()))
+    rss_mdm_install_support::files::secret(path).map_err(file_error)
 }
 
 #[cfg(test)]
 #[path = "../tests/config/unit.rs"]
 mod tests;
+
+impl Database {
+    pub fn archive(
+        &self,
+    ) -> std::result::Result<rss_mdm_install_support::maintenance::archive::Database<'_>, Error>
+    {
+        Ok(rss_mdm_install_support::maintenance::archive::Database {
+            options: self.options()?,
+            host: &self.host,
+            port: self.port,
+            name: &self.name,
+            user: &self.user,
+            password_file: &self.password_file,
+            ca_file: &self.ca_file,
+            profile: rss_mdm_install_support::StorageProfile::Mdm,
+        })
+    }
+}

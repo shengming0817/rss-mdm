@@ -79,6 +79,9 @@ impl Service {
         _input: &wire::TaskClaimRequest,
         audit: &RequestAudit,
     ) -> Result<()> {
+        if !self.accepts_new_work() {
+            return Ok(());
+        }
         let owner_audit = audit.product_fact_copy(rss_mdm_install_support::StorageProfile::Da);
         let audit = &owner_audit;
         let service = self;
@@ -125,6 +128,9 @@ impl Service {
         attempt: Uuid,
         audit: &RequestAudit,
     ) -> Result<Option<(wire::TaskPayload, Fact, i64)>> {
+        if !self.accepts_new_work() {
+            return Ok(None);
+        }
         let owner_audit = audit.product_fact_copy(rss_mdm_install_support::StorageProfile::Da);
         let audit = &owner_audit;
         self.agent_prepare_in(tx, p).await?;
@@ -198,6 +204,9 @@ impl Service {
         signed: &wire::SignedTask,
         audit: &RequestAudit,
     ) -> Result<()> {
+        if !self.accepts_new_work() {
+            return Err(Error::Forbidden.into());
+        }
         let owner_audit = audit.product_fact_copy(rss_mdm_install_support::StorageProfile::Da);
         let audit = &owner_audit;
         let run = db::load_run(tx, signed.payload.task_id()).await?;
@@ -225,6 +234,14 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<()> {
+        if !self.accepts_new_work()
+            && matches!(
+                input.event(),
+                wire::TaskEvent::Start | wire::TaskEvent::Received
+            )
+        {
+            return Err(Error::Forbidden.into());
+        }
         let owner_audit = audit.product_fact_copy(rss_mdm_install_support::StorageProfile::Da);
         let audit = &owner_audit;
         let run = db::load_run(tx, id).await?;
@@ -257,6 +274,14 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<EventEffects> {
+        if !self.accepts_new_work()
+            && matches!(
+                input.event(),
+                wire::TaskEvent::Start | wire::TaskEvent::Received
+            )
+        {
+            return Err(Error::Forbidden.into());
+        }
         let owner_audit = audit.product_fact_copy(rss_mdm_install_support::StorageProfile::Da);
         let audit = &owner_audit;
         let service = self;
@@ -276,7 +301,8 @@ impl Service {
         let allowed = plan
             .allowed_in(&service.transactions, tx, &run.target)
             .await?;
-        let effect_allowed = allowed && run.state.cancellation == Cancellation::None;
+        let effect_allowed =
+            self.accepts_new_work() && allowed && run.state.cancellation == Cancellation::None;
         if matches!(
             input.event(),
             wire::TaskEvent::Start | wire::TaskEvent::Received
@@ -349,7 +375,9 @@ impl Service {
                 run.result = Some(value.clone());
             }
             wire::TaskEvent::CredentialEscrow(value) => {
-                if !effect_allowed
+                if !(allowed
+                    && (self.accepts_new_work() && run.state.cancellation == Cancellation::None
+                        || !self.accepts_new_work() && run.state.started_at.is_some()))
                     || !matches!(run.state.execution, Execution::Running | Execution::Unknown)
                     || run.state.started_at.is_none()
                 {

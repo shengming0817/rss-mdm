@@ -46,7 +46,6 @@ rss-mdm-content-s3.workspace = true
 rss-mdm-certificate-archive-service.workspace = true
 rss-mdm-native-protection.workspace = true
 rss-mdm-timeline-service.workspace = true
-rss-mdm-backend-postgres-support.workspace = true
 rss-mdm-management-http.workspace=true
 rss-mdm-apple-channel.workspace=true
 rss-mdm-windows-channel.workspace=true

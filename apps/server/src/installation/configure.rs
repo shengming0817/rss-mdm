@@ -46,7 +46,7 @@ pub struct Channels {
     pub apple: Option<crate::apple::config::Config>,
     pub agent: crate::agent_pki::Config,
     #[serde(default)]
-    pub providers: Vec<crate::device_pki::Provider>,
+    pub providers: Vec<rss_mdm_pki_service::configuration::Provider>,
     pub apple_material_roots: Vec<PathBuf>,
 }
 #[derive(Serialize, Deserialize)]
@@ -309,7 +309,7 @@ fn recovery(journal: &Journal, runtime: &mut Value, source: &Recipient) -> Resul
     }
     recipients.push(json!({"certificate_file":cert_file,"private_key_file":key_file}));
     config["active_recipient"] = json!(recipient.id());
-    serde_json::from_value::<crate::recovery_credentials::Config>(config.clone())
+    serde_json::from_value::<rss_mdm_recovery_credentials::configuration::Config>(config.clone())
         .map_err(|_| Error::Input)?
         .open()
         .map_err(|_| Error::Input)?;
@@ -787,7 +787,7 @@ mod tests {
         recovery(&old, &mut runtime, &Recipient::Generate).unwrap();
         let original = runtime["recovery_credentials"].clone();
         recovery(&next, &mut runtime, &Recipient::Generate).unwrap();
-        let config: crate::recovery_credentials::Config =
+        let config: rss_mdm_recovery_credentials::configuration::Config =
             serde_json::from_value(runtime["recovery_credentials"].clone()).unwrap();
         let protection = config.open().unwrap();
         assert!(

@@ -163,6 +163,7 @@ pub fn from_da_configuration(
         bindings[0].uuid,
         bindings[1].uuid,
     )?;
+    crate::da::bind(&mut output)?;
     output.identifier = bindings[0].identifier.clone();
     if bindings[0].schema != "Configuration"
         || bindings[0].version != 1

@@ -258,18 +258,16 @@ let scope_group_health=Arc::new(crate::scope_group_changes::Health::default());
                         let identity = crate::identity::Identity::connect(
                             &compiled.config,
                             compiled.identity_management.clone(),
-                            Some(
-                                crate::assembly::device_access::identity_platform(&compiled.config)
-                                    .await
-                                    .map_err(assembly_error)?,
-                            ),
+                            if compiled.config.device_access.is_some() {Some(crate::assembly::device_access::identity_platform(&compiled.config).await.map_err(assembly_error)?)} else {None},
                             |resource| startup.stage_resource(resource),
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity", error))?;
-                        let da=Arc::new(crate::assembly::device_access::open(&compiled.config,&identity,&access.authorization_store(),protection.clone(),&cursor_key,|resource|startup.stage_resource(resource)).await.map_err(assembly_error)?);
+                        let da=if compiled.config.device_access.is_some() {Some(Arc::new(crate::assembly::device_access::open(&compiled.config,&identity,&access.authorization_store(),protection.clone(),&cursor_key,|resource|startup.stage_resource(resource)).await.map_err(assembly_error)?))} else {None};
+                        if let Some(da)=&da {
                         if let Some(pki)=&da.pki {startup.stage_task_with_token(crate::device_pki::registration("da-device-pki-maintenance",pki.clone()));}
-                        if let Some(listener)=crate::assembly::device_access::listener(&compiled.config,&identity,&da).await.map_err(assembly_error)? {startup.stage_task_with_token(listener.critical());}
+                        if let Some(listener)=crate::assembly::device_access::listener(&compiled.config,&identity,da).await.map_err(assembly_error)? {startup.stage_task_with_token(listener.critical());}
+                        }
                         let audit_budget =
                             rss_mdm_audit_integration::budget::AuditBudget::with_cancellation(
                                 Duration::from_secs(5),
@@ -310,7 +308,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         let recovery_materials = config
                             .recovery_credentials
                             .as_ref()
-                            .map(crate::recovery_credentials::Config::open)
+                            .map(crate::recovery_credentials::open)
                             .transpose()
                             .map_err(assembly_error)?;
                         let credential_receipts = recovery_materials.as_ref().map(|p| {
@@ -414,6 +412,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             commands.reconcile.clone(),
                             commands.worker_budget.clone(),
                             config.background.device_concurrency,
+                            config.device_access.is_some(),
                         ))
                         .await
                         .map_err(assembly_error)?;

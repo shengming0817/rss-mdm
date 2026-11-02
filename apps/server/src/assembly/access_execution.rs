@@ -6,6 +6,10 @@ pub(crate) struct Assembly {
     pub service: Arc<access::Service>,
     pub worker: Arc<access::worker::Worker>,
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "concrete MDM composition supplies each existing owner and the DA admission mode"
+)]
 pub(crate) async fn assemble(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     tenant: rss_request_context::TenantId,
@@ -14,8 +18,10 @@ pub(crate) async fn assemble(
     reconcile: rss_reconcile_postgres::PgStore,
     budget: Arc<tokio::sync::Semaphore>,
     concurrency: usize,
+    enabled: bool,
 ) -> Result<Assembly, crate::Error> {
     let materials = Arc::new(access::Materials {
+        accepting: enabled,
         agent_store: Arc::new(super::registration_agent_facts::AgentFacts::new(
             rss_mdm_install_support::StorageProfile::Mdm,
         )),

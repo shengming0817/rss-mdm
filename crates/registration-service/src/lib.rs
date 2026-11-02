@@ -133,3 +133,16 @@ pub const fn identity_access_contract(
 
 pub const DA_IDENTITY_PROJECTION_MANIFEST: &str =
     r#"{"tables":[],"functions":["rss_da.current_da_registration"],"views":[]}"#;
+
+/// Registration identity without the optional Inventory history observer.
+pub const fn identity_install_sql(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).identity_install
+}
+/// Relations of the independently installed registration identity.
+pub const fn identity_relations_sql(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).identity_relations
+}

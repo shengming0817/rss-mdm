@@ -2,23 +2,9 @@ use super::*;
 
 async fn accepted(c: &Context) -> Result<bool> {
     let mut tx = c.access.begin().await?;
-    let contracts = [
-        registration::identity_access_contract(DA),
-        rss_mdm_policy_postgres::device_access::ACCESS_CONTRACT,
-        rss_mdm_recovery_credentials::access_contract(DA),
-        rss_mdm_device_access_postgres::admission::ACCESS_CONTRACT,
-        rss_mdm_authorization_service::access_contract(DA),
-        rss_mdm_task_trust::access_contract(DA),
-        rss_mdm_pki_service::access_contract(DA),
-        rss_mdm_audit_integration::ACCESS_CONTRACT,
-        include_str!("access-contract.json"),
-    ];
-    let result = rss_mdm_backend_postgres_support::access_admission::verify(
-        &mut tx,
-        "da_access",
-        &contracts,
-    )
-    .await?;
+    let contracts = rss_mdm_device_access_runtime::installation::access_contracts();
+    let result =
+        rss_mdm_install_support::access_admission::verify(&mut tx, "da_access", &contracts).await?;
     rss_identity_postgres::verify_platform_subject_admission(
         &mut tx,
         rss_identity_core::InstanceId::parse(&c.inputs.installation.instance_id)?,

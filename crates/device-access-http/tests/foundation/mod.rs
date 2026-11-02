@@ -3,12 +3,15 @@ mod admission;
 mod business;
 mod configuration;
 mod context;
+mod exports;
+mod host;
 mod installation;
 mod material;
 mod platform;
+mod recovery;
 mod reports;
 mod transport;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use context::{Context, Inputs};
 use rss_mdm_install_support::StorageProfile;
 use rss_mdm_registration_service as registration;
@@ -31,6 +34,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     admission::verify_and_reject_drift(&c).await?;
     let material = material::Material::new(&c).await?;
     let registration = material.assemble(&c).await?;
+    let installed_host = Box::pin(host::verify(&c, &material, &registration)).await?;
     let token = material::administrator(&c).await?;
     let proof = c
         .sessions
@@ -470,7 +474,8 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         &client,
         &server.origin,
     ))
-    .await?;
+    .await
+    .context("DA business owner proof")?;
 
     let renewal = da::GrantRequest {
         operation_id: Uuid::new_v4(),
@@ -520,6 +525,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .status(),
         401
     );
+
     let platform_session = Box::pin(platform::verify(
         &c,
         &material,
@@ -528,7 +534,8 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         &client,
         base2,
     ))
-    .await?;
+    .await
+    .context("DA platform owner proof")?;
     material::empty(
         client
             .post(format!(
@@ -565,10 +572,15 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         401,
         "revoked DA registration cannot access the PSSO channel"
     );
+
     next_server.shutdown().await?;
     server.shutdown().await?;
-    drop(material);
     c.close().await;
+
+    Box::pin(recovery::verify(&c.inputs, &material, installed_host))
+        .await
+        .context("DA cold recovery proof")?;
+    drop(material);
     Ok(())
 }
 

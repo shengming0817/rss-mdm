@@ -312,7 +312,9 @@ pub async fn verify(
         .account()
         .principal
         .as_uuid();
-    let (actor, secret) = Box::pin(business::login(c, principal)).await?;
+    let (actor, secret) = Box::pin(business::login(c, principal))
+        .await
+        .context("platform proof cookie login")?;
     let old: Value = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND definition#>>'{target,device}'=$2")
         .bind(c.tenant.to_string()).bind(&registration.device).fetch_one(&c.operator).await?;
     let mut publication: rss_mdm_policy_postgres::device_access::Publication =
@@ -351,6 +353,7 @@ pub async fn verify(
     .await?;
     super::configuration::reject_account_change(c, m, &registration.device, &publication).await?;
     // The real DA export freezes every public native generator input and bound identity.
+
     let exported: da::SignedConfiguration = material::success(
         client
             .post(format!("{base}/configurations"))
@@ -366,6 +369,7 @@ pub async fn verify(
             .await?,
     )
     .await?;
+
     let managed: da::SignedConfiguration = material::success(
         client
             .post(format!("{base}/configurations"))
@@ -388,11 +392,20 @@ pub async fn verify(
     )
     .await?;
     material::verify(&exported, &installed)?;
+
     let rendered = rss_mdm_apple_mdm::platform_sso::from_da_configuration(&exported.decode()?)?;
+    let mut expected = rt.profile(&login)?;
+    rss_mdm_apple_mdm::da::bind(&mut expected)?;
     assert_eq!(
         serde_json::to_value(rendered)?,
-        serde_json::to_value(rt.profile(&login)?)?
+        serde_json::to_value(expected)?
     );
+
+    Box::pin(super::exports::verify(
+        client, base, &token, &exported, &installed,
+    ))
+    .await?;
+
     let mut wrong_tenant = installed.clone();
     wrong_tenant.tenant = Uuid::new_v4();
     assert!(rss_mdm_task_trust::configuration::verify(&exported, &wrong_tenant, now()).is_err());
@@ -456,7 +469,8 @@ pub async fn verify(
             .await?,
     )
     .await?;
-    super::configuration::verify_sources(
+
+    Box::pin(super::configuration::verify_sources(
         c,
         m,
         client,
@@ -466,8 +480,9 @@ pub async fn verify(
         &mut publication,
         &mut observation,
         &exported,
-    )
+    ))
     .await?;
+
     let id = Uuid::new_v4();
     let change = pg::device_access::Change {
         operation_id: Uuid::new_v4(),

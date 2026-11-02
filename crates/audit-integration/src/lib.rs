@@ -30,3 +30,6 @@ pub mod completion;
 
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+#[cfg(unix)]
+pub mod backup;

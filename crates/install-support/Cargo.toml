@@ -6,13 +6,18 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+libc.workspace = true
+zeroize.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["json", "uuid"] }
 thiserror.workspace = true
 uuid.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time","process"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

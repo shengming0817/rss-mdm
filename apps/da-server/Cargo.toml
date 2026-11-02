@@ -1,0 +1,57 @@
+[package]
+name = "rss-da-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rss-da"
+path = "src/main.rs"
+
+[dependencies]
+rss-mdm-device-access-runtime.workspace = true
+rss-mdm-device-access-http.workspace = true
+rss-mdm-device-access-postgres.workspace = true
+rss-mdm-device-access.workspace = true
+rss-mdm-install-support.workspace = true
+rss-mdm-agent-wire.workspace = true
+rss-mdm-authorization-service.workspace = true
+rss-mdm-audit-integration.workspace = true
+rss-mdm-registration-service.workspace = true
+rss-mdm-pki-service.workspace = true
+rss-mdm-device-trust.workspace = true
+rss-mdm-task-trust.workspace = true
+rss-mdm-native-protection.workspace = true
+rss-mdm-recovery-credentials.workspace = true
+rss-mdm-query.workspace = true
+rss-mdm-http-contract.workspace = true
+rss-identity-core.workspace = true
+rss-identity-postgres.workspace = true
+rss-identity-http-axum.workspace = true
+rss-identity-oidc.workspace = true
+rss-transactional-messaging.workspace = true
+rss-transactional-messaging-postgres.workspace = true
+rss-audit-postgres.workspace = true
+rss-ledger.workspace = true
+rss-ledger-postgres.workspace = true
+rss-observation-postgres.workspace = true
+rss-projection-postgres.workspace = true
+rss-request-context.workspace = true
+rss-runtime.workspace = true
+rss-axum.workspace = true
+sqlx.workspace = true
+axum.workspace = true
+tokio = {workspace = true, features = ["macros","rt-multi-thread","signal","time","sync","net","process"]}
+tokio-rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+uuid.workspace = true
+url.workspace = true
+zeroize.workspace = true
+thiserror.workspace = true
+time.workspace = true
+sha2.workspace = true
+[lints]
+workspace = true

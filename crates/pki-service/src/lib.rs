@@ -1,6 +1,8 @@
 //! Device PKI provider. Authorization and activation remain with each lifecycle owner.
 //! ref: smallstep/certificates@v0.30.2 api/sign.go, api/revoke.go, authority/provisioner/jwk.go.
 pub mod certificates;
+#[cfg(unix)]
+pub mod configuration;
 pub mod maintenance;
 pub mod mutation;
 pub mod providers;
@@ -564,3 +566,6 @@ fn csr_input_names(pem: &str) -> Result<Vec<String>, Error> {
 pub mod observations;
 
 mod storage_profile;
+
+#[cfg(unix)]
+pub mod backup;

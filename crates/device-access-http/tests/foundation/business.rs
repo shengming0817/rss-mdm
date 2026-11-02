@@ -132,13 +132,17 @@ pub async fn verify(
 ) -> Result<()> {
     use rss_mdm_policy_postgres::device_access::{Publication, Target};
     let business = assemble(c, m)?;
-    let token = material::administrator(c).await?;
+    let token = material::administrator(c)
+        .await
+        .context("create and log in business proof principal")?;
     let bearer = c
         .authority
         .inspect_bearer(c.tenant, BearerSecret::parse(token)?, deadline())
         .await?;
     let principal = bearer.account().principal.as_uuid();
-    let (actor, session_secret) = Box::pin(login(c, principal)).await?;
+    let (actor, session_secret) = Box::pin(login(c, principal))
+        .await
+        .context("business proof cookie login")?;
     let configuration = wire::AccessConfiguration {
         mac: None,
         windows: wire::AccessWindowsConfiguration::Whfb,
@@ -502,7 +506,7 @@ pub(super) async fn operation_proof(
     context: rss_identity_core::step_up::StepUpContext,
 ) -> Result<wire::Secret> {
     use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
-    let origin = url::Url::parse("https://localhost")?;
+    let origin = url::Url::parse(c.browser_origin.get().expect("initialized host origin"))?;
     let webauthn = Box::pin(rss_identity_postgres::WebauthnAuthority::connect(
         c.authority.clone(),
         "localhost".into(),

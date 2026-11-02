@@ -228,7 +228,11 @@ pub(super) async fn capture(frozen: &Frozen, journal: &Journal) -> Result<()> {
         }
         storage.save("installation.json", &identity)?;
         c.close().await.map_err(|_| Error::Storage)?;
-        archive::capture(&storage, &profile.administrator).await?;
+        archive::capture(
+            &storage,
+            &profile.administrator.archive().map_err(|_| Error::Input)?,
+        )
+        .await?;
         snapshot_tree::capture(&storage, "provisioning", &profile.directory)?;
         if let Some(ch) = &profile.clickhouse {
             let id = Uuid::new_v5(
@@ -388,7 +392,11 @@ async fn restore_postgres_data(
         if timescale {
             sqlx::raw_sql("CREATE EXTENSION IF NOT EXISTS timescaledb WITH VERSION '2.30.2'; SELECT public.timescaledb_pre_restore()").execute(&mut *c).await.map_err(|_|Error::Storage)?;
         }
-        archive::restore_database(storage, &profile.administrator).await?;
+        archive::restore_database(
+            storage,
+            &profile.administrator.archive().map_err(|_| Error::Input)?,
+        )
+        .await?;
     }
     if timescale {
         sqlx::query("SELECT public.timescaledb_post_restore()")

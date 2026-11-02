@@ -3,7 +3,7 @@ use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentit
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use std::{collections::BTreeMap, path::PathBuf};
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Database {
     host: String,
     port: u16,
@@ -87,6 +87,7 @@ impl rss_request_context::ExecutionTimer for Timer {
     }
 }
 pub struct Context {
+    pub browser_origin: std::sync::OnceLock<String>,
     pub platform: Arc<rss_mdm_device_access_postgres::platform_sso::bridge::Verifier>,
     pub business: std::sync::OnceLock<Arc<rss_mdm_device_access_http::Business>>,
     pub inputs: Inputs,
@@ -108,15 +109,10 @@ impl Context {
         let inputs: Inputs =
             serde_json::from_slice(&std::fs::read(std::env::var("RSS_MDM_T2_ENV")?)?)?;
         let operator = inputs.database("postgres").pool().await?;
-        let host = installation::Installation {
-            inputs: &inputs,
-            fail_before: None,
-        };
+        let tenant = rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?;
+        let management = Uuid::new_v4();
+        let host = installation::host(&inputs, tenant, management)?;
         let binding = host.binding()?;
-        let host = installation::Installation {
-            inputs: &inputs,
-            fail_before: None,
-        };
         rss_mdm_install_support::install(
             &inputs.database("da_owner").options()?,
             &binding,
@@ -153,29 +149,8 @@ impl Context {
             .await
             .is_err()
         );
-        let tenant = rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?;
-        let management = Uuid::new_v4();
-        let mut tx = operator.begin().await?;
-        sqlx::query(
-            "INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)",
-        )
-        .bind(inputs.installation.target.as_slice())
-        .bind(inputs.installation.lineage.as_slice())
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,1),($2,1)").bind(tenant.to_string()).bind(management).execute(&mut *tx).await?;
-        rss_mdm_authorization_service::installation::bind_da_in(
-            &mut tx,
-            Uuid::parse_str(&inputs.installation.instance_id)?,
-            management,
-        )
-        .await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(tenant.to_string())
-            .execute(&mut *tx)
-            .await?;
-        rss_mdm_inventory_postgres::initialize_fields_in(&mut tx, tenant).await?;
-        tx.commit().await?;
+        let absent:bool=sqlx::query_scalar("SELECT to_regnamespace('mdm') IS NULL AND to_regclass('rss_da.asset_authority_history') IS NULL").fetch_one(&operator).await?;
+        anyhow::ensure!(absent, "standalone DA must not install Inventory");
         let access = inputs.database("da_access").pool().await?;
         let runtime = inputs.runtime("da_access", tenant).await?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
@@ -240,6 +215,7 @@ impl Context {
             Arc::new(Timer),
         ));
         Ok(Self {
+            browser_origin: std::sync::OnceLock::new(),
             platform,
             business: std::sync::OnceLock::new(),
             proof_audit,

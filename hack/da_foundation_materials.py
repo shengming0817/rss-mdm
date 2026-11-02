@@ -40,6 +40,18 @@ def main():
         def log_message(self, *_args):
             pass
 
+        def do_GET(self):
+            if self.path != '/crl':
+                self.send_error(404)
+                return
+            # Serve the same issuer's actual signed CRL; Registry verifies its chain and freshness.
+            body = run('crl', '-in', root / 'ca.crl', '-outform', 'DER')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/pkix-crl')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_POST(self):
             try:
                 assert self.path == '/sign'
