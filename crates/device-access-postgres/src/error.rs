@@ -1,5 +1,7 @@
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
+    #[error("configuration signing failed: {0}")]
+    Signing(rss_mdm_task_trust::Error),
     #[error("device access capability is not enabled")]
     Unsupported,
     #[error("Agent lifecycle rejected: {0:?}")]
@@ -123,5 +125,30 @@ impl From<rss_mdm_registration_service::participants::Error> for Error {
             P::CommitUnknown => Self::CommitUnknown,
             P::RollbackFailed => Self::RollbackFailed,
         }
+    }
+}
+
+impl From<rss_mdm_task_trust::Error> for Error {
+    fn from(value: rss_mdm_task_trust::Error) -> Self {
+        use rss_mdm_task_trust::Error as E;
+        match value {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::NotFound => Self::NotFound,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Unsupported => Self::Unsupported,
+            E::ReadConflict => Self::ReadConflict,
+            E::CursorInvalidated => Self::CursorInvalidated,
+            other => Self::Signing(other),
+        }
+    }
+}
+
+impl From<rss_mdm_authorization_service::error::AuthorizationError> for Error {
+    fn from(e: rss_mdm_authorization_service::error::AuthorizationError) -> Self {
+        rss_mdm_authorization_service::Error::from(e).into()
     }
 }

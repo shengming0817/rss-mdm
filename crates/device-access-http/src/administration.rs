@@ -14,14 +14,22 @@ use rss_mdm_http_contract::{
 use std::sync::Arc;
 type Body<T> = Result<Json<T>, axum::extract::rejection::JsonRejection>;
 pub fn routes() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! {struct Administration for [Browser]{configuration,delivery,step_up}}
+    rss_mdm_http_contract::route_module! {struct Administration for [Browser]{configuration,configuration_step_up,delivery,step_up}}
     Administration {
+        configuration_step_up: Route::new(
+            "/device-access/configurations/step-up",
+            post(
+                configuration_step_up,
+                &catalog::DA_CONFIGURATION_CHANGE,
+                &[Operation::Action],
+            ),
+        ),
         configuration: Route::new(
             "/device-access/configurations",
             post(
                 configuration,
-                &catalog::DEVICE_ACCESS,
-                &[Operation::Create, Operation::Update],
+                &catalog::DA_CONFIGURATION_CHANGE,
+                &[Operation::Action],
             ),
         ),
         delivery: Route::new(
@@ -43,11 +51,17 @@ async fn configuration(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
+    CeremonyHeaders(headers): CeremonyHeaders,
     body: Body<Change>,
 ) -> Result<Json<rss_mdm_policy_postgres::device_access::Publication>, Error> {
     Ok(Json(
         s.registration
-            .publish_configuration(&auth.proof, &body.map_err(|_| Error::Malformed)?.0, &a)
+            .publish_configuration(
+                &auth.proof,
+                &body.map_err(|_| Error::Malformed)?.0,
+                crate::device_access::operation_proof(&headers)?.as_ref(),
+                &a,
+            )
             .await?,
     ))
 }
@@ -99,6 +113,31 @@ async fn step_up(
         .map_err(crate::identity::failure)?;
     Ok(Json(crate::identity_contract::TimedChallenge(result)))
 }
+async fn configuration_step_up(
+    State(s): State<Arc<Services>>,
+    Extension(auth): Extension<RequestAuth>,
+    CeremonyHeaders(headers): CeremonyHeaders,
+    body: Body<Change>,
+) -> Result<Json<crate::identity_contract::TimedChallenge>, Error> {
+    let context = body
+        .map_err(|_| Error::Malformed)?
+        .0
+        .step_up_context(&auth.proof)?;
+    let actor = s.identity.ceremony_actor(&headers).await?;
+    let result = s
+        .identity
+        .webauthn
+        .begin_authentication(
+            actor,
+            context,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                std::time::Duration::from_secs(10),
+            ),
+        )
+        .await
+        .map_err(crate::identity::failure)?;
+    Ok(Json(crate::identity_contract::TimedChallenge(result)))
+}
 pub fn evidence_routes()
 -> Router<Arc<crate::Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     rss_mdm_http_contract::route_module! {struct Evidence for [Da]{record}}
@@ -124,6 +163,7 @@ async fn evidence(
         .service
         .record_deployment(
             &business.evidence,
+            &s.configurations,
             &body.map_err(|_| Error::Malformed)?.0,
             &a,
         )

@@ -81,6 +81,10 @@ impl From<rss_mdm_device_access_postgres::Error> for Error {
     fn from(e: rss_mdm_device_access_postgres::Error) -> Self {
         use rss_mdm_device_access_postgres::Error as E;
         match e {
+            E::Signing(e) => match crate::Error::from(e).failure() {
+                Some(f) => Self::Classified(f),
+                None => Self::Unavailable,
+            },
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
@@ -159,6 +163,16 @@ impl From<axum::extract::rejection::JsonRejection> for Error {
             Self::RequestTooLarge
         } else {
             Self::Malformed
+        }
+    }
+}
+
+impl From<rss_mdm_query::Error> for Error {
+    fn from(e: rss_mdm_query::Error) -> Self {
+        match e {
+            rss_mdm_query::Error::Invalid => Self::Malformed,
+            rss_mdm_query::Error::Budget => Self::RequestTooLarge,
+            rss_mdm_query::Error::CursorInvalidated => Self::CursorInvalidated,
         }
     }
 }

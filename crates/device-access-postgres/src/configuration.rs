@@ -1,12 +1,10 @@
 //! DA configuration selection and native-session admission without a Scope backend.
 use crate::{
-    Error, Pending, Service,
+    Error, Pending,
     database::db,
     device_access::{self, Admission as AdmissionPort},
 };
 use rss_mdm_agent_wire::runtime::{AccessLocalSession, AccessPolicyOption};
-use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_device_access::PolicySelection;
 use rss_mdm_registration_service::{DevicePrincipal, participants::agent};
 use rss_request_context::TenantId;
@@ -190,42 +188,8 @@ pub struct Change {
     pub expected_revision: i64,
     pub publication: rss_mdm_policy_postgres::device_access::Publication,
 }
-impl Service {
-    pub async fn publish_configuration(
-        &self,
-        p: &AuthorizedPrincipal,
-        input: &Change,
-        a: &RequestAudit,
-    ) -> Result<rss_mdm_policy_postgres::device_access::Publication, Error> {
-        use sha2::{Digest, Sha256};
-        self.proof(p, a)?;
-        p.session()?;
-        let digest = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Malformed)?)
-        );
-        a.operation(
-            input.operation_id,
-            "da_configuration_publish",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        self.write_admitted(&self.access_audit,a,(p,input,&digest,a),|ctx,c|Box::pin(async move{
-            rss_identity_postgres::recheck_authenticated_session_on(c,ctx.0.session()?).await.map_err(|_|Error::Unauthorized)?;Ok(())
-        }),|ctx,c|Box::pin(async move{
-            let(p,input,digest,a)=ctx;
-            rss_mdm_authorization_service::lock_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;
-            rss_mdm_authorization_service::snapshot_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?.require_all_devices(p,Permission::AccountWrite)?;
-            let op=crate::operations::Operation::new(p,input.operation_id,digest)?;
-            if let Some(old)=crate::operations::replay(c,&op).await?{return Ok(crate::service::Change{value:serde_json::from_str(&old).map_err(|_|Error::Corrupt)?,replay:true});}
-            let tenant=Uuid::parse_str(p.tenant_id()).map_err(|_|Error::Malformed)?;
-            if let rss_mdm_policy_postgres::device_access::Target::Device{device}=&input.publication.target {
-                rss_mdm_registration_service::device::endpoints::lock_da_in(c,p.tenant_id(),device).await?;
-                rss_mdm_registration_service::device::endpoints::current_da_in(c,p.tenant_id(),device).await?.ok_or(Error::NotFound)?;
-            }
-            let now=crate::platform_sso::store::now(c).await?;
-            rss_mdm_policy_postgres::device_access::publish_on(c,tenant,&input.publication,input.expected_revision,serde_json::json!({"instance":p.instance_id(),"principal":p.principal_id()}),now).await.map_err(|e|match e{rss_mdm_policy_postgres::device_access::Error::Malformed=>Error::Malformed,rss_mdm_policy_postgres::device_access::Error::Conflict=>Error::Conflict,rss_mdm_policy_postgres::device_access::Error::Storage(_)=>Error::Storage})?;
-            crate::operations::save(c,&op,&serde_json::to_string(&input.publication).map_err(|_|Error::Corrupt)?,a).await?;
-            Ok(crate::service::Change{value:input.publication.clone(),replay:false})
-        })).await
-    }
-}
+mod management;
+pub use management::{ConfigurationPage, CurrentConfiguration, DIRECTORY, DirectoryQuery, HISTORY};
+
+mod diagnostics;
+pub use diagnostics::Diagnostics;

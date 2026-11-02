@@ -22,3 +22,5 @@ pub const AUTHORITY_SQL: &str = include_str!("../schema/authority.sql");
 pub const PROOF_SQL: &str = include_str!("../schema/proof-grants.sql");
 pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");
 pub mod admission;
+
+pub mod reports;

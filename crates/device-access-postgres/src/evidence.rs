@@ -2,14 +2,18 @@
 //! A task ACK, browser input or an unverified observation cannot create this fact.
 use crate::{Error, database::db};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rss_mdm_agent_wire::da;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_device_access::deployment::{Observation, PlatformConfiguration};
 use rss_mdm_registration_service::device::endpoints::{self, DaRegistration};
+use rss_mdm_task_trust::configuration::ConfigurationService;
 use rss_request_context::TenantId;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+/// Historical locks are bounded by the two setting groups per immutable Policy.
+pub(crate) type Mandatory = BTreeMap<Uuid, BTreeMap<da::ConfigurationField, Uuid>>;
 #[derive(Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SignedObservation {
@@ -45,6 +49,11 @@ impl Authorities {
             .collect()
     }
     fn verify(&self, signed: &SignedObservation, now: i64) -> Result<Observation, Error> {
+        let o = self.decode_verified(signed)?;
+        o.validate(now)?;
+        Ok(o)
+    }
+    fn decode_verified(&self, signed: &SignedObservation) -> Result<Observation, Error> {
         if signed.payload.len() > 32768 || signed.signature.len() > 128 {
             return Err(Error::Malformed);
         }
@@ -61,12 +70,13 @@ impl Authorities {
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
             .verify(&message, &signature)
             .map_err(|_| Error::Forbidden)?;
-        o.validate(now)?;
+        o.validate(o.issued_at)?;
         Ok(o)
     }
-    pub async fn record_on(
+    async fn record_on(
         &self,
         c: &mut PgConnection,
+        signing: &ConfigurationService,
         tenant: TenantId,
         installation: Uuid,
         signed: &SignedObservation,
@@ -83,8 +93,10 @@ impl Authorities {
         if current.registration_id != o.registration || current.generation != o.generation {
             return Err(Error::Forbidden);
         }
-        let old:Option<(i64,String)>=sqlx::query_as("SELECT sequence,payload FROM rss_da.deployment_evidence WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND authority=$4 FOR UPDATE").bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).fetch_optional(&mut *c).await.map_err(db)?;
-        if let Some((sequence, payload)) = old {
+        let old:Option<(i64,String,serde_json::Value)>=sqlx::query_as("SELECT sequence,payload,mandatory FROM rss_da.deployment_evidence WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND authority=$4 FOR UPDATE").bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).fetch_optional(&mut *c).await.map_err(db)?;
+        let mut mandatory = Mandatory::new();
+        if let Some((sequence, payload, previous)) = old {
+            mandatory = serde_json::from_value(previous).map_err(|_| Error::Corrupt)?;
             if o.sequence < sequence || (o.sequence == sequence && payload != signed.payload) {
                 return Err(Error::Conflict);
             }
@@ -96,8 +108,37 @@ impl Authorities {
             .fingerprints()
             .remove(&o.authority)
             .ok_or(Error::Configuration)?;
-        sqlx::query("INSERT INTO rss_da.deployment_evidence(tenant_id,registration,generation,authority,sequence,fingerprint,payload,signature,document,received_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,registration,generation,authority) DO UPDATE SET sequence=excluded.sequence,fingerprint=excluded.fingerprint,payload=excluded.payload,signature=excluded.signature,document=excluded.document,received_at=excluded.received_at")
-            .bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).bind(o.sequence).bind(&fingerprint).bind(&signed.payload).bind(&signed.signature).bind(serde_json::to_value(&o).map_err(|_|Error::Malformed)?).bind(now).execute(&mut *c).await.map_err(db)?;
+        if let Some(proof) = &o.configuration {
+            // The configured authority proves transport; the original issued artifact proves
+            // field authority. Neither a claimed delivery nor a Policy ID is sufficient.
+            let artifact = signing.read_on(c, proof.artifact).await?;
+            let config = artifact.decode().map_err(|_| Error::Corrupt)?;
+            let identity = da::ReportIdentity {
+                service_id: installation,
+                tenant: o.tenant,
+                registration: current.registration_id,
+                generation: current.generation,
+            };
+            if artifact.digest != proof.digest
+                || config.native.digest != proof.native_digest
+                || config.delivery != proof.delivery
+                || config.id != o.policy
+                || !config.permits(&identity, &o.device)
+            {
+                return Err(Error::Forbidden);
+            }
+            if config.delivery == da::DeliveryPermission::ManagedMandatory {
+                let locked = mandatory.entry(config.id).or_default();
+                for field in config.managed_fields {
+                    locked.insert(field, proof.artifact);
+                }
+            }
+        }
+        // A narrower old artifact updates only the fields it owns; other established
+        // locks survive until the current issuer explicitly releases those fields.
+        let mandatory = serde_json::to_value(mandatory).map_err(|_| Error::Corrupt)?;
+        sqlx::query("INSERT INTO rss_da.deployment_evidence(tenant_id,registration,generation,authority,sequence,fingerprint,payload,signature,document,received_at,mandatory) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(tenant_id,registration,generation,authority) DO UPDATE SET sequence=excluded.sequence,fingerprint=excluded.fingerprint,payload=excluded.payload,signature=excluded.signature,document=excluded.document,received_at=excluded.received_at,mandatory=excluded.mandatory")
+            .bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).bind(o.sequence).bind(&fingerprint).bind(&signed.payload).bind(&signed.signature).bind(serde_json::to_value(&o).map_err(|_|Error::Malformed)?).bind(now).bind(mandatory).execute(&mut *c).await.map_err(db)?;
         if !o.revoked {
             for report in &o.applications {
                 crate::device_access::storage::deployment_result_in(c, &o, report, &fingerprint)
@@ -105,6 +146,37 @@ impl Authorities {
             }
         }
         Ok(true)
+    }
+    pub(crate) async fn configurations_on(
+        &self,
+        c: &mut PgConnection,
+        tenant: TenantId,
+        installation: Uuid,
+        anchor: &DaRegistration,
+    ) -> Result<Vec<Observation>, Error> {
+        let rows=sqlx::query("SELECT payload,signature FROM rss_da.deployment_evidence WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 ORDER BY authority LIMIT 17")
+            .bind(tenant.to_string()).bind(anchor.registration_id).bind(anchor.generation).fetch_all(&mut *c).await.map_err(db)?;
+        if rows.len() > 16 {
+            return Err(Error::Capacity);
+        }
+        let mut values = Vec::new();
+        for r in rows {
+            let signed = SignedObservation {
+                payload: r.try_get("payload").map_err(db)?,
+                signature: r.try_get("signature").map_err(db)?,
+            };
+            let o = self.decode_verified(&signed)?;
+            if o.tenant.to_string() != tenant.to_string()
+                || o.installation != installation
+                || o.device != anchor.device
+                || o.registration != anchor.registration_id
+                || o.generation != anchor.generation
+            {
+                return Err(Error::Forbidden);
+            }
+            values.push(o);
+        }
+        Ok(values)
     }
     pub async fn native_on(
         &self,
@@ -114,25 +186,13 @@ impl Authorities {
         anchor: &DaRegistration,
         now: i64,
     ) -> Result<Observation, Error> {
-        let rows=sqlx::query("SELECT payload,signature FROM rss_da.deployment_evidence WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 ORDER BY authority LIMIT 17")
-            .bind(tenant.to_string()).bind(anchor.registration_id).bind(anchor.generation).fetch_all(&mut *c).await.map_err(db)?;
-        if rows.len() > 16 {
-            return Err(Error::Capacity);
-        }
+        let values = self
+            .configurations_on(c, tenant, installation, anchor)
+            .await?;
         let mut selected = None;
-        for r in rows {
-            let signed = SignedObservation {
-                payload: r.try_get("payload").map_err(db)?,
-                signature: r.try_get("signature").map_err(db)?,
-            };
-            let o = self.verify(&signed, now)?;
-            if o.tenant.to_string() != tenant.to_string()
-                || o.installation != installation
-                || o.device != anchor.device
-                || o.registration != anchor.registration_id
-                || o.generation != anchor.generation
-                || o.revoked
-            {
+        for o in values {
+            o.validate(now)?;
+            if o.revoked {
                 return Err(Error::Forbidden);
             }
             let selection = crate::device_access::execution::admission::policy_on(
@@ -143,7 +203,8 @@ impl Authorities {
                 return Err(Error::Forbidden);
             }
             if selected.as_ref().is_some_and(|old: &Observation| {
-                old.local_session != o.local_session
+                old.configuration != o.configuration
+                    || old.local_session != o.local_session
                     || old.policy != o.policy
                     || old.policy_version != o.policy_version
                     || serde_json::to_value(&old.deployment).ok()
@@ -180,6 +241,7 @@ impl crate::Service {
     pub async fn record_deployment(
         &self,
         authorities: &Authorities,
+        signing: &ConfigurationService,
         value: &SignedObservation,
         a: &RequestAudit,
     ) -> Result<(), Error> {
@@ -191,14 +253,21 @@ impl crate::Service {
         );
         self.write(
             a,
-            (authorities, value, self.tenant, self.service_id()?, a),
+            (
+                authorities,
+                value,
+                self.tenant,
+                self.service_id()?,
+                a,
+                signing,
+            ),
             |ctx, c| {
                 Box::pin(async move {
                     let now = super::platform_sso::store::now(c).await?;
                     let verified = ctx.0.verify(ctx.1, now)?;
                     ctx.4
                         .identify_service(&format!("da-deployment:{}", verified.authority));
-                    let changed = ctx.0.record_on(c, ctx.2, ctx.3, ctx.1).await?;
+                    let changed = ctx.0.record_on(c, ctx.5, ctx.2, ctx.3, ctx.1).await?;
                     Ok(crate::service::Change {
                         value: (),
                         replay: !changed,

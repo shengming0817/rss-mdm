@@ -14,6 +14,7 @@ pub enum Error {
     ConfigurationTrust(#[from] rss_mdm_task_trust::Error),
 }
 pub struct Resources {
+    pub report_limits: pg::reports::Limits,
     pub tenant: rss_request_context::TenantId,
     pub installation: Uuid,
     pub identity_instance: rss_identity_core::InstanceId,
@@ -44,6 +45,7 @@ impl Runtime {
     pub fn assemble(r: Resources, registration: Option<Registration>) -> Result<Self, Error> {
         let store = Arc::new(registration::Store::for_device_access(r.pool));
         let business = Arc::new(pg::Service::new(pg::Assembly {
+            report_limits: r.report_limits,
             cursor: r.cursor.clone(),
             tenant: r.tenant,
             instance: r.installation,

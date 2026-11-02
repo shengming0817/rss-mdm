@@ -267,15 +267,7 @@ pub async fn empty(response: reqwest::Response) -> Result<()> {
     Ok(())
 }
 pub fn verify(signed: &da::SignedConfiguration, trust: &da::ConfigurationTrust) -> Result<()> {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let key = trust.keys.iter().find(|k| k.id == signed.key_id).unwrap();
-    let bytes = signed.configuration.signing_bytes(&signed.key_id)?;
-    ring::signature::UnparsedPublicKey::new(
-        &ring::signature::ED25519,
-        URL_SAFE_NO_PAD.decode(&key.public_key)?,
-    )
-    .verify(&bytes, &URL_SAFE_NO_PAD.decode(&signed.signature)?)
-    .map_err(|_| anyhow::anyhow!("DA signature"))?;
+    rss_mdm_task_trust::configuration::verify(signed, trust, super::now())?;
     Ok(())
 }
 pub async fn administrator(c: &Context) -> Result<String> {
@@ -329,6 +321,7 @@ async fn administrator_for(c: &Context, device: Option<&str>) -> Result<String> 
         } else {
             [
                 access::Permission::AccountWrite,
+                access::Permission::OperationRead,
                 access::Permission::Enrollment,
                 access::Permission::Credentials,
                 access::Permission::ConfigurationWrite,

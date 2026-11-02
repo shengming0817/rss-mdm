@@ -39,4 +39,8 @@ GRANT INSERT ON rss_da.recovery_disclosures TO da_identity_runtime;
 GRANT UPDATE(tenant_id) ON rss_da.recovery_entries,rss_da.recovery_versions TO da_identity_runtime;
 GRANT SELECT ON rss_da.authorization_rules,rss_da.user_groups,rss_da.authorization_initializations,rss_da.api_keys TO da_identity_runtime;
 GRANT SELECT ON rss_da.devices TO da_identity_runtime;
+GRANT SELECT ON rss_da.report_heads,rss_da.report_history TO da_identity_runtime;
+GRANT SELECT ON rss_da.signing_heads,rss_da.signing_versions,rss_da.signing_acknowledgements TO da_identity_runtime;
+GRANT SELECT,INSERT ON rss_da.configuration_exports TO da_identity_runtime;
+GRANT SELECT(tenant_id,usage,key_id,max_verify_until),UPDATE(max_verify_until) ON rss_da.signing_keys TO da_identity_runtime;
 COMMIT;

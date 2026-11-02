@@ -4,6 +4,9 @@ use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
         "da": {
+            "Configuration": schemars::schema_for!(rss_mdm_agent_wire::da::Configuration),
+            "StatusReport": schemars::schema_for!(rss_mdm_agent_wire::da::StatusReport),
+            "ApplicationReport": schemars::schema_for!(rss_mdm_agent_wire::da::ApplicationReport),
             "GrantRequest": schemars::schema_for!(rss_mdm_agent_wire::da::GrantRequest),
             "Grant": schemars::schema_for!(rss_mdm_agent_wire::da::Grant),
             "CertificateRequest": schemars::schema_for!(rss_mdm_agent_wire::da::CertificateRequest),

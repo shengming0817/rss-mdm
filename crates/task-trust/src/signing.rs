@@ -76,16 +76,20 @@ impl Signer {
         &self,
         configuration: rss_mdm_agent_wire::da::Configuration,
     ) -> Result<rss_mdm_agent_wire::da::SignedConfiguration, Error> {
-        let bytes = configuration
-            .signing_bytes(&self.key_id)
+        use rss_mdm_agent_wire::da::SignedConfiguration;
+        let payload = configuration.payload().map_err(|_| Error::Malformed)?;
+        let bytes = SignedConfiguration::signing_bytes(&payload, &self.key_id)
             .map_err(|_| Error::Malformed)?;
-        Ok(rss_mdm_agent_wire::da::SignedConfiguration {
-            configuration,
+        let digest = SignedConfiguration::payload_digest(&payload).map_err(|_| Error::Malformed)?;
+        Ok(SignedConfiguration {
+            payload,
+            digest,
             key_id: self.key_id.clone(),
             signature: base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(self.key.sign(&bytes).as_ref()),
         })
     }
+
     pub fn sign(&self, payload: TaskPayload) -> Result<SignedTask, Error> {
         let bytes = payload
             .signing_bytes(&self.key_id)

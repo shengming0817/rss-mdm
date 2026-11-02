@@ -307,7 +307,7 @@ pub async fn verify(
     let token = material::administrator(c).await?;
     let principal = c
         .authority
-        .inspect_bearer(c.tenant, BearerSecret::parse(token)?, deadline())
+        .inspect_bearer(c.tenant, BearerSecret::parse(token.clone())?, deadline())
         .await?
         .account()
         .principal
@@ -338,20 +338,136 @@ pub async fn verify(
         enabled: true,
         role: Some(access::AccessRole::Standard),
     };
-    b.service
-        .publish_configuration(
-            &actor,
-            &pg::configuration::Change {
+    publication.managed_fields = vec![da::ConfigurationField::Mac];
+    super::configuration::publish_protected(
+        c,
+        m,
+        &pg::configuration::Change {
+            operation_id: Uuid::new_v4(),
+            expected_revision,
+            publication: publication.clone(),
+        },
+    )
+    .await?;
+    super::configuration::reject_account_change(c, m, &registration.device, &publication).await?;
+    // The real DA export freezes every public native generator input and bound identity.
+    let exported: da::SignedConfiguration = material::success(
+        client
+            .post(format!("{base}/configurations"))
+            .bearer_auth(&token)
+            .json(&da::Export {
                 operation_id: Uuid::new_v4(),
-                expected_revision,
-                publication: publication.clone(),
-            },
-            &business::audit(c),
+                policy: publication.id,
+                version: publication.version,
+                delivery: da::DeliveryPermission::Da,
+                lifetime_seconds: 600,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let managed: da::SignedConfiguration = material::success(
+        client
+            .post(format!("{base}/configurations"))
+            .bearer_auth(&token)
+            .json(&da::Export {
+                operation_id: Uuid::new_v4(),
+                policy: publication.id,
+                version: publication.version,
+                delivery: da::DeliveryPermission::ManagedMandatory,
+                lifetime_seconds: 600,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let installed: da::ConfigurationTrust = material::success(
+        peer.get(format!("{base}/configuration-trust"))
+            .send()
+            .await?,
+    )
+    .await?;
+    material::verify(&exported, &installed)?;
+    let rendered = rss_mdm_apple_mdm::platform_sso::from_da_configuration(&exported.decode()?)?;
+    assert_eq!(
+        serde_json::to_value(rendered)?,
+        serde_json::to_value(rt.profile(&login)?)?
+    );
+    let mut wrong_tenant = installed.clone();
+    wrong_tenant.tenant = Uuid::new_v4();
+    assert!(rss_mdm_task_trust::configuration::verify(&exported, &wrong_tenant, now()).is_err());
+    assert!(
+        rss_mdm_task_trust::configuration::verify(
+            &exported,
+            &installed,
+            exported.decode()?.expires_at
         )
-        .await?;
+        .is_err()
+    );
     let account = access::AccessAccount::Macos {
         generated_uid: Uuid::new_v4(),
     };
+    let configuration = rt.qualification_configuration()?;
+    let mut observation = Observation {
+        tenant: Uuid::parse_str(&c.tenant.to_string())?,
+        installation: registration.service_id,
+        device: registration.device.clone(),
+        registration: registration.registration,
+        generation: registration.generation as i64,
+        authority: business::authority_id(),
+        sequence: 10,
+        issued_at: now() - 1,
+        expires_at: now() + 600,
+        revoked: false,
+        policy: publication.id,
+        policy_version: publication.version,
+        configuration: Some(rss_mdm_device_access::deployment::ConfigurationDeployment {
+            artifact: managed.decode()?.operation_id,
+            digest: managed.digest.clone(),
+            native_digest: managed.decode()?.native.digest,
+            delivery: da::DeliveryPermission::ManagedMandatory,
+            state: da::SourceState::Present,
+        }),
+        deployment: Deployment::Macos {
+            configuration: configuration.configuration,
+            application_id: configuration.application_id,
+            application_version: configuration.application_version,
+            application_installed: true,
+            profile_identifier: configuration.profile_identifier,
+            profile_uuid: rt.profile(&login)?.uuid,
+            profile_matched: true,
+            architecture: "aarch64".into(),
+            os_version: [26, 4, 0, 0],
+            user_helper: true,
+            system_broker: true,
+        },
+        local_session: Some(access::AccessLocalSession {
+            account: account.clone(),
+            session_id: Uuid::new_v4(),
+        }),
+        applications: Vec::new(),
+    };
+    let evidence = format!("{base}/deployment-evidence");
+    material::empty(
+        client
+            .post(&evidence)
+            .json(&business::signed(&observation)?)
+            .send()
+            .await?,
+    )
+    .await?;
+    super::configuration::verify_sources(
+        c,
+        m,
+        client,
+        base,
+        &token,
+        &actor,
+        &mut publication,
+        &mut observation,
+        &exported,
+    )
+    .await?;
     let id = Uuid::new_v4();
     let change = pg::device_access::Change {
         operation_id: Uuid::new_v4(),
@@ -384,48 +500,6 @@ pub async fn verify(
         b.admission.as_ref(),
         &business::audit(c),
     ))
-    .await?;
-    let configuration = rt.qualification_configuration()?;
-    let mut observation = Observation {
-        tenant: Uuid::parse_str(&c.tenant.to_string())?,
-        installation: registration.service_id,
-        device: registration.device.clone(),
-        registration: registration.registration,
-        generation: registration.generation as i64,
-        authority: business::authority_id(),
-        sequence: 10,
-        issued_at: now() - 1,
-        expires_at: now() + 600,
-        revoked: false,
-        policy: publication.id,
-        policy_version: publication.version,
-        deployment: Deployment::Macos {
-            configuration: configuration.configuration,
-            application_id: configuration.application_id,
-            application_version: configuration.application_version,
-            application_installed: true,
-            profile_identifier: configuration.profile_identifier,
-            profile_uuid: rt.profile(&login)?.uuid,
-            profile_matched: true,
-            architecture: "aarch64".into(),
-            os_version: [26, 4, 0, 0],
-            user_helper: true,
-            system_broker: true,
-        },
-        local_session: Some(access::AccessLocalSession {
-            account: account.clone(),
-            session_id: Uuid::new_v4(),
-        }),
-        applications: Vec::new(),
-    };
-    let evidence = format!("{base}/deployment-evidence");
-    material::empty(
-        client
-            .post(&evidence)
-            .json(&business::signed(&observation)?)
-            .send()
-            .await?,
-    )
     .await?;
     let device = Key::new()?;
     let user = Key::new()?;
@@ -558,8 +632,8 @@ pub async fn verify(
         "removing the configured authority rejects persisted application evidence"
     );
     tx.rollback().await?;
-    let token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
-    let session = Box::pin(browser_session(c, id, &source, &user, token)).await?;
+    let native_token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
+    let session = Box::pin(browser_session(c, id, &source, &user, native_token)).await?;
     let mut revoked = observation.clone();
     revoked.sequence += 1;
     revoked.revoked = true;
@@ -572,6 +646,9 @@ pub async fn verify(
             .await?,
     )
     .await?;
+    let diagnostic =
+        super::configuration::diagnostic(client, base, &token, &registration.device).await?;
+    assert_eq!(diagnostic["resolution"]["blocked"], "withdrawn");
     assert!(
         Box::pin(native_login(c, &b, &source, &device, &user))
             .await
@@ -607,6 +684,6 @@ pub async fn verify(
             .await?,
     )
     .await?;
-    let token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
-    Box::pin(browser_session(c, id, &source, &user, token)).await
+    let native_token = Box::pin(native_login(c, &b, &source, &device, &user)).await?;
+    Box::pin(browser_session(c, id, &source, &user, native_token)).await
 }

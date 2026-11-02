@@ -2,6 +2,7 @@
 //! No Agent/native runtime or MDM application is assembled here.
 mod agent_transport;
 mod boundary;
+mod configurations;
 mod error;
 pub mod tls;
 use axum::{
@@ -60,8 +61,9 @@ pub fn router(
     let business = DaBusinessProtocol { access, psso }
         .assemble()
         .when("device_access_business", business.is_some());
-    rss_mdm_http_contract::route_module! {struct DaProtocol for [Da]{foundation,business [optional] at "/api/v1/da",evidence}}
+    rss_mdm_http_contract::route_module! {struct DaProtocol for [Da]{foundation,configuration_reports,business [optional] at "/api/v1/da",evidence}}
     DaProtocol {
+        configuration_reports: configurations::routes().bind_with(Some(&service), Arc::clone),
         foundation: declarations().bind_with(Some(&service), Arc::clone),
         business,
         evidence: administration::evidence_routes().bind_with(Some(&service), Arc::clone),
@@ -95,7 +97,7 @@ fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::D
             post(activate, &PROTOCOL, &[Operation::Action]),
         ),
         status: Route::new(
-            "/api/v1/da/status",
+            "/api/v1/da/registrations/status",
             post(status, &PROTOCOL, &[Operation::Action]),
         ),
         renew: Route::new(
@@ -324,15 +326,30 @@ async fn export(
     Administrator(p): Administrator,
     v: Body<da::Export>,
 ) -> Result<Json<da::SignedConfiguration>, Error> {
-    Ok(Json(s.configurations.export(&p, &body(v)?, &a).await?))
+    let b = s.business.as_ref().ok_or(Error::Unavailable)?;
+    Ok(Json(
+        b.service
+            .export_configuration(
+                &s.configurations,
+                &p,
+                &body(v)?,
+                b.platform.context.platform_sso.as_deref(),
+                &a,
+            )
+            .await?,
+    ))
 }
 async fn export_operation(
     State(s): State<Arc<Services>>,
-    Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
     Path(id): Path<Uuid>,
 ) -> Result<Json<da::SignedConfiguration>, Error> {
-    Ok(Json(s.configurations.operation(&p, id, &a).await?))
+    let b = s.business.as_ref().ok_or(Error::Unavailable)?;
+    Ok(Json(
+        b.service
+            .configuration_operation(&s.configurations, &p, id)
+            .await?,
+    ))
 }
 async fn retrieve(
     State(s): State<Arc<Services>>,
@@ -341,7 +358,12 @@ async fn retrieve(
     Path(id): Path<Uuid>,
 ) -> Result<Json<da::SignedConfiguration>, Error> {
     let p = s.registrations.authenticate(&peer(tls)?).await?;
-    Ok(Json(s.configurations.retrieve(&p, id, &a).await?))
+    let b = s.business.as_ref().ok_or(Error::Unavailable)?;
+    let current = b
+        .service
+        .retrieve_configuration(&s.configurations, &p, Some(id), &a)
+        .await?;
+    Ok(Json(current.artifact.ok_or(Error::Conflict)?))
 }
 
 async fn recover_issuance(
