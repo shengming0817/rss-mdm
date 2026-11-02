@@ -205,6 +205,7 @@ pub(crate) async fn open(
     );
     let business = rss_mdm_device_access_runtime::Runtime::assemble(
         rss_mdm_device_access_runtime::Resources {
+            report_limits: d.reports.clone(),
             tenant: identity.tenant,
             installation: uuid::Uuid::parse_str(&identity.instance.to_string())
                 .map_err(|_| invalid())?,

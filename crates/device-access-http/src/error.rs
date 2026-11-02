@@ -179,3 +179,22 @@ mod tests {
         assert_eq!(Error::from(E::NotFound).status(), 403);
     }
 }
+
+impl From<rss_mdm_device_access_postgres::Error> for Error {
+    fn from(e: rss_mdm_device_access_postgres::Error) -> Self {
+        use rss_mdm_device_access_postgres::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden | E::NotFound => Self::Forbidden,
+            E::Conflict | E::ReadConflict | E::CursorInvalidated => Self::Conflict,
+            E::CommitUnknown => Self::Unknown,
+            E::RollbackFailed => Self::Rollback,
+            E::Signing(e) => e.into(),
+            E::Capacity => Self::Enrollment(Code::RegistrationLimit, None, None),
+            E::Audit(e) => Self::Classified(audit_class(&e)),
+            E::Deadline => Self::Classified(Failure::Deadline),
+            _ => Self::Unavailable,
+        }
+    }
+}

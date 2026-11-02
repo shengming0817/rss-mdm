@@ -1075,3 +1075,66 @@ pub static MANAGEMENT_ACTIVITIES: Resource = Resource {
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::MANAGEMENT_ACTIVITIES),
 };
+
+pub static DA_CONFIGURATIONS: Resource = Resource {
+    id: "da_configurations",
+    category: Category::Projection,
+    owner: "device-access-http",
+    proof: "device_access.foundation",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::DA_CONFIGURATIONS),
+};
+
+pub static DA_CONFIGURATION_HISTORY: Resource = Resource {
+    id: "da_configuration_history",
+    category: Category::Facts,
+    owner: "device-access-http",
+    proof: "device_access.foundation",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::DA_CONFIGURATION_HISTORY),
+};
+
+pub static DA_CONFIGURATION_CHANGE: Resource = Resource {
+    id: "da_configuration_change",
+    category: Category::Command,
+    owner: "device-access-http",
+    proof: "device_access.foundation",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};
+
+pub static DA_STATUS: Resource = Resource {
+    id: "da_status",
+    category: Category::ReadModel,
+    owner: "device-access-http",
+    proof: "device_access.foundation",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};
+
+pub static DA_REPORT_HISTORY: Resource = Resource {
+    id: "da_report_history",
+    category: Category::Facts,
+    owner: "device-access-http",
+    proof: "device_access.foundation",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::DA_REPORT_HISTORY),
+};
+
+pub static DA_CONFIGURATION_DIAGNOSTICS: Resource = Resource {
+    id: "da_configuration_diagnostics",
+    category: Category::ReadModel,
+    owner: "device-access-http",
+    proof: "device_access.foundation",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};
+
+pub static DA_PUBLICATION_OPERATIONS: Resource = Resource {
+    id: "da_publication_operations",
+    category: Category::ReadModel,
+    owner: "device-access-http",
+    proof: "device_access.foundation",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};

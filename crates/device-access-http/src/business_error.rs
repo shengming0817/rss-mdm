@@ -81,6 +81,10 @@ impl From<rss_mdm_device_access_postgres::Error> for Error {
     fn from(e: rss_mdm_device_access_postgres::Error) -> Self {
         use rss_mdm_device_access_postgres::Error as E;
         match e {
+            E::Signing(e) => match crate::Error::from(e).failure() {
+                Some(f) => Self::Classified(f),
+                None => Self::Unavailable,
+            },
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,

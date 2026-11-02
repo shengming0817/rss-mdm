@@ -4,6 +4,8 @@ use std::path::PathBuf;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub reports: rss_mdm_device_access_postgres::reports::Limits,
     pub database: crate::config::Database,
     pub deployment_authorities: Vec<DeploymentAuthority>,
     pub platform_sso: Option<PlatformSso>,

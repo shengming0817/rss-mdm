@@ -97,3 +97,9 @@ pub static AGENT_ISSUANCE_RECOVERY_OPERATIONS: Description = Description::QueryO
 
 pub static WINDOWS_CERTIFICATE_REQUESTS: Description = Description::QueryOwner;
 pub static WINDOWS_SIGNING_RECOVERY_OPERATIONS: Description = Description::QueryOwner;
+
+pub static DA_CONFIGURATIONS: Description = Description::QueryOwner;
+
+pub static DA_CONFIGURATION_HISTORY: Description = Description::QueryOwner;
+
+pub static DA_REPORT_HISTORY: Description = Description::QueryOwner;

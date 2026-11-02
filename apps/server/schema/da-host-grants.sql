@@ -84,4 +84,7 @@ GRANT EXECUTE ON FUNCTION rss_da.current_da_registration(text),rss_da.access_pol
 GRANT USAGE ON SCHEMA rss_da TO mdm_owner;
 GRANT SELECT ON rss_da.signing_heads,rss_da.signing_versions TO mdm_owner;
 GRANT EXECUTE ON FUNCTION rss_da.binding_application_current(jsonb,bigint) TO mdm_access,mdm_identity_runtime,mdm_command_runtime,mdm_policy_runtime;
+GRANT SELECT ON rss_da.report_heads,rss_da.report_history,rss_da.signing_heads,rss_da.signing_versions,rss_da.signing_acknowledgements TO mdm_identity_runtime;
+GRANT SELECT,INSERT ON rss_da.configuration_exports TO mdm_identity_runtime;
+GRANT SELECT(tenant_id,usage,key_id,max_verify_until),UPDATE(max_verify_until) ON rss_da.signing_keys TO mdm_identity_runtime;
 COMMIT;

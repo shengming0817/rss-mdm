@@ -165,13 +165,30 @@ recoveryVersion，必须仍处于原自动投递窗口；`POST /deliveries/{id}/
 通过 `POST /api/v1/device-access/configurations` 发布 DA 配置，目标仅支持租户默认
 （`target.kind=tenant_default`）或单台 DA 设备覆盖（`target.kind=device`，`target.device` 为 DA 设备 ID）。
 设备覆盖优先；禁用覆盖会阻止回退到租户默认。当前入口不使用 MDM Scope 分配、排除或 Group；
-完整配置/状态闭环及 MDM 强制配置优先级由 #3129 承接。
+配置与状态查询使用 DA 独立入口；配置版本由 Policy 唯一持有。
 配置持有 selfEnrollment、可选 role（standard/administrator）、mac 登录配置与 Windows 机制配置（`windows.kind=disabled|rss_factor|whfb`）。
 role 为 null 时保留已有账号权限，新账号默认 standard。
 `rss_factor` 必须提供非空 `accounts` 来源集合（local/active_directory/entra）；`whfb` 固定纯 Entra joined、TPM 2.0 与 PIN，不能配置本地/AD 账号或创建目录账号。变更机制先完成原绑定退役，再建立新绑定；不自动迁移凭据。
 serverState、receivedRevision、appliedRevision、effect 各自表达不同事实。
 普通配置和角色更新只增加 revision；重新关联人员增加绑定代际及因子世代，Windows 的 `reset_factors` 显式增加因子世代。
 撤销立即停止服务端授权；离线本机保持原效果直到实际执行清理，不将接口成功视为即时端侧撤销。
+
+DA 状态上报为 `POST /api/v1/da/status-reports`；注册进度查询为 `POST /api/v1/da/registrations/status`。
+状态绑定 mTLS 当前注册和 generation，sequence 在该代次内严格递增；设备时间仅作描述。精确重试返回原 receivedAt，冲突和历史已清理的旧序号均拒绝。管理员通过 `GET /api/v1/da/admin/devices/{device}/status` 和 `/reports?kind=status|application&limit=64&cursor=...` 读取最新与历史；新页面不会把旧报告重新算作在线。读取要求 OperationRead，游标绑定主体、权限、设备、注册代次和查询。
+
+`GET /api/v1/da/admin/configurations`（可用 `device` 精确筛选）、`/{id}`、`/{id}/versions` 读取配置与不可变历史；`/api/v1/da/admin/configuration-operations/{operationId}` 为原操作者恢复发布回执。
+租户配置要求 RegistrationConfigurationRead/Write；设备配置写入要求 ConfigurationWrite。修改服务端账号角色、自助开通或启用规则同时要求 AccountWrite。
+发布 `managedFields` 只授权 mac/windows 客户端设置组；新增或更改授权、受保护配置停用与重新启用须通过 `/device-access/configurations/step-up` 完成用途绑定证明。
+`POST /api/v1/da/configurations` 导出正文只接受 operationId、policy、version、delivery 和 lifetimeSeconds，不能临时提供另一份配置内容。
+响应为原始 payload、keyId、signature、digest；`GET /api/v1/da/configuration-operations/{operationId}` 恢复同一签名回执。
+设备安装独立配置签名信任并 ACK 后，以 `GET /api/v1/da/configuration` 获取当前候选，或 `/configurations/{operationId}` 领取精确候选；已撤回或不再选中的版本不能领取。
+
+`POST /api/v1/da/configuration-reports` 分别报告 received、validated、applied、rejected 或 unknown，不推导状态链，不写入认证资格、绑定效果或签名钥匙 ACK。
+报告可以记录已过期或已撤回候选的拒绝/未知事实，但不能使其重新成为可领取或可信应用的候选。
+客户端 source 声明始终为 reported；预置信任的部署 authority 才能通过 deployment-evidence 的 configuration 字段证明精确 artifact/digest/nativeDigest 与实际投递。
+`GET /api/v1/da/admin/devices/{device}/configuration` 将可信证明与后台配置裁决分开展示。可信 managed-mandatory 设置优先于 DA 后台设置；授权字段锁定并标明后台值被忽略。已存在强制来源的读取失败、过期或冲突会阻断回退；没有配置时安全默认不启用集成。role、selfEnrollment 与服务端启用规则继续取自后台授权。
+客户端启动时先读取完整的托管引导快照，再裁决 DA 后台候选；签名内容整体替换，不将省略字段视为增量补丁。保留已确认的强制字段锁定信息，读取失败、无效或撤除不等同于首次缺失。
+原生模板消费者须保持内层 payload 字节和签名绑定的 profile/payload UUID、identifier、version；外层 CMS 可重新签名。完整原生导出装配由 #3093 承接。
 
 RSS 登录恢复密钥沿用本页的恢复凭据列表/查阅入口及 Credentials 权限，轮换/核对使用现有 Credential Policy。
 它只恢复 Windows 的 RSS 附加因子，仍需正确系统密码；Mac 沿用原生系统及磁盘恢复。
