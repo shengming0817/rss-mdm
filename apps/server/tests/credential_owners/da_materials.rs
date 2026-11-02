@@ -98,6 +98,7 @@ pub(super) async fn verify(
         role: None,
     };
     let publication = rss_mdm_policy_postgres::device_access::Publication {
+        managed_fields: vec![],
         id: Uuid::new_v4(),
         revision: 1,
         version: Uuid::new_v4(),

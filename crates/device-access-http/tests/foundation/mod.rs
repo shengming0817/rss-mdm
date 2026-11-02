@@ -5,6 +5,7 @@ mod context;
 mod installation;
 mod material;
 mod platform;
+mod reports;
 mod transport;
 use anyhow::Result;
 use context::{Context, Inputs};
@@ -180,15 +181,6 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
     assert_eq!(receipt.device, grant.device);
-    // Keep the independent business/protocol state machines out of this long TLS scenario.
-    Box::pin(business::verify(
-        &c,
-        &material,
-        &receipt,
-        &client,
-        &server.origin,
-    ))
-    .await?;
     let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.registrations WHERE purpose='da_device' AND channel IS NULL),(SELECT count(*) FROM rss_da.report_sources),(SELECT count(*) FROM rss_da.requests)").fetch_one(&c.operator).await?;
     assert_eq!(counts, (1, 0, 0));
     assert!(
@@ -206,22 +198,36 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .await?,
     )
     .await?;
+    let publication = rss_mdm_policy_postgres::device_access::Publication {
+        id: Uuid::new_v4(),
+        version: Uuid::new_v4(),
+        revision: 1,
+        target: rss_mdm_policy_postgres::device_access::Target::TenantDefault,
+        enabled: true,
+        managed_fields: vec![],
+        configuration: serde_json::from_value(
+            serde_json::json!({"mac":null,"windows":{"kind":"whfb"},"selfEnrollment":false,"enabled":true,"role":null}),
+        )?,
+    };
+    business::assemble(&c, &material)?
+        .service
+        .publish_configuration(
+            &proof,
+            &rss_mdm_device_access_postgres::configuration::Change {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 0,
+                publication: publication.clone(),
+            },
+            None,
+            &audit(),
+        )
+        .await?;
     let export = da::Export {
         operation_id: Uuid::new_v4(),
-        configuration: da::Configuration {
-            service_id: receipt.service_id,
-            tenant: receipt.tenant,
-            id: Uuid::new_v4(),
-            revision: 1,
-            epoch: 1,
-            audience: da::Audience::Tenant,
-            delivery: da::DeliveryPermission::Da,
-            issued_at: now(),
-            expires_at: now() + 600,
-            content: serde_json::from_value(
-                serde_json::json!({"mac":null,"windows":{"kind":"whfb"},"selfEnrollment":false,"enabled":true,"role":null}),
-            )?,
-        },
+        policy: publication.id,
+        version: publication.version,
+        delivery: da::DeliveryPermission::Da,
+        lifetime_seconds: 600,
     };
     let signed: da::SignedConfiguration = material::success(
         client
@@ -235,8 +241,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     assert_eq!(signed.key_id, old_key);
     let mut foreign = export.clone();
     foreign.operation_id = Uuid::new_v4();
-    foreign.configuration.id = Uuid::new_v4();
-    foreign.configuration.service_id = Uuid::new_v4();
+    foreign.policy = Uuid::new_v4();
     assert_eq!(
         client
             .post(format!("{base}/configurations"))
@@ -245,10 +250,10 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .send()
             .await?
             .status(),
-        400
+        403
     );
-    foreign.configuration.service_id = export.configuration.service_id;
-    foreign.configuration.tenant = Uuid::new_v4();
+    foreign.policy = export.policy;
+    foreign.version = Uuid::new_v4();
     assert_eq!(
         client
             .post(format!("{base}/configurations"))
@@ -257,7 +262,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .send()
             .await?
             .status(),
-        400
+        409
     );
     assert_eq!(
         client
@@ -272,13 +277,6 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let limited = material::device_administrator(&c, &receipt.device).await?;
     let mut scoped = export.clone();
     scoped.operation_id = Uuid::new_v4();
-    scoped.configuration.revision = i64::MAX as u64;
-    scoped.configuration.epoch = i64::MAX as u64;
-    scoped.configuration.audience = da::Audience::Device {
-        device: receipt.device.clone(),
-        registration: receipt.registration,
-        generation: receipt.generation,
-    };
     assert_eq!(
         client
             .post(format!("{base}/configurations"))
@@ -292,7 +290,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     // The rejected cross-scope write must not poison the existing publication head.
     let mut next_revision = export.clone();
     next_revision.operation_id = Uuid::new_v4();
-    next_revision.configuration.revision = 2;
+    // Multiple immutable exports reference the same publication; no independent configuration counter.
     let _: da::SignedConfiguration = material::success(
         client
             .post(format!("{base}/configurations"))
@@ -332,6 +330,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     )
     .await?;
     assert_eq!(fetched.signature, signed.signature);
+    reports::verify(&c, &client, &peer, base, &token, &receipt, &signed).await?;
     let request_audit = audit();
     let prepared = trust
         .change_task_trust(
@@ -368,7 +367,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     assert_eq!(active.revision, 3);
     let mut second = export.clone();
     second.operation_id = Uuid::new_v4();
-    second.configuration.id = Uuid::new_v4();
+
     // A process pinned to the old signer loses signing authority immediately.
     assert_eq!(
         client
@@ -459,7 +458,18 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     );
     // Durable export retention survives process reload, even after every live consumer ACKs.
     let retained:i64=sqlx::query_scalar("SELECT max_verify_until FROM rss_da.signing_keys WHERE tenant_id=$1::uuid AND usage='da_configuration' AND key_id=$2").bind(c.tenant.to_string()).bind(old_key).fetch_one(&c.operator).await?;
-    assert_eq!(retained, export.configuration.expires_at);
+    assert!(retained >= signed.decode()?.expires_at);
+    unknown_recovery(&c, &material, &client, base2, &token, export.operation_id).await?;
+    // Verify configuration trust before the business proof changes current policy selection.
+    Box::pin(business::verify(
+        &c,
+        &material,
+        &receipt,
+        &client,
+        &server.origin,
+    ))
+    .await?;
+
     let renewal = da::GrantRequest {
         operation_id: Uuid::new_v4(),
         csr: material.csr(2)?,
@@ -553,7 +563,6 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         401,
         "revoked DA registration cannot access the PSSO channel"
     );
-    unknown_recovery(&c, &material, &client, base2, &token, export.operation_id).await?;
     next_server.shutdown().await?;
     server.shutdown().await?;
     drop(material);
@@ -614,7 +623,7 @@ async fn unknown_recovery(
     assert_eq!(m.issued_count()?, previous + 1);
     let status: da::Progress = material::success(
         client
-            .post(format!("{base}/status"))
+            .post(format!("{base}/registrations/status"))
             .json(&enroll::StatusRequest {
                 wire_version: 1,
                 grant_id: grant.grant_id,

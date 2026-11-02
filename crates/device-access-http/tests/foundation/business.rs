@@ -37,6 +37,11 @@ pub fn assemble(
     let evidence = authorities()?;
     let runtime = rss_mdm_device_access_runtime::Runtime::assemble(
         rss_mdm_device_access_runtime::Resources {
+            report_limits: pg::reports::Limits {
+                history_count: 2,
+                reports_per_minute: 10,
+                ..Default::default()
+            },
             tenant: c.tenant,
             installation: Uuid::parse_str(&c.inputs.installation.instance_id)?,
             identity_instance: rss_identity_core::InstanceId::parse(
@@ -141,9 +146,18 @@ pub async fn verify(
         enabled: true,
         role: None,
     };
+    let mut tx = c.seed().await?;
+    let existing = rss_mdm_policy_postgres::device_access::selected_on(
+        &mut tx,
+        Uuid::parse_str(&c.tenant.to_string())?,
+        &receipt.device,
+    )
+    .await?;
+    tx.rollback().await?;
     let publication = Publication {
-        id: Uuid::new_v4(),
-        revision: 1,
+        managed_fields: vec![],
+        id: existing.as_ref().map(|v| v.id).unwrap_or_else(Uuid::new_v4),
+        revision: existing.as_ref().map(|v| v.revision + 1).unwrap_or(1),
         version: Uuid::new_v4(),
         target: Target::TenantDefault,
         enabled: true,
@@ -151,12 +165,12 @@ pub async fn verify(
     };
     let publish = pg::configuration::Change {
         operation_id: Uuid::new_v4(),
-        expected_revision: 0,
+        expected_revision: publication.revision - 1,
         publication: publication.clone(),
     };
     business
         .service
-        .publish_configuration(&actor, &publish, &audit(c))
+        .publish_configuration(&actor, &publish, None, &audit(c))
         .await?;
     let account = wire::AccessAccount::Windows {
         sid: "S-1-12-1-1-2-3-4".into(),
@@ -299,6 +313,7 @@ pub async fn verify(
         revoked: false,
         policy: publication.id,
         policy_version: publication.version,
+        configuration: None,
         deployment: Deployment::Windows {
             interactive_broker: true,
         },
@@ -420,6 +435,7 @@ pub async fn verify(
         operation_id: Uuid::new_v4(),
         expected_revision: 0,
         publication: Publication {
+            revision: 1,
             id: Uuid::new_v4(),
             version: Uuid::new_v4(),
             target: Target::Device {
@@ -431,7 +447,7 @@ pub async fn verify(
     };
     business
         .service
-        .publish_configuration(&current, &override_config, &audit(c))
+        .publish_configuration(&current, &override_config, None, &audit(c))
         .await?;
     let mut tx = c.seed().await?;
     assert!(

@@ -307,7 +307,7 @@ pub async fn verify(
     let token = material::administrator(c).await?;
     let principal = c
         .authority
-        .inspect_bearer(c.tenant, BearerSecret::parse(token)?, deadline())
+        .inspect_bearer(c.tenant, BearerSecret::parse(token.clone())?, deadline())
         .await?
         .account()
         .principal
@@ -346,9 +346,49 @@ pub async fn verify(
                 expected_revision,
                 publication: publication.clone(),
             },
+            None,
             &business::audit(c),
         )
         .await?;
+    // The real DA export freezes every public native generator input and bound identity.
+    let exported: da::SignedConfiguration = material::success(
+        client
+            .post(format!("{base}/configurations"))
+            .bearer_auth(&token)
+            .json(&da::Export {
+                operation_id: Uuid::new_v4(),
+                policy: publication.id,
+                version: publication.version,
+                delivery: da::DeliveryPermission::Da,
+                lifetime_seconds: 600,
+            })
+            .send()
+            .await?,
+    )
+    .await?;
+    let installed: da::ConfigurationTrust = material::success(
+        peer.get(format!("{base}/configuration-trust"))
+            .send()
+            .await?,
+    )
+    .await?;
+    material::verify(&exported, &installed)?;
+    let rendered = rss_mdm_apple_mdm::platform_sso::from_da_configuration(&exported.decode()?)?;
+    assert_eq!(
+        serde_json::to_value(rendered)?,
+        serde_json::to_value(rt.profile(&login)?)?
+    );
+    let mut wrong_tenant = installed.clone();
+    wrong_tenant.tenant = Uuid::new_v4();
+    assert!(rss_mdm_task_trust::configuration::verify(&exported, &wrong_tenant, now()).is_err());
+    assert!(
+        rss_mdm_task_trust::configuration::verify(
+            &exported,
+            &installed,
+            exported.decode()?.expires_at
+        )
+        .is_err()
+    );
     let account = access::AccessAccount::Macos {
         generated_uid: Uuid::new_v4(),
     };
@@ -399,6 +439,7 @@ pub async fn verify(
         revoked: false,
         policy: publication.id,
         policy_version: publication.version,
+        configuration: None,
         deployment: Deployment::Macos {
             configuration: configuration.configuration,
             application_id: configuration.application_id,
