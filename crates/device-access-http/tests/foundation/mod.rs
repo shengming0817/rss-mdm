@@ -3,6 +3,8 @@ mod admission;
 mod business;
 mod configuration;
 mod context;
+mod exports;
+mod host;
 mod installation;
 mod material;
 mod platform;
@@ -31,6 +33,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     admission::verify_and_reject_drift(&c).await?;
     let material = material::Material::new(&c).await?;
     let registration = material.assemble(&c).await?;
+    host::verify(&c, &material, &registration).await?;
     let token = material::administrator(&c).await?;
     let proof = c
         .sessions

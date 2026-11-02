@@ -101,6 +101,7 @@ impl Fixture {
                 storage.reconcile.clone(),
                 storage.worker_budget.clone(),
                 config.background.device_concurrency,
+                config.device_access.is_some(),
             ))
             .await?;
             let (scripts, script_work) = assembly::script::assemble(

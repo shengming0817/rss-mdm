@@ -73,3 +73,6 @@ pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -
         }
     }
 }
+
+#[cfg(unix)]
+pub mod configuration;

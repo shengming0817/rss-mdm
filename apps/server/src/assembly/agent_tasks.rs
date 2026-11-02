@@ -243,9 +243,10 @@ impl Tasks for AgentTasks {
                     .map(|v| (v, Owner::Registration)),
                 );
             }
-            if binding
-                .capabilities
-                .contains(&wire::Capability::DeviceAccessV1)
+            if self.access.accepts_new_work()
+                && binding
+                    .capabilities
+                    .contains(&wire::Capability::DeviceAccessV1)
             {
                 candidates.extend(
                     rss_mdm_device_access_postgres::device_access::execution::poll::offer_candidates(
@@ -264,7 +265,7 @@ impl Tasks for AgentTasks {
                 .capabilities
                 .contains(&wire::Capability::CredentialsWindowsV1)
             {
-                for owner in &self.credentials {
+                for owner in self.credentials.iter().filter(|s| s.accepts_new_work()) {
                     let profile = owner.profile();
                     candidates.extend(
                         rss_mdm_recovery_credentials::tasks::actions::poll::offer_candidates(
@@ -287,9 +288,10 @@ impl Tasks for AgentTasks {
             }
             candidates.truncate(128);
             // Capture the globally bounded page before admission/relay can expose additional work.
-            if binding
-                .capabilities
-                .contains(&wire::Capability::DeviceAccessV1)
+            if self.access.accepts_new_work()
+                && binding
+                    .capabilities
+                    .contains(&wire::Capability::DeviceAccessV1)
             {
                 self.access
                     .agent_admit_in(tx, p, input, audit)
@@ -300,7 +302,7 @@ impl Tasks for AgentTasks {
                 .capabilities
                 .contains(&wire::Capability::CredentialsWindowsV1)
             {
-                for credentials in &self.credentials {
+                for credentials in self.credentials.iter().filter(|s| s.accepts_new_work()) {
                     credentials
                         .agent_admit_in(tx, p, input, audit)
                         .await

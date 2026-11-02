@@ -4,6 +4,8 @@ use rss_mdm_registration_service::participants::{capacity::DeviceCapacity, scope
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgRuntime;
 pub struct Materials {
+    /// Fixed process mode; disabled hosts may only settle existing executions.
+    pub accepting: bool,
     pub product: Option<Arc<dyn super::product::Product>>,
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub source: Arc<dyn Sources>,
@@ -11,6 +13,7 @@ pub struct Materials {
     pub recovery_credentials: Arc<crate::Protection>,
 }
 pub struct Transactions {
+    pub(crate) accepting: bool,
     pub(crate) product: Option<Arc<dyn super::product::Product>>,
     profile: rss_mdm_install_support::StorageProfile,
     pub(crate) runtime: Arc<PgRuntime>,
@@ -24,6 +27,9 @@ pub struct Transactions {
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
 }
 impl Transactions {
+    pub fn accepts_new_work(&self) -> bool {
+        self.accepting
+    }
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
@@ -82,6 +88,7 @@ impl Transactions {
         .await
         .map_err(|_| Error::Unavailable)?;
         Ok(Self {
+            accepting: materials.accepting,
             product: materials.product.clone(),
             profile,
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
@@ -111,6 +118,14 @@ pub struct Service {
     pub(crate) transactions: Transactions,
 }
 impl Service {
+    /// Freeze this process to settlement of previously created executions.
+    pub fn settlement_only(mut self) -> Self {
+        self.transactions.accepting = false;
+        self
+    }
+    pub fn accepts_new_work(&self) -> bool {
+        self.transactions.accepting
+    }
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.transactions.profile()
     }

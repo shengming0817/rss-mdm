@@ -389,10 +389,13 @@ pub async fn verify(
     .await?;
     material::verify(&exported, &installed)?;
     let rendered = rss_mdm_apple_mdm::platform_sso::from_da_configuration(&exported.decode()?)?;
+    let mut expected = rt.profile(&login)?;
+    rss_mdm_apple_mdm::da::bind(&mut expected)?;
     assert_eq!(
         serde_json::to_value(rendered)?,
-        serde_json::to_value(rt.profile(&login)?)?
+        serde_json::to_value(expected)?
     );
+    super::exports::verify(&client, &base, &token, &exported, &installed).await?;
     let mut wrong_tenant = installed.clone();
     wrong_tenant.tenant = Uuid::new_v4();
     assert!(rss_mdm_task_trust::configuration::verify(&exported, &wrong_tenant, now()).is_err());

@@ -8,7 +8,7 @@ PACKAGE = 'rss-mdm-app'
 MODULES = {
     'device_access.foundation': dict(package='rss-mdm-device-access-http', target='foundation', installer=None,
         prefix='foundation::',profiles=('da_foundation',),
-        inputs=('crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs','crates/agent-wire/src/da/*',
+        inputs=('apps/da-server/*','crates/apple-mdm/src/da.rs','crates/windows-mdm/src/da.rs','crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs','crates/agent-wire/src/da/*',
                 'crates/agent-wire/src/enroll.rs','crates/agent-wire/src/pki.rs','crates/agent-wire/src/task_trust.rs',
                 'crates/agent-wire/src/runtime.rs','crates/agent-wire/src/device_access.rs','crates/agent-wire/src/platform_sso.rs',
                 'crates/native-protection/*',
@@ -18,8 +18,8 @@ MODULES = {
     'agent.foundation': dict(package='rss-mdm-agent-channel', target='foundation', installer=None,
         prefix='foundation::', profiles=('agent_foundation',),
         inputs=('crates/install-support/*','crates/agent-channel/*','crates/registration-service/*',
-                'crates/native-protection/*','crates/backend-postgres-support/src/access_admission.rs',
-                'crates/backend-postgres-support/src/access-admission.sql',
+                'crates/native-protection/*','crates/install-support/src/access_admission.rs',
+                'crates/install-support/src/access-admission.sql',
                 'crates/authorization-service/*','crates/pki-service/*','crates/inventory-postgres/*','crates/task-trust/*',
                 'crates/policy-postgres/*','crates/scope-postgres/*','crates/inventory-service/*',
                 'crates/scope-service/src/registration.rs','crates/scope-service/src/channels/*',
@@ -190,7 +190,7 @@ MODULES = {
                 'apps/server/tests/foundation/tenants.rs')),
     'foundation.recovery': dict(
         prefix='installation::backup::t2::', profiles=('recovery',),
-        inputs=('apps/server/src/installation/backup.rs',
+        inputs=('crates/install-support/src/maintenance/*','crates/audit-integration/src/backup.rs','crates/pki-service/src/backup.rs','apps/server/src/installation/backup.rs',
                 'crates/inventory-postgres/migrations/asset-cuts.sql',
                 'crates/inventory-postgres/migrations/install.sql',
                 'apps/server/tests/foundation/recovery.rs')),

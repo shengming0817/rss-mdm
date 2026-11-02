@@ -281,13 +281,10 @@ pub(crate) async fn admission(
         .map_err(db)?;
     verify_runtime_storage(&mut tx).await?;
     let contracts = access_contracts(audit);
-    let valid = rss_mdm_backend_postgres_support::access_admission::verify(
-        &mut tx,
-        "mdm_access",
-        &contracts,
-    )
-    .await
-    .map_err(db)?;
+    let valid =
+        rss_mdm_install_support::access_admission::verify(&mut tx, "mdm_access", &contracts)
+            .await
+            .map_err(db)?;
     crate::administration::tenants::verify_read_profile(&mut tx).await?;
     crate::cursor_keys::verify(&mut tx).await?;
     let instance: String =

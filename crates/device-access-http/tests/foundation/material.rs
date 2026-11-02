@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 pub struct Material {
     pub directory: std::path::PathBuf,
     pub protection: Arc<Protector>,
-    port: u16,
+    pub port: u16,
     _provider: tokio::process::Child,
 }
 pub struct Server {

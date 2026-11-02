@@ -1,6 +1,7 @@
 //! Quiesced current-installation backup. Original CA, database, content and protection identities travel together.
 mod accounts;
-pub(super) mod archive;
+pub(super) use rss_mdm_install_support::maintenance::archive;
+use rss_mdm_install_support::maintenance::fence::{connection_fence, no_writers};
 mod ledger;
 pub(super) mod storage;
 mod telemetry;
@@ -17,17 +18,7 @@ pub struct OriginalAccount {
     pub login: String,
     pub password_file: PathBuf,
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Authority {
-    pub purpose: rss_mdm_agent_wire::pki::Purpose,
-    pub issuer: String,
-    pub configuration_file: PathBuf,
-    pub online_directory: PathBuf,
-    pub offline_directory: PathBuf,
-    pub root_private_key_file: PathBuf,
-    pub root_password_file: PathBuf,
-}
+pub use rss_mdm_pki_service::backup::Authority;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -65,86 +56,6 @@ struct Frozen {
     hosts: Vec<Host>,
     installation: crate::migration::Installation,
 }
-fn ca_file(authority: &Authority, value: &str) -> Result<PathBuf> {
-    let path = PathBuf::from(value);
-    if !path.starts_with(&authority.online_directory)
-        || path.canonicalize().map_err(|_| Error::Input)? != path
-    {
-        return Err(Error::Input);
-    }
-    Ok(path)
-}
-fn ca_identity(authority: &Authority) -> Result<()> {
-    let configuration = &authority.configuration_file;
-    if !configuration.starts_with(&authority.online_directory)
-        || !authority
-            .root_private_key_file
-            .starts_with(&authority.offline_directory)
-        || !authority
-            .root_password_file
-            .starts_with(&authority.offline_directory)
-    {
-        return Err(Error::Input);
-    }
-    let config: Value = serde_json::from_slice(
-        &crate::config::read(configuration, 1024 * 1024, false).map_err(|_| Error::Input)?,
-    )
-    .map_err(|_| Error::Input)?;
-    let issuer = openssl::x509::X509::from_pem(
-        &crate::config::read(
-            &ca_file(authority, config["crt"].as_str().ok_or(Error::Input)?)?,
-            131072,
-            false,
-        )
-        .map_err(|_| Error::Input)?,
-    )
-    .map_err(|_| Error::Input)?;
-    if rss_mdm_device_trust::digest(&issuer.to_der().map_err(|_| Error::Input)?) != authority.issuer
-    {
-        return Err(Error::Conflict);
-    }
-    let password =
-        crate::config::secret(&authority.root_password_file).map_err(|_| Error::Input)?;
-    let key = crate::config::read(&authority.root_private_key_file, 32768, true)
-        .map_err(|_| Error::Input)?;
-    let key = openssl::pkey::PKey::private_key_from_pem_passphrase(&key, password.as_bytes())
-        .map_err(|_| Error::Input)?;
-    let roots = match &config["root"] {
-        Value::String(root) => vec![root.as_str()],
-        Value::Array(roots) => roots
-            .iter()
-            .map(|r| r.as_str().ok_or(Error::Input))
-            .collect::<Result<Vec<_>>>()?,
-        _ => return Err(Error::Input),
-    };
-    let mut matched = 0;
-    for root in roots {
-        let root = openssl::x509::X509::from_pem(
-            &crate::config::read(&ca_file(authority, root)?, 131072, false)
-                .map_err(|_| Error::Input)?,
-        )
-        .map_err(|_| Error::Input)?;
-        let public = root.public_key().map_err(|_| Error::Input)?;
-        if public.public_eq(&key)
-            && issuer.verify(&public).map_err(|_| Error::Input)?
-            && issuer.issuer_name().to_der().map_err(|_| Error::Input)?
-                == root.subject_name().to_der().map_err(|_| Error::Input)?
-        {
-            matched += 1;
-        }
-    }
-    if matched != 1 {
-        return Err(Error::Conflict);
-    }
-    Ok(())
-}
-async fn no_writers(c: &mut sqlx::PgConnection) -> Result<()> {
-    let n:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'").fetch_one(c).await.map_err(|_|Error::Storage)?;
-    if n != 0 {
-        return Err(Error::Busy);
-    }
-    Ok(())
-}
 pub(super) fn administrator(input: &Input) -> Result<crate::config::Database> {
     let mut value =
         serde_json::to_value(&input.database.administrator).map_err(|_| Error::Input)?;
@@ -167,50 +78,6 @@ pub(super) async fn recovery_administrator(database: &crate::config::Database) -
         return Err(Error::Input);
     }
     Ok(())
-}
-pub(super) async fn connection_fence(
-    c: &mut sqlx::PgConnection,
-    journal: &Journal,
-    enable: bool,
-) -> Result<()> {
-    let roles = if let Some(roles) =
-        journal.load::<Vec<(String, bool)>>("database-connections.json")?
-    {
-        roles
-    } else {
-        if !enable {
-            return Err(Error::Corrupt);
-        }
-        let roles:Vec<(String,bool)>=sqlx::query_as("SELECT CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END,bool_or(a.is_grantable) FROM pg_database d CROSS JOIN LATERAL aclexplode(coalesce(d.datacl,acldefault('d',d.datdba))) a WHERE d.datname=current_database() AND a.privilege_type='CONNECT' AND a.grantee<>d.datdba GROUP BY 1 ORDER BY 1").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
-        journal.secret(
-            "database-connections.json",
-            &serde_json::to_vec(&roles).map_err(|_| Error::Corrupt)?,
-        )?;
-        roles
-    };
-    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-    sqlx::query("SELECT set_config('rss.backup.roles',$1,true)")
-        .bind(serde_json::to_string(&roles).map_err(|_| Error::Corrupt)?)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Storage)?;
-    sqlx::raw_sql(if enable {r#"DO $backup$
-DECLARE entry jsonb; role_name text;
-BEGIN
- EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC',current_database());
- FOR role_name IN SELECT DISTINCT pg_get_userbyid(a.grantee)::text FROM pg_database d CROSS JOIN LATERAL aclexplode(coalesce(d.datacl,acldefault('d',d.datdba))) a WHERE d.datname=current_database() AND a.privilege_type='CONNECT' AND a.grantee NOT IN (0,d.datdba) LOOP
-  IF role_name=current_user THEN CONTINUE; END IF;
-  EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM %s',current_database(),CASE WHEN role_name='PUBLIC' THEN 'PUBLIC' ELSE quote_ident(role_name) END);
- END LOOP;
-END $backup$;"#}else{r#"DO $backup$
-DECLARE entry jsonb; role_name text;
-BEGIN
- FOR entry IN SELECT value FROM jsonb_array_elements(current_setting('rss.backup.roles')::jsonb) LOOP
-  role_name:=entry->>0;
-  EXECUTE format('GRANT CONNECT ON DATABASE %I TO %s%s',current_database(),CASE WHEN role_name='PUBLIC' THEN 'PUBLIC' ELSE quote_ident(role_name) END,CASE WHEN (entry->>1)::boolean THEN ' WITH GRANT OPTION' ELSE '' END);
- END LOOP;
-END $backup$;"#}).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-    tx.commit().await.map_err(|_| Error::Storage)
 }
 pub async fn capture(input: Request) -> Result<Receipt> {
     if input.operation_id.is_nil()
@@ -444,7 +311,7 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
         {
             return Err(Error::Input);
         }
-        ca_identity(authority)?;
+        rss_mdm_pki_service::backup::verify(authority)?;
     }
     let frozen = Frozen {
         request: input,
@@ -532,7 +399,13 @@ async fn capture_stopped(frozen: &Frozen, journal: &Journal, progress: &mut Rece
     no_writers(&mut c).await?;
     // Forced RLS must not filter a whole-installation archive. The deployment
     // administrator was admitted before quiescence; runtime roles remain fenced.
-    archive::capture(journal, &administrator(&frozen.request.installation)?).await?;
+    archive::capture(
+        journal,
+        &administrator(&frozen.request.installation)?
+            .archive()
+            .map_err(|_| Error::Input)?,
+    )
+    .await?;
     c.close().await.map_err(|_| Error::Storage)?;
     for (index, authority) in frozen.request.authorities.iter().enumerate() {
         snapshot_tree::capture(journal, &format!("ca-{index}"), &authority.online_directory)?;
@@ -838,7 +711,11 @@ async fn restore_database_snapshot(
             .await
             .map_err(|_| Error::Storage)?;
     if !committed {
-        archive::restore_database(journal, &input.administrator).await?;
+        archive::restore_database(
+            journal,
+            &input.administrator.archive().map_err(|_| Error::Input)?,
+        )
+        .await?;
     }
     crate::migration::verify_identity(&mut *c, &frozen.installation)
         .await

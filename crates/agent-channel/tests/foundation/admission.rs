@@ -16,12 +16,7 @@ pub async fn access(c: &Context) -> Result<()> {
         include_str!("access-contract.json"),
     ];
     anyhow::ensure!(
-        rss_mdm_backend_postgres_support::access_admission::verify(
-            &mut tx,
-            "da_access",
-            &contracts
-        )
-        .await?,
+        rss_mdm_install_support::access_admission::verify(&mut tx, "da_access", &contracts).await?,
         "DA access contract rejected"
     );
     rss_identity_postgres::verify_platform_subject_admission(

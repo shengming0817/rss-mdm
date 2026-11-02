@@ -421,6 +421,7 @@ async fn verify_access_recovery(
             c.tenant,
             audit.clone(),
             Arc::new(execution::Materials {
+                accepting: true,
                 agent_store: Arc::new(
                     rss_mdm_agent_channel::enrollment_facts::EnrollmentFacts::new(
                         StorageProfile::Mdm,
@@ -505,6 +506,13 @@ async fn verify_access_recovery(
         Cancellation::None,
         "RSS credential recovery also reads transport registration from the Agent owner"
     );
+    // Disabled DA converges existing tasks before transport retirement, without touching MDM ownership.
+    let service = service.settlement_only();
+    let credential = credential.settlement_only();
+    let disabled = recover(c, &runtime, &audit, &service, id).await?;
+    assert_ne!(disabled.cancellation, Cancellation::None);
+    let disabled = recover_credential(c, &runtime, &audit, &credential, credential_id).await?;
+    assert_ne!(disabled.cancellation, Cancellation::None);
     let mut setup = seed(c).await?;
     sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1 AND id=$2")
         .bind(binding.tenant)
@@ -603,6 +611,7 @@ async fn credential_runs(
             c.tenant,
             audit.clone(),
             Arc::new(tasks::Materials {
+                accepting: true,
                 product: Some(product),
                 agent_store: Arc::new(
                     rss_mdm_agent_channel::enrollment_facts::EnrollmentFacts::new(

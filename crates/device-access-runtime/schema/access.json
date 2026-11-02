@@ -1,0 +1,1 @@
+{"tables":[],"functions":[{"name":"rss_da.current_da_registration","search_path":"search_path=pg_catalog"}],"external_relations":["rss_da.installation_binding","rss_da.installation_units","rss_da.authorization_installation"],"verified_schemas":["identity_authority"]}

@@ -12,6 +12,11 @@ impl crate::tasks::Transactions {
         cause: (Uuid, ActivityOrigin),
         deadline: i64,
     ) -> crate::tasks::transaction::Result<Decision> {
+        if !self.accepts_new_work() {
+            return Ok(Decision::Rejected {
+                reason: "device_access_disabled".into(),
+            });
+        }
         let profile = self.profile();
 
         self.validate_in(tx)?;

@@ -85,6 +85,9 @@ impl Service {
         input: &wire::TaskClaimRequest,
         audit: &RequestAudit,
     ) -> Result<()> {
+        if !self.accepts_new_work() {
+            return Ok(());
+        }
         let owner_audit = audit.product_fact_copy(self.profile());
         let audit = &owner_audit;
         let profile = self.profile();
@@ -145,6 +148,9 @@ impl Service {
         attempt: Uuid,
         audit: &RequestAudit,
     ) -> Result<Option<(wire::TaskPayload, Fact, i64)>> {
+        if !self.accepts_new_work() {
+            return Ok(None);
+        }
         let owner_audit = audit.product_fact_copy(self.profile());
         let audit = &owner_audit;
         let profile = self.profile();
@@ -226,6 +232,9 @@ impl Service {
         signed: &wire::SignedTask,
         audit: &RequestAudit,
     ) -> Result<()> {
+        if !self.accepts_new_work() {
+            return Err(Error::Forbidden.into());
+        }
         let owner_audit = audit.product_fact_copy(self.profile());
         let audit = &owner_audit;
         let profile = self.profile();
@@ -260,6 +269,14 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<()> {
+        if !self.accepts_new_work()
+            && matches!(
+                input.event(),
+                wire::TaskEvent::Start | wire::TaskEvent::Received
+            )
+        {
+            return Err(Error::Forbidden.into());
+        }
         let owner_audit = audit.product_fact_copy(self.profile());
         let audit = &owner_audit;
         let profile = self.profile();
@@ -303,6 +320,14 @@ impl Service {
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
     ) -> Result<EventEffects> {
+        if !self.accepts_new_work()
+            && matches!(
+                input.event(),
+                wire::TaskEvent::Start | wire::TaskEvent::Received
+            )
+        {
+            return Err(Error::Forbidden.into());
+        }
         let owner_audit = audit.product_fact_copy(self.profile());
         let audit = &owner_audit;
         let profile = self.profile();
@@ -340,7 +365,9 @@ impl Service {
             plan.completion_authorized_in(&service.transactions, tx, &run.target, now)
                 .await?
         };
-        let effect_allowed = allowed && run.state.cancellation == Cancellation::None;
+        let effect_allowed = allowed
+            && (run.state.cancellation == Cancellation::None
+                || !self.accepts_new_work() && run.state.started_at.is_some());
         if matches!(
             input.event(),
             wire::TaskEvent::Start | wire::TaskEvent::Received

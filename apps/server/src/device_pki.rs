@@ -1,65 +1,28 @@
 //! Public device PKI inputs; neither an offline root key nor a local signer is loaded.
 use crate::{ConfigIssue, Error};
-use rss_mdm_agent_wire::pki::{Purpose, Trust};
+use rss_mdm_agent_wire::pki::Purpose;
 use rss_mdm_device_trust::DeviceTrust;
 pub(crate) fn load(
     path: &std::path::Path,
     purpose: Purpose,
     now: i64,
 ) -> Result<DeviceTrust, Error> {
-    let invalid = || Error::Configuration(ConfigIssue::AgentPki);
-    let bytes = crate::config::read(path, 64 * 1024 * 1024, false)?;
-    let trust: Trust = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-    DeviceTrust::restore(trust, purpose, now).map_err(|_| invalid())
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Provider {
-    #[serde(default)]
-    pub scep_url: Option<String>,
-    pub purpose: Purpose,
-    pub issuer: String,
-    pub origin: String,
-    pub tls_root_file: std::path::PathBuf,
-    pub provisioner: String,
-    pub kid: String,
-    pub provisioner_key_file: std::path::PathBuf,
+    rss_mdm_pki_service::configuration::decode(
+        &crate::config::read(path, 64 * 1024 * 1024, false)?,
+        purpose,
+        now,
+    )
+    .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))
 }
 pub(crate) fn providers(
-    config: &[Provider],
+    config: &[rss_mdm_pki_service::configuration::Provider],
 ) -> Result<std::sync::Arc<rss_mdm_pki_service::providers::Providers>, Error> {
-    let entries = config
-        .iter()
-        .map(|p| {
-            let invalid = || Error::Configuration(ConfigIssue::AgentPki);
-            let client = rss_mdm_pki_service::StepCa::new(
-                rss_mdm_pki_service::Configuration {
-                    origin: p.origin.clone(),
-                    provisioner: p.provisioner.clone(),
-                    kid: p.kid.clone(),
-                },
-                &crate::config::read(&p.tls_root_file, 131072, false).map_err(|_| invalid())?,
-                &crate::config::read(&p.provisioner_key_file, 32768, true)
-                    .map_err(|_| invalid())?,
-            )
-            .map_err(|_| invalid())?;
-            Ok(rss_mdm_pki_service::providers::Provider {
-                purpose: p.purpose,
-                issuer: p.issuer.clone(),
-                client: std::sync::Arc::new(client),
-                scep_url: p.scep_url.clone(),
-            })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    rss_mdm_pki_service::providers::Providers::new(entries)
-        .map(std::sync::Arc::new)
+    rss_mdm_pki_service::configuration::providers(config)
         .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))
 }
-
 /// Prepare each issuer independently; a missing optional issuer cannot hide a valid one.
 pub(crate) fn prepare(
-    config: &[Provider],
+    config: &[rss_mdm_pki_service::configuration::Provider],
     channels: &crate::channel_status::Channels,
 ) -> Result<std::sync::Arc<rss_mdm_pki_service::providers::Providers>, Error> {
     use crate::channel_status::{ChannelName, ChannelState, Reason};

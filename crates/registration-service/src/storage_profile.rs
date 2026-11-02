@@ -1,6 +1,8 @@
 //! Fixed, owner-owned SQL. Only these source literals can select objects.
 use rss_mdm_install_support::StorageProfile;
 pub(crate) struct Statements {
+    pub identity_install: &'static str,
+    pub identity_relations: &'static str,
     pub identity_access_contract: &'static str,
     pub identity_object_manifest: &'static str,
     pub device_trust_consumers: &'static str,
@@ -305,9 +307,542 @@ pub(crate) struct Statements {
 macro_rules! define_storage {
     ($module:ident, $access_schema:literal, $access_schema_decl:literal, $access_path:literal, $access_role:literal, $installation:literal, $mdm_registration_tasks_agent_admission:literal, $mdm_registration_tasks_device_recovery:literal, $mdm_registration_tasks_installation_status:literal, $mdm_registration_tasks_operations:literal, $mdm_registration_tasks_policy_recovery:literal, $mdm_registration_tasks_receipts:literal, $mdm_registration_tasks_recovery_key:literal, $mdm_registration_tasks_requests:literal, $mdm_registration_tasks_retirement_commands:literal, $mdm_registration_tasks_runs:literal, $mdm_registration_tasks_save_retired_command:literal, $mdm_registration_tasks_save_retired_run:literal, $mdm_registration_tasks_windows_pending_operations:literal, $mdm_registration_tasks_windows_wake_candidates:literal, $mdm_registration_tasks_schema:literal, $mdm_policy_policies:literal, $mdm_policy_triggers:literal, $mdm_policy_versions:literal, $mdm_policy_schema:literal, $owner:literal, $command_runtime:literal, $inventory_runtime:literal, $scope_runtime:literal, $policy_runtime:literal, $resource_runtime:literal, $software_runtime:literal, $content_runtime:literal, $telemetry_runtime:literal, $software_driver:literal, $identity_runtime:literal, $create_mdm_registration_tasks:literal, $create_access:literal, $native_retirement_clear:literal, $index_38:literal, $index_39:literal, $index_40:literal, $index_41:literal, $index_42:literal, $index_43:literal, $index_44:literal, $index_45:literal, $index_46:literal, $index_47:literal, $index_48:literal, $index_49:literal, $index_50:literal, $index_51:literal, $index_52:literal, $index_53:literal, $index_54:literal, $index_55:literal, $index_56:literal, $index_57:literal, $index_58:literal, $index_59:literal, $index_60:literal, $index_61:literal, $index_62:literal, $index_63:literal, $index_64:literal, $index_65:literal, $index_66:literal, $index_67:literal, $index_68:literal, $index_69:literal, $index_70:literal, $index_71:literal, $index_72:literal, $index_73:literal, $index_74:literal, $index_75:literal, $index_76:literal, $index_77:literal, $index_78:literal, $index_79:literal, $index_80:literal, $index_81:literal, $index_82:literal, $index_83:literal, $index_84:literal, $index_85:literal, $index_86:literal, $index_87:literal, $index_88:literal, $contract_table_89:literal, $contract_table_90:literal, $contract_table_91:literal, $contract_table_92:literal, $contract_table_93:literal, $contract_table_94:literal, $contract_table_95:literal, $contract_table_96:literal, $contract_table_97:literal, $contract_table_98:literal, $contract_table_99:literal, $contract_table_100:literal, $contract_table_101:literal, $contract_table_102:literal, $contract_table_103:literal, $contract_table_104:literal, $contract_table_105:literal, $contract_table_106:literal, $contract_table_107:literal, $contract_table_108:literal, $contract_table_109:literal, $contract_table_110:literal, $contract_table_111:literal, $access_contract_tables:literal, $access_contract_functions:literal, $access_contract_external_relations:literal, $contract_table_115:literal, $contract_table_116:literal, $contract_table_117:literal, $contract_table_118:literal, $enrollment_access_contract_tables:literal, $enrollment_access_contract_functions:literal, $default_agent_values:literal, $pki_certificates:literal, $pki_signing:literal, $trigger_path:literal) => {
         mod $module {
+            macro_rules! identity_install { () => { concat!(r###"-- Fresh installation: registration-service owns these objects.
+BEGIN;
+SET LOCAL check_function_bodies = false;
+
+"###, $create_access, r###";
+
+
+
+CREATE TABLE "###, $access_schema, r###"credentials (
+    tenant_id uuid NOT NULL,
+    id uuid NOT NULL,
+    registration uuid NOT NULL,
+    channel text,
+    locator text NOT NULL,
+    state text NOT NULL,
+    CONSTRAINT credentials_channel_check CHECK ((channel = ANY (ARRAY['agent'::text, 'mdm'::text]))),
+    CONSTRAINT credentials_locator_check CHECK ((locator ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT credentials_state_check CHECK ((state = ANY (ARRAY['active'::text, 'superseded'::text, 'revoked'::text])))
+);
+
+ALTER TABLE ONLY "###, $access_schema, r###"credentials FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE "###, $access_schema, r###"devices (
+    tenant_id uuid NOT NULL,
+    id text NOT NULL,
+    retirement uuid,
+    CONSTRAINT devices_id_check CHECK ((((octet_length(id) >= 1) AND (octet_length(id) <= 256)) AND (id !~ '[[:cntrl:]]'::text)))
+);
+
+ALTER TABLE ONLY "###, $access_schema, r###"devices FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE "###, $access_schema, r###"grants (
+    tenant_id uuid NOT NULL,
+    id uuid NOT NULL,
+    actor text NOT NULL,
+    instance text NOT NULL,
+    device text NOT NULL,
+    purpose text NOT NULL,
+    state text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    CONSTRAINT grants_actor_check CHECK (((length(actor) >= 1) AND (length(actor) <= 255))),
+    CONSTRAINT grants_check CHECK (((expires_at > created_at) AND (expires_at <= (created_at + '00:05:00'::interval)))),
+    CONSTRAINT grants_client_check CHECK (((length(instance) >= 1) AND (length(instance) <= 255))),
+    CONSTRAINT grants_device_check CHECK ((((octet_length(device) >= 1) AND (octet_length(device) <= 256)) AND (device !~ '[[:cntrl:]]'::text))),
+    CONSTRAINT grants_purpose_check CHECK ((purpose = 'enrollment'::text)),
+    CONSTRAINT grants_state_check CHECK ((state = ANY (ARRAY['available'::text, 'consumed'::text, 'revoked'::text])))
+);
+
+ALTER TABLE ONLY "###, $access_schema, r###"grants FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE "###, $access_schema, r###"registration_operations (
+    tenant_id uuid NOT NULL,
+    actor text NOT NULL,
+    instance text NOT NULL,
+    operation_id uuid NOT NULL,
+    digest text NOT NULL,
+    result text NOT NULL,
+    CONSTRAINT operations_digest_check CHECK ((length(digest) = 64)),
+    CONSTRAINT operations_result_check CHECK ((octet_length(result) <= 65536))
+);
+
+ALTER TABLE ONLY "###, $access_schema, r###"registration_operations FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE "###, $access_schema, r###"certificate_grants (
+ certificate_purpose text NOT NULL DEFAULT 'agent' CHECK(certificate_purpose IN('agent','da_device')),
+ tenant_id uuid NOT NULL,
+ id uuid NOT NULL,
+ operation_id uuid NOT NULL,
+ source text NOT NULL,
+ actor text,
+ instance text,
+ device text NOT NULL CHECK(octet_length(device) BETWEEN 1 AND 256 AND device !~ '[[:cntrl:]]'),
+ platform text CHECK(platform IN('windows','macos')),
+ CHECK((certificate_purpose='agent' AND platform IS NOT NULL) OR (certificate_purpose='da_device' AND platform IS NULL)),
+ secret_digest text NOT NULL CHECK(secret_digest ~ '^[0-9a-f]{64}$'),
+ request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
+ spki text CHECK(spki ~ '^[0-9a-f]{64}$'),
+ state text NOT NULL CHECK(state IN('pending','available','consumed','revoked')),
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ expires_at timestamptz NOT NULL,
+ target_registration uuid,
+ predecessor uuid,
+ native_authority jsonb CHECK(octet_length(native_authority::text)<=65536),
+ CONSTRAINT native_origin CHECK((source='native')=(native_authority IS NOT NULL)),
+ CONSTRAINT agent_grant_window CHECK(expires_at>created_at AND expires_at<=created_at+interval '7 days'),
+ CONSTRAINT agent_grant_subject CHECK((state IN('pending','revoked') AND source='browser' AND actor IS NULL AND instance IS NULL AND spki IS NOT NULL) OR (state<>'pending' AND actor IS NOT NULL AND instance IS NOT NULL)),
+ CONSTRAINT agent_grant_target CHECK((source IN('recovery','renewal'))=(target_registration IS NOT NULL AND predecessor IS NOT NULL)),
+ PRIMARY KEY(tenant_id,id),
+ UNIQUE(tenant_id,certificate_purpose,source,operation_id),
+ configuration_id uuid,
+ configuration_binding jsonb CHECK(octet_length(configuration_binding::text)<=32768),
+ CONSTRAINT configuration_authority
+ CHECK((source='configuration' AND configuration_id IS NOT NULL AND configuration_binding IS NOT NULL AND spki IS NOT NULL) OR (source<>'configuration' AND configuration_id IS NULL AND configuration_binding IS NULL)),
+ CONSTRAINT certificate_grants_source_check CHECK(source IN('download','browser','native','recovery','renewal','configuration','administrator')),
+ CONSTRAINT configuration_device_key UNIQUE(tenant_id,configuration_id,spki)
+
+);
+CREATE TABLE "###, $access_schema, r###"certificate_issuances (
+ tenant_id uuid NOT NULL,
+ id uuid NOT NULL,
+ grant_id uuid NOT NULL,
+ operation_id uuid NOT NULL,
+ request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
+ authority_digest text NOT NULL CHECK(authority_digest ~ '^[0-9a-f]{64}$'),
+ csr bytea NOT NULL CHECK(octet_length(csr) BETWEEN 1 AND 32768),
+ spki text NOT NULL CHECK(spki ~ '^[0-9a-f]{64}$'),
+ identity text NOT NULL,
+ profile jsonb NOT NULL CHECK(octet_length(profile::text)<=16384),
+ not_before bigint NOT NULL,
+ not_after bigint NOT NULL CHECK(not_after>not_before),
+ state text NOT NULL CHECK(state IN('signing','unknown','issued')),
+ certificate_chain jsonb CHECK(octet_length(certificate_chain::text)<=180000),
+ metadata jsonb CHECK(octet_length(metadata::text)<=16384),
+ fingerprint text CHECK(fingerprint ~ '^[0-9a-f]{64}$'),
+ activation_operation uuid,
+ activation_digest text CHECK(activation_digest ~ '^[0-9a-f]{64}$'),
+ activation_result jsonb CHECK(octet_length(activation_result::text)<=65536),
+ credential uuid,
+ CONSTRAINT candidate_shape CHECK((state='issued')=(certificate_chain IS NOT NULL AND metadata IS NOT NULL AND fingerprint IS NOT NULL)),
+ CONSTRAINT activation_shape CHECK((activation_result IS NULL AND activation_operation IS NULL AND activation_digest IS NULL AND credential IS NULL) OR (state='issued' AND activation_result IS NOT NULL AND activation_operation IS NOT NULL AND activation_digest IS NOT NULL AND credential IS NOT NULL)),
+ PRIMARY KEY(tenant_id,id),
+ UNIQUE(tenant_id,grant_id),
+ UNIQUE(tenant_id,operation_id),
+ UNIQUE(tenant_id,fingerprint),
+ FOREIGN KEY(tenant_id,grant_id) REFERENCES "###, $access_schema, r###"certificate_grants(tenant_id,id),
+ signing_issuer text CHECK(signing_issuer ~ '^[0-9a-f]{64}$')
+
+);
+ALTER TABLE "###, $access_schema, r###"registration_operations ADD COLUMN agent_issuance_recovery uuid;
+ALTER TABLE "###, $access_schema, "registration_operations ", $index_38, " FOREIGN KEY(tenant_id,agent_issuance_recovery) REFERENCES ", $access_schema, r###"certificate_issuances(tenant_id,id);
+ALTER TABLE "###, $access_schema, "registration_operations ", $index_39, r###" CHECK(agent_issuance_recovery IS NULL OR result=to_json(agent_issuance_recovery)::text);
+"###, $index_40, " ON ", $access_schema, r###"registration_operations(tenant_id,agent_issuance_recovery,actor,operation_id) WHERE agent_issuance_recovery IS NOT NULL;
+"###, $index_41, " ON ", $access_schema, r###"certificate_grants(tenant_id,device,id);
+"###, $index_42, " ON ", $access_schema, r###"certificate_grants(tenant_id,target_registration,id) WHERE target_registration IS NOT NULL;
+ALTER TABLE "###, $access_schema, r###"certificate_grants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "###, $access_schema, r###"certificate_grants FORCE ROW LEVEL SECURITY;
+ALTER TABLE "###, $access_schema, r###"certificate_issuances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "###, $access_schema, r###"certificate_issuances FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON "###, $access_schema, r###"certificate_grants USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY insert_only ON "###, $access_schema, "certificate_grants AS RESTRICTIVE FOR INSERT WITH CHECK(current_user <> '", $command_runtime, r###"' OR source='native');
+CREATE POLICY tenant ON "###, $access_schema, r###"certificate_issuances USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+"###, $index_43, " ON ", $access_schema, r###"certificate_grants(tenant_id,actor,instance,expires_at);
+CREATE TABLE "###, $access_schema, r###"registrations (
+ purpose text NOT NULL CHECK(purpose IN('primary','windows_declared','da_device')),
+ epoch uuid NOT NULL,
+ next_command bigint DEFAULT 1024 NOT NULL CHECK(next_command BETWEEN 1024 AND 4294967296),
+ parent_id uuid,
+ parent_generation bigint,
+ ready boolean NOT NULL DEFAULT false,
+ CONSTRAINT linked_shape CHECK((purpose IN('primary','da_device') AND parent_id IS NULL AND parent_generation IS NULL) OR (purpose='windows_declared' AND channel='mdm' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0)),
+ tenant_id uuid NOT NULL,
+ id uuid NOT NULL,
+ device text NOT NULL,
+ channel text,
+ generation bigint NOT NULL,
+ request_id uuid,
+ certificate_grant_id uuid,
+ CONSTRAINT registration_origin CHECK((channel='mdm' AND request_id IS NOT NULL AND certificate_grant_id IS NULL) OR (channel='agent' AND purpose='primary' AND request_id IS NULL AND certificate_grant_id IS NOT NULL) OR (channel IS NULL AND purpose='da_device' AND request_id IS NULL AND certificate_grant_id IS NOT NULL)),
+ state text NOT NULL,
+ CONSTRAINT registrations_channel_check CHECK ((channel IS NOT NULL AND channel IN('agent','mdm') AND purpose<>'da_device') OR (channel IS NULL AND purpose='da_device')),
+ CONSTRAINT registrations_generation_check CHECK ((generation > 0)),
+ CONSTRAINT registrations_state_check CHECK ((state = ANY (ARRAY['active'::text, 'superseded'::text, 'revoked'::text]))),
+ first_authenticated_at timestamptz,
+ last_communication_received_at timestamptz
+
+);
+
+ALTER TABLE ONLY "###, $access_schema, r###"registrations FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE "###, $access_schema, r###"report_sources (
+    tenant_id uuid NOT NULL,
+    registration uuid NOT NULL,
+    source text NOT NULL,
+    epoch uuid NOT NULL,
+    enabled boolean NOT NULL,
+    next_sequence bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT report_sources_next_sequence_check CHECK ((next_sequence >= 0)),
+    CONSTRAINT report_sources_source_check CHECK (((length(source) >= 1) AND (length(source) <= 255)))
+);
+
+ALTER TABLE ONLY "###, $access_schema, r###"report_sources FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE "###, $access_schema, r###"requests (
+ authority_kind text NOT NULL DEFAULT 'password',
+ tenant_id uuid NOT NULL,
+ id uuid NOT NULL,
+ grant_id uuid,
+ parent_id uuid,
+ parent_generation bigint,
+ parent_credential uuid,
+ state text DEFAULT 'cancelled'::text NOT NULL,
+ expected_generation bigint,
+ password_digest text,
+ password_version bigint DEFAULT 0 NOT NULL,
+ credential_ref uuid,
+ expires_at timestamp with time zone,
+ issuance_operation uuid,
+ source text NOT NULL,
+ windows_profile text,
+ CONSTRAINT requests_windows_profile_check CHECK ((source='mdm.windows' AND windows_profile IS NOT NULL AND windows_profile IN ('Full','Device')) OR (source<>'mdm.windows' AND windows_profile IS NULL)),
+ CONSTRAINT requests_expected_generation_check CHECK ((expected_generation >= 0)),
+ CONSTRAINT requests_password_digest_check CHECK ((password_digest ~ '^[0-9a-f]{64}$'::text)),
+ CONSTRAINT requests_password_version_check CHECK ((password_version >= 0)),
+ CONSTRAINT requests_source_check CHECK ((source = ANY (ARRAY['mdm.windows'::text, 'mdm.apple'::text]))),
+ CONSTRAINT requests_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'bound'::text, 'cancelled'::text]))),
+ self_service boolean NOT NULL DEFAULT false,
+ account_version bigint NOT NULL DEFAULT 0 CHECK(account_version>=0),
+ account_reference jsonb,
+ account_challenge text CHECK(account_challenge ~ '^[0-9a-f]{64}$'),
+ organization_version bigint NOT NULL DEFAULT 0 CHECK(organization_version>=0),
+ organization_challenge text CHECK(organization_challenge ~ '^[0-9a-f]{64}$'),
+ CONSTRAINT requests_authority_kind_check CHECK(authority_kind IN('password','parent_certificate','apple_account','apple_ade','windows_entra','agent_policy')),
+ CONSTRAINT enrollment_shape CHECK(
+ state='cancelled' OR (expected_generation IS NOT NULL AND expires_at IS NOT NULL AND issuance_operation IS NOT NULL AND (
+ (authority_kind='password' AND grant_id IS NOT NULL AND parent_id IS NULL AND password_digest IS NOT NULL AND password_version>0 AND credential_ref IS NOT NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version=0 AND organization_challenge IS NULL) OR
+ (authority_kind='parent_certificate' AND grant_id IS NULL AND source='mdm.windows' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0 AND parent_credential IS NOT NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version=0 AND organization_challenge IS NULL) OR
+ (authority_kind='apple_account' AND grant_id IS NOT NULL AND source='mdm.apple' AND self_service AND parent_id IS NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version>0 AND account_reference IS NOT NULL AND account_challenge IS NOT NULL AND organization_version=0 AND organization_challenge IS NULL) OR
+ (authority_kind='apple_ade' AND grant_id IS NOT NULL AND source='mdm.apple' AND NOT self_service AND parent_id IS NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version>0 AND organization_challenge IS NOT NULL) OR
+ (authority_kind='windows_entra' AND grant_id IS NOT NULL AND source='mdm.windows' AND NOT self_service AND parent_id IS NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version>0 AND organization_challenge IS NULL) OR
+ (authority_kind='agent_policy' AND grant_id IS NOT NULL AND NOT self_service AND parent_id IS NULL AND password_digest IS NOT NULL AND password_version=1 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version=0 AND organization_challenge IS NULL)
+ )))
+
+);
+
+"###, $index_44, " ON ", $access_schema, r###"requests(tenant_id,issuance_operation) WHERE authority_kind='parent_certificate';
+
+ALTER TABLE ONLY "###, $access_schema, r###"requests FORCE ROW LEVEL SECURITY;
+
+
+
+ALTER TABLE ONLY "###, $access_schema, r###"credentials
+    "###, $index_46, r###" PRIMARY KEY (tenant_id, id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"credentials
+    "###, $index_47, r###" UNIQUE NULLS NOT DISTINCT (tenant_id, channel, locator);
+
+ALTER TABLE ONLY "###, $access_schema, r###"devices
+    "###, $index_48, r###" PRIMARY KEY (tenant_id, id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"requests
+    "###, $index_49, r###" UNIQUE (tenant_id, issuance_operation);
+
+ALTER TABLE ONLY "###, $access_schema, r###"grants
+    "###, $index_50, r###" PRIMARY KEY (tenant_id, id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"registration_operations
+    "###, $index_51, r###" PRIMARY KEY (tenant_id, actor, operation_id);
+
+ALTER TABLE ONLY "###, $access_schema, "registrations ", $index_52, r###" UNIQUE(tenant_id,id,generation);
+
+ALTER TABLE ONLY "###, $access_schema, r###"registrations
+    "###, $index_53, r###" PRIMARY KEY (tenant_id, id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"registrations
+    "###, $index_54, r###" UNIQUE NULLS NOT DISTINCT (tenant_id, device, channel, purpose, generation);
+
+ALTER TABLE ONLY "###, $access_schema, r###"registrations
+    "###, $index_55, r###" UNIQUE (tenant_id, id, channel);
+
+ALTER TABLE ONLY "###, $access_schema, r###"registrations
+    "###, $index_56, r###" UNIQUE (tenant_id, request_id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"report_sources
+    "###, $index_57, r###" PRIMARY KEY (tenant_id, registration, source);
+
+ALTER TABLE ONLY "###, $access_schema, r###"requests
+    "###, $index_58, r###" PRIMARY KEY (tenant_id, id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"requests
+    "###, $index_59, r###" UNIQUE (tenant_id, grant_id);
+
+
+
+"###, $index_64, " ON ", $access_schema, r###"credentials USING btree (tenant_id, registration) WHERE (state = 'active'::text);
+
+"###, $index_65, " ON ", $access_schema, r###"registrations USING btree (tenant_id, device, channel, purpose) NULLS NOT DISTINCT WHERE (state = 'active'::text);
+
+"###, $index_66, " ON ", $access_schema, r###"registrations USING btree (tenant_id, device, id);
+
+
+
+ALTER TABLE "###, $access_schema, r###"credentials ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE "###, $access_schema, r###"devices ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE "###, $access_schema, r###"grants ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE "###, $access_schema, r###"registration_operations ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE "###, $access_schema, r###"registrations ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE "###, $access_schema, r###"report_sources ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE "###, $access_schema, r###"requests ENABLE ROW LEVEL SECURITY;
+
+
+
+CREATE POLICY tenant ON "###, $access_schema, r###"credentials USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+CREATE POLICY tenant ON "###, $access_schema, r###"devices USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+CREATE POLICY tenant ON "###, $access_schema, r###"grants USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+CREATE POLICY tenant ON "###, $access_schema, r###"registration_operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+CREATE POLICY tenant ON "###, $access_schema, r###"registrations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+CREATE POLICY tenant ON "###, $access_schema, r###"report_sources USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+CREATE POLICY tenant ON "###, $access_schema, r###"requests USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+CREATE TABLE "###, $access_schema, r###"registration_users (
+    tenant_id uuid NOT NULL,
+    device text NOT NULL,
+    revision bigint NOT NULL CHECK(revision>0),
+    instance text,
+    principal text,
+    PRIMARY KEY(tenant_id,device),
+    CHECK((instance IS NULL)=(principal IS NULL))
+);
+ALTER TABLE "###, $access_schema, r###"registration_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "###, $access_schema, r###"registration_users FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON "###, $access_schema, r###"registration_users USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT ON "###, $access_schema, "registration_users TO ", $access_role, r###";
+GRANT UPDATE(revision,instance,principal) ON "###, $access_schema, "registration_users TO ", $access_role, r###";
+CREATE TABLE "###, $access_schema, r###"current_users (
+    tenant_id uuid NOT NULL,
+    device text NOT NULL,
+    revision bigint NOT NULL CHECK(revision>0),
+    registration uuid NOT NULL,
+    generation bigint NOT NULL CHECK(generation>0),
+    session_reference jsonb,
+    confirmed_at bigint NOT NULL,
+    PRIMARY KEY(tenant_id,device)
+);
+ALTER TABLE "###, $access_schema, r###"current_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "###, $access_schema, r###"current_users FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON "###, $access_schema, r###"current_users USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT ON "###, $access_schema, "current_users TO ", $access_role, r###";
+GRANT UPDATE(revision,registration,generation,session_reference,confirmed_at) ON "###, $access_schema, "current_users TO ", $access_role, r###";
+COMMIT;
+"###) }; }
+            macro_rules! inventory_install { () => { concat!(r###"BEGIN;
+SET LOCAL check_function_bodies=false;
+CREATE FUNCTION "###, $access_schema, r###"capture_asset_authority() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO "###, $access_path, r###"
+    AS $$
+DECLARE r jsonb; d jsonb; previous jsonb; k text; i text; dev text; reg uuid; v bigint; t uuid; platform text;
+BEGIN
+ IF TG_OP='DELETE' THEN r=to_jsonb(OLD); ELSE r=to_jsonb(NEW); END IF;
+ IF TG_OP='UPDATE' THEN previous=to_jsonb(OLD); END IF;
+ t=(r->>'tenant_id')::uuid;
+ IF TG_TABLE_NAME='registrations' AND r->>'channel'='agent' THEN
+  SELECT g.platform INTO platform FROM "###, $access_schema, r###"certificate_grants g WHERE g.tenant_id=t AND g.id=(r->>'certificate_grant_id')::uuid;
+ END IF;
+ CASE TG_TABLE_NAME
+ WHEN 'devices' THEN
+  k='device'; i=r->>'id'; dev=i; d=jsonb_build_object('id',i);
+  -- Admission intent does not replace the endpoint identity or invalidate
+  -- other devices in the same sealed Policy batch.
+  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id') THEN RETURN NULL; END IF;
+ WHEN 'registrations' THEN
+  k='registration'; i=r->>'id'; reg=i::uuid; dev=r->>'device';
+  d=jsonb_build_object('id',i,'device',dev,'channel',r->>'channel','purpose',r->>'purpose','generation',r->'generation','state',r->>'state','platform',platform);
+  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id','device',previous->>'device','channel',previous->>'channel','purpose',previous->>'purpose','generation',previous->'generation','state',previous->>'state','platform',platform) THEN RETURN NULL; END IF;
+ WHEN 'report_sources' THEN
+  IF NOT EXISTS(SELECT 1 FROM "###, $access_schema, r###"registrations WHERE tenant_id=t AND id=(r->>'registration')::uuid AND purpose='primary') THEN RAISE EXCEPTION 'report source requires primary registration'; END IF;
+  k='source'; reg=(r->>'registration')::uuid;
+  i=jsonb_build_array(r->>'registration',r->>'source')::text;
+  d=jsonb_build_object('registration',reg,'source',r->>'source','epoch',r->>'epoch','enabled',r->'enabled');
+  -- Collection sequence/command allocation is not an asset change.
+  IF previous IS NOT NULL AND d=jsonb_build_object('registration',(previous->>'registration')::uuid,'source',previous->>'source','epoch',previous->>'epoch','enabled',previous->'enabled') THEN RETURN NULL; END IF;
+ WHEN 'credentials' THEN
+  k='credential'; i=r->>'id'; reg=(r->>'registration')::uuid;
+  -- Credential locators and secrets never enter asset history.
+  d=jsonb_build_object('id',i,'registration',reg,'channel',r->>'channel','state',r->>'state');
+ ELSE RAISE EXCEPTION 'unexpected asset authority';
+ END CASE;
+ IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NULL; END IF;
+ IF dev IS NULL THEN SELECT device INTO dev FROM "###, $access_schema, r###"registrations WHERE tenant_id=t AND id=reg; END IF;
+ v=mdm.record_asset_change(t,k,jsonb_build_object('device',dev,'registration',reg,'identity',i),ARRAY[]::text[]);
+ IF TG_OP='DELETE' THEN d=NULL; END IF;
+ INSERT INTO "###, $access_schema, r###"asset_authority_history VALUES(t,k,i,dev,reg,v,d);
+ RETURN NULL;
+END $$;
+
+CREATE TABLE "###, $access_schema, r###"asset_authority_history (
+    tenant_id uuid NOT NULL,
+    kind text NOT NULL,
+    identity text NOT NULL,
+    device text,
+    registration uuid,
+    revision bigint NOT NULL,
+    document jsonb,
+    CONSTRAINT asset_authority_history_document_check CHECK (((document IS NULL) OR (octet_length((document)::text) <= 16384))),
+    CONSTRAINT asset_authority_history_identity_check CHECK (((octet_length(identity) >= 1) AND (octet_length(identity) <= 1024))),
+    CONSTRAINT asset_authority_history_kind_check CHECK ((kind = ANY (ARRAY['device'::text, 'registration'::text, 'source'::text, 'credential'::text])))
+);
+
+ALTER TABLE ONLY "###, $access_schema, r###"asset_authority_history FORCE ROW LEVEL SECURITY;
+ALTER TABLE ONLY "###, $access_schema, r###"asset_authority_history
+    "###, $index_45, r###" PRIMARY KEY (tenant_id, kind, identity, revision);
+"###, $index_60, " ON ", $access_schema, r###"asset_authority_history USING btree (tenant_id, device, kind, identity, revision);
+
+"###, $index_61, " ON ", $access_schema, r###"asset_authority_history USING btree (tenant_id, registration, kind, identity, revision);
+
+"###, $index_62, " ON ", $access_schema, r###"asset_authority_history USING btree (tenant_id, revision, device);
+
+"###, $index_63, " ON ", $access_schema, r###"asset_authority_history USING btree (tenant_id, device, revision DESC);
+ALTER TABLE "###, $access_schema, r###"asset_authority_history ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON "###, $access_schema, r###"asset_authority_history USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+COMMIT;
+"###) }; }
+            macro_rules! identity_relations { () => { concat!(r###"-- Fresh installation: registration-service owns these objects.
+BEGIN;
+SET LOCAL check_function_bodies = false;
+
+
+
+ALTER TABLE ONLY "###, $access_schema, r###"credentials
+    "###, $index_68, " FOREIGN KEY (tenant_id, registration) REFERENCES ", $access_schema, r###"registrations(tenant_id, id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"registrations
+    "###, $index_69, " FOREIGN KEY (tenant_id, device) REFERENCES ", $access_schema, r###"devices(tenant_id, id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"registrations
+    "###, $index_70, " FOREIGN KEY (tenant_id, request_id) REFERENCES ", $access_schema, r###"requests(tenant_id, id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"report_sources
+    "###, $index_71, " FOREIGN KEY (tenant_id, registration) REFERENCES ", $access_schema, r###"registrations(tenant_id, id);
+
+ALTER TABLE ONLY "###, $access_schema, r###"requests
+    "###, $index_72, " FOREIGN KEY (tenant_id, grant_id) REFERENCES ", $access_schema, r###"grants(tenant_id, id);
+
+GRANT USAGE ON "###, $access_schema_decl, " TO ", $access_role, r###";
+GRANT USAGE ON "###, $access_schema_decl, " TO ", $software_driver, r###";
+GRANT USAGE ON "###, $access_schema_decl, " TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
+GRANT USAGE ON "###, $access_schema_decl, " TO ", $command_runtime, r###";
+
+
+
+GRANT SELECT,INSERT ON TABLE "###, $access_schema, "credentials TO ", $access_role, r###";
+GRANT SELECT ON TABLE "###, $access_schema, "credentials TO ", $command_runtime, r###";
+
+GRANT SELECT(tenant_id,id) ON TABLE "###, $access_schema, "credentials TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
+
+GRANT SELECT(registration) ON TABLE "###, $access_schema, "credentials TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
+
+GRANT UPDATE(state) ON TABLE "###, $access_schema, "credentials TO ", $access_role, r###";
+GRANT SELECT(state) ON TABLE "###, $access_schema, "credentials TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
+
+GRANT SELECT,INSERT ON TABLE "###, $access_schema, "devices TO ", $access_role, r###";
+GRANT UPDATE(retirement) ON "###, $access_schema, "devices TO ", $access_role, ",", $policy_runtime, ",", $command_runtime, r###";
+GRANT SELECT ON TABLE "###, $access_schema, "devices TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
+GRANT SELECT ON TABLE "###, $access_schema, "devices TO ", $command_runtime, r###";
+
+GRANT SELECT,INSERT ON TABLE "###, $access_schema, "grants TO ", $access_role, r###";
+
+GRANT SELECT,INSERT ON TABLE "###, $access_schema, "registration_operations TO ", $access_role, r###";
+
+GRANT SELECT,INSERT ON TABLE "###, $access_schema, "registrations TO ", $access_role, r###";
+GRANT SELECT ON TABLE "###, $access_schema, "registrations TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
+GRANT SELECT ON TABLE "###, $access_schema, "registrations TO ", $command_runtime, r###";
+
+GRANT UPDATE(ready) ON TABLE "###, $access_schema, "registrations TO ", $access_role, r###";
+GRANT UPDATE(ready) ON TABLE "###, $access_schema, "registrations TO ", $command_runtime, r###";
+GRANT UPDATE(state) ON TABLE "###, $access_schema, "registrations TO ", $access_role, r###";
+
+GRANT SELECT,INSERT ON TABLE "###, $access_schema, "report_sources TO ", $access_role, r###";
+GRANT SELECT ON TABLE "###, $access_schema, "report_sources TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
+GRANT SELECT ON TABLE "###, $access_schema, "report_sources TO ", $command_runtime, r###";
+
+GRANT UPDATE(enabled) ON TABLE "###, $access_schema, "report_sources TO ", $access_role, r###";
+
+GRANT UPDATE(next_command) ON TABLE "###, $access_schema, "registrations TO ", $access_role, r###";
+GRANT UPDATE(next_command) ON TABLE "###, $access_schema, "registrations TO ", $command_runtime, r###";
+
+GRANT UPDATE(next_sequence) ON TABLE "###, $access_schema, "report_sources TO ", $access_role, r###";
+GRANT UPDATE(next_sequence) ON TABLE "###, $access_schema, "report_sources TO ", $command_runtime, r###";
+
+GRANT SELECT,INSERT ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
+GRANT SELECT ON TABLE "###, $access_schema, "requests TO ", $command_runtime, r###";
+-- Policy native acceptance reads source/profile evidence, never enrollment secrets.
+GRANT SELECT(tenant_id,id,source,windows_profile) ON "###, $access_schema, "requests TO ", $policy_runtime, r###";
+
+GRANT UPDATE(state) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
+
+GRANT UPDATE(password_digest) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
+
+GRANT UPDATE(password_version) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
+
+GRANT UPDATE(credential_ref) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
+
+GRANT UPDATE(expires_at) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
+ALTER TABLE "###, $access_schema, "registrations ", $index_73, " FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES ", $access_schema, r###"registrations(tenant_id,id,generation);
+ALTER TABLE "###, $access_schema, "requests ", $index_74, " FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES ", $access_schema, r###"registrations(tenant_id,id,generation);
+ALTER TABLE "###, $access_schema, "requests ", $index_75, " FOREIGN KEY(tenant_id,parent_credential) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
+ALTER TABLE "###, $access_schema, "registrations ", $index_76, " FOREIGN KEY(tenant_id,certificate_grant_id) REFERENCES ", $access_schema, r###"certificate_grants(tenant_id,id);
+ALTER TABLE "###, $access_schema, "certificate_grants ", $index_77, " FOREIGN KEY(tenant_id,target_registration) REFERENCES ", $access_schema, r###"registrations(tenant_id,id);
+ALTER TABLE "###, $access_schema, "certificate_grants ", $index_78, " FOREIGN KEY(tenant_id,predecessor) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
+ALTER TABLE "###, $access_schema, "certificate_issuances ", $index_79, " FOREIGN KEY(tenant_id,credential) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
+GRANT SELECT,INSERT ON "###, $access_schema, "certificate_grants,", $access_schema, "certificate_issuances TO ", $access_role, r###";
+GRANT UPDATE(actor,instance,state,device) ON "###, $access_schema, "certificate_grants TO ", $access_role, r###";
+GRANT UPDATE(state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) ON "###, $access_schema, "certificate_issuances TO ", $access_role, r###";
+GRANT SELECT,INSERT ON "###, $access_schema, "certificate_grants TO ", $command_runtime, r###";
+GRANT SELECT(tenant_id,credential,not_after) ON "###, $access_schema, "certificate_issuances TO ", $command_runtime, ",", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
+GRANT UPDATE(last_communication_received_at) ON "###, $access_schema, "registrations TO ", $access_role, ", ", $command_runtime, r###";
+GRANT UPDATE(first_authenticated_at) ON "###, $access_schema, "registrations TO ", $access_role, ", ", $command_runtime, r###";
+GRANT UPDATE(account_version,account_reference,account_challenge) ON "###, $access_schema, "requests TO ", $access_role, r###";
+GRANT UPDATE(organization_version,organization_challenge) ON "###, $access_schema, "requests TO ", $access_role, r###";
+-- Device invokes Registration retirement on the shared audited command transaction.
+GRANT UPDATE(state) ON "###, $access_schema, "registrations,", $access_schema, "credentials TO ", $command_runtime, r###";
+GRANT UPDATE(enabled) ON "###, $access_schema, "report_sources TO ", $command_runtime, r###";
+COMMIT;
+"###) }; }
+            macro_rules! inventory_relations { () => { concat!(r###"BEGIN;
+SET LOCAL check_function_bodies=false;
+CREATE TRIGGER asset_authority AFTER INSERT OR DELETE OR UPDATE ON "###, $access_schema, "credentials FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"capture_asset_authority();
+
+CREATE TRIGGER asset_authority AFTER INSERT OR DELETE OR UPDATE ON "###, $access_schema, "devices FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"capture_asset_authority();
+
+CREATE TRIGGER asset_authority AFTER INSERT OR DELETE OR UPDATE ON "###, $access_schema, "registrations FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"capture_asset_authority();
+
+CREATE TRIGGER asset_authority AFTER INSERT OR DELETE OR UPDATE ON "###, $access_schema, "report_sources FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"capture_asset_authority();
+
+ALTER TABLE ONLY "###, $access_schema, r###"asset_authority_history
+    "###, $index_67, r###" FOREIGN KEY (tenant_id, revision) REFERENCES mdm.asset_changes(tenant_id, revision);
+REVOKE ALL ON FUNCTION "###, $access_schema, r###"capture_asset_authority() FROM PUBLIC;
+
+GRANT SELECT ON TABLE "###, $access_schema, "asset_authority_history TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, ",", $access_role, r###";
+COMMIT;
+"###) }; }
             pub(super) const SQL: super::Statements = super::Statements {
-                identity_access_contract: concat!(r###"{"tables":[{"###, $contract_table_89, r###","read_write":false,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_90, r###","read_write":true,"updates":["state"],"delete_policy":null},{"###, $contract_table_91, r###","read_write":true,"updates":["retirement"],"delete_policy":null},{"###, $contract_table_92, r###","read_write":true,"updates":[],"delete_policy":null},{"###, $contract_table_93, r###","read_write":true,"updates":[],"delete_policy":null},{"###, $contract_table_94, r###","read_write":true,"updates":["state","next_command","ready","first_authenticated_at","last_communication_received_at"],"delete_policy":null},{"###, $contract_table_95, r###","read_write":true,"updates":["enabled","next_sequence"],"delete_policy":null},{"###, $contract_table_96, r###","read_write":true,"updates":["state","password_digest","password_version","credential_ref","expires_at","account_version","account_reference","account_challenge","organization_version","organization_challenge"],"delete_policy":null},{"###, $contract_table_97, r###","read_write":true,"updates":["actor","instance","state","device"],"delete_policy":null,"insert_policy":"current_user<>'"###, $command_runtime, r###"'::nameorsource='native'::text"},{"###, $contract_table_98, r###","read_write":true,"updates":["state","certificate_chain","metadata","fingerprint","activation_operation","activation_digest","activation_result","credential"],"delete_policy":null},{"###, $contract_table_100, r###","read_write":true,"updates":["revision","instance","principal"],"delete_policy":null},{"###, $contract_table_105, r###","read_write":true,"updates":["revision","registration","generation","session_reference","confirmed_at"],"delete_policy":null}],"functions":[],"external_relations":[],"verified_schemas":[]}"###),
-                identity_object_manifest: concat!(r###"{"tables":[""###,$access_schema,r###"asset_authority_history"###,r###"",""###,$access_schema,r###"certificate_grants"###,r###"",""###,$access_schema,r###"certificate_issuances"###,r###"",""###,$access_schema,r###"credentials"###,r###"",""###,$access_schema,r###"current_users"###,r###"",""###,$access_schema,r###"devices"###,r###"",""###,$access_schema,r###"grants"###,r###"",""###,$access_schema,r###"registration_operations"###,r###"",""###,$access_schema,r###"registration_users"###,r###"",""###,$access_schema,r###"registrations"###,r###"",""###,$access_schema,r###"report_sources"###,r###"",""###,$access_schema,r###"requests"###,r###""],"functions":[""###,$access_schema,r###"capture_asset_authority"],"views":[]}"###),
+                identity_access_contract: concat!(r###"{"tables":[{"###, $contract_table_90, r###","read_write":true,"updates":["state"],"delete_policy":null},{"###, $contract_table_91, r###","read_write":true,"updates":["retirement"],"delete_policy":null},{"###, $contract_table_92, r###","read_write":true,"updates":[],"delete_policy":null},{"###, $contract_table_93, r###","read_write":true,"updates":[],"delete_policy":null},{"###, $contract_table_94, r###","read_write":true,"updates":["state","next_command","ready","first_authenticated_at","last_communication_received_at"],"delete_policy":null},{"###, $contract_table_95, r###","read_write":true,"updates":["enabled","next_sequence"],"delete_policy":null},{"###, $contract_table_96, r###","read_write":true,"updates":["state","password_digest","password_version","credential_ref","expires_at","account_version","account_reference","account_challenge","organization_version","organization_challenge"],"delete_policy":null},{"###, $contract_table_97, r###","read_write":true,"updates":["actor","instance","state","device"],"delete_policy":null,"insert_policy":"current_user<>'"###, $command_runtime, r###"'::nameorsource='native'::text"},{"###, $contract_table_98, r###","read_write":true,"updates":["state","certificate_chain","metadata","fingerprint","activation_operation","activation_digest","activation_result","credential"],"delete_policy":null},{"###, $contract_table_100, r###","read_write":true,"updates":["revision","instance","principal"],"delete_policy":null},{"###, $contract_table_105, r###","read_write":true,"updates":["revision","registration","generation","session_reference","confirmed_at"],"delete_policy":null}],"functions":[],"external_relations":[],"verified_schemas":[]}"###),
+                identity_object_manifest: concat!(r###"{"tables":[""###,$access_schema,r###"certificate_grants"###,r###"",""###,$access_schema,r###"certificate_issuances"###,r###"",""###,$access_schema,r###"credentials"###,r###"",""###,$access_schema,r###"current_users"###,r###"",""###,$access_schema,r###"devices"###,r###"",""###,$access_schema,r###"grants"###,r###"",""###,$access_schema,r###"registration_operations"###,r###"",""###,$access_schema,r###"registration_users"###,r###"",""###,$access_schema,r###"registrations"###,r###"",""###,$access_schema,r###"report_sources"###,r###"",""###,$access_schema,r###"requests"###,r###""],"functions":[],"views":[]}"###),
                 device_trust_consumers: concat!("SELECT DISTINCT r.id,r.generation FROM ", $access_schema, "registrations r JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN ", $access_schema, "certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE r.tenant_id=$1::uuid AND r.state='active' AND k.state='active' AND ($3::text IS NULL OR r.device=$3) AND i.not_after>floor(extract(epoch FROM clock_timestamp()))::bigint AND (($2='agent_task' AND r.channel='agent' AND r.purpose='primary' AND EXISTS(SELECT 1 FROM ", $access_schema, "report_sources s WHERE(s.tenant_id,s.registration)=(r.tenant_id,r.id) AND s.source='agent.builtin' AND s.enabled)) OR ($2='da_configuration' AND r.channel IS NULL AND r.purpose='da_device'))"),
                 da_registration: concat!("SELECT device,state FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=$2 AND purpose='da_device' AND channel IS NULL"),
                 da_current_registration: concat!("SELECT r.device,k.id AS credential FROM ", $access_schema, "registrations r JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.purpose='da_device' AND r.channel IS NULL AND r.state='active' AND k.state='active'"),
@@ -831,524 +1366,10 @@ credential IS NOT NULL
                 enrollment_tasks_queries_detail_on_2: concat!(",'result',r.result) FROM ", $mdm_registration_tasks_runs, " r JOIN ", $mdm_policy_versions, " v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3"),
                 enrollment_tasks_queries_assignment_ids_on_1: concat!("SELECT r.id FROM ", $mdm_registration_tasks_runs, " r JOIN ", $mdm_policy_versions, " v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.device=$3 AND $6='agent' AND r.registration=$4 AND r.generation=$5 ORDER BY r.id"),
                 enrollment_tasks_queries_assignment_state_on_1: concat!("SELECT frozen FROM ", $mdm_policy_versions, " WHERE tenant_id=$1::uuid AND id=$2"),
-                install: concat!(r###"-- Fresh installation: registration-service owns these objects.
-BEGIN;
-SET LOCAL check_function_bodies = false;
-
-"###, $create_access, r###";
-
-CREATE FUNCTION "###, $access_schema, r###"capture_asset_authority() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path TO "###, $access_path, r###"
-    AS $$
-DECLARE r jsonb; d jsonb; previous jsonb; k text; i text; dev text; reg uuid; v bigint; t uuid; platform text;
-BEGIN
- IF TG_OP='DELETE' THEN r=to_jsonb(OLD); ELSE r=to_jsonb(NEW); END IF;
- IF TG_OP='UPDATE' THEN previous=to_jsonb(OLD); END IF;
- t=(r->>'tenant_id')::uuid;
- IF TG_TABLE_NAME='registrations' AND r->>'channel'='agent' THEN
-  SELECT g.platform INTO platform FROM "###, $access_schema, r###"certificate_grants g WHERE g.tenant_id=t AND g.id=(r->>'certificate_grant_id')::uuid;
- END IF;
- CASE TG_TABLE_NAME
- WHEN 'devices' THEN
-  k='device'; i=r->>'id'; dev=i; d=jsonb_build_object('id',i);
-  -- Admission intent does not replace the endpoint identity or invalidate
-  -- other devices in the same sealed Policy batch.
-  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id') THEN RETURN NULL; END IF;
- WHEN 'registrations' THEN
-  k='registration'; i=r->>'id'; reg=i::uuid; dev=r->>'device';
-  d=jsonb_build_object('id',i,'device',dev,'channel',r->>'channel','purpose',r->>'purpose','generation',r->'generation','state',r->>'state','platform',platform);
-  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id','device',previous->>'device','channel',previous->>'channel','purpose',previous->>'purpose','generation',previous->'generation','state',previous->>'state','platform',platform) THEN RETURN NULL; END IF;
- WHEN 'report_sources' THEN
-  IF NOT EXISTS(SELECT 1 FROM "###, $access_schema, r###"registrations WHERE tenant_id=t AND id=(r->>'registration')::uuid AND purpose='primary') THEN RAISE EXCEPTION 'report source requires primary registration'; END IF;
-  k='source'; reg=(r->>'registration')::uuid;
-  i=jsonb_build_array(r->>'registration',r->>'source')::text;
-  d=jsonb_build_object('registration',reg,'source',r->>'source','epoch',r->>'epoch','enabled',r->'enabled');
-  -- Collection sequence/command allocation is not an asset change.
-  IF previous IS NOT NULL AND d=jsonb_build_object('registration',(previous->>'registration')::uuid,'source',previous->>'source','epoch',previous->>'epoch','enabled',previous->'enabled') THEN RETURN NULL; END IF;
- WHEN 'credentials' THEN
-  k='credential'; i=r->>'id'; reg=(r->>'registration')::uuid;
-  -- Credential locators and secrets never enter asset history.
-  d=jsonb_build_object('id',i,'registration',reg,'channel',r->>'channel','state',r->>'state');
- ELSE RAISE EXCEPTION 'unexpected asset authority';
- END CASE;
- IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NULL; END IF;
- IF dev IS NULL THEN SELECT device INTO dev FROM "###, $access_schema, r###"registrations WHERE tenant_id=t AND id=reg; END IF;
- v=mdm.record_asset_change(t,k,jsonb_build_object('device',dev,'registration',reg,'identity',i),ARRAY[]::text[]);
- IF TG_OP='DELETE' THEN d=NULL; END IF;
- INSERT INTO "###, $access_schema, r###"asset_authority_history VALUES(t,k,i,dev,reg,v,d);
- RETURN NULL;
-END $$;
-
-CREATE TABLE "###, $access_schema, r###"asset_authority_history (
-    tenant_id uuid NOT NULL,
-    kind text NOT NULL,
-    identity text NOT NULL,
-    device text,
-    registration uuid,
-    revision bigint NOT NULL,
-    document jsonb,
-    CONSTRAINT asset_authority_history_document_check CHECK (((document IS NULL) OR (octet_length((document)::text) <= 16384))),
-    CONSTRAINT asset_authority_history_identity_check CHECK (((octet_length(identity) >= 1) AND (octet_length(identity) <= 1024))),
-    CONSTRAINT asset_authority_history_kind_check CHECK ((kind = ANY (ARRAY['device'::text, 'registration'::text, 'source'::text, 'credential'::text])))
-);
-
-ALTER TABLE ONLY "###, $access_schema, r###"asset_authority_history FORCE ROW LEVEL SECURITY;
-
-CREATE TABLE "###, $access_schema, r###"credentials (
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    registration uuid NOT NULL,
-    channel text,
-    locator text NOT NULL,
-    state text NOT NULL,
-    CONSTRAINT credentials_channel_check CHECK ((channel = ANY (ARRAY['agent'::text, 'mdm'::text]))),
-    CONSTRAINT credentials_locator_check CHECK ((locator ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT credentials_state_check CHECK ((state = ANY (ARRAY['active'::text, 'superseded'::text, 'revoked'::text])))
-);
-
-ALTER TABLE ONLY "###, $access_schema, r###"credentials FORCE ROW LEVEL SECURITY;
-
-CREATE TABLE "###, $access_schema, r###"devices (
-    tenant_id uuid NOT NULL,
-    id text NOT NULL,
-    retirement uuid,
-    CONSTRAINT devices_id_check CHECK ((((octet_length(id) >= 1) AND (octet_length(id) <= 256)) AND (id !~ '[[:cntrl:]]'::text)))
-);
-
-ALTER TABLE ONLY "###, $access_schema, r###"devices FORCE ROW LEVEL SECURITY;
-
-CREATE TABLE "###, $access_schema, r###"grants (
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    actor text NOT NULL,
-    instance text NOT NULL,
-    device text NOT NULL,
-    purpose text NOT NULL,
-    state text NOT NULL,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    CONSTRAINT grants_actor_check CHECK (((length(actor) >= 1) AND (length(actor) <= 255))),
-    CONSTRAINT grants_check CHECK (((expires_at > created_at) AND (expires_at <= (created_at + '00:05:00'::interval)))),
-    CONSTRAINT grants_client_check CHECK (((length(instance) >= 1) AND (length(instance) <= 255))),
-    CONSTRAINT grants_device_check CHECK ((((octet_length(device) >= 1) AND (octet_length(device) <= 256)) AND (device !~ '[[:cntrl:]]'::text))),
-    CONSTRAINT grants_purpose_check CHECK ((purpose = 'enrollment'::text)),
-    CONSTRAINT grants_state_check CHECK ((state = ANY (ARRAY['available'::text, 'consumed'::text, 'revoked'::text])))
-);
-
-ALTER TABLE ONLY "###, $access_schema, r###"grants FORCE ROW LEVEL SECURITY;
-
-CREATE TABLE "###, $access_schema, r###"registration_operations (
-    tenant_id uuid NOT NULL,
-    actor text NOT NULL,
-    instance text NOT NULL,
-    operation_id uuid NOT NULL,
-    digest text NOT NULL,
-    result text NOT NULL,
-    CONSTRAINT operations_digest_check CHECK ((length(digest) = 64)),
-    CONSTRAINT operations_result_check CHECK ((octet_length(result) <= 65536))
-);
-
-ALTER TABLE ONLY "###, $access_schema, r###"registration_operations FORCE ROW LEVEL SECURITY;
-
-CREATE TABLE "###, $access_schema, r###"certificate_grants (
- certificate_purpose text NOT NULL DEFAULT 'agent' CHECK(certificate_purpose IN('agent','da_device')),
- tenant_id uuid NOT NULL,
- id uuid NOT NULL,
- operation_id uuid NOT NULL,
- source text NOT NULL,
- actor text,
- instance text,
- device text NOT NULL CHECK(octet_length(device) BETWEEN 1 AND 256 AND device !~ '[[:cntrl:]]'),
- platform text CHECK(platform IN('windows','macos')),
- CHECK((certificate_purpose='agent' AND platform IS NOT NULL) OR (certificate_purpose='da_device' AND platform IS NULL)),
- secret_digest text NOT NULL CHECK(secret_digest ~ '^[0-9a-f]{64}$'),
- request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
- spki text CHECK(spki ~ '^[0-9a-f]{64}$'),
- state text NOT NULL CHECK(state IN('pending','available','consumed','revoked')),
- created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
- expires_at timestamptz NOT NULL,
- target_registration uuid,
- predecessor uuid,
- native_authority jsonb CHECK(octet_length(native_authority::text)<=65536),
- CONSTRAINT native_origin CHECK((source='native')=(native_authority IS NOT NULL)),
- CONSTRAINT agent_grant_window CHECK(expires_at>created_at AND expires_at<=created_at+interval '7 days'),
- CONSTRAINT agent_grant_subject CHECK((state IN('pending','revoked') AND source='browser' AND actor IS NULL AND instance IS NULL AND spki IS NOT NULL) OR (state<>'pending' AND actor IS NOT NULL AND instance IS NOT NULL)),
- CONSTRAINT agent_grant_target CHECK((source IN('recovery','renewal'))=(target_registration IS NOT NULL AND predecessor IS NOT NULL)),
- PRIMARY KEY(tenant_id,id),
- UNIQUE(tenant_id,certificate_purpose,source,operation_id),
- configuration_id uuid,
- configuration_binding jsonb CHECK(octet_length(configuration_binding::text)<=32768),
- CONSTRAINT configuration_authority
- CHECK((source='configuration' AND configuration_id IS NOT NULL AND configuration_binding IS NOT NULL AND spki IS NOT NULL) OR (source<>'configuration' AND configuration_id IS NULL AND configuration_binding IS NULL)),
- CONSTRAINT certificate_grants_source_check CHECK(source IN('download','browser','native','recovery','renewal','configuration','administrator')),
- CONSTRAINT configuration_device_key UNIQUE(tenant_id,configuration_id,spki)
-
-);
-CREATE TABLE "###, $access_schema, r###"certificate_issuances (
- tenant_id uuid NOT NULL,
- id uuid NOT NULL,
- grant_id uuid NOT NULL,
- operation_id uuid NOT NULL,
- request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
- authority_digest text NOT NULL CHECK(authority_digest ~ '^[0-9a-f]{64}$'),
- csr bytea NOT NULL CHECK(octet_length(csr) BETWEEN 1 AND 32768),
- spki text NOT NULL CHECK(spki ~ '^[0-9a-f]{64}$'),
- identity text NOT NULL,
- profile jsonb NOT NULL CHECK(octet_length(profile::text)<=16384),
- not_before bigint NOT NULL,
- not_after bigint NOT NULL CHECK(not_after>not_before),
- state text NOT NULL CHECK(state IN('signing','unknown','issued')),
- certificate_chain jsonb CHECK(octet_length(certificate_chain::text)<=180000),
- metadata jsonb CHECK(octet_length(metadata::text)<=16384),
- fingerprint text CHECK(fingerprint ~ '^[0-9a-f]{64}$'),
- activation_operation uuid,
- activation_digest text CHECK(activation_digest ~ '^[0-9a-f]{64}$'),
- activation_result jsonb CHECK(octet_length(activation_result::text)<=65536),
- credential uuid,
- CONSTRAINT candidate_shape CHECK((state='issued')=(certificate_chain IS NOT NULL AND metadata IS NOT NULL AND fingerprint IS NOT NULL)),
- CONSTRAINT activation_shape CHECK((activation_result IS NULL AND activation_operation IS NULL AND activation_digest IS NULL AND credential IS NULL) OR (state='issued' AND activation_result IS NOT NULL AND activation_operation IS NOT NULL AND activation_digest IS NOT NULL AND credential IS NOT NULL)),
- PRIMARY KEY(tenant_id,id),
- UNIQUE(tenant_id,grant_id),
- UNIQUE(tenant_id,operation_id),
- UNIQUE(tenant_id,fingerprint),
- FOREIGN KEY(tenant_id,grant_id) REFERENCES "###, $access_schema, r###"certificate_grants(tenant_id,id),
- signing_issuer text CHECK(signing_issuer ~ '^[0-9a-f]{64}$')
-
-);
-ALTER TABLE "###, $access_schema, r###"registration_operations ADD COLUMN agent_issuance_recovery uuid;
-ALTER TABLE "###, $access_schema, "registration_operations ", $index_38, " FOREIGN KEY(tenant_id,agent_issuance_recovery) REFERENCES ", $access_schema, r###"certificate_issuances(tenant_id,id);
-ALTER TABLE "###, $access_schema, "registration_operations ", $index_39, r###" CHECK(agent_issuance_recovery IS NULL OR result=to_json(agent_issuance_recovery)::text);
-"###, $index_40, " ON ", $access_schema, r###"registration_operations(tenant_id,agent_issuance_recovery,actor,operation_id) WHERE agent_issuance_recovery IS NOT NULL;
-"###, $index_41, " ON ", $access_schema, r###"certificate_grants(tenant_id,device,id);
-"###, $index_42, " ON ", $access_schema, r###"certificate_grants(tenant_id,target_registration,id) WHERE target_registration IS NOT NULL;
-ALTER TABLE "###, $access_schema, r###"certificate_grants ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "###, $access_schema, r###"certificate_grants FORCE ROW LEVEL SECURITY;
-ALTER TABLE "###, $access_schema, r###"certificate_issuances ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "###, $access_schema, r###"certificate_issuances FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON "###, $access_schema, r###"certificate_grants USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-CREATE POLICY insert_only ON "###, $access_schema, "certificate_grants AS RESTRICTIVE FOR INSERT WITH CHECK(current_user <> '", $command_runtime, r###"' OR source='native');
-CREATE POLICY tenant ON "###, $access_schema, r###"certificate_issuances USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-"###, $index_43, " ON ", $access_schema, r###"certificate_grants(tenant_id,actor,instance,expires_at);
-CREATE TABLE "###, $access_schema, r###"registrations (
- purpose text NOT NULL CHECK(purpose IN('primary','windows_declared','da_device')),
- epoch uuid NOT NULL,
- next_command bigint DEFAULT 1024 NOT NULL CHECK(next_command BETWEEN 1024 AND 4294967296),
- parent_id uuid,
- parent_generation bigint,
- ready boolean NOT NULL DEFAULT false,
- CONSTRAINT linked_shape CHECK((purpose IN('primary','da_device') AND parent_id IS NULL AND parent_generation IS NULL) OR (purpose='windows_declared' AND channel='mdm' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0)),
- tenant_id uuid NOT NULL,
- id uuid NOT NULL,
- device text NOT NULL,
- channel text,
- generation bigint NOT NULL,
- request_id uuid,
- certificate_grant_id uuid,
- CONSTRAINT registration_origin CHECK((channel='mdm' AND request_id IS NOT NULL AND certificate_grant_id IS NULL) OR (channel='agent' AND purpose='primary' AND request_id IS NULL AND certificate_grant_id IS NOT NULL) OR (channel IS NULL AND purpose='da_device' AND request_id IS NULL AND certificate_grant_id IS NOT NULL)),
- state text NOT NULL,
- CONSTRAINT registrations_channel_check CHECK ((channel IS NOT NULL AND channel IN('agent','mdm') AND purpose<>'da_device') OR (channel IS NULL AND purpose='da_device')),
- CONSTRAINT registrations_generation_check CHECK ((generation > 0)),
- CONSTRAINT registrations_state_check CHECK ((state = ANY (ARRAY['active'::text, 'superseded'::text, 'revoked'::text]))),
- first_authenticated_at timestamptz,
- last_communication_received_at timestamptz
-
-);
-
-ALTER TABLE ONLY "###, $access_schema, r###"registrations FORCE ROW LEVEL SECURITY;
-
-CREATE TABLE "###, $access_schema, r###"report_sources (
-    tenant_id uuid NOT NULL,
-    registration uuid NOT NULL,
-    source text NOT NULL,
-    epoch uuid NOT NULL,
-    enabled boolean NOT NULL,
-    next_sequence bigint DEFAULT 0 NOT NULL,
-    CONSTRAINT report_sources_next_sequence_check CHECK ((next_sequence >= 0)),
-    CONSTRAINT report_sources_source_check CHECK (((length(source) >= 1) AND (length(source) <= 255)))
-);
-
-ALTER TABLE ONLY "###, $access_schema, r###"report_sources FORCE ROW LEVEL SECURITY;
-
-CREATE TABLE "###, $access_schema, r###"requests (
- authority_kind text NOT NULL DEFAULT 'password',
- tenant_id uuid NOT NULL,
- id uuid NOT NULL,
- grant_id uuid,
- parent_id uuid,
- parent_generation bigint,
- parent_credential uuid,
- state text DEFAULT 'cancelled'::text NOT NULL,
- expected_generation bigint,
- password_digest text,
- password_version bigint DEFAULT 0 NOT NULL,
- credential_ref uuid,
- expires_at timestamp with time zone,
- issuance_operation uuid,
- source text NOT NULL,
- windows_profile text,
- CONSTRAINT requests_windows_profile_check CHECK ((source='mdm.windows' AND windows_profile IS NOT NULL AND windows_profile IN ('Full','Device')) OR (source<>'mdm.windows' AND windows_profile IS NULL)),
- CONSTRAINT requests_expected_generation_check CHECK ((expected_generation >= 0)),
- CONSTRAINT requests_password_digest_check CHECK ((password_digest ~ '^[0-9a-f]{64}$'::text)),
- CONSTRAINT requests_password_version_check CHECK ((password_version >= 0)),
- CONSTRAINT requests_source_check CHECK ((source = ANY (ARRAY['mdm.windows'::text, 'mdm.apple'::text]))),
- CONSTRAINT requests_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'bound'::text, 'cancelled'::text]))),
- self_service boolean NOT NULL DEFAULT false,
- account_version bigint NOT NULL DEFAULT 0 CHECK(account_version>=0),
- account_reference jsonb,
- account_challenge text CHECK(account_challenge ~ '^[0-9a-f]{64}$'),
- organization_version bigint NOT NULL DEFAULT 0 CHECK(organization_version>=0),
- organization_challenge text CHECK(organization_challenge ~ '^[0-9a-f]{64}$'),
- CONSTRAINT requests_authority_kind_check CHECK(authority_kind IN('password','parent_certificate','apple_account','apple_ade','windows_entra','agent_policy')),
- CONSTRAINT enrollment_shape CHECK(
- state='cancelled' OR (expected_generation IS NOT NULL AND expires_at IS NOT NULL AND issuance_operation IS NOT NULL AND (
- (authority_kind='password' AND grant_id IS NOT NULL AND parent_id IS NULL AND password_digest IS NOT NULL AND password_version>0 AND credential_ref IS NOT NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version=0 AND organization_challenge IS NULL) OR
- (authority_kind='parent_certificate' AND grant_id IS NULL AND source='mdm.windows' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0 AND parent_credential IS NOT NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version=0 AND organization_challenge IS NULL) OR
- (authority_kind='apple_account' AND grant_id IS NOT NULL AND source='mdm.apple' AND self_service AND parent_id IS NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version>0 AND account_reference IS NOT NULL AND account_challenge IS NOT NULL AND organization_version=0 AND organization_challenge IS NULL) OR
- (authority_kind='apple_ade' AND grant_id IS NOT NULL AND source='mdm.apple' AND NOT self_service AND parent_id IS NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version>0 AND organization_challenge IS NOT NULL) OR
- (authority_kind='windows_entra' AND grant_id IS NOT NULL AND source='mdm.windows' AND NOT self_service AND parent_id IS NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version>0 AND organization_challenge IS NULL) OR
- (authority_kind='agent_policy' AND grant_id IS NOT NULL AND NOT self_service AND parent_id IS NULL AND password_digest IS NOT NULL AND password_version=1 AND credential_ref IS NULL AND account_version=0 AND account_reference IS NULL AND account_challenge IS NULL AND organization_version=0 AND organization_challenge IS NULL)
- )))
-
-);
-
-"###, $index_44, " ON ", $access_schema, r###"requests(tenant_id,issuance_operation) WHERE authority_kind='parent_certificate';
-
-ALTER TABLE ONLY "###, $access_schema, r###"requests FORCE ROW LEVEL SECURITY;
-
-ALTER TABLE ONLY "###, $access_schema, r###"asset_authority_history
-    "###, $index_45, r###" PRIMARY KEY (tenant_id, kind, identity, revision);
-
-ALTER TABLE ONLY "###, $access_schema, r###"credentials
-    "###, $index_46, r###" PRIMARY KEY (tenant_id, id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"credentials
-    "###, $index_47, r###" UNIQUE NULLS NOT DISTINCT (tenant_id, channel, locator);
-
-ALTER TABLE ONLY "###, $access_schema, r###"devices
-    "###, $index_48, r###" PRIMARY KEY (tenant_id, id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"requests
-    "###, $index_49, r###" UNIQUE (tenant_id, issuance_operation);
-
-ALTER TABLE ONLY "###, $access_schema, r###"grants
-    "###, $index_50, r###" PRIMARY KEY (tenant_id, id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"registration_operations
-    "###, $index_51, r###" PRIMARY KEY (tenant_id, actor, operation_id);
-
-ALTER TABLE ONLY "###, $access_schema, "registrations ", $index_52, r###" UNIQUE(tenant_id,id,generation);
-
-ALTER TABLE ONLY "###, $access_schema, r###"registrations
-    "###, $index_53, r###" PRIMARY KEY (tenant_id, id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"registrations
-    "###, $index_54, r###" UNIQUE NULLS NOT DISTINCT (tenant_id, device, channel, purpose, generation);
-
-ALTER TABLE ONLY "###, $access_schema, r###"registrations
-    "###, $index_55, r###" UNIQUE (tenant_id, id, channel);
-
-ALTER TABLE ONLY "###, $access_schema, r###"registrations
-    "###, $index_56, r###" UNIQUE (tenant_id, request_id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"report_sources
-    "###, $index_57, r###" PRIMARY KEY (tenant_id, registration, source);
-
-ALTER TABLE ONLY "###, $access_schema, r###"requests
-    "###, $index_58, r###" PRIMARY KEY (tenant_id, id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"requests
-    "###, $index_59, r###" UNIQUE (tenant_id, grant_id);
-
-"###, $index_60, " ON ", $access_schema, r###"asset_authority_history USING btree (tenant_id, device, kind, identity, revision);
-
-"###, $index_61, " ON ", $access_schema, r###"asset_authority_history USING btree (tenant_id, registration, kind, identity, revision);
-
-"###, $index_62, " ON ", $access_schema, r###"asset_authority_history USING btree (tenant_id, revision, device);
-
-"###, $index_63, " ON ", $access_schema, r###"asset_authority_history USING btree (tenant_id, device, revision DESC);
-
-"###, $index_64, " ON ", $access_schema, r###"credentials USING btree (tenant_id, registration) WHERE (state = 'active'::text);
-
-"###, $index_65, " ON ", $access_schema, r###"registrations USING btree (tenant_id, device, channel, purpose) NULLS NOT DISTINCT WHERE (state = 'active'::text);
-
-"###, $index_66, " ON ", $access_schema, r###"registrations USING btree (tenant_id, device, id);
-
-ALTER TABLE "###, $access_schema, r###"asset_authority_history ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE "###, $access_schema, r###"credentials ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE "###, $access_schema, r###"devices ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE "###, $access_schema, r###"grants ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE "###, $access_schema, r###"registration_operations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE "###, $access_schema, r###"registrations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE "###, $access_schema, r###"report_sources ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE "###, $access_schema, r###"requests ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY tenant ON "###, $access_schema, r###"asset_authority_history USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
-CREATE POLICY tenant ON "###, $access_schema, r###"credentials USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
-CREATE POLICY tenant ON "###, $access_schema, r###"devices USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
-CREATE POLICY tenant ON "###, $access_schema, r###"grants USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
-CREATE POLICY tenant ON "###, $access_schema, r###"registration_operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
-CREATE POLICY tenant ON "###, $access_schema, r###"registrations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
-CREATE POLICY tenant ON "###, $access_schema, r###"report_sources USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
-CREATE POLICY tenant ON "###, $access_schema, r###"requests USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-CREATE TABLE "###, $access_schema, r###"registration_users (
-    tenant_id uuid NOT NULL,
-    device text NOT NULL,
-    revision bigint NOT NULL CHECK(revision>0),
-    instance text,
-    principal text,
-    PRIMARY KEY(tenant_id,device),
-    CHECK((instance IS NULL)=(principal IS NULL))
-);
-ALTER TABLE "###, $access_schema, r###"registration_users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "###, $access_schema, r###"registration_users FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON "###, $access_schema, r###"registration_users USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-GRANT SELECT,INSERT ON "###, $access_schema, "registration_users TO ", $access_role, r###";
-GRANT UPDATE(revision,instance,principal) ON "###, $access_schema, "registration_users TO ", $access_role, r###";
-CREATE TABLE "###, $access_schema, r###"current_users (
-    tenant_id uuid NOT NULL,
-    device text NOT NULL,
-    revision bigint NOT NULL CHECK(revision>0),
-    registration uuid NOT NULL,
-    generation bigint NOT NULL CHECK(generation>0),
-    session_reference jsonb,
-    confirmed_at bigint NOT NULL,
-    PRIMARY KEY(tenant_id,device)
-);
-ALTER TABLE "###, $access_schema, r###"current_users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "###, $access_schema, r###"current_users FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON "###, $access_schema, r###"current_users USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-GRANT SELECT,INSERT ON "###, $access_schema, "current_users TO ", $access_role, r###";
-GRANT UPDATE(revision,registration,generation,session_reference,confirmed_at) ON "###, $access_schema, "current_users TO ", $access_role, r###";
-COMMIT;
-"###),
-                relations: concat!(r###"-- Fresh installation: registration-service owns these objects.
-BEGIN;
-SET LOCAL check_function_bodies = false;
-
-CREATE TRIGGER asset_authority AFTER INSERT OR DELETE OR UPDATE ON "###, $access_schema, "credentials FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"capture_asset_authority();
-
-CREATE TRIGGER asset_authority AFTER INSERT OR DELETE OR UPDATE ON "###, $access_schema, "devices FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"capture_asset_authority();
-
-CREATE TRIGGER asset_authority AFTER INSERT OR DELETE OR UPDATE ON "###, $access_schema, "registrations FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"capture_asset_authority();
-
-CREATE TRIGGER asset_authority AFTER INSERT OR DELETE OR UPDATE ON "###, $access_schema, "report_sources FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"capture_asset_authority();
-
-ALTER TABLE ONLY "###, $access_schema, r###"asset_authority_history
-    "###, $index_67, r###" FOREIGN KEY (tenant_id, revision) REFERENCES mdm.asset_changes(tenant_id, revision);
-
-ALTER TABLE ONLY "###, $access_schema, r###"credentials
-    "###, $index_68, " FOREIGN KEY (tenant_id, registration) REFERENCES ", $access_schema, r###"registrations(tenant_id, id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"registrations
-    "###, $index_69, " FOREIGN KEY (tenant_id, device) REFERENCES ", $access_schema, r###"devices(tenant_id, id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"registrations
-    "###, $index_70, " FOREIGN KEY (tenant_id, request_id) REFERENCES ", $access_schema, r###"requests(tenant_id, id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"report_sources
-    "###, $index_71, " FOREIGN KEY (tenant_id, registration) REFERENCES ", $access_schema, r###"registrations(tenant_id, id);
-
-ALTER TABLE ONLY "###, $access_schema, r###"requests
-    "###, $index_72, " FOREIGN KEY (tenant_id, grant_id) REFERENCES ", $access_schema, r###"grants(tenant_id, id);
-
-GRANT USAGE ON "###, $access_schema_decl, " TO ", $access_role, r###";
-GRANT USAGE ON "###, $access_schema_decl, " TO ", $software_driver, r###";
-GRANT USAGE ON "###, $access_schema_decl, " TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
-GRANT USAGE ON "###, $access_schema_decl, " TO ", $command_runtime, r###";
-
-REVOKE ALL ON FUNCTION "###, $access_schema, r###"capture_asset_authority() FROM PUBLIC;
-
-GRANT SELECT ON TABLE "###, $access_schema, "asset_authority_history TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, ",", $access_role, r###";
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "credentials TO ", $access_role, r###";
-GRANT SELECT ON TABLE "###, $access_schema, "credentials TO ", $command_runtime, r###";
-
-GRANT SELECT(tenant_id,id) ON TABLE "###, $access_schema, "credentials TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
-
-GRANT SELECT(registration) ON TABLE "###, $access_schema, "credentials TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
-
-GRANT UPDATE(state) ON TABLE "###, $access_schema, "credentials TO ", $access_role, r###";
-GRANT SELECT(state) ON TABLE "###, $access_schema, "credentials TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "devices TO ", $access_role, r###";
-GRANT UPDATE(retirement) ON "###, $access_schema, "devices TO ", $access_role, ",", $policy_runtime, ",", $command_runtime, r###";
-GRANT SELECT ON TABLE "###, $access_schema, "devices TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
-GRANT SELECT ON TABLE "###, $access_schema, "devices TO ", $command_runtime, r###";
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "grants TO ", $access_role, r###";
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "registration_operations TO ", $access_role, r###";
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "registrations TO ", $access_role, r###";
-GRANT SELECT ON TABLE "###, $access_schema, "registrations TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
-GRANT SELECT ON TABLE "###, $access_schema, "registrations TO ", $command_runtime, r###";
-
-GRANT UPDATE(ready) ON TABLE "###, $access_schema, "registrations TO ", $access_role, r###";
-GRANT UPDATE(ready) ON TABLE "###, $access_schema, "registrations TO ", $command_runtime, r###";
-GRANT UPDATE(state) ON TABLE "###, $access_schema, "registrations TO ", $access_role, r###";
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "report_sources TO ", $access_role, r###";
-GRANT SELECT ON TABLE "###, $access_schema, "report_sources TO ", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
-GRANT SELECT ON TABLE "###, $access_schema, "report_sources TO ", $command_runtime, r###";
-
-GRANT UPDATE(enabled) ON TABLE "###, $access_schema, "report_sources TO ", $access_role, r###";
-
-GRANT UPDATE(next_command) ON TABLE "###, $access_schema, "registrations TO ", $access_role, r###";
-GRANT UPDATE(next_command) ON TABLE "###, $access_schema, "registrations TO ", $command_runtime, r###";
-
-GRANT UPDATE(next_sequence) ON TABLE "###, $access_schema, "report_sources TO ", $access_role, r###";
-GRANT UPDATE(next_sequence) ON TABLE "###, $access_schema, "report_sources TO ", $command_runtime, r###";
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
-GRANT SELECT ON TABLE "###, $access_schema, "requests TO ", $command_runtime, r###";
--- Policy native acceptance reads source/profile evidence, never enrollment secrets.
-GRANT SELECT(tenant_id,id,source,windows_profile) ON "###, $access_schema, "requests TO ", $policy_runtime, r###";
-
-GRANT UPDATE(state) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
-
-GRANT UPDATE(password_digest) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
-
-GRANT UPDATE(password_version) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
-
-GRANT UPDATE(credential_ref) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
-
-GRANT UPDATE(expires_at) ON TABLE "###, $access_schema, "requests TO ", $access_role, r###";
-ALTER TABLE "###, $access_schema, "registrations ", $index_73, " FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES ", $access_schema, r###"registrations(tenant_id,id,generation);
-ALTER TABLE "###, $access_schema, "requests ", $index_74, " FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES ", $access_schema, r###"registrations(tenant_id,id,generation);
-ALTER TABLE "###, $access_schema, "requests ", $index_75, " FOREIGN KEY(tenant_id,parent_credential) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
-ALTER TABLE "###, $access_schema, "registrations ", $index_76, " FOREIGN KEY(tenant_id,certificate_grant_id) REFERENCES ", $access_schema, r###"certificate_grants(tenant_id,id);
-ALTER TABLE "###, $access_schema, "certificate_grants ", $index_77, " FOREIGN KEY(tenant_id,target_registration) REFERENCES ", $access_schema, r###"registrations(tenant_id,id);
-ALTER TABLE "###, $access_schema, "certificate_grants ", $index_78, " FOREIGN KEY(tenant_id,predecessor) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
-ALTER TABLE "###, $access_schema, "certificate_issuances ", $index_79, " FOREIGN KEY(tenant_id,credential) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
-GRANT SELECT,INSERT ON "###, $access_schema, "certificate_grants,", $access_schema, "certificate_issuances TO ", $access_role, r###";
-GRANT UPDATE(actor,instance,state,device) ON "###, $access_schema, "certificate_grants TO ", $access_role, r###";
-GRANT UPDATE(state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) ON "###, $access_schema, "certificate_issuances TO ", $access_role, r###";
-GRANT SELECT,INSERT ON "###, $access_schema, "certificate_grants TO ", $command_runtime, r###";
-GRANT SELECT(tenant_id,credential,not_after) ON "###, $access_schema, "certificate_issuances TO ", $command_runtime, ",", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
-GRANT UPDATE(last_communication_received_at) ON "###, $access_schema, "registrations TO ", $access_role, ", ", $command_runtime, r###";
-GRANT UPDATE(first_authenticated_at) ON "###, $access_schema, "registrations TO ", $access_role, ", ", $command_runtime, r###";
-GRANT UPDATE(account_version,account_reference,account_challenge) ON "###, $access_schema, "requests TO ", $access_role, r###";
-GRANT UPDATE(organization_version,organization_challenge) ON "###, $access_schema, "requests TO ", $access_role, r###";
--- Device invokes Registration retirement on the shared audited command transaction.
-GRANT UPDATE(state) ON "###, $access_schema, "registrations,", $access_schema, "credentials TO ", $command_runtime, r###";
-GRANT UPDATE(enabled) ON "###, $access_schema, "report_sources TO ", $command_runtime, r###";
-COMMIT;
-"###),
+                identity_install: identity_install!(),
+                install: concat!(identity_install!(), inventory_install!()),
+                identity_relations: identity_relations!(),
+                relations: concat!(identity_relations!(), inventory_relations!()),
                 agent_bootstrap: concat!(r###"BEGIN;
 CREATE TABLE "###, $access_schema, r###"agent_bootstraps (
  tenant_id uuid NOT NULL,id uuid NOT NULL,installation uuid NOT NULL,installation_facts jsonb NOT NULL CHECK(octet_length(installation_facts::text)<=16384),delivery uuid NOT NULL,

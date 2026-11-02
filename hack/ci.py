@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-da-app":"apps/da-server",
     "rss-mdm-device-access":"crates/device-access",
     "rss-mdm-device-access-postgres":"crates/device-access-postgres",
     "rss-mdm-device-access-runtime":"crates/device-access-runtime",
@@ -206,13 +207,8 @@ def verify_backend_support(data):
             if dependency['pkg'] != ident:
                 continue
             owner = packages[node['id']]
-            # The independent DA host fixture exercises the real admission contract.
-            if owner in {'rss-mdm-agent-channel','rss-mdm-device-access-http'}:
-                require(dependency.get('dep_kinds') and all(kind.get('kind') == 'dev' for kind in dependency['dep_kinds']),
-                        'Agent foundation may consume backend support only in tests')
-            else:
-                parents.add(owner)
-    require(parents == adapters | {"rss-mdm-app"}, "only backend adapters and App admission may directly consume support")
+            parents.add(owner)
+    require(parents == adapters, "only backend adapters may directly consume support")
     visited, pending = set(), [ident]
     while pending:
         key = pending.pop()
@@ -229,7 +225,7 @@ def verify_audit_integration(data):
     require(len(ids) == 1, 'exactly one product audit integration package is required')
     identity = ids[0]
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
-    require(parents == {'rss-mdm-device-access-postgres','rss-mdm-device-access-runtime','rss-mdm-group-service', 'rss-mdm-compliance-service', 'rss-mdm-script-service','rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',   'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
+    require(parents == {'rss-da-app','rss-mdm-device-access-postgres','rss-mdm-device-access-runtime','rss-mdm-group-service', 'rss-mdm-compliance-service', 'rss-mdm-script-service','rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',   'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
     require(set(nodes[identity]['features']) <= {'default'}, 'audit integration exposes an unsupported feature')
     pending, visited = [identity], set()
     while pending:
@@ -272,6 +268,24 @@ def verify_agent_wire(data):
                     require(packages[edge['pkg']]['name'] in direct,
                             'Agent wire production closure has an unsupported direct dependency')
                 pending.append(edge['pkg'])
+
+def verify_da_host(data):
+    """The standalone product may use native codecs, never MDM/Agent runtime composition."""
+    packages = {p['id']: p['name'] for p in data['packages']}
+    nodes = {n['id']: n for n in data['resolve']['nodes']}
+    roots = [key for key, name in packages.items() if name == 'rss-da-app']
+    require(len(roots) == 1, 'exactly one standalone DA application required')
+    denied = {'rss-mdm-app', 'rss-mdm-agent-channel', 'rss-mdm-apple-channel',
+              'rss-mdm-windows-channel', 'rss-mdm-management-http'}
+    pending, visited = roots, set()
+    while pending:
+        key = pending.pop()
+        if key in visited:
+            continue
+        visited.add(key)
+        require(packages[key] not in denied, 'standalone DA depends on MDM/Agent runtime: ' + packages[key])
+        pending.extend(edge['pkg'] for edge in nodes[key]['deps']
+                       if any(kind.get('kind') != 'dev' for kind in edge.get('dep_kinds', [{'kind': None}])))
 
 def verify_capability_boundaries(data):
     """Cargo owns package identities and target/optional/build dependency declarations."""
@@ -330,7 +344,7 @@ def verify_capability_boundaries(data):
         package = packages.get('rss-mdm-' + owner)
         require(package is not None, 'missing capability owner: ' + owner)
         dependencies = {d['name'] for d in package['dependencies'] if d['kind'] != 'dev'}
-        invalid = dependencies & denied
+        invalid = dependencies & (denied | {'rss-da-app'})
         if owner == 'task-state':
             invalid |= dependencies - {'serde', 'schemars', 'uuid', 'thiserror'}
         if owner in {'group', 'scope', 'policy', 'resource', 'device-access'}:
@@ -375,6 +389,7 @@ def verify_metadata(data, root, mode, pin):
     require("test-support" not in features["rss-identity-oidc"], "OIDC fixture transport feature drift")
     require("test-support" not in features["rss-identity-postgres"], "Identity fact-time feature drift")
     nodes = {n['id']: n for n in data['resolve']['nodes']}
+    verify_da_host(data)
     verify_backend_support(data)
     verify_audit_integration(data)
     verify_agent_wire(data)

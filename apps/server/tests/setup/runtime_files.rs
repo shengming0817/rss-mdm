@@ -9,7 +9,7 @@ fn scep_gateway_publishes_exact_device_paths_with_private_upstream_tls() {
     let ca = root.join("ca.pem");
     std::fs::write(&ca, test_certificate()).unwrap();
     config.product_origin = "https://mdm.example.test".into();
-    config.device_pki = vec![crate::device_pki::Provider {
+    config.device_pki = vec![rss_mdm_pki_service::configuration::Provider {
         purpose: rss_mdm_agent_wire::pki::Purpose::Apple,
         issuer: "a".repeat(64),
         origin: "https://step-ca:9000".into(),

@@ -5,12 +5,15 @@ use rss_mdm_registration_service::participants::capacity::DeviceCapacity;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgRuntime;
 pub struct Materials {
+    /// Fixed process mode; disabled hosts may only settle existing executions.
+    pub accepting: bool,
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub capacity: Arc<dyn DeviceCapacity>,
     pub recovery: Option<Arc<dyn AccessRecovery>>,
     pub platform: Arc<dyn PlatformFacts>,
 }
 pub struct Transactions {
+    pub(crate) accepting: bool,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -21,6 +24,9 @@ pub struct Transactions {
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
 }
 impl Transactions {
+    pub fn accepts_new_work(&self) -> bool {
+        self.accepting
+    }
     pub async fn bind(
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
@@ -61,6 +67,7 @@ impl Transactions {
         .await
         .map_err(|_| Error::Unavailable)?;
         Ok(Self {
+            accepting: materials.accepting,
             runtime,
             tenant,
             audit_store,
@@ -83,6 +90,14 @@ pub struct Service {
     pub(crate) transactions: Transactions,
 }
 impl Service {
+    /// Freeze this process to settlement of previously created executions.
+    pub fn settlement_only(mut self) -> Self {
+        self.transactions.accepting = false;
+        self
+    }
+    pub fn accepts_new_work(&self) -> bool {
+        self.transactions.accepting
+    }
     pub fn new(transactions: Transactions) -> Self {
         Self { transactions }
     }

@@ -1,7 +1,10 @@
 //! The product's bounded installation executor; hosts compose capability-owned units.
 //! ref: sqlx v0.9.0 sqlx-core/src/migrate/migrator.rs.
 //! No application, business capability, Identity authority or channel is owned here.
+pub mod access_admission;
 pub mod catalog;
+#[cfg(unix)]
+pub mod files;
 mod profile;
 pub use profile::StorageProfile;
 mod ledger;
@@ -274,6 +277,27 @@ pub async fn read_receipts(
         .await
 }
 
+/// Verify the immutable installation identity and configuration without modifying storage.
+pub async fn verify_binding(
+    connection: &mut PgConnection,
+    binding: &Binding,
+    units: &[Unit],
+) -> std::result::Result<(), sqlx::Error> {
+    let matched: bool = sqlx::query_scalar(binding.profile.statements().matches)
+        .bind(binding.instance)
+        .bind(binding.target.as_slice())
+        .bind(binding.lineage.as_slice())
+        .bind(&binding.configuration)
+        .bind(format!("{:x}", Sha256::digest(manifest(units).to_string())))
+        .fetch_one(connection)
+        .await?;
+    if matched {
+        Ok(())
+    } else {
+        Err(sqlx::Error::Protocol("installation binding differs".into()))
+    }
+}
+
 pub async fn verify_manifest(
     connection: &mut PgConnection,
     profile: StorageProfile,
@@ -302,3 +326,6 @@ pub async fn execute_schema(
     }
     Ok(())
 }
+
+#[cfg(unix)]
+pub mod maintenance;

@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 autotests = false
 [dependencies]
+rss-mdm-windows-mdm.workspace = true
 webauthn-rs-proto.workspace = true
 base64.workspace = true
 http.workspace = true
@@ -46,6 +47,8 @@ workspace = true
 name = "foundation"
 path = "tests/foundation.rs"
 [dev-dependencies]
+rss-da-app.workspace = true
+plist.workspace = true
 openssl.workspace = true
 jsonschema.workspace = true
 rss-mdm-device-access-runtime.workspace = true
@@ -59,14 +62,10 @@ time.workspace = true
 reqwest = {workspace = true, features=["json"]}
 sha2.workspace = true
 tower.workspace = true
-rss-mdm-backend-postgres-support.workspace = true
 rss-mdm-pki-service.workspace = true
 rss-mdm-device-trust.workspace = true
 rss-mdm-native-protection.workspace = true
 rss-mdm-query.workspace = true
-rss-mdm-inventory-postgres.workspace = true
-rss-mdm-inventory.workspace = true
-rss-mdm-policy-service.workspace = true
 rss-audit-postgres.workspace = true
 rss-identity-postgres.workspace = true
 rss-observation-postgres.workspace = true

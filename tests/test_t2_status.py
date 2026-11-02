@@ -47,8 +47,8 @@ class T2Status(unittest.TestCase):
     def test_foundation_selects_its_protection_and_admission_inputs(self):
         for path in ('crates/native-protection/src/storage_profile.rs',
                      'crates/native-protection/src/lib.rs',
-                     'crates/backend-postgres-support/src/access_admission.rs',
-                     'crates/backend-postgres-support/src/access-admission.sql'):
+                     'crates/install-support/src/access_admission.rs',
+                     'crates/install-support/src/access-admission.sql'):
             with self.subTest(path=path):
                 self.assertIn('agent.foundation', affected([path]))
         self.assertNotIn('agent.foundation', affected(['crates/backend-postgres-support/src/document.rs']))

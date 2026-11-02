@@ -54,7 +54,7 @@ class CandidatePublication(unittest.TestCase):
                     source.mkdir()
                     inputs = ["deployment/providers.lock.json", "deployment/Dockerfile", "Cargo.lock", "rust-toolchain.toml"]
                     inputs += ["fixtures/mdm-config.example.json"]
-                    inputs += ["apps/server/schema/" + Path(name).name if name.endswith("-roles.sql") else name
+                    inputs += ["crates/device-access-runtime/schema/roles.sql" if name == "deployment/device-access-roles.sql" else "apps/server/schema/" + Path(name).name if name.endswith("-roles.sql") else name
                                for name in release.DEPLOYMENT_FILES if name != "mdm-config.example.json"]
                     for name in inputs:
                         target = source / name; target.parent.mkdir(parents=True, exist_ok=True)
@@ -181,3 +181,14 @@ class WorkingSource(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class DaDelivery(unittest.TestCase):
+    def test_da_has_a_closed_product_delivery_surface(self):
+        files = release.deployment_files('da')
+        self.assertIn('deployment/da.compose.yaml', files)
+        self.assertNotIn('deployment/production.compose.yaml', files)
+        for name in files:
+            original = release.ROOT / ('crates/device-access-runtime/schema/roles.sql' if name.endswith('device-access-roles.sql') else name)
+            self.assertTrue(original.is_file(), name)
+        with self.assertRaises(ValueError):
+            release.deployment_files('other')

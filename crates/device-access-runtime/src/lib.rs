@@ -1,11 +1,16 @@
 //! Resource assembly for DA. Hosts own connection, listener and worker lifetimes.
 //! No MDM/Agent business service is required for independent DA registration or PSSO.
+pub mod enterprise;
+pub mod installation;
+pub mod platform;
 use rss_mdm_device_access_postgres as pg;
 use rss_mdm_registration_service as registration;
 use std::{num::NonZeroU32, sync::Arc};
 use uuid::Uuid;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("DA configuration rejected")]
+    Configuration,
     #[error(transparent)]
     Business(#[from] pg::Error),
     #[error(transparent)]
@@ -109,5 +114,20 @@ impl Runtime {
             registrations,
             configurations,
         })
+    }
+}
+
+impl Runtime {
+    pub fn prepare(origin: &str) -> Arc<pg::platform_sso::bridge::Verifier> {
+        Arc::new(pg::platform_sso::bridge::Verifier::new(origin))
+    }
+    pub fn bind(
+        &self,
+        platform: &pg::platform_sso::bridge::Verifier,
+        enterprise: &pg::enterprise::platform::Verifier,
+    ) -> Result<(), Error> {
+        platform.bind(&self.platform)?;
+        enterprise.bind(self.admission.clone())?;
+        Ok(())
     }
 }

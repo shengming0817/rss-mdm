@@ -11,7 +11,9 @@ def all_tools(root=ROOT):
     return sorted(path.stem for path in (root / 'tests').glob('test_*.py'))
 
 
-TOOL_INPUTS = {'.env.example': ('test_dev_environment',),
+TOOL_INPUTS = {'deployment/da.compose.yaml': ('test_release',),
+ 'deployment/initialize_da.py': ('test_release',),
+ 'deployment/da-config.example.json': ('test_release',),'.env.example': ('test_dev_environment',),
  'apps/server/tests/api/mod.rs': ('test_app_test_layout',),
  'crates/management-http/schema/Collection.json': ('test_http_contract_artifact',),
  'deployment/Dockerfile': ('test_release',),
@@ -60,7 +62,6 @@ TOOL_INPUTS = {'.env.example': ('test_dev_environment',),
 T1_INPUTS = ('apps/server/tests/foundation/mod.rs',
  'apps/server/examples/http_contract.rs',
  'apps/server/examples/management_capabilities.rs',
- 'apps/server/src/installation/local.rs',
  'apps/server/src/installation/mod.rs',
  'apps/server/src/installation/model.rs',
  'apps/server/tests/agent_pki/health.rs',

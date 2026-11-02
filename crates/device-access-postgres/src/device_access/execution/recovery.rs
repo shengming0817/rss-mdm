@@ -56,6 +56,9 @@ impl Service {
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
+        if !self.accepts_new_work() {
+            return Err(Error::Forbidden);
+        }
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             rss_mdm_audit_integration::StorageProfile::Da,
             self.transactions.tenant.to_string(),
@@ -125,7 +128,8 @@ pub async fn recover_one(service: &Service, tx: &mut PgTransaction<'_>, id: Uuid
     let plan = admission::load(tx, run.id).await?;
     let previous = run.state.clone();
     let stale = stale_registration(&service.transactions, tx, &run.target).await?;
-    if stale
+    if !service.accepts_new_work()
+        || stale
         || !plan
             .allowed_in(&service.transactions, tx, &run.target)
             .await?

@@ -56,6 +56,9 @@ impl Service {
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
+        if !self.accepts_new_work() {
+            return Err(Error::Forbidden);
+        }
         let profile = self.profile();
 
         let audit = rss_mdm_audit_integration::RequestAudit::new(
@@ -192,7 +195,8 @@ pub async fn recover_one(
             .await?;
     let previous = run.state.clone();
     let stale = stale_registration(&service.transactions, tx, &run.target).await?;
-    if stale
+    if !service.accepts_new_work()
+        || stale
         || plan
             .withdrawn_in(&service.transactions, tx, &run.target, now)
             .await?

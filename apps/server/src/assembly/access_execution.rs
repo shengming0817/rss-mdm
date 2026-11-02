@@ -14,8 +14,10 @@ pub(crate) async fn assemble(
     reconcile: rss_reconcile_postgres::PgStore,
     budget: Arc<tokio::sync::Semaphore>,
     concurrency: usize,
+    enabled: bool,
 ) -> Result<Assembly, crate::Error> {
     let materials = Arc::new(access::Materials {
+        accepting: enabled,
         agent_store: Arc::new(super::registration_agent_facts::AgentFacts::new(
             rss_mdm_install_support::StorageProfile::Mdm,
         )),

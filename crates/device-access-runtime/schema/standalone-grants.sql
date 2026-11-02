@@ -1,9 +1,7 @@
 BEGIN;
 GRANT USAGE ON SCHEMA rss_da TO da_access,da_identity_runtime;
-GRANT SELECT(instance_id,target,lineage) ON rss_da.installation_binding TO da_access;
+GRANT SELECT ON rss_da.installation_binding TO da_access;
 GRANT SELECT ON rss_da.installation_units TO da_access;
-GRANT USAGE ON SCHEMA mdm TO da_access;
-GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO da_access;
 GRANT USAGE ON SCHEMA rss_audit TO da_access,da_identity_runtime,da_identity_maintenance,da_identity_provisioning;
 GRANT SELECT ON rss_audit.records TO da_access,da_identity_runtime,da_identity_maintenance,da_identity_provisioning;
 GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO da_access,da_identity_runtime,da_identity_maintenance,da_identity_provisioning;

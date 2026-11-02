@@ -66,3 +66,36 @@ pub fn registration(
         policy,
     ))
 }
+
+/// Browser TLS has a separate boundary and never treats a Cookie as device authentication.
+pub fn browser(
+    tcp: TcpListener,
+    certificates: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+    router: axum::Router,
+    policy: rss_axum::Http1ServePolicy,
+) -> std::io::Result<rss_runtime::ManagedTaskRegistration> {
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certificates, key)
+        .map_err(std::io::Error::other)?;
+    let router = router.layer(axum::middleware::from_fn(
+        |Extension(info): Extension<AcceptedConnectionInfo<Peer>>,
+         mut request: axum::extract::Request,
+         next: axum::middleware::Next| async move {
+            request
+                .extensions_mut()
+                .insert(rss_identity_http_axum::ClientAddress(
+                    info.socket_peer().ip(),
+                ));
+            next.run(request).await
+        },
+    ));
+    Ok(rss_axum::serve_http1_registration(
+        tcp,
+        router,
+        Transport(TlsAcceptor::from(Arc::new(config))),
+        "da-browser",
+        policy,
+    ))
+}

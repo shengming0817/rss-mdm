@@ -1,5 +1,10 @@
 //! Fixed RP backend exchange; Identity owns assertion and token verification.
-use super::*;
+use crate::Error;
+use rss_request_context::TenantId;
+use std::{path::PathBuf, time::Duration};
+fn invalid() -> Error {
+    Error::Configuration
+}
 use rss_identity_core::{
     enterprise::EnterpriseTarget,
     federation::{ClaimMapping, ProviderCredentials, ProviderSettings, ProviderSettingsInput},
@@ -59,7 +64,8 @@ impl Backend {
         if issuer.scheme() != "https" {
             return Err(invalid());
         }
-        let backend = config::secret(&input.backend_secret_file)?;
+        let backend = rss_mdm_install_support::files::secret(&input.backend_secret_file)
+            .map_err(|_| invalid())?;
         if backend.len() < 43
             || backend.len() > 256
             || !backend
@@ -86,13 +92,18 @@ impl Backend {
             .private_ca_file
             .as_ref()
             .map(|p| {
-                config::read(p, 16384, false)
+                rss_mdm_install_support::files::read(p, 16384, false)
+                    .map_err(|_| invalid())
                     .and_then(|v| String::from_utf8(v.to_vec()).map_err(|_| invalid()))
             })
             .transpose()?;
-        let credentials =
-            ProviderCredentials::new(config::secret(&input.client_secret_file)?.to_string(), ca)
-                .map_err(|_| invalid())?;
+        let credentials = ProviderCredentials::new(
+            rss_mdm_install_support::files::secret(&input.client_secret_file)
+                .map_err(|_| invalid())?
+                .to_string(),
+            ca,
+        )
+        .map_err(|_| invalid())?;
         let access = if input.private_cidrs.is_empty() {
             vec![]
         } else {
@@ -182,4 +193,20 @@ impl Client for Backend {
             })
         })
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Deployment {
+    pub key_id: String,
+    pub signing_key_file: PathBuf,
+    pub clients: Vec<Configuration>,
+    pub administrators: Vec<Administrator>,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Administrator {
+    pub configuration: rss_mdm_device_access_postgres::enterprise::keycloak::Configuration,
+    pub client_secret_file: PathBuf,
+    pub private_ca_file: Option<PathBuf>,
 }

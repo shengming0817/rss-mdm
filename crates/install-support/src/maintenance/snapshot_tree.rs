@@ -1,5 +1,5 @@
 //! Exact cold filesystem snapshots; no symlink traversal or overwrite of different restored bytes.
-use super::{Error, Result, backup::archive::file_digest, local::Journal};
+use super::{Error, Result, archive::file_digest, journal::Journal};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
@@ -89,7 +89,7 @@ fn copy(source: &Path, target: &Path) -> Result<()> {
         .and_then(|f| f.sync_all())
         .map_err(|_| Error::Storage)
 }
-pub(super) fn capture(journal: &Journal, name: &str, source: &Path) -> Result<()> {
+pub fn capture(journal: &Journal, name: &str, source: &Path) -> Result<()> {
     absolute(source)?;
     let archive = journal.path(name)?;
     if archive.starts_with(source) || source.starts_with(&archive) {
@@ -191,7 +191,7 @@ fn verify(archive: &Path, tree: &Tree) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn restore(journal: &Journal, name: &str) -> Result<()> {
+pub fn restore(journal: &Journal, name: &str) -> Result<()> {
     let tree: Tree = journal
         .load(&format!("{name}.json"))?
         .ok_or(Error::Corrupt)?;
@@ -250,7 +250,7 @@ struct ExternalFile {
     source: PathBuf,
     node: Node,
 }
-pub(super) fn capture_inputs(journal: &Journal, values: &[serde_json::Value]) -> Result<()> {
+pub fn capture_inputs(journal: &Journal, values: &[serde_json::Value]) -> Result<()> {
     fn collect(
         value: &serde_json::Value,
         paths: &mut std::collections::BTreeSet<PathBuf>,
@@ -335,7 +335,7 @@ fn verify_external(journal: &Journal, file: &ExternalFile) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn restore_inputs(journal: &Journal) -> Result<()> {
+pub fn restore_inputs(journal: &Journal) -> Result<()> {
     let files: Vec<ExternalFile> = journal.load("inputs.json")?.ok_or(Error::Corrupt)?;
     for file in files {
         verify_external(journal, &file)?;

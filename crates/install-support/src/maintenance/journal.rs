@@ -8,13 +8,13 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub(super) struct Journal {
+pub struct Journal {
     root: PathBuf,
     _lock: File,
     uid: u32,
 }
 impl Journal {
-    pub(super) fn open(root: &Path) -> Result<Self> {
+    pub fn open(root: &Path) -> Result<Self> {
         if !root.is_absolute() || root.components().any(|p| matches!(p, Component::ParentDir)) {
             return Err(Error::Input);
         }
@@ -64,7 +64,7 @@ impl Journal {
             uid,
         })
     }
-    pub(super) fn path(&self, name: &str) -> Result<PathBuf> {
+    pub fn path(&self, name: &str) -> Result<PathBuf> {
         if name.is_empty()
             || name.len() > 128
             || !name
@@ -77,7 +77,7 @@ impl Journal {
         }
         Ok(self.root.join(name))
     }
-    pub(super) fn load<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
+    pub fn load<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
         let path = self.path(name)?;
         match fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -90,7 +90,7 @@ impl Journal {
                 {
                     return Err(Error::Input);
                 }
-                let bytes = crate::config::read(&path, 64 * 1024 * 1024, true)
+                let bytes = crate::files::read(&path, 64 * 1024 * 1024, true)
                     .map_err(|_| Error::Storage)?;
                 serde_json::from_slice(&bytes)
                     .map(Some)
@@ -98,14 +98,14 @@ impl Journal {
             }
         }
     }
-    pub(super) fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
+    pub fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
         let bytes = serde_json::to_vec(value).map_err(|_| Error::Input)?;
         if bytes.len() > 64 * 1024 * 1024 {
             return Err(Error::Input);
         }
         self.replace(name, &bytes)
     }
-    pub(super) fn replace(&self, name: &str, bytes: &[u8]) -> Result<()> {
+    pub fn replace(&self, name: &str, bytes: &[u8]) -> Result<()> {
         let target = self.path(name)?;
         let temporary = self.path(&format!("stage-{}", uuid::Uuid::new_v4()))?;
         let result = (|| {
@@ -129,7 +129,7 @@ impl Journal {
         result
     }
     /// The journal lock excludes concurrent generation. Existing bytes are never overwritten.
-    pub(super) fn secret(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+    pub fn secret(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
         if bytes.len() > 64 * 1024 * 1024 {
             return Err(Error::Input);
         }
@@ -139,7 +139,7 @@ impl Journal {
                 if !meta.is_file() || meta.uid() != self.uid || meta.mode() & 0o077 != 0 {
                     return Err(Error::Input);
                 }
-                let existing = crate::config::read(&path, bytes.len() as u64, true)
+                let existing = crate::files::read(&path, bytes.len() as u64, true)
                     .map_err(|_| Error::Storage)?;
                 if existing.as_slice() != bytes {
                     return Err(Error::Conflict);
