@@ -11,7 +11,7 @@ zeroize.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["json", "uuid"] }
 thiserror.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["time","process"] }
