@@ -17,11 +17,23 @@ pub struct Observation {
     pub policy: Uuid,
     pub policy_version: Uuid,
     pub deployment: Deployment,
+    /// Exact configuration delivery attested by the configured deployment authority.
+    pub configuration: Option<ConfigurationDeployment>,
     pub local_session: Option<rss_mdm_agent_wire::runtime::AccessLocalSession>,
     /// Complete macOS PSSO application facts, signed by the deployment authority. These
     /// are business observations, never Agent task acknowledgements or delivery receipts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub applications: Vec<rss_mdm_agent_wire::runtime::AccessResult>,
+}
+/// Independently verified delivery; a configuration signature alone cannot create this fact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationDeployment {
+    pub artifact: Uuid,
+    pub digest: String,
+    pub native_digest: String,
+    pub delivery: rss_mdm_agent_wire::da::DeliveryPermission,
+    pub state: rss_mdm_agent_wire::da::SourceState,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
@@ -59,6 +71,14 @@ pub struct PlatformConfiguration {
 }
 impl Observation {
     pub fn validate(&self, now: i64) -> Result<(), crate::Error> {
+        if let Some(proof) = &self.configuration
+            && (proof.artifact.is_nil()
+                || !rss_mdm_agent_wire::da::valid_digest(&proof.digest)
+                || !rss_mdm_agent_wire::da::valid_digest(&proof.native_digest))
+        {
+            return Err(crate::Error);
+        }
+
         if self.tenant.is_nil()
             || self.installation.is_nil()
             || self.registration.is_nil()
@@ -195,6 +215,7 @@ mod tests {
         };
         let profile = Uuid::new_v4();
         let mut proof = Observation {
+            configuration: None,
             tenant: Uuid::new_v4(),
             installation: Uuid::new_v4(),
             device: "da".into(),

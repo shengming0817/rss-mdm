@@ -1,0 +1,169 @@
+{
+  "$defs": {
+    "Diagnostic": {
+      "description": "Closed diagnostic classes deliberately exclude arbitrary process output and secrets.",
+      "oneOf": [
+        {
+          "const": "unsupported",
+          "description": "Unsupported platform capability.",
+          "type": "string"
+        },
+        {
+          "const": "permission_denied",
+          "description": "Local permission missing.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_configuration",
+          "description": "Configuration or trust failed validation.",
+          "type": "string"
+        },
+        {
+          "const": "source_unavailable",
+          "description": "Native source unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "source_conflict",
+          "description": "Conflicting sources.",
+          "type": "string"
+        },
+        {
+          "const": "factor_unavailable",
+          "description": "A binding or factor is not ready.",
+          "type": "string"
+        }
+      ]
+    },
+    "Health": {
+      "description": "A reported diagnostic, never proof that login is permitted.",
+      "oneOf": [
+        {
+          "const": "unknown",
+          "description": "No observation is available.",
+          "type": "string"
+        },
+        {
+          "const": "ready",
+          "description": "Device reports readiness.",
+          "type": "string"
+        },
+        {
+          "const": "degraded",
+          "description": "Device reports a degraded capability.",
+          "type": "string"
+        },
+        {
+          "const": "blocked",
+          "description": "Device reports that a prerequisite blocks operation.",
+          "type": "string"
+        }
+      ]
+    },
+    "ReportIdentity": {
+      "additionalProperties": false,
+      "description": "Identity must match the authenticated transport and current registration.",
+      "properties": {
+        "generation": {
+          "description": "Current positive registration generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "registration": {
+          "description": "Current DA registration.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "serviceId": {
+          "description": "Product installation instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "Owning tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "serviceId",
+        "tenant",
+        "registration",
+        "generation"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Complete diagnostic snapshot; sequence is the idempotency key within its registration.",
+  "properties": {
+    "binding": {
+      "$ref": "#/$defs/Health",
+      "description": "Binding readiness claimed by the device."
+    },
+    "clientVersion": {
+      "description": "Bounded version label, not an executable capability declaration.",
+      "type": "string"
+    },
+    "configurationDigest": {
+      "description": "Last configuration digest reported by the device.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "contractVersion": {
+      "description": "Current protocol format, one.",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "errors": {
+      "description": "Bounded closed diagnostic classes.",
+      "items": {
+        "$ref": "#/$defs/Diagnostic"
+      },
+      "type": "array"
+    },
+    "factor": {
+      "$ref": "#/$defs/Health",
+      "description": "Factor readiness claimed by the device."
+    },
+    "health": {
+      "$ref": "#/$defs/Health",
+      "description": "Overall health claimed by the device."
+    },
+    "identity": {
+      "$ref": "#/$defs/ReportIdentity",
+      "description": "Authenticated identity coordinates."
+    },
+    "observedAt": {
+      "description": "Device time is descriptive only.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "sequence": {
+      "description": "Positive, monotonically increasing per registration generation.",
+      "format": "int64",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "identity",
+    "sequence",
+    "clientVersion",
+    "contractVersion",
+    "binding",
+    "factor",
+    "health",
+    "errors"
+  ],
+  "title": "StatusReport",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/StatusReport"
+}

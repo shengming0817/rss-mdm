@@ -27,7 +27,7 @@ pub const BRIDGE_TYPE: &str = "rss-mdm-platform-sso-browser+jwt";
 /// Exact supported native login scope.
 pub const SCOPE: &str = "openid offline_access urn:apple:platformsso";
 
-#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Deployment-selected identities; no private signing material.
 pub struct Configuration {

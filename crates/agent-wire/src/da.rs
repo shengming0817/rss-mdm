@@ -1,5 +1,5 @@
 //! Device Access contracts. PKI is shared; configuration authority has its own signing domain.
-use crate::runtime::{AccessConfiguration, Secret, WireError};
+use crate::runtime::{Secret, WireError};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -64,7 +64,7 @@ pub struct Registration {
     /// Stable caller operation identity; changed input under the same ID conflicts.
     pub operation_id: Uuid,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 /// Authorized recipients of an immutable configuration.
 pub enum Audience {
@@ -89,94 +89,11 @@ pub enum DeliveryPermission {
     /// Managed mandatory delivery is required by the consuming policy.
     ManagedMandatory,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// Typed DA inner configuration and all signed authority coordinates.
-pub struct Configuration {
-    /// Stable installation instance, independent of its network location.
-    pub service_id: Uuid,
-    /// Tenant owning this identity and signing authority.
-    pub tenant: Uuid,
-    /// Stable configuration identity.
-    pub id: Uuid,
-    /// Positive monotonically increasing publication revision.
-    pub revision: u64,
-    /// Positive configuration authority epoch.
-    pub epoch: u64,
-    /// Recipients bound into the signature.
-    pub audience: Audience,
-    /// Permitted delivery class; it does not attest the actual transport.
-    pub delivery: DeliveryPermission,
-    /// Signing validity start in Unix seconds, checked against server time.
-    pub issued_at: i64,
-    /// Exclusive validity limit in Unix seconds.
-    pub expires_at: i64,
-    /// Validated platform account and login configuration.
-    pub content: AccessConfiguration,
-}
-impl Configuration {
-    /// Validate and encode the fixed, domain-separated signing payload.
-    pub fn signing_bytes(&self, key: &str) -> Result<Vec<u8>, WireError> {
-        self.content.validate()?;
-        if self.service_id.is_nil()
-            || self.tenant.is_nil()
-            || self.id.is_nil()
-            || self.revision == 0
-            || self.revision > i64::MAX as u64
-            || self.epoch == 0
-            || self.epoch > i64::MAX as u64
-            || self.issued_at <= 0
-            || self.expires_at <= self.issued_at
-            || key.is_empty()
-            || key.len() > 128
-        {
-            return Err(WireError::InvalidValue);
-        }
-        if let Audience::Device {
-            device,
-            registration,
-            generation,
-        } = &self.audience
-            && (device.is_empty()
-                || device.len() > 256
-                || device.chars().any(char::is_control)
-                || registration.is_nil()
-                || *generation == 0
-                || *generation > i64::MAX as u64)
-        {
-            return Err(WireError::InvalidValue);
-        }
-        let mut bytes = b"rss-da-configuration-v1-ed25519\0".to_vec();
-        bytes.extend(
-            serde_json::to_vec(&(key, "da_configuration", self))
-                .map_err(|_| WireError::InvalidValue)?,
-        );
-        if bytes.len() > 65536 {
-            return Err(WireError::InvalidValue);
-        }
-        Ok(bytes)
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// Ed25519 signature over the typed configuration in the DA signing domain.
-pub struct SignedConfiguration {
-    /// Complete typed configuration covered by the signature.
-    pub configuration: Configuration,
-    /// Stable key identifier from DA configuration trust.
-    pub key_id: String,
-    /// Canonical unpadded base64url Ed25519 signature.
-    pub signature: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// An administrator export request with an immutable operation identity.
-pub struct Export {
-    /// Stable caller operation identity; changed input under the same ID conflicts.
-    pub operation_id: Uuid,
-    /// Complete typed configuration covered by the signature.
-    pub configuration: Configuration,
-}
+mod configuration;
+mod status;
+pub use configuration::*;
+pub use status::*;
+
 /// Exact DA content trust. Public keys never establish their own authority.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -224,6 +141,6 @@ pub struct Progress {
 
 /// Fingerprint of the generated Device Access protocol schema.
 pub const SCHEMA_FINGERPRINT: &str =
-    "1a486e88629cbecf06344309aaa475f21f11663c143d039ebd861f8f1dfa4d0f";
+    "3553c8ce7ad12d794d8239e9dd42d472b063b80289b8dfc407eb4fbf2568f05c";
 /// Canonical current Device Access schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/da/manifest.json");

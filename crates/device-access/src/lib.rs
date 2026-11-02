@@ -87,4 +87,5 @@ pub struct PolicySelection {
     pub configuration: AccessConfiguration,
 }
 
+pub mod configuration;
 pub mod deployment;

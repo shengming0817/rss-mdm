@@ -1,0 +1,249 @@
+{
+  "$defs": {
+    "ApplicationState": {
+      "description": "Application observations are independent facts, not an inferred success chain.",
+      "oneOf": [
+        {
+          "const": "received",
+          "description": "Received by the reporting device.",
+          "type": "string"
+        },
+        {
+          "const": "validated",
+          "description": "Device claims validation succeeded.",
+          "type": "string"
+        },
+        {
+          "const": "applied",
+          "description": "Device claims local application succeeded.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "Device rejected the candidate.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Local application outcome is unknown.",
+          "type": "string"
+        }
+      ]
+    },
+    "DeliveryPermission": {
+      "description": "Permission to transport content is separate from proof of its actual delivery channel.",
+      "oneOf": [
+        {
+          "const": "da",
+          "description": "DA transport is permitted.",
+          "type": "string"
+        },
+        {
+          "const": "managed_mandatory",
+          "description": "Managed mandatory delivery is required by the consuming policy.",
+          "type": "string"
+        }
+      ]
+    },
+    "Diagnostic": {
+      "description": "Closed diagnostic classes deliberately exclude arbitrary process output and secrets.",
+      "oneOf": [
+        {
+          "const": "unsupported",
+          "description": "Unsupported platform capability.",
+          "type": "string"
+        },
+        {
+          "const": "permission_denied",
+          "description": "Local permission missing.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_configuration",
+          "description": "Configuration or trust failed validation.",
+          "type": "string"
+        },
+        {
+          "const": "source_unavailable",
+          "description": "Native source unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "source_conflict",
+          "description": "Conflicting sources.",
+          "type": "string"
+        },
+        {
+          "const": "factor_unavailable",
+          "description": "A binding or factor is not ready.",
+          "type": "string"
+        }
+      ]
+    },
+    "ReportIdentity": {
+      "additionalProperties": false,
+      "description": "Identity must match the authenticated transport and current registration.",
+      "properties": {
+        "generation": {
+          "description": "Current positive registration generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "registration": {
+          "description": "Current DA registration.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "serviceId": {
+          "description": "Product installation instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "Owning tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "serviceId",
+        "tenant",
+        "registration",
+        "generation"
+      ],
+      "type": "object"
+    },
+    "ReportedSource": {
+      "additionalProperties": false,
+      "description": "A single source referenced by an application report, without a caller-controlled trust flag.",
+      "properties": {
+        "artifact": {
+          "description": "Exact export operation.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "delivery": {
+          "$ref": "#/$defs/DeliveryPermission",
+          "description": "Actual delivery claimed by the device."
+        },
+        "digest": {
+          "description": "Exact inner payload digest.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/SourceState",
+          "description": "Local source read/validation result."
+        }
+      },
+      "required": [
+        "artifact",
+        "digest",
+        "delivery",
+        "state"
+      ],
+      "type": "object"
+    },
+    "SourceState": {
+      "description": "Actual source observation. Missing and explicit release have different safety meanings.",
+      "oneOf": [
+        {
+          "const": "missing",
+          "description": "No source was found, not permission to release an existing lock.",
+          "type": "string"
+        },
+        {
+          "const": "present",
+          "description": "A complete candidate was obtained.",
+          "type": "string"
+        },
+        {
+          "const": "read_failed",
+          "description": "Platform source could not be read.",
+          "type": "string"
+        },
+        {
+          "const": "invalid",
+          "description": "Validation failed.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "Candidate has expired.",
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "Conflicting same-level candidates.",
+          "type": "string"
+        },
+        {
+          "const": "withdrawn",
+          "description": "Source explicitly withdrawn; a protected release is still required to unlock.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Configuration application report; it cannot acknowledge signing-key installation.",
+  "properties": {
+    "artifact": {
+      "description": "Original signing operation for the selected candidate.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "digest": {
+      "description": "Expected inner payload digest.",
+      "type": "string"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Diagnostic"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional closed rejection reason."
+    },
+    "identity": {
+      "$ref": "#/$defs/ReportIdentity",
+      "description": "Current authenticated registration."
+    },
+    "operationId": {
+      "description": "Stable report operation for exact replay.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "sequence": {
+      "description": "Monotonic application-report sequence, separate from periodic status.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "sources": {
+      "description": "Exact contributing source set.",
+      "items": {
+        "$ref": "#/$defs/ReportedSource"
+      },
+      "type": "array"
+    },
+    "state": {
+      "$ref": "#/$defs/ApplicationState",
+      "description": "Device-reported observation."
+    }
+  },
+  "required": [
+    "identity",
+    "operationId",
+    "sequence",
+    "artifact",
+    "digest",
+    "sources",
+    "state"
+  ],
+  "title": "ApplicationReport",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/ApplicationReport"
+}

@@ -1,0 +1,540 @@
+{
+  "$defs": {
+    "AccessConfiguration": {
+      "additionalProperties": false,
+      "description": "Common product configuration; Apple protocol payloads remain with the Apple owner.",
+      "properties": {
+        "enabled": {
+          "description": "Enable the platform's RSS login integration.",
+          "type": "boolean"
+        },
+        "mac": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoginConfiguration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Device-wide Mac profile settings; absence excludes Mac integration from this policy."
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit role convergence; null preserves existing role, new accounts default standard."
+        },
+        "selfEnrollment": {
+          "description": "Permit the first association to the currently authenticated interactive local account.",
+          "type": "boolean"
+        },
+        "windows": {
+          "$ref": "#/$defs/AccessWindowsConfiguration",
+          "description": "Explicit admitted Windows account authorities."
+        }
+      },
+      "required": [
+        "windows",
+        "selfEnrollment",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "AccessRole": {
+      "description": "Requested account privilege. Absence preserves an existing account's privilege.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary local user.",
+          "type": "string"
+        },
+        {
+          "const": "administrator",
+          "description": "Local administrator, requiring explicit RSS device-account authorization.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessWindowsConfiguration": {
+      "description": "Current Windows policy, with no implicit fallback between authentication mechanisms.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "This policy does not target Windows.",
+          "properties": {
+            "kind": {
+              "const": "disabled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Password plus the RSS offline factor.",
+          "properties": {
+            "accounts": {
+              "description": "Explicit admitted account authorities.",
+              "items": {
+                "$ref": "#/$defs/AccessWindowsKind"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "rss_factor",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "accounts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Pure Entra join, TPM 2.0 and PIN; Windows owns enrollment and authentication.",
+          "properties": {
+            "kind": {
+              "const": "whfb",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessWindowsKind": {
+      "description": "Windows account classes admitted by the selected policy.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Local SAM account.",
+          "type": "string"
+        },
+        {
+          "const": "active_directory",
+          "description": "AD domain account.",
+          "type": "string"
+        },
+        {
+          "const": "entra",
+          "description": "Entra directory account.",
+          "type": "string"
+        }
+      ]
+    },
+    "Audience": {
+      "description": "Authorized recipients of an immutable configuration.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Any current DA device in this tenant.",
+          "properties": {
+            "kind": {
+              "const": "tenant",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One exact endpoint registration generation.",
+          "properties": {
+            "device": {
+              "description": "Registration-owner allocated endpoint identity.",
+              "type": "string"
+            },
+            "generation": {
+              "description": "Positive registration generation, checked against the current mapping.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "device",
+              "type": "string"
+            },
+            "registration": {
+              "description": "Registration identity; renewed credentials retain the same generation.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "device",
+            "registration",
+            "generation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AuthenticationMode": {
+      "description": "Device-wide login mode; every user on one Mac consumes the same system profile.",
+      "oneOf": [
+        {
+          "const": "secure_enclave",
+          "description": "Existing Secure Enclave user-key protocol.",
+          "type": "string"
+        },
+        {
+          "const": "password",
+          "description": "Device-signed Apple Password request, verified by the selected password authority.",
+          "type": "string"
+        }
+      ]
+    },
+    "Configuration": {
+      "additionalProperties": false,
+      "description": "Deployment-selected identities; no private signing material.",
+      "properties": {
+        "applicationId": {
+          "description": "Signed containing application bundle identifier.",
+          "type": "string"
+        },
+        "applicationVersion": {
+          "description": "Exact application inventory version required before registration.",
+          "type": "string"
+        },
+        "clientId": {
+          "description": "Apple login client UUID.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "extensionId": {
+          "description": "Signed extension bundle identifier.",
+          "type": "string"
+        },
+        "teamId": {
+          "description": "Apple signing team identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "teamId",
+        "extensionId",
+        "applicationId",
+        "applicationVersion",
+        "clientId"
+      ],
+      "type": "object"
+    },
+    "ConfigurationField": {
+      "description": "Atomic client-setting groups which a DA issuer may authorize for managed delivery.",
+      "oneOf": [
+        {
+          "const": "mac",
+          "description": "Complete macOS native login configuration; server authorization remains independent.",
+          "type": "string"
+        },
+        {
+          "const": "windows",
+          "description": "Complete Windows login mechanism; server account admission remains independent.",
+          "type": "string"
+        }
+      ]
+    },
+    "DeliveryPermission": {
+      "description": "Permission to transport content is separate from proof of its actual delivery channel.",
+      "oneOf": [
+        {
+          "const": "da",
+          "description": "DA transport is permitted.",
+          "type": "string"
+        },
+        {
+          "const": "managed_mandatory",
+          "description": "Managed mandatory delivery is required by the consuming policy.",
+          "type": "string"
+        }
+      ]
+    },
+    "LoginConfiguration": {
+      "additionalProperties": false,
+      "description": "Business configuration compiled into one device-wide System profile. No deployment secrets.",
+      "properties": {
+        "authentication": {
+          "$ref": "#/$defs/AuthenticationMode",
+          "description": "Chosen native authentication method."
+        },
+        "filevault": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for Apple silicon FileVault unlock."
+        },
+        "login": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for the login window."
+        },
+        "maintenanceAccounts": {
+          "description": "Exact local maintenance account short names excluded from platform login policy.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offlineGraceSeconds": {
+          "description": "Explicit offline allowance, in seconds; never synthesized by the server.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "passwordProvider": {
+          "description": "Configured password provider identity; required only in Password mode.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registrationGraceSeconds": {
+          "description": "Explicit allowance for unregistered accounts, in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "unlock": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for screen unlock."
+        }
+      },
+      "required": [
+        "authentication",
+        "login",
+        "unlock",
+        "filevault",
+        "maintenanceAccounts"
+      ],
+      "type": "object"
+    },
+    "LoginPolicy": {
+      "description": "An explicit platform login policy, independent for login, unlock and FileVault.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Preserve native local login; do not emit an enforcing platform policy.",
+          "type": "string"
+        },
+        {
+          "const": "attempt",
+          "description": "Try the configured password authority with Apple's offline behavior.",
+          "type": "string"
+        },
+        {
+          "const": "require",
+          "description": "Require the configured authority; grace periods must be explicitly selected.",
+          "type": "string"
+        }
+      ]
+    },
+    "MacNativeInput": {
+      "additionalProperties": false,
+      "description": "Public deployment inputs consumed by the existing PSSO native payload generator.",
+      "properties": {
+        "deployment": {
+          "$ref": "#/$defs/Configuration",
+          "description": "Signed application/extension identity; never contains private keys."
+        },
+        "origin": {
+          "description": "Canonical product HTTPS origin used to derive tenant-scoped protocol endpoints.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "deployment",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "NativeBinding": {
+      "additionalProperties": false,
+      "description": "Native payload identity bound by the inner signature, never mutable display metadata.",
+      "properties": {
+        "identifier": {
+          "description": "Platform-native payload identifier.",
+          "type": "string"
+        },
+        "schema": {
+          "description": "Native schema identity, including Configuration for the outer profile.",
+          "type": "string"
+        },
+        "uuid": {
+          "description": "Platform-native payload UUID.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "version": {
+          "description": "Native payload version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema",
+        "identifier",
+        "uuid",
+        "version"
+      ],
+      "type": "object"
+    },
+    "NativeExpectation": {
+      "additionalProperties": false,
+      "description": "Input contract for platform generators; it does not prove native installation.",
+      "properties": {
+        "bindings": {
+          "description": "Native identities that an outer transport must preserve.",
+          "items": {
+            "$ref": "#/$defs/NativeBinding"
+          },
+          "type": "array"
+        },
+        "digest": {
+          "description": "SHA-256 of the canonical native expectation, including bound identities.",
+          "type": "string"
+        },
+        "mac": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MacNativeInput"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mac generator inputs from the same live platform owner as the bound native identities."
+        },
+        "version": {
+          "description": "Canonical expectation format; currently one.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "digest",
+        "bindings"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Fully bound content, constructed from an immutable Policy publication by the server.",
+  "properties": {
+    "audience": {
+      "$ref": "#/$defs/Audience",
+      "description": "Exact permitted recipients."
+    },
+    "content": {
+      "$ref": "#/$defs/AccessConfiguration",
+      "description": "The complete published configuration."
+    },
+    "delivery": {
+      "$ref": "#/$defs/DeliveryPermission",
+      "description": "Issuer permission, not evidence of actual transport."
+    },
+    "expiresAt": {
+      "description": "Exclusive expiry in Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "id": {
+      "description": "Policy identity, never a second independently versioned configuration.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "issuedAt": {
+      "description": "Server issue time in Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "managedFields": {
+      "description": "Only these client groups may acquire managed locks.",
+      "items": {
+        "$ref": "#/$defs/ConfigurationField"
+      },
+      "type": "array"
+    },
+    "native": {
+      "$ref": "#/$defs/NativeExpectation",
+      "description": "Expectations consumed by platform export generators."
+    },
+    "operationId": {
+      "description": "Original export operation; also the immutable artifact identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "revision": {
+      "description": "Policy publication CAS revision.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "serviceId": {
+      "description": "Installation identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "tenant": {
+      "description": "Owning tenant.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "trustRevision": {
+      "description": "Exact signing trust revision, independent from Policy revision.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "version": {
+      "description": "Immutable Policy version.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "serviceId",
+    "tenant",
+    "id",
+    "version",
+    "revision",
+    "trustRevision",
+    "operationId",
+    "audience",
+    "delivery",
+    "managedFields",
+    "issuedAt",
+    "expiresAt",
+    "content",
+    "native"
+  ],
+  "title": "Configuration",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/Configuration"
+}

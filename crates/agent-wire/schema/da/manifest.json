@@ -32,6 +32,18 @@
     {
       "type": "SignedConfiguration",
       "file": "signed-configuration-v1.schema.json"
+    },
+    {
+      "type": "Configuration",
+      "file": "configuration-v1.schema.json"
+    },
+    {
+      "type": "StatusReport",
+      "file": "status-report-v1.schema.json"
+    },
+    {
+      "type": "ApplicationReport",
+      "file": "application-report-v1.schema.json"
     }
   ]
 }
