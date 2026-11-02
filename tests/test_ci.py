@@ -57,10 +57,10 @@ class DependencyPolicy(unittest.TestCase):
         data['packages'][-2:-2] = extra
         for node in data['resolve']['nodes']:
             node['deps'] = []
-        next((n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-app'))['deps'] = [{'pkg': name} for name in ci.IDENTITY_PACKAGES | {'rss-mdm-audit-integration', 'rss-mdm-backend-postgres-support'}]
+        next((n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-app'))['deps'] = [{'pkg': name} for name in ci.IDENTITY_PACKAGES | {'rss-mdm-audit-integration'}]
         data['resolve']['nodes'][-2:-2] = [{'id': p['id'], 'features': [], 'deps': []} for p in extra]
         next((n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-software-service'))['deps'] = [{'pkg': 'rss-mdm-audit-integration'}]
-        for owner in ['rss-mdm-device-access-postgres','rss-mdm-device-access-runtime','rss-mdm-group-service','rss-mdm-compliance-service','rss-mdm-script-service', 'rss-mdm-task-trust', 'rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',  'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']:
+        for owner in ['rss-da-app','rss-mdm-device-access-postgres','rss-mdm-device-access-runtime','rss-mdm-group-service','rss-mdm-compliance-service','rss-mdm-script-service', 'rss-mdm-task-trust', 'rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',  'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']:
             next((n for n in data['resolve']['nodes'] if n['id'] == owner))['deps'].append({'pkg': 'rss-mdm-audit-integration'})
         for kind in ('policy', 'resource', 'software-release'):
             next((n for n in data['resolve']['nodes'] if n['id'] == f'rss-mdm-{kind}-postgres'))['deps'].append({'pkg': 'rss-mdm-backend-postgres-support'})
@@ -68,12 +68,8 @@ class DependencyPolicy(unittest.TestCase):
         agent = next(n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-agent-channel')
         edge = {'pkg': 'rss-mdm-backend-postgres-support', 'dep_kinds': [{'kind': 'dev'}]}
         agent['deps'].append(edge)
-        ci.verify_backend_support(data)
-        for kinds in ([], [{'kind': None}], [{'kind': 'dev'}, {'kind': 'build'}]):
-            edge['dep_kinds'] = kinds
-            with self.subTest(backend_support_kinds=kinds):
-                with self.assertRaisesRegex(RuntimeError, 'only in tests'):
-                    ci.verify_backend_support(data)
+        with self.assertRaisesRegex(RuntimeError, 'only backend adapters'):
+            ci.verify_backend_support(data)
         agent['deps'].pop()
         other = next(n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-task-trust')
         other['deps'].append({'pkg': edge['pkg'], 'dep_kinds': [{'kind': 'dev'}]})
@@ -335,3 +331,17 @@ class WorkingTreeStability(unittest.TestCase):
                     self.assertNotEqual(state, updated)
                     state = updated
                 self.assertEqual(state, ci.working_source_state())
+
+
+class StandaloneDaBoundary(unittest.TestCase):
+    def test_production_closure_excludes_mdm_runtime_but_allows_test_consumers(self):
+        names = ['rss-da-app', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel']
+        graph = {'packages': [{'id': n, 'name': n} for n in names],
+                 'resolve': {'nodes': [{'id': n, 'deps': []} for n in names]}}
+        app, ingress, agent = graph['resolve']['nodes']
+        app['deps'].append({'pkg': ingress['id'], 'dep_kinds': [{'kind': None}]})
+        ingress['deps'].append({'pkg': agent['id'], 'dep_kinds': [{'kind': 'dev'}]})
+        ci.verify_da_host(graph)
+        ingress['deps'][0]['dep_kinds'] = [{'kind': None}]
+        with self.assertRaisesRegex(RuntimeError, 'standalone DA depends on MDM/Agent runtime'):
+            ci.verify_da_host(graph)

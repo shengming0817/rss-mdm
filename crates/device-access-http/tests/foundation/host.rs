@@ -2,17 +2,21 @@
 use super::*;
 use std::{os::unix::fs::PermissionsExt, path::Path};
 
-fn private(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn private(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::write(path, bytes)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
+pub struct InstalledHost {
+    pub runtime_file: std::path::PathBuf,
+    pub accounts: Vec<rss_da_app::maintenance::OriginalAccount>,
+}
 pub async fn verify(
     c: &Context,
     m: &material::Material,
     registration: &registration::agent::da::RegistrationService,
-) -> Result<()> {
+) -> Result<InstalledHost> {
     let management: Uuid =
         sqlx::query_scalar("SELECT management_tenant_id FROM rss_da.authorization_installation")
             .fetch_one(&c.operator)
@@ -58,21 +62,32 @@ pub async fn verify(
     private(&password_file, password.as_bytes())?;
     let principal = Uuid::new_v4();
     let login = format!("host-{}", principal.simple());
-    rss_da_app::maintenance::account(
-        rss_da_app::maintenance::Account {
-            runtime_file: runtime_file.clone(),
-            maintenance_database: serde_json::from_value(serde_json::to_value(
-                c.inputs.database("da_identity_maintenance"),
-            )?)?,
-            tenant: management,
-            principal,
-            login: login.clone(),
-            password_file,
-            operation_id: Uuid::new_v4(),
-        },
-        rss_da_app::maintenance::AccountOperation::Initialize,
-    )
-    .await?;
+    let tenants = [management, Uuid::parse_str(&c.tenant.to_string())?];
+    for tenant in tenants {
+        rss_da_app::maintenance::account(
+            rss_da_app::maintenance::Account {
+                runtime_file: runtime_file.clone(),
+                maintenance_database: serde_json::from_value(serde_json::to_value(
+                    c.inputs.database("da_identity_maintenance"),
+                )?)?,
+                tenant,
+                principal,
+                login: login.clone(),
+                password_file: password_file.clone(),
+                operation_id: Uuid::new_v4(),
+            },
+            rss_da_app::maintenance::AccountOperation::Initialize,
+        )
+        .await?;
+    }
+    let mut damaged = value.clone();
+    damaged["browser"]["private_key_file"] = serde_json::json!(m.directory.join("device1.key"));
+    assert!(
+        rss_da_app::maintenance::diagnose(serde_json::from_value(damaged)?)
+            .await
+            .is_err()
+    );
+    rss_da_app::maintenance::diagnose(rss_da_app::config::load(&runtime_file)?).await?;
     drop((browser, protocol));
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let config = rss_da_app::config::load(&runtime_file)?;
@@ -120,13 +135,40 @@ pub async fn verify(
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let session: serde_json::Value = response.json().await?;
         assert_eq!(session["identity"], signed_in["identity"]);
+        transport::slow_body(m, &origin, c.tenant).await?;
+        let response = client
+            .post(format!(
+                "{origin}/api/v1/identity/tenants/{}/login",
+                c.tenant
+            ))
+            .header("origin", &origin)
+            .header("x-identity-request", "1")
+            .json(&serde_json::json!({"login":login,"password":password}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let cookie = response
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()?
+            .split(';')
+            .next()
+            .unwrap();
+        let response = client
+            .get(format!("{origin}/api/v1/da/pki/da_device/trust"))
+            .header("cookie", cookie)
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let observed: rss_mdm_agent_wire::pki::Trust = response.json().await?;
+        assert_eq!(observed.purpose, rss_mdm_agent_wire::pki::Purpose::DaDevice);
         Ok::<(), anyhow::Error>(())
     }
     .await;
     let _ = stop.send(());
-    let shutdown = tokio::time::timeout(Duration::from_secs(50), running).await???;
+    tokio::time::timeout(Duration::from_secs(50), running).await???;
     result?;
-    let _ = shutdown;
     assert!(
         tokio::net::TcpStream::connect(browser_address)
             .await
@@ -137,5 +179,16 @@ pub async fn verify(
             .await
             .is_err()
     );
-    Ok(())
+    Ok(InstalledHost {
+        runtime_file,
+        accounts: tenants
+            .into_iter()
+            .map(|tenant| rss_da_app::maintenance::OriginalAccount {
+                tenant,
+                principal,
+                login: login.clone(),
+                password_file: password_file.clone(),
+            })
+            .collect(),
+    })
 }

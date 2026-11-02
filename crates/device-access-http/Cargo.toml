@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 autotests = false
 [dependencies]
+rss-mdm-pki-service.workspace = true
 rss-mdm-windows-mdm.workspace = true
 webauthn-rs-proto.workspace = true
 base64.workspace = true
@@ -62,7 +63,6 @@ time.workspace = true
 reqwest = {workspace = true, features=["json"]}
 sha2.workspace = true
 tower.workspace = true
-rss-mdm-pki-service.workspace = true
 rss-mdm-device-trust.workspace = true
 rss-mdm-native-protection.workspace = true
 rss-mdm-query.workspace = true

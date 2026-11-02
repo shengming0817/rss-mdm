@@ -321,6 +321,7 @@ pub async fn verify_standalone_access(
     rss_mdm_install_support::verify_manifest(c, DA, &standalone_units(ledger)).await?;
     verify_catalog(c).await?;
     let mut contracts = access_contracts();
+    contracts.push(r#"{"tables":[],"functions":[],"external_relations":["public.da_restore_operation"],"verified_schemas":[]}"#);
     if ledger {
         contracts.push(r#"{"tables":[],"functions":[{"name":"rss_ledger.prepare_append","search_path":"search_path=pg_catalog, rss_ledger"},{"name":"rss_ledger.insert_entry","search_path":"search_path=pg_catalog, rss_ledger"}],"external_relations":["rss_ledger.heads","rss_ledger.entries"],"verified_schemas":[]}"#);
     }

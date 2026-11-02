@@ -21,6 +21,7 @@ struct Node {
 struct Tree {
     source: PathBuf,
     nodes: Vec<Node>,
+    excluded: Vec<PathBuf>,
 }
 fn absolute(path: &Path) -> Result<()> {
     if !path.is_absolute()
@@ -90,14 +91,29 @@ fn copy(source: &Path, target: &Path) -> Result<()> {
         .map_err(|_| Error::Storage)
 }
 pub fn capture(journal: &Journal, name: &str, source: &Path) -> Result<()> {
+    capture_excluding(journal, name, source, &[])
+}
+/// Exclude host-owned mutable checkpoints, never silently overwrite them during restore.
+pub fn capture_excluding(
+    journal: &Journal,
+    name: &str,
+    source: &Path,
+    excluded: &[PathBuf],
+) -> Result<()> {
     absolute(source)?;
+    for path in excluded {
+        relative(path)?;
+        if path.as_os_str().is_empty() {
+            return Err(Error::Input);
+        }
+    }
     let archive = journal.path(name)?;
     if archive.starts_with(source) || source.starts_with(&archive) {
         return Err(Error::Input);
     }
     let manifest = format!("{name}.json");
     if let Some(tree) = journal.load::<Tree>(&manifest)? {
-        if tree.source != source {
+        if tree.source != source || tree.excluded != excluded {
             return Err(Error::Conflict);
         }
         return verify(&archive, &tree);
@@ -132,6 +148,9 @@ pub fn capture(journal: &Journal, name: &str, source: &Path) -> Result<()> {
                 continue;
             }
             let path = path.join(entry.file_name());
+            if excluded.contains(&path) {
+                continue;
+            }
             relative(&path)?;
             let metadata = std::fs::symlink_metadata(entry.path()).map_err(|_| Error::Storage)?;
             if metadata.is_dir() {
@@ -158,6 +177,7 @@ pub fn capture(journal: &Journal, name: &str, source: &Path) -> Result<()> {
     }
     nodes.sort_by(|a, b| a.relative.cmp(&b.relative));
     let tree = Tree {
+        excluded: excluded.to_vec(),
         source: source.into(),
         nodes,
     };

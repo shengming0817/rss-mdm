@@ -112,6 +112,7 @@ Ok(())
 /// Assemble without binding network listeners;
 // teardown uses the same resource owner as serving.
 pub async fn diagnose(config: Config) -> Result<()> {
+    host::validate_tls(&config)?;
     let mut scope = LifecycleScope::<(), Error, std::io::Error>::try_new(
         TotalDrainBudget::new(Duration::from_secs(30)).map_err(|_| Error::Lifecycle)?,
         Arc::new(host::Timer),

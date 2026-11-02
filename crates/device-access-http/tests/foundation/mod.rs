@@ -8,6 +8,7 @@ mod host;
 mod installation;
 mod material;
 mod platform;
+mod recovery;
 mod reports;
 mod transport;
 use anyhow::Result;
@@ -33,7 +34,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     admission::verify_and_reject_drift(&c).await?;
     let material = material::Material::new(&c).await?;
     let registration = material.assemble(&c).await?;
-    host::verify(&c, &material, &registration).await?;
+    let installed_host = host::verify(&c, &material, &registration).await?;
     let token = material::administrator(&c).await?;
     let proof = c
         .sessions
@@ -570,8 +571,9 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     );
     next_server.shutdown().await?;
     server.shutdown().await?;
-    drop(material);
     c.close().await;
+    recovery::verify(&c.inputs, &material, installed_host).await?;
+    drop(material);
     Ok(())
 }
 

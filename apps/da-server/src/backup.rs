@@ -197,6 +197,8 @@ pub async fn capture(input: Request) -> Result<()> {
         archive::verify(&journal, progress.digest.as_deref().ok_or(Error::Storage)?)
             .map_err(storage)?;
 
+        root.save("backup-operation.json", &Option::<Uuid>::None)
+            .map_err(storage)?;
         println!(
             "{}",
             serde_json::to_string(&progress).map_err(|_| Error::Storage)?
@@ -263,10 +265,11 @@ pub async fn capture(input: Request) -> Result<()> {
                 )
                 .map_err(storage)?;
 
-            snapshot_tree::capture(
+            snapshot_tree::capture_excluding(
                 &journal,
                 "installation",
                 &frozen.request.installation_directory,
+                &[PathBuf::from("backup-operation.json")],
             )
             .map_err(storage)?;
 
@@ -385,7 +388,7 @@ pub async fn restore(input: Restore) -> Result<()> {
    if !empty{return Err(Error::Admission)}
    let mut tx=c.begin().await.map_err(|_|Error::Storage)?;
 
-   sqlx::raw_sql("CREATE TABLE public.da_restore_operation(singleton boolean PRIMARY KEY CHECK(singleton),operation uuid NOT NULL,manifest text NOT NULL,baseline_verified boolean NOT NULL DEFAULT false,complete boolean NOT NULL DEFAULT false); REVOKE ALL ON public.da_restore_operation FROM PUBLIC;").execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+   sqlx::raw_sql("CREATE TABLE public.da_restore_operation(singleton boolean PRIMARY KEY CHECK(singleton),operation uuid NOT NULL,manifest text NOT NULL,baseline_verified boolean NOT NULL DEFAULT false,complete boolean NOT NULL DEFAULT false); REVOKE ALL ON public.da_restore_operation FROM PUBLIC; GRANT SELECT(complete) ON public.da_restore_operation TO da_access;").execute(&mut *tx).await.map_err(|_|Error::Storage)?;
 
    sqlx::query("INSERT INTO public.da_restore_operation(singleton,operation,manifest) VALUES(true,$1,$2)").bind(input.operation_id).bind(&input.backup_manifest_sha256).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
 tx.commit().await.map_err(|_|Error::Storage)?;

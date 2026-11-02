@@ -18,6 +18,7 @@ pub struct Services {
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub business: Arc<crate::device_access::Services>,
+    pub pki: Arc<crate::pki::HttpState>,
     pub platform: Arc<crate::platform_sso::HttpState>,
     pub origin: String,
     pub host: String,
@@ -27,10 +28,11 @@ pub struct Services {
 pub fn router(state: Option<&Arc<Services>>) -> Router<(), impl Declaration + use<>> {
     let business = state.map(|s| s.business.clone());
     let platform = state.map(|s| s.platform.clone());
-    rss_mdm_http_contract::route_module! {struct Management for [Browser]{access [optional],administration}}
+    rss_mdm_http_contract::route_module! {struct Management for [Browser]{access [optional],administration,pki}}
     let management = Management {
         access: crate::device_access::mount(business.clone(), true),
         administration: crate::administration::routes().bind_with(business.as_ref(), Arc::clone),
+        pki: crate::pki::routes().bind_with(state.map(|s| &s.pki), Arc::clone),
     }
     .assemble();
     rss_mdm_http_contract::route_module! {struct Protected for [Browser]{management at "/api/v1",platform}}
@@ -147,7 +149,29 @@ async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next)
         let mut response = if invalid {
             Error::Malformed.into_response()
         } else {
-            next.run(request).await
+            let (parts, body) = request.into_parts();
+            match tokio::time::timeout(Duration::from_secs(5), axum::body::to_bytes(body, 131072))
+                .await
+            {
+                Ok(Ok(body)) => {
+                    next.run(Request::from_parts(parts, axum::body::Body::from(body)))
+                        .await
+                }
+                failed => {
+                    let mut response = if failed.is_err() {
+                        Error::Classified(
+                            rss_mdm_audit_integration::completion::ResponseFailure::Deadline,
+                        )
+                    } else {
+                        Error::RequestTooLarge
+                    }
+                    .into_response();
+                    response
+                        .headers_mut()
+                        .insert("connection", axum::http::HeaderValue::from_static("close"));
+                    response
+                }
+            }
         };
         let failure = response
             .extensions()

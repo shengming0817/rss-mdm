@@ -29,4 +29,8 @@ services:
         source: ${DA_INSTALLATION_ROOT:?}
         target: ${DA_INSTALLATION_ROOT:?}
         bind: {create_host_path: false}
+      - type: bind
+        source: ${DA_ARCHIVE_ROOT:?}
+        target: ${DA_ARCHIVE_ROOT:?}
+        bind: {create_host_path: false}
     restart: "no"

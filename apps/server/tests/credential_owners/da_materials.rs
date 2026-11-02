@@ -337,6 +337,8 @@ pub(super) async fn verify(
         agent,
         &binding,
         protection.clone(),
+        &task,
+        &escrow,
     ))
     .await
     .context("recover access and credential runs using their actual owners")?;
@@ -388,6 +390,8 @@ async fn verify_access_recovery(
     agent: &DevicePrincipal,
     binding: &access::Binding,
     protection: Arc<recovery::Protection>,
+    task: &w::AccessTaskSpec,
+    escrow: &w::CredentialEscrow,
 ) -> Result<()> {
     use access::execution;
     use rss_mdm_task_state::{Cancellation, Execution, RunState};
@@ -449,8 +453,15 @@ async fn verify_access_recovery(
             revoked_da_credential_id,
             retirement_credential_id,
         ],
-    ) = credential_runs(
-        c, agent, binding, protection, &runtime, &audit, &original, at,
+    ) = credential_runs::<3>(
+        c,
+        agent,
+        binding,
+        protection.clone(),
+        &runtime,
+        &audit,
+        &original,
+        at,
     )
     .await
     .context("prepare the RSS credential execution owner and frozen run")?;
@@ -506,13 +517,6 @@ async fn verify_access_recovery(
         Cancellation::None,
         "RSS credential recovery also reads transport registration from the Agent owner"
     );
-    // Disabled DA converges existing tasks before transport retirement, without touching MDM ownership.
-    let service = service.settlement_only();
-    let credential = credential.settlement_only();
-    let disabled = recover(c, &runtime, &audit, &service, id).await?;
-    assert_ne!(disabled.cancellation, Cancellation::None);
-    let disabled = recover_credential(c, &runtime, &audit, &credential, credential_id).await?;
-    assert_ne!(disabled.cancellation, Cancellation::None);
     let mut setup = seed(c).await?;
     sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1 AND id=$2")
         .bind(binding.tenant)
@@ -582,6 +586,123 @@ async fn verify_access_recovery(
     ))
     .await
     .context("retire the RSS credential run using its frozen DA authority")?;
+    // Independent disabled-host state leaves the enabled revocation proofs above meaningful.
+    let (disabled_credential, [disabled_id]) = credential_runs::<1>(
+        c, agent, binding, protection, &runtime, &audit, &original, at,
+    )
+    .await?;
+    let disabled_credential = disabled_credential.settlement_only();
+    assert_eq!(
+        recover_credential(c, &runtime, &audit, &disabled_credential, disabled_id)
+            .await?
+            .cancellation,
+        Cancellation::Confirmed
+    );
+    let mut started = RunState::new(task.deadline, at)?;
+    started.claim(task.attempt_id, at)?;
+    started.received(task.attempt_id, at)?;
+    started.start(task.attempt_id, at)?;
+    let payload = w::TaskPayload::DeviceAccess(Box::new(task.clone()));
+    let signing = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[91; 32])
+        .map_err(|_| anyhow::anyhow!("test signing key"))?;
+    let signature = signing.sign(&payload.signing_bytes("disabled-host-proof")?);
+    let signed = w::SignedTask {
+        payload,
+        key_id: "disabled-host-proof".into(),
+        signature: URL_SAFE_NO_PAD.encode(signature.as_ref()),
+    };
+    let mut setup = seed(c).await?;
+    sqlx::query("INSERT INTO rss_da.access_runs(tenant_id,id,policy_version,origin,access_binding,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint) VALUES($1,$2,$3,'\"policy\"',$4,$5,$6,$7,$8,$9,$9,$10,$11,$12)")
+        .bind(binding.tenant).bind(task.task_id).bind(binding.policy_version).bind(serde_json::to_value(binding)?)
+        .bind(agent.device()).bind(agent.registration()).bind(agent.generation()).bind("disabled-started-proof")
+        .bind(at).bind(task.deadline).bind(serde_json::to_value(started)?).bind(vec![17_u8;32]).execute(&mut *setup).await?;
+    sqlx::query("INSERT INTO mdm_agent.task_attempts(tenant_id,id,run,registration,claimed_at,offer,permit,deadline) VALUES($1,$2,$3,$4,$5,$6,$6,$7)")
+        .bind(binding.tenant).bind(task.attempt_id).bind(task.task_id).bind(agent.registration()).bind(at)
+        .bind(serde_json::to_value(signed)?).bind(task.deadline).execute(&mut *setup).await?;
+    let context: serde_json::Value = sqlx::query_scalar(
+        "SELECT execution_context FROM mdm_agent.bindings WHERE tenant_id=$1 AND registration=$2",
+    )
+    .bind(binding.tenant)
+    .bind(agent.registration())
+    .fetch_one(&mut *setup)
+    .await?;
+    setup.commit().await?;
+    let context: w::SoftwareExecutionContext = serde_json::from_value(context)?;
+    let service = service.settlement_only();
+    let disabled = recover(c, &runtime, &audit, &service, task.task_id).await?;
+    assert_eq!(disabled.execution, Execution::Running);
+    assert_eq!(disabled.cancellation, Cancellation::Requested);
+    let count = material_count(c, binding.tenant).await?;
+    for event in [
+        w::TaskEvent::Start,
+        w::TaskEvent::CredentialEscrow(escrow.clone()),
+        w::TaskEvent::DeviceAccessResult(w::AccessResult {
+            binding_id: binding.id,
+            binding_generation: binding.generation,
+            revision: binding.revision,
+            definition_digest: task.definition_digest,
+            effect: binding.effect.clone().unwrap(),
+        }),
+    ] {
+        let start = matches!(event, w::TaskEvent::Start);
+        let escrow = matches!(event, w::TaskEvent::CredentialEscrow(_));
+        let input =
+            w::TaskEventRequest::new(Uuid::new_v4(), task.attempt_id, event, context.clone())?;
+        let request = rss_mdm_audit_integration::RequestAudit::new(
+            StorageProfile::Da,
+            c.tenant.to_string(),
+            "disabled-host-settlement",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        let result = execution::transaction::run(
+            &audit,
+            &runtime,
+            c.tenant,
+            &request,
+            (&service, agent, task.task_id, &input, &request, &audit),
+            |(service, agent, id, input, request, audit), tx| {
+                Box::pin(async move {
+                    let effects = service
+                        .agent_event_in(tx, agent, *id, input, request)
+                        .await?;
+                    audit.append_in(tx, &effects.fact).await?;
+                    Ok(effects.credentials)
+                })
+            },
+        )
+        .await;
+        if start {
+            assert!(matches!(result, Err(execution::Error::Forbidden)));
+        } else if escrow {
+            assert_eq!(
+                result?,
+                vec![
+                    binding
+                        .applied_windows
+                        .as_ref()
+                        .and_then(|v| match v {
+                            w::AccessWindowsFacts::RssFactor(f) => Some(f.recovery.clone()),
+                            _ => None,
+                        })
+                        .unwrap()
+                ]
+            );
+        } else {
+            result?;
+        }
+    }
+    let state: serde_json::Value =
+        sqlx::query_scalar("SELECT state FROM rss_da.access_runs WHERE tenant_id=$1 AND id=$2")
+            .bind(binding.tenant)
+            .bind(task.task_id)
+            .fetch_one(&c.operator)
+            .await?;
+    assert_eq!(
+        serde_json::from_value::<RunState>(state)?.execution,
+        Execution::Succeeded
+    );
+    assert_eq!(material_count(c, binding.tenant).await?, count);
+    drop(disabled_credential);
     drop(service);
     drop(credential);
     runtime.close().await;
@@ -592,7 +713,7 @@ async fn verify_access_recovery(
     clippy::too_many_arguments,
     reason = "reuse one real Agent, DA binding and original worker transaction resources"
 )]
-async fn credential_runs(
+async fn credential_runs<const N: usize>(
     c: &Context,
     agent: &DevicePrincipal,
     binding: &access::Binding,
@@ -601,7 +722,7 @@ async fn credential_runs(
     audit: &Arc<rss_mdm_audit_integration::AuditStore>,
     state: &serde_json::Value,
     at: i64,
-) -> Result<(recovery::tasks::Service, [Uuid; 3])> {
+) -> Result<(recovery::tasks::Service, [Uuid; N])> {
     use recovery::tasks;
     let product = Arc::new(pg::recovery::eligibility::AccessEligibility { admission: None });
     let service = tasks::Service::new(
@@ -673,7 +794,7 @@ async fn credential_runs(
     };
     // Independent policies keep each revocation/retirement proof on a fresh run. A committed
     // cancellation and its deterministic Audit receipt must never be reset for another scenario.
-    let ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    let ids = std::array::from_fn(|_| Uuid::new_v4());
     let definition = serde_json::to_value(definition)?;
     let frozen = serde_json::to_value(frozen)?;
     let anchor = recovery::Binding {

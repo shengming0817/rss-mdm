@@ -196,6 +196,19 @@ pub async fn assemble(
         .map_err(|_| Error::Storage)?;
 
     acquire(DynManagedResource::new_box(Pool(pool.clone())));
+    // CONNECT is temporarily available to the verifier; incomplete restore never admits a host.
+    let restoring: bool =
+        sqlx::query_scalar("SELECT to_regclass('public.da_restore_operation') IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| Error::Storage)?;
+    if restoring {
+        let complete: bool = sqlx::query_scalar("SELECT count(complete)=1 AND coalesce(bool_and(complete),false) FROM public.da_restore_operation")
+            .fetch_one(&pool).await.map_err(|_|Error::Admission)?;
+        if !complete {
+            return Err(Error::Admission);
+        }
+    }
 
     let transactions = runtime(&config.database, &config.installation).await?;
 
@@ -580,7 +593,7 @@ pub async fn assemble(
     });
 
     let business = Arc::new(http::device_access::Services {
-        cursor,
+        cursor: cursor.clone(),
         recovery,
         registration: runtime.business.clone(),
         admission: runtime.admission.clone(),
@@ -588,6 +601,11 @@ pub async fn assemble(
     });
 
     let state = Arc::new(http::browser::Services {
+        pki: Arc::new(http::pki::HttpState {
+            registry: pki.clone(),
+            cursor: cursor.clone(),
+            clock: Arc::new(Timer),
+        }),
         identity,
         authorization: authorization.clone(),
         audit: audit.clone(),
@@ -677,6 +695,16 @@ fn certificates(
     .map_err(|_| Error::Configuration)?;
 
     Ok((chain, key))
+}
+pub(crate) fn validate_tls(config: &Config) -> Result<()> {
+    for listener in [&config.browser, &config.registration.listener] {
+        let (chain, key) = certificates(listener)?;
+        tokio_rustls::rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .map_err(|_| Error::Configuration)?;
+    }
+    Ok(())
 }
 fn http_policy() -> Result<rss_axum::Http1ServePolicy> {
     rss_axum::Http1ServePolicy::new(

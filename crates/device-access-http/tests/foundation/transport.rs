@@ -16,6 +16,9 @@ use tokio_rustls::{
     },
 };
 async fn connect(material: &Material, server: &Server) -> Result<TlsStream<TcpStream>> {
+    connect_origin(material, &server.origin).await
+}
+async fn connect_origin(material: &Material, origin: &str) -> Result<TlsStream<TcpStream>> {
     let mut roots = RootCertStore::empty();
     for certificate in
         CertificateDer::pem_file_iter(material.directory.join("task-trust-ca/ca.pem"))?
@@ -27,8 +30,7 @@ async fn connect(material: &Material, server: &Server) -> Result<TlsStream<TcpSt
             .with_root_certificates(roots)
             .with_no_client_auth(),
     ));
-    let address = server
-        .origin
+    let address = origin
         .trim_start_matches("https://")
         .split('/')
         .next()
@@ -73,5 +75,18 @@ pub async fn bounded_connections(material: &Material, server: &Server) -> Result
     )
     .await??;
     assert!(response.status().is_success());
+    Ok(())
+}
+
+pub async fn slow_body(
+    material: &Material,
+    origin: &str,
+    tenant: rss_request_context::TenantId,
+) -> Result<()> {
+    let mut peer = connect_origin(material, origin).await?;
+    peer.write_all(format!("POST /api/v1/apple/platform-sso/{tenant}/token HTTP/1.1\r\nHost: {}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 100\r\n\r\na=",origin.trim_start_matches("https://")).as_bytes()).await?;
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(8), peer.read_to_end(&mut response)).await??;
+    assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 503"));
     Ok(())
 }

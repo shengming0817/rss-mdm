@@ -12,7 +12,7 @@ use axum::{
 };
 use boundary::Administrator;
 pub use error::Error;
-use rss_mdm_agent_wire::{da, enroll, pki, task_trust};
+use rss_mdm_agent_wire::{da, enroll, pki as wire_pki, task_trust};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_certificate::ClientCertificateEvidence;
 use rss_mdm_http_contract::{
@@ -265,7 +265,7 @@ async fn revoke(
 async fn pki_trust(
     State(s): State<Arc<Services>>,
     tls: Option<Extension<ClientCertificateEvidence>>,
-) -> Result<Json<pki::Trust>, Error> {
+) -> Result<Json<wire_pki::Trust>, Error> {
     Ok(Json(
         s.registrations
             .device_trust(tls.as_ref().map(|v| &v.0))
@@ -276,7 +276,7 @@ async fn pki_ack(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     tls: Option<Extension<ClientCertificateEvidence>>,
-    v: Body<pki::Acknowledgement>,
+    v: Body<wire_pki::Acknowledgement>,
 ) -> Result<(), Error> {
     s.registrations
         .acknowledge_trust(&peer(tls)?, &body(v)?, &a)
@@ -419,6 +419,7 @@ pub struct Business {
 }
 
 pub mod exports;
+pub mod pki;
 
 /// Offline projection from the exact DA production declarations.
 pub fn contract() -> Result<serde_json::Value, Error> {
