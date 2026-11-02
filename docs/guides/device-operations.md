@@ -154,7 +154,7 @@ recoveryVersion，必须仍处于原自动投递窗口；`POST /deliveries/{id}/
 
 `GET /api/v1/devices/{device}/device-access` 使用统一 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；`GET /devices/{device}/device-access/bindings/{id}` 读取单条绑定。企业配置目录 `/device-access/enterprise/configuration` 使用同一查询语法，但独立字段目录为 `id/kind/value`，详情为 `/configuration/{id}`。恢复凭据 `/devices/{device}/recovery-credentials` 同样返回元数据分页，秘密仍只通过专用授权披露操作取得。三类游标签名绑定资源、租户、主体、权限、设备（设备级资源）和数据版本；查询、权限或源数据变化后重新开始，不接受旧 `after/afterId/afterVersion` 参数。
 `PUT /api/v1/devices/{device}/device-access/bindings/{id}` 使用 operationId、expectedRevision 和
-`put`/`unbind`/`reset_factors` 动作；新绑定 revision 为 0。Put 指定同一 Identity 实例的 principal、已分配 policy，
+`put`/`unbind`/`reset_factors` 动作；新绑定 revision 为 0。Put 指定同一 Identity 实例的 principal、当前匹配的 DA policy，
 以及 existing 稳定账号或 create 平台/账号名。已有绑定换本地目标须新增绑定，不根据名称接管。
 后续变更和读取要求当前设备 AccountWrite 权限；只持有本机管理员权限不能调用。
 写入前向 `/device-access/bindings/{id}/step-up` POST 同一业务正文，完成 Identity WebAuthn authenticate 后携带用途绑定的 operation cookie 写入。证明先于产品锁消费，并与绑定、回执和审计同事务结算。业务摘要不包含 proof handle；成功后精确重试先返回同操作者的原回执，不额外消费证明。摘要不符返回冲突。
@@ -162,8 +162,12 @@ recoveryVersion，必须仍处于原自动投递窗口；`POST /deliveries/{id}/
 
 `unbind` 必须明确 `disposition: keep|disable|standard`；通常选择 keep 保留账号状态，禁用和降权由管理员显式选择。三种处置均不删除账号或数据。任务摘要绑定该意图，只有一致的原生回读结果才推进 appliedRevision。
 
-Policy action `device_access` 持有 selfEnrollment、可选 role（standard/administrator）、mac 登录配置与 Windows 机制配置（`windows.kind=disabled|rss_factor|whfb`）；沿用 Scope 分配、
-排除和 Policy 启停。role 为 null 时保留已有账号权限，新账号默认 standard。
+通过 `POST /api/v1/device-access/configurations` 发布 DA 配置，目标仅支持租户默认
+（`target.kind=tenant_default`）或单台 DA 设备覆盖（`target.kind=device`，`target.device` 为 DA 设备 ID）。
+设备覆盖优先；禁用覆盖会阻止回退到租户默认。当前入口不使用 MDM Scope 分配、排除或 Group；
+完整配置/状态闭环及 MDM 强制配置优先级由 #3129 承接。
+配置持有 selfEnrollment、可选 role（standard/administrator）、mac 登录配置与 Windows 机制配置（`windows.kind=disabled|rss_factor|whfb`）。
+role 为 null 时保留已有账号权限，新账号默认 standard。
 `rss_factor` 必须提供非空 `accounts` 来源集合（local/active_directory/entra）；`whfb` 固定纯 Entra joined、TPM 2.0 与 PIN，不能配置本地/AD 账号或创建目录账号。变更机制先完成原绑定退役，再建立新绑定；不自动迁移凭据。
 serverState、receivedRevision、appliedRevision、effect 各自表达不同事实。
 普通配置和角色更新只增加 revision；重新关联人员增加绑定代际及因子世代，Windows 的 `reset_factors` 显式增加因子世代。

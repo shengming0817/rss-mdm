@@ -269,7 +269,7 @@ let scope_group_health=Arc::new(crate::scope_group_changes::Health::default());
                         .map_err(|error| ProcessError::at("startup.identity", error))?;
                         let da=Arc::new(crate::assembly::device_access::open(&compiled.config,&identity,&access.authorization_store(),protection.clone(),&cursor_key,|resource|startup.stage_resource(resource)).await.map_err(assembly_error)?);
                         if let Some(pki)=&da.pki {startup.stage_task_with_token(crate::device_pki::registration("da-device-pki-maintenance",pki.clone()));}
-                        if let Some(listener)=crate::assembly::device_access::listener(&compiled.config,&identity,&da).await.map_err(assembly_error)? {startup.stage_task_with_token(listener);}
+                        if let Some(listener)=crate::assembly::device_access::listener(&compiled.config,&identity,&da).await.map_err(assembly_error)? {startup.stage_task_with_token(listener.critical());}
                         let audit_budget =
                             rss_mdm_audit_integration::budget::AuditBudget::with_cancellation(
                                 Duration::from_secs(5),

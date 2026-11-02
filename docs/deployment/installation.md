@@ -272,7 +272,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 账户初始化、授权初始化和 serve 在后续工作前，通过受限数据库能力核验安装身份、当前期望 epoch 和租户状态，并提交永久 used 标记。标记不改变元数据版本，后续初始化或启动失败也不会恢复可删除性。删除与首次使用共用安装锁；先删除则使用被拒绝，先声明使用则删除返回 InUse。运行角色仅有该固定函数 EXECUTE，不能直接更新租户表。
 
-账户初始化输入另含 tenant_id、expected_epoch、principal_id、login、password_file；授权初始化沿用 user.tenantId，并显式提供 `expectedEpoch` 和 `profile`（`mdm` 或 `da`）；连接角色分别为 `mdm_access`、`da_access`。完整安装为同一 Identity 管理员分别初始化两份产品授权。两者从数据库核验登记及当前 epoch，使用各自受限角色。日常账户与 IdP 管理使用受保护 HTTP 接口。
+账户初始化输入另含 tenant_id、expected_epoch、principal_id、login、password_file；授权初始化沿用 user.tenantId，并显式提供 `expectedEpoch` 和 `profile:"mdm"`，使用 `mdm_access` 初始化宿主唯一授权来源，DA 同样读取此来源。账户与授权初始化分别使用各自受限角色，从数据库核验登记及当前 epoch。日常账户与 IdP 管理使用受保护 HTTP 接口。
 
 通过 `tenant-list` 找到 `management=true` 的唯一管理租户。部署方沿用现有 `initialize` 配置，把 tenant_id 填为该 ID、expected_epoch 填 1，显式创建初始账户；随后用同一账户执行 `initialize-authorization`，其 user.tenantId 也填该 ID。初始规则授予租户 CRUD、创建租户管理员、账户管理与授权读写，不授予设备业务权限。
 
