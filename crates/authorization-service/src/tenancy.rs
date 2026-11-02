@@ -42,7 +42,7 @@ impl InstallationTenants {
         permission: Permission,
     ) -> Result<(), Error> {
         proof.check_live()?;
-        if self.profile != proof.profile() {
+        if self.profile != proof.authority_profile() {
             return Err(Error::Forbidden);
         }
         self.require_identity(proof.instance_id(), proof.tenant_id(), permission)

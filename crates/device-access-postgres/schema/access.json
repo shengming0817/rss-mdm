@@ -237,6 +237,14 @@
     {
       "name": "rss_da.access_binding_ready",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.binding_application_current",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_da.platform_registration_matches",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [],

@@ -128,17 +128,17 @@ pub async fn list(
     let budget = AuditBudget::new(std::time::Duration::from_secs(3));
     store.read(tenant,&budget.control(),(p,codec,kind,q),|ctx,tx|Box::pin(async move {
         tx.with_connection_context(ctx,|(p,codec,kind,q),c|Box::pin(async move {
-            crate::lock_on(p.profile(), c,p.tenant_id(),p.instance_id()).await?;
-            let current=crate::snapshot_on(p.profile(), c,p.tenant_id(),p.instance_id()).await?;
+            crate::lock_on(p.authority_profile(), c,p.tenant_id(),p.instance_id()).await?;
+            let current=crate::snapshot_on(p.authority_profile(), c,p.tenant_id(),p.instance_id()).await?;
             current.require(p,kind.permission(),None)?;
             let group=match kind {Directory::Members(id)=>match current.groups.iter().find(|r|r.id==*id && r.value.is_some()) { Some(g)=>Some(g), None=>return Ok(None) },_=>None};
             let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?,group.map(|g|(g.id,g.revision)))).map_err(error)?;
             let after=q.after(codec,&binding).map_err(error)?;
             let (projection,table)=match kind {
-                Directory::Rules=>("jsonb_build_object('id',id,'revision',revision,'deleted',document IS NULL,'subjectKind',document->'subject'->>'kind','value',document)",crate::storage_profile::sql(p.profile()).directory_list_1),
-                Directory::Groups=>("jsonb_build_object('id',id,'revision',revision,'deleted',document IS NULL,'name',document->'name','enabled',document->'enabled','memberCount',jsonb_array_length(document->'members'),'value',CASE WHEN document IS NULL THEN NULL ELSE jsonb_build_object('name',document->'name','enabled',document->'enabled','memberCount',jsonb_array_length(document->'members')) END)",crate::storage_profile::sql(p.profile()).directory_list_2),
-                Directory::Members(_)=>("member",crate::storage_profile::sql(p.profile()).directory_list_3),
-                Directory::Keys=>("jsonb_build_object('id',id,'revision',revision,'authorityRevision',authority_revision,'credentialRevision',credential_revision,'name',metadata->'name','enabled',enabled,'expiresAt',expires_at,'metadata',metadata,'createdBy',created_by,'createdAt',created_at,'revoked',revoked)",crate::storage_profile::sql(p.profile()).directory_list_4)
+                Directory::Rules=>("jsonb_build_object('id',id,'revision',revision,'deleted',document IS NULL,'subjectKind',document->'subject'->>'kind','value',document)",crate::storage_profile::sql(p.authority_profile()).directory_list_1),
+                Directory::Groups=>("jsonb_build_object('id',id,'revision',revision,'deleted',document IS NULL,'name',document->'name','enabled',document->'enabled','memberCount',jsonb_array_length(document->'members'),'value',CASE WHEN document IS NULL THEN NULL ELSE jsonb_build_object('name',document->'name','enabled',document->'enabled','memberCount',jsonb_array_length(document->'members')) END)",crate::storage_profile::sql(p.authority_profile()).directory_list_2),
+                Directory::Members(_)=>("member",crate::storage_profile::sql(p.authority_profile()).directory_list_3),
+                Directory::Keys=>("jsonb_build_object('id',id,'revision',revision,'authorityRevision',authority_revision,'credentialRevision',credential_revision,'name',metadata->'name','enabled',enabled,'expiresAt',expires_at,'metadata',metadata,'createdBy',created_by,'createdAt',created_at,'revoked',revoked)",crate::storage_profile::sql(p.authority_profile()).directory_list_4)
             };
             let mut sql=sqlx::QueryBuilder::new(format!("SELECT row FROM (SELECT {projection} AS row FROM {table} WHERE tenant_id="));
             sql.push_bind(p.tenant_id().to_owned()).push("::uuid AND instance=").push_bind(p.instance_id().to_owned()).push("::uuid");
@@ -176,10 +176,15 @@ pub async fn detail(
             Box::pin(async move {
                 tx.with_connection_context(ctx, |(p, group, id), c| {
                     Box::pin(async move {
-                        crate::lock_on(p.profile(), c, p.tenant_id(), p.instance_id()).await?;
-                        let current =
-                            crate::snapshot_on(p.profile(), c, p.tenant_id(), p.instance_id())
-                                .await?;
+                        crate::lock_on(p.authority_profile(), c, p.tenant_id(), p.instance_id())
+                            .await?;
+                        let current = crate::snapshot_on(
+                            p.authority_profile(),
+                            c,
+                            p.tenant_id(),
+                            p.instance_id(),
+                        )
+                        .await?;
                         current.require(
                             p,
                             if *group {

@@ -188,8 +188,8 @@ pub(crate) async fn finish(
                     || !rss_mdm_registration_service::lifecycle::work_allowed_in(
                         rss_mdm_install_support::StorageProfile::Da,
                         c,
-                        &task.tenant_id.to_string(),
-                        &task.device_id,
+                        &access.tenant.to_string(),
+                        &access.device,
                     )
                     .await?
                 {
@@ -236,8 +236,8 @@ pub(crate) async fn unresolved(
                     || !rss_mdm_registration_service::lifecycle::work_allowed_in(
                         rss_mdm_install_support::StorageProfile::Da,
                         c,
-                        &task.tenant_id.to_string(),
-                        &task.device_id,
+                        &b.tenant.to_string(),
+                        &b.device,
                     )
                     .await?;
                 recovery

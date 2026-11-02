@@ -150,7 +150,7 @@ impl Registry {
             .map_err(db)?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true)").bind(p.tenant_id()).execute(&mut *tx).await.map_err(db)?;
         let auth = rss_mdm_authorization_service::snapshot_on(
-            self.profile(),
+            p.authority_profile(),
             &mut tx,
             p.tenant_id(),
             p.instance_id(),
@@ -174,7 +174,7 @@ impl Registry {
         p.check_live().map_err(|_| Error::Forbidden)?;
         let mut tx = self.begin(p.tenant_id()).await?;
         rss_mdm_authorization_service::lock_on(
-            self.profile(),
+            p.authority_profile(),
             &mut tx,
             p.tenant_id(),
             p.instance_id(),
@@ -182,7 +182,7 @@ impl Registry {
         .await
         .map_err(|_| Error::Storage)?;
         let auth = rss_mdm_authorization_service::snapshot_on(
-            self.profile(),
+            p.authority_profile(),
             &mut tx,
             p.tenant_id(),
             p.instance_id(),

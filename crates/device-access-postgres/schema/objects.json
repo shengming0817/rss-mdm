@@ -31,7 +31,8 @@
     "rss_da.deployment_valid_until",
     "rss_da.platform_registration_matches",
     "rss_da.platform_session_qualifications",
-    "rss_da.save_retired_access_run"
+    "rss_da.save_retired_access_run",
+    "rss_da.binding_application_current"
   ],
   "views": []
 }

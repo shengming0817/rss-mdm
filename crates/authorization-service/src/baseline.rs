@@ -116,7 +116,7 @@ impl Authority {
     }
     /// Rehydrate a bounded attempt from trusted product state and current authorization facts.
     pub async fn principal(&self, store: &crate::Store) -> Result<AuthorizedPrincipal, Error> {
-        if self.profile != store.profile() {
+        if self.profile != store.profile() || self.profile != store.authority_profile() {
             return Err(Error::Forbidden);
         }
         let principal =

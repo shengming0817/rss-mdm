@@ -11,7 +11,9 @@ pub async fn authorization_snapshot(
     database: &crate::Store,
     proof: &AuthorizedPrincipal,
 ) -> Result<Snapshot, Error> {
-    if proof.profile() != database.profile() {
+    if proof.profile() != database.profile()
+        || proof.authority_profile() != database.authority_profile()
+    {
         return Err(Error::Forbidden);
     }
     use sqlx::Acquire;
@@ -174,7 +176,7 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
     tx: &mut sqlx::PgConnection,
     context: &ChangeContext<'_, T>,
 ) -> Result<(Receipt, bool), Error> {
-    let profile = context.proof.profile();
+    let profile = context.proof.authority_profile();
 
     let ChangeContext {
         proof,
@@ -348,12 +350,13 @@ async fn read_snapshot(
     tx: &mut sqlx::PgConnection,
     proof: &AuthorizedPrincipal,
 ) -> Result<Snapshot, Error> {
-    let profile = proof.profile();
+    let profile = proof.authority_profile();
 
     let snapshot = snapshot_on(profile, tx, proof.tenant_id(), proof.instance_id()).await?;
     proof.check_live()?;
     Ok(snapshot)
 }
+/// Read the actual authority source; the principal independently binds its business product.
 pub async fn snapshot_on(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
@@ -383,7 +386,7 @@ async fn protect_management_initializer(
     tx: &mut sqlx::PgConnection,
     proof: &AuthorizedPrincipal,
 ) -> Result<(), Error> {
-    let profile = proof.profile();
+    let profile = proof.authority_profile();
 
     let projected = read_snapshot(tx, proof).await?;
     let principal: String = sqlx::query_scalar(
@@ -443,6 +446,7 @@ impl Table {
 fn decode<T: DeserializeOwned>(value: &str) -> Result<T, Error> {
     serde_json::from_str(value).map_err(|_| Error::Storage)
 }
+/// Fence mutations of this authority source, including consumers serving another product.
 pub async fn lock(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
@@ -554,7 +558,7 @@ async fn initialize_on(
     operation: &Operation<'_>,
     audit: &RequestAudit,
 ) -> Result<(Receipt, bool), Error> {
-    let profile = operation.actor.profile;
+    let profile = operation.actor.authority_profile;
 
     let key = operation.key;
     lock(profile, tx, &user.tenant_id, &user.instance_id).await?;

@@ -46,11 +46,22 @@ pub(super) async fn authorize(
     permission: Permission,
 ) -> Result<(), Error> {
     p.check_live()?;
-    rss_mdm_authorization_service::lock_on(p.profile(), c, p.tenant_id(), p.instance_id()).await?;
-    rss_mdm_authorization_service::snapshot_on(p.profile(), c, p.tenant_id(), p.instance_id())
-        .await?
-        .require(p, permission, Some(device))
-        .map_err(|_| Error::Forbidden)?;
+    rss_mdm_authorization_service::lock_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?
+    .require(p, permission, Some(device))
+    .map_err(|_| Error::Forbidden)?;
     Ok(())
 }
 
@@ -167,7 +178,7 @@ impl Service {
         )
         .await?;
         rss_mdm_authorization_service::lock_on(
-            employee.profile(),
+            employee.authority_profile(),
             &mut current,
             employee.tenant_id(),
             employee.instance_id(),
@@ -317,7 +328,7 @@ impl Service {
             let selected=admission.policy(c,tenant_uuid(device.tenant())?,device.device(),policy).await?;
             if selected.version!=row.try_get::<Uuid,_>("policy_version").map_err(db)? || !selected.configuration.self_enrollment || !selected.configuration.enabled || !selected.configuration.admits(&local.account) { return Err(Error::Forbidden); }
             if !storage::first_in(c,tenant_uuid(device.tenant())?,device.device(),device.registration(),who,&local.account).await? {return Err(Error::Conflict);}
-            let binding=Binding{operation_id:input.operation_id,account_disposition:rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:device.device().into(),registration:device.registration(),registration_generation:device.generation(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,factor_generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,applied_windows:None,created_by_rss:false};
+            let binding=Binding{deployment_application:None,operation_id:input.operation_id,account_disposition:rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:device.device().into(),registration:device.registration(),registration_generation:device.generation(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,factor_generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,applied_windows:None,created_by_rss:false};
             storage::insert_in(c,&binding).await?;
             super::lifecycle::emit_on(c,&binding,None,input.operation_id,"accepted").await?;
             sqlx::query("UPDATE rss_da.ceremonies SET consumed=$3 WHERE tenant_id=$1 AND id=$2").bind(binding.tenant).bind(input.challenge).bind(binding.id).execute(&mut *c).await.map_err(db)?;
@@ -417,7 +428,7 @@ impl Service {
                             person.validate()?;
                             if matches!(input.action,Action::Reinstate{..}) {
                                 super::lifecycle::require_settled_on(c,tenant,person).await?;
-                                let snapshot=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Da, c,actor.tenant_id(),actor.instance_id()).await?;
+                                let snapshot=rss_mdm_authorization_service::snapshot_on(actor.authority_profile(), c,actor.tenant_id(),actor.instance_id()).await?;
                                 snapshot.require(actor,Permission::IdentityAccountsManage,None).map_err(|_|Error::Forbidden)?;
                                 let changed=sqlx::query("UPDATE rss_da.subject_denials SET denied=false,operation=$4 WHERE tenant_id=$1 AND instance=$2 AND principal=$3 AND denied")
                                     .bind(tenant).bind(person.instance).bind(person.principal).bind(input.operation_id).execute(&mut *c).await.map_err(db)?.rows_affected();
@@ -471,6 +482,7 @@ impl Service {
                                 .checked_add(1)
                                 .ok_or(Error::Capacity)?;
                             Binding {
+                                deployment_application: None,
                                 operation_id: input.operation_id,
                                 account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,
                                 id: *id,

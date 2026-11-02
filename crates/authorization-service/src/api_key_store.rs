@@ -141,7 +141,7 @@ async fn change_on(
     c: &mut sqlx::PgConnection,
     context: &KeyWrite<'_>,
 ) -> Result<(Receipt, bool), Error> {
-    let profile = context.proof.profile();
+    let profile = context.proof.authority_profile();
 
     let KeyWrite {
         proof,

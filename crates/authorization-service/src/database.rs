@@ -4,6 +4,7 @@ use sqlx::{Connection, PgPool, Postgres, Transaction};
 #[derive(Clone)]
 pub struct Store {
     pub(crate) profile: rss_mdm_install_support::StorageProfile,
+    authority_profile: rss_mdm_install_support::StorageProfile,
     pool: PgPool,
     pub(crate) clock: std::sync::Arc<dyn rss_request_context::Clock>,
 }
@@ -15,6 +16,7 @@ impl Store {
     ) -> Self {
         Self {
             profile,
+            authority_profile: profile,
             pool,
             clock,
         }
@@ -22,12 +24,23 @@ impl Store {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
+    /// Actual rules, credentials and installation authority, fixed by host assembly.
+    pub fn authority_profile(&self) -> rss_mdm_install_support::StorageProfile {
+        self.authority_profile
+    }
+    /// Serve another business product using the same authority, connection pool and clock.
+    pub fn for_product(&self, product: rss_mdm_install_support::StorageProfile) -> Self {
+        Self {
+            profile: product,
+            ..self.clone()
+        }
+    }
     pub(crate) async fn acquire(&self) -> Result<sqlx::pool::PoolConnection<Postgres>, Error> {
         self.pool.acquire().await.map_err(db)
     }
     /// Startup validates the persisted recovery principal using the existing restricted pool.
     pub async fn require_management_initializer(&self) -> Result<(), Error> {
-        let profile = self.profile;
+        let profile = self.authority_profile();
 
         let mut connection = None;
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -64,7 +77,12 @@ impl Store {
         proof: &crate::context::AuthorizedPrincipal,
         management: bool,
     ) -> Result<(), Error> {
-        let profile = self.profile;
+        if proof.profile() != self.profile()
+            || proof.authority_profile() != self.authority_profile()
+        {
+            return Err(Error::Forbidden);
+        }
+        let profile = self.authority_profile();
 
         let mut connection = None;
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {

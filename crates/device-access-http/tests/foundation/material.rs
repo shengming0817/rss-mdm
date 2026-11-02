@@ -221,7 +221,7 @@ pub fn state(
         )?,
     );
     Ok(rss_mdm_device_access_http::Services {
-        business: Some(Arc::new(super::business::assemble(c, m)?)),
+        business: Some(super::business::assemble(c, m)?),
         registrations: registration,
         configurations,
         authorization: c.authorization.clone(),

@@ -70,7 +70,7 @@ impl Service {
         }
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
         rss_mdm_authorization_service::snapshot_on(
-            rss_mdm_install_support::StorageProfile::Da,
+            p.authority_profile(),
             &mut tx,
             p.tenant_id(),
             p.instance_id(),

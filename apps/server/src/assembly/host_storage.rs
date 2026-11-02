@@ -49,9 +49,10 @@ pub(super) async fn admit(
             rss_mdm_device_service::control::verify_authority(c)
                 .await
                 .inspect_err(|e| eprintln!("command authority admission: {e}"))?;
-            rss_mdm_authorization_service::verify_authority(
+            rss_mdm_authorization_service::verify_authority_for_host(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 c,
+                &["da_access"],
             )
             .await
             .inspect_err(|e| eprintln!("command authorization admission: {e}"))?;

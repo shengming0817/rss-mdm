@@ -213,11 +213,22 @@ pub(crate) async fn authorize_reenrollment_in(
 
     use rss_mdm_authorization_service as auth;
     proof.enrollment(device)?.check()?;
-    auth::lock_on(profile, c, proof.tenant_id(), proof.instance_id()).await?;
-    auth::snapshot_on(profile, c, proof.tenant_id(), proof.instance_id())
-        .await?
-        .require(proof, auth::Permission::Enrollment, Some(device))
-        .map_err(|_| Error::Forbidden)?;
+    auth::lock_on(
+        proof.authority_profile(),
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await?;
+    auth::snapshot_on(
+        proof.authority_profile(),
+        c,
+        proof.tenant_id(),
+        proof.instance_id(),
+    )
+    .await?
+    .require(proof, auth::Permission::Enrollment, Some(device))
+    .map_err(|_| Error::Forbidden)?;
     lock_device_in(profile, c, proof.tenant_id(), device).await?;
     let retirement: Option<uuid::Uuid> = sqlx::query_scalar(
         crate::storage_profile::sql(profile).lifecycle_authorize_reenrollment_in_1,

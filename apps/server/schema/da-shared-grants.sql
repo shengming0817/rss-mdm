@@ -16,4 +16,7 @@ GRANT SELECT ON mdm_access.devices,mdm_access.registrations,mdm_access.credentia
 GRANT USAGE ON SCHEMA mdm TO da_owner;
 GRANT REFERENCES(tenant_id,revision) ON mdm.asset_changes TO da_owner;
 GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO da_owner;
+-- Hosted DA authorization borrows the existing host authority, with no mirrored grants.
+GRANT SELECT ON mdm_access.authorization_rules,mdm_access.user_groups,mdm_access.api_keys,mdm_access.api_network_policy TO da_access;
+GRANT EXECUTE ON FUNCTION mdm_access.operation_authority_valid(jsonb,text,text,bigint),mdm_access.operation_authority_valid_until(jsonb,text,text,bigint) TO da_access;
 COMMIT;

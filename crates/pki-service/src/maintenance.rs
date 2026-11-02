@@ -219,7 +219,7 @@ impl Registry {
                         if let Some(p) = p {
                             p.check_live().map_err(|_| Error::Forbidden)?;
                             rss_mdm_authorization_service::lock_on(
-                                profile,
+                                p.authority_profile(),
                                 c,
                                 p.tenant_id(),
                                 p.instance_id(),
@@ -227,7 +227,7 @@ impl Registry {
                             .await
                             .map_err(|_| Error::Storage)?;
                             rss_mdm_authorization_service::snapshot_on(
-                                profile,
+                                p.authority_profile(),
                                 c,
                                 p.tenant_id(),
                                 p.instance_id(),

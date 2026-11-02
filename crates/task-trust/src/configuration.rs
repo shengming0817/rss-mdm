@@ -40,23 +40,33 @@ impl ConfigurationService {
         if p.profile() != profile || p.tenant_id() != self.trust.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        rss_mdm_authorization_service::lock_shared_on(profile, c, p.tenant_id(), p.instance_id())
-            .await?;
+        rss_mdm_authorization_service::lock_shared_on(
+            p.authority_profile(),
+            c,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
         let scope = config.and_then(|v| match &v.audience {
             Audience::Tenant => None,
             Audience::Device { device, .. } => Some(device.as_str()),
         });
-        rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
-            .await?
-            .require(
-                p,
-                if scope.is_some() {
-                    Permission::ConfigurationWrite
-                } else {
-                    Permission::RegistrationConfigurationWrite
-                },
-                scope,
-            )?;
+        rss_mdm_authorization_service::snapshot_on(
+            p.authority_profile(),
+            c,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?
+        .require(
+            p,
+            if scope.is_some() {
+                Permission::ConfigurationWrite
+            } else {
+                Permission::RegistrationConfigurationWrite
+            },
+            scope,
+        )?;
         Ok(())
     }
     pub async fn export(

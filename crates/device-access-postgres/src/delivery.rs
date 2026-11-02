@@ -232,8 +232,8 @@ impl Service {
             rss_identity_postgres::consume_step_up_on(c,ctx.0.session()?,ctx.3,ctx.2.expose()).await.map_err(|_|Error::Unauthorized)?;Ok(())
         }),|ctx,c|Box::pin(async move{
             let(p,input,_,_,digest,a)=ctx;
-            rss_mdm_authorization_service::lock_on(p.profile(),c,p.tenant_id(),p.instance_id()).await?;
-            rss_mdm_authorization_service::snapshot_on(p.profile(),c,p.tenant_id(),p.instance_id()).await?.require_all_devices(p,Permission::AccountWrite)?;
+            rss_mdm_authorization_service::lock_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;
+            rss_mdm_authorization_service::snapshot_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?.require_all_devices(p,Permission::AccountWrite)?;
             lock_da_target(c,p.tenant_id(),&input.da.device,Some(&input.agent)).await?;
             if input.enabled {
                 current_da(c,p.tenant_id(),&input.da).await?;
@@ -274,14 +274,14 @@ impl Service {
             Box::pin(async move {
                 let (p, id, digest) = *ctx;
                 rss_mdm_authorization_service::lock_on(
-                    StorageProfile::Da,
+                    p.authority_profile(),
                     c,
                     p.tenant_id(),
                     p.instance_id(),
                 )
                 .await?;
                 rss_mdm_authorization_service::snapshot_on(
-                    StorageProfile::Da,
+                    p.authority_profile(),
                     c,
                     p.tenant_id(),
                     p.instance_id(),

@@ -5,6 +5,8 @@ use rss_mdm_recovery_credentials as recovery;
 use std::sync::Arc;
 use uuid::Uuid;
 mod credentials;
+mod da_authorization;
+mod da_materials;
 mod registration;
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()

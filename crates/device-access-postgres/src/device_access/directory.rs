@@ -59,11 +59,14 @@ pub(crate) async fn authorization_binding(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
 ) -> Result<String, Error> {
-    Ok(
-        rss_mdm_authorization_service::snapshot_on(p.profile(), c, p.tenant_id(), p.instance_id())
-            .await?
-            .query_binding(p)?,
+    Ok(rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
     )
+    .await?
+    .query_binding(p)?)
 }
 #[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,7 +157,7 @@ impl Service {
         }
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
         rss_mdm_authorization_service::snapshot_on(
-            p.profile(),
+            p.authority_profile(),
             &mut tx,
             p.tenant_id(),
             p.instance_id(),

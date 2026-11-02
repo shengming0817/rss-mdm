@@ -46,6 +46,7 @@ workspace = true
 name = "foundation"
 path = "tests/foundation.rs"
 [dev-dependencies]
+openssl.workspace = true
 jsonschema.workspace = true
 rss-mdm-device-access-runtime.workspace = true
 url.workspace = true

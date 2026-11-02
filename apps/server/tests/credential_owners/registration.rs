@@ -1,7 +1,7 @@
 use super::*;
 use rss_mdm_agent_wire::runtime as w;
 #[tokio::test]
-#[ignore = "T2: a current authenticated Agent cannot become DA through device-name coincidence"]
+#[ignore = "T2: explicit DA delivery authorization and RSS material custody across distinct real endpoints"]
 async fn access_binding_requires_current_registration_generation() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let (registration, grant, device) = material::seed_registration(&c).await?;
@@ -14,6 +14,7 @@ async fn access_binding_requires_current_registration_generation() -> Result<()>
             w::Capability::InventoryCollectionV1,
             w::Capability::DeviceAccessV1,
             w::Capability::DeviceAccessWhfbV1,
+            w::Capability::CredentialsWindowsV1,
         ],
     )
     .await?;
@@ -63,13 +64,15 @@ async fn access_binding_requires_current_registration_generation() -> Result<()>
 async fn delivery_lifecycle(
     c: &Context,
     agent: &rss_mdm_registration_service::DevicePrincipal,
-    device: &str,
+    _agent_device: &str,
 ) -> Result<()> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rss_mdm_device_access_postgres::delivery;
     use rss_mdm_install_support::StorageProfile;
     use rss_mdm_registration_service::device::{self, endpoints::DaRegistration};
     use sha2::{Digest, Sha256};
+    let device = format!("da-{}", Uuid::new_v4());
+    let device = device.as_str();
     let (peer, certificate, csr) =
         material::peer_material(c, device, rss_mdm_agent_wire::pki::Purpose::DaDevice).await?;
     let meta = peer.metadata();
@@ -90,6 +93,11 @@ async fn delivery_lifecycle(
         operation_id: operation,
     };
     let mut tx = seed(c).await?;
+    sqlx::query("INSERT INTO rss_da.devices(tenant_id,id) VALUES($1,$2)")
+        .bind(tenant)
+        .bind(device)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("INSERT INTO rss_da.certificate_grants(certificate_purpose,tenant_id,id,operation_id,source,actor,instance,device,secret_digest,request_digest,state,expires_at) VALUES('da_device',$1,$2,$2,'administrator','seed',$3,$4,repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')")
         .bind(tenant).bind(grant).bind(&c.inputs.installation.instance_id).bind(device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.registrations(tenant_id,id,device,channel,generation,certificate_grant_id,state,purpose,epoch) VALUES($1,$2,$3,NULL,7,$4,'active','da_device',$5)")
@@ -114,6 +122,8 @@ async fn delivery_lifecycle(
     assert_eq!(da.kind(), device::RegistrationKind::DaDevice);
     assert_eq!(agent.kind(), device::RegistrationKind::Agent);
     assert_ne!(da.registration(), agent.registration());
+    assert_ne!(da.device(), agent.device());
+    assert_ne!(da.generation(), agent.generation());
     assert!(
         device::require_use_in(&mut tx, &da, device::ConsumerUse::AgentTask)
             .await
@@ -122,17 +132,17 @@ async fn delivery_lifecycle(
     let resolved = delivery::resolve_on(&mut tx, &da).await?;
     assert_eq!(resolved.registration(), registration);
     tx.rollback().await?;
-    // No name-based bridge even when both credentials are valid and device strings coincide.
+    // Neither valid credential creates a delivery relationship without explicit authorization.
     let mut tx = seed(c).await?;
     assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
-    sqlx::query("INSERT INTO rss_da.agent_delivery(tenant_id,da_device,da_registration,da_generation,agent_installation,agent_device,agent_registration,agent_generation,enabled,revision) VALUES($1,$2,$3,7,$4,$2,$5,$6,true,1)")
-        .bind(tenant).bind(device).bind(registration).bind(agent.installation()).bind(agent.registration()).bind(agent.generation()).execute(&mut *tx).await?;
-    tx.commit().await?;
+    tx.rollback().await?;
     let anchor = DaRegistration {
         device: device.into(),
         registration_id: registration,
         generation: 7,
     };
+    let person = super::da_authorization::authorize(c, agent, &anchor).await?;
+    super::da_materials::verify(c, agent, &anchor, person).await?;
     let mut tx = c.database.archive_pool().begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())

@@ -155,10 +155,12 @@ impl Service {
 }
 
 pub(super) async fn stale_registration(
-    profile: rss_mdm_install_support::StorageProfile,
+    service: &Transactions,
     tx: &mut PgTransaction<'_>,
     target: &Target,
 ) -> Result<bool> {
+    // Credential storage can belong to DA while the execution target remains an Agent.
+    let profile = service.agent_store.storage_profile();
     let tenant = tx.tenant_id().to_string();
     let target = target.clone();
     Ok(tx
@@ -189,7 +191,7 @@ pub async fn recover_one(
         crate::tasks::policy::read_in(&service.transactions.policy_reader, tx, run.policy_version)
             .await?;
     let previous = run.state.clone();
-    let stale = stale_registration(profile, tx, &run.target).await?;
+    let stale = stale_registration(&service.transactions, tx, &run.target).await?;
     if stale
         || plan
             .withdrawn_in(&service.transactions, tx, &run.target, now)

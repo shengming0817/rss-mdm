@@ -36,6 +36,19 @@ pub(super) struct Observation {
     source_revision: Option<String>,
 }
 impl Snapshot {
+    fn require_source(&self, proof: &AuthorizedPrincipal) -> Result<(), AuthorizationError> {
+        if self
+            .installation
+            .as_ref()
+            .is_some_and(|i| i.profile() != proof.authority_profile())
+            || proof
+                .key_proof()
+                .is_some_and(|k| k.authority_profile != proof.authority_profile())
+        {
+            return Err(AuthorizationError::Forbidden);
+        }
+        Ok(())
+    }
     pub fn key_record(&self, id: Uuid) -> Option<&crate::api_key::KeyRecord> {
         self.keys.iter().find(|key| key.id == id)
     }
@@ -46,13 +59,7 @@ impl Snapshot {
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;
-        if self
-            .installation
-            .as_ref()
-            .is_some_and(|i| i.profile() != proof.profile())
-        {
-            return Err(AuthorizationError::Forbidden);
-        }
+        self.require_source(proof)?;
         let Some(credential) = proof.key_proof() else {
             return Ok(None);
         };
@@ -81,6 +88,7 @@ impl Snapshot {
                 Sha256::digest(
                     serde_json::to_vec(&(
                         proof.profile(),
+                        proof.authority_profile(),
                         proof.actor(),
                         key.authority_revision,
                         &key.metadata.grants
@@ -99,6 +107,7 @@ impl Snapshot {
         facts: &rss_identity_postgres::RevalidatedSession,
     ) -> Result<String, Error> {
         proof.check_live()?;
+        self.require_source(proof)?;
         let original = proof.session()?;
         facts.check_live().map_err(|_| Error::Unauthorized)?;
         if facts.instance() != original.instance()
@@ -126,8 +135,13 @@ impl Snapshot {
         Ok(format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&(proof.profile(), proof.actor(), grants))
-                    .map_err(|_| Error::Malformed)?
+                serde_json::to_vec(&(
+                    proof.profile(),
+                    proof.authority_profile(),
+                    proof.actor(),
+                    grants,
+                ))
+                .map_err(|_| Error::Malformed)?
             )
         ))
     }
@@ -172,6 +186,7 @@ impl Snapshot {
         &self,
         proof: &AuthorizedPrincipal,
     ) -> Result<Vec<EffectiveGrant>, AuthorizationError> {
+        self.require_source(proof)?;
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;

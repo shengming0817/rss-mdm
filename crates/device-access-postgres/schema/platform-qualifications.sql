@@ -1,5 +1,35 @@
--- Verified deployment payloads are written only by the DA verifier. Every read rechecks
--- current authority fingerprints, exact targets/configuration and server-bounded validity.
+-- Verified application payloads are written only by the DA verifier. This shared check
+-- fences stored native effects; PSSO qualification also checks current configured authorities.
+CREATE FUNCTION rss_da.binding_application_current(binding jsonb,as_of bigint) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT CASE WHEN binding->'deploymentApplication' IS NULL OR binding->'deploymentApplication'='null'::jsonb
+ THEN true ELSE EXISTS (
+  SELECT FROM rss_da.deployment_evidence e
+  CROSS JOIN LATERAL jsonb_array_elements(e.document->'applications') application
+  WHERE e.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+   AND e.tenant_id::text=binding->>'tenant' AND e.registration::text=binding->>'registration'
+   AND e.generation::text=binding->>'registrationGeneration'
+   AND e.authority::text=binding#>>'{deploymentApplication,authority}'
+   AND e.sequence::text=binding#>>'{deploymentApplication,sequence}'
+   AND e.fingerprint=binding#>>'{deploymentApplication,fingerprint}'
+   AND e.document->>'revoked'='false'
+   AND e.document#>>'{deployment,platform}'='macos' AND binding#>>'{account,platform}'='macos'
+   AND e.document->>'installation'=(SELECT instance_id::text FROM rss_da.installation_binding WHERE singleton)
+   AND e.document->>'policy'=binding->>'policy' AND e.document->>'policyVersion'=binding->>'policyVersion'
+   AND e.document->>'device'=binding->>'device'
+   AND (e.document->>'issuedAt')::bigint<=e.received_at AND e.received_at<=as_of
+   AND (e.document->>'expiresAt')::bigint>as_of
+   AND (e.document->>'expiresAt')::bigint-(e.document->>'issuedAt')::bigint BETWEEN 1 AND 86400
+   AND application->>'bindingId'=binding->>'id'
+   AND application->>'bindingGeneration'=binding->>'generation'
+   AND application->>'revision'=binding->>'revision'
+   AND application->'effect'=binding->'effect'
+   AND rss_da.current_da_registration(binding->>'device')=jsonb_build_object('device',binding->>'device','registrationId',e.registration,'generation',e.generation)
+ ) END
+$$;
+REVOKE ALL ON FUNCTION rss_da.binding_application_current(jsonb,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rss_da.binding_application_current(jsonb,bigint) TO da_access,da_identity_runtime,da_inventory_runtime,da_scope_runtime,da_policy_runtime,da_telemetry_runtime,da_command_runtime;
+
 CREATE FUNCTION rss_da.deployment_valid_until(p_registration uuid,p_generation bigint,config jsonb,p_profile uuid,as_of bigint) RETURNS bigint
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT CASE WHEN count(*)>0 AND bool_and(coalesce(
@@ -97,4 +127,4 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog 
  )
 $$;
 REVOKE ALL ON FUNCTION rss_da.platform_registration_matches(uuid,bigint,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rss_da.platform_registration_matches(uuid,bigint,jsonb) TO da_command_runtime;
+GRANT EXECUTE ON FUNCTION rss_da.platform_registration_matches(uuid,bigint,jsonb) TO da_command_runtime,da_access;

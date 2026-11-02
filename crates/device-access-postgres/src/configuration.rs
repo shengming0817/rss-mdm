@@ -213,8 +213,8 @@ impl Service {
             rss_identity_postgres::recheck_authenticated_session_on(c,ctx.0.session()?).await.map_err(|_|Error::Unauthorized)?;Ok(())
         }),|ctx,c|Box::pin(async move{
             let(p,input,digest,a)=ctx;
-            rss_mdm_authorization_service::lock_on(p.profile(),c,p.tenant_id(),p.instance_id()).await?;
-            rss_mdm_authorization_service::snapshot_on(p.profile(),c,p.tenant_id(),p.instance_id()).await?.require_all_devices(p,Permission::AccountWrite)?;
+            rss_mdm_authorization_service::lock_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;
+            rss_mdm_authorization_service::snapshot_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?.require_all_devices(p,Permission::AccountWrite)?;
             let op=crate::operations::Operation::new(p,input.operation_id,digest)?;
             if let Some(old)=crate::operations::replay(c,&op).await?{return Ok(crate::service::Change{value:serde_json::from_str(&old).map_err(|_|Error::Corrupt)?,replay:true});}
             let tenant=Uuid::parse_str(p.tenant_id()).map_err(|_|Error::Malformed)?;

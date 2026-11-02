@@ -60,7 +60,7 @@ pub struct KeyRecord {
 }
 /// Constructed only after a tenant-scoped database credential lookup.
 pub(crate) struct KeyProof {
-    pub(crate) profile: rss_mdm_install_support::StorageProfile,
+    pub(crate) authority_profile: rss_mdm_install_support::StorageProfile,
     pub(crate) instance: String,
     pub(crate) tenant: String,
     pub(crate) id: Uuid,
@@ -76,7 +76,7 @@ impl crate::Store {
         tenant: &str,
         secret: &crate::credential::ApiKeySecret,
     ) -> Result<crate::context::Principal, Error> {
-        let profile = self.profile;
+        let profile = self.authority_profile();
 
         use sqlx::{Acquire, Row};
         let start = self.clock.now();
@@ -113,7 +113,7 @@ impl crate::Store {
             let remaining: Option<f64> = row.try_get("remaining").map_err(crate::database::db)?;
             let seconds = remaining.unwrap_or(10.0).clamp(0.0, 10.0);
             let proof = KeyProof {
-                profile,
+                authority_profile: profile,
                 clock: self.clock.clone(),
                 authority_revision: authority_revision.try_into().map_err(|_| Error::Corrupt)?,
                 instance,

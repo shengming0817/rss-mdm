@@ -185,14 +185,14 @@ impl RegistrationService {
                 match authority {
                     Authority::Administrator(p, target) => {
                         rss_mdm_authorization_service::lock_on(
-                            profile,
+                            p.authority_profile(),
                             c,
                             &tenant,
                             p.instance_id(),
                         )
                         .await?;
                         rss_mdm_authorization_service::snapshot_on(
-                            profile,
+                            p.authority_profile(),
                             c,
                             &tenant,
                             p.instance_id(),
@@ -398,12 +398,22 @@ impl RegistrationService {
                     .map_err(db)?
                     .ok_or(Error::Forbidden)?;
                 let device: String = row.try_get("device").map_err(db)?;
-                rss_mdm_authorization_service::lock_on(profile, c, &tenant, p.instance_id())
-                    .await?;
-                rss_mdm_authorization_service::snapshot_on(profile, c, &tenant, p.instance_id())
-                    .await?
-                    .require(p, Permission::Credentials, Some(&device))
-                    .map_err(|_| Error::Forbidden)?;
+                rss_mdm_authorization_service::lock_on(
+                    p.authority_profile(),
+                    c,
+                    &tenant,
+                    p.instance_id(),
+                )
+                .await?;
+                rss_mdm_authorization_service::snapshot_on(
+                    p.authority_profile(),
+                    c,
+                    &tenant,
+                    p.instance_id(),
+                )
+                .await?
+                .require(p, Permission::Credentials, Some(&device))
+                .map_err(|_| Error::Forbidden)?;
                 let d = digest(&("da_revoke", *registration))?;
                 let op = crate::operations::Operation {
                     actor: crate::operations::Actor::from_authorized(p),

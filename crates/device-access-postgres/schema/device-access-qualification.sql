@@ -21,7 +21,8 @@ BEGIN
  SELECT b.document INTO binding FROM rss_da.bindings b
  WHERE b.tenant_id=tenant AND b.id=p_binding AND b.generation=p_generation
   AND rss_da.current_da_registration(b.device)=jsonb_build_object('device',b.device,'registrationId',b.registration,'generation',b.registration_generation)
-  AND rss_da.access_binding_ready(b.document);
+  AND rss_da.access_binding_ready(b.document)
+  AND rss_da.binding_application_current(b.document,p_as_of);
  IF NOT FOUND THEN RETURN jsonb_build_object('state','excluded'); END IF;
  IF binding->>'tenant' IS DISTINCT FROM tenant::text OR binding->>'id' IS DISTINCT FROM p_binding::text THEN
   RAISE EXCEPTION 'invalid access binding identity' USING ERRCODE='23514';

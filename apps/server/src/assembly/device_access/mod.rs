@@ -38,6 +38,7 @@ impl rss_mdm_registration_service::certificate_issuance::Clock for Clock {
 pub(crate) async fn open(
     config: &crate::config::Config,
     identity: &crate::identity::Identity,
+    authorization: &rss_mdm_authorization_service::Store,
     protection: Arc<rss_mdm_native_protection::Protector>,
     cursor: &[u8],
     mut acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
@@ -223,11 +224,7 @@ pub(crate) async fn open(
         inputs,
     )
     .map_err(|_| invalid())?;
-    let authorization = Arc::new(rss_mdm_authorization_service::Store::from_pool(
-        StorageProfile::Da,
-        pool.clone(),
-        Arc::new(crate::lifecycle::RuntimeTimer),
-    ));
+    let authorization = Arc::new(authorization.for_product(StorageProfile::Da));
     let recovery = config
         .recovery_credentials
         .as_ref()

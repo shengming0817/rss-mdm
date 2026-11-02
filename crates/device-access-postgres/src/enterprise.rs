@@ -220,14 +220,14 @@ async fn authorize(
 ) -> Result<(), Error> {
     actor.check_live()?;
     rss_mdm_authorization_service::lock_on(
-        rss_mdm_install_support::StorageProfile::Da,
+        actor.authority_profile(),
         c,
         actor.tenant_id(),
         actor.instance_id(),
     )
     .await?;
     rss_mdm_authorization_service::snapshot_on(
-        rss_mdm_install_support::StorageProfile::Da,
+        actor.authority_profile(),
         c,
         actor.tenant_id(),
         actor.instance_id(),
@@ -392,7 +392,7 @@ async fn register_key_on(
         return Err(Error::Conflict);
     }
     rss_mdm_authorization_service::snapshot_on(
-        rss_mdm_install_support::StorageProfile::Da,
+        actor.authority_profile(),
         c,
         actor.tenant_id(),
         actor.instance_id(),

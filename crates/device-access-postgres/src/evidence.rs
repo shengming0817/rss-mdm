@@ -76,7 +76,7 @@ impl Authorities {
         if o.tenant.to_string() != tenant.to_string() || o.installation != installation {
             return Err(Error::Forbidden);
         }
-        endpoints::lock_da_in(c, &tenant.to_string(), &o.device).await?;
+        crate::delivery::lock_da_target(c, &tenant.to_string(), &o.device, None).await?;
         let current = endpoints::current_da_in(c, &tenant.to_string(), &o.device)
             .await?
             .ok_or(Error::Forbidden)?;
@@ -97,7 +97,13 @@ impl Authorities {
             .remove(&o.authority)
             .ok_or(Error::Configuration)?;
         sqlx::query("INSERT INTO rss_da.deployment_evidence(tenant_id,registration,generation,authority,sequence,fingerprint,payload,signature,document,received_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,registration,generation,authority) DO UPDATE SET sequence=excluded.sequence,fingerprint=excluded.fingerprint,payload=excluded.payload,signature=excluded.signature,document=excluded.document,received_at=excluded.received_at")
-            .bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).bind(o.sequence).bind(fingerprint).bind(&signed.payload).bind(&signed.signature).bind(serde_json::to_value(&o).map_err(|_|Error::Malformed)?).bind(now).execute(c).await.map_err(db)?;
+            .bind(o.tenant).bind(o.registration).bind(o.generation).bind(o.authority).bind(o.sequence).bind(&fingerprint).bind(&signed.payload).bind(&signed.signature).bind(serde_json::to_value(&o).map_err(|_|Error::Malformed)?).bind(now).execute(&mut *c).await.map_err(db)?;
+        if !o.revoked {
+            for report in &o.applications {
+                crate::device_access::storage::deployment_result_in(c, &o, report, &fingerprint)
+                    .await?;
+            }
+        }
         Ok(true)
     }
     pub async fn native_on(

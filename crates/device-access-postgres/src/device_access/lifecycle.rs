@@ -124,7 +124,7 @@ pub(super) async fn accept_offboarding_on(
     }
     require_settled_on(c, current.tenant, &current.person).await?;
     let snapshot = rss_mdm_authorization_service::snapshot_on(
-        rss_mdm_install_support::StorageProfile::Da,
+        actor.authority_profile(),
         c,
         actor.tenant_id(),
         actor.instance_id(),
@@ -506,7 +506,7 @@ async fn load_on(
         return Err(Error::Corrupt);
     }
     let snapshot = rss_mdm_authorization_service::snapshot_on(
-        rss_mdm_install_support::StorageProfile::Da,
+        actor.authority_profile(),
         c,
         actor.tenant_id(),
         actor.instance_id(),

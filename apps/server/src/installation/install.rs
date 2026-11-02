@@ -497,36 +497,24 @@ async fn initialize_account(
         true,
     )
     .await;
-    for profile in [
-        rss_mdm_install_support::StorageProfile::Mdm,
-        rss_mdm_install_support::StorageProfile::Da,
-    ] {
-        crate::authorization_bootstrap::initialize(crate::authorization_bootstrap::Initialize {
-            profile,
-            database: input.database(match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => "mdm_access",
-                rss_mdm_install_support::StorageProfile::Da => "da_access",
-            })?,
-            audit: input.audit(journal)?,
-            identity_database: input.database("mdm_identity_runtime")?,
-            installation: coordinates(input, saved),
-            expected_epoch: 1,
-            login: login.into(),
-            password_file: password_file.clone(),
-            operation_id: if profile == rss_mdm_install_support::StorageProfile::Da {
-                Uuid::new_v5(&operation, b"da-authorization")
-            } else {
-                operation
-            },
-            user: rss_mdm_authorization_service::User {
-                instance_id: saved.receipt.instance_id.to_string(),
-                tenant_id: tenant.into(),
-                principal_id: principal.to_string(),
-            },
-        })
-        .await
-        .map_err(|_| Error::Storage)?;
-    }
+    crate::authorization_bootstrap::initialize(crate::authorization_bootstrap::Initialize {
+        profile: rss_mdm_install_support::StorageProfile::Mdm,
+        database: input.database("mdm_access")?,
+        audit: input.audit(journal)?,
+        identity_database: input.database("mdm_identity_runtime")?,
+        installation: coordinates(input, saved),
+        expected_epoch: 1,
+        login: login.into(),
+        password_file,
+        operation_id: operation,
+        user: rss_mdm_authorization_service::User {
+            instance_id: saved.receipt.instance_id.to_string(),
+            tenant_id: tenant.into(),
+            principal_id: principal.to_string(),
+        },
+    })
+    .await
+    .map_err(|_| Error::Storage)?;
     let _ = initialized;
     Ok(())
 }

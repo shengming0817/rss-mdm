@@ -48,14 +48,14 @@ impl Store {
         proof.check_live()?;
         let mut tx = self.begin(proof.tenant_id()).await?;
         rss_mdm_authorization_service::lock_on(
-            self.profile,
+            proof.authority_profile(),
             &mut tx,
             proof.tenant_id(),
             proof.instance_id(),
         )
         .await?;
         let current = rss_mdm_authorization_service::snapshot_on(
-            self.profile,
+            proof.authority_profile(),
             &mut tx,
             proof.tenant_id(),
             proof.instance_id(),

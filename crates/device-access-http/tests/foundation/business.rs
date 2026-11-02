@@ -13,10 +13,10 @@ use rss_mdm_device_access_postgres as pg;
 fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(10))
 }
-fn key() -> Ed25519KeyPair {
+pub(super) fn key() -> Ed25519KeyPair {
     Ed25519KeyPair::from_seed_unchecked(&[49; 32]).unwrap()
 }
-fn authority_id() -> Uuid {
+pub(super) fn authority_id() -> Uuid {
     Uuid::from_u128(0x229df54fe9804bc1aa8f006c14890c15)
 }
 fn authorities() -> Result<Arc<pg::evidence::Authorities>> {
@@ -30,7 +30,10 @@ fn authorities() -> Result<Arc<pg::evidence::Authorities>> {
 pub fn assemble(
     c: &Context,
     m: &material::Material,
-) -> Result<rss_mdm_device_access_http::Business> {
+) -> Result<Arc<rss_mdm_device_access_http::Business>> {
+    if let Some(business) = c.business.get() {
+        return Ok(business.clone());
+    }
     let evidence = authorities()?;
     let runtime = rss_mdm_device_access_runtime::Runtime::assemble(
         rss_mdm_device_access_runtime::Resources {
@@ -44,14 +47,15 @@ pub fn assemble(
             proof_audit: c.proof_audit.clone(),
             cursor: rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
             protection: m.protection.clone(),
-            platform: None,
+            platform: Some(super::platform::runtime(c)?),
             evidence: evidence.clone(),
             broker_query: None,
             agent_facts: None,
         },
         None,
     )?;
-    Ok(rss_mdm_device_access_http::Business {
+    c.platform.bind(&runtime.platform)?;
+    let business = Arc::new(rss_mdm_device_access_http::Business {
         evidence,
         service: runtime.business,
         admission: runtime.admission,
@@ -60,9 +64,17 @@ pub fn assemble(
             authority: c.authority.clone(),
             origin: "https://localhost".into(),
         }),
-    })
+    });
+    anyhow::ensure!(
+        c.business.set(business.clone()).is_ok(),
+        "single DA assembly"
+    );
+    Ok(business)
 }
-async fn login(c: &Context, principal: Uuid) -> Result<(AuthorizedPrincipal, SessionSecret)> {
+pub(super) async fn login(
+    c: &Context,
+    principal: Uuid,
+) -> Result<(AuthorizedPrincipal, SessionSecret)> {
     let issued = c
         .authority
         .login_local(
@@ -84,7 +96,7 @@ async fn login(c: &Context, principal: Uuid) -> Result<(AuthorizedPrincipal, Ses
         .await?;
     Ok((actor, secret))
 }
-fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
+pub(super) fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
     rss_mdm_audit_integration::RequestAudit::new(
         DA,
         c.tenant.to_string(),
@@ -92,7 +104,7 @@ fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
         rss_mdm_audit_integration::AuditIntent::Management,
     )
 }
-fn signed(value: &Observation) -> Result<pg::evidence::SignedObservation> {
+pub(super) fn signed(value: &Observation) -> Result<pg::evidence::SignedObservation> {
     let payload = serde_json::to_vec(value)?;
     let mut message = b"rss.da.deployment.v1\0".to_vec();
     message.extend_from_slice(&payload);
@@ -112,7 +124,6 @@ pub async fn verify(
     base: &str,
 ) -> Result<()> {
     use rss_mdm_policy_postgres::device_access::{Publication, Target};
-    use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
     let business = assemble(c, m)?;
     let token = material::administrator(c).await?;
     let bearer = c
@@ -169,74 +180,7 @@ pub async fn verify(
     };
     let fingerprints = std::collections::BTreeMap::new();
     let context = change.step_up_context(&actor, &receipt.device, binding, &fingerprints)?;
-    let origin = url::Url::parse("https://localhost")?;
-    let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
-        c.authority.clone(),
-        "localhost".into(),
-        origin.clone(),
-        deadline(),
-    )
-    .await?;
-    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
-    let registration = webauthn
-        .begin_registration(
-            c.authority
-                .inspect_session(
-                    c.tenant,
-                    SessionSecret::parse(session_secret.expose().into())?,
-                    deadline(),
-                )
-                .await?,
-            "DA business proof".into(),
-            false,
-            rss_identity_postgres::RegistrationAuthorization::First,
-            deadline(),
-        )
-        .await?;
-    let response = authenticator.do_registration(origin.clone(), registration.options)?;
-    webauthn
-        .finish_registration(
-            c.authority
-                .inspect_session(
-                    c.tenant,
-                    SessionSecret::parse(session_secret.expose().into())?,
-                    deadline(),
-                )
-                .await?,
-            registration.id,
-            response,
-            deadline(),
-        )
-        .await?;
-    let challenge = webauthn
-        .begin_authentication(
-            c.authority
-                .inspect_session(
-                    c.tenant,
-                    SessionSecret::parse(session_secret.expose().into())?,
-                    deadline(),
-                )
-                .await?,
-            context,
-            deadline(),
-        )
-        .await?;
-    let response = authenticator.do_authentication(origin, challenge.options)?;
-    let grant = webauthn
-        .finish_authentication(
-            c.authority
-                .inspect_session(
-                    c.tenant,
-                    SessionSecret::parse(session_secret.expose().into())?,
-                    deadline(),
-                )
-                .await?,
-            challenge.id,
-            response,
-            deadline(),
-        )
-        .await?;
-    let proof = wire::Secret::parse(grant.expose())?;
+    let proof = operation_proof(c, &session_secret, context).await?;
     let before = counts(c).await?;
     // Failure occurs after binding, receipt and outbox writes, within the original Identity transaction.
     sqlx::raw_sql("CREATE FUNCTION public.reject_da_business_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'DA receipt rollback probe'; END $$; CREATE TRIGGER rollback_probe AFTER INSERT ON rss_da.operations FOR EACH ROW EXECUTE FUNCTION public.reject_da_business_receipt();").execute(&c.operator).await?;
@@ -368,6 +312,7 @@ pub async fn verify(
             account,
             session_id: Uuid::new_v4(),
         }),
+        applications: Vec::new(),
     };
     let url = format!("{base}/deployment-evidence");
     material::empty(
@@ -502,4 +447,80 @@ pub async fn verify(
         "independent DA business never requires an MDM deployment"
     );
     Ok(())
+}
+
+pub(super) async fn operation_proof(
+    c: &Context,
+    session_secret: &SessionSecret,
+    context: rss_identity_core::step_up::StepUpContext,
+) -> Result<wire::Secret> {
+    use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
+    let origin = url::Url::parse("https://localhost")?;
+    let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
+        c.authority.clone(),
+        "localhost".into(),
+        origin.clone(),
+        deadline(),
+    )
+    .await?;
+    let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
+    let registration = webauthn
+        .begin_registration(
+            c.authority
+                .inspect_session(
+                    c.tenant,
+                    SessionSecret::parse(session_secret.expose().into())?,
+                    deadline(),
+                )
+                .await?,
+            "DA business proof".into(),
+            false,
+            rss_identity_postgres::RegistrationAuthorization::First,
+            deadline(),
+        )
+        .await?;
+    let response = authenticator.do_registration(origin.clone(), registration.options)?;
+    webauthn
+        .finish_registration(
+            c.authority
+                .inspect_session(
+                    c.tenant,
+                    SessionSecret::parse(session_secret.expose().into())?,
+                    deadline(),
+                )
+                .await?,
+            registration.id,
+            response,
+            deadline(),
+        )
+        .await?;
+    let challenge = webauthn
+        .begin_authentication(
+            c.authority
+                .inspect_session(
+                    c.tenant,
+                    SessionSecret::parse(session_secret.expose().into())?,
+                    deadline(),
+                )
+                .await?,
+            context,
+            deadline(),
+        )
+        .await?;
+    let response = authenticator.do_authentication(origin, challenge.options)?;
+    let grant = webauthn
+        .finish_authentication(
+            c.authority
+                .inspect_session(
+                    c.tenant,
+                    SessionSecret::parse(session_secret.expose().into())?,
+                    deadline(),
+                )
+                .await?,
+            challenge.id,
+            response,
+            deadline(),
+        )
+        .await?;
+    Ok(wire::Secret::parse(grant.expose())?)
 }

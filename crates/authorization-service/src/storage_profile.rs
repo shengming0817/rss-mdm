@@ -166,7 +166,7 @@ COMMIT;
 "###),
                 authority: concat!(r###"-- Durable product authorization evidence. Authentication and authority locks remain with callers.
 BEGIN;
-CREATE FUNCTION "###, $access_schema, r###".operation_authority_valid_until(authority jsonb, requested text, as_of bigint)
+CREATE FUNCTION "###, $access_schema, r###".operation_authority_valid_until(authority jsonb, product text, requested text, as_of bigint)
 RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  WITH context AS (
   SELECT authority->'actor' AS actor,authority->'basis' AS basis,authority->'scope' AS scope,
@@ -190,7 +190,7 @@ RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog A
       'identity_accounts_manage','enterprise_applications_read','enterprise_applications_write','identity_providers_manage','authorization_read','authorization_write','user_group_read','user_group_write','department_read')
  )
  SELECT max(coalesce(c.expires_at::bigint,9223372036854775807))
-  FROM candidates c WHERE authority->>'profile'='"###, $profile_name, r###"' AND authority->>'permission'=requested AND c.tenant=nullif(current_setting('rss.tenant_id',true),'')
+  FROM candidates c WHERE product IN('mdm','da') AND authority->>'profile'=product AND authority->>'source'='"###, $profile_name, r###"' AND authority->>'permission'=requested AND c.tenant=nullif(current_setting('rss.tenant_id',true),'')
   AND EXISTS(SELECT FROM jsonb_array_elements(c.grants) g WHERE g->>'operation'=requested AND
    CASE c.scope->>'kind'
     WHEN 'all_devices' THEN g->'scope'='{"kind":"all_devices"}'::jsonb
@@ -207,15 +207,15 @@ RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog A
    ELSE false END)
 
 $$;
-REVOKE ALL ON FUNCTION "###, $access_schema, r###".operation_authority_valid_until(jsonb,text,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION "###, $access_schema, r###".operation_authority_valid_until(jsonb,text,bigint)
+REVOKE ALL ON FUNCTION "###, $access_schema, r###".operation_authority_valid_until(jsonb,text,text,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION "###, $access_schema, r###".operation_authority_valid_until(jsonb,text,text,bigint)
  TO "###, $access_role, ",", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $resource_runtime, ",", $software_runtime, ",", $content_runtime, ",", $telemetry_runtime, ",", $command_runtime, ",", $software_driver, ",", $identity_runtime, r###";
-CREATE FUNCTION "###, $access_schema, r###".operation_authority_valid(authority jsonb,requested text,as_of bigint)
+CREATE FUNCTION "###, $access_schema, r###".operation_authority_valid(authority jsonb,product text,requested text,as_of bigint)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
- SELECT "###, $access_schema, r###".operation_authority_valid_until(authority,requested,as_of) IS NOT NULL
+ SELECT "###, $access_schema, r###".operation_authority_valid_until(authority,product,requested,as_of) IS NOT NULL
 $$;
-REVOKE ALL ON FUNCTION "###, $access_schema, r###".operation_authority_valid(jsonb,text,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION "###, $access_schema, r###".operation_authority_valid(jsonb,text,bigint)
+REVOKE ALL ON FUNCTION "###, $access_schema, r###".operation_authority_valid(jsonb,text,text,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION "###, $access_schema, r###".operation_authority_valid(jsonb,text,text,bigint)
  TO "###, $access_role, ",", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $resource_runtime, ",", $software_runtime, ",", $content_runtime, ",", $telemetry_runtime, ",", $command_runtime, ",", $software_driver, ",", $identity_runtime, r###";
 COMMIT;
 "###),
@@ -255,8 +255,8 @@ GRANT USAGE ON SCHEMA "###, $access_schema, " TO ", $resource_runtime, ",", $sof
 "###),
                 admission: concat!(r###"-- Only authorization/fencing kernels; bodies come directly from their owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
- ('"###, $access_schema, ".operation_authority_valid_until(jsonb,text,bigint)', 'sql', 'bigint', true, false, 's', ARRAY['authority','requested','as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['", $access_role, "','", $command_runtime, "','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $resource_runtime, "','", $software_runtime, "','", $content_runtime, "','", $telemetry_runtime, "','", $identity_runtime, "','", $owner, "','", $software_driver, r###"']::text[]),
- ('"###, $access_schema, ".operation_authority_valid(jsonb,text,bigint)', 'sql', 'boolean', true, false, 's', ARRAY['authority','requested','as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['", $access_role, "','", $command_runtime, "','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $resource_runtime, "','", $software_runtime, "','", $content_runtime, "','", $telemetry_runtime, "','", $identity_runtime, "','", $owner, "','", $software_driver, r###"']::text[])
+ ('"###, $access_schema, ".operation_authority_valid_until(jsonb,text,text,bigint)', 'sql', 'bigint', true, false, 's', ARRAY['authority','product','requested','as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['", $access_role, "','", $command_runtime, "','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $resource_runtime, "','", $software_runtime, "','", $content_runtime, "','", $telemetry_runtime, "','", $identity_runtime, "','", $owner, "','", $software_driver, r###"']::text[]),
+ ('"###, $access_schema, ".operation_authority_valid(jsonb,text,text,bigint)', 'sql', 'boolean', true, false, 's', ARRAY['authority','product','requested','as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['", $access_role, "','", $command_runtime, "','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $resource_runtime, "','", $software_runtime, "','", $content_runtime, "','", $telemetry_runtime, "','", $identity_runtime, "','", $owner, "','", $software_driver, r###"']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)
@@ -269,7 +269,7 @@ WHERE p.oid IS NULL OR l.lanname<>e.language OR p.prorettype<>to_regtype(e.resul
  OR r.rolname<>'"###, $owner, r###"' OR r.rolsuper OR r.rolbypassrls OR r.rolcreaterole
  OR pg_has_role(current_user,r.oid,'MEMBER')
  OR EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
- WHERE a.grantee=0 OR (a.grantee<>p.proowner AND (a.is_grantable OR a.privilege_type<>'EXECUTE' OR NOT pg_get_userbyid(a.grantee)=ANY(e.roles))))
+ WHERE a.grantee=0 OR (a.grantee<>p.proowner AND (a.is_grantable OR a.privilege_type<>'EXECUTE' OR NOT pg_get_userbyid(a.grantee)=ANY(e.roles || $3::text[]))))
 ORDER BY e.signature LIMIT 1
 "###),
                 identity_management_authorize_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, ".authorization_initializations WHERE tenant_id=$1::uuid AND instance=$2::uuid AND principal=$3::uuid)"),
@@ -296,7 +296,7 @@ ORDER BY e.signature LIMIT 1
                 authority_valid_1: concat!("SELECT metadata FROM ", $access_schema, ".api_keys WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3 AND authority_revision=$4 AND enabled AND NOT revoked AND (expires_at IS NULL OR expires_at>$5) AND (expires_at IS NULL OR to_timestamp(expires_at)>clock_timestamp())"),
                 authority_valid_2: concat!("SELECT document FROM ", $access_schema, ".authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3 AND revision=$4"),
                 authority_valid_3: concat!("SELECT document FROM ", $access_schema, ".user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3"),
-                authority_valid_4: concat!("SELECT ", $access_schema, ".operation_authority_valid($1,$2,$3)"),
+                authority_valid_4: concat!("SELECT ", $access_schema, ".operation_authority_valid($1,$2,$3,$4)"),
                 operations_replay_1: concat!("SELECT digest,result,instance::text FROM ", $access_schema, ".authorization_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid"),
                 operations_save_1: concat!("INSERT INTO ", $access_schema, ".authorization_operations(tenant_id,actor,operation_id,digest,result,instance) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6::uuid)"),
                 api_key_authenticate_key_1: concat!("SELECT instance_id::text FROM ", $installation, " WHERE singleton"),

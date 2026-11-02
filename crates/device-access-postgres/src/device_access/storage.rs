@@ -180,7 +180,7 @@ pub async fn require_active_in(
 /// Read the same persisted readiness predicate used by bounded qualification projections.
 /// This borrows the caller's existing binding/lifecycle locks and never takes another lock.
 pub async fn accepts_login_in(c: &mut PgConnection, binding: &Binding) -> Result<bool, Error> {
-    sqlx::query_scalar("SELECT rss_da.access_binding_ready($1)")
+    sqlx::query_scalar("SELECT rss_da.access_binding_ready($1) AND rss_da.binding_application_current($1,floor(extract(epoch FROM statement_timestamp()))::bigint)")
         .bind(serde_json::to_value(binding).map_err(|_| Error::Corrupt)?)
         .fetch_one(c)
         .await
@@ -241,6 +241,25 @@ pub async fn result_in(
         }
         return Ok(false);
     }
+    if !project_result(&mut b, report)? {
+        return Ok(false);
+    }
+    // A current, authenticated task result supersedes earlier deployment evidence.
+    b.deployment_application = None;
+    save_in(c, &b, b.revision).await?;
+    let phase = match &report.effect {
+        AccessEffect::Unknown => "unknown",
+        AccessEffect::Failed { .. } => "failed",
+        effect if effect.complete(&b.configuration, b.intent.platform()) => "applied",
+        _ => "pending",
+    };
+    super::lifecycle::emit_on(c, &b, None, event, phase).await?;
+    Ok(true)
+}
+
+/// Shared projection for already authenticated, exactly correlated native effects.
+/// Transport receipts and authority provenance remain with the respective caller.
+fn project_result(b: &mut Binding, report: &AccessResult) -> Result<bool, Error> {
     match &report.effect {
         AccessEffect::Applied {
             account,
@@ -332,15 +351,85 @@ pub async fn result_in(
         b.applied_revision = Some(b.revision);
     }
     b.effect = Some(report.effect.clone());
-    save_in(c, &b, b.revision).await?;
-    let phase = match &report.effect {
-        AccessEffect::Unknown => "unknown",
-        AccessEffect::Failed { .. } => "failed",
-        effect if effect.complete(&b.configuration, b.intent.platform()) => "applied",
-        _ => "pending",
-    };
-    super::lifecycle::emit_on(c, &b, None, event, phase).await?;
     Ok(true)
+}
+
+/// The signed deployment envelope owns this observation; no Agent run or ACK is synthesized.
+pub(crate) async fn deployment_result_in(
+    c: &mut PgConnection,
+    observation: &rss_mdm_device_access::deployment::Observation,
+    report: &AccessResult,
+    fingerprint: &str,
+) -> Result<(), Error> {
+    // The envelope already holds its target fence; reject cross-device reports before
+    // trying to acquire another target's optional Agent/DA lifecycle locks.
+    let candidate = get_in(c, observation.tenant, report.binding_id).await?;
+    if candidate.device != observation.device
+        || candidate.registration != observation.registration
+        || candidate.registration_generation != observation.generation
+    {
+        return Err(Error::Conflict);
+    }
+    let mut b = locked_in(c, observation.tenant, report.binding_id).await?;
+    if b.device != observation.device
+        || b.registration != observation.registration
+        || b.registration_generation != observation.generation
+        || b.policy != observation.policy
+        || b.policy_version != observation.policy_version
+        || b.generation != report.binding_generation
+        || b.revision != report.revision
+        || b.definition_digest()? != report.definition_digest
+        || b.intent.platform() != TaskPlatform::Macos
+        || !report
+            .effect
+            .complete(&b.configuration, b.intent.platform())
+    {
+        return Err(Error::Conflict);
+    }
+    report
+        .validate_for(b.intent.platform())
+        .map_err(|_| Error::Malformed)?;
+    let selected: serde_json::Value = sqlx::query_scalar(
+        "SELECT rss_da.access_policy($1,$2,floor(extract(epoch FROM statement_timestamp()))::bigint)",
+    ).bind(b.policy).bind(&b.device).fetch_one(&mut *c).await.map_err(db)?;
+    if selected["state"] != "eligible"
+        || selected["version"]
+            != serde_json::to_value(b.policy_version).map_err(|_| Error::Corrupt)?
+        || selected["configuration"]
+            != serde_json::to_value(&b.configuration).map_err(|_| Error::Corrupt)?
+    {
+        return Err(Error::Forbidden);
+    }
+    let AccessEffect::Applied { mac: Some(mac), .. } = &report.effect else {
+        return Err(Error::Malformed);
+    };
+    let facts = mac
+        .platform_sso
+        .as_ref()
+        .filter(|facts| facts.ready())
+        .ok_or(Error::Forbidden)?;
+    let registered: bool =
+        sqlx::query_scalar("SELECT rss_da.platform_registration_matches($1,$2,$3)")
+            .bind(facts.user_source_id)
+            .bind(facts.user_source_version)
+            .bind(serde_json::to_value(&b).map_err(|_| Error::Corrupt)?)
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+    if !registered || !project_result(&mut b, report)? {
+        return Err(Error::Forbidden);
+    }
+    b.deployment_application = Some(DeploymentApplication {
+        authority: observation.authority,
+        sequence: observation.sequence,
+        fingerprint: fingerprint.into(),
+    });
+    save_in(c, &b, b.revision).await?;
+    let event = Uuid::new_v5(
+        &observation.authority,
+        format!("{}:{}:{}", b.registration, observation.sequence, b.id).as_bytes(),
+    );
+    super::lifecycle::emit_on(c, &b, None, event, "applied").await
 }
 
 pub async fn received_in(

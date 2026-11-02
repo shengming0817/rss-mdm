@@ -3,17 +3,17 @@ use crate::{Error, Permission, context::AuthorizedPrincipal};
 use serde::Serialize;
 
 pub struct IdentityManagementPolicy {
-    profile: rss_mdm_install_support::StorageProfile,
+    authority_profile: rss_mdm_install_support::StorageProfile,
     instance: String,
 }
 impl IdentityManagementPolicy {
     pub fn new(
-        profile: rss_mdm_install_support::StorageProfile,
+        authority_profile: rss_mdm_install_support::StorageProfile,
         instance: &str,
     ) -> Result<Self, Error> {
         crate::canonical_uuid(instance).map_err(|_| Error::Configuration)?;
         Ok(Self {
-            profile,
+            authority_profile,
             instance: instance.into(),
         })
     }
@@ -22,7 +22,9 @@ impl IdentityManagementPolicy {
         proof: &AuthorizedPrincipal,
     ) -> Result<IdentityNavigation, Error> {
         proof.check_live()?;
-        if proof.profile() != self.profile || proof.instance_id() != self.instance {
+        if proof.authority_profile() != self.authority_profile
+            || proof.instance_id() != self.instance
+        {
             return Err(Error::Unauthorized);
         }
         // Require the loaded snapshot even when neither capability is granted.
@@ -59,7 +61,7 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
                 + 'a,
         >,
     > {
-        let profile = self.profile;
+        let profile = self.authority_profile;
 
         Box::pin(async move {
             use rss_identity_postgres::{

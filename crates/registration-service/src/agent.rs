@@ -401,11 +401,22 @@ async fn authorize_on(
     }
 
     p.check_live()?;
-    rss_mdm_authorization_service::lock_on(profile, c, p.tenant_id(), p.instance_id()).await?;
-    rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
-        .await?
-        .require(p, permission, None)
-        .map_err(|_| Error::Forbidden)
+    rss_mdm_authorization_service::lock_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
+    rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?
+    .require(p, permission, None)
+    .map_err(|_| Error::Forbidden)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -240,13 +240,13 @@ Identity callback 固定 `/api/v1/identity/oidc/callback`，其它 API 保留后
 
 使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。接受空库或完全一致的当前安装记录；失败恢复见[运维](operations.md)。
 
-由数据库管理员创建专用数据库和 `mdm_owner`、`mdm_runtime`、`mdm_api`、`mdm_access` 基础角色。所有产品角色均禁止 SUPERUSER、BYPASSRLS 和高权继承；`mdm_owner` 需要该数据库与 public schema 的 CREATE 权限，但不持有 CREATEROLE。`mdm_api` 是组件 reader 的验证角色，不进入 serve 配置。
+由数据库管理员创建专用数据库和 `mdm_owner`、`mdm_runtime`、`mdm_api`、`mdm_access` 基础角色。所有产品角色均禁止 SUPERUSER、BYPASSRLS 和高权继承；`mdm_owner` 需要该数据库与 public schema 的 CREATE 权限，但不持有 CREATEROLE。下述角色脚本创建 `da_owner` 后，同样向其授予目标数据库与 public schema 的 CREATE；它仅持有 `rss_da`，不继承 `mdm_owner`。`mdm_api` 是组件 reader 的验证角色，不进入 serve 配置。
 
-再按顺序安装候选目录 deployment/ 中的 `business-roles.sql`、`software-publication-roles.sql`、`identity-roles.sql`、`commands-roles.sql`、`audit-roles.sql`。脚本创建的 NOLOGIN profile 保持为权限角色；仅对实际配置的连接角色启用 LOGIN 并设置独立秘密，不额外授予继承权限。Identity runtime/maintenance/provisioning 不继承 owner；owner 的准入检查所需切换关系由随附 SQL 设置。
+再按顺序安装候选目录 deployment/ 中的 `business-roles.sql`、`software-publication-roles.sql`、`identity-roles.sql`、`commands-roles.sql`、`audit-roles.sql`、`webhook-roles.sql`、`device-access-roles.sql`。脚本创建的 NOLOGIN profile 保持为权限角色；仅对实际配置的连接角色启用 LOGIN 并设置独立秘密，不额外授予继承权限。Identity runtime/maintenance/provisioning 不继承 owner；owner 的准入检查所需切换关系由随附 SQL 设置。
 
 Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 安装，两个 owner 均为 NOLOGIN、NOSUPERUSER、NOBYPASSRLS。管理员须对目标数据库执行 `audit-roles.sql` 中的 CREATE 授权。实际业务运行角色只取得组件表 SELECT 和固定追加函数 EXECUTE；业务状态、操作回执与最终审计共同提交。Plain 默认安装不创建 Ledger schema，显式 Ledger 才安装和授予其能力。
 
-`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际业务及 Identity runtime/maintenance/provisioning 权限，脚本成功不代表角色准入成功。
+`migrate` 分别使用 `mdm_owner` 和 `da_owner` 安装各自数据；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 配置显式指定 `profile:"mdm"`，使用 mdm_access 初始化宿主唯一授权来源；`serve` 只使用对应运行角色。安装会检查实际业务及 Identity runtime/maintenance/provisioning 权限，脚本成功不代表角色准入成功。
 
 新安装输入含 `database`（`mdm_owner`）、`device_access_database`（`da_owner`）和 `installation`；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建唯一保留管理租户及 epoch=1，不创建账户、密码或权限；重放只核稳定安装身份、保留管理租户绑定、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予实际业务与 Identity 写角色权限，模式不能随重放改变。
 
@@ -583,4 +583,4 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 `device_access.registration` 显式配置独立 DA TLS listener、设备 PKI 与配置签名版本；未提供时不启动注册 listener。`deployment_authorities` 是部署方预置的 Ed25519 验证公钥，不从请求或 Agent ACK 导入。部署观测绑定租户、安装实例、当前 DA 注册代际、配置版本和有效期；Windows 原生会话不要求 macOS PSSO runtime。Mac PSSO 另需匹配应用、配置描述文件、平台版本与辅助进程的完整可信观测。
 
-DA 最小配置支持租户默认与单设备覆盖；禁用覆盖会阻断默认回退。Agent 作为可选投递通道，须通过当前 DA 管理员的 step-up 显式授权到具体安装、注册和代际。DA 业务与 RSS 恢复材料保持 DA 锚点，任务签名、wire、ACK 和密文投递 AAD 继续使用真实 Agent 身份。MDM Policy 的强制配置优先裁决由 #3129 的配置闭环完成。
+当前宿主的 DA 复用原授权规则，现有 Web/API 的授权和撤销立即作用于 DA；DA 业务和审计归属仍为 DA。独立 DA 以自己的授权来源装配，不镜像权限规则。DA 最小配置支持租户默认与单设备覆盖；禁用覆盖会阻断默认回退。Agent 作为可选投递通道，须通过当前 DA 管理员的 step-up 显式授权到具体安装、注册和代际。DA 业务与 RSS 恢复材料保持 DA 锚点，任务签名、wire、ACK 和密文投递 AAD 继续使用真实 Agent 身份。MDM Policy 的强制配置优先裁决由 #3129 的配置闭环完成。

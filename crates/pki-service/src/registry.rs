@@ -812,15 +812,28 @@ async fn live(
     c: &mut sqlx::PgConnection,
     p: &AuthorizedPrincipal,
 ) -> Result<(), Error> {
+    if p.profile() != profile {
+        return Err(Error::Forbidden);
+    }
     p.check_live().map_err(|_| Error::Forbidden)?;
-    rss_mdm_authorization_service::lock_on(profile, c, p.tenant_id(), p.instance_id())
-        .await
-        .map_err(|_| Error::Storage)?;
-    rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
-        .await
-        .map_err(|_| Error::Storage)?
-        .require_all_devices(p, Permission::Credentials)
-        .map_err(|_| Error::Forbidden)
+    rss_mdm_authorization_service::lock_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Storage)?
+    .require_all_devices(p, Permission::Credentials)
+    .map_err(|_| Error::Forbidden)
 }
 
 pub async fn persist(

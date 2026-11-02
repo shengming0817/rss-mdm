@@ -55,7 +55,7 @@ pub async fn list(
     proof.credentials(device)?;
     let mut tx = database.snapshot(proof.tenant_id()).await?;
     let current = rss_mdm_authorization_service::snapshot_on(
-        profile,
+        proof.authority_profile(),
         &mut tx,
         proof.tenant_id(),
         proof.instance_id(),

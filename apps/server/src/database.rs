@@ -201,9 +201,10 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     crate::migration::verify_runtime_installation(connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_authorization_service::verify_authority(
+    rss_mdm_authorization_service::verify_authority_for_host(
         rss_mdm_install_support::StorageProfile::Mdm,
         connection,
+        &["da_access"],
     )
     .await
     .map_err(storage_admission_error)?;

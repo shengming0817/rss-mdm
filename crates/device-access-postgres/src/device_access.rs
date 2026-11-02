@@ -28,6 +28,16 @@ pub enum Origin {
     },
 }
 
+/// Internal provenance of the last complete deployment-authority observation.
+/// Public binding views and the Agent status protocol deliberately omit it.
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentApplication {
+    pub authority: Uuid,
+    pub sequence: i64,
+    pub fingerprint: String,
+}
+
 /// A configured business target. It does not authenticate an HTTP request or issue a session.
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -56,6 +66,8 @@ pub struct Binding {
     pub effect: Option<AccessEffect>,
     /// Last verified factors survive later failed configuration observations.
     pub applied_windows: Option<rss_mdm_agent_wire::runtime::AccessWindowsFacts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_application: Option<DeploymentApplication>,
     pub created_by_rss: bool,
 }
 impl Binding {
@@ -76,6 +88,13 @@ impl Binding {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
+        if self
+            .deployment_application
+            .as_ref()
+            .is_some_and(|p| p.authority.is_nil() || p.sequence < 1 || p.fingerprint.len() != 64)
+        {
+            return Err(Error::Malformed);
+        }
         if self.state != State::Revoked
             && self.account_disposition
                 != rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep

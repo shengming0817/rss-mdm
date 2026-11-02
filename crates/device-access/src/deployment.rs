@@ -18,6 +18,10 @@ pub struct Observation {
     pub policy_version: Uuid,
     pub deployment: Deployment,
     pub local_session: Option<rss_mdm_agent_wire::runtime::AccessLocalSession>,
+    /// Complete macOS PSSO application facts, signed by the deployment authority. These
+    /// are business observations, never Agent task acknowledgements or delivery receipts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applications: Vec<rss_mdm_agent_wire::runtime::AccessResult>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
@@ -69,8 +73,29 @@ impl Observation {
             || self.issued_at > now
             || self.expires_at <= now
             || self.expires_at.saturating_sub(self.issued_at) > 86400
+            || self.applications.len() > 16
+            || (!self.applications.is_empty()
+                && !matches!(self.deployment, Deployment::Macos { .. }))
         {
             return Err(crate::Error);
+        }
+        let platform = match self.deployment {
+            Deployment::Macos { .. } => rss_mdm_agent_wire::runtime::TaskPlatform::Macos,
+            Deployment::Windows { .. } => rss_mdm_agent_wire::runtime::TaskPlatform::Windows,
+        };
+        let mut bindings = std::collections::BTreeSet::new();
+        for application in &self.applications {
+            application
+                .validate_for(platform)
+                .map_err(|_| crate::Error)?;
+            if !bindings.insert(application.binding_id)
+                || !matches!(
+                    application.effect,
+                    rss_mdm_agent_wire::runtime::AccessEffect::Applied { .. }
+                )
+            {
+                return Err(crate::Error);
+            }
         }
         if let Some(session) = &self.local_session {
             session.validate().map_err(|_| crate::Error)?;
@@ -198,6 +223,7 @@ mod tests {
                 system_broker: true,
             },
             local_session: None,
+            applications: Vec::new(),
         };
         assert!(proof.qualifies(&configuration, profile, 199));
         assert!(!proof.qualifies(&configuration, profile, 200));

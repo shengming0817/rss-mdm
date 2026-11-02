@@ -79,8 +79,8 @@ GRANT SELECT ON rss_da.devices TO mdm_identity_runtime;
 GRANT SELECT ON rss_da.bindings,rss_da.agent_delivery,rss_da.devices,rss_da.policies,rss_da.policy_versions TO mdm_policy_runtime;
 GRANT UPDATE(tenant_id) ON rss_da.bindings TO mdm_policy_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.current_da_registration(text),rss_da.access_policy(uuid,text,bigint),rss_da.lock_policy(uuid),rss_da.access_binding_ready(jsonb) TO mdm_policy_runtime;
--- New tenant administrators receive both product grants with the shared Identity account.
-GRANT USAGE ON SCHEMA rss_da TO mdm_identity_provisioning;
-GRANT SELECT ON rss_da.authorization_installation,rss_da.authorization_rules,rss_da.user_groups,rss_da.api_keys TO mdm_identity_provisioning;
-GRANT INSERT ON rss_da.authorization_rules TO mdm_identity_provisioning;
+-- Maintenance reads only the DA public signing head/version metadata.
+GRANT USAGE ON SCHEMA rss_da TO mdm_owner;
+GRANT SELECT ON rss_da.signing_heads,rss_da.signing_versions TO mdm_owner;
+GRANT EXECUTE ON FUNCTION rss_da.binding_application_current(jsonb,bigint) TO mdm_access,mdm_identity_runtime,mdm_command_runtime,mdm_policy_runtime;
 COMMIT;

@@ -188,9 +188,13 @@ async fn authorize(
     }
 
     p.credentials(device)?;
-    let auth =
-        rss_mdm_authorization_service::snapshot_on(profile, c, p.tenant_id(), p.instance_id())
-            .await?;
+    let auth = rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        c,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await?;
     auth.require(p, Permission::Credentials, Some(device))
         .map_err(rss_mdm_authorization_service::Error::from)?;
     Ok(auth.query_binding(p)?)

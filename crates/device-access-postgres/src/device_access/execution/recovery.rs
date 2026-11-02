@@ -95,16 +95,19 @@ impl Service {
 }
 
 pub(super) async fn stale_registration(
+    service: &Transactions,
     tx: &mut PgTransaction<'_>,
     target: &Target,
 ) -> Result<bool> {
+    // Runs belong to DA, but their transport coordinates belong to the actual Agent store.
+    let profile = service.agent_store.storage_profile();
     let tenant = tx.tenant_id().to_string();
     let target = target.clone();
     Ok(tx
         .with_connection(move |c| {
             Box::pin(
                 rss_mdm_registration_service::device::read::stale_registration_in(
-                    rss_mdm_install_support::StorageProfile::Da,
+                    profile,
                     c,
                     tenant,
                     target.registration,
@@ -121,7 +124,7 @@ pub async fn recover_one(service: &Service, tx: &mut PgTransaction<'_>, id: Uuid
     let mut run = db::load_run(tx, id).await?;
     let plan = admission::load(tx, run.id).await?;
     let previous = run.state.clone();
-    let stale = stale_registration(tx, &run.target).await?;
+    let stale = stale_registration(&service.transactions, tx, &run.target).await?;
     if stale
         || !plan
             .allowed_in(&service.transactions, tx, &run.target)
