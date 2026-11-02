@@ -10,12 +10,15 @@ def initialize(root, binary):
     root = Path(root)
     if not root.is_absolute() or root.is_symlink() or not root.is_dir() or root.stat().st_mode & 0o077:
         raise ValueError('private absolute installation directory required')
+    runtime = root / 'runtime'
+    if runtime.is_symlink() or not runtime.is_dir() or runtime.stat().st_mode & 0o077:
+        raise ValueError('private runtime directory required')
     entries = [('prepare-database', 'database.json'), ('install', 'install.json')]
     accounts = json.loads((root / 'accounts.json').read_text())
     if not isinstance(accounts, list) or not accounts:
         raise ValueError('explicit original account input paths required')
     entries += [('initialize-account', name) for name in accounts]
-    entries.append(('diagnose', 'runtime.json'))
+    entries.append(('diagnose', 'runtime/runtime.json'))
     for command, name in entries:
         path = root / name
         if Path(name).is_absolute() or '..' in Path(name).parts or not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o077:

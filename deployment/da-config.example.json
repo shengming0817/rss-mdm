@@ -1,11 +1,11 @@
 {
   "installation": {"instance":"00000000-0000-4000-8000-000000000001","tenant":"00000000-0000-4000-8000-000000000002","management_tenant":"00000000-0000-4000-8000-000000000003","target":[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"lineage":[2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"epoch":1},
-  "database":{"host":"postgres.example.com","port":5432,"name":"da","user":"da_access","password_file":"/srv/rss-da/da-access-password","ca_file":"/srv/rss-da/postgres-ca.pem"},
-  "identity_database":{"host":"postgres.example.com","port":5432,"name":"da","user":"da_identity_runtime","password_file":"/srv/rss-da/identity-password","ca_file":"/srv/rss-da/postgres-ca.pem"},
+  "database":{"host":"postgres.example.com","port":5432,"name":"da","user":"da_access","password_file":"/srv/rss-da/runtime/da-access-password","ca_file":"/srv/rss-da/runtime/postgres-ca.pem"},
+  "identity_database":{"host":"postgres.example.com","port":5432,"name":"da","user":"da_identity_runtime","password_file":"/srv/rss-da/runtime/identity-password","ca_file":"/srv/rss-da/runtime/postgres-ca.pem"},
   "audit":{"mode":"plain"},
-  "browser":{"listen":"0.0.0.0:8443","origin":"https://da.example.com","certificate_file":"/srv/rss-da/browser.pem","private_key_file":"/srv/rss-da/browser-key.pem"},
-  "registration":{"listener":{"listen":"0.0.0.0:8444","origin":"https://device.da.example.com","certificate_file":"/srv/rss-da/device.pem","private_key_file":"/srv/rss-da/device-key.pem"},"trust_file":"/srv/rss-da/device-trust.json","providers":[],"certificate_days":30,"configuration_revision":null,"configuration_lifetime":86400},
-  "protection":{"active_file":"/srv/rss-da/protection-key","historical_files":[],"fingerprint_file":"/srv/rss-da/fingerprint-key"},
-  "cursor_key_file":"/srv/rss-da/cursor-key",
+  "browser":{"listen":"0.0.0.0:8443","origin":"https://da.example.com","certificate_file":"/srv/rss-da/runtime/browser.pem","private_key_file":"/srv/rss-da/runtime/browser-key.pem"},
+  "registration":{"listener":{"listen":"0.0.0.0:8444","origin":"https://device.da.example.com","certificate_file":"/srv/rss-da/runtime/device.pem","private_key_file":"/srv/rss-da/runtime/device-key.pem"},"trust_file":"/srv/rss-da/runtime/device-trust.json","providers":[],"certificate_days":30,"configuration_revision":null,"configuration_lifetime":86400},
+  "protection":{"active_file":"/srv/rss-da/runtime/protection-key","historical_files":[],"fingerprint_file":"/srv/rss-da/runtime/fingerprint-key"},
+  "cursor_key_file":"/srv/rss-da/runtime/cursor-key",
   "deployment_authorities":[],"platform_sso":null,"enterprise":null,"oidc":null,"recovery":null
 }

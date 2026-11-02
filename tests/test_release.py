@@ -179,10 +179,36 @@ class WorkingSource(unittest.TestCase):
                 result = release.snapshot_ui(value['Id'], output)
             self.assertIsNone(result['revision'])
 
-if __name__ == "__main__":
-    unittest.main()
-
 class DaDelivery(unittest.TestCase):
+    def test_da_initialization_uses_isolated_runtime_material(self):
+        spec = importlib.util.spec_from_file_location(
+            'initialize_da', release.ROOT / 'deployment/initialize_da.py')
+        initialize_da = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(initialize_da)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            root.chmod(0o700)
+            (root / 'runtime').mkdir(mode=0o700)
+            for name in ['database.json', 'install.json', 'account.json', 'runtime/runtime.json']:
+                (root / name).write_text('{}')
+                (root / name).chmod(0o600)
+            (root / 'accounts.json').write_text('["account.json"]')
+            with mock.patch.object(initialize_da.subprocess, 'run') as run:
+                initialize_da.initialize(root, '/bin/rss-da-installer')
+            self.assertEqual(run.call_args_list, [
+                mock.call(['/bin/rss-da-installer', command, '--config', str(root / name)], check=True)
+                for command, name in [('prepare-database', 'database.json'), ('install', 'install.json'),
+                                      ('initialize-account', 'account.json'), ('diagnose', 'runtime/runtime.json')]
+            ])
+            (root / 'runtime/runtime.json').unlink()
+            (root / 'runtime').rmdir()
+            (root / 'runtime.json').write_text('{}')
+            (root / 'runtime.json').chmod(0o600)
+            with mock.patch.object(initialize_da.subprocess, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'runtime directory'):
+                    initialize_da.initialize(root, '/bin/rss-da-installer')
+                run.assert_not_called()
+
     def test_da_has_a_closed_product_delivery_surface(self):
         files = release.deployment_files('da')
         self.assertIn('deployment/da.compose.yaml', files)
@@ -192,3 +218,7 @@ class DaDelivery(unittest.TestCase):
             self.assertTrue(original.is_file(), name)
         with self.assertRaises(ValueError):
             release.deployment_files('other')
+
+
+if __name__ == "__main__":
+    unittest.main()

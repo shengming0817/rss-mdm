@@ -280,7 +280,10 @@ pub fn capture_inputs(journal: &Journal, values: &[serde_json::Value]) -> Result
                 for (name, value) in object {
                     if name.ends_with("_file") && value.is_string() {
                         paths.insert(PathBuf::from(value.as_str().ok_or(Error::Input)?));
-                    } else if matches!(name.as_str(), "key_files" | "credential_keys") {
+                    } else if matches!(
+                        name.as_str(),
+                        "key_files" | "credential_keys" | "signing_keys"
+                    ) {
                         for value in value.as_object().ok_or(Error::Input)?.values() {
                             paths.insert(PathBuf::from(value.as_str().ok_or(Error::Input)?));
                         }
@@ -417,16 +420,35 @@ mod tests {
         let source = root.join("source");
         std::fs::create_dir(&source).unwrap();
         std::fs::write(root.join("secret"), b"original key").unwrap();
+        let signing_key = root.join("psso-private-key");
+        std::fs::write(&signing_key, b"original signing identity").unwrap();
+        std::fs::set_permissions(&signing_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let original = std::fs::metadata(&signing_key).unwrap();
         std::os::unix::fs::symlink(root.join("secret"), source.join("link")).unwrap();
         let journal = Journal::open(&root.join("archive")).unwrap();
         assert!(capture(&journal, "tree", &source).is_err());
         capture_inputs(
             &journal,
-            &[serde_json::json!({"key_files":{"original":root.join("secret")}})],
+            &[serde_json::json!({
+                "key_files":{"original":root.join("secret")},
+                "platform_sso":{"signing_keys":{"active":signing_key}}
+            })],
         )
         .unwrap();
         std::fs::remove_file(root.join("secret")).unwrap();
+        std::fs::remove_file(&signing_key).unwrap();
         restore_inputs(&journal).unwrap();
         assert_eq!(std::fs::read(root.join("secret")).unwrap(), b"original key");
+        assert_eq!(
+            std::fs::read(&signing_key).unwrap(),
+            b"original signing identity"
+        );
+        let restored = std::fs::metadata(&signing_key).unwrap();
+        assert_eq!(restored.mode(), original.mode());
+        assert_eq!(restored.uid(), original.uid());
+        assert_eq!(restored.gid(), original.gid());
+        restore_inputs(&journal).unwrap();
+        std::fs::write(&signing_key, b"another signing identity").unwrap();
+        assert!(matches!(restore_inputs(&journal), Err(Error::Conflict)));
     }
 }
