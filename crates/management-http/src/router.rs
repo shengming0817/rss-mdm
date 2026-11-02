@@ -23,7 +23,7 @@ pub struct Services {
     pub platform_configuration: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
     pub windows_entra: Option<Arc<rss_mdm_registration_service::windows_entra::Management>>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
-    pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
+    pub pki_clock: Arc<dyn rss_mdm_registration_service::certificate_issuance::Clock>,
     pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub filevault: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
     pub recovery_native: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,

@@ -2,8 +2,8 @@
 //! ref: smallstep/certificates authority/provisioner/jwk.go and api/sign.go@v0.30.2.
 use crate::Error;
 use rss_mdm_agent_wire::pki::Purpose;
-use rss_mdm_certificate::agent::{SUBJECT, VerifiedAgentCsr};
-use rss_mdm_device_trust::agent::{AgentTrust, IssuedAgentCertificate};
+use rss_mdm_certificate::device_identity::{VerifiedDeviceCsr, subject};
+use rss_mdm_device_trust::device_identity::{DeviceIdentityTrust, IssuedDeviceCertificate};
 use rss_mdm_pki_service::{Sign, providers::Providers};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -24,22 +24,22 @@ pub enum IssuanceError {
 }
 /// No network schema or public constructor can mint signing authority.
 /// ```compile_fail
-/// let intent = rss_mdm_registration_service::agent_pki::AuthorizedAgentIssuanceIntent::new();
+/// let intent = rss_mdm_registration_service::certificate_issuance::AuthorizedDeviceIssuanceIntent::new();
 /// ```
 /// ```compile_fail
-/// let intent: rss_mdm_registration_service::agent_pki::AuthorizedAgentIssuanceIntent = serde_json::from_str("{}").unwrap();
+/// let intent: rss_mdm_registration_service::certificate_issuance::AuthorizedDeviceIssuanceIntent = serde_json::from_str("{}").unwrap();
 /// ```
-pub struct AuthorizedAgentIssuanceIntent {
+pub struct AuthorizedDeviceIssuanceIntent {
     attempt: Uuid,
     issuer: [u8; 32],
     request: Uuid,
-    csr: VerifiedAgentCsr,
+    csr: VerifiedDeviceCsr,
     identity: String,
     deadline: i64,
     start: i64,
     end: i64,
 }
-impl AuthorizedAgentIssuanceIntent {
+impl AuthorizedDeviceIssuanceIntent {
     pub fn attempt(&self) -> Uuid {
         self.attempt
     }
@@ -47,16 +47,17 @@ impl AuthorizedAgentIssuanceIntent {
 pub struct Issued {
     pub attempt: Uuid,
     pub request: Uuid,
-    pub certificate: IssuedAgentCertificate,
+    pub certificate: IssuedDeviceCertificate,
 }
-pub struct AgentIssuer {
+pub struct DeviceIssuer {
     profile: rss_mdm_install_support::StorageProfile,
+    purpose: Purpose,
     providers: Arc<Providers>,
-    trust: Arc<AgentTrust>,
+    trust: Arc<DeviceIdentityTrust>,
     days: u16,
     clock: Arc<dyn Clock>,
 }
-impl AgentIssuer {
+impl DeviceIssuer {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }
@@ -65,21 +66,23 @@ impl AgentIssuer {
         providers: Arc<Providers>,
         days: u16,
         development: bool,
-        trust: Arc<AgentTrust>,
+        trust: Arc<DeviceIdentityTrust>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, IssuanceError> {
         if days == 0 || days > 3650 || (!development && days != 365) {
             return Err(IssuanceError::Configuration);
         }
+        let purpose = trust.purpose().map_err(|_| IssuanceError::Configuration)?;
         let active = trust
             .trust
             .active()
             .map_err(|_| IssuanceError::Configuration)?;
         providers
-            .get(Purpose::Agent, &active.digest)
+            .get(purpose, &active.digest)
             .map_err(|_| IssuanceError::Configuration)?;
         Ok(Self {
             profile,
+            purpose,
             providers,
             trust,
             days,
@@ -87,6 +90,9 @@ impl AgentIssuer {
         })
     }
 
+    pub fn purpose(&self) -> Purpose {
+        self.purpose
+    }
     /// Freeze the signing issuer and provider identity without retaining secrets.
     pub(crate) fn authority_digest(&self, issuer: [u8; 32]) -> Result<String, Error> {
         let digest = issuer
@@ -94,11 +100,11 @@ impl AgentIssuer {
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
         self.providers
-            .get(Purpose::Agent, &digest)
+            .get(self.purpose, &digest)
             .map(|p| p.authority_digest(&digest))
             .map_err(|_| Error::Configuration)
     }
-    pub fn trust(&self) -> &Arc<AgentTrust> {
+    pub fn trust(&self) -> &Arc<DeviceIdentityTrust> {
         &self.trust
     }
     pub(crate) async fn authorize_in(
@@ -107,7 +113,7 @@ impl AgentIssuer {
         tenant: Uuid,
         spec: &crate::agent::issuance::Signing,
     ) -> Result<(), Error> {
-        let csr = VerifiedAgentCsr::verify(&spec.csr).map_err(|_| Error::Corrupt)?;
+        let csr = VerifiedDeviceCsr::verify(&spec.csr, self.purpose).map_err(|_| Error::Corrupt)?;
         let pem = csr.pem().map_err(|_| Error::Corrupt)?;
         let issuer = spec
             .issuer
@@ -116,20 +122,20 @@ impl AgentIssuer {
             .collect::<String>();
         let provider = self
             .providers
-            .get(Purpose::Agent, &issuer)
+            .get(self.purpose, &issuer)
             .map_err(|_| Error::Configuration)?;
         rss_mdm_pki_service::signing::authorize_in(
             self.profile,
             c,
             tenant,
-            "agent",
+            rss_mdm_pki_service::registry::purpose(self.purpose),
             &issuer,
             provider,
             Sign {
                 attempt: spec.attempt,
                 csr_pem: &pem,
                 csr_digest: &csr.digest(),
-                subject: SUBJECT,
+                subject: subject(self.purpose).map_err(|_| Error::Configuration)?,
                 sans: std::slice::from_ref(&spec.identity),
                 start: spec.start,
                 end: spec.end,
@@ -143,10 +149,10 @@ impl AgentIssuer {
     pub(crate) fn persisted_intent(
         &self,
         spec: crate::agent::issuance::Signing,
-    ) -> Result<AuthorizedAgentIssuanceIntent, Error> {
-        let csr = VerifiedAgentCsr::verify(&spec.csr).map_err(|_| Error::Corrupt)?;
+    ) -> Result<AuthorizedDeviceIssuanceIntent, Error> {
+        let csr = VerifiedDeviceCsr::verify(&spec.csr, self.purpose).map_err(|_| Error::Corrupt)?;
         let end = spec.end;
-        Ok(AuthorizedAgentIssuanceIntent {
+        Ok(AuthorizedDeviceIssuanceIntent {
             attempt: spec.attempt,
             issuer: spec.issuer,
             request: spec.grant,
@@ -169,7 +175,7 @@ impl AgentIssuer {
     /// Consume one persisted authorization. Persistence and audit belong to the lifecycle owner.
     pub async fn issue(
         &self,
-        intent: AuthorizedAgentIssuanceIntent,
+        intent: AuthorizedDeviceIssuanceIntent,
         store: &rss_mdm_pki_service::signing::SigningStore,
         tenant: Uuid,
     ) -> Result<Issued, IssuanceError> {
@@ -195,9 +201,9 @@ impl AgentIssuer {
         &self,
         store: &rss_mdm_pki_service::signing::SigningStore,
         tenant: Uuid,
-        intent: &AuthorizedAgentIssuanceIntent,
+        intent: &AuthorizedDeviceIssuanceIntent,
         now: i64,
-    ) -> Result<IssuedAgentCertificate, IssuanceError> {
+    ) -> Result<IssuedDeviceCertificate, IssuanceError> {
         let unknown = || IssuanceError::Unknown {
             attempt: intent.attempt,
         };
@@ -210,18 +216,21 @@ impl AgentIssuer {
             .collect::<String>();
         let provider = self
             .providers
-            .get(Purpose::Agent, &issuer)
+            .get(self.purpose, &issuer)
             .map_err(|_| IssuanceError::Configuration)?;
         let chain = store
             .issue(
                 tenant,
-                ("agent", &issuer),
+                (
+                    rss_mdm_pki_service::registry::purpose(self.purpose),
+                    &issuer,
+                ),
                 provider,
                 Sign {
                     attempt: intent.attempt,
                     csr_pem: &pem,
                     csr_digest: &intent.csr.digest(),
-                    subject: SUBJECT,
+                    subject: subject(self.purpose).map_err(|_| IssuanceError::Configuration)?,
                     sans: &sans,
                     start: intent.start,
                     end: intent.end,

@@ -3,22 +3,65 @@ use super::*;
 fn identity_is_canonical_tenant_scoped_and_not_a_csr_claim() {
     let tenant = Uuid::new_v4();
     assert_ne!(
-        identity(tenant, "device").unwrap(),
-        identity(Uuid::new_v4(), "device").unwrap()
+        identity(
+            rss_mdm_agent_wire::pki::Purpose::Agent,
+            Uuid::nil(),
+            tenant,
+            "device"
+        )
+        .unwrap(),
+        identity(
+            rss_mdm_agent_wire::pki::Purpose::Agent,
+            Uuid::nil(),
+            Uuid::new_v4(),
+            "device"
+        )
+        .unwrap()
     );
     assert!(
-        identity(tenant, "设备:one")
-            .unwrap()
-            .starts_with(&format!("urn:rss-mdm:agent:v1:{tenant}:"))
+        identity(
+            rss_mdm_agent_wire::pki::Purpose::Agent,
+            Uuid::nil(),
+            tenant,
+            "设备:one"
+        )
+        .unwrap()
+        .starts_with(&format!("urn:rss-mdm:agent:v1:{tenant}:"))
     );
-    assert!(identity(Uuid::nil(), "device").is_err());
-    assert!(identity(tenant, "").is_err());
-    assert!(identity(tenant, "device\n").is_err());
+    assert!(
+        identity(
+            rss_mdm_agent_wire::pki::Purpose::Agent,
+            Uuid::nil(),
+            Uuid::nil(),
+            "device"
+        )
+        .is_err()
+    );
+    assert!(
+        identity(
+            rss_mdm_agent_wire::pki::Purpose::Agent,
+            Uuid::nil(),
+            tenant,
+            ""
+        )
+        .is_err()
+    );
+    assert!(
+        identity(
+            rss_mdm_agent_wire::pki::Purpose::Agent,
+            Uuid::nil(),
+            tenant,
+            "device\n"
+        )
+        .is_err()
+    );
 }
 #[test]
 fn malformed_requests_do_not_produce_verified_csr() {
     for bytes in [vec![], vec![0; MAX_CSR + 1], vec![0x30, 0]] {
-        assert!(VerifiedAgentCsr::verify(&bytes).is_err());
+        assert!(
+            VerifiedDeviceCsr::verify(&bytes, rss_mdm_agent_wire::pki::Purpose::Agent).is_err()
+        );
     }
 }
 
@@ -74,7 +117,8 @@ fn signed_csr_profile_rejects_substituted_identity_and_usage() {
         let der = request.build().to_der().unwrap();
         if valid {
             use x509_cert::der::Decode;
-            let verified = VerifiedAgentCsr::verify(&der).unwrap();
+            let verified =
+                VerifiedDeviceCsr::verify(&der, rss_mdm_agent_wire::pki::Purpose::Agent).unwrap();
             let mut public = x509_cert::request::CertReq::from_der(&der)
                 .unwrap()
                 .info
@@ -92,7 +136,7 @@ fn signed_csr_profile_rejects_substituted_identity_and_usage() {
             assert!(!verified.uses_key(&other).unwrap());
         }
         assert_eq!(
-            VerifiedAgentCsr::verify(&der).is_ok(),
+            VerifiedDeviceCsr::verify(&der, rss_mdm_agent_wire::pki::Purpose::Agent).is_ok(),
             valid,
             "profile {subject}/{extension}"
         );

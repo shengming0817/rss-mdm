@@ -19,7 +19,7 @@ async fn authenticate_on(
     principal: &DevicePrincipal,
 ) -> Result<(), Error> {
     if principal.tenant() != service.tenant
-        || principal.channel() != rss_mdm_inventory::Channel::Agent
+        || principal.channel() != Some(rss_mdm_inventory::Channel::Agent)
         || principal.purpose() != Purpose::Primary
     {
         return Err(Error::Denied);

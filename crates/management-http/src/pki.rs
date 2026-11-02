@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub struct HttpState {
     pub registry: Arc<Registry>,
     pub cursor: rss_mdm_query::cursor::CursorCodec,
-    pub clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
+    pub clock: Arc<dyn rss_mdm_registration_service::certificate_issuance::Clock>,
 }
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {

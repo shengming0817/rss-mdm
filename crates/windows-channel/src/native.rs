@@ -380,7 +380,7 @@ async fn receive_capabilities(
                     version,
                     edition,
                     Scope::Device,
-                    enrollment(p.purpose()),
+                    enrollment(p.purpose())?,
                 )
                 .is_ok()
             {
@@ -398,12 +398,13 @@ async fn receive_capabilities(
 
 fn enrollment(
     purpose: rss_mdm_registration_service::Purpose,
-) -> rss_mdm_windows_mdm::native::Enrollment {
+) -> Result<rss_mdm_windows_mdm::native::Enrollment, Error> {
     use rss_mdm_registration_service::Purpose;
     use rss_mdm_windows_mdm::native::Enrollment;
     match purpose {
-        Purpose::Primary => Enrollment::Primary,
-        Purpose::WindowsDeclared => Enrollment::LinkedCertificate,
+        Purpose::Primary => Ok(Enrollment::Primary),
+        Purpose::WindowsDeclared => Ok(Enrollment::LinkedCertificate),
+        Purpose::DaDevice => Err(Error::Forbidden),
     }
 }
 
@@ -547,7 +548,7 @@ pub(crate) async fn send_on(
                     v,
                     *e as u32,
                     if op.user { Scope::User } else { Scope::Device },
-                    enrollment(p.purpose()),
+                    enrollment(p.purpose())?,
                 )
                 .map_err(|_| protocol())
             })

@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 #[tokio::test]
 #[ignore = "T2: current registration generation and trust activation SQL"]
-async fn activation_requires_current_generation_ack() -> Result<()> {
+async fn rolling_activation_preserves_per_device_issuance_gate() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let protection = support::protection(&c)?;
     let service = support::service(&c, protection.clone())?;
@@ -31,6 +31,7 @@ async fn activation_requires_current_generation_ack() -> Result<()> {
         assert!(matches!(
             rss_mdm_task_trust::service::read_task_trust(
                 da,
+                rss_mdm_task_trust::Use::AgentTask,
                 &c.audit,
                 c.tenant,
                 &proof,
@@ -43,7 +44,12 @@ async fn activation_requires_current_generation_ack() -> Result<()> {
     }
     let da_service = rss_mdm_task_trust::Service::new(
         c.tenant,
-        std::sync::Arc::new(rss_mdm_task_trust::Signing::new(da, c.tenant, None)?),
+        std::sync::Arc::new(rss_mdm_task_trust::Signing::new(
+            da,
+            rss_mdm_task_trust::Use::AgentTask,
+            c.tenant,
+            None,
+        )?),
         protection.clone(),
         c.audit.clone(),
         std::sync::Arc::new(
@@ -74,22 +80,7 @@ async fn activation_requires_current_generation_ack() -> Result<()> {
         expected_revision: 1,
         key_id: key.clone(),
     };
-    assert!(matches!(
-        service
-            .change_task_trust(&proof, &c.request(&proof)?, operation, &change)
-            .await,
-        Err(Error::Conflict)
-    ));
-    assert_eq!(
-        service.task_trust(&proof, &c.request(&proof)?).await?,
-        trust
-    );
-    assert_eq!(
-        c.audit_count("mdm.business", &operation.to_string())
-            .await?,
-        0
-    );
-    support::seed_ack(&c, &trust, registration, 2).await?;
+    // Activation is administrative and does not wait for offline or stale-generation ACKs.
     let result = service
         .change_task_trust(&proof, &c.request(&proof)?, operation, &change)
         .await?;
@@ -199,6 +190,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         .await?;
     let loaded = rss_mdm_task_trust::trust::load(
         rss_mdm_install_support::StorageProfile::Mdm,
+        rss_mdm_task_trust::Use::AgentTask,
         &mut tx,
         c.tenant,
         1,
@@ -208,6 +200,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     tx.commit().await?;
     let signing = rss_mdm_task_trust::Signing::new(
         rss_mdm_install_support::StorageProfile::Mdm,
+        rss_mdm_task_trust::Use::AgentTask,
         c.tenant,
         Some(loaded),
     )?;
@@ -289,6 +282,43 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     )
     .map_err(|_| anyhow::anyhow!("real signature verification"))?;
     tx.commit().await?;
+    // Use the existing public wire vector, rebinding it through the real authenticated signer.
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../crates/agent-wire/tests/fixtures/telemetry-v1-vectors.json"
+    ))?;
+    let mut telemetry: w::SignedTelemetryConfiguration =
+        serde_json::from_value(vector["signed"].clone())?;
+    telemetry.configuration.tenant_id = Uuid::parse_str(&c.tenant.to_string())?;
+    telemetry.configuration.device_id = principal.device().into();
+    telemetry.configuration.registration_id = registration;
+    telemetry.configuration.generation = 2;
+    telemetry.configuration.issued_at = now;
+    telemetry.configuration.expires_at = now + 300;
+    telemetry.configuration.backfill_seconds = 3600;
+    let watermark = || {
+        sqlx::query_scalar::<_,i64>("SELECT max_verify_until FROM mdm_task_signing.keys WHERE tenant_id=$1::uuid AND usage='agent_task' AND key_id=$2").bind(c.tenant.to_string()).bind(trust.keys[0].id.clone())
+    };
+    for commit in [false, true] {
+        let mut lease = c.database.archive_pool().begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(c.tenant.to_string())
+            .execute(&mut *lease)
+            .await?;
+        let signed = signing
+            .sign_telemetry_on(&mut lease, &principal, telemetry.configuration.clone())
+            .await?;
+        assert_eq!(signed.key_id, trust.keys[0].id);
+        assert_eq!(watermark().fetch_one(&c.operator).await?, 0);
+        if commit {
+            lease.commit().await?;
+        } else {
+            lease.rollback().await?;
+        }
+        assert_eq!(
+            watermark().fetch_one(&c.operator).await?,
+            if commit { now + 3900 } else { 0 }
+        );
+    }
     let mut update = c.operator.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(c.tenant.to_string())

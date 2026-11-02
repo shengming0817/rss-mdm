@@ -142,3 +142,5 @@ Agent 接入应保留 PR 1445 定义的安装身份与企业注册世代边界�
 
 当前 V1 直接替换旧结构，无别名、双读或降级。Agent/Web 在各自 PBI 固定本次完整 Git rev 后接入；
 本仓生成、编译与服务端验证不代表客户端已切换，不清理旧部署或 journal 来跳过格式拒绝。
+
+DA 的独立契约位于 `da`，证书信任直接复用 `pki::Trust` / `Purpose::DaDevice`。内层配置签名域为 `rss-da-configuration-v1-ed25519`，配置 trust 摘要包含独立用途；它不接受 Agent task、telemetry 或外层 CMS 的签名作为配置授权。当前 schema 与指纹由 `hack/agent_wire_artifact.py --write` 从 Rust 声明生成，不保留旧 schema 别名。

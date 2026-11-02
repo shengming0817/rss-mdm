@@ -70,20 +70,20 @@ pub(crate) struct Statements {
     pub access_contract: &'static str,
 }
 macro_rules! define_storage {
-    ($module:ident, $pki_acknowledgements:literal, $pki_certificates:literal, $pki_crls:literal, $pki_current_certificates:literal, $pki_installations:literal, $pki_issuers:literal, $pki_operations:literal, $pki_revocations:literal, $pki_rotations:literal, $pki_signing:literal, $pki_trust:literal, $pki_trust_observations:literal, $pki_schema:literal, $registrations:literal, $credentials:literal, $agent_grants:literal, $access_schema:literal, $access_role:literal, $command_role:literal, $policy_role:literal, $owner_role:literal, $index_one_open_rotation:literal, $index_one_active_issuer:literal, $index_signing_recovery_operations:literal, $requests:literal, $agent_bootstraps:literal, $registration_operations:literal, $native_scep:literal, $contract_issuers:literal, $contract_signing:literal, $contract_certificates:literal, $contract_rotations:literal, $contract_acknowledgements:literal, $contract_revocations:literal, $contract_crls:literal, $contract_trust:literal, $contract_operations:literal, $contract_installations:literal, $contract_trust_observations:literal) => {
+    ($module:ident, $pki_acknowledgements:literal, $pki_certificates:literal, $pki_crls:literal, $pki_current_certificates:literal, $pki_installations:literal, $pki_issuers:literal, $pki_operations:literal, $pki_revocations:literal, $pki_rotations:literal, $pki_signing:literal, $pki_trust:literal, $pki_trust_observations:literal, $pki_schema:literal, $registrations:literal, $credentials:literal, $certificate_grants:literal, $access_schema:literal, $access_role:literal, $command_role:literal, $policy_role:literal, $owner_role:literal, $index_one_open_rotation:literal, $index_one_active_issuer:literal, $index_signing_recovery_operations:literal, $requests:literal, $agent_bootstraps:literal, $registration_operations:literal, $native_scep:literal, $contract_issuers:literal, $contract_signing:literal, $contract_certificates:literal, $contract_rotations:literal, $contract_acknowledgements:literal, $contract_revocations:literal, $contract_crls:literal, $contract_trust:literal, $contract_operations:literal, $contract_installations:literal, $contract_trust_observations:literal) => {
         mod $module {
             pub(super) const SQL: super::Statements = super::Statements {
                 install: concat!(r###"-- Product device PKI and cross-owner trust relationships.
 BEGIN;
 CREATE SCHEMA IF NOT EXISTS "###, $pki_schema, r###";
 GRANT USAGE ON SCHEMA "###, $pki_schema, " TO ", $access_role, r###";
-CREATE TABLE "###, $pki_issuers, r###" (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'), revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('prepared','active','verify_only','retired')), chain bytea NOT NULL CHECK(octet_length(chain) BETWEEN 1 AND 67108864), provider text NOT NULL CHECK(provider IN ('step_ca','legacy')), not_after bigint NOT NULL, PRIMARY KEY(tenant_id,purpose,digest));
+CREATE TABLE "###, $pki_issuers, r###" (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap','da_device')), digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'), revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('prepared','active','verify_only','retired')), chain bytea NOT NULL CHECK(octet_length(chain) BETWEEN 1 AND 67108864), provider text NOT NULL CHECK(provider IN ('step_ca','legacy')), not_after bigint NOT NULL, PRIMARY KEY(tenant_id,purpose,digest));
 ALTER TABLE "###, $pki_issuers, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $pki_issuers, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $pki_issuers, r###" USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON "###, $pki_issuers, " TO ", $access_role, r###";
 GRANT UPDATE(state) ON "###, $pki_issuers, " TO ", $access_role, r###";
-CREATE TABLE "###, $pki_signing, r###" (tenant_id uuid NOT NULL, attempt uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), binding bytea NOT NULL CHECK(octet_length(binding) BETWEEN 1 AND 131072), deadline bigint NOT NULL, digest bytea NOT NULL CHECK(octet_length(digest)=32), state text NOT NULL CHECK(state IN ('prepared','signing','unknown','issued','superseded')), chain bytea CHECK(octet_length(chain) BETWEEN 1 AND 524288), created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(tenant_id,attempt), CHECK((state='issued')=(chain IS NOT NULL)));
+CREATE TABLE "###, $pki_signing, r###" (tenant_id uuid NOT NULL, attempt uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap','da_device')), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), binding bytea NOT NULL CHECK(octet_length(binding) BETWEEN 1 AND 131072), deadline bigint NOT NULL, digest bytea NOT NULL CHECK(octet_length(digest)=32), state text NOT NULL CHECK(state IN ('prepared','signing','unknown','issued','superseded')), chain bytea CHECK(octet_length(chain) BETWEEN 1 AND 524288), created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(tenant_id,attempt), CHECK((state='issued')=(chain IS NOT NULL)));
 ALTER TABLE "###, $pki_signing, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $pki_signing, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $pki_signing, r###" USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
@@ -95,7 +95,7 @@ ALTER TABLE "###, $pki_signing, r###" ADD CONSTRAINT successor_other CHECK (succ
 ALTER TABLE "###, $pki_signing, r###" ADD CONSTRAINT successor_unique UNIQUE(tenant_id,successor);
 ALTER TABLE "###, $pki_signing, " ADD CONSTRAINT successor_attempt FOREIGN KEY(tenant_id,successor) REFERENCES ", $pki_signing, r###"(tenant_id,attempt) DEFERRABLE INITIALLY DEFERRED;
 GRANT UPDATE(successor) ON "###, $pki_signing, " TO ", $access_role, r###";
-CREATE TABLE "###, $pki_certificates, r###" (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), registration uuid, not_after bigint NOT NULL, certificate bytea NOT NULL CHECK(octet_length(certificate) BETWEEN 1 AND 32768),
+CREATE TABLE "###, $pki_certificates, r###" (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap','da_device')), fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), registration uuid, not_after bigint NOT NULL, certificate bytea NOT NULL CHECK(octet_length(certificate) BETWEEN 1 AND 32768),
  verification_version integer NOT NULL CHECK(verification_version=1),
  verification_trust bytea NOT NULL CHECK(octet_length(verification_trust)=32),
  verification_start bigint CHECK(verification_start>0),
@@ -107,7 +107,7 @@ ALTER TABLE "###, $pki_certificates, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $pki_certificates, r###" USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON "###, $pki_certificates, " TO ", $access_role, r###";
 GRANT UPDATE(registration,verification_version,verification_trust,verification_start,verification_end) ON "###, $pki_certificates, " TO ", $access_role, r###";
-CREATE TABLE "###, $pki_rotations, r###" (tenant_id uuid NOT NULL, id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), previous text NOT NULL, candidate text NOT NULL, revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('distributing','activated','retired')), PRIMARY KEY(tenant_id,id));
+CREATE TABLE "###, $pki_rotations, r###" (tenant_id uuid NOT NULL, id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap','da_device')), previous text NOT NULL, candidate text NOT NULL, revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('distributing','activated','retired')), PRIMARY KEY(tenant_id,id));
 ALTER TABLE "###, $pki_rotations, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $pki_rotations, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $pki_rotations, r###" USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
@@ -119,13 +119,13 @@ ALTER TABLE "###, $pki_acknowledgements, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $pki_acknowledgements, r###" USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON "###, $pki_acknowledgements, " TO ", $access_role, r###";
 GRANT UPDATE(revision,digest,confirmed_at) ON "###, $pki_acknowledgements, " TO ", $access_role, r###";
-CREATE TABLE "###, $pki_revocations, r###" (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), issuer text NOT NULL, serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), attempt uuid NOT NULL, state text NOT NULL CHECK(state IN ('pending','submitted','published')), failures integer NOT NULL DEFAULT 0 CHECK(failures BETWEEN 0 AND 32), next_attempt timestamptz NOT NULL DEFAULT clock_timestamp(), crl_number bigint, PRIMARY KEY(tenant_id,purpose,issuer,serial), UNIQUE(tenant_id,attempt));
+CREATE TABLE "###, $pki_revocations, r###" (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap','da_device')), issuer text NOT NULL, serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), attempt uuid NOT NULL, state text NOT NULL CHECK(state IN ('pending','submitted','published')), failures integer NOT NULL DEFAULT 0 CHECK(failures BETWEEN 0 AND 32), next_attempt timestamptz NOT NULL DEFAULT clock_timestamp(), crl_number bigint, PRIMARY KEY(tenant_id,purpose,issuer,serial), UNIQUE(tenant_id,attempt));
 ALTER TABLE "###, $pki_revocations, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $pki_revocations, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $pki_revocations, r###" USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON "###, $pki_revocations, " TO ", $access_role, r###";
 GRANT UPDATE(state,failures,next_attempt,crl_number) ON "###, $pki_revocations, " TO ", $access_role, r###";
-CREATE TABLE "###, $pki_crls, r###" (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), issuer text NOT NULL, number bigint NOT NULL CHECK(number>=0), this_update bigint NOT NULL, next_update bigint NOT NULL CHECK(next_update>this_update), der bytea NOT NULL CHECK(octet_length(der) BETWEEN 1 AND 16777216), PRIMARY KEY(tenant_id,purpose,issuer));
+CREATE TABLE "###, $pki_crls, r###" (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap','da_device')), issuer text NOT NULL, number bigint NOT NULL CHECK(number>=0), this_update bigint NOT NULL, next_update bigint NOT NULL CHECK(next_update>this_update), der bytea NOT NULL CHECK(octet_length(der) BETWEEN 1 AND 16777216), PRIMARY KEY(tenant_id,purpose,issuer));
 ALTER TABLE "###, $pki_crls, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $pki_crls, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $pki_crls, r###" USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
@@ -153,7 +153,7 @@ GRANT SELECT,INSERT ON "###, $pki_operations, " TO ", $access_role, r###";
 ALTER TABLE "###, $pki_certificates, " ADD CONSTRAINT issuer_generation FOREIGN KEY(tenant_id,purpose,issuer) REFERENCES ", $pki_issuers, r###"(tenant_id,purpose,digest);
 ALTER TABLE "###, $pki_signing, " ADD CONSTRAINT issuer_generation FOREIGN KEY(tenant_id,purpose,issuer) REFERENCES ", $pki_issuers, r###"(tenant_id,purpose,digest);
 ALTER TABLE "###, $pki_revocations, " ADD CONSTRAINT issued_certificate FOREIGN KEY(tenant_id,purpose,issuer,serial) REFERENCES ", $pki_certificates, r###"(tenant_id,purpose,issuer,serial);
-CREATE TABLE "###, $pki_installations, r###"(tenant_id uuid NOT NULL,purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')),registration uuid NOT NULL,
+CREATE TABLE "###, $pki_installations, r###"(tenant_id uuid NOT NULL,purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap','da_device')),registration uuid NOT NULL,
  revision bigint NOT NULL CHECK(revision>0),digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),body bytea NOT NULL CHECK(octet_length(body) BETWEEN 1 AND 67108864),
  confirmed_at timestamptz NOT NULL DEFAULT clock_timestamp(),PRIMARY KEY(tenant_id,purpose,registration),
  FOREIGN KEY(tenant_id,registration) REFERENCES "###, $registrations, r###"(tenant_id,id));
@@ -278,7 +278,7 @@ COMMIT;
         r.state,NULL::bigint AS deadline,NULL::text AS revocation_state
  FROM rotation x JOIN "###, $registrations, r###" r ON r.tenant_id=x.tenant_id
  WHERE x.state='distributing' AND r.state='active'
- AND ((r.channel='agent' AND x.purpose='agent') OR (r.channel='mdm' AND EXISTS(
+ AND ((r.channel='agent' AND x.purpose='agent') OR (r.channel IS NULL AND r.purpose='da_device' AND x.purpose='da_device') OR (r.channel='mdm' AND EXISTS(
    SELECT 1 FROM "###, $requests, r###" q WHERE q.tenant_id=r.tenant_id AND q.id=r.request_id
    AND q.source=CASE x.purpose WHEN 'windows' THEN 'mdm.windows' WHEN 'apple' THEN 'mdm.apple' ELSE x.purpose END)))
  AND NOT EXISTS(SELECT 1 FROM "###, $pki_acknowledgements, r###" a WHERE a.tenant_id=r.tenant_id
@@ -323,7 +323,7 @@ define_storage!(
     "mdm_pki",
     "mdm_access.registrations",
     "mdm_access.credentials",
-    "mdm_access.agent_grants",
+    "mdm_access.certificate_grants",
     "mdm_access",
     "mdm_access",
     "mdm_command_runtime",
@@ -371,7 +371,7 @@ define_storage!(
     "rss_da",
     "rss_da.registrations",
     "rss_da.credentials",
-    "rss_da.agent_grants",
+    "rss_da.certificate_grants",
     "rss_da",
     "da_access",
     "da_command_runtime",

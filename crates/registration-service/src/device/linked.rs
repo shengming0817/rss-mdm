@@ -17,7 +17,7 @@ pub async fn request_in(
     }
 
     if parent.purpose() != Purpose::Primary
-        || parent.channel() != Channel::Mdm
+        || parent.channel() != Some(Channel::Mdm)
         || id.is_nil()
         || operation.is_nil()
     {

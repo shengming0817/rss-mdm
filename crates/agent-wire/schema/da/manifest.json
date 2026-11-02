@@ -1,0 +1,37 @@
+{
+  "apiVersion": 1,
+  "schemas": [
+    {
+      "type": "GrantRequest",
+      "file": "grant-request-v1.schema.json"
+    },
+    {
+      "type": "Grant",
+      "file": "grant-v1.schema.json"
+    },
+    {
+      "type": "CertificateRequest",
+      "file": "certificate-request-v1.schema.json"
+    },
+    {
+      "type": "Registration",
+      "file": "registration-v1.schema.json"
+    },
+    {
+      "type": "Progress",
+      "file": "progress-v1.schema.json"
+    },
+    {
+      "type": "ConfigurationTrust",
+      "file": "configuration-trust-v1.schema.json"
+    },
+    {
+      "type": "Export",
+      "file": "export-v1.schema.json"
+    },
+    {
+      "type": "SignedConfiguration",
+      "file": "signed-configuration-v1.schema.json"
+    }
+  ]
+}

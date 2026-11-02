@@ -47,6 +47,7 @@ fn names(purpose: Purpose) -> (&'static str, Option<&'static str>) {
     match purpose {
         Purpose::Windows => ("rss-windows", None),
         Purpose::Agent => ("rss-agent", None),
+        Purpose::DaDevice => ("rss-da-device", None),
         Purpose::Apple => ("rss-apple-revocation", Some("rss")),
         Purpose::AgentBootstrap => (
             "rss-agent-bootstrap-revocation",
@@ -108,7 +109,7 @@ fn jwk(bytes: &[u8], kid: Option<&str>) -> Result<(String, serde_json::Value)> {
 fn claims(purpose: Purpose) -> wire::Claims {
     let (default, max) = match purpose {
         Purpose::Windows => ("2160h", "2160h"),
-        Purpose::Agent => ("8760h", "8760h"),
+        Purpose::Agent | Purpose::DaDevice => ("8760h", "8760h"),
         Purpose::Apple => ("24h", "2160h"),
         Purpose::AgentBootstrap => ("1h", "24h"),
     };

@@ -18,7 +18,7 @@ pub struct Source {
 }
 impl Source {
     pub fn agent(p: &rss_mdm_registration_service::DevicePrincipal) -> Result<Self, Error> {
-        if p.channel() != rss_mdm_inventory::Channel::Agent
+        if p.channel() != Some(rss_mdm_inventory::Channel::Agent)
             || p.purpose() != rss_mdm_registration_service::Purpose::Primary
         {
             return Err(Error::Forbidden);

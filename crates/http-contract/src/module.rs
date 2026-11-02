@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 pub enum Listener {
     Browser,
     Agent,
+    Da,
     WindowsEnrollment,
     WindowsManagement,
     Apple,

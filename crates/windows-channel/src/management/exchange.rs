@@ -35,7 +35,7 @@ impl Delivery {
                 Box::pin(async move {
                     let (s, w, p, m, b, a, ingress) = ctx;
                     s.business.prepare(tx, p, a).await?;
-                    let retirement = w.retirement_request(p.purpose());
+                    let retirement = w.retirement_request(p.purpose())?;
                     let work = tx
                         .with_connection_context(
                             &mut (&**s, w.clone(), *p, *m, *b, *a, ingress.clone()),

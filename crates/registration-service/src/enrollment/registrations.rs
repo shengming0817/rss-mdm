@@ -109,5 +109,5 @@ pub struct Row {
     pub status: super::read::RegistrationState,
     pub user_context_id: Option<uuid::Uuid>,
     pub enrollment_id: Option<uuid::Uuid>,
-    pub agent_grant_id: Option<uuid::Uuid>,
+    pub certificate_grant_id: Option<uuid::Uuid>,
 }

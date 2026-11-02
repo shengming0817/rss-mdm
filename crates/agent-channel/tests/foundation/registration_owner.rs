@@ -25,14 +25,14 @@ impl registration::Retirement for Retire {
         })
     }
 }
-impl registration::agent_pki::Clock for context::Timer {
+impl registration::certificate_issuance::Clock for context::Timer {
     fn unix_seconds(&self) -> std::result::Result<i64, registration::Error> {
         Ok(now())
     }
 }
 pub async fn assemble(
     c: &Context,
-    trust: rss_mdm_device_trust::agent::AgentTrust,
+    trust: rss_mdm_device_trust::device_identity::DeviceIdentityTrust,
 ) -> Result<agent::Service> {
     use rss_mdm_agent_wire::pki::Purpose;
     use rss_mdm_pki_service::{
@@ -61,7 +61,7 @@ pub async fn assemble(
         scep_url: None,
     }])?);
     let clock = Arc::new(context::Timer);
-    let issuer = Arc::new(registration::agent_pki::AgentIssuer::new(
+    let issuer = Arc::new(registration::certificate_issuance::DeviceIssuer::new(
         DA,
         providers,
         2,

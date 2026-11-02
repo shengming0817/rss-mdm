@@ -3,6 +3,16 @@
 use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
+        "da": {
+            "GrantRequest": schemars::schema_for!(rss_mdm_agent_wire::da::GrantRequest),
+            "Grant": schemars::schema_for!(rss_mdm_agent_wire::da::Grant),
+            "CertificateRequest": schemars::schema_for!(rss_mdm_agent_wire::da::CertificateRequest),
+            "Registration": schemars::schema_for!(rss_mdm_agent_wire::da::Registration),
+            "Progress": schemars::schema_for!(rss_mdm_agent_wire::da::Progress),
+            "ConfigurationTrust": schemars::schema_for!(rss_mdm_agent_wire::da::ConfigurationTrust),
+            "Export": schemars::schema_for!(rss_mdm_agent_wire::da::Export),
+            "SignedConfiguration": schemars::schema_for!(rss_mdm_agent_wire::da::SignedConfiguration),
+        },
         "enterprise": {
             "KeyRegistration": schemars::schema_for!(rss_mdm_agent_wire::enterprise::KeyRegistration),
             "NativeProof": schemars::schema_for!(rss_mdm_agent_wire::enterprise::NativeProof),

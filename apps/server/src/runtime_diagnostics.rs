@@ -698,6 +698,7 @@ impl RuntimeDiagnostics {
                 ChannelName::Signing => {
                     match rss_mdm_task_trust::trust::check_revision(
                         rss_mdm_install_support::StorageProfile::Mdm,
+                        rss_mdm_task_trust::Use::AgentTask,
                         &mut tx,
                         self.tenant,
                         *revision as u64,

@@ -174,15 +174,38 @@ async fn exercise(c: &Context) -> Result<()> {
         )
         .await?;
     assert_eq!(binding.registration_id, registration);
-    let loaded = rss_mdm_task_trust::trust::load(DA, &mut tx, c.tenant, 1, &protection).await?;
+    let loaded = rss_mdm_task_trust::trust::load(
+        DA,
+        rss_mdm_task_trust::Use::AgentTask,
+        &mut tx,
+        c.tenant,
+        1,
+        &protection,
+    )
+    .await?;
     let signing = Arc::new(rss_mdm_task_trust::Signing::new(
         DA,
+        rss_mdm_task_trust::Use::AgentTask,
         c.tenant,
         Some(loaded),
     )?);
-    let mismatch = rss_mdm_task_trust::trust::load(DA, &mut tx, c.tenant, 1, &protection).await?;
+    let mismatch = rss_mdm_task_trust::trust::load(
+        DA,
+        rss_mdm_task_trust::Use::AgentTask,
+        &mut tx,
+        c.tenant,
+        1,
+        &protection,
+    )
+    .await?;
     assert!(
-        rss_mdm_task_trust::Signing::new(StorageProfile::Mdm, c.tenant, Some(mismatch)).is_err()
+        rss_mdm_task_trust::Signing::new(
+            StorageProfile::Mdm,
+            rss_mdm_task_trust::Use::AgentTask,
+            c.tenant,
+            Some(mismatch)
+        )
+        .is_err()
     );
     tx.commit().await?;
     audit_boundaries::task_trust(c, &p, signing.clone(), protection.clone(), &trust).await?;

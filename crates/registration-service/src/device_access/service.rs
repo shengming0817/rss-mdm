@@ -232,7 +232,7 @@ impl Service {
     ) -> Result<AccessChallenge, Error> {
         self.proof(employee, audit)?;
         if device.tenant() != self.tenant
-            || device.channel() != rss_mdm_inventory::Channel::Agent
+            || device.channel() != Some(rss_mdm_inventory::Channel::Agent)
             || input.operation_id.is_nil()
             || input.policy.is_nil()
         {

@@ -1,6 +1,6 @@
 //! Agent issuer deployment inputs; private CA signing keys never enter this process.
 use crate::{ConfigIssue, Error};
-use rss_mdm_registration_service::agent_pki::AgentIssuer;
+use rss_mdm_registration_service::certificate_issuance::DeviceIssuer;
 use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 #[derive(serde::Serialize, Deserialize)]
@@ -48,10 +48,10 @@ pub struct BootstrapConfig {
     pub webhooks: Vec<crate::ca_webhooks::Credentials>,
 }
 pub(crate) struct AgentPki {
-    pub issuer: Arc<AgentIssuer>,
+    pub issuer: Arc<DeviceIssuer>,
     pub bootstrap: Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
     pub origins: Vec<String>,
-    pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
+    pub pki_clock: Arc<dyn rss_mdm_registration_service::certificate_issuance::Clock>,
     clock: Arc<dyn crate::clock::Clock>,
     required_seconds: i64,
 }
@@ -110,10 +110,13 @@ impl Config {
             return Err(invalid());
         }
         let trust = Arc::new(
-            rss_mdm_device_trust::agent::AgentTrust::from_trust(device_trust, days)
-                .map_err(|_| invalid())?,
+            rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
+                device_trust,
+                days,
+            )
+            .map_err(|_| invalid())?,
         );
-        let issuer = AgentIssuer::new(
+        let issuer = DeviceIssuer::new(
             rss_mdm_install_support::StorageProfile::Mdm,
             providers,
             days,
@@ -133,7 +136,7 @@ impl Config {
     }
 }
 pub(crate) struct PkiClock(pub(crate) Arc<dyn crate::clock::Clock>);
-impl rss_mdm_registration_service::agent_pki::Clock for PkiClock {
+impl rss_mdm_registration_service::certificate_issuance::Clock for PkiClock {
     fn unix_seconds(&self) -> Result<i64, rss_mdm_registration_service::Error> {
         self.0
             .unix_seconds()

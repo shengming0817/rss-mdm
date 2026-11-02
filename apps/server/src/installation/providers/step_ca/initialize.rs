@@ -397,6 +397,7 @@ pub(in crate::installation) async fn prepare(
 fn purpose_name(p: Purpose) -> &'static str {
     match p {
         Purpose::Agent => "agent",
+        Purpose::DaDevice => "da-device",
         Purpose::Windows => "windows",
         Purpose::Apple => "apple",
         Purpose::AgentBootstrap => "agent-bootstrap",
@@ -411,20 +412,21 @@ fn resource_name(base: &str, primary: bool, tenant: Uuid) -> String {
 }
 fn channel(runtime: &Value, purpose: Purpose) -> Option<&Value> {
     runtime
-        .pointer(channel_path(purpose))
+        .pointer(channel_path(purpose)?)
         .filter(|v| v.get("trust_file").is_some())
 }
 fn channel_mut(runtime: &mut Value, purpose: Purpose) -> Option<&mut Value> {
     runtime
-        .pointer_mut(channel_path(purpose))
+        .pointer_mut(channel_path(purpose)?)
         .filter(|v| v.get("trust_file").is_some())
 }
-fn channel_path(p: Purpose) -> &'static str {
+fn channel_path(p: Purpose) -> Option<&'static str> {
     match p {
-        Purpose::Agent => "/agent_pki",
-        Purpose::Windows => "/native_protocols/windows",
-        Purpose::Apple => "/native_protocols/apple",
-        Purpose::AgentBootstrap => "/agent_pki/bootstrap",
+        Purpose::Agent => Some("/agent_pki"),
+        Purpose::DaDevice => None,
+        Purpose::Windows => Some("/native_protocols/windows"),
+        Purpose::Apple => Some("/native_protocols/apple"),
+        Purpose::AgentBootstrap => Some("/agent_pki/bootstrap"),
     }
 }
 async fn current_trust(

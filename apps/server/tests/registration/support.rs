@@ -62,10 +62,12 @@ pub fn service(
     };
     let mut trust = n.trust.clone();
     trust.purpose = Purpose::Agent;
-    let trust = Arc::new(rss_mdm_device_trust::agent::AgentTrust::from_trust(
-        rss_mdm_device_trust::DeviceTrust::new(trust, Purpose::Agent, now())?,
-        2,
-    )?);
+    let trust = Arc::new(
+        rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
+            rss_mdm_device_trust::DeviceTrust::new(trust, Purpose::Agent, now())?,
+            2,
+        )?,
+    );
     let digest = format!("{:x}", Sha256::digest(&n.root));
     let client = Arc::new(StepCa::new(
         Configuration {
@@ -83,7 +85,7 @@ pub fn service(
         scep_url: None,
     }])?);
     let clock = Arc::new(Clock);
-    let issuer = Arc::new(agent_pki::AgentIssuer::new(
+    let issuer = Arc::new(agent_pki::DeviceIssuer::new(
         rss_mdm_install_support::StorageProfile::Mdm,
         providers,
         2,
@@ -126,7 +128,7 @@ pub fn service(
     })?)
 }
 pub async fn counts(c: &Context) -> Result<(i64, i64)> {
-    Ok(sqlx::query_as("SELECT (SELECT count(*) FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='native')").bind(c.tenant.to_string()).fetch_one(&c.operator).await?)
+    Ok(sqlx::query_as("SELECT (SELECT count(*) FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_access.certificate_grants WHERE tenant_id=$1::uuid AND source='native')").bind(c.tenant.to_string()).fetch_one(&c.operator).await?)
 }
 #[derive(Serialize)]
 struct InputIdentity<'a> {

@@ -24,15 +24,15 @@ impl crate::protocol_types::Windows for Windows {
     fn retirement_request(
         &self,
         purpose: rss_mdm_registration_service::Purpose,
-    ) -> rss_mdm_windows_mdm::native::Request {
-        rss_mdm_windows_mdm::native::Request::Node {
+    ) -> Result<rss_mdm_windows_mdm::native::Request, Error> {
+        Ok(rss_mdm_windows_mdm::native::Request::Node {
             node: "./Device/Vendor/MSFT/DMClient/Unenroll".into(),
             instance: vec![],
             operation: rss_mdm_windows_mdm::native::Verb::Exec,
             value: Some(rss_mdm_windows_mdm::native::Value::Text(
-                self.provider(purpose),
+                self.provider(purpose)?,
             )),
-        }
+        })
     }
 
     fn prepare<'a>(
@@ -277,7 +277,7 @@ async fn prepare(
         stopped,
         declared_summaries,
         user_available: authenticated && login_user,
-        provider_id: windows.provider(p.purpose()),
+        provider_id: windows.provider(p.purpose())?,
         management_urls: windows.management_urls(p.purpose()),
         input,
         history: history.expected,

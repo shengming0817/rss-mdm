@@ -3,9 +3,10 @@ execution_roles AS (SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_ha
 reachable AS (SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))),
 trust_tables AS (
  SELECT c.*,expected.columns FROM (VALUES
-  ('mdm_task_signing.heads',ARRAY['tenant_id','revision']),
-  ('mdm_task_signing.versions',ARRAY['tenant_id','revision','body','digest']),
-  ('mdm_task_signing.acknowledgements',ARRAY['tenant_id','registration','generation','revision','digest'])
+  ('mdm_task_signing.heads',ARRAY['tenant_id','usage','revision']),
+  ('mdm_task_signing.versions',ARRAY['tenant_id','usage','revision','body','digest']),
+  ('mdm_task_signing.acknowledgements',ARRAY['tenant_id','usage','registration','generation','revision','digest']),
+  ('mdm_task_signing.keys',ARRAY['tenant_id','usage','key_id','max_verify_until'])
  ) expected(name,columns) JOIN pg_class c ON c.oid=expected.name::regclass
 ), collection_columns AS (SELECT
  ARRAY['tenant_id','registration','source','epoch','id','scope','sequence','started_at','sealed_at','attempts','result','reason','batch','digest','input_digest'] AS reads,
@@ -28,8 +29,8 @@ SELECT
  AND has_schema_privilege(current_user,'mdm_telemetry','USAGE')
  AND NOT has_schema_privilege(current_user,'mdm_telemetry','CREATE')
 
- AND NOT EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,'mdm_access.agent_issuances','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
- AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid='mdm_access.agent_issuances'::regclass AND a.attnum>0 AND NOT a.attisdropped
+ AND NOT EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,'mdm_access.certificate_issuances','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid='mdm_access.certificate_issuances'::regclass AND a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,a.attrelid,a.attnum,'SELECT')<>(a.attname IN('tenant_id','credential','not_after'))
  OR EXISTS(SELECT 1 FROM reachable r WHERE has_column_privilege(r.oid,a.attrelid,a.attnum,'INSERT,UPDATE,REFERENCES')
  OR (has_column_privilege(r.oid,a.attrelid,a.attnum,'SELECT') AND a.attname NOT IN('tenant_id','credential','not_after')))))
@@ -42,11 +43,11 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM trust_tables t JOIN pg_attribute a ON a.attrelid=t.oid
   WHERE a.attnum>0 AND NOT a.attisdropped AND (
    has_column_privilege(current_user,t.oid,a.attnum,'SELECT')<>(a.attname=ANY(t.columns))
-   OR EXISTS(SELECT 1 FROM reachable r WHERE has_column_privilege(r.oid,t.oid,a.attnum,'INSERT,UPDATE,REFERENCES')
+   OR has_column_privilege(current_user,t.oid,a.attnum,'UPDATE')<>(t.relname='keys' AND a.attname='max_verify_until')
+   OR EXISTS(SELECT 1 FROM reachable r WHERE has_column_privilege(r.oid,t.oid,a.attnum,'INSERT,REFERENCES')
+    OR (has_column_privilege(r.oid,t.oid,a.attnum,'UPDATE') AND NOT (t.relname='keys' AND a.attname='max_verify_until'))
     OR (has_column_privilege(r.oid,t.oid,a.attnum,'SELECT') AND NOT a.attname=ANY(t.columns)))))
- AND NOT EXISTS(SELECT 1 FROM reachable r
-  WHERE has_table_privilege(r.oid,'mdm_task_signing.keys','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
-  OR has_any_column_privilege(r.oid,'mdm_task_signing.keys','SELECT,INSERT,UPDATE,REFERENCES'))
+
 
  AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid='mdm_access.collection_runs'::regclass)
  AND NOT EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,'mdm_access.collection_runs','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))

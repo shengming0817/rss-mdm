@@ -295,7 +295,7 @@ pub(crate) async fn status_on(
     principal: &DevicePrincipal,
     batch: Uuid,
 ) -> Result<TelemetryReceipt, Error> {
-    if principal.channel() != rss_mdm_inventory::Channel::Agent
+    if principal.channel() != Some(rss_mdm_inventory::Channel::Agent)
         || principal.purpose() != rss_mdm_registration_service::device::Purpose::Primary
     {
         return Err(Error::Denied);

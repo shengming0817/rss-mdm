@@ -1,0 +1,393 @@
+{
+  "$defs": {
+    "AccessConfiguration": {
+      "additionalProperties": false,
+      "description": "Common product configuration; Apple protocol payloads remain with the Apple owner.",
+      "properties": {
+        "enabled": {
+          "description": "Enable the platform's RSS login integration.",
+          "type": "boolean"
+        },
+        "mac": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoginConfiguration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Device-wide Mac profile settings; absence excludes Mac integration from this policy."
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit role convergence; null preserves existing role, new accounts default standard."
+        },
+        "selfEnrollment": {
+          "description": "Permit the first association to the currently authenticated interactive local account.",
+          "type": "boolean"
+        },
+        "windows": {
+          "$ref": "#/$defs/AccessWindowsConfiguration",
+          "description": "Explicit admitted Windows account authorities."
+        }
+      },
+      "required": [
+        "windows",
+        "selfEnrollment",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "AccessRole": {
+      "description": "Requested account privilege. Absence preserves an existing account's privilege.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary local user.",
+          "type": "string"
+        },
+        {
+          "const": "administrator",
+          "description": "Local administrator, requiring explicit RSS device-account authorization.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessWindowsConfiguration": {
+      "description": "Current Windows policy, with no implicit fallback between authentication mechanisms.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "This policy does not target Windows.",
+          "properties": {
+            "kind": {
+              "const": "disabled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Password plus the RSS offline factor.",
+          "properties": {
+            "accounts": {
+              "description": "Explicit admitted account authorities.",
+              "items": {
+                "$ref": "#/$defs/AccessWindowsKind"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "rss_factor",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "accounts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Pure Entra join, TPM 2.0 and PIN; Windows owns enrollment and authentication.",
+          "properties": {
+            "kind": {
+              "const": "whfb",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessWindowsKind": {
+      "description": "Windows account classes admitted by the selected policy.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Local SAM account.",
+          "type": "string"
+        },
+        {
+          "const": "active_directory",
+          "description": "AD domain account.",
+          "type": "string"
+        },
+        {
+          "const": "entra",
+          "description": "Entra directory account.",
+          "type": "string"
+        }
+      ]
+    },
+    "Audience": {
+      "description": "Authorized recipients of an immutable configuration.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Any current DA device in this tenant.",
+          "properties": {
+            "kind": {
+              "const": "tenant",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One exact endpoint registration generation.",
+          "properties": {
+            "device": {
+              "description": "Registration-owner allocated endpoint identity.",
+              "type": "string"
+            },
+            "generation": {
+              "description": "Positive registration generation, checked against the current mapping.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "device",
+              "type": "string"
+            },
+            "registration": {
+              "description": "Registration identity; renewed credentials retain the same generation.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "device",
+            "registration",
+            "generation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AuthenticationMode": {
+      "description": "Device-wide login mode; every user on one Mac consumes the same system profile.",
+      "oneOf": [
+        {
+          "const": "secure_enclave",
+          "description": "Existing Secure Enclave user-key protocol.",
+          "type": "string"
+        },
+        {
+          "const": "password",
+          "description": "Device-signed Apple Password request, verified by the selected password authority.",
+          "type": "string"
+        }
+      ]
+    },
+    "Configuration": {
+      "additionalProperties": false,
+      "description": "Typed DA inner configuration and all signed authority coordinates.",
+      "properties": {
+        "audience": {
+          "$ref": "#/$defs/Audience",
+          "description": "Recipients bound into the signature."
+        },
+        "content": {
+          "$ref": "#/$defs/AccessConfiguration",
+          "description": "Validated platform account and login configuration."
+        },
+        "delivery": {
+          "$ref": "#/$defs/DeliveryPermission",
+          "description": "Permitted delivery class; it does not attest the actual transport."
+        },
+        "epoch": {
+          "description": "Positive configuration authority epoch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "expiresAt": {
+          "description": "Exclusive validity limit in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "description": "Stable configuration identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "issuedAt": {
+          "description": "Signing validity start in Unix seconds, checked against server time.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "revision": {
+          "description": "Positive monotonically increasing publication revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "serviceId": {
+          "description": "Stable installation instance, independent of its network location.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "Tenant owning this identity and signing authority.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "serviceId",
+        "tenant",
+        "id",
+        "revision",
+        "epoch",
+        "audience",
+        "delivery",
+        "issuedAt",
+        "expiresAt",
+        "content"
+      ],
+      "type": "object"
+    },
+    "DeliveryPermission": {
+      "description": "Permission to transport content is separate from proof of its actual delivery channel.",
+      "oneOf": [
+        {
+          "const": "da",
+          "description": "DA transport is permitted.",
+          "type": "string"
+        },
+        {
+          "const": "managed_mandatory",
+          "description": "Managed mandatory delivery is required by the consuming policy.",
+          "type": "string"
+        }
+      ]
+    },
+    "LoginConfiguration": {
+      "additionalProperties": false,
+      "description": "Business configuration compiled into one device-wide System profile. No deployment secrets.",
+      "properties": {
+        "authentication": {
+          "$ref": "#/$defs/AuthenticationMode",
+          "description": "Chosen native authentication method."
+        },
+        "filevault": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for Apple silicon FileVault unlock."
+        },
+        "login": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for the login window."
+        },
+        "maintenanceAccounts": {
+          "description": "Exact local maintenance account short names excluded from platform login policy.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offlineGraceSeconds": {
+          "description": "Explicit offline allowance, in seconds; never synthesized by the server.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "passwordProvider": {
+          "description": "Configured password provider identity; required only in Password mode.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registrationGraceSeconds": {
+          "description": "Explicit allowance for unregistered accounts, in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "unlock": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for screen unlock."
+        }
+      },
+      "required": [
+        "authentication",
+        "login",
+        "unlock",
+        "filevault",
+        "maintenanceAccounts"
+      ],
+      "type": "object"
+    },
+    "LoginPolicy": {
+      "description": "An explicit platform login policy, independent for login, unlock and FileVault.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Preserve native local login; do not emit an enforcing platform policy.",
+          "type": "string"
+        },
+        {
+          "const": "attempt",
+          "description": "Try the configured password authority with Apple's offline behavior.",
+          "type": "string"
+        },
+        {
+          "const": "require",
+          "description": "Require the configured authority; grace periods must be explicitly selected.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "An administrator export request with an immutable operation identity.",
+  "properties": {
+    "configuration": {
+      "$ref": "#/$defs/Configuration",
+      "description": "Complete typed configuration covered by the signature."
+    },
+    "operationId": {
+      "description": "Stable caller operation identity; changed input under the same ID conflicts.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operationId",
+    "configuration"
+  ],
+  "title": "Export",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/Export"
+}

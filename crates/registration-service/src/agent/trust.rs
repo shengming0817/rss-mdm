@@ -37,13 +37,7 @@ impl Service {
         self.write(a, (self, p, input, trust, d, a), |ctx, c| {
             Box::pin(async move {
                 let (service, p, input, trust, d, a) = ctx;
-                crate::device::store::revalidate_source(
-                    profile,
-                    c,
-                    p,
-                    rss_mdm_inventory::ReportSource::AgentBuiltin,
-                )
-                .await?;
+                crate::device::require_use_in(c, p, service.consumer_use()).await?;
                 let tenant = service.tenant.to_string();
                 let actor = p.registration().to_string();
                 let hash = Sha256::digest(d.as_bytes()).to_vec();
@@ -126,13 +120,7 @@ impl Service {
         self.write(a, (self, p, input), |ctx, c| {
             Box::pin(async move {
                 let (service, p, input) = ctx;
-                crate::device::store::revalidate_source(
-                    profile,
-                    c,
-                    p,
-                    rss_mdm_inventory::ReportSource::AgentBuiltin,
-                )
-                .await?;
+                crate::device::require_use_in(c, p, service.consumer_use()).await?;
                 let replay = rss_mdm_pki_service::observations::record_in(
                     profile,
                     c,

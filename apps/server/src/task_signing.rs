@@ -33,6 +33,7 @@ pub(crate) async fn open(
     .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     let loaded = rss_mdm_task_trust::trust::load(
         rss_mdm_install_support::StorageProfile::Mdm,
+        rss_mdm_task_trust::Use::AgentTask,
         &mut tx,
         tenant,
         config.revision,

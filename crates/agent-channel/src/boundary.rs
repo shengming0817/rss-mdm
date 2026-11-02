@@ -276,8 +276,8 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/agent/enroll/bootstrap/scep/notify" | "/bootstrap/scep/notify" => {
             "agent_bootstrap_issued"
         }
-        "/api/v1/agent/enroll/certificates" | "/certificates" => "agent_certificate_authorize",
-        "/api/v1/agent/enroll/activate" | "/activate" => "agent_certificate_activate",
+        "/api/v1/agent/enroll/certificates" | "/certificates" => "device_certificate_authorize",
+        "/api/v1/agent/enroll/activate" | "/activate" => "device_certificate_activate",
         "/api/v1/agent/runtime/current-user" | "/current-user" => "agent_current_user_change",
         "/api/v1/agent/runtime/reports" | "/reports" => "agent_report",
         "/api/v1/agent/runtime/reports/{id}" | "/reports/{id}" => "agent_report_read",
@@ -298,7 +298,7 @@ mod tests {
     fn registration_rejections_keep_the_agent_action() {
         assert_eq!(
             route_action("/api/v1/agent/enroll/activate"),
-            "agent_certificate_activate"
+            "device_certificate_activate"
         );
     }
 }

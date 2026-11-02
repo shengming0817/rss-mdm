@@ -1,7 +1,15 @@
 //! Fixed, owner-owned SQL. Only these source literals can select objects.
 use rss_mdm_install_support::StorageProfile;
 pub(crate) struct Statements {
-    pub device_authenticate_agent_in_1: &'static str,
+    pub identity_access_contract: &'static str,
+    pub identity_object_manifest: &'static str,
+    pub device_trust_consumers: &'static str,
+    pub da_registration: &'static str,
+    pub da_current_registration: &'static str,
+    pub da_insert_grant: &'static str,
+    pub da_grant_operation: &'static str,
+    pub device_installation_identity: &'static str,
+    pub device_authenticate_endpoint_in_1: &'static str,
     pub quotas_configuration_on_1: &'static str,
     pub admission_read_in_1: &'static str,
     pub admission_require_request_in_1: &'static str,
@@ -42,22 +50,22 @@ pub(crate) struct Statements {
     pub agent_native_create_in_1: &'static str,
     pub agent_native_create_in_2: &'static str,
     pub agent_native_source_2: &'static str,
-    pub agent_grants_request_1: &'static str,
-    pub agent_grants_request_2: &'static str,
-    pub agent_grants_request_3: &'static str,
-    pub agent_grants_authorize_target_1: &'static str,
-    pub agent_grants_authorize_target_2: &'static str,
-    pub agent_grants_revoke_1: &'static str,
-    pub agent_grants_renewal_status_1: &'static str,
-    pub agent_grants_authorize_target_3: &'static str,
-    pub agent_grants_revoke_2: &'static str,
-    pub agent_grants_recovery_1: &'static str,
-    pub agent_grants_recovery_2: &'static str,
-    pub agent_grants_recovery_3: &'static str,
-    pub agent_grants_progress_1: &'static str,
-    pub agent_grants_renew_1: &'static str,
-    pub agent_grants_renew_2: &'static str,
-    pub agent_grants_renew_3: &'static str,
+    pub certificate_grants_request_1: &'static str,
+    pub certificate_grants_request_2: &'static str,
+    pub certificate_grants_request_3: &'static str,
+    pub certificate_grants_authorize_target_1: &'static str,
+    pub certificate_grants_authorize_target_2: &'static str,
+    pub certificate_grants_revoke_1: &'static str,
+    pub certificate_grants_renewal_status_1: &'static str,
+    pub certificate_grants_authorize_target_3: &'static str,
+    pub certificate_grants_revoke_2: &'static str,
+    pub certificate_grants_recovery_1: &'static str,
+    pub certificate_grants_recovery_2: &'static str,
+    pub certificate_grants_recovery_3: &'static str,
+    pub certificate_grants_progress_1: &'static str,
+    pub certificate_grants_renew_1: &'static str,
+    pub certificate_grants_renew_2: &'static str,
+    pub certificate_grants_renew_3: &'static str,
     pub agent_connections_retirement_blockers_on_1: &'static str,
     pub agent_connections_retirement_blockers_on_2: &'static str,
     pub agent_connections_signer_on_1: &'static str,
@@ -298,13 +306,21 @@ macro_rules! define_storage {
     ($module:ident, $access_schema:literal, $access_schema_decl:literal, $access_path:literal, $access_role:literal, $installation:literal, $mdm_registration_tasks_agent_admission:literal, $mdm_registration_tasks_device_recovery:literal, $mdm_registration_tasks_installation_status:literal, $mdm_registration_tasks_operations:literal, $mdm_registration_tasks_policy_recovery:literal, $mdm_registration_tasks_receipts:literal, $mdm_registration_tasks_recovery_key:literal, $mdm_registration_tasks_requests:literal, $mdm_registration_tasks_retirement_commands:literal, $mdm_registration_tasks_runs:literal, $mdm_registration_tasks_save_retired_command:literal, $mdm_registration_tasks_save_retired_run:literal, $mdm_registration_tasks_windows_pending_operations:literal, $mdm_registration_tasks_windows_wake_candidates:literal, $mdm_registration_tasks_schema:literal, $mdm_policy_policies:literal, $mdm_policy_triggers:literal, $mdm_policy_versions:literal, $mdm_policy_schema:literal, $owner:literal, $command_runtime:literal, $inventory_runtime:literal, $scope_runtime:literal, $policy_runtime:literal, $resource_runtime:literal, $software_runtime:literal, $content_runtime:literal, $telemetry_runtime:literal, $software_driver:literal, $identity_runtime:literal, $create_mdm_registration_tasks:literal, $create_access:literal, $native_retirement_clear:literal, $index_38:literal, $index_39:literal, $index_40:literal, $index_41:literal, $index_42:literal, $index_43:literal, $index_44:literal, $index_45:literal, $index_46:literal, $index_47:literal, $index_48:literal, $index_49:literal, $index_50:literal, $index_51:literal, $index_52:literal, $index_53:literal, $index_54:literal, $index_55:literal, $index_56:literal, $index_57:literal, $index_58:literal, $index_59:literal, $index_60:literal, $index_61:literal, $index_62:literal, $index_63:literal, $index_64:literal, $index_65:literal, $index_66:literal, $index_67:literal, $index_68:literal, $index_69:literal, $index_70:literal, $index_71:literal, $index_72:literal, $index_73:literal, $index_74:literal, $index_75:literal, $index_76:literal, $index_77:literal, $index_78:literal, $index_79:literal, $index_80:literal, $index_81:literal, $index_82:literal, $index_83:literal, $index_84:literal, $index_85:literal, $index_86:literal, $index_87:literal, $index_88:literal, $contract_table_89:literal, $contract_table_90:literal, $contract_table_91:literal, $contract_table_92:literal, $contract_table_93:literal, $contract_table_94:literal, $contract_table_95:literal, $contract_table_96:literal, $contract_table_97:literal, $contract_table_98:literal, $contract_table_99:literal, $contract_table_100:literal, $contract_table_101:literal, $contract_table_102:literal, $contract_table_103:literal, $contract_table_104:literal, $contract_table_105:literal, $contract_table_106:literal, $contract_table_107:literal, $contract_table_108:literal, $contract_table_109:literal, $contract_table_110:literal, $contract_table_111:literal, $access_contract_tables:literal, $access_contract_functions:literal, $access_contract_external_relations:literal, $contract_table_115:literal, $contract_table_116:literal, $contract_table_117:literal, $contract_table_118:literal, $enrollment_access_contract_tables:literal, $enrollment_access_contract_functions:literal, $default_agent_values:literal, $pki_certificates:literal, $pki_signing:literal, $trigger_path:literal) => {
         mod $module {
             pub(super) const SQL: super::Statements = super::Statements {
-                device_authenticate_agent_in_1: concat!("SELECT r.id,r.device,r.generation,r.epoch,r.state,k.id AS credential,k.state AS credential_state,i.identity FROM ", $access_schema, "agent_issuances i JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) JOIN ", $access_schema, "registrations r ON(r.tenant_id,r.id)=(k.tenant_id,k.registration) WHERE i.tenant_id=$1::uuid AND i.fingerprint=$2 AND r.channel='agent'"),
+                identity_access_contract: concat!(r###"{"tables":[{"###, $contract_table_89, r###","read_write":false,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_90, r###","read_write":true,"updates":["state"],"delete_policy":null},{"###, $contract_table_91, r###","read_write":true,"updates":["retirement"],"delete_policy":null},{"###, $contract_table_92, r###","read_write":true,"updates":[],"delete_policy":null},{"###, $contract_table_93, r###","read_write":true,"updates":[],"delete_policy":null},{"###, $contract_table_94, r###","read_write":true,"updates":["state","next_command","ready","first_authenticated_at","last_communication_received_at"],"delete_policy":null},{"###, $contract_table_95, r###","read_write":true,"updates":["enabled","next_sequence"],"delete_policy":null},{"###, $contract_table_96, r###","read_write":true,"updates":["state","password_digest","password_version","credential_ref","expires_at","account_version","account_reference","account_challenge","organization_version","organization_challenge"],"delete_policy":null},{"###, $contract_table_97, r###","read_write":true,"updates":["actor","instance","state","device"],"delete_policy":null,"insert_policy":"current_user<>'"###, $command_runtime, r###"'::nameorsource='native'::text"},{"###, $contract_table_98, r###","read_write":true,"updates":["state","certificate_chain","metadata","fingerprint","activation_operation","activation_digest","activation_result","credential"],"delete_policy":null},{"###, $contract_table_100, r###","read_write":true,"updates":["revision","instance","principal"],"delete_policy":null},{"###, $contract_table_105, r###","read_write":true,"updates":["revision","registration","generation","session_reference","confirmed_at"],"delete_policy":null}],"functions":[],"external_relations":[],"verified_schemas":[]}"###),
+                identity_object_manifest: concat!(r###"{"tables":[""###,$access_schema,r###"asset_authority_history"###,r###"",""###,$access_schema,r###"certificate_grants"###,r###"",""###,$access_schema,r###"certificate_issuances"###,r###"",""###,$access_schema,r###"credentials"###,r###"",""###,$access_schema,r###"current_users"###,r###"",""###,$access_schema,r###"devices"###,r###"",""###,$access_schema,r###"grants"###,r###"",""###,$access_schema,r###"registration_operations"###,r###"",""###,$access_schema,r###"registration_users"###,r###"",""###,$access_schema,r###"registrations"###,r###"",""###,$access_schema,r###"report_sources"###,r###"",""###,$access_schema,r###"requests"###,r###""],"functions":[""###,$access_schema,r###"capture_asset_authority"],"views":[]}"###),
+                device_trust_consumers: concat!("SELECT DISTINCT r.id,r.generation FROM ", $access_schema, "registrations r JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN ", $access_schema, "certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE r.tenant_id=$1::uuid AND r.state='active' AND k.state='active' AND ($3::text IS NULL OR r.device=$3) AND i.not_after>floor(extract(epoch FROM clock_timestamp()))::bigint AND (($2='agent_task' AND r.channel='agent' AND r.purpose='primary' AND EXISTS(SELECT 1 FROM ", $access_schema, "report_sources s WHERE(s.tenant_id,s.registration)=(r.tenant_id,r.id) AND s.source='agent.builtin' AND s.enabled)) OR ($2='da_configuration' AND r.channel IS NULL AND r.purpose='da_device'))"),
+                da_registration: concat!("SELECT device,state FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=$2 AND purpose='da_device' AND channel IS NULL"),
+                da_current_registration: concat!("SELECT r.device,k.id AS credential FROM ", $access_schema, "registrations r JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.purpose='da_device' AND r.channel IS NULL AND r.state='active' AND k.state='active'"),
+                da_insert_grant: concat!("INSERT INTO ", $access_schema, "certificate_grants(tenant_id,id,certificate_purpose,operation_id,source,actor,instance,device,secret_digest,request_digest,spki,state,expires_at,target_registration,predecessor) VALUES($1::uuid,$2,'da_device',$3,$4,$5,$6,$7,$8,$9,$10,'available',clock_timestamp()+$11*interval '1 second',$12,$13)"),
+                da_grant_operation: concat!("SELECT *,floor(extract(epoch FROM expires_at))::bigint AS expiry FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND certificate_purpose='da_device' AND source=$2 AND operation_id=$3"),
+                device_installation_identity: concat!("SELECT instance_id FROM ", $installation),
+                device_authenticate_endpoint_in_1: concat!("SELECT r.id,r.device,r.generation,r.epoch,r.state,k.id AS credential,k.state AS credential_state,i.identity FROM ", $access_schema, "certificate_issuances i JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) JOIN ", $access_schema, "registrations r ON(r.tenant_id,r.id)=(k.tenant_id,k.registration) WHERE i.tenant_id=$1::uuid AND i.fingerprint=$2 AND r.purpose=$3 AND k.channel IS NOT DISTINCT FROM r.channel"),
                 quotas_configuration_on_1: concat!("SELECT revision,agent,windows_mdm,macos_mdm FROM ", $access_schema, "registration_quota_settings WHERE tenant_id=$1::uuid AND subject=$2"),
                 admission_read_in_1: concat!("SELECT revision,paused FROM ", $access_schema, "registration_admission WHERE tenant_id=$1::uuid AND channel=$2"),
                 admission_require_request_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "registrations r JOIN ", $access_schema, "requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND q.id=$2 AND r.state='active' AND (r.first_authenticated_at IS NOT NULL OR (q.source='mdm.apple' AND q.state='bound')))"),
                 admission_change_1: concat!("INSERT INTO ", $access_schema, "registration_admission(tenant_id,channel,revision,paused) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,channel) DO UPDATE SET revision=EXCLUDED.revision,paused=EXCLUDED.paused"),
                 admission_require_windows_in_1: concat!("SELECT first_authenticated_at IS NOT NULL FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active'"),
-                agent_grant_row_1: concat!("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE"),
+                agent_grant_row_1: concat!("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE"),
                 lifecycle_retire_1: concat!("SELECT device FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=$2"),
                 lifecycle_retire_2: concat!("SELECT id FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE"),
                 lifecycle_retire_3: concat!("SELECT id FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND parent_id=$2 AND state='active' ORDER BY id FOR UPDATE"),
@@ -313,7 +329,7 @@ macro_rules! define_storage {
                 lifecycle_authorize_reenrollment_in_1: concat!("SELECT retirement FROM ", $access_schema, "devices WHERE tenant_id=$1::uuid AND id=$2"),
                 lifecycle_authorize_reenrollment_in_2: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "devices d JOIN ", $access_schema, "registrations r ON(r.tenant_id,r.device)=(d.tenant_id,d.id) WHERE d.tenant_id=$1::uuid AND d.retirement=$2 AND r.state='active')"),
                 lifecycle_authorize_reenrollment_in_3: concat!("UPDATE ", $access_schema, "requests r SET state='cancelled' FROM ", $access_schema, "grants g WHERE(r.tenant_id,r.grant_id)=(g.tenant_id,g.id) AND g.tenant_id=$1::uuid AND g.device=$2 AND r.state='pending'"),
-                lifecycle_authorize_reenrollment_in_4: concat!("UPDATE ", $access_schema, "agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2 AND state<>'revoked'"),
+                lifecycle_authorize_reenrollment_in_4: concat!("UPDATE ", $access_schema, "certificate_grants SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2 AND state<>'revoked'"),
                 lifecycle_authorize_reenrollment_in_5: concat!("UPDATE ", $access_schema, "devices SET retirement=NULL WHERE tenant_id=$1::uuid AND id=$2"),
                 operations_read_1: concat!("SELECT digest,result,instance FROM ", $access_schema, "registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid"),
                 operations_save_result_1: concat!("INSERT INTO ", $access_schema, "registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6,$7)"),
@@ -332,17 +348,17 @@ macro_rules! define_storage {
                 enrollment_store_mark_bound_in_1: concat!("UPDATE ", $access_schema, "requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND password_version=$3 AND expires_at>clock_timestamp() AND self_service=$4"),
                 enrollment_read_enrollment_status_1: concat!("SELECT q.state,q.source,q.authority_kind,CASE q.authority_kind WHEN 'apple_account' THEN q.account_version WHEN 'apple_ade' THEN q.organization_version WHEN 'windows_entra' THEN q.organization_version ELSE q.password_version END AS authorization_version,q.windows_profile,q.credential_ref,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,floor(extract(epoch FROM statement_timestamp()))::bigint AS now,r.id AS registration,r.generation,r.state AS registration_state,floor(extract(epoch FROM r.first_authenticated_at))::bigint AS first_authenticated_at,EXISTS(SELECT 1 FROM ", $access_schema, "report_sources s WHERE s.tenant_id=r.tenant_id AND s.registration=r.id AND s.source=q.source AND s.enabled) AS source_enabled FROM ", $access_schema, "requests q JOIN ", $access_schema, "grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN ", $access_schema, "registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND g.device=$3 AND q.issuance_operation IS NOT NULL AND (NOT $4 OR (q.self_service AND g.instance=$5 AND g.actor=$6))"),
                 enrollment_read_record_authenticated_in_1: concat!("UPDATE ", $access_schema, "registrations SET first_authenticated_at=clock_timestamp() WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active' AND first_authenticated_at IS NULL"),
-                enrollment_registrations_list_1: concat!("SELECT jsonb_build_object('registrationId',r.id,'userContextId',CASE WHEN q.windows_profile='Full' THEN r.id END,'enrollmentId',r.request_id,'agentGrantId',r.agent_grant_id,'source',coalesce(q.source,'agent.builtin'),'generation',r.generation,'status',r.state) FROM ", $access_schema, "registrations r LEFT JOIN ", $access_schema, "requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id="),
+                enrollment_registrations_list_1: concat!("SELECT jsonb_build_object('registrationId',r.id,'userContextId',CASE WHEN q.windows_profile='Full' THEN r.id END,'enrollmentId',r.request_id,'agentGrantId',r.certificate_grant_id,'source',coalesce(q.source,'agent.builtin'),'generation',r.generation,'status',r.state) FROM ", $access_schema, "registrations r LEFT JOIN ", $access_schema, "requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id="),
                 quotas_management_change_1: concat!("INSERT INTO ", $access_schema, "registration_quota_settings(tenant_id,subject,revision,agent,windows_mdm,macos_mdm) VALUES($1::uuid,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,subject) DO UPDATE SET revision=EXCLUDED.revision,agent=EXCLUDED.agent,windows_mdm=EXCLUDED.windows_mdm,macos_mdm=EXCLUDED.macos_mdm"),
                 agent_native_source_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2 AND installation=$3 AND active AND state<>'revoked' AND (state='consumed' OR deadline>extract(epoch FROM clock_timestamp())) AND source->>'registration'=$4 AND source->>'credential'=$5 AND source->>'generation'=$6)"),
-                agent_native_native_grant_row_1: concat!("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND id=$2 AND source='native'"),
+                agent_native_native_grant_row_1: concat!("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND id=$2 AND source='native'"),
                 agent_native_create_in_1: concat!(r###"
-SELECT id FROM "###, $access_schema, r###"agent_grants WHERE tenant_id=$1::uuid AND source='native' AND
+SELECT id FROM "###, $access_schema, r###"certificate_grants WHERE tenant_id=$1::uuid AND source='native' AND
 native_authority->>'installation'= $2
 "###),
                 agent_native_create_in_2: concat!(r###"
 INSERT INTO
-"###, $access_schema, r###"agent_grants(tenant_id,
+"###, $access_schema, r###"certificate_grants(tenant_id,
 id,
 operation_id,
 source,
@@ -378,32 +394,32 @@ $12)
 SELECT locator FROM "###, $access_schema, r###"credentials WHERE tenant_id=$1::uuid AND id=$2 AND
 registration=$3 AND channel='mdm' AND state='active'
 "###),
-                agent_grants_request_1: concat!("SELECT id FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND source='browser' AND operation_id=$2"),
-                agent_grants_request_2: concat!("SELECT count(*) FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND state='pending' AND expires_at>clock_timestamp()"),
-                agent_grants_request_3: concat!("INSERT INTO ", $access_schema, "agent_grants(tenant_id,id,operation_id,source,device,platform,secret_digest,request_digest,spki,state,created_at,expires_at) VALUES($1::uuid,$2,$3,'browser',$4,$5,$6,$7,$8,'pending',statement_timestamp(),statement_timestamp()+make_interval(secs=>$9))"),
-                agent_grants_authorize_target_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND device=$2) AND NOT EXISTS(SELECT 1 FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active')"),
-                agent_grants_authorize_target_2: concat!("UPDATE ", $access_schema, "agent_grants SET device=$3 WHERE tenant_id=$1::uuid AND id=$2 AND state='pending'"),
-                agent_grants_revoke_1: concat!("SELECT id FROM ", $access_schema, "agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$2"),
-                agent_grants_renewal_status_1: concat!("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND source='renewal' AND operation_id=$2"),
-                agent_grants_authorize_target_3: concat!(r###"
-UPDATE "###, $access_schema, r###"agent_grants SET actor=$3,instance=$4,state='available' WHERE
+                certificate_grants_request_1: concat!("SELECT id FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND source='browser' AND operation_id=$2"),
+                certificate_grants_request_2: concat!("SELECT count(*) FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND state='pending' AND expires_at>clock_timestamp()"),
+                certificate_grants_request_3: concat!("INSERT INTO ", $access_schema, "certificate_grants(tenant_id,id,operation_id,source,device,platform,secret_digest,request_digest,spki,state,created_at,expires_at) VALUES($1::uuid,$2,$3,'browser',$4,$5,$6,$7,$8,'pending',statement_timestamp(),statement_timestamp()+make_interval(secs=>$9))"),
+                certificate_grants_authorize_target_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND device=$2) AND NOT EXISTS(SELECT 1 FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active')"),
+                certificate_grants_authorize_target_2: concat!("UPDATE ", $access_schema, "certificate_grants SET device=$3 WHERE tenant_id=$1::uuid AND id=$2 AND state='pending'"),
+                certificate_grants_revoke_1: concat!("SELECT id FROM ", $access_schema, "certificate_issuances WHERE tenant_id=$1::uuid AND grant_id=$2"),
+                certificate_grants_renewal_status_1: concat!("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND source='renewal' AND operation_id=$2"),
+                certificate_grants_authorize_target_3: concat!(r###"
+UPDATE "###, $access_schema, r###"certificate_grants SET actor=$3,instance=$4,state='available' WHERE
 tenant_id=$1::uuid AND id=$2
 "###),
-                agent_grants_revoke_2: concat!(r###"
-UPDATE "###, $access_schema, r###"agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2
+                certificate_grants_revoke_2: concat!(r###"
+UPDATE "###, $access_schema, r###"certificate_grants SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2
 "###),
-                agent_grants_recovery_1: concat!(r###"
+                certificate_grants_recovery_1: concat!(r###"
 SELECT r.device,r.state,k.id FROM "###, $access_schema, "registrations r JOIN ", $access_schema, r###"credentials k
 ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND
 r.channel='agent' AND k.state='active' FOR UPDATE OF r,k
 "###),
-                agent_grants_recovery_2: concat!(r###"
-SELECT id FROM "###, $access_schema, r###"agent_grants WHERE tenant_id=$1::uuid AND source='recovery' AND
+                certificate_grants_recovery_2: concat!(r###"
+SELECT id FROM "###, $access_schema, r###"certificate_grants WHERE tenant_id=$1::uuid AND source='recovery' AND
 operation_id=$2
 "###),
-                agent_grants_recovery_3: concat!(r###"
+                certificate_grants_recovery_3: concat!(r###"
 INSERT INTO
-"###, $access_schema, r###"agent_grants(tenant_id,
+"###, $access_schema, r###"certificate_grants(tenant_id,
 id,
 operation_id,
 source,
@@ -436,22 +452,22 @@ statement_timestamp()+make_interval(secs=>$11),
 $12,
 $13)
 "###),
-                agent_grants_progress_1: concat!(r###"
-SELECT id,state,activation_result FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND
+                certificate_grants_progress_1: concat!(r###"
+SELECT id,state,activation_result FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND
 grant_id=$2
 "###),
-                agent_grants_renew_1: concat!(r###"
+                certificate_grants_renew_1: concat!(r###"
 SELECT g.actor,g.instance,g.platform FROM "###, $access_schema, r###"registrations r JOIN
-"###, $access_schema, r###"agent_grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.agent_grant_id) WHERE
+"###, $access_schema, r###"certificate_grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.certificate_grant_id) WHERE
 r.tenant_id=$1::uuid AND r.id=$2
 "###),
-                agent_grants_renew_2: concat!(r###"
-SELECT id FROM "###, $access_schema, r###"agent_grants WHERE tenant_id=$1::uuid AND source='renewal' AND
+                certificate_grants_renew_2: concat!(r###"
+SELECT id FROM "###, $access_schema, r###"certificate_grants WHERE tenant_id=$1::uuid AND source='renewal' AND
 operation_id=$2
 "###),
-                agent_grants_renew_3: concat!(r###"
+                certificate_grants_renew_3: concat!(r###"
 INSERT INTO
-"###, $access_schema, r###"agent_grants(tenant_id,
+"###, $access_schema, r###"certificate_grants(tenant_id,
 id,
 operation_id,
 source,
@@ -484,8 +500,8 @@ statement_timestamp()+make_interval(secs=>$11),
 $12,
 $13)
 "###),
-                agent_connections_retirement_blockers_on_1: concat!("SELECT count(*) FROM ", $access_schema, "agent_configurations f WHERE f.tenant_id=$1::uuid AND NOT ((f.document#>'{connections,configuration,origins}') ?| $2::text[]) AND ((f.state='available' AND f.expires_at>clock_timestamp()) OR EXISTS(SELECT 1 FROM ", $access_schema, "agent_grants g WHERE g.tenant_id=f.tenant_id AND g.configuration_id=f.id AND g.state IN('available','consumed') AND g.expires_at>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM ", $access_schema, "registrations r WHERE r.tenant_id=g.tenant_id AND r.agent_grant_id=g.id)))"),
-                agent_connections_retirement_blockers_on_2: concat!("SELECT count(*) FROM ", $access_schema, "agent_bootstraps b WHERE b.tenant_id=$1::uuid AND b.active AND NOT b.cleanup_complete AND b.state<>'revoked' AND b.deadline>floor(extract(epoch FROM clock_timestamp()))::bigint AND NOT(b.download_origin=ANY($2::text[])) AND NOT EXISTS(SELECT 1 FROM ", $access_schema, "agent_grants g JOIN ", $access_schema, "registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'installation'=b.installation::text AND r.state='active')"),
+                agent_connections_retirement_blockers_on_1: concat!("SELECT count(*) FROM ", $access_schema, "agent_configurations f WHERE f.tenant_id=$1::uuid AND NOT ((f.document#>'{connections,configuration,origins}') ?| $2::text[]) AND ((f.state='available' AND f.expires_at>clock_timestamp()) OR EXISTS(SELECT 1 FROM ", $access_schema, "certificate_grants g WHERE g.tenant_id=f.tenant_id AND g.configuration_id=f.id AND g.state IN('available','consumed') AND g.expires_at>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM ", $access_schema, "registrations r WHERE r.tenant_id=g.tenant_id AND r.certificate_grant_id=g.id)))"),
+                agent_connections_retirement_blockers_on_2: concat!("SELECT count(*) FROM ", $access_schema, "agent_bootstraps b WHERE b.tenant_id=$1::uuid AND b.active AND NOT b.cleanup_complete AND b.state<>'revoked' AND b.deadline>floor(extract(epoch FROM clock_timestamp()))::bigint AND NOT(b.download_origin=ANY($2::text[])) AND NOT EXISTS(SELECT 1 FROM ", $access_schema, "certificate_grants g JOIN ", $access_schema, "registrations r ON(r.tenant_id,r.certificate_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'installation'=b.installation::text AND r.state='active')"),
                 agent_connections_signer_on_1: concat!("SELECT key_id,public_key,private_key FROM ", $access_schema, "agent_configuration_keys WHERE tenant_id=$1::uuid"),
                 agent_connections_ensure_signer_on_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "agent_configuration_keys WHERE tenant_id=$1::uuid)"),
                 agent_connections_ensure_signer_on_2: concat!("INSERT INTO ", $access_schema, "agent_configuration_keys(tenant_id,key_id,public_key,private_key) VALUES($1::uuid,$2,$3,$4)"),
@@ -512,18 +528,18 @@ $13)
                 agent_connections_rewrap_1: concat!("SELECT key_id,private_key FROM ", $access_schema, "agent_configuration_keys WHERE tenant_id=$1::uuid AND substring(private_key FROM 1 FOR $2)<>$3 FOR UPDATE"),
                 agent_connections_rewrap_2: concat!("UPDATE ", $access_schema, "agent_configuration_keys SET private_key=$3 WHERE tenant_id=$1::uuid AND key_id=$2"),
                 agent_configurations_row_1: concat!("SELECT * FROM ", $access_schema, "agent_configurations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE"),
-                agent_configurations_usage_1: concat!("SELECT count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM ", $access_schema, "agent_issuances i WHERE (i.tenant_id,i.grant_id)=(g.tenant_id,g.id)) AND g.state='available' AND g.expires_at>clock_timestamp()),count(*) FILTER(WHERE EXISTS(SELECT 1 FROM ", $access_schema, "agent_issuances i WHERE (i.tenant_id,i.grant_id)=(g.tenant_id,g.id))) FROM ", $access_schema, "agent_grants g WHERE g.tenant_id=$1::uuid AND g.configuration_id=$2"),
-                agent_configurations_lock_for_grant_1: concat!("SELECT configuration_id FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND id=$2"),
+                agent_configurations_usage_1: concat!("SELECT count(*) FILTER(WHERE NOT EXISTS(SELECT 1 FROM ", $access_schema, "certificate_issuances i WHERE (i.tenant_id,i.grant_id)=(g.tenant_id,g.id)) AND g.state='available' AND g.expires_at>clock_timestamp()),count(*) FILTER(WHERE EXISTS(SELECT 1 FROM ", $access_schema, "certificate_issuances i WHERE (i.tenant_id,i.grant_id)=(g.tenant_id,g.id))) FROM ", $access_schema, "certificate_grants g WHERE g.tenant_id=$1::uuid AND g.configuration_id=$2"),
+                agent_configurations_lock_for_grant_1: concat!("SELECT configuration_id FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND id=$2"),
                 agent_configurations_create_configuration_1: concat!("SELECT id FROM ", $access_schema, "agent_configurations WHERE tenant_id=$1::uuid AND operation_id=$2"),
                 agent_configurations_create_configuration_2: concat!("INSERT INTO ", $access_schema, "agent_configurations(tenant_id,id,operation_id,creator,instance,secret_digest,request_digest,signature,document,quantity,state,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,'available',to_timestamp($11))"),
                 agent_configurations_configuration_operation_1: concat!("SELECT id FROM ", $access_schema, "agent_configurations WHERE tenant_id=$1::uuid AND operation_id=$2 AND creator=$3 AND instance=$4"),
                 agent_configurations_revoke_configuration_1: concat!("UPDATE ", $access_schema, "agent_configurations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2"),
-                agent_configurations_exchange_configuration_1: concat!("SELECT id FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND source='configuration' AND operation_id=$2"),
-                agent_configurations_exchange_configuration_2: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND configuration_id=$2 AND spki=$3)"),
-                agent_configurations_exchange_configuration_3: concat!("INSERT INTO ", $access_schema, "agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,created_at,expires_at,configuration_id,configuration_binding) VALUES($1::uuid,$2,$3,'configuration',$4,$5,$6,$7,$8,$9,$10,'available',statement_timestamp(),statement_timestamp()+make_interval(secs=>$11),$12,$13)"),
-                agent_configurations_configuration_exchange_status_1: concat!("SELECT *,floor(extract(epoch FROM expires_at))::bigint AS expiry,expires_at>clock_timestamp() AS live FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND configuration_id=$2 AND operation_id=$3 AND source='configuration'"),
-                agent_configurations_cancel_reservation_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$2)"),
-                agent_configurations_cancel_reservation_2: concat!("UPDATE ", $access_schema, "agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2"),
+                agent_configurations_exchange_configuration_1: concat!("SELECT id FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND source='configuration' AND operation_id=$2"),
+                agent_configurations_exchange_configuration_2: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND configuration_id=$2 AND spki=$3)"),
+                agent_configurations_exchange_configuration_3: concat!("INSERT INTO ", $access_schema, "certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,created_at,expires_at,configuration_id,configuration_binding) VALUES($1::uuid,$2,$3,'configuration',$4,$5,$6,$7,$8,$9,$10,'available',statement_timestamp(),statement_timestamp()+make_interval(secs=>$11),$12,$13)"),
+                agent_configurations_configuration_exchange_status_1: concat!("SELECT *,floor(extract(epoch FROM expires_at))::bigint AS expiry,expires_at>clock_timestamp() AS live FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND configuration_id=$2 AND operation_id=$3 AND source='configuration'"),
+                agent_configurations_cancel_reservation_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "certificate_issuances WHERE tenant_id=$1::uuid AND grant_id=$2)"),
+                agent_configurations_cancel_reservation_2: concat!("UPDATE ", $access_schema, "certificate_grants SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2"),
                 agent_bootstrap_bootstrap_challenge_1: concat!("UPDATE ", $access_schema, "agent_bootstraps SET state='signing',transaction_id=$3,csr_digest=$4,spki=$5,deadline=$6 WHERE tenant_id=$1::uuid AND id=$2"),
                 agent_bootstrap_bootstrap_notify_1: concat!("UPDATE ", $access_schema, "agent_bootstraps SET state='issued',fingerprint=$3,certificate=$4 WHERE tenant_id=$1::uuid AND id=$2"),
                 agent_bootstrap_native_grant_1: concat!("UPDATE ", $access_schema, "agent_bootstraps SET state='consumed' WHERE tenant_id=$1::uuid AND id=$2"),
@@ -531,11 +547,11 @@ $13)
                 agent_bootstrap_row_2: concat!("SELECT * FROM ", $access_schema, "agent_bootstraps WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE"),
                 agent_bootstrap_require_delivery_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "agent_bootstraps b WHERE b.tenant_id=$1::uuid AND b.id=$2 AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute' AND a.state<>'pending')))"),
                 agent_issuance_issue_1: concat!(r###"
-SELECT * FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$2 FOR UPDATE
+SELECT * FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND grant_id=$2 FOR UPDATE
 "###),
                 agent_issuance_issue_2: concat!(r###"
 INSERT INTO
-"###, $access_schema, r###"agent_issuances(tenant_id,
+"###, $access_schema, r###"certificate_issuances(tenant_id,
 id,
 grant_id,
 operation_id,
@@ -552,64 +568,64 @@ state)
 VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'signing')
 "###),
                 agent_issuance_issue_3: concat!(r###"
-UPDATE "###, $access_schema, r###"agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND id=$2
+UPDATE "###, $access_schema, r###"certificate_grants SET state='consumed' WHERE tenant_id=$1::uuid AND id=$2
 "###),
                 agent_issuance_record_unknown_1: concat!(r###"
-UPDATE "###, $access_schema, r###"agent_issuances SET state='unknown' WHERE tenant_id=$1::uuid AND id=$2 AND
+UPDATE "###, $access_schema, r###"certificate_issuances SET state='unknown' WHERE tenant_id=$1::uuid AND id=$2 AND
 state='signing'
 "###),
                 agent_issuance_save_certificate_1: concat!(r###"
-SELECT * FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND id=$2 AND grant_id=$3 FOR
+SELECT * FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND id=$2 AND grant_id=$3 FOR
 UPDATE
 "###),
                 agent_issuance_save_certificate_2: concat!(r###"
-UPDATE "###, $access_schema, r###"agent_issuances SET
+UPDATE "###, $access_schema, r###"certificate_issuances SET
 state='issued',certificate_chain=$3,metadata=$4,fingerprint=$5 WHERE tenant_id=$1::uuid AND
 id=$2
 "###),
                 agent_issuance_save_certificate_3: concat!(r###"
-SELECT * FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND id=$2
+SELECT * FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND id=$2
 "###),
                 agent_issuance_recover_issuance_1: concat!(r###"
-SELECT * FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND id=$2
+SELECT * FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND id=$2
 "###),
-                agent_current_user_bindings_on_1: concat!("SELECT u.device,u.revision,u.session_reference,u.confirmed_at,(SELECT decode(k.locator,'hex') FROM ", $access_schema, "registrations r JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN ", $access_schema, "agent_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE r.tenant_id=u.tenant_id AND r.id=u.registration AND r.device=u.device AND r.generation=u.generation AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND k.state='active' AND i.not_before<=extract(epoch FROM statement_timestamp()) AND i.not_after>extract(epoch FROM statement_timestamp())) AS fingerprint FROM ", $access_schema, "current_users u WHERE u.tenant_id=$1::uuid AND u.device=ANY($2)"),
+                agent_current_user_bindings_on_1: concat!("SELECT u.device,u.revision,u.session_reference,u.confirmed_at,(SELECT decode(k.locator,'hex') FROM ", $access_schema, "registrations r JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN ", $access_schema, "certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE r.tenant_id=u.tenant_id AND r.id=u.registration AND r.device=u.device AND r.generation=u.generation AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND k.state='active' AND i.not_before<=extract(epoch FROM statement_timestamp()) AND i.not_after>extract(epoch FROM statement_timestamp())) AS fingerprint FROM ", $access_schema, "current_users u WHERE u.tenant_id=$1::uuid AND u.device=ANY($2)"),
                 agent_current_user_change_current_user_1: concat!("SELECT digest,result,instance FROM ", $access_schema, "registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3"),
                 agent_current_user_change_current_user_2: concat!("INSERT INTO ", $access_schema, "current_users(tenant_id,device,revision,registration,generation,session_reference,confirmed_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=EXCLUDED.revision,registration=EXCLUDED.registration,generation=EXCLUDED.generation,session_reference=EXCLUDED.session_reference,confirmed_at=EXCLUDED.confirmed_at"),
                 agent_current_user_change_current_user_3: concat!("INSERT INTO ", $access_schema, "registration_operations(tenant_id,actor,instance,operation_id,digest,result) VALUES($1::uuid,$2,$3,$4,$5,$6)"),
-                agent_queries_issuance_device_1: concat!("SELECT g.device FROM ", $access_schema, "agent_issuances i JOIN ", $access_schema, "agent_grants g ON(g.tenant_id,g.id)=(i.tenant_id,i.grant_id) WHERE i.tenant_id=$1::uuid AND i.id=$2"),
-                agent_queries_request_details_1: concat!("SELECT device FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND id=$2"),
+                agent_queries_issuance_device_1: concat!("SELECT g.device FROM ", $access_schema, "certificate_issuances i JOIN ", $access_schema, "certificate_grants g ON(g.tenant_id,g.id)=(i.tenant_id,i.grant_id) WHERE i.tenant_id=$1::uuid AND i.id=$2"),
+                agent_queries_request_details_1: concat!("SELECT device FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND id=$2"),
                 agent_queries_registration_recovery_operation_1: concat!("SELECT device FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=$2 AND channel='agent'"),
-                agent_queries_registration_recovery_operation_2: concat!("SELECT id,state,platform,floor(extract(epoch FROM expires_at))::bigint AS expiry,expires_at>statement_timestamp() AS live,actor,instance,target_registration FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND source='recovery' AND operation_id=$2 AND target_registration=$3"),
+                agent_queries_registration_recovery_operation_2: concat!("SELECT id,state,platform,floor(extract(epoch FROM expires_at))::bigint AS expiry,expires_at>statement_timestamp() AS live,actor,instance,target_registration FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND source='recovery' AND operation_id=$2 AND target_registration=$3"),
                 agent_queries_issuance_recovery_operations_1: concat!("SELECT jsonb_build_object('actor',actor,'instance',instance,'operationId',operation_id) FROM ", $access_schema, "registration_operations WHERE tenant_id="),
-                agent_queries_issuance_recovery_operation_1: concat!("SELECT * FROM ", $access_schema, "agent_issuances WHERE tenant_id=$1::uuid AND id=$2"),
-                agent_queries_issuance_recovery_operation_2: concat!("SELECT *,floor(extract(epoch FROM expires_at))::bigint AS expiry,expires_at>statement_timestamp() AS live FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND id=$2"),
+                agent_queries_issuance_recovery_operation_1: concat!("SELECT * FROM ", $access_schema, "certificate_issuances WHERE tenant_id=$1::uuid AND id=$2"),
+                agent_queries_issuance_recovery_operation_2: concat!("SELECT *,floor(extract(epoch FROM expires_at))::bigint AS expiry,expires_at>statement_timestamp() AS live FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND id=$2"),
                 agent_queries_issuance_recovery_operation_3: concat!("SELECT result,digest,instance,agent_issuance_recovery FROM ", $access_schema, "registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3 AND agent_issuance_recovery=$4"),
                 agent_settings_initialize_on_1: concat!("INSERT INTO ", $access_schema, "agent_enrollment_settings(tenant_id,revision,document) VALUES($1::uuid,1,$2)"),
                 agent_settings_tenant_seed_sql_1: concat!("CREATE FUNCTION ", $access_schema, "seed_tenant_settings(t uuid) RETURNS void LANGUAGE sql SET search_path=pg_catalog,pg_temp AS $seed$ INSERT INTO ", $access_schema, "agent_enrollment_settings(tenant_id,revision,document) VALUES(t,1,'", $default_agent_values, "'::jsonb); $seed$; REVOKE ALL ON FUNCTION ", $access_schema, "seed_tenant_settings(uuid) FROM PUBLIC;"),
                 agent_settings_read_on_1: concat!("SELECT revision,document FROM ", $access_schema, "agent_enrollment_settings WHERE tenant_id=$1::uuid"),
                 agent_settings_update_settings_1: concat!("SELECT tenant_id FROM ", $access_schema, "agent_enrollment_settings WHERE tenant_id=$1::uuid FOR UPDATE"),
                 agent_settings_update_settings_2: concat!("UPDATE ", $access_schema, "agent_enrollment_settings SET revision=revision+1,document=$2 WHERE tenant_id=$1::uuid"),
-                agent_activation_activate_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='agent' AND state='active')"),
-                agent_activation_activate_2: concat!("SELECT coalesce(max(generation),0)+1 FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='agent'"),
+                agent_activation_activate_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel IS NOT DISTINCT FROM $3 AND state='active')"),
+                agent_activation_activate_2: concat!("SELECT coalesce(max(generation),0)+1 FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel IS NOT DISTINCT FROM $3"),
                 agent_activation_activate_3: concat!(r###"
-SELECT grant_id FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND id=$2
+SELECT grant_id FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND id=$2
 "###),
                 agent_activation_activate_4: concat!(r###"
-SELECT * FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE
+SELECT * FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE
 "###),
                 agent_activation_activate_5: concat!(r###"
 SELECT r.generation,r.epoch,k.state AS credential_state,r.state FROM "###, $access_schema, r###"registrations r
 JOIN "###, $access_schema, r###"credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE
-r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.channel='agent' AND k.id=$4 FOR UPDATE OF
+r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.channel IS NOT DISTINCT FROM $5 AND k.id=$4 FOR UPDATE OF
 r,k
 "###),
                 agent_activation_activate_6: concat!(r###"
-SELECT activation_result FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND
+SELECT activation_result FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND
 credential=$2
 "###),
                 agent_activation_activate_7: concat!(r###"
-SELECT profile FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND credential=$2
+SELECT profile FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND credential=$2
 "###),
                 agent_activation_activate_8: concat!(r###"
 UPDATE "###, $access_schema, r###"credentials SET state='superseded' WHERE tenant_id=$1::uuid AND id=$2 AND
@@ -620,8 +636,8 @@ INSERT INTO "###, $access_schema, r###"devices(tenant_id,id) VALUES($1::uuid,$2)
 "###),
                 agent_activation_activate_10: concat!(r###"
 INSERT INTO
-"###, $access_schema, r###"registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch)
-VALUES($1::uuid,$2,$3,'agent',$6,$4,'active','primary',$5)
+"###, $access_schema, r###"registrations(tenant_id,id,device,channel,generation,certificate_grant_id,state,purpose,epoch)
+VALUES($1::uuid,$2,$3,$7,$6,$4,'active',$8,$5)
 "###),
                 agent_activation_activate_11: concat!(r###"
 INSERT INTO "###, $access_schema, r###"report_sources(tenant_id,registration,source,epoch,enabled)
@@ -629,19 +645,19 @@ VALUES($1::uuid,$2,$3,$4,true)
 "###),
                 agent_activation_activate_12: concat!(r###"
 INSERT INTO "###, $access_schema, r###"credentials(tenant_id,id,registration,channel,locator,state)
-VALUES($1::uuid,$2,$3,'agent',$4,'active')
+VALUES($1::uuid,$2,$3,$5,$4,'active')
 "###),
                 agent_activation_activate_13: concat!(r###"
-UPDATE "###, $access_schema, r###"agent_issuances SET
+UPDATE "###, $access_schema, r###"certificate_issuances SET
 activation_operation=$3,activation_digest=$4,activation_result=$5,credential=$6 WHERE
 tenant_id=$1::uuid AND id=$2
 "###),
                 agent_activation_authenticate_1: concat!(r###"
-SELECT not_after FROM "###, $access_schema, r###"agent_issuances WHERE tenant_id=$1::uuid AND fingerprint=$2 AND
+SELECT not_after FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$1::uuid AND fingerprint=$2 AND
 credential IS NOT NULL
 "###),
                 device_registration_user_assign_registration_user_1: concat!("INSERT INTO ", $access_schema, "registration_users(tenant_id,device,revision,instance,principal) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=EXCLUDED.revision,instance=EXCLUDED.instance,principal=EXCLUDED.principal"),
-                device_registration_user_target_on_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "devices WHERE tenant_id=$1::uuid AND id=$2) OR EXISTS(SELECT 1 FROM ", $access_schema, "requests q JOIN ", $access_schema, "grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=$2 AND q.issuance_operation IS NOT NULL AND q.state<>'cancelled') OR EXISTS(SELECT 1 FROM ", $access_schema, "agent_grants WHERE tenant_id=$1::uuid AND device=$2 AND state IN('available','issued','active'))"),
+                device_registration_user_target_on_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "devices WHERE tenant_id=$1::uuid AND id=$2) OR EXISTS(SELECT 1 FROM ", $access_schema, "requests q JOIN ", $access_schema, "grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=$2 AND q.issuance_operation IS NOT NULL AND q.state<>'cancelled') OR EXISTS(SELECT 1 FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND device=$2 AND state IN('available','issued','active'))"),
                 device_registration_user_read_on_1: concat!("SELECT revision,instance,principal FROM ", $access_schema, "registration_users WHERE tenant_id=$1::uuid AND device=$2"),
                 device_registration_user_initialize_on_1: concat!("INSERT INTO ", $access_schema, "registration_users(tenant_id,device,revision,instance,principal) VALUES($1::uuid,$2,1,$3,$4) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=registration_users.revision+1,instance=EXCLUDED.instance,principal=EXCLUDED.principal WHERE registration_users.principal IS NULL"),
                 device_registration_user_page_on_1: concat!("SELECT device,revision,instance,principal FROM ", $access_schema, "registration_users WHERE tenant_id=$1::uuid AND device=ANY($2)"),
@@ -680,7 +696,7 @@ credential IS NOT NULL
                 device_store_allocate_commands_in_1: concat!("UPDATE ", $access_schema, "registrations SET next_command=next_command+$5 WHERE tenant_id=$1::uuid AND id=$2 AND purpose=$3 AND generation=$4 AND state='active' AND next_command<=4294967296-$5 RETURNING next_command-$5"),
                 device_store_activate_renewed_mdm_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "registrations r JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.generation=$4 AND r.state='active' AND k.id=$5 AND k.state='active' AND r.purpose=$6 AND (r.parent_id IS NULL OR EXISTS(SELECT 1 FROM ", $access_schema, "registrations p WHERE p.tenant_id=r.tenant_id AND p.id=r.parent_id AND p.generation=r.parent_generation AND p.state='active' AND p.purpose='primary')))"),
                 device_store_revalidate_collection_source_1: concat!("SELECT epoch FROM ", $access_schema, "report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3 AND enabled"),
-                device_store_live_collection_streams_on_1: concat!("SELECT r.id,s.source,s.epoch FROM ", $access_schema, "registrations r JOIN ", $access_schema, "report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND s.enabled AND s.source IN('agent.native','agent.script','agent.osquery') AND EXISTS(SELECT 1 FROM ", $access_schema, "credentials k JOIN ", $access_schema, "agent_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND k.state='active' AND i.not_after>floor(extract(epoch FROM clock_timestamp()))::bigint) ORDER BY r.id,s.source LIMIT 65"),
+                device_store_live_collection_streams_on_1: concat!("SELECT r.id,s.source,s.epoch FROM ", $access_schema, "registrations r JOIN ", $access_schema, "report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND s.enabled AND s.source IN('agent.native','agent.script','agent.osquery') AND EXISTS(SELECT 1 FROM ", $access_schema, "credentials k JOIN ", $access_schema, "certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND k.state='active' AND i.not_after>floor(extract(epoch FROM clock_timestamp()))::bigint) ORDER BY r.id,s.source LIMIT 65"),
                 device_store_collection_stream_retired_on_1: concat!("SELECT NOT EXISTS(SELECT 1 FROM ", $access_schema, "registrations r JOIN ", $access_schema, "report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.id=$3 AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND s.source=$4 AND s.epoch=$5 AND s.enabled)"),
                 device_store_report_epoch_in_1: concat!("SELECT s.epoch FROM ", $access_schema, "report_sources s JOIN ", $access_schema, "registrations r ON(r.tenant_id,r.id)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.registration=$2 AND s.source=$3 AND s.enabled AND r.state='active'"),
                 device_endpoints_current_in_1: concat!("SELECT r.id,r.generation FROM ", $access_schema, "registrations r WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel=$3 AND r.purpose='primary' AND r.state='active' AND EXISTS(SELECT 1 FROM ", $access_schema, "credentials k WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active')"),
@@ -773,10 +789,10 @@ credential IS NOT NULL
                 device_directory_page_on_1: concat!("SELECT d.summary FROM unnest($2::text[]) WITH ORDINALITY p(id,n) JOIN ", $access_schema, "directory_endpoints d ON d.id=p.id WHERE d.tenant_id=$1::uuid ORDER BY p.n"),
                 device_management_read_1: concat!("SELECT r.id,r.device,r.generation,r.purpose,r.epoch,r.parent_id,r.parent_generation,q.windows_profile,k.id AS credential FROM ", $access_schema, "registrations r JOIN ", $access_schema, "requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.channel=$2 AND r.purpose=$3 AND r.state='active' AND q.source=$4 AND k.channel=$2 AND k.state='active' AND k.locator=$5"),
                 device_management_validate_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "registrations r JOIN ", $access_schema, "requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.device=$4 AND r.purpose='primary' AND r.state='active' AND q.source='mdm.windows' AND EXISTS(SELECT 1 FROM ", $access_schema, "credentials k WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND k.state='active'))"),
-                device_management_validate_2: concat!("SELECT k.state,r.state AS registration_state,i.not_after FROM ", $access_schema, "credentials k JOIN ", $access_schema, "registrations r ON(r.tenant_id,r.id)=(k.tenant_id,k.registration) JOIN ", $access_schema, "agent_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE k.tenant_id=$1::uuid AND k.id=$2"),
+                device_management_validate_2: concat!("SELECT k.state,r.state AS registration_state,i.not_after FROM ", $access_schema, "credentials k JOIN ", $access_schema, "registrations r ON(r.tenant_id,r.id)=(k.tenant_id,k.registration) JOIN ", $access_schema, "certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE k.tenant_id=$1::uuid AND k.id=$2"),
                 device_management_validate_3: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "registrations r JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.device=$4 AND r.purpose=$5 AND r.epoch=$6 AND r.state='active' AND k.id=$7 AND k.state='active' AND r.parent_id IS NOT DISTINCT FROM $8 AND r.parent_generation IS NOT DISTINCT FROM $9)"),
                 agent_configurations_directory_configuration_directory_1: concat!("WITH candidates AS (SELECT id,tenant_id,creator,quantity,document->'quantity' AS quantity_metadata,document->'targets' AS targets,floor(extract(epoch FROM created_at))::bigint AS created, floor(extract(epoch FROM expires_at))::bigint AS expiry,CASE WHEN state='revoked' THEN 'revoked' WHEN expires_at<=statement_timestamp() THEN 'expired' ELSE 'available' END AS effective_state FROM ", $access_schema, "agent_configurations WHERE tenant_id="),
-                agent_configurations_directory_configuration_directory_2: concat!(") SELECT jsonb_build_object('configurationId',c.id,'state',c.effective_state,'createdAt',c.created,'expiresAt',c.expiry,'createdBy',c.creator,'targets',c.targets,'quantity',c.quantity_metadata,'reserved',u.reserved,'consumed',u.consumed,'remaining',c.quantity-u.reserved-u.consumed) FROM candidates c CROSS JOIN LATERAL (SELECT count(*) FILTER(WHERE NOT issued AND state='available' AND expires_at>statement_timestamp()) AS reserved,count(*) FILTER(WHERE issued) AS consumed FROM (SELECT g.state,g.expires_at,EXISTS(SELECT 1 FROM ", $access_schema, "agent_issuances i WHERE (i.tenant_id,i.grant_id)=(g.tenant_id,g.id)) AS issued FROM ", $access_schema, "agent_grants g WHERE g.tenant_id=c.tenant_id AND g.configuration_id=c.id) grants) u"),
+                agent_configurations_directory_configuration_directory_2: concat!(") SELECT jsonb_build_object('configurationId',c.id,'state',c.effective_state,'createdAt',c.created,'expiresAt',c.expiry,'createdBy',c.creator,'targets',c.targets,'quantity',c.quantity_metadata,'reserved',u.reserved,'consumed',u.consumed,'remaining',c.quantity-u.reserved-u.consumed) FROM candidates c CROSS JOIN LATERAL (SELECT count(*) FILTER(WHERE NOT issued AND state='available' AND expires_at>statement_timestamp()) AS reserved,count(*) FILTER(WHERE issued) AS consumed FROM (SELECT g.state,g.expires_at,EXISTS(SELECT 1 FROM ", $access_schema, "certificate_issuances i WHERE (i.tenant_id,i.grant_id)=(g.tenant_id,g.id)) AS issued FROM ", $access_schema, "certificate_grants g WHERE g.tenant_id=c.tenant_id AND g.configuration_id=c.id) grants) u"),
                 enrollment_tasks_recovery_accept_action_dispatch_1: concat!("SELECT gateway_accepted FROM ", $mdm_registration_tasks_runs, " WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE"),
                 enrollment_tasks_recovery_accept_action_dispatch_2: concat!("UPDATE ", $mdm_registration_tasks_runs, " SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2::uuid"),
                 enrollment_tasks_worker_pending_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $mdm_registration_tasks_policy_recovery, " WHERE tenant_id=$1::uuid AND policy=$2 AND input_revision>input_consumed)"),
@@ -831,7 +847,7 @@ BEGIN
  IF TG_OP='UPDATE' THEN previous=to_jsonb(OLD); END IF;
  t=(r->>'tenant_id')::uuid;
  IF TG_TABLE_NAME='registrations' AND r->>'channel'='agent' THEN
-  SELECT g.platform INTO platform FROM "###, $access_schema, r###"agent_grants g WHERE g.tenant_id=t AND g.id=(r->>'agent_grant_id')::uuid;
+  SELECT g.platform INTO platform FROM "###, $access_schema, r###"certificate_grants g WHERE g.tenant_id=t AND g.id=(r->>'certificate_grant_id')::uuid;
  END IF;
  CASE TG_TABLE_NAME
  WHEN 'devices' THEN
@@ -883,7 +899,7 @@ CREATE TABLE "###, $access_schema, r###"credentials (
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     registration uuid NOT NULL,
-    channel text NOT NULL,
+    channel text,
     locator text NOT NULL,
     state text NOT NULL,
     CONSTRAINT credentials_channel_check CHECK ((channel = ANY (ARRAY['agent'::text, 'mdm'::text]))),
@@ -935,7 +951,8 @@ CREATE TABLE "###, $access_schema, r###"registration_operations (
 
 ALTER TABLE ONLY "###, $access_schema, r###"registration_operations FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE "###, $access_schema, r###"agent_grants (
+CREATE TABLE "###, $access_schema, r###"certificate_grants (
+ certificate_purpose text NOT NULL DEFAULT 'agent' CHECK(certificate_purpose IN('agent','da_device')),
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,
  operation_id uuid NOT NULL,
@@ -943,7 +960,8 @@ CREATE TABLE "###, $access_schema, r###"agent_grants (
  actor text,
  instance text,
  device text NOT NULL CHECK(octet_length(device) BETWEEN 1 AND 256 AND device !~ '[[:cntrl:]]'),
- platform text NOT NULL CHECK(platform IN('windows','macos')),
+ platform text CHECK(platform IN('windows','macos')),
+ CHECK((certificate_purpose='agent' AND platform IS NOT NULL) OR (certificate_purpose='da_device' AND platform IS NULL)),
  secret_digest text NOT NULL CHECK(secret_digest ~ '^[0-9a-f]{64}$'),
  request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
  spki text CHECK(spki ~ '^[0-9a-f]{64}$'),
@@ -958,16 +976,16 @@ CREATE TABLE "###, $access_schema, r###"agent_grants (
  CONSTRAINT agent_grant_subject CHECK((state IN('pending','revoked') AND source='browser' AND actor IS NULL AND instance IS NULL AND spki IS NOT NULL) OR (state<>'pending' AND actor IS NOT NULL AND instance IS NOT NULL)),
  CONSTRAINT agent_grant_target CHECK((source IN('recovery','renewal'))=(target_registration IS NOT NULL AND predecessor IS NOT NULL)),
  PRIMARY KEY(tenant_id,id),
- UNIQUE(tenant_id,source,operation_id),
+ UNIQUE(tenant_id,certificate_purpose,source,operation_id),
  configuration_id uuid,
  configuration_binding jsonb CHECK(octet_length(configuration_binding::text)<=32768),
  CONSTRAINT configuration_authority
  CHECK((source='configuration' AND configuration_id IS NOT NULL AND configuration_binding IS NOT NULL AND spki IS NOT NULL) OR (source<>'configuration' AND configuration_id IS NULL AND configuration_binding IS NULL)),
- CONSTRAINT agent_grants_source_check CHECK(source IN('download','browser','native','recovery','renewal','configuration')),
+ CONSTRAINT certificate_grants_source_check CHECK(source IN('download','browser','native','recovery','renewal','configuration','administrator')),
  CONSTRAINT configuration_device_key UNIQUE(tenant_id,configuration_id,spki)
 
 );
-CREATE TABLE "###, $access_schema, r###"agent_issuances (
+CREATE TABLE "###, $access_schema, r###"certificate_issuances (
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,
  grant_id uuid NOT NULL,
@@ -994,42 +1012,42 @@ CREATE TABLE "###, $access_schema, r###"agent_issuances (
  UNIQUE(tenant_id,grant_id),
  UNIQUE(tenant_id,operation_id),
  UNIQUE(tenant_id,fingerprint),
- FOREIGN KEY(tenant_id,grant_id) REFERENCES "###, $access_schema, r###"agent_grants(tenant_id,id),
+ FOREIGN KEY(tenant_id,grant_id) REFERENCES "###, $access_schema, r###"certificate_grants(tenant_id,id),
  signing_issuer text CHECK(signing_issuer ~ '^[0-9a-f]{64}$')
 
 );
 ALTER TABLE "###, $access_schema, r###"registration_operations ADD COLUMN agent_issuance_recovery uuid;
-ALTER TABLE "###, $access_schema, "registration_operations ", $index_38, " FOREIGN KEY(tenant_id,agent_issuance_recovery) REFERENCES ", $access_schema, r###"agent_issuances(tenant_id,id);
+ALTER TABLE "###, $access_schema, "registration_operations ", $index_38, " FOREIGN KEY(tenant_id,agent_issuance_recovery) REFERENCES ", $access_schema, r###"certificate_issuances(tenant_id,id);
 ALTER TABLE "###, $access_schema, "registration_operations ", $index_39, r###" CHECK(agent_issuance_recovery IS NULL OR result=to_json(agent_issuance_recovery)::text);
 "###, $index_40, " ON ", $access_schema, r###"registration_operations(tenant_id,agent_issuance_recovery,actor,operation_id) WHERE agent_issuance_recovery IS NOT NULL;
-"###, $index_41, " ON ", $access_schema, r###"agent_grants(tenant_id,device,id);
-"###, $index_42, " ON ", $access_schema, r###"agent_grants(tenant_id,target_registration,id) WHERE target_registration IS NOT NULL;
-ALTER TABLE "###, $access_schema, r###"agent_grants ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "###, $access_schema, r###"agent_grants FORCE ROW LEVEL SECURITY;
-ALTER TABLE "###, $access_schema, r###"agent_issuances ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "###, $access_schema, r###"agent_issuances FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON "###, $access_schema, r###"agent_grants USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-CREATE POLICY insert_only ON "###, $access_schema, "agent_grants AS RESTRICTIVE FOR INSERT WITH CHECK(current_user <> '", $command_runtime, r###"' OR source='native');
-CREATE POLICY tenant ON "###, $access_schema, r###"agent_issuances USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-"###, $index_43, " ON ", $access_schema, r###"agent_grants(tenant_id,actor,instance,expires_at);
+"###, $index_41, " ON ", $access_schema, r###"certificate_grants(tenant_id,device,id);
+"###, $index_42, " ON ", $access_schema, r###"certificate_grants(tenant_id,target_registration,id) WHERE target_registration IS NOT NULL;
+ALTER TABLE "###, $access_schema, r###"certificate_grants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "###, $access_schema, r###"certificate_grants FORCE ROW LEVEL SECURITY;
+ALTER TABLE "###, $access_schema, r###"certificate_issuances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "###, $access_schema, r###"certificate_issuances FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON "###, $access_schema, r###"certificate_grants USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY insert_only ON "###, $access_schema, "certificate_grants AS RESTRICTIVE FOR INSERT WITH CHECK(current_user <> '", $command_runtime, r###"' OR source='native');
+CREATE POLICY tenant ON "###, $access_schema, r###"certificate_issuances USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+"###, $index_43, " ON ", $access_schema, r###"certificate_grants(tenant_id,actor,instance,expires_at);
 CREATE TABLE "###, $access_schema, r###"registrations (
- purpose text NOT NULL CHECK(purpose IN('primary','windows_declared')),
+ purpose text NOT NULL CHECK(purpose IN('primary','windows_declared','da_device')),
  epoch uuid NOT NULL,
  next_command bigint DEFAULT 1024 NOT NULL CHECK(next_command BETWEEN 1024 AND 4294967296),
  parent_id uuid,
  parent_generation bigint,
  ready boolean NOT NULL DEFAULT false,
- CONSTRAINT linked_shape CHECK((purpose='primary' AND parent_id IS NULL AND parent_generation IS NULL) OR (purpose='windows_declared' AND channel='mdm' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0)),
+ CONSTRAINT linked_shape CHECK((purpose IN('primary','da_device') AND parent_id IS NULL AND parent_generation IS NULL) OR (purpose='windows_declared' AND channel='mdm' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0)),
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,
  device text NOT NULL,
- channel text NOT NULL,
+ channel text,
  generation bigint NOT NULL,
  request_id uuid,
- agent_grant_id uuid,
- CONSTRAINT registration_origin CHECK((channel='mdm' AND request_id IS NOT NULL AND agent_grant_id IS NULL) OR (channel='agent' AND request_id IS NULL AND agent_grant_id IS NOT NULL)),
+ certificate_grant_id uuid,
+ CONSTRAINT registration_origin CHECK((channel='mdm' AND request_id IS NOT NULL AND certificate_grant_id IS NULL) OR (channel='agent' AND purpose='primary' AND request_id IS NULL AND certificate_grant_id IS NOT NULL) OR (channel IS NULL AND purpose='da_device' AND request_id IS NULL AND certificate_grant_id IS NOT NULL)),
  state text NOT NULL,
- CONSTRAINT registrations_channel_check CHECK ((channel = ANY (ARRAY['agent'::text, 'mdm'::text]))),
+ CONSTRAINT registrations_channel_check CHECK ((channel IS NOT NULL AND channel IN('agent','mdm') AND purpose<>'da_device') OR (channel IS NULL AND purpose='da_device')),
  CONSTRAINT registrations_generation_check CHECK ((generation > 0)),
  CONSTRAINT registrations_state_check CHECK ((state = ANY (ARRAY['active'::text, 'superseded'::text, 'revoked'::text]))),
  first_authenticated_at timestamptz,
@@ -1105,7 +1123,7 @@ ALTER TABLE ONLY "###, $access_schema, r###"credentials
     "###, $index_46, r###" PRIMARY KEY (tenant_id, id);
 
 ALTER TABLE ONLY "###, $access_schema, r###"credentials
-    "###, $index_47, r###" UNIQUE (tenant_id, channel, locator);
+    "###, $index_47, r###" UNIQUE NULLS NOT DISTINCT (tenant_id, channel, locator);
 
 ALTER TABLE ONLY "###, $access_schema, r###"devices
     "###, $index_48, r###" PRIMARY KEY (tenant_id, id);
@@ -1125,7 +1143,7 @@ ALTER TABLE ONLY "###, $access_schema, r###"registrations
     "###, $index_53, r###" PRIMARY KEY (tenant_id, id);
 
 ALTER TABLE ONLY "###, $access_schema, r###"registrations
-    "###, $index_54, r###" UNIQUE (tenant_id, device, channel, purpose, generation);
+    "###, $index_54, r###" UNIQUE NULLS NOT DISTINCT (tenant_id, device, channel, purpose, generation);
 
 ALTER TABLE ONLY "###, $access_schema, r###"registrations
     "###, $index_55, r###" UNIQUE (tenant_id, id, channel);
@@ -1152,7 +1170,7 @@ ALTER TABLE ONLY "###, $access_schema, r###"requests
 
 "###, $index_64, " ON ", $access_schema, r###"credentials USING btree (tenant_id, registration) WHERE (state = 'active'::text);
 
-"###, $index_65, " ON ", $access_schema, r###"registrations USING btree (tenant_id, device, channel, purpose) WHERE (state = 'active'::text);
+"###, $index_65, " ON ", $access_schema, r###"registrations USING btree (tenant_id, device, channel, purpose) NULLS NOT DISTINCT WHERE (state = 'active'::text);
 
 "###, $index_66, " ON ", $access_schema, r###"registrations USING btree (tenant_id, device, id);
 
@@ -1234,7 +1252,7 @@ ALTER TABLE ONLY "###, $access_schema, r###"asset_authority_history
     "###, $index_67, r###" FOREIGN KEY (tenant_id, revision) REFERENCES mdm.asset_changes(tenant_id, revision);
 
 ALTER TABLE ONLY "###, $access_schema, r###"credentials
-    "###, $index_68, " FOREIGN KEY (tenant_id, registration, channel) REFERENCES ", $access_schema, r###"registrations(tenant_id, id, channel);
+    "###, $index_68, " FOREIGN KEY (tenant_id, registration) REFERENCES ", $access_schema, r###"registrations(tenant_id, id);
 
 ALTER TABLE ONLY "###, $access_schema, r###"registrations
     "###, $index_69, " FOREIGN KEY (tenant_id, device) REFERENCES ", $access_schema, r###"devices(tenant_id, id);
@@ -1313,15 +1331,15 @@ GRANT UPDATE(expires_at) ON TABLE "###, $access_schema, "requests TO ", $access_
 ALTER TABLE "###, $access_schema, "registrations ", $index_73, " FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES ", $access_schema, r###"registrations(tenant_id,id,generation);
 ALTER TABLE "###, $access_schema, "requests ", $index_74, " FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES ", $access_schema, r###"registrations(tenant_id,id,generation);
 ALTER TABLE "###, $access_schema, "requests ", $index_75, " FOREIGN KEY(tenant_id,parent_credential) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
-ALTER TABLE "###, $access_schema, "registrations ", $index_76, " FOREIGN KEY(tenant_id,agent_grant_id) REFERENCES ", $access_schema, r###"agent_grants(tenant_id,id);
-ALTER TABLE "###, $access_schema, "agent_grants ", $index_77, " FOREIGN KEY(tenant_id,target_registration) REFERENCES ", $access_schema, r###"registrations(tenant_id,id);
-ALTER TABLE "###, $access_schema, "agent_grants ", $index_78, " FOREIGN KEY(tenant_id,predecessor) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
-ALTER TABLE "###, $access_schema, "agent_issuances ", $index_79, " FOREIGN KEY(tenant_id,credential) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
-GRANT SELECT,INSERT ON "###, $access_schema, "agent_grants,", $access_schema, "agent_issuances TO ", $access_role, r###";
-GRANT UPDATE(actor,instance,state,device) ON "###, $access_schema, "agent_grants TO ", $access_role, r###";
-GRANT UPDATE(state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) ON "###, $access_schema, "agent_issuances TO ", $access_role, r###";
-GRANT SELECT,INSERT ON "###, $access_schema, "agent_grants TO ", $command_runtime, r###";
-GRANT SELECT(tenant_id,credential,not_after) ON "###, $access_schema, "agent_issuances TO ", $command_runtime, ",", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
+ALTER TABLE "###, $access_schema, "registrations ", $index_76, " FOREIGN KEY(tenant_id,certificate_grant_id) REFERENCES ", $access_schema, r###"certificate_grants(tenant_id,id);
+ALTER TABLE "###, $access_schema, "certificate_grants ", $index_77, " FOREIGN KEY(tenant_id,target_registration) REFERENCES ", $access_schema, r###"registrations(tenant_id,id);
+ALTER TABLE "###, $access_schema, "certificate_grants ", $index_78, " FOREIGN KEY(tenant_id,predecessor) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
+ALTER TABLE "###, $access_schema, "certificate_issuances ", $index_79, " FOREIGN KEY(tenant_id,credential) REFERENCES ", $access_schema, r###"credentials(tenant_id,id);
+GRANT SELECT,INSERT ON "###, $access_schema, "certificate_grants,", $access_schema, "certificate_issuances TO ", $access_role, r###";
+GRANT UPDATE(actor,instance,state,device) ON "###, $access_schema, "certificate_grants TO ", $access_role, r###";
+GRANT UPDATE(state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) ON "###, $access_schema, "certificate_issuances TO ", $access_role, r###";
+GRANT SELECT,INSERT ON "###, $access_schema, "certificate_grants TO ", $command_runtime, r###";
+GRANT SELECT(tenant_id,credential,not_after) ON "###, $access_schema, "certificate_issuances TO ", $command_runtime, ",", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
 GRANT UPDATE(last_communication_received_at) ON "###, $access_schema, "registrations TO ", $access_role, ", ", $command_runtime, r###";
 GRANT UPDATE(first_authenticated_at) ON "###, $access_schema, "registrations TO ", $access_role, ", ", $command_runtime, r###";
 GRANT UPDATE(account_version,account_reference,account_challenge) ON "###, $access_schema, "requests TO ", $access_role, r###";
@@ -1353,7 +1371,7 @@ GRANT SELECT,INSERT ON "###, $access_schema, "agent_bootstraps TO ", $command_ru
 GRANT UPDATE(active,cleanup,cleanup_complete,cleanup_retry_at) ON "###, $access_schema, "agent_bootstraps TO ", $command_runtime, ",", $policy_runtime, r###";
 GRANT SELECT ON "###, $access_schema, "agent_bootstraps TO ", $access_role, r###";
 GRANT UPDATE(state,deadline,transaction_id,csr_digest,spki,fingerprint,certificate) ON "###, $access_schema, "agent_bootstraps TO ", $access_role, r###";
-GRANT SELECT ON "###, $access_schema, "agent_grants TO ", $policy_runtime, r###";
+GRANT SELECT ON "###, $access_schema, "certificate_grants TO ", $policy_runtime, r###";
 COMMIT;
 "###),
                 agent_configurations: concat!(r###"-- Registration settings and reusable configuration authority. Existing identities are unchanged.
@@ -1376,9 +1394,9 @@ CREATE TABLE "###, $access_schema, r###"agent_configurations (
  PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,operation_id)
 );
 
-ALTER TABLE "###, $access_schema, "agent_grants ADD FOREIGN KEY(tenant_id,configuration_id) REFERENCES ", $access_schema, r###"agent_configurations(tenant_id,id);
+ALTER TABLE "###, $access_schema, "certificate_grants ADD FOREIGN KEY(tenant_id,configuration_id) REFERENCES ", $access_schema, r###"agent_configurations(tenant_id,id);
 
-"###, $index_81, " ON ", $access_schema, r###"agent_grants(tenant_id,configuration_id);
+"###, $index_81, " ON ", $access_schema, r###"certificate_grants(tenant_id,configuration_id);
 ALTER TABLE "###, $access_schema, r###"agent_enrollment_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $access_schema, r###"agent_enrollment_settings FORCE ROW LEVEL SECURITY;
 ALTER TABLE "###, $access_schema, r###"agent_configurations ENABLE ROW LEVEL SECURITY;
@@ -1514,7 +1532,7 @@ SELECT tenant_id,NULL::timestamptz AS expires_at FROM "###, $access_schema, r###
 UNION ALL
 SELECT tenant_id,NULL::timestamptz AS expires_at FROM "###, $access_schema, r###"credentials WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT tenant_id,NULL::timestamptz AS expires_at FROM "###, $access_schema, r###"agent_grants WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT tenant_id,NULL::timestamptz AS expires_at FROM "###, $access_schema, r###"certificate_grants WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
 SELECT tenant_id,NULL::timestamptz AS expires_at FROM "###, $access_schema, r###"registration_users WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
@@ -1547,7 +1565,7 @@ CREATE VIEW "###, $access_schema, r###"directory_channels WITH (security_barrier
 SELECT DISTINCT ON(r.tenant_id,r.device,r.channel) r.tenant_id,r.device,r.channel,r.id,r.generation,r.state,r.last_communication_received_at,q.windows_profile,coalesce(q.source,'agent.builtin') AS source,
  CASE q.source WHEN 'mdm.windows' THEN 'windows' WHEN 'mdm.apple' THEN 'macos' ELSE g.platform END AS platform
 FROM "###, $access_schema, "registrations r LEFT JOIN ", $access_schema, r###"requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id)
-LEFT JOIN "###, $access_schema, r###"agent_grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.agent_grant_id)
+LEFT JOIN "###, $access_schema, r###"certificate_grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.certificate_grant_id)
 WHERE r.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND r.purpose='primary'
 ORDER BY r.tenant_id,r.device,r.channel,r.generation DESC;
 CREATE VIEW "###, $access_schema, r###"directory_enrollments WITH (security_barrier=true) AS
@@ -1582,7 +1600,7 @@ FROM "###, $access_schema, "registration_users r FULL JOIN ", $access_schema, r#
 LEFT JOIN LATERAL (
  SELECT min(least(i.not_after,p.valid_until)) AS valid_until
  FROM "###, $access_schema, "registrations g JOIN ", $access_schema, r###"credentials k ON(k.tenant_id,k.registration)=(g.tenant_id,g.id)
- JOIN "###, $access_schema, r###"agent_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id)
+ JOIN "###, $access_schema, r###"certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id)
  JOIN "###, $pki_certificates, r###" p ON p.tenant_id=k.tenant_id AND p.purpose='agent' AND p.fingerprint=decode(k.locator,'hex')
  WHERE g.tenant_id=u.tenant_id AND g.id=u.registration AND g.device=u.device AND g.generation=u.generation
   AND g.channel='agent' AND g.purpose='primary' AND g.state='active' AND k.state='active'
@@ -1719,10 +1737,10 @@ COMMIT;"###),
 -- retain the original registration; organization authority is exempt from personal quotas.
 WITH agent AS (
  SELECT g.device,g.id,g.expires_at,
- EXISTS(SELECT 1 FROM "###, $access_schema, r###"registrations r WHERE r.tenant_id=g.tenant_id AND r.agent_grant_id=g.id AND r.state='active') AS active,
+ EXISTS(SELECT 1 FROM "###, $access_schema, r###"registrations r WHERE r.tenant_id=g.tenant_id AND r.certificate_grant_id=g.id AND r.state='active') AS active,
  g.state IN('available','consumed') AND g.expires_at>clock_timestamp() AND
- NOT EXISTS(SELECT 1 FROM "###, $access_schema, r###"registrations r WHERE r.tenant_id=g.tenant_id AND r.agent_grant_id=g.id) AS reserved
- FROM "###, $access_schema, r###"agent_grants g
+ NOT EXISTS(SELECT 1 FROM "###, $access_schema, r###"registrations r WHERE r.tenant_id=g.tenant_id AND r.certificate_grant_id=g.id) AS reserved
+ FROM "###, $access_schema, r###"certificate_grants g
  WHERE g.tenant_id=$1::uuid AND g.instance=$2 AND g.actor=$3 AND g.source IN('download','browser')
 ), native AS (
  SELECT g.device,q.id,q.source,q.expires_at,
@@ -1833,7 +1851,7 @@ REVOKE ALL ON FUNCTION "###, $access_schema, r###"channel_members_current(jsonb,
 GRANT EXECUTE ON FUNCTION "###, $access_schema, "channel_members_current(jsonb,text) TO ", $access_role, ",", $command_runtime, ",", $policy_runtime, ",", $scope_runtime, ",", $inventory_runtime, ",", $telemetry_runtime, r###";
 COMMIT;
 "###),
-                object_manifest: concat!(r###"{"tables":[""###, $access_schema, r###"agent_bootstraps",""###, $access_schema, r###"agent_configuration_keys",""###, $access_schema, r###"agent_configurations",""###, $access_schema, r###"agent_connection_deployments",""###, $access_schema, r###"agent_connection_drafts",""###, $access_schema, r###"agent_connection_failures",""###, $access_schema, r###"agent_connection_observations",""###, $access_schema, r###"agent_connection_versions",""###, $access_schema, r###"agent_enrollment_settings",""###, $access_schema, r###"agent_grants",""###, $access_schema, r###"agent_issuances",""###, $access_schema, r###"asset_authority_history",""###, $access_schema, r###"credentials",""###, $access_schema, r###"current_users",""###, $access_schema, r###"devices",""###, $access_schema, r###"grants",""###, $access_schema, r###"registration_admission",""###, $access_schema, r###"registration_operations",""###, $access_schema, r###"registration_quota_settings",""###, $access_schema, r###"registration_users",""###, $access_schema, r###"registrations",""###, $access_schema, r###"report_sources",""###, $access_schema, r###"requests",""###, $mdm_registration_tasks_agent_admission, r###"",""###, $mdm_registration_tasks_policy_recovery, r###"",""###, $mdm_registration_tasks_receipts, r###"",""###, $mdm_registration_tasks_runs, r###""],"functions":[""###, $access_schema, r###"asset_sources_at",""###, $access_schema, r###"capture_asset_authority",""###, $access_schema, r###"channel_members_current",""###, $access_schema, r###"seed_tenant_settings",""###, $mdm_registration_tasks_save_retired_run, r###""],"views":[""###, $access_schema, r###"directory_channels",""###, $access_schema, r###"directory_endpoints",""###, $access_schema, r###"directory_enrollments",""###, $access_schema, r###"directory_inputs",""###, $access_schema, r###"directory_metadata",""###, $access_schema, r###"directory_users"]}"###),
+                object_manifest: concat!(r###"{"tables":[""###, $access_schema, r###"agent_bootstraps",""###, $access_schema, r###"agent_configuration_keys",""###, $access_schema, r###"agent_configurations",""###, $access_schema, r###"agent_connection_deployments",""###, $access_schema, r###"agent_connection_drafts",""###, $access_schema, r###"agent_connection_failures",""###, $access_schema, r###"agent_connection_observations",""###, $access_schema, r###"agent_connection_versions",""###, $access_schema, r###"agent_enrollment_settings",""###, $access_schema, r###"certificate_grants",""###, $access_schema, r###"certificate_issuances",""###, $access_schema, r###"asset_authority_history",""###, $access_schema, r###"credentials",""###, $access_schema, r###"current_users",""###, $access_schema, r###"devices",""###, $access_schema, r###"grants",""###, $access_schema, r###"registration_admission",""###, $access_schema, r###"registration_operations",""###, $access_schema, r###"registration_quota_settings",""###, $access_schema, r###"registration_users",""###, $access_schema, r###"registrations",""###, $access_schema, r###"report_sources",""###, $access_schema, r###"requests",""###, $mdm_registration_tasks_agent_admission, r###"",""###, $mdm_registration_tasks_policy_recovery, r###"",""###, $mdm_registration_tasks_receipts, r###"",""###, $mdm_registration_tasks_runs, r###""],"functions":[""###, $access_schema, r###"asset_sources_at",""###, $access_schema, r###"capture_asset_authority",""###, $access_schema, r###"channel_members_current",""###, $access_schema, r###"seed_tenant_settings",""###, $mdm_registration_tasks_save_retired_run, r###""],"views":[""###, $access_schema, r###"directory_channels",""###, $access_schema, r###"directory_endpoints",""###, $access_schema, r###"directory_enrollments",""###, $access_schema, r###"directory_inputs",""###, $access_schema, r###"directory_metadata",""###, $access_schema, r###"directory_users"]}"###),
                 access_contract: concat!(r###"{"tables":[{"###, $contract_table_89, r###","read_write":false,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_90, r###","read_write":true,"updates":["state"],"delete_policy":null},{"###, $contract_table_91, r###","read_write":true,"updates":["retirement"],"delete_policy":null},{"###, $contract_table_92, r###","read_write":true,"updates":[],"delete_policy":null},{"###, $contract_table_93, r###","read_write":true,"updates":[],"delete_policy":null},{"###, $contract_table_94, r###","read_write":true,"updates":["state","next_command","ready","first_authenticated_at","last_communication_received_at"],"delete_policy":null},{"###, $contract_table_95, r###","read_write":true,"updates":["enabled","next_sequence"],"delete_policy":null},{"###, $contract_table_96, r###","read_write":true,"updates":["state","password_digest","password_version","credential_ref","expires_at","account_version","account_reference","account_challenge","organization_version","organization_challenge"],"delete_policy":null},{"###, $contract_table_97, r###","read_write":true,"updates":["actor","instance","state","device"],"delete_policy":null,"insert_policy":"current_user<>'"###, $command_runtime, r###"'::nameorsource='native'::text"},{"###, $contract_table_98, r###","read_write":true,"updates":["state","certificate_chain","metadata","fingerprint","activation_operation","activation_digest","activation_result","credential"],"delete_policy":null},{"###, $contract_table_99, r###","read_write":true,"updates":["revision","agent","windows_mdm","macos_mdm"],"delete_policy":null},{"###, $contract_table_100, r###","read_write":true,"updates":["revision","instance","principal"],"delete_policy":null},{"###, $contract_table_101, r###","read_write":true,"updates":["revision","document"],"delete_policy":null},{"###, $contract_table_102, r###","read_write":true,"updates":["state"],"delete_policy":null},{"###, $contract_table_103, r###","read_write":true,"updates":["revision","paused"],"delete_policy":null},{"###, $contract_table_104, r###","read_write":false,"read_only":true,"updates":["state","transaction_id","csr_digest","spki","fingerprint","certificate","deadline"],"delete_policy":null},{"###, $contract_table_105, r###","read_write":true,"updates":["revision","registration","generation","session_reference","confirmed_at"],"delete_policy":null},{"###, $contract_table_106, r###","read_write":true,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_107, r###","read_write":true,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_108, r###","read_write":true,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_109, r###","read_write":false,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_110, r###","read_write":true,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_111, r###","read_write":true,"read_only":true,"updates":[],"delete_policy":null}"###, $access_contract_tables, r###"],"functions":[{"name":""###, $access_schema, r###"channel_members_current","search_path":"search_path=pg_catalog"},{"name":""###, $access_schema, r###"asset_sources_at","search_path":"search_path=pg_catalog"}"###, $access_contract_functions, r###"],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
                 enrollment_access_contract: concat!(r###"{"tables":[{"###, $contract_table_115, r###","read_write":false,"updates":[],"delete_policy":null,"read_only":true},{"###, $contract_table_116, r###","read_write":false,"updates":[],"delete_policy":null},{"###, $contract_table_117, r###","read_write":false,"updates":[],"delete_policy":null},{"###, $contract_table_118, r###","read_write":false,"updates":[],"delete_policy":null}"###, $enrollment_access_contract_tables, r###"],"functions":[{"name":""###, $mdm_registration_tasks_save_retired_run, r###"","search_path":"search_path=pg_catalog"}"###, $enrollment_access_contract_functions, r###"],"external_relations":[],"verified_schemas":[]}"###),
                 current_members: concat!("SELECT ", $access_schema, "channel_members_current($1,$2)"),
@@ -1970,8 +1988,8 @@ define_storage!(
     r###""schema":"mdm_access","table":"registrations""###,
     r###""schema":"mdm_access","table":"report_sources""###,
     r###""schema":"mdm_access","table":"requests""###,
-    r###""schema":"mdm_access","table":"agent_grants""###,
-    r###""schema":"mdm_access","table":"agent_issuances""###,
+    r###""schema":"mdm_access","table":"certificate_grants""###,
+    r###""schema":"mdm_access","table":"certificate_issuances""###,
     r###""schema":"mdm_access","table":"registration_quota_settings""###,
     r###""schema":"mdm_access","table":"registration_users""###,
     r###""schema":"mdm_access","table":"agent_enrollment_settings""###,
@@ -2098,8 +2116,8 @@ define_storage!(
     r###""schema":"rss_da","table":"registrations""###,
     r###""schema":"rss_da","table":"report_sources""###,
     r###""schema":"rss_da","table":"requests""###,
-    r###""schema":"rss_da","table":"agent_grants""###,
-    r###""schema":"rss_da","table":"agent_issuances""###,
+    r###""schema":"rss_da","table":"certificate_grants""###,
+    r###""schema":"rss_da","table":"certificate_issuances""###,
     r###""schema":"rss_da","table":"registration_quota_settings""###,
     r###""schema":"rss_da","table":"registration_users""###,
     r###""schema":"rss_da","table":"agent_enrollment_settings""###,

@@ -75,7 +75,7 @@ pub async fn record_communication_in(
             .bind(registration)
             .bind(generation)
             .bind(principal.device())
-            .bind(principal.channel().as_str())
+            .bind(principal.require_channel()?.as_str())
             .execute(c)
             .await
             .map_err(db)?;
@@ -221,7 +221,8 @@ impl DeviceService {
             device: row.try_get("device").map_err(db)?,
             registration,
             generation: row.try_get("generation").map_err(db)?,
-            channel: channel(&row)?,
+            kind: RegistrationKind::from_channel(channel(&row)?),
+            installation: installation_in(profile, &mut tx).await?,
             purpose: Purpose::Primary,
             parent: None,
             epoch: uuid(&row, "epoch")?,
@@ -343,7 +344,10 @@ pub async fn retire_state_in(
             &row.try_get::<String, _>("device").map_err(db)?,
             registration,
             row.try_get("generation").map_err(db)?,
-            &row.try_get::<String, _>("channel").map_err(db)?,
+            row.try_get::<Option<String>, _>("channel")
+                .map_err(db)?
+                .as_deref()
+                .unwrap_or("da_device"),
             state,
         )
         .await?;
@@ -591,7 +595,7 @@ pub async fn revalidate_source(
         return Err(crate::Error::Forbidden);
     }
 
-    if principal.purpose() != Purpose::Primary || principal.channel() != source.channel() {
+    if principal.purpose() != Purpose::Primary || principal.channel() != Some(source.channel()) {
         return Err(Error::Forbidden);
     }
     let tenant = principal.tenant().to_string();
@@ -601,14 +605,14 @@ pub async fn revalidate_source(
         tx,
         &tenant,
         principal.device(),
-        principal.channel(),
+        principal.require_channel()?,
     )
     .await?;
     super::management::revalidate(profile, tx, principal).await?;
     let live = sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_1)
         .bind(&tenant)
         .bind(&registration)
-        .bind(principal.channel().as_str())
+        .bind(principal.require_channel()?.as_str())
         .fetch_optional(&mut *tx)
         .await
         .map_err(db)?
@@ -1030,7 +1034,7 @@ pub async fn revalidate_collection_source(
 
     use rss_mdm_inventory::Source;
     if principal.purpose() != Purpose::Primary
-        || principal.channel() != Channel::Agent
+        || principal.channel() != Some(Channel::Agent)
         || !matches!(
             source,
             Source::AgentNative | Source::AgentScript | Source::AgentOsquery
@@ -1121,4 +1125,23 @@ pub async fn report_epoch_in(
         .fetch_optional(c)
         .await
         .map_err(db)
+}
+
+/// Keep existing Agent/native lock identities while admitting independent DA registrations.
+pub async fn lock_registration(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+    kind: RegistrationKind,
+) -> Result<(), Error> {
+    crate::lifecycle::lock_device_in(profile, c, tenant, device).await?;
+    let key = serde_json::to_string(&(profile.name(), tenant, device, kind.lock_name()))
+        .map_err(|_| Error::Malformed)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
+        .bind(key)
+        .execute(c)
+        .await
+        .map_err(db)?;
+    Ok(())
 }

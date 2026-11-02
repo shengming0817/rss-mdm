@@ -105,7 +105,7 @@ pub trait Windows: Send + Sync {
     fn retirement_request(
         &self,
         purpose: rss_mdm_registration_service::Purpose,
-    ) -> rss_mdm_windows_mdm::native::Request;
+    ) -> Result<rss_mdm_windows_mdm::native::Request, crate::Error>;
     fn prepare<'a>(
         self: std::sync::Arc<Self>,
         connection: &'a mut PgConnection,

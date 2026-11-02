@@ -6,6 +6,15 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'device_access.foundation': dict(package='rss-mdm-device-access-http', target='foundation', installer=None,
+        prefix='foundation::',profiles=('da_foundation',),
+        inputs=('crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs',
+                'crates/agent-wire/src/enroll.rs','crates/agent-wire/src/pki.rs','crates/agent-wire/src/task_trust.rs',
+                'crates/agent-wire/src/runtime.rs','crates/agent-wire/src/device_access.rs','crates/agent-wire/src/platform_sso.rs',
+                'crates/native-protection/*',
+                'crates/registration-service/*','crates/task-trust/*','crates/pki-service/*','crates/install-support/*',
+                'crates/audit-integration/*','crates/authorization-service/*','hack/da_foundation_materials.py','hack/task_trust_materials.py')),
+
     'agent.foundation': dict(package='rss-mdm-agent-channel', target='foundation', installer=None,
         prefix='foundation::', profiles=('agent_foundation',),
         inputs=('crates/install-support/*','crates/agent-channel/*','crates/registration-service/*',

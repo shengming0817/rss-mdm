@@ -1,8 +1,6 @@
 //! Agent trust generations and authorized issuance evidence.
-use rss_mdm_certificate::{
-    ClientCertificateEvidence, Error,
-    agent::{PROFILE, VerifiedAgentCsr},
-};
+use rss_mdm_agent_wire::pki::Purpose;
+use rss_mdm_certificate::{ClientCertificateEvidence, Error, device_identity::VerifiedDeviceCsr};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio_rustls::rustls::{pki_types::CertificateDer, server::danger::ClientCertVerifier};
@@ -15,6 +13,9 @@ fn malformed(_: impl std::fmt::Debug) -> Error {
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Metadata {
+    pub purpose: Purpose,
+    pub service_id: uuid::Uuid,
+    pub tenant: uuid::Uuid,
     pub profile: &'static str,
     pub identity: String,
     pub issuer: [u8; 32],
@@ -26,21 +27,21 @@ pub struct Metadata {
     pub provisioner: String,
 }
 /// Validated issuance output. This type is not channel credential evidence.
-pub struct IssuedAgentCertificate {
+pub struct IssuedDeviceCertificate {
     pub metadata: Metadata,
     pub csr_digest: [u8; 32],
     pub chain: Vec<Vec<u8>>,
 }
 /// Can only be constructed from completed TLS, never HTTP certificate text.
-pub struct VerifiedAgentPeer {
+pub struct VerifiedDevicePeer {
     metadata: Metadata,
 }
-impl VerifiedAgentPeer {
+impl VerifiedDevicePeer {
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
     }
 }
-pub struct AgentTrust {
+pub struct DeviceIdentityTrust {
     pub trust: crate::DeviceTrust,
     max_seconds: i64,
 }
@@ -59,10 +60,11 @@ fn valid(c: &Certificate, now: i64) -> bool {
                 .to_unix_duration()
                 .as_secs()
 }
-impl AgentTrust {
+impl DeviceIdentityTrust {
     pub fn from_trust(trust: crate::DeviceTrust, max_days: u16) -> Result<Self, Error> {
         let active = trust.active()?;
-        if active.provisioner != "rss-agent"
+        let purpose = trust.public()?.purpose;
+        if active.provisioner != rss_mdm_certificate::device_identity::provisioner(purpose)?
             || active.kid.is_empty()
             || active.kid.len() > 128
             || !(1..=3650).contains(&max_days)
@@ -76,6 +78,9 @@ impl AgentTrust {
             trust,
             max_seconds: i64::from(max_days) * 86400,
         })
+    }
+    pub fn purpose(&self) -> Result<Purpose, Error> {
+        Ok(self.trust.public()?.purpose)
     }
     /// Offer real client authentication while permitting anonymous bootstrap requests.
     pub fn enrollment_verifier(&self) -> Arc<dyn ClientCertVerifier> {
@@ -130,10 +135,19 @@ impl AgentTrust {
         let t = &c.tbs_certificate;
         let start = t.validity.not_before.to_unix_duration().as_secs() as i64;
         let end = t.validity.not_after.to_unix_duration().as_secs() as i64;
-        rss_mdm_certificate::agent::validate_leaf_profile(&c, &issuer, self.max_seconds)?;
-        let identity = crate::agent_identity(&c, &generation)?;
+        let purpose = self.purpose()?;
+        rss_mdm_certificate::device_identity::validate_leaf_profile(
+            &c,
+            &issuer,
+            self.max_seconds,
+            purpose,
+        )?;
+        let identity = crate::endpoint_identity(&c, &generation, purpose)?;
         Ok(Metadata {
-            profile: PROFILE,
+            service_id: self.trust.public()?.service_id,
+            tenant: self.trust.public()?.tenant,
+            purpose,
+            profile: rss_mdm_certificate::device_identity::profile(purpose)?,
             identity,
             issuer: Sha256::digest(&issuer_bytes).into(),
             fingerprint: Sha256::digest(der).into(),
@@ -147,29 +161,30 @@ impl AgentTrust {
     pub fn validate_issued(
         &self,
         chain: Vec<Vec<u8>>,
-        csr: &VerifiedAgentCsr,
+        csr: &VerifiedDeviceCsr,
         identity: &str,
         start: i64,
         end: i64,
         now: i64,
-    ) -> Result<IssuedAgentCertificate, Error> {
+    ) -> Result<IssuedDeviceCertificate, Error> {
         self.validate_issued_for(self.issuer_digest(), chain, csr, identity, start..end, now)
     }
     pub fn validate_issued_for(
         &self,
         expected_issuer: [u8; 32],
         chain: Vec<Vec<u8>>,
-        csr: &VerifiedAgentCsr,
+        csr: &VerifiedDeviceCsr,
         identity: &str,
         validity: std::ops::Range<i64>,
         now: i64,
-    ) -> Result<IssuedAgentCertificate, Error> {
+    ) -> Result<IssuedDeviceCertificate, Error> {
         let refs = chain
             .iter()
             .map(|c| CertificateDer::from(c.as_slice()))
             .collect::<Vec<_>>();
         let metadata = self.check(&refs, now)?;
-        if metadata.issuer != expected_issuer
+        if csr.purpose() != metadata.purpose
+            || metadata.issuer != expected_issuer
             || metadata.identity != identity
             || metadata.spki != csr.spki()
             || metadata.not_before != validity.start
@@ -177,7 +192,7 @@ impl AgentTrust {
         {
             return Err(Error::Conflict);
         }
-        Ok(IssuedAgentCertificate {
+        Ok(IssuedDeviceCertificate {
             metadata,
             csr_digest: csr.digest(),
             chain,
@@ -189,11 +204,11 @@ impl AgentTrust {
         &self,
         expected_issuer: [u8; 32],
         chain: Vec<Vec<u8>>,
-        csr: &VerifiedAgentCsr,
+        csr: &VerifiedDeviceCsr,
         identity: &str,
         start: i64,
         end: i64,
-    ) -> Result<IssuedAgentCertificate, Error> {
+    ) -> Result<IssuedDeviceCertificate, Error> {
         if chain.is_empty() || chain.len() > 4 || chain.iter().any(|c| c.len() > 32768) {
             return Err(Error::Malformed);
         }
@@ -203,14 +218,15 @@ impl AgentTrust {
             .collect::<String>();
         let generation = self.trust.verify_history(&chain[0], &issuer)?;
         let metadata = self.metadata(&chain[0], generation)?;
-        if metadata.identity != identity
+        if csr.purpose() != metadata.purpose
+            || metadata.identity != identity
             || metadata.spki != csr.spki()
             || metadata.not_before != start
             || metadata.not_after != end
         {
             return Err(Error::Conflict);
         }
-        Ok(IssuedAgentCertificate {
+        Ok(IssuedDeviceCertificate {
             metadata,
             csr_digest: csr.digest(),
             chain,
@@ -220,8 +236,8 @@ impl AgentTrust {
         &self,
         peer: &ClientCertificateEvidence,
         now: i64,
-    ) -> Result<VerifiedAgentPeer, Error> {
+    ) -> Result<VerifiedDevicePeer, Error> {
         self.check(peer.chain(), now)
-            .map(|metadata| VerifiedAgentPeer { metadata })
+            .map(|metadata| VerifiedDevicePeer { metadata })
     }
 }

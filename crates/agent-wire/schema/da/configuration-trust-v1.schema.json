@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "KeyState": {
+      "description": "Exact task-signing key lifecycle. Retirement removes a key from the next complete set.",
+      "oneOf": [
+        {
+          "const": "prepared",
+          "description": "Installed before the server starts signing with this key.",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "The sole key used for newly signed tasks.",
+          "type": "string"
+        },
+        {
+          "const": "verify_only",
+          "description": "Retained to authenticate previously issued tasks.",
+          "type": "string"
+        }
+      ]
+    },
+    "PublicKey": {
+      "additionalProperties": false,
+      "description": "Ed25519 public material. Private keys never appear in this contract.",
+      "properties": {
+        "id": {
+          "description": "Stable, never reused key identifier.",
+          "type": "string"
+        },
+        "public_key": {
+          "description": "Exactly 32 public-key bytes encoded as canonical unpadded base64url.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/KeyState",
+          "description": "Approved use of this key."
+        }
+      },
+      "required": [
+        "id",
+        "public_key",
+        "state"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Exact DA content trust. Public keys never establish their own authority.",
+  "properties": {
+    "keys": {
+      "description": "Complete sorted set of configuration public keys and lifecycle states.",
+      "items": {
+        "$ref": "#/$defs/PublicKey"
+      },
+      "type": "array"
+    },
+    "revision": {
+      "description": "Positive monotonically increasing publication revision.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "service_id": {
+      "description": "Stable installation instance, independent of its network location.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "tenant": {
+      "description": "Tenant owning this identity and signing authority.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "service_id",
+    "tenant",
+    "revision",
+    "keys"
+  ],
+  "title": "ConfigurationTrust",
+  "type": "object",
+  "$id": "https://rss.example/da/v1/ConfigurationTrust"
+}

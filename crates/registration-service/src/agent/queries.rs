@@ -142,8 +142,8 @@ const REQUEST_SQL: &str = r#"SELECT jsonb_build_object(
  CASE WHEN i.state IN ('signing','unknown') THEN 'original_ca_response' END,
  CASE WHEN i.state='issued' AND i.activation_result IS NULL THEN 'awaiting_device_activation' END
  ],NULL)))
- FROM mdm_access.agent_grants g LEFT JOIN mdm_access.agent_issuances i ON(i.tenant_id,i.grant_id)=(g.tenant_id,g.id)
- LEFT JOIN mdm_access.registrations r ON r.tenant_id=g.tenant_id AND (r.id=g.target_registration OR (g.target_registration IS NULL AND r.agent_grant_id=g.id))
+ FROM mdm_access.certificate_grants g LEFT JOIN mdm_access.certificate_issuances i ON(i.tenant_id,i.grant_id)=(g.tenant_id,g.id)
+ LEFT JOIN mdm_access.registrations r ON r.tenant_id=g.tenant_id AND (r.id=g.target_registration OR (g.target_registration IS NULL AND r.certificate_grant_id=g.id))
  WHERE g.tenant_id="#;
 fn request_column(name: &str) -> &'static str {
     match name {
@@ -457,7 +457,7 @@ impl Service {
                 .iter()
                 .map(|v| STANDARD.decode(v).map_err(|_| Error::Corrupt))
                 .collect::<Result<Vec<_>, _>>()?;
-            if digest(&("agent_issuance_recovery", id, chain))?
+            if digest(&("certificate_issuance_recovery", id, chain))?
                 != record.try_get::<String, _>("digest").map_err(db)?
             {
                 return Err(Error::Corrupt);

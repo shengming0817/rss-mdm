@@ -8,6 +8,14 @@ pub struct Store {
     pub(crate) retirement: Arc<dyn Retirement>,
 }
 impl Store {
+    /// Standalone certificate registration needs only the shared PKI retirement owner.
+    pub fn for_device_access(pool: PgPool) -> Self {
+        Self::from_pool(
+            rss_mdm_install_support::StorageProfile::Da,
+            pool,
+            Arc::new(CertificateRetirement),
+        )
+    }
     pub fn from_pool(
         profile: rss_mdm_install_support::StorageProfile,
         pool: PgPool,
@@ -82,4 +90,30 @@ impl Store {
 }
 pub(crate) fn db(_: sqlx::Error) -> Error {
     Error::Storage
+}
+
+struct CertificateRetirement;
+impl crate::Retirement for CertificateRetirement {
+    fn events(&self) -> Option<&dyn crate::EventSink> {
+        None
+    }
+    fn retire<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        _facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
+        tenant: &'a str,
+        registration: uuid::Uuid,
+        _state: &'a str,
+    ) -> crate::agent::Pending<'a, ()> {
+        Box::pin(async move {
+            rss_mdm_pki_service::certificates::revoke_registration_in(
+                rss_mdm_install_support::StorageProfile::Da,
+                c,
+                tenant,
+                registration,
+            )
+            .await
+            .map_err(|_| Error::Storage)
+        })
+    }
 }

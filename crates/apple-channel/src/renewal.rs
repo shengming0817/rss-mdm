@@ -572,7 +572,7 @@ pub async fn management(
                 let p = *p; let d = *d; let bytes = *bytes;
     let message = protocol::management(d)?;
     let tenant = p.tenant().to_string();
-    crate::device::store::lock_channel(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, p.device(), p.channel()).await?;
+    crate::device::store::lock_channel(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, p.device(), p.require_channel()?).await?;
     crate::device::store::revalidate_source(rss_mdm_install_support::StorageProfile::Mdm, c,p,rss_mdm_inventory::ReportSource::MdmApple).await?;
     let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active' AND udid=$3)").bind(&tenant).bind(p.registration()).bind(message.udid).fetch_one(&mut *c).await.map_err(db)?;
     if !live {

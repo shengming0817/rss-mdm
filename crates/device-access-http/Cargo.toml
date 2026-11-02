@@ -1,0 +1,57 @@
+[package]
+name = "rss-mdm-device-access-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+autotests = false
+[dependencies]
+rss-mdm-install-support.workspace = true
+rss-mdm-registration-service.workspace = true
+rss-mdm-task-trust.workspace = true
+rss-mdm-certificate.workspace = true
+rss-mdm-agent-wire.workspace = true
+rss-mdm-audit-integration.workspace = true
+rss-mdm-authorization-service.workspace = true
+rss-mdm-http-contract.workspace = true
+rss-identity-core.workspace = true
+rss-request-context.workspace = true
+axum.workspace = true
+rss-axum.workspace = true
+rss-runtime.workspace = true
+tokio-rustls.workspace = true
+
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+uuid.workspace = true
+[lints]
+workspace = true
+[[test]]
+name = "foundation"
+path = "tests/foundation.rs"
+[dev-dependencies]
+anyhow.workspace = true
+base64.workspace = true
+ring.workspace = true
+sqlx.workspace = true
+time.workspace = true
+reqwest = {workspace = true, features=["json"]}
+sha2.workspace = true
+tower.workspace = true
+rss-mdm-backend-postgres-support.workspace = true
+rss-mdm-pki-service.workspace = true
+rss-mdm-device-trust.workspace = true
+rss-mdm-native-protection.workspace = true
+rss-mdm-query.workspace = true
+rss-mdm-inventory-postgres.workspace = true
+rss-mdm-inventory.workspace = true
+rss-mdm-policy-service.workspace = true
+rss-audit-postgres.workspace = true
+rss-identity-postgres.workspace = true
+rss-observation-postgres.workspace = true
+rss-projection-postgres.workspace = true
+rss-transactional-messaging.workspace = true
+rss-transactional-messaging-postgres = { workspace = true, features = ["integration"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "process"] }

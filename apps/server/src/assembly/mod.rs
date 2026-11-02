@@ -709,6 +709,7 @@ fn observe_native_trust(
             Purpose::Apple => ChannelName::Apple,
             Purpose::Agent => ChannelName::Agent,
             Purpose::AgentBootstrap => ChannelName::AgentBootstrap,
+            Purpose::DaDevice => return Err(Error::Forbidden),
         };
         channels.loaded(
             name,
@@ -779,6 +780,7 @@ async fn admit_native(
                 };
                 channels.set(name, ChannelState::Degraded, Some(reason))?;
                 match purpose {
+                    Purpose::DaDevice => return Err(Error::Forbidden),
                     Purpose::Windows => *windows = None,
                     Purpose::Apple => *apple = None,
                     Purpose::Agent => *agent_pki = None,

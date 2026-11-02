@@ -41,7 +41,7 @@ pub async fn seed_trust(c: &Context, protection: &Protector, states: &[KeyState]
         .derive();
         let sealed = protection.seal_bytes(pkcs8.as_ref(), &aad)?;
         sqlx::query(
-            "INSERT INTO rss_da.signing_keys(tenant_id,key_id,private_key) VALUES($1,$2,$3)",
+            "INSERT INTO rss_da.signing_keys(usage,tenant_id,key_id,private_key) VALUES('agent_task',$1,$2,$3)",
         )
         .bind(tenant)
         .bind(&key_id)
@@ -64,11 +64,13 @@ pub async fn seed_trust(c: &Context, protection: &Protector, states: &[KeyState]
     )?
     .derive();
     let fingerprint = protection.mac(b"isolated legal trust seed", &aad)?;
-    sqlx::query("INSERT INTO rss_da.signing_heads VALUES($1,1)")
-        .bind(tenant)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("INSERT INTO rss_da.signing_versions(tenant_id,revision,operation_id,fingerprint_key,fingerprint,body,digest) VALUES($1,1,$2,$3,$4,$5,$6)")
+    sqlx::query(
+        "INSERT INTO rss_da.signing_heads(tenant_id,usage,revision) VALUES($1,'agent_task',1)",
+    )
+    .bind(tenant)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("INSERT INTO rss_da.signing_versions(usage,tenant_id,revision,operation_id,fingerprint_key,fingerprint,body,digest) VALUES('agent_task',$1,1,$2,$3,$4,$5,$6)")
         .bind(tenant).bind(operation).bind(protection.fingerprint_id()).bind(fingerprint.as_slice()).bind(serde_json::to_value(&trust)?).bind(trust.installation_digest()?).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(trust)
@@ -88,9 +90,9 @@ pub async fn seed_registration(c: &Context) -> Result<(Uuid, Uuid, String)> {
         .bind(&device)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO rss_da.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1,$2,$2,'download','seed',$3,$4,'windows',repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')")
+    sqlx::query("INSERT INTO rss_da.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1,$2,$2,'download','seed',$3,$4,'windows',repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')")
         .bind(tenant).bind(grant).bind(&c.inputs.installation.instance_id).bind(&device).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_da.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch) VALUES($1,$2,$3,'agent',2,$4,'active','primary',$5)")
+    sqlx::query("INSERT INTO rss_da.registrations(tenant_id,id,device,channel,generation,certificate_grant_id,state,purpose,epoch) VALUES($1,$2,$3,'agent',2,$4,'active','primary',$5)")
         .bind(tenant).bind(registration).bind(&device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((registration, grant, device))
@@ -101,15 +103,17 @@ pub async fn seed_ack(
     registration: Uuid,
     generation: i64,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO rss_da.signing_acknowledgements VALUES($1::uuid,$2,$3,$4,$5,$6)")
-        .bind(c.tenant.to_string())
-        .bind(Uuid::new_v4())
-        .bind(registration)
-        .bind(generation)
-        .bind(trust.revision as i64)
-        .bind(trust.installation_digest()?)
-        .execute(&c.operator)
-        .await?;
+    sqlx::query(
+        "INSERT INTO rss_da.signing_acknowledgements VALUES($1::uuid,'agent_task',$2,$3,$4,$5,$6)",
+    )
+    .bind(c.tenant.to_string())
+    .bind(Uuid::new_v4())
+    .bind(registration)
+    .bind(generation)
+    .bind(trust.revision as i64)
+    .bind(trust.installation_digest()?)
+    .execute(&c.operator)
+    .await?;
     Ok(())
 }
 
@@ -117,10 +121,10 @@ async fn agent_material(
     c: &Context,
     device: &str,
 ) -> Result<(
-    rss_mdm_device_trust::agent::VerifiedAgentPeer,
+    rss_mdm_device_trust::device_identity::VerifiedDevicePeer,
     Vec<u8>,
     Vec<u8>,
-    rss_mdm_device_trust::agent::AgentTrust,
+    rss_mdm_device_trust::device_identity::DeviceIdentityTrust,
     rss_mdm_certificate::ClientCertificateEvidence,
 )> {
     use base64::engine::general_purpose::STANDARD;
@@ -158,7 +162,7 @@ async fn agent_material(
         "version":1,"service_id":c.inputs.installation.instance_id,"origin":"https://mdm.example.test","tenant":c.tenant.to_string(),"purpose":"agent","revision":1,
         "issuers":[{"digest":format!("{:x}",Sha256::digest(&root)),"mode":"active","certificate":STANDARD.encode(&root),"root":STANDARD.encode(&root),"crl":STANDARD.encode(&crl),"root_crl":STANDARD.encode(&crl),"provisioner":"rss-agent","kid":"task-trust"}]
     }))?;
-    let trust = rss_mdm_device_trust::agent::AgentTrust::from_trust(
+    let trust = rss_mdm_device_trust::device_identity::DeviceIdentityTrust::from_trust(
         rss_mdm_device_trust::DeviceTrust::new(
             trust,
             rss_mdm_agent_wire::pki::Purpose::Agent,
@@ -275,12 +279,12 @@ pub async fn authenticated_agent(
         .bind(tenant).bind(credential).bind(registration).bind(&fingerprint).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.report_sources(tenant_id,registration,source,epoch,next_sequence,enabled) VALUES($1,$2,'agent.builtin',$3,0,true)")
         .bind(tenant).bind(registration).bind(epoch).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_da.agent_issuances(tenant_id,id,grant_id,operation_id,request_digest,authority_digest,csr,spki,identity,profile,not_before,not_after,state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) VALUES($1,$2,$3,$4,repeat('1',64),repeat('2',64),$5,$6,$7,$8,$9,$10,'issued',$11,$12,$13,$4,repeat('3',64),$14,$15)")
+    sqlx::query("INSERT INTO rss_da.certificate_issuances(tenant_id,id,grant_id,operation_id,request_digest,authority_digest,csr,spki,identity,profile,not_before,not_after,state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) VALUES($1,$2,$3,$4,repeat('1',64),repeat('2',64),$5,$6,$7,$8,$9,$10,'issued',$11,$12,$13,$4,repeat('3',64),$14,$15)")
         .bind(tenant).bind(issuance).bind(grant).bind(operation).bind(csr)
         .bind(meta.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).bind(&meta.identity)
         .bind(serde_json::to_value(&profile)?)
         .bind(meta.not_before).bind(meta.not_after).bind(serde_json::json!([STANDARD.encode(&certificate)])).bind(serde_json::to_value(meta)?).bind(fingerprint)
-        .bind(serde_json::to_value(&activation)?)
+        .bind(serde_json::json!({"kind":"agent","receipt":&activation}))
         .bind(credential).execute(&mut *tx).await?;
     tx.commit().await?;
     let mut tx = c.access.clone().begin().await?;
@@ -288,7 +292,7 @@ pub async fn authenticated_agent(
         .bind(c.tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    let principal = rss_mdm_registration_service::device::authenticate_agent_in(
+    let principal = rss_mdm_registration_service::device::authenticate_endpoint_in(
         super::DA,
         &mut tx,
         c.tenant,

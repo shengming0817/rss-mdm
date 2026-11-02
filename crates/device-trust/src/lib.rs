@@ -257,8 +257,11 @@ impl DeviceTrust {
             if public.provisioner.len() > 128
                 || public.kid.len() > 128
                 || (public.mode != Mode::VerifyOnly && public.provisioner.is_empty())
-                || (trust.purpose == Purpose::Agent
-                    && (public.provisioner != "rss-agent" || public.kid.is_empty()))
+                || (matches!(trust.purpose, Purpose::Agent | Purpose::DaDevice)
+                    && (public.provisioner
+                        != rss_mdm_certificate::device_identity::provisioner(trust.purpose)
+                            .map_err(invalid)?
+                        || public.kid.is_empty()))
             {
                 return Err(Error::Malformed);
             }
@@ -380,7 +383,10 @@ impl DeviceTrust {
         let mut old = self.inner.write().map_err(invalid)?;
         if trust.service_id != old.trust.service_id
             || (trust.origin != old.trust.origin
-                && !matches!(trust.purpose, Purpose::Agent | Purpose::AgentBootstrap))
+                && !matches!(
+                    trust.purpose,
+                    Purpose::Agent | Purpose::AgentBootstrap | Purpose::DaDevice
+                ))
             || trust.tenant != old.trust.tenant
             || trust.purpose != old.trust.purpose
             || trust.revision < old.trust.revision
@@ -477,7 +483,7 @@ impl DeviceTrust {
                     return Err(Error::Unauthorized);
                 }
             }
-            Purpose::Agent => {
+            Purpose::Agent | Purpose::DaDevice => {
                 let (_, sans) = t
                     .get::<SubjectAltName>()
                     .map_err(invalid)?
@@ -485,10 +491,13 @@ impl DeviceTrust {
                 let [GeneralName::UniformResourceIdentifier(uri)] = sans.0.as_slice() else {
                     return Err(Error::Unauthorized);
                 };
-                if t.subject.to_string() != "CN=rss-mdm-agent"
-                    || !uri
-                        .as_str()
-                        .starts_with(&format!("urn:rss-mdm:agent:v1:{}:", trust.tenant))
+                if t.subject.to_string()
+                    != format!(
+                        "CN={}",
+                        rss_mdm_certificate::device_identity::subject(trust.purpose)
+                            .map_err(invalid)?
+                    )
+                    || !uri.as_str().starts_with(&identity_authority_prefix(trust)?)
                 {
                     return Err(Error::Unauthorized);
                 }
@@ -538,9 +547,9 @@ impl DeviceTrust {
             &t.to_der().map_err(invalid)?,
             leaf.signature.as_bytes().ok_or(Error::Malformed)?,
         )?;
-        if snapshot.trust.purpose == Purpose::Agent {
-            let identity = agent_identity(&leaf, &generation.public)?;
-            if !identity.starts_with(&format!("urn:rss-mdm:agent:v1:{}:", snapshot.trust.tenant)) {
+        if matches!(snapshot.trust.purpose, Purpose::Agent | Purpose::DaDevice) {
+            let identity = endpoint_identity(&leaf, &generation.public, snapshot.trust.purpose)?;
+            if !identity.starts_with(&identity_authority_prefix(&snapshot.trust)?) {
                 return Err(Error::Unauthorized);
             }
         }
@@ -575,11 +584,9 @@ impl DeviceTrust {
             {
                 continue;
             }
-            if snapshot.trust.purpose == Purpose::Agent {
-                let identity = agent_identity(&leaf, &g.public)?;
-                if !identity
-                    .starts_with(&format!("urn:rss-mdm:agent:v1:{}:", snapshot.trust.tenant))
-                {
+            if matches!(snapshot.trust.purpose, Purpose::Agent | Purpose::DaDevice) {
+                let identity = endpoint_identity(&leaf, &g.public, snapshot.trust.purpose)?;
+                if !identity.starts_with(&identity_authority_prefix(&snapshot.trust)?) {
                     return Err(Error::Unauthorized);
                 }
             }
@@ -681,9 +688,10 @@ impl ClientCertVerifier for Verifier {
     }
 }
 
-pub fn agent_identity(
+pub fn endpoint_identity(
     c: &Certificate,
     generation: &rss_mdm_agent_wire::pki::Issuer,
+    purpose: Purpose,
 ) -> Result<String, Error> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use uuid::Uuid;
@@ -697,7 +705,11 @@ pub fn agent_identity(
         credential: OctetString,
     }
     let t = &c.tbs_certificate;
-    if t.subject.to_string() != "CN=rss-mdm-agent"
+    if t.subject.to_string()
+        != format!(
+            "CN={}",
+            rss_mdm_certificate::device_identity::subject(purpose).map_err(invalid)?
+        )
         || t.subject_public_key_info.algorithm.oid
             != ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1")
     {
@@ -712,8 +724,16 @@ pub fn agent_identity(
         _ => return Err(Error::Unauthorized),
     };
     let remainder = identity
-        .strip_prefix("urn:rss-mdm:agent:v1:")
+        .strip_prefix(
+            rss_mdm_certificate::device_identity::identity_prefix(purpose).map_err(invalid)?,
+        )
         .ok_or(Error::Unauthorized)?;
+    let (service, remainder) = if purpose == Purpose::DaDevice {
+        let (service, remainder) = remainder.split_once(':').ok_or(Error::Unauthorized)?;
+        (Uuid::parse_str(service).map_err(invalid)?, remainder)
+    } else {
+        (Uuid::nil(), remainder)
+    };
     let (tenant, encoded) = remainder.split_once(':').ok_or(Error::Unauthorized)?;
     let tenant = Uuid::parse_str(tenant).map_err(invalid)?;
     let device = URL_SAFE_NO_PAD.decode(encoded).map_err(invalid)?;
@@ -722,10 +742,9 @@ pub fn agent_identity(
         || device.is_empty()
         || device.len() > 256
         || device.chars().any(char::is_control)
-        || format!(
-            "urn:rss-mdm:agent:v1:{tenant}:{}",
-            URL_SAFE_NO_PAD.encode(device)
-        ) != identity
+        || rss_mdm_certificate::device_identity::identity(purpose, service, tenant, device)
+            .map_err(invalid)?
+            != identity
     {
         return Err(Error::Unauthorized);
     }
@@ -757,8 +776,8 @@ pub fn agent_identity(
     Ok(identity)
 }
 
-pub mod agent;
 pub mod apple;
+pub mod device_identity;
 pub mod windows;
 impl From<Error> for rss_mdm_certificate::Error {
     fn from(e: Error) -> Self {
@@ -832,4 +851,14 @@ impl ClientCertVerifier for EnrollmentVerifier {
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.signature.supported_verify_schemes()
     }
+}
+
+fn identity_authority_prefix(trust: &rss_mdm_agent_wire::pki::Trust) -> Result<String, Error> {
+    let prefix =
+        rss_mdm_certificate::device_identity::identity_prefix(trust.purpose).map_err(invalid)?;
+    Ok(if trust.purpose == Purpose::DaDevice {
+        format!("{prefix}{}:{}:", trust.service_id, trust.tenant)
+    } else {
+        format!("{prefix}{}:", trust.tenant)
+    })
 }
