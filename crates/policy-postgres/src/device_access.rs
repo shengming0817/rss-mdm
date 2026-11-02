@@ -29,6 +29,8 @@ pub struct Publication {
     pub target: Target,
     /// Disabled overrides deliberately block fallback to the tenant default.
     pub enabled: bool,
+    /// Client groups authorized for managed-mandatory transport.
+    pub managed_fields: Vec<rss_mdm_agent_wire::da::ConfigurationField>,
     /// Validated device access configuration.
     pub configuration: rss_mdm_agent_wire::runtime::AccessConfiguration,
 }
@@ -71,6 +73,9 @@ pub async fn publish_on(
     {
         return Err(Error::Malformed);
     }
+    if value.managed_fields.len() > 2 || value.managed_fields.windows(2).any(|v| v[0] >= v[1]) {
+        return Err(Error::Malformed);
+    }
     value
         .configuration
         .validate()
@@ -92,7 +97,7 @@ pub async fn publish_on(
     }
     let number = number.checked_add(1).ok_or(Error::Malformed)?;
     let definition = serde_json::to_value(value).map_err(|_| Error::Malformed)?;
-    let frozen = serde_json::json!({"kind":"device_access","configuration":value.configuration});
+    let frozen = serde_json::json!({"kind":"device_access","configuration":value.configuration,"publication":value});
     let fingerprint = Sha256::digest(serde_json::to_vec(&frozen).map_err(|_| Error::Malformed)?);
     let result=sqlx::query("INSERT INTO rss_da.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,state=excluded.state,definition=excluded.definition,author=excluded.author,updated_at=excluded.updated_at")
         .bind(tenant).bind(value.id).bind(value.revision).bind(value.version).bind(number).bind(if value.enabled{"enabled"}else{"disabled"}).bind(definition).bind(author).bind(now).execute(&mut *c).await;
@@ -117,3 +122,67 @@ CREATE UNIQUE INDEX da_configuration_target ON rss_da.policies(tenant_id,(defini
 
 /// Access profile for the minimal DA publication consumer.
 pub const ACCESS_CONTRACT: &str = include_str!("../schema/da-device-access.json");
+
+/// Serialize selector changes, exports and selection on the same borrowed transaction.
+pub async fn lock_publications_on(c: &mut PgConnection, tenant: Uuid) -> Result<(), Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,31291))")
+        .bind(tenant.to_string())
+        .execute(c)
+        .await?;
+    Ok(())
+}
+/// Read one current publication; disabled is an explicit tombstone, never absence.
+pub async fn get_on(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<Option<Publication>, Error> {
+    let value: Option<serde_json::Value> = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1 AND id=$2 AND definition->'target' IS NOT NULL")
+        .bind(tenant).bind(id).fetch_optional(c).await?;
+    value
+        .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
+        .transpose()
+}
+/// Device override or tenant default, including explicit disabled overrides.
+pub async fn selected_on(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    device: &str,
+) -> Result<Option<Publication>, Error> {
+    let value: Option<serde_json::Value> = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1 AND (definition#>>'{target,kind}'='tenant_default' OR (definition#>>'{target,kind}'='device' AND definition#>>'{target,device}'=$2)) ORDER BY (definition#>>'{target,kind}'='device') DESC LIMIT 1")
+        .bind(tenant).bind(device).fetch_optional(c).await?;
+    value
+        .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
+        .transpose()
+}
+
+/// Ordered current publications for a tenant directory or an explicitly selected device.
+pub async fn directory_on(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    device: Option<&str>,
+    after: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<Publication>, Error> {
+    let values:Vec<serde_json::Value>=sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1 AND definition->'target' IS NOT NULL AND ($2::text IS NULL OR definition#>>'{target,device}'=$2) AND ($3::uuid IS NULL OR id>$3) ORDER BY id LIMIT $4")
+        .bind(tenant).bind(device).bind(after).bind(limit).fetch_all(c).await?;
+    values
+        .into_iter()
+        .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
+        .collect()
+}
+/// Immutable history, including withdrawn publications, in descending revision order.
+pub async fn history_on(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    policy: Uuid,
+    after: Option<i64>,
+    limit: i64,
+) -> Result<Vec<Publication>, Error> {
+    let values:Vec<serde_json::Value>=sqlx::query_scalar("SELECT frozen->'publication' FROM rss_da.policy_versions WHERE tenant_id=$1 AND policy=$2 AND action_kind='device_access' AND ($3::bigint IS NULL OR number<$3) ORDER BY number DESC LIMIT $4")
+        .bind(tenant).bind(policy).bind(after).bind(limit).fetch_all(c).await?;
+    values
+        .into_iter()
+        .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
+        .collect()
+}

@@ -3,8 +3,8 @@ use crate::Use;
 use rss_mdm_install_support::StorageProfile;
 pub(crate) struct Statements {
     pub configuration_save: &'static str,
+    pub configuration_current: &'static str,
     pub configuration_receipt: &'static str,
-    pub configuration_latest: &'static str,
     pub retain_until: &'static str,
     pub pending_until: &'static str,
     pub install: &'static str,
@@ -40,8 +40,8 @@ macro_rules! define_storage {
     ($module:ident, $usage:literal, $schema:literal, $exports:literal, $contract_exports:literal, $heads:literal, $keys:literal, $versions:literal, $acknowledgements:literal, $observations:literal, $registrations:literal, $installation:literal, $access:literal, $command:literal, $policy:literal, $telemetry:literal, $contract_table_12:literal, $contract_table_13:literal, $contract_table_14:literal, $contract_table_15:literal, $contract_table_16:literal) => {
         mod $module {
             pub(super) const SQL: super::Statements = super::Statements {
-                configuration_save: concat!("INSERT INTO ",$exports,"(tenant_id,operation,actor,instance,request,configuration,revision,epoch,result) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)"),
-                configuration_latest: concat!("SELECT result FROM ",$exports," WHERE tenant_id=$1::uuid AND configuration=$2 ORDER BY revision DESC LIMIT 1"),
+                configuration_save: concat!("INSERT INTO ",$exports,"(tenant_id,operation,actor,instance,request,configuration,revision,trust_revision,result,issued_at,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"),
+                configuration_current: concat!("SELECT result FROM ",$exports," WHERE tenant_id=$1::uuid AND configuration=$2 AND revision=$3 AND request->>'delivery'='da' AND expires_at>floor(extract(epoch FROM clock_timestamp()))::bigint ORDER BY issued_at DESC,operation DESC LIMIT 1"),
                 configuration_receipt: concat!("SELECT actor,instance,request,result FROM ",$exports," WHERE tenant_id=$1::uuid AND operation=$2"),
                 retain_until: concat!("UPDATE ", $keys, " SET max_verify_until=greatest(max_verify_until,$3) WHERE usage='",$usage,"' AND tenant_id=$1::uuid AND key_id=$2"),
                 pending_until: concat!("SELECT max_verify_until>floor(extract(epoch FROM clock_timestamp()))::bigint FROM ", $keys," WHERE usage='",$usage,"' AND tenant_id=$1::uuid AND key_id=$2"),
@@ -50,8 +50,9 @@ CREATE SCHEMA IF NOT EXISTS "###, $schema, r###";
 CREATE TABLE "###, $exports, r###" (
  tenant_id uuid NOT NULL,operation uuid NOT NULL,actor text NOT NULL,instance text NOT NULL,
  request jsonb NOT NULL CHECK(octet_length(request::text)<=98304),configuration uuid NOT NULL,
- revision bigint NOT NULL CHECK(revision>0),epoch bigint NOT NULL CHECK(epoch>0),result jsonb NOT NULL CHECK(octet_length(result::text)<=98304),
- PRIMARY KEY(tenant_id,operation),UNIQUE(tenant_id,configuration,revision,epoch)
+ revision bigint NOT NULL CHECK(revision>0),trust_revision bigint NOT NULL CHECK(trust_revision>0),result jsonb NOT NULL CHECK(octet_length(result::text)<=98304),
+ issued_at bigint NOT NULL,expires_at bigint NOT NULL CHECK(expires_at>issued_at),
+ PRIMARY KEY(tenant_id,operation)
 );
 ALTER TABLE "###,$exports,r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###,$exports,r###" FORCE ROW LEVEL SECURITY;
