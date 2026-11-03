@@ -499,6 +499,52 @@ impl ScopeBinding {
         .await?;
         Ok(())
     }
+    pub async fn definition_at_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        revision: u64,
+    ) -> Result<ScopeDefinition, BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        let sql = crate::storage_profile::sql(self.profile()).store_definition_at_1;
+        let revision = i64::try_from(revision).map_err(|_| BindingError::Invalid)?;
+        let value: Value = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(sql)
+                        .bind(tenant)
+                        .bind(id)
+                        .bind(revision)
+                        .fetch_optional(c)
+                        .await
+                })
+            })
+            .await?
+            .ok_or(BindingError::Missing)?;
+        serde_json::from_value(value).map_err(|_| invariant())
+    }
+    /// The caller keeps the Scope aggregate lock while replacing the returned task.
+    pub async fn pending_task_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        scope: Uuid,
+    ) -> Result<Option<Uuid>, BindingError> {
+        self.head_in(tx, scope, true).await?;
+        let tenant = self.tenant.to_string();
+        let sql = crate::storage_profile::sql(self.profile()).store_enqueue_in_1;
+        Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(sql)
+                        .bind(tenant)
+                        .bind(scope)
+                        .fetch_optional(c)
+                        .await
+                })
+            })
+            .await?)
+    }
     pub async fn enqueue_in(
         &self,
         tx: &mut PgTransaction<'_>,

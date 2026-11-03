@@ -13,7 +13,6 @@ use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
 };
-use rss_mdm_scope::Reference;
 use rss_mdm_scope_service::ScopeChange;
 
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
@@ -22,7 +21,7 @@ fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
 }
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_group_directory, get_device_groups, get_scope_directory, get_group_read, post_group_write, get_group_references, get_group_impacts, get_scope_references, post_group_preview, get_group_page, get_scope_page, get_scope_read, post_scope_write, get_group_task, get_scope_task } }
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_group_directory, get_device_groups, get_scope_directory, get_group_read, post_group_write, get_group_references, get_group_impacts, get_scope_references, post_group_preview, get_group_page, get_scope_page, get_scope_read, post_scope_write, post_scope_preview, get_group_task, get_scope_task } }
         RoutesModule1 {
             get_group_directory: rss_mdm_http_contract::module::Route::new(
                 "/groups",
@@ -104,6 +103,10 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
                     &[RouteOperation::List],
                 ),
             ),
+            post_scope_preview: rss_mdm_http_contract::module::Route::new(
+                "/scopes/previews",
+                post(scope_preview, &contracts::SCOPES, &[RouteOperation::Action]),
+            ),
             get_scope_read: rss_mdm_http_contract::module::Route::new(
                 "/scopes/{id}",
                 rss_mdm_http_contract::routing::get(
@@ -179,22 +182,8 @@ async fn run(
             rss_mdm_audit_integration::AuditIntent::Management,
         );
     }
-    let authorize = || {
-        auth.proof.manage(permission)?;
-        if let Command::Scope { change, .. } = &command
-            && matches!(&change.input, ScopeChange::Put { definition } if definition.references().iter().any(|r|matches!(r,Reference::Group(_))))
-        {
-            auth.proof.manage(Permission::GroupRead)?;
-        }
-        if matches!(command, Command::TaskRead { .. }) {
-            assets::ReadScope::from_proof(&auth.proof)?
-                .full()
-                .map_err(rss_mdm_inventory_service::Error::from)?;
-        }
-        Ok(())
-    };
-    authorize()?;
-    let response = wire::Response::decode(app.scopes.execute(&command, audit, &authorize).await?)?;
+    auth.proof.manage(permission)?;
+    let response = wire::Response::decode(app.scopes.execute(&command, audit, &auth.proof).await?)?;
     Ok(PlanningResponse(response))
 }
 macro_rules! read {
@@ -340,6 +329,18 @@ async fn group_preview(
     let request = body(payload)?;
     Ok(Json(
         app.groups.preview(&auth.proof, &request, &audit).await?,
+    ))
+}
+
+async fn scope_preview(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    payload: BodyInput<rss_mdm_scope_service::preview::Request>,
+) -> Result<Json<rss_mdm_scope_service::preview::Response>, Error> {
+    let request = body(payload)?;
+    Ok(Json(
+        app.scopes.preview(&auth.proof, &request, &audit).await?,
     ))
 }
 

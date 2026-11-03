@@ -18,28 +18,24 @@ pub(crate) async fn metadata(
             .bind(tenant).bind(id.to_string()).bind(after).bind(selected).bind(limit as i64).bind(matched_only).fetch_all(c).await
     })).await
 }
-pub(crate) async fn rows(
-    tx: &mut PgTransaction<'_>,
-    id: OperationId,
-    after: Option<String>,
-    limit: usize,
-) -> Result<Vec<sqlx::postgres::PgRow>, PgError> {
-    selected_rows(tx, id, after, None, limit).await
-}
 pub(crate) async fn selected_rows(
     tx: &mut PgTransaction<'_>,
     id: OperationId,
     after: Option<String>,
     selected: Option<Vec<String>>,
     limit: usize,
-) -> Result<Vec<sqlx::postgres::PgRow>, PgError> {
+    max_bytes: usize,
+) -> Result<(Vec<sqlx::postgres::PgRow>, usize), PgError> {
     let metadata = metadata(tx, id, after, selected, limit, false).await?;
     let mut devices = Vec::new();
     let mut runs = Vec::new();
     let mut bytes = 0usize;
     for row in metadata {
         let size = row.try_get::<i32, _>("bytes")? as usize + 1024;
-        if bytes + size > 16 * 1024 * 1024 {
+        if bytes + size > max_bytes.min(16 * 1024 * 1024) {
+            if devices.is_empty() {
+                return Ok((Vec::new(), size));
+            }
             break;
         }
         bytes += size;
@@ -54,5 +50,5 @@ pub(crate) async fn selected_rows(
     if rows.len() > limit {
         return Err(stored_shape());
     }
-    Ok(rows)
+    Ok((rows, bytes))
 }

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub enum ScopeChange {
     Put { definition: ScopeDefinition },
     Delete,
+    Recompute,
 }
 
 pub mod references;
@@ -37,6 +38,7 @@ mod calculation;
 pub mod directory;
 mod mutations;
 pub mod pages;
+pub mod preview;
 mod receipts;
 pub mod runtime;
 pub mod tasks;

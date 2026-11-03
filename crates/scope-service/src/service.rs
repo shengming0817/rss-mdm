@@ -92,9 +92,9 @@ impl Scopes {
         &self,
         command: &Command,
         audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+        proof: &crate::authorization::context::AuthorizedPrincipal,
     ) -> std::result::Result<Value, Error> {
-        self.execute_with_initialization(command, audit, authorize, None)
+        self.execute_with_initialization(command, audit, proof, false)
             .await
     }
     pub async fn execute_initialization(
@@ -103,25 +103,23 @@ impl Scopes {
         audit: &RequestAudit,
         proof: &crate::authorization::context::AuthorizedPrincipal,
     ) -> std::result::Result<Value, Error> {
-        self.execute_with_initialization(
-            command,
-            audit,
-            &|| {
-                proof
-                    .manage(crate::authorization::Permission::ScopeWrite)
-                    .map_err(Error::from)
-            },
-            Some(proof),
-        )
-        .await
+        self.execute_with_initialization(command, audit, proof, true)
+            .await
     }
     async fn execute_with_initialization(
         &self,
         command: &Command,
         audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
-        initialization: Option<&crate::authorization::context::AuthorizedPrincipal>,
+        proof: &crate::authorization::context::AuthorizedPrincipal,
+        initialization: bool,
     ) -> std::result::Result<Value, Error> {
+        if audit.profile() != self.profile()
+            || proof.tenant_id() != self.tenant.to_string()
+            || (!initialization && proof.initialization_authority().is_some())
+        {
+            return Err(Error::Forbidden);
+        }
+        proof.bind_audit(audit)?;
         match command {
             Command::Scope { id, .. } | Command::ScopeRead { id } => audit.resource_target(
                 rss_mdm_audit_integration::TargetKind::Scope,
@@ -131,23 +129,41 @@ impl Scopes {
                 audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, target)
             }
         }
-        if audit.profile() != self.profile() {
-            return Err(Error::Forbidden);
-        }
-        authorize()?;
+        let write = matches!(command, Command::Scope { .. });
+        audit.set_action(
+            if write {
+                "management_write"
+            } else {
+                "management_read"
+            },
+            if write {
+                rss_mdm_audit_integration::AuditIntent::Management
+            } else {
+                rss_mdm_audit_integration::AuditIntent::Routine
+            },
+        );
+        proof.manage(if write {
+            crate::authorization::Permission::ScopeWrite
+        } else {
+            crate::authorization::Permission::ScopeRead
+        })?;
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
             audit,
-            &(self, command, audit, authorize, initialization),
+            (self, command, audit, proof, initialization),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, authorize, initialization) = *ctx;
-                    if let Some(proof) = initialization {
-                        let Command::Scope { id, .. } = command else {
+                    let (s, command, audit, proof, initialization) = *ctx;
+                    s.audit_store.prepare_in(tx, audit, &[]).await?;
+                    if initialization {
+                        let Command::Scope { id, change } = command else {
                             return Err(Error::Forbidden.into());
                         };
+                        if !matches!(change.input, ScopeChange::Put { .. }) {
+                            return Err(Error::Forbidden.into());
+                        }
                         crate::authorization::baseline::check_in(
                             tx,
                             proof,
@@ -156,22 +172,75 @@ impl Scopes {
                         )
                         .await?;
                     }
-                    s.execute_in(tx, command, audit, authorize).await
+                    s.execute_in(tx, command, audit, proof).await
                 })
             },
         )
         .await
+    }
+    async fn authorize_command_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        proof: &crate::authorization::context::AuthorizedPrincipal,
+        command: &Command,
+    ) -> Result<()> {
+        use crate::authorization::Permission;
+        let authority = crate::action_admission::current(tx, proof).await?;
+        authority.require(
+            proof,
+            if matches!(command, Command::Scope { .. }) {
+                Permission::ScopeWrite
+            } else {
+                Permission::ScopeRead
+            },
+            None,
+        )?;
+        let grouped = match command {
+            Command::Scope { change, .. } if matches!(&change.input,ScopeChange::Put{definition} if definition.references().iter().any(|r|matches!(r,rss_mdm_scope::Reference::Group(_)))) => {
+                true
+            }
+            Command::Scope { id, change } if matches!(change.input, ScopeChange::Recompute) => {
+                if change.expected_revision == 0 {
+                    return Err(Error::Malformed.into());
+                }
+                let definition = match self
+                    .store
+                    .definition_at_in(tx, *id, change.expected_revision)
+                    .await
+                {
+                    Ok(definition) => definition,
+                    Err(rss_mdm_scope_postgres::BindingError::Missing) => {
+                        self.store.head_in(tx, *id, false).await?;
+                        return Err(Error::Conflict.into());
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                definition
+                    .references()
+                    .iter()
+                    .any(|r| matches!(r, rss_mdm_scope::Reference::Group(_)))
+            }
+            _ => false,
+        };
+        if grouped {
+            authority.require(proof, Permission::GroupRead, None)?;
+        }
+        if matches!(command, Command::TaskRead { .. }) {
+            authority.require_all_devices(proof, Permission::InventoryRead)?;
+        }
+        proof.check_live()?;
+        Ok(())
     }
     async fn execute_in(
         &self,
         tx: &mut PgTransaction<'_>,
         command: &Command,
         audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+        proof: &crate::authorization::context::AuthorizedPrincipal,
     ) -> Result<Value> {
         self.store.admit_in(tx).await?;
-        authorize()?;
-        self.audit_store.prepare_in(tx, audit, &[]).await?;
+        self.authorize_command_in(tx, proof, command).await?;
+
         let (operation, fingerprint) = crate::identity(command, audit)?;
         let actor = audit.snapshot().actor;
         if let Some(id) = operation
@@ -188,7 +257,7 @@ impl Scopes {
             wire::Response::decode(old.clone())?;
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             crate::receipts::audit(tx, &self.audit_store, audit, operation, true).await?;
-            authorize()?;
+            self.authorize_command_in(tx, proof, command).await?;
             return Ok(old);
         }
         let at = self
@@ -212,7 +281,7 @@ impl Scopes {
                 .await?;
         }
         crate::receipts::audit(tx, &self.audit_store, audit, operation, false).await?;
-        authorize()?;
+        self.authorize_command_in(tx, proof, command).await?;
         Ok(value)
     }
     #[allow(

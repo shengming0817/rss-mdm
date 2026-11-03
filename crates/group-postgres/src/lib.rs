@@ -49,3 +49,19 @@ pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 /// Narrow Group facts and fences used by Scope installations.
 pub const SCOPE_FACTS_SQL: &str = include_str!("../migrations/scope-facts.sql");
+
+mod source_decisions;
+/// Bounded frozen evidence and the actual bytes reserved before decoding.
+pub struct DecisionPage {
+    /// Ordered records; an empty page proves source enumeration has ended.
+    pub items: Vec<DecisionRecord>,
+    /// Accumulated evidence bytes, including per-record overhead.
+    pub bytes: usize,
+}
+/// Selected frozen membership, with absent dynamic keys remaining unknown.
+pub struct SourceDecisions {
+    /// Explicit outcomes for the requested keys that have evidence.
+    pub outcomes: std::collections::BTreeMap<String, rss_mdm_group::Outcome>,
+    /// Accumulated evidence bytes, including per-record overhead.
+    pub bytes: usize,
+}

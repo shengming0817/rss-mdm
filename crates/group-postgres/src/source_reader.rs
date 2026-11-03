@@ -41,7 +41,7 @@ impl GroupSources {
         )?;
         Ok(Self::bound(runtime, tenant))
     }
-    fn check_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
+    pub(crate) fn check_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.runtime.validate_transaction(tx)?;
         Ok(if self.tenant == tx.tenant_id() {
             Ok(())
@@ -265,7 +265,8 @@ impl GroupSources {
         id: OperationId,
         after: Option<String>,
         limit: usize,
-    ) -> InTransaction<Vec<DecisionRecord>> {
+        max_bytes: usize,
+    ) -> InTransaction<crate::DecisionPage> {
         crate::store::input!(self.check_transaction(tx)?);
         if !(1..=usize::from(rss_mdm_query::MAX_PAGE_LIMIT) + 1).contains(&limit) {
             return Ok(Err(Rejection::InvalidInput));
@@ -275,10 +276,22 @@ impl GroupSources {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
         if build.request.patch.is_some() {
+            let limit = limit.min(max_bytes / (rss_mdm_group::limits::STRING_BYTES + 1024));
+            if limit == 0 {
+                return Ok(Err(Rejection::PageBudgetExceeded));
+            }
             let devices = crate::store::input!(self.build_members_in(tx, id, after, limit).await?);
-            return Ok(Ok(devices.into_iter().map(manual).collect()));
+            let bytes = devices.iter().map(|s| s.len() + 1024).sum();
+            return Ok(Ok(crate::DecisionPage {
+                items: devices.into_iter().map(manual).collect(),
+                bytes,
+            }));
         }
-        let rows = crate::history::rows(tx, id, after, limit).await?;
+        let (rows, bytes) =
+            crate::history::selected_rows(tx, id, after, None, limit, max_bytes).await?;
+        if bytes > max_bytes {
+            return Ok(Err(Rejection::PageBudgetExceeded));
+        }
         let mut result = Vec::new();
         for row in rows {
             let bytes: Vec<u8> = row.try_get("evidence")?;
@@ -292,6 +305,9 @@ impl GroupSources {
             }
             result.push(record);
         }
-        Ok(Ok(result))
+        Ok(Ok(crate::DecisionPage {
+            items: result,
+            bytes,
+        }))
     }
 }

@@ -214,24 +214,10 @@ impl ScopeProjection {
                             .first()
                             .ok_or_else(|| sqlx::Error::Protocol("scope target missing".into()))?
                             .clone();
-                        let excluded = result.as_ref().is_some_and(|r| {
-                            r.reasons
-                                .contains(&rss_mdm_scope::ExclusionReason::ExplicitExclusion)
-                        });
-                        let pending = !excluded
-                            && (identities.len() != 1
-                                || result.as_ref().is_some_and(|r| {
-                                    r.reasons.iter().any(|r| {
-                                        matches!(
-                                            r,
-                                            rss_mdm_scope::ExclusionReason::UnknownTarget
-                                                | rss_mdm_scope::ExclusionReason::UnknownLimitation
-                                                | rss_mdm_scope::ExclusionReason::UnknownExclusion
-                                        )
-                                    })
-                                }));
-                        let matched =
-                            !pending && result.as_ref().is_some_and(|r| r.reasons.is_empty());
+                        let (matched, pending) = crate::channels::targets::qualification(
+                            result.as_ref(),
+                            identities.len(),
+                        );
                         let entry = if matched || pending {
                             sqlx::query_scalar::<_, i64>(
                                 crate::storage_profile::sql(profile).projection_project_3,
@@ -336,7 +322,7 @@ impl ScopeProjection {
         changed.ok_or(Error::Conflict.into())
     }
 }
-fn source_error(e: crate::channels::SourceError) -> Fault {
+pub(crate) fn source_error(e: crate::channels::SourceError) -> Fault {
     use crate::channels::SourceError as E;
     match e {
         E::Unsupported => Error::Unsupported.into(),

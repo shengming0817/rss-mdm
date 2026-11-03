@@ -63,6 +63,19 @@ pub trait ObjectReader: Send + Sync {
         device: &'a str,
     ) -> Pending<'a, MembershipObjects>;
 
+    /// Frozen objects containing this original endpoint/channel, never current heads.
+    /// The byte allowance is checked before material is decoded. None means the
+    /// allowance was insufficient, not that the snapshot contains no objects.
+    fn memberships_at<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        snapshot: Uuid,
+        device: &'a str,
+        channel: rss_mdm_inventory::Channel,
+        max_bytes: usize,
+    ) -> Pending<'a, Option<(Vec<DeviceObject>, usize)>>;
+
     fn relation_revision<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -80,7 +93,8 @@ pub trait ObjectReader: Send + Sync {
         tenant: TenantId,
         snapshot: Uuid,
         object: &'a ObjectRef,
-    ) -> Pending<'a, DeviceObject>;
+        max_bytes: usize,
+    ) -> Pending<'a, Option<(DeviceObject, usize)>>;
     fn endpoint<'a>(
         &'a self,
         c: &'a mut PgConnection,

@@ -400,7 +400,7 @@ async fn group_and_scope_target_authority_and_delete_gates() -> Result<()> {
                 },
             },
             &c.request(&sw)?,
-            &|| sw.manage(P::ScopeWrite).map_err(Into::into),
+            &sw,
         )
         .await;
     assert!(matches!(
@@ -424,7 +424,7 @@ async fn group_and_scope_target_authority_and_delete_gates() -> Result<()> {
                 },
             },
             &c.request(&sw)?,
-            &|| sw.manage(P::ScopeWrite).map_err(Into::into),
+            &sw,
         )
         .await?;
     assert_eq!(

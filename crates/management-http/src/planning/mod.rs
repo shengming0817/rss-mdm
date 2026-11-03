@@ -6,5 +6,3 @@ pub use http::routes;
 use rss_mdm_audit_integration::RequestAudit;
 use std::sync::Arc;
 use uuid::Uuid;
-
-use crate::assets;

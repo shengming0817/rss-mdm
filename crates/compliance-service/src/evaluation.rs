@@ -481,9 +481,11 @@ impl Compliance {
                         stored(rss_mdm_group::OperationId::parse(&set.to_string()))?,
                         after.clone(),
                         1,
+                        rss_mdm_group::limits::BATCH_BYTES,
                     )
                     .await?,
             )?;
+            let records = records.items;
             let Some(last) = records.last().map(|r| r.device.clone()) else {
                 return Ok(());
             };

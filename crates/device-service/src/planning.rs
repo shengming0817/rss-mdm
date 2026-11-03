@@ -151,6 +151,20 @@ impl ObjectReader for PlanningObjects {
         Box::pin(snapshots::memberships(c, tenant, device))
     }
 
+    fn memberships_at<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        snapshot: Uuid,
+        device: &'a str,
+        channel: rss_mdm_inventory::Channel,
+        max_bytes: usize,
+    ) -> Pending<'a, Option<(Vec<DeviceObject>, usize)>> {
+        Box::pin(snapshots::memberships_at(
+            c, tenant, snapshot, device, channel, max_bytes,
+        ))
+    }
+
     fn relation_revision<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -185,8 +199,9 @@ impl ObjectReader for PlanningObjects {
         tenant: TenantId,
         snapshot: Uuid,
         object: &'a ObjectRef,
-    ) -> Pending<'a, DeviceObject> {
-        Box::pin(snapshots::lookup(c, tenant, snapshot, object))
+        max_bytes: usize,
+    ) -> Pending<'a, Option<(DeviceObject, usize)>> {
+        Box::pin(snapshots::lookup(c, tenant, snapshot, object, max_bytes))
     }
     fn endpoint<'a>(
         &'a self,

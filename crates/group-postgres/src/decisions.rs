@@ -1,7 +1,4 @@
-use crate::{
-    storage::{data, stored_shape},
-    *,
-};
+use crate::{storage::stored_shape, *};
 use rss_mdm_group::OperationId;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
@@ -150,88 +147,23 @@ impl GroupStore {
         id: OperationId,
         after: Option<String>,
         limit: usize,
-    ) -> InTransaction<Vec<DecisionRecord>> {
-        self.sources.build_decisions_in(tx, id, after, limit).await
+        max_bytes: usize,
+    ) -> InTransaction<DecisionPage> {
+        self.sources
+            .build_decisions_in(tx, id, after, limit, max_bytes)
+            .await
     }
-    /// Look up complete frozen dynamic decisions for at most one evaluator page.
-    /// Absence is Unknown, never a negative membership proof.
+    /// Look up frozen decisions within the caller's remaining decoded-byte budget.
     pub async fn source_decisions_in(
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
         objects: &[String],
-    ) -> InTransaction<std::collections::BTreeMap<String, rss_mdm_group::Outcome>> {
-        crate::store::input!(self.check_transaction(tx)?);
-        if objects.len() > rss_mdm_group::limits::OBJECTS {
-            return Ok(Err(Rejection::InvalidInput));
-        }
-        let build = crate::store::input!(self.build_in(tx, id).await?);
-        if build.receipt.is_none() {
-            return Ok(Err(Rejection::IncompleteSnapshot));
-        }
-        if build.request.patch.is_some() {
-            let tenant = self.tenant.to_string();
-            let group = build.request.group.to_string();
-            let base = build.request.base_calculation;
-            let wanted = objects.to_vec();
-            let matched:Vec<String>=tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar("SELECT object_id FROM (SELECT DISTINCT ON(m.object_id) m.object_id,m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND m.object_id=ANY($3) AND ((r.phase='published' AND r.base_calculation<=$4) OR r.id=$5::uuid) ORDER BY m.object_id,m.revision DESC) latest WHERE added")
-                    .bind(tenant).bind(group).bind(wanted).bind(base).bind(id.to_string()).fetch_all(c).await
-            })).await?;
-            return Ok(Ok(objects
-                .iter()
-                .map(|o| {
-                    (
-                        o.clone(),
-                        if matched.contains(o) {
-                            rss_mdm_group::Outcome::Match
-                        } else {
-                            rss_mdm_group::Outcome::NoMatch
-                        },
-                    )
-                })
-                .collect()));
-        }
-        let metadata =
-            crate::history::metadata(tx, id, None, Some(objects.to_vec()), objects.len(), false)
-                .await?;
-        let mut bytes = 0usize;
-        for row in &metadata {
-            bytes = bytes.saturating_add(row.try_get::<i32, _>("bytes")? as usize + 1024);
-        }
-        if bytes > rss_mdm_group::limits::BATCH_BYTES {
-            return Ok(Err(Rejection::PageBudgetExceeded));
-        }
-        let rows =
-            crate::history::selected_rows(tx, id, None, Some(objects.to_vec()), objects.len())
-                .await?;
-        let mut result = std::collections::BTreeMap::new();
-        for row in rows {
-            let object: String = row.try_get("object_id")?;
-            let evidence: Vec<u8> = row.try_get("evidence")?;
-            crate::storage::document(&evidence, row.try_get("evidence_digest")?)?;
-            let record: DecisionRecord = data(serde_json::from_slice(&evidence))?;
-            if record.device != object {
-                return Err(stored_shape());
-            }
-            let outcome = match record.decision {
-                DecisionValue::Match => rss_mdm_group::Outcome::Match,
-                DecisionValue::NoMatch => rss_mdm_group::Outcome::NoMatch,
-                _ => rss_mdm_group::Outcome::Unknown(
-                    if record
-                        .explanations
-                        .iter()
-                        .any(|e| e.outcome == DecisionValue::Conflict)
-                    {
-                        rss_mdm_group::UnknownReason::Conflict
-                    } else {
-                        rss_mdm_group::UnknownReason::Missing
-                    },
-                ),
-            };
-            result.insert(object, outcome);
-        }
-        Ok(Ok(result))
+        max_bytes: usize,
+    ) -> InTransaction<SourceDecisions> {
+        self.sources
+            .source_decisions_in(tx, id, objects, max_bytes)
+            .await
     }
     /// Read a bounded page of the complete, prepared membership difference.
     pub async fn build_changes_in(
