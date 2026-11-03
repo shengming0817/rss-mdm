@@ -42,7 +42,7 @@ Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled �
 响应区分 endpoint 与 association 对象，包含成员/规则版本和评估新鲜度；stale 不表示当前仍满足规则。
 空列表不证明所有组都已计算或均不匹配。权限与设备绑定的游标不能用于另一设备。
 
-创建 Group 必须声明不可变 `assetContext: endpoint | associated_device`。静态组只接受 endpoint；成员、差分与决策使用 `{kind: endpoint | association, id}`。endpoint 组仍求值原始终端；associated_device 组以关联对象和独立终端为完整对象域，并保留原始注册、世代与字段来源。动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。预览保存独立计算结果，不发布正式成员、不产生执行。计算检查点固定 AssetCut 并分页恢复；各 owner 消费固定切面差集，旧计算完成后自动追赶。新建 Group 由自己的初始化任务处理。
+创建 Group 必须声明不可变 `assetContext: endpoint | associated_device`。静态组只接受 endpoint；成员、差分与决策使用 `{kind: endpoint | association, id}`。endpoint 组仍求值原始终端；associated_device 组以关联对象和独立终端为完整对象域，并保留原始注册、世代与字段来源。动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。条件预览只返回最多 20 个匹配样例，不保存条件或结果，不发布正式成员、不产生执行。计算检查点固定 AssetCut 并分页恢复；各 owner 消费固定切面差集，旧计算完成后自动追赶。新建 Group 由自己的初始化任务处理。
 
 动态 Group 条件还支持 `{ "kind":"group", "groupId":"<uuid>", "op":"member_of" }` 与
 `not_member_of`，可单独使用或嵌入现有 AND/OR。只能引用同租户、同 assetContext、已获授权的组；
@@ -128,8 +128,16 @@ items 经过当前权限过滤，空列表不能作为删除许可；deletionBlo
 
 有 nextCursor 时将原值传入同一查询的 cursor；409 后丢弃旧游标，从首页重查。
 组引用保存除 GroupWrite 及全设备 InventoryRead 外还要求 GroupRead，并重新验证引用链的敏感字段权限。
-`POST /api/v1/groups/{id}/previews` 使用 `{operationId, expectedRevision, input:{}}`；
-预览结果沿用同一 sources 证据和分页结构，current 为 false，不发布正式成员。
+`POST /api/v1/groups/previews` 接收 `{criteria, assetContext, editing?}`，直接返回最多 20 个匹配对象。
+新建时省略 editing；编辑智能组时提供 `{groupId, expectedRevision}`，assetContext 必须与原组一致。
+响应 items 可用于设备链接展示；inputFingerprint、assetCut、objectSnapshot、sources 和 asOf 关联本次条件和固定输入。
+预览只返回确定匹配对象，不展示不匹配/资料不足清单、不计算全量统计、不分页或创建后台任务。
+每次请求最多扫描 1000 个对象和检查 1000 个引用节点，并服从现有六秒请求及求值字节/工作预算；
+这些只是一次预览的预算，不限制正式组规模。scanComplete=false 表示样例或扫描预算已停止本次读取，
+空样例此时不能说明全范围没有匹配设备。引用检查不能完成、权限拒绝、CAS/引用冲突和依赖失败明确报错。
+条件变化、取消或关闭时，消费方清空样例并忽略原请求的迟到响应。没有结果留存、草稿恢复或自动保存。
+保存仍走原写入和 CAS，重新验证当前前提；预览不保证之后的实时事实不变。
+旧的空 input 预览接口及其任务种类已删除。Web 必须迁移到当前表单条件请求后才能使用新后端预览。
 
 编辑 revision、计算发布版本、成员语义 memberVersion 各自独立。无差分重算不改变编辑 CAS 或成员语义版本。Scope 也分别记录定义、计算与目标语义版本；持续匹配设备保留入组坐标，退出后重入取得新坐标。历史结果不会被新事实改写。
 

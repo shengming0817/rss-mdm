@@ -1,4 +1,5 @@
 //! Real independent Group and Compliance consumers of Inventory's bounded facts.
+mod preview;
 use crate::{authority_t2_support::Context, planning_t2_support as planning};
 use anyhow::{Context as _, Result};
 use rss_mdm_authorization_service::{Permission as P, context::AuthorizedPrincipal};

@@ -158,7 +158,6 @@ impl Groups {
                         remove: vec![],
                     }
                 }),
-                publish: true,
                 automatic: true,
                 asset_cut: cut.clone(),
                 at: stored(Timepoint::try_from(
