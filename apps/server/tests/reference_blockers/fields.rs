@@ -240,9 +240,21 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
     );
     let mut custom = field.clone();
     custom.key = rss_mdm_inventory::FieldKey::parse("custom.reference")?;
+    custom.value_type = rss_mdm_inventory::ValueType::Object {
+        properties: [("child".into(), field.value_type.clone())].into(),
+    };
+    custom.validate()?;
+    let custom_query: a::Query = serde_json::from_value(
+        json!({"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.reference.child","op":"eq","value":{"kind":"string","value":"Windows"}}},"fields":[]}),
+    )?;
+    let custom_catalog = rss_mdm_inventory::Catalog::new(vec![custom.clone()])?;
+    let condition = custom_query.criteria.as_ref().unwrap();
+    condition.validate()?;
+    a::rule(c.tenant, Uuid::nil(), &condition.criteria, &custom_catalog)?;
+
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &custom).await?);
-    sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document) VALUES($1::uuid,$2,$3,$4,1,$5)").bind(c.tenant.to_string()).bind(instance).bind(foreign[0]).bind(Uuid::new_v4()).bind(json!({"query":{"criteria":{"field":"custom.reference.child"}}})).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document) VALUES($1::uuid,$2,$3,$4,1,$5)").bind(c.tenant.to_string()).bind(instance).bind(foreign[0]).bind(Uuid::new_v4()).bind(json!({"name":"legal nested reference","query":custom_query})).execute(&mut *tx).await?;
     tx.commit().await?;
     let change = a::Command::FieldWrite {
         field: custom.key,

@@ -304,6 +304,34 @@ async fn group_and_scope_target_authority_and_delete_gates() -> Result<()> {
     let owners = Owners::open(&c).await?;
     let root = owners.create(&c, &writer, None).await?;
     let child=owners.create(&c,&writer,Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"group","groupId":root,"op":"member_of"}}))?)).await?;
+    for (revision, stale) in [(2, true), (1, false)] {
+        let result = owners
+            .groups
+            .execute(
+                &rss_mdm_group_service::Command::Group {
+                    id: root,
+                    change: Box::new(rss_mdm_group_service::operation::Operation {
+                        operation_id: Uuid::new_v4(),
+                        expected_revision: revision,
+                        input: rss_mdm_group_service::GroupChange::Delete,
+                    }),
+                },
+                &c.request(&writer)?,
+                &writer,
+            )
+            .await;
+        if stale {
+            assert!(matches!(
+                result,
+                Err(rss_mdm_group_service::Error::Conflict)
+            ));
+        } else {
+            assert!(matches!(
+                result,
+                Err(rss_mdm_group_service::Error::Referenced)
+            ));
+        }
+    }
     let scoped = scope(&c, &[root]).await?;
     let resource = support::software(&c, "scope-blocker").await?;
     let (policy, _) = support::policy(
@@ -378,6 +406,26 @@ async fn group_and_scope_target_authority_and_delete_gates() -> Result<()> {
         result,
         Err(rss_mdm_scope_service::Error::Referenced)
     ));
+    let unused = scope(&c, &[]).await?;
+    assert!(
+        http.pages(&format!("/scopes/{unused}/references"))
+            .await?
+            .is_empty()
+    );
+    scopes
+        .execute(
+            &rss_mdm_scope_service::Command::Scope {
+                id: unused,
+                change: rss_mdm_scope_service::operation::Operation {
+                    operation_id: Uuid::new_v4(),
+                    expected_revision: 1,
+                    input: rss_mdm_scope_service::ScopeChange::Delete,
+                },
+            },
+            &c.request(&sw)?,
+            &|| sw.manage(P::ScopeWrite).map_err(Into::into),
+        )
+        .await?;
     assert_eq!(
         http.get(&format!("/scopes/{}/references", Uuid::new_v4()))
             .await?

@@ -196,14 +196,16 @@ impl Groups {
                     .and_then(|accepted| json(&accepted));
             }
             GroupChange::Delete => {
-                group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
+                let current =
+                    group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
+                let expected = expected()?;
+                if current.revision != expected {
+                    return Err(Error::Conflict.into());
+                }
                 if self.references_used_in(tx, id).await? {
                     return Err(Error::Referenced.into());
                 }
-                pg::Command::Delete {
-                    group,
-                    expected: expected()?,
-                }
+                pg::Command::Delete { group, expected }
             }
             GroupChange::Recompute {} => {
                 return self

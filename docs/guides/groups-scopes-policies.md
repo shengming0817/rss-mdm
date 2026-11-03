@@ -55,13 +55,19 @@ Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled �
 引用选择复用 `GET /api/v1/groups?filter=assetContext==endpoint`；编辑时传
 `referenceableFor=<group-id>`，会排除本组和上下文不匹配的候选。完整禁环校验由异步保存任务完成。
 
-`GET /api/v1/groups/{id}/references?kind&relation&limit&cursor` 查询当前依赖。
+`GET /api/v1/groups/{id}/references?limit&cursor` 查询直接删除阻断，要求 GroupRead。
+返回同租户当前 Group、Scope 与 Compliance 的最小身份、修订及引用角色；即使没有来源详情权限也返回坐标，
+不返回名称、配置或内容。`GET /api/v1/scopes/{id}/references?limit&cursor` 要求 ScopeRead，返回当前
+Policy 主范围及软件灰度阶段引用；停用和已归档 Policy 仍保留引用，归档后不支持编辑解除。
+两类摘要默认及最大页长为 1,000，游标绑定目标、主体及当前权限，不承诺跨页快照。
+空摘要不构成删除许可；写入遇到引用阻断返回 409 `object_referenced`，版本或生命周期冲突仍单独处理。
+
+`GET /api/v1/groups/{id}/impacts?kind&relation&limit&cursor` 查询递归影响，要求 GroupRead 和全设备 InventoryRead。
 kind 为 `group|scope|policy|compliance_rule`，省略时查询获授权类别；relation 为
 `direct|indirect|all`，默认 all。查询覆盖嵌套组、Scope 的 target/limitation/exclusion、
 策略主范围与软件灰度范围，以及合规规则。每项按来源对象及直接/间接关系归并，返回角色和
-确定性代表路径，分别展示生命周期、计算新鲜度、当前有效性及删除阻塞；代表路径不枚举全部路径。
-items 经过当前权限过滤，空列表不能作为删除许可；deletionBlocked 包括不可见的当前引用，
-但不透露其身份。显式查询无权类别返回 403，根组不存在返回 404。
+确定性代表路径、生命周期、计算新鲜度及当前有效性；代表路径不枚举全部路径。
+items 经过来源权限过滤；显式查询无权类别返回 403，根组不存在返回 404。
 游标绑定租户、根组、筛选、当前权限及依赖视图；相关定义或展示状态变化返回 409，需要从首页重查。
 
 删除在原写事务内复核所有当前引用。停用的合规规则和保留的 Scope 引用同样阻止删除；
@@ -109,7 +115,7 @@ items 经过当前权限过滤，空列表不能作为删除许可；deletionBlo
 }
 ```
 
-对来源组查询 `GET /api/v1/groups/11111111-1111-4111-8111-111111111111/references?relation=all&limit=64`：
+对来源组查询 `GET /api/v1/groups/11111111-1111-4111-8111-111111111111/impacts?relation=all&limit=64`：
 
 ```json
 {
@@ -120,9 +126,9 @@ items 经过当前权限过滤，空列表不能作为删除许可；deletionBlo
       { "kind": "group", "id": "11111111-1111-4111-8111-111111111111" },
       { "kind": "group", "id": "22222222-2222-4222-8222-222222222222" }
     ],
-    "lifecycleState": "active", "freshness": "current", "effective": true, "blocksDeletion": true
+    "lifecycleState": "active", "freshness": "current", "effective": true
   }],
-  "nextCursor": null, "deletionBlocked": true
+  "nextCursor": null
 }
 ```
 
