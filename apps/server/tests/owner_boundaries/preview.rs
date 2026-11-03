@@ -301,7 +301,12 @@ async fn os_fact(c: &Context, registration: Uuid) -> Result<()> {
 async fn positive_facts_and_associated_cut_share_formal_evaluation() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let account = c
-        .account(&[P::GroupRead, P::GroupWrite, P::InventoryRead])
+        .account(&[
+            P::GroupRead,
+            P::GroupWrite,
+            P::GroupRecompute,
+            P::InventoryRead,
+        ])
         .await?;
     let proof = c.authenticate(&account).await?;
     let owners = Owners::open(&c).await?;
@@ -361,7 +366,12 @@ async fn positive_facts_and_associated_cut_share_formal_evaluation() -> Result<(
 async fn source_evidence_budget_retries_a_smaller_page() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let account = c
-        .account(&[P::GroupRead, P::GroupWrite, P::InventoryRead])
+        .account(&[
+            P::GroupRead,
+            P::GroupWrite,
+            P::GroupRecompute,
+            P::InventoryRead,
+        ])
         .await?;
     let proof = c.authenticate(&account).await?;
     let owners = Owners::open(&c).await?;
