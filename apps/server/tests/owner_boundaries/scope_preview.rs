@@ -162,7 +162,26 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
             },
         ))
         .layer(axum::Extension(RequestAuth { proof: p.clone() }))
-        .layer(axum::Extension(c.request(&p)?));
+        .layer(axum::middleware::from_fn({
+            let proof = p.clone();
+            let tenant = c.tenant;
+            move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+                let proof = proof.clone();
+                async move {
+                    let audit = rss_mdm_audit_integration::RequestAudit::new(
+                        rss_mdm_audit_integration::StorageProfile::Mdm,
+                        tenant.to_string(),
+                        "management_read",
+                        rss_mdm_audit_integration::AuditIntent::Routine,
+                    );
+                    proof.bind_audit(&audit).unwrap();
+                    request.extensions_mut().insert(audit.clone());
+                    let response = next.run(request).await;
+                    audit.finalize(None);
+                    response
+                }
+            }
+        }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -251,12 +270,17 @@ async fn unknown_and_unfinished_sources_are_distinct_from_empty() -> Result<()> 
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &field).await?);
     tx.commit().await?;
+    let mut targets = BTreeSet::from([Reference::Device(object.members[0].device.clone())]);
+    for _ in 0..16 {
+        let endpoint = planning::endpoint(&c).await?;
+        targets.insert(Reference::Device(endpoint.members[0].device.clone()));
+    }
     let condition = serde_json::from_value(
         json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.os.name","op":"eq","value":{"kind":"string","value":"Windows"}}}),
     )?;
     let group = owners.create(&c, &p, Some(condition)).await?;
     let run = super::preview::publish(&owners, &c, &p, group).await?;
-    let request = Request {
+    let mut request = Request {
         definition: ScopeDefinition {
             targets: BTreeSet::from([Reference::Device(object.members[0].device.clone())]),
             limitations: None,
@@ -268,8 +292,9 @@ async fn unknown_and_unfinished_sources_are_distinct_from_empty() -> Result<()> 
     let response = scopes.preview(&p, &request, &c.request(&p)?).await?;
     assert!(response.items.is_empty() && response.scan_complete && response.has_unknown);
     // A byte-budget stop with no confirmed sample is partial, not an empty result.
-    sqlx::query("UPDATE mdm_group.member_rows SET evidence=evidence||convert_to(repeat(' ',16777216-octet_length(evidence)),'UTF8'),evidence_digest=sha256(evidence||convert_to(repeat(' ',16777216-octet_length(evidence)),'UTF8')) WHERE tenant_id=$1::uuid AND run_id=$2")
+    sqlx::query("UPDATE mdm_group.member_rows SET evidence=evidence||convert_to(repeat(' ',1048576-octet_length(evidence)),'UTF8'),evidence_digest=sha256(evidence||convert_to(repeat(' ',1048576-octet_length(evidence)),'UTF8')) WHERE tenant_id=$1::uuid AND run_id=$2")
         .bind(c.tenant.to_string()).bind(run).execute(&c.operator).await?;
+    request.definition.targets = targets;
     let partial = scopes.preview(&p, &request, &c.request(&p)?).await?;
     assert!(partial.items.is_empty() && !partial.scan_complete);
     assert_eq!(partial.stop_reason, StopReason::WorkBudget);

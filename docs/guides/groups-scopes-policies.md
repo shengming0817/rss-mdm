@@ -42,7 +42,7 @@ Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled �
 响应区分 endpoint 与 association 对象，包含成员/规则版本和评估新鲜度；stale 不表示当前仍满足规则。
 空列表不证明所有组都已计算或均不匹配。权限与设备绑定的游标不能用于另一设备。
 
-创建 Group 必须声明不可变 `assetContext: endpoint | associated_device`。静态组只接受 endpoint；成员、差分与决策使用 `{kind: endpoint | association, id}`。endpoint 组仍求值原始终端；associated_device 组以关联对象和独立终端为完整对象域，并保留原始注册、世代与字段来源。动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。条件预览只返回最多 20 个匹配样例，不保存条件或结果，不发布正式成员、不产生执行。计算检查点固定 AssetCut 并分页恢复；各 owner 消费固定切面差集，旧计算完成后自动追赶。新建 Group 由自己的初始化任务处理。
+创建 Group 必须声明不可变 `assetContext: endpoint | associated_device`。静态组只接受 endpoint；成员、差分与决策使用 `{kind: endpoint | association, id}`。endpoint 组仍求值原始终端；associated_device 组以关联对象和独立终端为完整对象域，并保留原始注册、世代与字段来源。动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。条件预览只返回有界匹配样例，不保存条件或结果，不发布正式成员、不产生执行。计算检查点固定 AssetCut 并分页恢复；各 owner 消费固定切面差集，旧计算完成后自动追赶。新建 Group 由自己的初始化任务处理。
 
 动态 Group 条件还支持 `{ "kind":"group", "groupId":"<uuid>", "op":"member_of" }` 与
 `not_member_of`，可单独使用或嵌入现有 AND/OR。只能引用同租户、同 assetContext、已获授权的组；
@@ -134,7 +134,7 @@ items 经过来源权限过滤；显式查询无权类别返回 403，根组不�
 
 有 nextCursor 时将原值传入同一查询的 cursor；409 后丢弃旧游标，从首页重查。
 组引用保存除 GroupWrite 及全设备 InventoryRead 外还要求 GroupRead，并重新验证引用链的敏感字段权限。
-`POST /api/v1/groups/previews` 接收 `{criteria, assetContext, editing?}`，直接返回最多 20 个匹配对象。
+`POST /api/v1/groups/previews` 接收 `{criteria, assetContext, editing?}`，直接返回有界匹配对象，上限由 [Group preview owner](../../crates/group-service/src/preview.rs) 持有。
 新建时省略 editing；编辑智能组时提供 `{groupId, expectedRevision}`，assetContext 必须与原组一致。
 响应 items 可用于设备链接展示；inputFingerprint、assetCut、objectSnapshot、sources 和 asOf 关联本次条件和固定输入。
 预览只返回确定匹配对象，不展示不匹配/资料不足清单、不计算全量统计、不分页或创建后台任务。
@@ -145,6 +145,20 @@ items 经过来源权限过滤；显式查询无权类别返回 403，根组不�
 保存仍走原写入和 CAS，重新验证当前前提；预览不保证之后的实时事实不变。
 旧的空 input 预览接口及其任务种类已删除。Web 必须迁移到当前表单条件请求后才能使用新后端预览。
 
+## Scope 草稿预览与独立重算
+
+保存前可调用 `POST /api/v1/scopes/previews`，提交完整 `definition` 和 `channel`；编辑已有范围时携带 `editing.scopeId/expectedRevision`。
+此入口只读，不保存定义、发布成员或排队策略。`limitations:null` 表示不限制，`[]` 表示显式空限制。
+返回的是有界匹配样例；上限与预算由 [Scope preview owner](../../crates/scope-service/src/preview.rs) 持有。
+`scanComplete`、`stopReason` 与 `hasUnknown` 分别说明扫描结束、提前停止和已观察到的未知事实，
+未扫描完成或存在未知时，空样例不证明范围为空，也没有精确总数承诺。
+Group 条件预览的样例上限由其 [preview owner](../../crates/group-service/src/preview.rs) 持有，二者均不替代正式成员结果。
+
+重算已保存范围使用 `POST /api/v1/scopes/{id}`，携带原格式 `operationId/expectedRevision` 和 `input:{"action":"recompute"}`。
+定义修订保持不变，旧未完成任务标记为 superseded 并指向替代任务；新任务重新捕获来源。
+已有完整结果保留到新结果原子发布。回执中的 task 供原任务读取，正式成员仍使用固定 result 分页。
+结果未知时保留同一操作身份、CAS 与内容，显式重提原请求；读取当前定义不证明原操作成功，不自动重放写入。
+
 编辑 revision、计算发布版本、成员语义 memberVersion 各自独立。无差分重算不改变编辑 CAS 或成员语义版本。Scope 也分别记录定义、计算与目标语义版本；持续匹配设备保留入组坐标，退出后重入取得新坐标。历史结果不会被新事实改写。
 
 Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个来源先归一到选定的原始通道，再进行并集、限制与排除；显式终端排除也阻断关联组映射出的同一终端，直接终端来源不会扩展到关联端。Scope 的 `limitations:null` 表示不限制，空数组表示没有匹配限制。Unknown 目标、限制或排除依据会留下逐设备阻断原因；Unknown 排除不能当作“不属于排除组”。确定排除优先于其它 Unknown；首次尚无完整结果或明确定义变化尚未发布时，由原队列等待。普通资产检查点落后不阻止消费最新完整结果；当前执行资格另行核对。
@@ -153,7 +167,7 @@ Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个
 
 AgentCollection Policy 可在任务签名配置前保存并冻结已验证的内容，使基础初始化先于通道设置完成。保存不表示可执行：预览仍要求当前进程加载签名器，实际领取还会核验当前签名权威及设备信任。后续配置签名器后沿用原策略，无需重新发布。
 
-后台任务返回稳定 task 身份；冲突导致替代任务时，状态返回 replacement_task。结果页的 nextCursor 原样续读，不能用固定前 N 台设备代替分页。Group/Scope 任务与派生结果除管理权限外还要求全设备 inventory_read，每页重验。
+后台任务返回稳定 task 身份；冲突导致替代任务时，状态返回 replacementTask。结果页的 nextCursor 原样续读，不能用固定前 N 台设备代替分页。Group/Scope 任务与派生结果除管理权限外还要求全设备 inventory_read，每页重验。
 
 已发布策略归组织持有，浏览器会话退出或过期不删除分配。新写入、新自助调用和读取检查当前请求者权限；已受理任务不重新取得原发布人的授权，保留原参数、材料和结果归属。明确 Policy 停用、取消和注册撤销继续有效。停用或修改分配需要当前管理员授权。命令失败、命令到期与持续分配状态分别保存；缺少注册或能力不会删除配置分配。脚本 Unknown 不自动重试，退出不虚构副作用撤销。
 
