@@ -168,11 +168,29 @@ where
             Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
         > + Send,
 {
+    inspect_budget(runtime,tenant,deadline(),context,operation).await
+}
+
+pub(crate) async fn inspect_budget<C: Send, R: Send, F>(
+    runtime: &PgRuntime,
+    tenant: TenantId,
+    cutoff: rss_transactional_messaging::policy::OperationDeadline,
+    context: C,
+    operation: F,
+) -> std::result::Result<R, Error>
+where
+    F: for<'c> FnOnce(
+            &'c mut C,
+            &'c mut PgTransaction<'_>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
+        > + Send,
+{
     let failure = Mutex::new(None);
     let attempt = runtime
         .local_tx_with_context(
             tenant,
-            deadline(),
+            cutoff,
             (context, Some(operation), &failure),
             |state, tx| {
                 Box::pin(async move {

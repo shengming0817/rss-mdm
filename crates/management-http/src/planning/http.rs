@@ -22,7 +22,7 @@ fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
 }
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_group_directory, get_device_groups, get_scope_directory, get_group_read, post_group_write, get_group_references, get_group_impacts, get_scope_references, post_group_preview, get_group_page, get_scope_page, get_scope_read, post_scope_write, get_group_task, get_scope_task } }
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_group_directory, get_device_groups, get_scope_directory, get_group_read, post_group_write, get_group_references, get_group_impacts, get_scope_references, post_group_preview, get_group_page, get_scope_page, get_scope_read, post_scope_write, post_scope_preview, get_group_task, get_scope_task } }
         RoutesModule1 {
             get_group_directory: rss_mdm_http_contract::module::Route::new(
                 "/groups",
@@ -103,6 +103,10 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
                     &contracts::SCOPE_RESULTS,
                     &[RouteOperation::List],
                 ),
+            ),
+            post_scope_preview: rss_mdm_http_contract::module::Route::new(
+                "/scopes/previews",
+                post(scope_preview, &contracts::SCOPES, &[RouteOperation::Action]),
             ),
             get_scope_read: rss_mdm_http_contract::module::Route::new(
                 "/scopes/{id}",
@@ -341,6 +345,14 @@ async fn group_preview(
     Ok(Json(
         app.groups.preview(&auth.proof, &request, &audit).await?,
     ))
+}
+
+async fn scope_preview(
+    State(app):State<Arc<HttpState>>,Extension(auth):Extension<RequestAuth>,
+    Extension(audit):Extension<RequestAudit>,payload:BodyInput<rss_mdm_scope_service::preview::Request>,
+)->Result<Json<rss_mdm_scope_service::preview::Response>,Error> {
+    let request=body(payload)?;
+    Ok(Json(app.scopes.preview(&auth.proof,&request,&audit).await?))
 }
 
 async fn group_task(

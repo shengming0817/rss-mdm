@@ -24,7 +24,7 @@ impl Scopes {
             serde_json::json!({"id":id,"revision":h.revision,"definition":h.definition,"resolution":h.resolution,"resolution_revision":h.resolution_revision}),
         )
     }
-    async fn validate_references_in(
+    pub(crate) async fn validate_references_in(
         &self,
         tx: &mut PgTransaction<'_>,
         definition: &ScopeDefinition,

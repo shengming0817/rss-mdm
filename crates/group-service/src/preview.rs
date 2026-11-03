@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::Duration};
 
 /// Examples are deliberately not a complete member set or a counted search result.
-pub const SAMPLE_LIMIT: usize = 20;
+pub const SAMPLE_LIMIT: usize = 1000;
 // These bound one read, not the size/depth of an authored Group graph.
 const REFERENCE_CHECKS: usize = 1000;
 const SCAN_OBJECTS: usize = 1000;

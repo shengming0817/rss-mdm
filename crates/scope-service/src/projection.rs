@@ -319,7 +319,7 @@ impl ScopeProjection {
         changed.ok_or(Error::Conflict.into())
     }
 }
-fn source_error(e: crate::channels::SourceError) -> Fault {
+pub(crate) fn source_error(e: crate::channels::SourceError) -> Fault {
     use crate::channels::SourceError as E;
     match e {
         E::Unsupported => Error::Unsupported.into(),
