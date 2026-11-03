@@ -847,6 +847,9 @@ mod operation_reads;
 #[path = "../../tests/registration/mod.rs"]
 mod registration_installation_t2;
 #[cfg(test)]
+#[path = "../../tests/registration/directory.rs"]
+mod registration_directory_t2;
+#[cfg(test)]
 #[path = "../../tests/software/mod.rs"]
 mod software_t2;
 

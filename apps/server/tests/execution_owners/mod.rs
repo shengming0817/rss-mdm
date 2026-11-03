@@ -1,4 +1,5 @@
 //! Real owner composition seams; state reduction and protocol matrices remain in their owners.
+mod directory;
 mod fixture;
 use fixture::Fixture;
 mod composition;

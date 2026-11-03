@@ -1,5 +1,8 @@
 use crate::{Mounts, contract_routes};
 
+#[path = "execution_evidence.rs"]
+mod execution_evidence;
+
 #[test]
 fn offline_management_contract_is_complete_without_runtime_services() {
     let routes = contract_routes(
