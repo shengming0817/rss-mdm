@@ -268,8 +268,16 @@ impl Groups {
                 }
                 EvaluationStep::Ready(facts) => facts,
             };
-            self.fill_group_sources_in(tx, sources, &mut facts.objects)
-                .await?;
+            match self
+                .fill_group_sources_in(tx, sources, &mut facts.objects)
+                .await
+            {
+                Err(Fault::Request(Error::Unavailable(Failure::AssetBytesLimit))) if limit > 1 => {
+                    limit = (limit / 2).max(1);
+                    continue;
+                }
+                result => result?,
+            }
             let key = after
                 .as_ref()
                 .map(|s| checked_input(rss_mdm_group::ObjectKey::new(self.tenant, s)))

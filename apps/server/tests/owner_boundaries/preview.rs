@@ -213,3 +213,183 @@ async fn preview_excludes_unknown_facts() -> Result<()> {
     c.close().await;
     Ok(())
 }
+
+async fn publish(
+    owners: &Owners,
+    c: &Context,
+    proof: &AuthorizedPrincipal,
+    id: Uuid,
+) -> Result<Uuid> {
+    let accepted = owners
+        .groups
+        .execute(
+            &group::Command::Group {
+                id,
+                change: Box::new(group::operation::Operation {
+                    operation_id: Uuid::new_v4(),
+                    expected_revision: 1,
+                    input: group::GroupChange::Recompute {},
+                }),
+            },
+            &c.request(proof)?,
+            proof,
+        )
+        .await?;
+    let task = Uuid::parse_str(accepted["task"].as_str().context("calculation task")?)?;
+    owners.settle(c, task).await?;
+    let published: Uuid = sqlx::query_scalar(
+        "SELECT member_set FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(id)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(published, task);
+    Ok(published)
+}
+
+async fn os_fact(c: &Context, registration: Uuid) -> Result<()> {
+    use rss_mdm_inventory::*;
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    let field = builtin::fields()
+        .into_iter()
+        .find(|f| f.key.as_str() == "device.os.name")
+        .unwrap();
+    assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &field).await?);
+    let key = field.key;
+    let definition = CollectionDefinition::new(
+        "preview-os",
+        1,
+        Source::MdmWindows,
+        vec![CollectionField {
+            definition: field,
+            scope: CollectionScope::Device,
+        }],
+    )?;
+    rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &definition).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(c.tenant.to_string()).bind(registration).fetch_one(&mut *tx).await?;
+    let scope = rss_mdm_registration_service::device::scope_dataset(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c.tenant,
+        registration,
+        "mdm.windows",
+        epoch,
+        "preview-os",
+    )?;
+    let (sequence, _) = rss_mdm_registration_service::device::store::allocate_report_in(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        &c.tenant.to_string(),
+        &registration.to_string(),
+        ReportSource::MdmWindows,
+        &epoch.to_string(),
+        1,
+        i64::from(u32::MAX),
+    )
+    .await?
+    .context("report sequence")?;
+    let projection = rss_mdm_inventory_postgres::projection_scope(c.tenant);
+    let at = time::OffsetDateTime::now_utc().unix_timestamp();
+    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$9,'known',$10,'mdm.windows',$11,$12,$13)")
+        .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(&Scalar::String("Windows".into()))?).bind(Uuid::new_v4().to_string()).bind(at).bind(registration.to_string()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: real scalar facts produce the same preview and published members; associated preview reads only its existing cut"]
+async fn positive_facts_and_associated_cut_share_formal_evaluation() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[P::GroupRead, P::GroupWrite, P::InventoryRead])
+        .await?;
+    let proof = c.authenticate(&account).await?;
+    let owners = Owners::open(&c).await?;
+    let object = planning::endpoint(&c).await?;
+    os_fact(&c, object.members[0].registration_id).await?;
+    let condition: group::criteria::Condition = serde_json::from_value(
+        json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.os.name","op":"eq","value":{"kind":"string","value":"Windows"}}}),
+    )?;
+    let mut input = request(condition.clone());
+    let preview = owners
+        .groups
+        .preview(&proof, &input, &c.request(&proof)?)
+        .await?;
+    assert_eq!(preview.items, vec![object.object.clone()]);
+    assert!(preview.scan_complete);
+    let id = owners.create(&c, &proof, Some(condition)).await?;
+    let run = publish(&owners, &c, &proof, id).await?;
+    let page = owners
+        .groups
+        .execute(
+            &group::Command::GroupPage {
+                group: id,
+                result: run,
+                projection: group::pages::GroupPageKind::Members,
+                query: group::pages::SCHEMA.parse("")?.0,
+            },
+            &c.request(&proof)?,
+            &proof,
+        )
+        .await?;
+    assert_eq!(page["page"]["items"], serde_json::to_value(&preview.items)?);
+    // Minimal legal Device-owned fixed projection. A standalone endpoint is also
+    // an object in AssociatedDevice context; no association workflow is under test.
+    let snapshot = Uuid::new_v4();
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)").bind(c.tenant.to_string()).bind(snapshot).bind(preview.asset_cut.to_json()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) VALUES($1::uuid,$2,1,$3,$4)").bind(c.tenant.to_string()).bind(object.object.key()).bind(serde_json::to_value(&object)?).bind(vec![object.members[0].device.clone()]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.checkpoints(tenant_id,from_cut,rebuilding,object_revision,current_cut) VALUES($1::uuid,$2,false,1,$3)").bind(c.tenant.to_string()).bind(preview.asset_cut.to_json()).bind(snapshot).execute(&mut *tx).await?;
+    tx.commit().await?;
+    input.asset_context = AssetContext::AssociatedDevice;
+    let before = business_state(&c).await?;
+    let result = owners
+        .groups
+        .preview(&proof, &input, &c.request(&proof)?)
+        .await?;
+    assert_eq!(result.items, preview.items);
+    assert_eq!(result.object_snapshot, Some(snapshot));
+    assert_eq!(result.asset_cut, preview.asset_cut);
+    assert_eq!(business_state(&c).await?, before);
+    drop(owners);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: preview narrows an oversized source evidence page and preserves all matching objects"]
+async fn source_evidence_budget_retries_a_smaller_page() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[P::GroupRead, P::GroupWrite, P::InventoryRead])
+        .await?;
+    let proof = c.authenticate(&account).await?;
+    let owners = Owners::open(&c).await?;
+    let empty = owners.create(&c, &proof, None).await?;
+    for _ in 0..17 {
+        planning::endpoint(&c).await?;
+    }
+    let id = owners
+        .create(&c, &proof, Some(membership(empty, "not_member_of")?))
+        .await?;
+    let run = publish(&owners, &c, &proof, id).await?;
+    // Valid JSON whitespace makes 17 individually legal 1 MiB records exceed
+    // the 16 MiB batch budget without inventing another rule-evaluation fixture.
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    let changed=sqlx::query("UPDATE mdm_group.member_rows SET evidence=evidence||convert_to(repeat(' ',1048576-octet_length(evidence)),'UTF8'),evidence_digest=sha256(evidence||convert_to(repeat(' ',1048576-octet_length(evidence)),'UTF8')) WHERE tenant_id=$1::uuid AND run_id=$2").bind(c.tenant.to_string()).bind(run).execute(&mut *tx).await?.rows_affected();
+    assert_eq!(changed, 17);
+    tx.commit().await?;
+    let result = owners
+        .groups
+        .preview(
+            &proof,
+            &request(membership(id, "member_of")?),
+            &c.request(&proof)?,
+        )
+        .await?;
+    assert_eq!(result.items.len(), 17);
+    assert!(result.scan_complete);
+    drop(owners);
+    c.close().await;
+    Ok(())
+}
