@@ -1,11 +1,5 @@
 use super::*;
 use rss_mdm_inventory_service::{assets as a, inventory_runtime as rt};
-struct Clock;
-impl rss_observation::Clock for Clock {
-    fn now(&self) -> std::time::Instant {
-        tokio::time::Instant::now().into_std()
-    }
-}
 #[tokio::test]
 #[ignore = "T2: field pages include every source and foreign saved-query composite identity, exclude archived mappings, and keep reads separate from retirement"]
 async fn field_blockers_and_profile_lifecycle() -> Result<()> {
@@ -36,10 +30,16 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
         .await?;
     let compliance = Uuid::new_v4();
     owners.compliance.execute(&rss_mdm_compliance_service::Command::Put{id:compliance,request:Box::new(rss_mdm_compliance_service::operation::Operation{operation_id:Uuid::new_v4(),expected_revision:0,input:serde_json::from_value(json!({"presentation":{"name":"private rule"},"severity":"low","enabled":false,"platform":"all","target":{"kind":"groups","ids":[group]},"criteria":criteria}))?})},&c.request(&writer)?,&writer).await?;
-    let blueprint = r::blueprints::catalog()
+    let mut blueprint = r::blueprints::catalog()
         .into_iter()
-        .find(|b| b.id == "windows.identity")
-        .expect("Windows native identity blueprint");
+        .find(|b| b.id == "windows.agent.identity")
+        .expect("Windows agent identity blueprint");
+    let r::blueprints::Definition::AgentCollection { template } = &mut blueprint.definition else {
+        panic!("agent collection blueprint");
+    };
+    let mut spec = template.spec().clone();
+    spec.mappings.retain(|key, _| key == field.key.as_str());
+    *template = r::AgentCollectionDefinition::new(spec)?;
     let template = blueprint.instantiate(c.tenant, r::Id::new("field-template")?)?;
     let label = template.label().as_str().to_owned();
     version(&c, template.clone()).await?;
@@ -63,7 +63,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
                 key: field.key.as_str().into(),
                 version: 1,
             }],
-            projection: r::TelemetryProjection::Both,
+            projection: r::TelemetryProjection::Current,
             sample_millis: 10000,
             upload_millis: 60000,
             budget: r::TelemetryBudget {
@@ -76,6 +76,11 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
             boost: None,
             backfill_seconds: 3600,
         })?;
+        rss_mdm_telemetry_service::profile_validation::validate(
+            &template,
+            &profile,
+            std::slice::from_ref(&field),
+        )?;
         let bytes = serde_json::to_vec(&profile)?;
         let v = r::Version::new(
             c.tenant,
@@ -158,7 +163,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
     }
     sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document) VALUES($1::uuid,$2,$3,$4,1,NULL)").bind(c.tenant.to_string()).bind(instance).bind(foreign[0]).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     tx.commit().await?;
-    let clock = rt::Clock::new(Arc::new(Clock));
+    let clock = rt::Clock::new(crate::clock::monotonic());
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_projection::Control::new(&clock, clock.cutoff(), &cancel);
     let observation = rt::ObservationResource::open(

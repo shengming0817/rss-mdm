@@ -31,8 +31,14 @@ pub async fn software_with_export(
         json!({"id":"private","revision":"1","protocol":{"kind":"private"}}),
     )?;
     let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
+    let export_enabled = !matches!(export, r::SoftwareExport::Disabled);
+    let signatures = if export_enabled {
+        json!([])
+    } else {
+        json!([{"evidence":{"reference":"reviewed-signature","length":3,"sha256":vec![4;32]},"artifact":"package","mechanism":"authenticode","publisher":"Acme"}])
+    };
     let definition: r::SoftwareDefinition = serde_json::from_value(
-        json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":[{"evidence":{"reference":"reviewed-signature","length":3,"sha256":vec![4;32]},"artifact":"package","mechanism":"authenticode","publisher":"Acme"}],"provenance":{"kind":"private"},"export":export}),
+        json!({"material":{"format":"msi","installer":"package"},"source":source.snapshot()?,"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":invocation},"signatures":signatures,"provenance":{"kind":"private"},"export":export}),
     )?;
     let version = r::Version::new(
         c.tenant,
@@ -46,6 +52,13 @@ pub async fn software_with_export(
             r::Declaration::Software { definition },
         )],
     )?;
+    if export_enabled {
+        rss_mdm_software_service::publication::derive_document(
+            &version,
+            &[],
+            "https://packages.example.test/",
+        )?;
+    }
     let owner = planning::owner(c, "mdm_resource_runtime").await?;
     let store = rss_mdm_resource_postgres::ResourceStore::new(
         owner.runtime.clone(),

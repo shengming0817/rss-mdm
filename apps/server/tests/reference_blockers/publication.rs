@@ -1,5 +1,6 @@
 //! Legal retained publication material; use the real release owner to withdraw it.
 use super::*;
+use anyhow::Context as _;
 use rss_mdm_software_release as rel;
 pub(super) async fn withdrawn(c: &Context, resource: &r::Version) -> Result<()> {
     let document = rss_mdm_software_service::publication::derive_document(
@@ -50,20 +51,22 @@ pub(super) async fn withdrawn(c: &Context, resource: &r::Version) -> Result<()> 
             at,
         },
     )?;
-    let owner = planning::owner(c, "mdm_software_runtime").await?;
+    let owner = planning::owner(c, "mdm_software_driver").await?;
     let store = rss_mdm_software_release_postgres::ReleaseStore::new(
         owner.runtime.clone(),
         c.tenant,
         crate::authority_t2_support::deadline(),
     )
-    .await?;
+    .await
+    .context("admit release owner")?;
     store
         .create(
             &rel::RequestId::new(c.tenant, Uuid::new_v4().to_string())?,
             &publication,
             crate::authority_t2_support::deadline(),
         )
-        .await?;
+        .await
+        .context("create retained publication")?;
     let bytes = serde_json::to_vec(
         &json!({"target":"private","format":1,"resource":resource.resource().as_str(),"version":resource.label().as_str(),"resource_digest":resource.digest().bytes(),"expected_resource_revision":2,"coordinate":"Acme.App/1.2","document":document}),
     )?;
@@ -82,7 +85,8 @@ pub(super) async fn withdrawn(c: &Context, resource: &r::Version) -> Result<()> 
             },
             crate::authority_t2_support::deadline(),
         )
-        .await?;
+        .await
+        .context("withdraw retained publication")?;
     assert!(
         store
             .get(&id, crate::authority_t2_support::deadline())

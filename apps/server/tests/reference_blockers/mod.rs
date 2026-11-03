@@ -158,22 +158,23 @@ async fn resource_http_retention_permissions_and_continuations() -> Result<()> {
     )
     .await?;
     let target = scope(&c, &[]).await?;
-    let (policy, current) = support::policy(
+    let (policy, historical) = support::policy(
         &c,
         &resource,
         target,
         rss_mdm_policy::SoftwareChannel::Agent,
-        vec![],
+        vec![support::stage(target)],
     )
     .await?;
-    let historical = Uuid::new_v4();
+    let current = Uuid::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint,resource,resource_version) SELECT tenant_id,$3,policy,2,action_kind,frozen,fingerprint,resource,resource_version FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(current).bind(historical).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint,resource,resource_version) SELECT tenant_id,$3,policy,2,action_kind,frozen,fingerprint,resource,resource_version FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(historical).bind(current).execute(&mut *tx).await?;
     sqlx::query(
-        "UPDATE mdm_policy.policies SET state='archived' WHERE tenant_id=$1::uuid AND id=$2",
+        "UPDATE mdm_policy.policies SET state='archived',current_version=$3,version_number=2,revision=2 WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(c.tenant.to_string())
     .bind(policy)
+    .bind(current)
     .execute(&mut *tx)
     .await?;
     sqlx::query("UPDATE mdm_software.versions SET lifecycle=jsonb_set(lifecycle,'{state}','\"withdrawn\"') WHERE tenant_id=$1::uuid AND resource='blocker-software'").bind(c.tenant.to_string()).execute(&mut *tx).await?;
@@ -281,7 +282,7 @@ async fn resource_http_retention_permissions_and_continuations() -> Result<()> {
     let can_read:bool=sqlx::query_scalar("SELECT has_column_privilege(current_user,'mdm_software_composition.subjects','record','SELECT') AND NOT has_column_privilege(current_user,'mdm_software_composition.subjects','document','SELECT')").fetch_one(&pool).await?;
     assert!(can_read);
     pool.close().await;
-    sqlx::query("UPDATE mdm_access.authorization_rules SET revision=revision+1,document=jsonb_set(document,'{grants}','[]') WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(account.rule).execute(&c.operator).await?;
+    sqlx::query("UPDATE mdm_access.authorization_rules SET revision=revision+1,document=NULL WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(account.rule).execute(&c.operator).await?;
     assert_eq!(
         http.get(&format!("{path}?limit=1&cursor={token}")).await?.0,
         403

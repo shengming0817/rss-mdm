@@ -14,7 +14,7 @@ pub trait UsageReader: Send + Sync {
         tx: &'a mut PgTransaction<'_>,
         resource: &'a str,
         version: &'a str,
-    ) -> Pin<Box<dyn Future<Output = std::result::Result<u64, Self::Error>> + Send + 'a>>;
+    ) -> Pending<'a, u64, Self::Error>;
     /// Bounded exact-target projection using the same predicates as the archive count.
     fn page_in<'a>(
         &'a self,
@@ -23,18 +23,12 @@ pub trait UsageReader: Send + Sync {
         version: &'a str,
         after: Option<&'a crate::references::Position>,
         limit: usize,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = std::result::Result<Vec<crate::references::Entry>, Self::Error>>
-                + Send
-                + 'a,
-        >,
-    >;
+    ) -> Pending<'a, Vec<crate::references::Entry>, Self::Error>;
 }
 
-use crate::transaction::Result;
 use rss_mdm_resource::{TelemetryProfile, Version};
-pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+pub type Pending<'a, T, E = crate::transaction::Fault> =
+    Pin<Box<dyn Future<Output = std::result::Result<T, E>> + Send + 'a>>;
 /// Inventory owns the catalog fence and validates mapping and projection budgets.
 pub trait CollectionValidator: Send + Sync {
     fn fence_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>) -> Pending<'a, ()>;

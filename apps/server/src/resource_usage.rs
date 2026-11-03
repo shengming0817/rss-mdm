@@ -10,13 +10,7 @@ impl rss_mdm_resource_service::UsageReader for StoredReferences {
         tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
         resource: &'a str,
         version: &'a str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = rss_mdm_resource_service::transaction::Result<u64>>
-                + Send
-                + 'a,
-        >,
-    > {
+    ) -> rss_mdm_resource_service::inputs::Pending<'a, u64, Self::Error> {
         Box::pin(async move {
             let assignments = rss_mdm_resource_service::transaction::checked(
                 self.policies
@@ -55,15 +49,10 @@ impl rss_mdm_resource_service::UsageReader for StoredReferences {
         version: &'a str,
         after: Option<&'a rss_mdm_resource_service::references::Position>,
         limit: usize,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = rss_mdm_resource_service::transaction::Result<
-                        Vec<rss_mdm_resource_service::references::Entry>,
-                    >,
-                > + Send
-                + 'a,
-        >,
+    ) -> rss_mdm_resource_service::inputs::Pending<
+        'a,
+        Vec<rss_mdm_resource_service::references::Entry>,
+        Self::Error,
     > {
         Box::pin(async move {
             use rss_mdm_resource_service::references::{Entry, Kind, Release, Retention, Role};
