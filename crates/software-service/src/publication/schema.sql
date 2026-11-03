@@ -14,7 +14,7 @@ CREATE TABLE mdm_software_composition.subjects (
  FOREIGN KEY(tenant_id,record) REFERENCES mdm_software_release.aggregates(tenant_id,id),
  FOREIGN KEY(tenant_id,resource) REFERENCES mdm_resource.aggregates(tenant_id,id)
 );
-CREATE INDEX resource_references ON mdm_software_composition.subjects(tenant_id,resource,version);
+CREATE INDEX resource_references ON mdm_software_composition.subjects(tenant_id,resource,version,record COLLATE "C");
 CREATE TABLE mdm_software_composition.authorities (
  tenant_id uuid NOT NULL, software bytea NOT NULL CHECK(octet_length(software)=32),
  record text NOT NULL,

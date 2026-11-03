@@ -145,22 +145,23 @@ pub async fn profile_references_in(
     let tenant = tx.tenant_id().to_string();
     let resource = resource.to_owned();
     let version = version.to_owned();
-    let count: i64 = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT count(*) FROM mdm_resource.profile_refs WHERE tenant_id=$1::uuid AND target=$2 AND target_version=$3 AND NOT archived")
-            .bind(tenant).bind(resource).bind(version).fetch_one(c).await
-    })).await?;
+    let count: i64 = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "SELECT count(*) FROM ({PROFILE_REFERENCE_FACTS_SQL}) facts"
+                )))
+                .bind(tenant)
+                .bind(resource)
+                .bind(version)
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?;
     u64::try_from(count).map_err(|_| STORAGE.fault("profile_refs::count"))
 }
 
-/// Counts of active and retained field references owned by Resource.
-pub struct FieldReferenceCounts {
-    /// Active collection mappings.
-    pub collections: i64,
-    /// Active telemetry mappings.
-    pub telemetry: i64,
-    /// Archived mappings retained for explanation.
-    pub archived: i64,
-}
 /// One exact mapping and the authoritative lifecycle of its immutable version.
 pub struct FieldMappingReference {
     /// Resource identity.
@@ -192,28 +193,27 @@ impl FieldReferences {
         }
         Ok(())
     }
-    /// Active references block retirement; archived references explain retained definitions only.
-    pub async fn counts_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        field: &str,
-    ) -> Result<FieldReferenceCounts, PgError> {
+    /// Whether a live mapping blocks field retirement in this original transaction.
+    pub async fn used_in(&self, tx: &mut PgTransaction<'_>, field: &str) -> Result<bool, PgError> {
         self.check(tx)?;
         let tenant = self.tenant.to_string();
         let field = field.to_owned();
-        let (collections, telemetry, archived) = tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as("SELECT count(*) FILTER(WHERE NOT archived AND NOT telemetry),count(*) FILTER(WHERE NOT archived AND telemetry),count(*) FILTER(WHERE archived) FROM mdm_resource.field_refs WHERE tenant_id=$1::uuid AND field=$2")
-            .bind(tenant).bind(field).fetch_one(c).await
-    })).await?;
-        Ok(FieldReferenceCounts {
-            collections,
-            telemetry,
-            archived,
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "SELECT EXISTS(SELECT FROM ({FIELD_REFERENCE_FACTS_SQL}) facts)"
+                )))
+                .bind(tenant)
+                .bind(field)
+                .fetch_one(c)
+                .await
+            })
         })
+        .await
     }
 
     /// Bounded keyset page of exact field references; lifecycle is read from the resource owner.
-    pub async fn mappings_in(
+    pub async fn blockers_in(
         &self,
         tx: &mut PgTransaction<'_>,
         field: &str,
@@ -229,7 +229,7 @@ impl FieldReferences {
         let field = field.to_owned();
         let (owner, version) = after.unwrap_or_default();
         let rows: Vec<(String,String,bool)> = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as("SELECT owner,version,telemetry FROM mdm_resource.field_refs WHERE tenant_id=$1::uuid AND field=$2 AND (owner COLLATE \"C\",version COLLATE \"C\")>($3,$4) ORDER BY owner COLLATE \"C\",version COLLATE \"C\" LIMIT $5")
+        sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT owner,version,telemetry FROM ({FIELD_REFERENCE_FACTS_SQL}) facts WHERE (owner COLLATE \"C\",version COLLATE \"C\")>($3,$4) ORDER BY owner COLLATE \"C\",version COLLATE \"C\" LIMIT $5")))
             .bind(tenant.to_string()).bind(field).bind(owner).bind(version).bind(i64::from(limit)).fetch_all(c).await
     })).await?;
         let owners: Vec<_> = rows
@@ -270,3 +270,9 @@ impl FieldReferences {
             .collect()
     }
 }
+
+/// Exact live template references; archived profile versions no longer block.
+pub const PROFILE_REFERENCE_FACTS_SQL: &str = "SELECT owner AS id,version FROM mdm_resource.profile_refs WHERE tenant_id=$1::uuid AND target=$2 AND target_version=$3 AND NOT archived";
+
+/// One canonical exact-field predicate for retirement and bounded blocker reads.
+const FIELD_REFERENCE_FACTS_SQL: &str = "SELECT owner,version,telemetry FROM mdm_resource.field_refs WHERE tenant_id=$1::uuid AND field=$2 AND NOT archived";

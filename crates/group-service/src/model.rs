@@ -64,3 +64,12 @@ pub struct RequiredAuthority {
     pub(crate) permission: rss_mdm_authorization_service::Permission,
     pub(crate) evidence: rss_mdm_authorization_service::OperationAuthority,
 }
+
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Freshness {
+    Current,
+    Pending,
+}

@@ -8,10 +8,10 @@ pub(crate) struct Statements {
     pub projection_relations: &'static str,
     pub projection_admission: &'static str,
     pub group_reference_facts: &'static str,
+    pub group_blocker_facts: &'static str,
     pub admission: &'static str,
     pub access_admission: &'static str,
     pub authority_admission: &'static str,
-    pub lib_group_used_in_1: &'static str,
     pub lib_accept_group_change_in_1: &'static str,
     pub lib_group_change_page_in_1: &'static str,
     pub lib_group_change_page_in_2: &'static str,
@@ -594,6 +594,13 @@ AND NOT EXISTS(SELECT 1 FROM relations t CROSS JOIN reachable r WHERE
 AND NOT EXISTS(SELECT 1 FROM relations t JOIN pg_attribute col ON col.attrelid=t.oid
  CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
 "###),
+                group_blocker_facts: concat!(r#"
+SELECT s.id,s.revision,
+ ARRAY(SELECT role FROM (VALUES ('target',v.definition->'targets'),('limitation',v.definition->'limitations'),('exclusion',v.definition->'exclusions')) roles(role,entries)
+ WHERE EXISTS(SELECT FROM jsonb_array_elements(coalesce(nullif(entries,'null'::jsonb),'[]'::jsonb)) e WHERE e->>'kind'='group' AND (e->>'id')::uuid=$2::uuid)) AS roles
+FROM "#, $schema, "scope_sources e JOIN ", $schema, "scopes s ON(s.tenant_id,s.id)=(e.tenant_id,e.scope) JOIN ", $schema, r#"scope_versions v ON(v.tenant_id,v.id,v.revision)=(s.tenant_id,s.id,s.revision)
+WHERE e.tenant_id=$1::uuid AND e.kind='group' AND e.target=$2::uuid::text AND NOT s.deleted
+"#),
                 group_reference_facts: concat!(r###"
 SELECT s.tenant_id,s.id,s.revision,s.deleted,s.resolution,s.resolution_revision,s.calculation_revision,
  r.phase,
@@ -705,7 +712,6 @@ WHERE p.oid IS NULL OR l.lanname<>e.language OR p.prorettype<>to_regtype(e.resul
  WHERE a.grantee=0 OR (a.grantee<>p.proowner AND (a.is_grantable OR a.privilege_type<>'EXECUTE' OR NOT pg_get_userbyid(a.grantee)=ANY(e.roles))))
 ORDER BY e.signature LIMIT 1
 "###),
-                lib_group_used_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $schema, "scope_sources e JOIN ", $schema, "scopes s ON(s.tenant_id,s.id)=(e.tenant_id,e.scope) WHERE e.tenant_id=$1::uuid AND NOT s.deleted AND e.kind='group' AND e.target=$2)"),
                 lib_accept_group_change_in_1: concat!("INSERT INTO ", $group_changes, "(tenant_id,event_id,group_id) VALUES($1::uuid,$2,$3)"),
                 lib_group_change_page_in_1: concat!("SELECT event_id,group_id,cursor FROM ", $group_changes, " WHERE tenant_id=$1::uuid AND NOT completed ORDER BY event_id LIMIT 1 FOR UPDATE SKIP LOCKED"),
                 lib_group_change_page_in_2: concat!("SELECT DISTINCT s.id FROM ", $schema, "scopes s JOIN ", $schema, "scope_sources e ON(e.tenant_id,e.scope)=(s.tenant_id,s.id) WHERE s.tenant_id=$1::uuid AND NOT s.deleted AND e.kind='group' AND e.target=$2 AND ($3::uuid IS NULL OR s.id>$3) ORDER BY s.id LIMIT 65"),

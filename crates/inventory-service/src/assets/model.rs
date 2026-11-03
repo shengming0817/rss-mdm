@@ -265,12 +265,6 @@ pub enum Response {
         version: u64,
         definition: Option<Box<rss_mdm_inventory::FieldDefinition>>,
     },
-    FieldReferences {
-        field: FieldKey,
-        impact: super::FieldImpact,
-        mappings: Vec<super::FieldMappingReference>,
-        next_cursor: Option<String>,
-    },
     QueryStatus {
         task: Uuid,
         status: String,
@@ -366,10 +360,6 @@ pub enum Command {
     FieldWrite {
         field: FieldKey,
         change: Operation<super::FieldChange>,
-    },
-    FieldReferences {
-        field: FieldKey,
-        query: super::FieldReferenceQuery,
     },
     QueryStatus {
         task: Uuid,

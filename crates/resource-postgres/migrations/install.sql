@@ -60,7 +60,7 @@ CREATE TABLE mdm_resource.profile_refs (
  target text NOT NULL CHECK(octet_length(target) BETWEEN 1 AND 128), target_version text NOT NULL CHECK(octet_length(target_version) BETWEEN 1 AND 128), archived boolean NOT NULL,
  PRIMARY KEY(tenant_id,owner,version,target,target_version), FOREIGN KEY(tenant_id,owner) REFERENCES mdm_resource.aggregates(tenant_id,id)
 );
-CREATE INDEX profile_refs_live ON mdm_resource.profile_refs(tenant_id,target,target_version) WHERE NOT archived;
+CREATE INDEX profile_refs_live ON mdm_resource.profile_refs(tenant_id,target,target_version,owner COLLATE "C",version COLLATE "C") WHERE NOT archived;
 ALTER TABLE mdm_resource.profile_refs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_resource.profile_refs FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_resource.profile_refs USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);

@@ -10,6 +10,8 @@ pub enum Error {
     Forbidden,
     #[error("scope changed")]
     Conflict,
+    #[error("object is still referenced")]
+    Referenced,
     #[error("scope not found")]
     NotFound,
     #[error("unsupported scope source")]

@@ -10,55 +10,7 @@ pub enum FieldChange {
     },
     Delete {},
 }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FieldImpact {
-    pub groups: i64,
-    pub templates: i64,
-    pub telemetry_profiles: i64,
-    pub archived_resource_versions: i64,
-    pub compliance: i64,
-    pub saved_queries: i64,
-}
-impl FieldImpact {
-    fn used(&self) -> bool {
-        self.groups > 0
-            || self.templates > 0
-            || self.telemetry_profiles > 0
-            || self.compliance > 0
-            || self.saved_queries > 0
-    }
-}
 impl AssetService {
-    pub(super) async fn field_impact(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        field: FieldKey,
-    ) -> Result<FieldImpact> {
-        let tenant = self.tenant;
-        let key = field.as_str().to_owned();
-        let (groups,compliance,saved_queries)=tx.with_connection(move|c|Box::pin(async move {
-            let groups=sqlx::query_scalar("SELECT count(*) FROM mdm_assets.group_fields WHERE tenant_id=$1::uuid AND field=$2").bind(tenant.to_string()).bind(&key).fetch_one(&mut *c).await?;
-            let compliance=rss_mdm_compliance_postgres::field_references_in(c,tenant,&key).await?;
-            let saved_queries=sqlx::query_scalar("SELECT count(*) FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND document IS NOT NULL AND (jsonb_path_exists(document,'$.query.**.field ? (@ == $field || @ starts with $prefix)',jsonb_build_object('field',$2::text,'prefix',$2::text||'.')) OR jsonb_path_exists(document,'$.query.fields[*] ? (@ == $field)',jsonb_build_object('field',$2::text)))").bind(tenant.to_string()).bind(key).fetch_one(c).await?;
-            Ok((groups,compliance,saved_queries))
-        })).await?;
-        let rss_mdm_resource_postgres::FieldReferenceCounts {
-            collections: templates,
-            telemetry: telemetry_profiles,
-            archived: archived_resource_versions,
-        } = rss_mdm_resource_postgres::FieldReferences::bind(self.runtime.clone(), self.tenant)
-            .counts_in(tx, field.as_str())
-            .await?;
-        Ok(FieldImpact {
-            groups,
-            templates,
-            telemetry_profiles,
-            archived_resource_versions,
-            compliance,
-            saved_queries,
-        })
-    }
     pub(super) async fn field_write(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -80,7 +32,7 @@ impl AssetService {
         if expected >= i64::MAX as u64 || old.map_or(0, |f| f.version) != expected {
             return Err(Error::Conflict.into());
         }
-        let impact = self.field_impact(tx, field).await?;
+        let used = self.field_used_in(tx, field).await?;
         let next = match &change.input {
             FieldChange::Put { definition } => {
                 checked_input(definition.validate())?;
@@ -113,7 +65,7 @@ impl AssetService {
                     {
                         return Err(Error::Conflict.into());
                     }
-                    if impact.used()
+                    if used
                         && (!old
                             .sources
                             .keys()
@@ -123,7 +75,7 @@ impl AssetService {
                             || old.platforms != definition.platforms
                             || old.searchable != definition.searchable)
                     {
-                        return Err(Error::Conflict.into());
+                        return Err(Error::Referenced.into());
                     }
                 } else if !field.as_str().starts_with("custom.") {
                     return Err(Error::Malformed.into());
@@ -131,8 +83,11 @@ impl AssetService {
                 Some(definition.as_ref().clone())
             }
             FieldChange::Delete {} => {
-                if old.is_none() || impact.used() || rss_mdm_inventory::builtin::protected(field) {
+                if old.is_none() || rss_mdm_inventory::builtin::protected(field) {
                     return Err(Error::Conflict.into());
+                }
+                if used {
+                    return Err(Error::Referenced.into());
                 }
                 None
             }
@@ -178,98 +133,4 @@ pub struct FieldView {
     #[serde(flatten)]
     pub definition: rss_mdm_agent_wire::runtime::FieldDefinition,
     pub operations: Vec<rss_mdm_inventory::Operator>,
-}
-
-/// Bounded continuation for the existing field-reference endpoint.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FieldReferenceQuery {
-    #[serde(skip_deserializing)]
-    #[schemars(skip)]
-    pub authority: String,
-    #[serde(default = "reference_limit")]
-    #[schemars(extend("minimum" = 1, "maximum" = 1000))]
-    pub limit: u16,
-    pub cursor: Option<String>,
-}
-fn reference_limit() -> u16 {
-    rss_mdm_query::DEFAULT_PAGE_LIMIT
-}
-/// Exact resource coordinates; presence is configuration, not an execution/readiness assertion.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FieldMappingReference {
-    pub resource: String,
-    pub version: String,
-    pub state: String,
-    pub telemetry: bool,
-}
-impl AssetService {
-    pub(super) async fn field_mapping_references(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        field: FieldKey,
-        query: &FieldReferenceQuery,
-    ) -> Result<rss_mdm_query::Page<FieldMappingReference>> {
-        if !(1..=1000).contains(&query.limit) {
-            return Err(Error::Malformed.into());
-        }
-        let codec = rss_mdm_query::cursor::CursorCodec::from_key(self.asset_cursor_key.clone());
-        let context = checked_input(rss_mdm_query::cursor::fingerprint(&(
-            "field-mapping-references-v1",
-            self.tenant.to_string(),
-            field,
-            &query.authority,
-        )))?;
-        let after: Option<(String, String)> = query
-            .cursor
-            .as_ref()
-            .map(|cursor| {
-                let token = checked_input(rss_contract::PageCursor::parse(cursor))?;
-                checked_input(codec.decode(&token, &context))
-            })
-            .transpose()?;
-        let mut rows =
-            rss_mdm_resource_postgres::FieldReferences::bind(self.runtime.clone(), self.tenant)
-                .mappings_in(tx, field.as_str(), after, query.limit + 1)
-                .await?;
-        let more = rows.len() > usize::from(query.limit);
-        rows.truncate(usize::from(query.limit));
-        let next = if more {
-            let row = rows.last().ok_or(Error::Malformed)?;
-            Some(
-                checked_input(codec.encode(&context, &(&row.resource, &row.version)))?
-                    .as_str()
-                    .to_owned(),
-            )
-        } else {
-            None
-        };
-        let mut items = Vec::new();
-        for rss_mdm_resource_postgres::FieldMappingReference {
-            resource,
-            version,
-            telemetry,
-            state,
-        } in rows
-        {
-            let state = match state {
-                rss_mdm_resource::State::Frozen => "frozen",
-                rss_mdm_resource::State::Active => "active",
-                rss_mdm_resource::State::Deprecated => "deprecated",
-                rss_mdm_resource::State::Archived => "archived",
-            }
-            .into();
-            items.push(FieldMappingReference {
-                resource,
-                version,
-                state,
-                telemetry,
-            });
-        }
-        Ok(rss_mdm_query::Page {
-            items,
-            next_cursor: next,
-        })
-    }
 }

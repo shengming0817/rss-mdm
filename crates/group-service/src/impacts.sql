@@ -106,12 +106,9 @@ walk(id,path) AS (
   (SELECT jsonb_agg(jsonb_build_array(id,revision,resolution,resolution_revision,calculation_revision,phase) ORDER BY id) FROM scope_facts h WHERE EXISTS(SELECT FROM related_scopes s WHERE h.id=s.id)),
   (SELECT jsonb_agg(jsonb_build_array(group_id,definition_version,authority_version) ORDER BY group_id) FROM mdm_group.source_state h WHERE tenant_id=$1::uuid AND EXISTS(SELECT FROM related_groups g WHERE g.id=h.group_id)),
   (SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid)
- )::text,'UTF8')),'hex') AS generation,
- (EXISTS(SELECT FROM mdm_group.groups g JOIN mdm_group.rules s ON(s.tenant_id,s.group_id,s.version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id=$1::uuid AND NOT g.deleted AND s.group_ids @> ARRAY[$2::uuid])
-  OR EXISTS(SELECT FROM scope_facts s WHERE NOT s.deleted AND s.group_ids @> ARRAY[$2::uuid])
-  OR EXISTS(SELECT FROM compliance_facts r WHERE r.group_ids @> ARRAY[$2::uuid])) AS blocked
+ )::text,'UTF8')),'hex') AS generation
 )
-SELECT meta.generation,meta.blocked,(EXISTS(SELECT FROM group_status WHERE NOT valid)
+SELECT meta.generation,(EXISTS(SELECT FROM group_status WHERE NOT valid)
  OR EXISTS(SELECT FROM page p JOIN mdm_group.groups g ON g.tenant_id=$1::uuid AND g.id=p.id
  LEFT JOIN mdm_group.rules r ON(r.tenant_id,r.group_id,r.version)=(g.tenant_id,g.id,g.rule_version)
  WHERE p.kind=0 AND (r.version IS NULL OR r.digest<>sha256(r.document)
@@ -122,5 +119,5 @@ SELECT meta.generation,meta.blocked,(EXISTS(SELECT FROM group_status WHERE NOT v
  'revision',d.revision,'relation',CASE WHEN d.relation=0 THEN 'direct' ELSE 'indirect' END,
  'roles',d.roles,'via',(SELECT jsonb_agg(jsonb_build_object('kind',CASE WHEN ordinal=cardinality(d.path) THEN (ARRAY['group','scope','policy','compliance_rule'])[d.kind+1] WHEN d.kind=2 AND ordinal=cardinality(d.path)-1 THEN 'scope' ELSE 'group' END,'id',id) ORDER BY ordinal) FROM unnest(d.path) WITH ORDINALITY x(id,ordinal)),
  'lifecycleState',d.state,'freshness',CASE WHEN d.current THEN 'current' ELSE 'pending' END,
- 'effective',d.current AND d.state IN('active','enabled'),'blocksDeletion',true
+ 'effective',d.current AND d.state IN('active','enabled')
  ) ORDER BY d.kind,d.id,d.relation) FROM details d),'[]'::jsonb)::text AS items FROM meta

@@ -4,6 +4,22 @@ pub async fn count_in(tx: &mut PgTransaction<'_>, resource: &str, version: &str)
     let tenant = tx.tenant_id().to_string();
     let resource = resource.to_owned();
     let version = version.to_owned();
-    let count:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant).bind(resource).bind(version).fetch_one(c).await})).await?;
+    let count: i64 = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "SELECT count(*) FROM ({FACTS_SQL}) facts"
+                )))
+                .bind(tenant)
+                .bind(resource)
+                .bind(version)
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?;
     Ok(count as u64)
 }
+
+/// Immutable publication subjects that block exact-version archival.
+pub const FACTS_SQL: &str = "SELECT record AS id FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3";

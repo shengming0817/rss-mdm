@@ -58,6 +58,14 @@ pub trait ScopeDependents: Send + Sync {
         tx: &'a mut PgTransaction<'_>,
         scope: uuid::Uuid,
     ) -> Pending<'a, bool, crate::transaction::Fault>;
+    /// Minimal blockers projected by the Policy owner, with the original delete predicate.
+    fn references_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        scope: uuid::Uuid,
+        after: Option<uuid::Uuid>,
+        limit: usize,
+    ) -> Pending<'a, Vec<crate::references::Entry>, crate::transaction::Fault>;
     fn publication_recorded_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,

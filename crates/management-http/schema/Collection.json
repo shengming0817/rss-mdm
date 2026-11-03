@@ -1,71 +1,4 @@
 {
-  "FieldImpact": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "additionalProperties": false,
-    "properties": {
-      "archivedResourceVersions": {
-        "format": "int64",
-        "type": "integer"
-      },
-      "compliance": {
-        "format": "int64",
-        "type": "integer"
-      },
-      "groups": {
-        "format": "int64",
-        "type": "integer"
-      },
-      "savedQueries": {
-        "format": "int64",
-        "type": "integer"
-      },
-      "telemetryProfiles": {
-        "format": "int64",
-        "type": "integer"
-      },
-      "templates": {
-        "format": "int64",
-        "type": "integer"
-      }
-    },
-    "required": [
-      "groups",
-      "templates",
-      "telemetryProfiles",
-      "archivedResourceVersions",
-      "compliance",
-      "savedQueries"
-    ],
-    "title": "FieldImpact",
-    "type": "object"
-  },
-  "FieldMappingReference": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "additionalProperties": false,
-    "description": "Exact resource coordinates; presence is configuration, not an execution/readiness assertion.",
-    "properties": {
-      "resource": {
-        "type": "string"
-      },
-      "state": {
-        "type": "string"
-      },
-      "telemetry": {
-        "type": "boolean"
-      },
-      "version": {
-        "type": "string"
-      }
-    },
-    "required": [
-      "resource",
-      "version",
-      "state",
-      "telemetry"
-    ],
-    "title": "FieldMappingReference",
-    "type": "object"
-  },
   "FieldReferenceQuery": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
@@ -81,6 +14,172 @@
         "type": "integer"
       }
     },
+    "type": "object"
+  },
+  "FieldReferences": {
+    "$defs": {
+      "Entry": {
+        "additionalProperties": false,
+        "properties": {
+          "release": {
+            "$ref": "#/$defs/Release"
+          },
+          "role": {
+            "$ref": "#/$defs/Role"
+          },
+          "source": {
+            "$ref": "#/$defs/Source"
+          }
+        },
+        "required": [
+          "source",
+          "role",
+          "release"
+        ],
+        "type": "object"
+      },
+      "Release": {
+        "enum": [
+          "edit_or_delete_referencing_object",
+          "archive_referencing_version"
+        ],
+        "type": "string"
+      },
+      "Role": {
+        "enum": [
+          "group_condition",
+          "collection_mapping",
+          "telemetry_mapping",
+          "compliance_condition",
+          "saved_query"
+        ],
+        "type": "string"
+      },
+      "Source": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "const": "group",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "revision"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "resource_version",
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "version"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "const": "compliance_rule",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "revision"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "instance": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "kind": {
+                "const": "saved_query",
+                "type": "string"
+              },
+              "owner": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "instance",
+              "owner",
+              "id",
+              "revision"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/$defs/Entry"
+        },
+        "type": "array"
+      },
+      "nextCursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "items",
+      "nextCursor"
+    ],
+    "title": "Page",
     "type": "object"
   },
   "FieldView": {
@@ -1403,6 +1502,304 @@
       "input"
     ],
     "title": "Operation",
+    "type": "object"
+  },
+  "GroupImpacts": {
+    "$defs": {
+      "Entry": {
+        "additionalProperties": false,
+        "properties": {
+          "effective": {
+            "type": "boolean"
+          },
+          "freshness": {
+            "$ref": "#/$defs/Freshness"
+          },
+          "lifecycleState": {
+            "$ref": "#/$defs/Lifecycle"
+          },
+          "relation": {
+            "$ref": "#/$defs/Relation"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/$defs/Object"
+          },
+          "via": {
+            "items": {
+              "$ref": "#/$defs/Object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "source",
+          "revision",
+          "relation",
+          "roles",
+          "via",
+          "lifecycleState",
+          "freshness",
+          "effective"
+        ],
+        "type": "object"
+      },
+      "Freshness": {
+        "enum": [
+          "current",
+          "pending"
+        ],
+        "type": "string"
+      },
+      "Kind": {
+        "enum": [
+          "group",
+          "scope",
+          "policy",
+          "compliance_rule"
+        ],
+        "type": "string"
+      },
+      "Lifecycle": {
+        "enum": [
+          "active",
+          "enabled",
+          "disabled",
+          "archived"
+        ],
+        "type": "string"
+      },
+      "Object": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
+      "Relation": {
+        "enum": [
+          "direct",
+          "indirect"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/$defs/Entry"
+        },
+        "type": "array"
+      },
+      "nextCursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "items",
+      "nextCursor"
+    ],
+    "title": "Impacts",
+    "type": "object"
+  },
+  "GroupReferences": {
+    "$defs": {
+      "Entry": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "release": {
+            "$ref": "#/$defs/Release"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/$defs/Role"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "revision",
+          "roles",
+          "release"
+        ],
+        "type": "object"
+      },
+      "Kind": {
+        "enum": [
+          "group",
+          "scope",
+          "compliance_rule"
+        ],
+        "type": "string"
+      },
+      "Release": {
+        "enum": [
+          "edit_or_delete_referencing_object"
+        ],
+        "type": "string"
+      },
+      "Role": {
+        "enum": [
+          "group_condition",
+          "target",
+          "limitation",
+          "exclusion",
+          "compliance_target"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/$defs/Entry"
+        },
+        "type": "array"
+      },
+      "nextCursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "items",
+      "nextCursor"
+    ],
+    "title": "Page",
+    "type": "object"
+  },
+  "ResourceReferences": {
+    "$defs": {
+      "Entry": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "release": {
+            "$ref": "#/$defs/Release",
+            "description": "Supported lifecycle, not an authorization or a promise of success."
+          },
+          "retention": {
+            "$ref": "#/$defs/Retention"
+          },
+          "role": {
+            "$ref": "#/$defs/Role"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "version",
+          "role",
+          "retention",
+          "release"
+        ],
+        "type": "object"
+      },
+      "Kind": {
+        "enum": [
+          "policy_version",
+          "software_publication",
+          "software_catalog",
+          "collection_profile"
+        ],
+        "type": "string"
+      },
+      "Release": {
+        "enum": [
+          "retained_immutable",
+          "archive_referencing_version"
+        ],
+        "type": "string"
+      },
+      "Retention": {
+        "enum": [
+          "current_version",
+          "historical_version",
+          "retained_record",
+          "unarchived_version"
+        ],
+        "type": "string"
+      },
+      "Role": {
+        "enum": [
+          "policy_action",
+          "publication_subject",
+          "catalog_version",
+          "collection_template"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/$defs/Entry"
+        },
+        "type": "array"
+      },
+      "nextCursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "items",
+      "nextCursor"
+    ],
+    "title": "Page",
     "type": "object"
   },
   "ResourceResponse": {
@@ -11134,6 +11531,89 @@
       "input"
     ],
     "title": "Operation",
+    "type": "object"
+  },
+  "ScopeReferences": {
+    "$defs": {
+      "Entry": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "release": {
+            "$ref": "#/$defs/Release"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/$defs/Role"
+            },
+            "type": "array"
+          },
+          "version": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "version",
+          "revision",
+          "roles",
+          "release"
+        ],
+        "type": "object"
+      },
+      "Kind": {
+        "enum": [
+          "policy"
+        ],
+        "type": "string"
+      },
+      "Release": {
+        "enum": [
+          "edit_referencing_policy",
+          "retained_archived_policy"
+        ],
+        "type": "string"
+      },
+      "Role": {
+        "enum": [
+          "policy_scope",
+          "rollout_stage"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/$defs/Entry"
+        },
+        "type": "array"
+      },
+      "nextCursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "items",
+      "nextCursor"
+    ],
+    "title": "Page",
     "type": "object"
   }
 }

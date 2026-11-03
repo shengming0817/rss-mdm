@@ -6,6 +6,9 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'references.lifecycle': dict(prefix='assembly::reference_blockers_t2::', profiles=('shared',),
+        inputs=('crates/resource-service/*','crates/resource-postgres/*','crates/group-service/*','crates/scope-service/*','crates/scope-postgres/*','crates/policy-postgres/*','crates/policy-service/src/management/scope_changes.rs','crates/inventory-service/src/assets/*','crates/compliance-postgres/*','crates/software-service/src/publication/*','crates/software-service/src/catalog/*','crates/management-http/*','crates/http-contract/*','apps/server/src/resource_usage.rs','apps/server/src/assembly/resource.rs','apps/server/src/assembly/policy.rs','apps/server/tests/reference_blockers/*')),
+
     'device_access.foundation': dict(package='rss-mdm-device-access-http', target='foundation', installer=None,
         prefix='foundation::',profiles=('da_foundation',),
         inputs=('apps/da-server/*','crates/apple-mdm/src/da.rs','crates/windows-mdm/src/da.rs','crates/device-access/*','crates/device-access-postgres/*','crates/device-access-runtime/*','crates/policy-postgres/src/device_access.rs','crates/device-access-http/*','crates/certificate/*','crates/device-trust/*','crates/agent-wire/src/da.rs','crates/agent-wire/src/da/*',

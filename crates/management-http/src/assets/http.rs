@@ -219,12 +219,6 @@ fn authorize(
                 Err(rss_mdm_inventory_service::Error::Forbidden)
             }
         }
-        Command::FieldReferences { .. } => {
-            auth.proof.manage(Permission::InventoryFieldsWrite)?;
-            auth.proof
-                .manage(Permission::ResourceRead)
-                .map_err(rss_mdm_inventory_service::Error::from)
-        }
         Command::FieldLayoutWrite { .. }
         | Command::FieldWrite { .. }
         | Command::RetentionWrite { .. }
@@ -288,9 +282,7 @@ async fn run(
         | Command::CollectionRun { device, .. }
         | Command::CollectionItems { device, .. }
         | Command::ListItems { device, .. } => audit.target_device(device),
-        Command::FieldWrite { field, .. } | Command::FieldReferences { field, .. } => {
-            audit.target(field.as_str())
-        }
+        Command::FieldWrite { field, .. } => audit.target(field.as_str()),
         Command::QueryStatus { task, .. }
         | Command::QueryItems { task, .. }
         | Command::QueryFacets { task, .. } => audit.target(&task.to_string()),
@@ -626,25 +618,21 @@ async fn field_references(
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<FieldReferencesQuery>,
     >,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
-    (async {
-        let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-        let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
-        let query = FieldReferenceQuery {
-            limit: page.limit() as u16,
-            cursor: page.cursor().clone(),
-            authority: auth.proof.authorization()?.query_binding(&auth.proof)?,
-        };
-        run(
-            &app,
-            &auth,
-            &audit,
-            Command::FieldReferences { field, query },
-        )
-        .await
-    })
-    .await
-    .map(rss_mdm_http_contract::CollectionResponse)
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_inventory_service::assets::field_references::Entry>>,
+    >,
+    Error,
+> {
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
+    let (q, _) = query.parse().map_err(|_| Error::Malformed)?;
+    Ok(rss_mdm_http_contract::CollectionResponse(Json(
+        app.assets.field_references(&auth.proof, field, &q).await?,
+    )))
 }
 
 #[derive(schemars::JsonSchema, Deserialize)]
@@ -831,7 +819,7 @@ impl rss_mdm_http_contract::query::WindowOwner for QueryFacetsQuery {
 struct FieldReferencesQuery;
 impl rss_mdm_http_contract::query::WindowOwner for FieldReferencesQuery {
     fn schema() -> &'static rss_mdm_query::window::Schema {
-        &rss_mdm_inventory_service::assets::windows::FIELD_REFERENCES
+        &rss_mdm_inventory_service::assets::field_references::SCHEMA
     }
 }
 

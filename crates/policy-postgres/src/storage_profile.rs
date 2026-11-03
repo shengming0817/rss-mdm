@@ -29,11 +29,11 @@ pub(crate) struct Statements {
     pub store_trigger_in_1: &'static str,
     pub store_read_snapshot_on_1: &'static str,
     pub store_version_snapshot_on_1: &'static str,
-    pub store_resource_usage_in_1: &'static str,
+    pub resource_reference_facts: &'static str,
     pub store_resolve_in_1: &'static str,
     pub store_locked_in_1: &'static str,
     pub store_action_kinds_in_1: &'static str,
-    pub scope_used_in_1: &'static str,
+    pub scope_reference_facts: &'static str,
     pub scope_dependents_in_1: &'static str,
     pub schedules_triggers_in_1: &'static str,
     pub schedules_retirement_in_1: &'static str,
@@ -91,6 +91,7 @@ CREATE TABLE "###, $versions, r###" (
  PRIMARY KEY(tenant_id,id),UNIQUE(tenant_id,policy,number),
  FOREIGN KEY(tenant_id,policy) REFERENCES "###, $policies, r###"(tenant_id,id)
 );
+CREATE INDEX ON "###, $versions, r###"(tenant_id,resource,resource_version,policy,id);
 ALTER TABLE "###, $policies, " ADD FOREIGN KEY(tenant_id,current_version) REFERENCES ", $versions, r###"(tenant_id,id) DEFERRABLE INITIALLY DEFERRED;
 "###, $index_23, " ON ", $policies, r###"(tenant_id, (definition->>'alias')) WHERE state<>'archived' AND definition->>'alias' IS NOT NULL;
 "###, $index_24, " ON ", $policies, r###"(tenant_id, (definition->>'customEvent'), id) WHERE state<>'archived' AND definition->>'customEvent' IS NOT NULL;
@@ -330,11 +331,11 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 store_trigger_in_1: concat!("INSERT INTO ", $triggers, "(tenant_id,id,version,created_at,deadline) VALUES($1::uuid,$2,$3,$4,$5)"),
                 store_read_snapshot_on_1: concat!("SELECT revision,current_version,version_number,state,definition,execution_binding FROM ", $policies, " WHERE tenant_id=$1::uuid AND id=$2"),
                 store_version_snapshot_on_1: concat!("SELECT policy,number,action_kind,frozen FROM ", $versions, " WHERE tenant_id=$1::uuid AND id=$2"),
-                store_resource_usage_in_1: concat!("SELECT count(*) FROM ", $versions, " WHERE tenant_id=$1::uuid AND resource=$2 AND resource_version=$3"),
+                resource_reference_facts: concat!("SELECT v.policy::text AS id,v.id::text AS version,(p.current_version=v.id) AS current FROM ", $versions, " v JOIN ", $policies, " p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE v.tenant_id=$1::uuid AND v.resource=$2 AND v.resource_version=$3"),
                 store_resolve_in_1: concat!("SELECT id FROM ", $policies, " WHERE tenant_id=$1::uuid AND definition->>'alias'=$2 AND state<>'archived'"),
                 store_locked_in_1: concat!("SELECT ", $policy_schema, "lock_policy($1)"),
                 store_action_kinds_in_1: concat!("SELECT DISTINCT action_kind FROM ", $versions, " WHERE tenant_id=$1::uuid AND policy=$2 ORDER BY action_kind"),
-                scope_used_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $policies, " WHERE tenant_id=$1::uuid AND ((definition->>'scope')::uuid=$2 OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(definition->'action'->'rollout'->'stages','[]'::jsonb)) stage WHERE (stage->>'scope')::uuid=$2)))"),
+                scope_reference_facts: concat!("SELECT id,current_version AS version,revision,state,ARRAY(SELECT role FROM (SELECT 'policy_scope'::text AS role WHERE (definition->>'scope')::uuid=$2 UNION ALL SELECT 'rollout_stage' WHERE EXISTS(SELECT FROM jsonb_array_elements(coalesce(definition#>'{action,rollout,stages}','[]'::jsonb)) stage WHERE (stage->>'scope')::uuid=$2)) roles FROM ", $policies, " WHERE tenant_id=$1::uuid AND ((definition->>'scope')::uuid=$2 OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(definition->'action'->'rollout'->'stages','[]'::jsonb)) stage WHERE (stage->>'scope')::uuid=$2))"),
                 scope_dependents_in_1: concat!("SELECT id FROM ", $policies, " WHERE tenant_id=$1::uuid AND (definition->>'scope'=$2 OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(definition->'action'->'rollout'->'stages','[]'::jsonb)) stage WHERE stage->>'scope'=$2)) AND id>coalesce($3::uuid,'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY id LIMIT 65"),
                 schedules_triggers_in_1: concat!("SELECT id,created_at FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at DESC,id DESC LIMIT 64"),
                 schedules_retirement_in_1: concat!("SELECT p.id,v.id,v.frozen FROM ", $policies, " p JOIN ", $versions, " v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND v.action_kind='unmanage_device' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT 64"),

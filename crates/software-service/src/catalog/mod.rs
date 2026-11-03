@@ -685,9 +685,25 @@ pub async fn reference_count_in(
     let tenant = tx.tenant_id().to_string();
     let resource = resource.to_owned();
     let version = version.to_owned();
-    let count:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT count(*) FROM mdm_software.versions WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant).bind(resource).bind(version).fetch_one(c).await})).await?;
+    let count: i64 = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "SELECT count(*) FROM ({RESOURCE_REFERENCE_FACTS_SQL}) facts"
+                )))
+                .bind(tenant)
+                .bind(resource)
+                .bind(version)
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?;
     u64::try_from(count).map_err(|_| Error::Integrity)
 }
 
 /// Current installation permissions and objects of this owner.
 pub const RELATIONS_SQL: &str = include_str!("relations.sql");
+
+/// Catalog lifecycle records retained even after withdrawal; exact archive predicate.
+pub const RESOURCE_REFERENCE_FACTS_SQL: &str = "SELECT resource AS id,version FROM mdm_software.versions WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3";

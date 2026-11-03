@@ -15,6 +15,21 @@ pub trait UsageReader: Send + Sync {
         resource: &'a str,
         version: &'a str,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<u64, Self::Error>> + Send + 'a>>;
+    /// Bounded exact-target projection using the same predicates as the archive count.
+    fn page_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        resource: &'a str,
+        version: &'a str,
+        after: Option<&'a crate::references::Position>,
+        limit: usize,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = std::result::Result<Vec<crate::references::Entry>, Self::Error>>
+                + Send
+                + 'a,
+        >,
+    >;
 }
 
 use crate::transaction::Result;

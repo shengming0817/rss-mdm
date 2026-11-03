@@ -169,3 +169,11 @@ pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -
 }
 
 pub mod device_access;
+
+/// Exact immutable Policy references, including historical versions ($1 tenant, $2 resource, $3 version).
+/// Consumers borrow their original transaction; no document content is projected.
+pub fn resource_reference_facts_sql(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).resource_reference_facts
+}

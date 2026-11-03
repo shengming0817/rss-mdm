@@ -1008,8 +1008,8 @@ pub static COLLECTION_ITEMS: Resource = Resource {
 pub static FIELD_REFERENCES: Resource = Resource {
     id: "field_references",
     category: Category::Facts,
-    owner: "management-http",
-    proof: "assets.http",
+    owner: "inventory-service",
+    proof: "references.lifecycle",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
 };
@@ -1044,8 +1044,8 @@ pub static INVENTORY_LIST_ITEMS: Resource = Resource {
 pub static GROUP_REFERENCES: Resource = Resource {
     id: "group_references",
     category: Category::Facts,
-    owner: "inventory-service",
-    proof: "planning.http",
+    owner: "group-service",
+    proof: "references.lifecycle",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
 };
@@ -1137,4 +1137,31 @@ pub static DA_PUBLICATION_OPERATIONS: Resource = Resource {
     proof: "device_access.foundation",
     query: QueryPolicy::NotCollection,
     collection: None,
+};
+
+pub static RESOURCE_REFERENCES: Resource = Resource {
+    id: "resource_references",
+    category: Category::Facts,
+    owner: "resource-service",
+    proof: "references.lifecycle",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static SCOPE_REFERENCES: Resource = Resource {
+    id: "scope_references",
+    category: Category::Facts,
+    owner: "scope-service",
+    proof: "references.lifecycle",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static GROUP_IMPACTS: Resource = Resource {
+    id: "group_impacts",
+    category: Category::Facts,
+    owner: "group-service",
+    proof: "planning.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
 };

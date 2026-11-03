@@ -8,13 +8,13 @@ use rss_mdm_group_service as group;
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
-struct Owners {
+pub(super) struct Owners {
     storage: crate::owner_storage::OwnerRuntime,
-    groups: Arc<group::Groups>,
-    compliance: compliance::Compliance,
+    pub(super) groups: Arc<group::Groups>,
+    pub(super) compliance: compliance::Compliance,
 }
 impl Owners {
-    async fn open(c: &Context) -> Result<Self> {
+    pub(super) async fn open(c: &Context) -> Result<Self> {
         let storage = planning::owner(c, "mdm_inventory_runtime").await?;
         let groups = Arc::new(
             rss_mdm_group_postgres::GroupStore::new(
@@ -60,7 +60,7 @@ impl Owners {
             compliance,
         })
     }
-    async fn create(
+    pub(super) async fn create(
         &self,
         c: &Context,
         proof: &AuthorizedPrincipal,
@@ -136,7 +136,7 @@ impl Owners {
         Ok(())
     }
 }
-async fn scope(c: &Context, groups: &[Uuid]) -> Result<Uuid> {
+pub(super) async fn scope(c: &Context, groups: &[Uuid]) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let definition = rss_mdm_scope::ScopeDefinition {
         targets: groups
@@ -223,14 +223,13 @@ async fn mixed_references_are_owned_authorized_and_stable_across_pages() -> Resu
             .map_or_else(|| "limit=1".to_string(), |v| format!("limit=1&cursor={v}"));
         let page = owners
             .groups
-            .references(
+            .impacts(
                 &proof,
                 root,
-                &group::references::Query::parse(&raw)?,
+                &group::impacts::Query::parse(&raw)?,
                 &c.request(&proof)?,
             )
             .await?;
-        assert!(page.deletion_blocked);
         assert!(page.items.len() <= 1);
         entries.extend(page.items);
         cursor = page.next_cursor;
@@ -241,7 +240,7 @@ async fn mixed_references_are_owned_authorized_and_stable_across_pages() -> Resu
     }
     let keys = entries
         .iter()
-        .map(group::references::Entry::key)
+        .map(group::impacts::Entry::key)
         .collect::<Vec<_>>();
     assert!(keys.windows(2).all(|w| w[0] < w[1]));
     assert_eq!(keys.len(), 6);
@@ -273,19 +272,18 @@ async fn mixed_references_are_owned_authorized_and_stable_across_pages() -> Resu
     let hidden = c.authenticate(&hidden).await?;
     let page = owners
         .groups
-        .references(
+        .impacts(
             &hidden,
             root,
-            &group::references::Query::parse("limit=20")?,
+            &group::impacts::Query::parse("limit=20")?,
             &c.request(&hidden)?,
         )
         .await?;
-    assert!(page.deletion_blocked);
     assert!(page.items.iter().any(|entry| entry.source.id == child));
     assert!(
         page.items
             .iter()
-            .all(|e| e.source.kind == group::references::Kind::Group)
+            .all(|e| e.source.kind == group::impacts::Kind::Group)
     );
     assert!(matches!(
         owners
@@ -303,7 +301,7 @@ async fn mixed_references_are_owned_authorized_and_stable_across_pages() -> Resu
                 &hidden
             )
             .await,
-        Err(group::Error::Conflict)
+        Err(group::Error::Referenced)
     ));
     drop(owners);
     c.close().await;
@@ -320,19 +318,20 @@ async fn hidden_scope_reference_alone_blocks_group_deletion() -> Result<()> {
     let proof = c.authenticate(&account).await?;
     let owners = Owners::open(&c).await?;
     let root = owners.create(&c, &proof, None).await?;
-    scope(&c, &[root]).await?;
+    let scoped = scope(&c, &[root]).await?;
+    let reader = c.account(&[P::GroupRead]).await?;
+    let reader = c.authenticate(&reader).await?;
     let page = owners
         .groups
         .references(
-            &proof,
+            &reader,
             root,
-            &group::references::Query::parse("limit=20")?,
-            &c.request(&proof)?,
+            &group::references::SCHEMA.parse("limit=20")?.0,
         )
         .await?;
-    assert!(page.items.is_empty());
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].id, scoped);
     assert!(page.next_cursor.is_none());
-    assert!(page.deletion_blocked);
     let deletion = owners
         .groups
         .execute(
@@ -348,7 +347,7 @@ async fn hidden_scope_reference_alone_blocks_group_deletion() -> Result<()> {
             &proof,
         )
         .await;
-    assert!(matches!(deletion, Err(group::Error::Conflict)));
+    assert!(matches!(deletion, Err(group::Error::Referenced)));
     drop(owners);
     c.close().await;
     Ok(())
@@ -415,7 +414,7 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
                         .await
                         .is_err()
                 );
-                assert!(ctx.3.counts_in(tx, "device.os.name").await.is_err());
+                assert!(ctx.3.used_in(tx, "device.os.name").await.is_err());
                 let changes = ctx
                     .0
                     .changes_page_in(tx, Some(&ctx.4), &ctx.5, 0, None, 1000)

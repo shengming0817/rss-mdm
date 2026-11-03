@@ -8,6 +8,8 @@ pub enum Error {
     Forbidden,
     #[error("inventory conflict")]
     Conflict,
+    #[error("object is still referenced")]
+    Referenced,
     #[error("inventory object not found")]
     NotFound,
     #[error("inventory commit outcome unknown")]

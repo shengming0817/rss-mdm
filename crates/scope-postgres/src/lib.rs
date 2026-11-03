@@ -69,32 +69,6 @@ impl ScopeBinding {
     }
 }
 
-impl ScopeBinding {
-    /// Read active Scope references while the caller holds the target Group lock.
-    /// Scope reference creation participates in that same lock protocol.
-    pub async fn group_used_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        group: Uuid,
-    ) -> Result<bool, BindingError> {
-        let profile = self.profile();
-
-        self.validate_in(tx)?;
-        let tenant = self.tenant.to_string();
-        Ok(tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    sqlx::query_scalar(crate::storage_profile::sql(profile).lib_group_used_in_1)
-                        .bind(tenant)
-                        .bind(group.to_string())
-                        .fetch_one(c)
-                        .await
-                })
-            })
-            .await?)
-    }
-}
-
 /// Scope-owned durable Group change acceptance and bounded fan-out.
 pub const fn group_changes_sql(profile: rss_mdm_install_support::StorageProfile) -> &'static str {
     storage_profile::sql(profile).group_changes
@@ -357,3 +331,10 @@ pub const fn access_contract(profile: rss_mdm_install_support::StorageProfile) -
 }
 
 mod operations;
+
+/// Direct Group blockers, selected by the reverse source index before projecting roles.
+pub const fn group_blocker_facts_sql(
+    profile: rss_mdm_install_support::StorageProfile,
+) -> &'static str {
+    storage_profile::sql(profile).group_blocker_facts
+}

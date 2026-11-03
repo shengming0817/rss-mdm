@@ -20,7 +20,7 @@ impl Groups {
             None
         };
         Ok(
-            json!({"group":group,"criteria":criteria,"member_set":member_set.map(|id|id.to_string()),"freshness":if self.current_in(tx,checked_input(Uuid::parse_str(&id.to_string()))?).await? {references::Freshness::Current}else{references::Freshness::Pending}}),
+            json!({"group":group,"criteria":criteria,"member_set":member_set.map(|id|id.to_string()),"freshness":if self.current_in(tx,checked_input(Uuid::parse_str(&id.to_string()))?).await? {crate::Freshness::Current}else{crate::Freshness::Pending}}),
         )
     }
     pub async fn group_change(
@@ -197,20 +197,8 @@ impl Groups {
             }
             GroupChange::Delete => {
                 group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
-                self.assert_unused_in(tx, id).await?;
-                if dependencies::used_in(tx, id).await? {
-                    return Err(Error::Conflict.into());
-                }
-                let tenant = self.tenant;
-                if tx
-                    .with_connection(move |c| {
-                        Box::pin(async move {
-                            rss_mdm_compliance_postgres::group_used(c, tenant, id).await
-                        })
-                    })
-                    .await?
-                {
-                    return Err(Error::Conflict.into());
+                if self.references_used_in(tx, id).await? {
+                    return Err(Error::Referenced.into());
                 }
                 pg::Command::Delete {
                     group,
