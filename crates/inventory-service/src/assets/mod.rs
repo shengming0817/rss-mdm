@@ -21,13 +21,14 @@ pub mod filter;
 mod directory;
 pub mod field_directory;
 mod field_layout;
+pub mod field_references;
 mod fields;
 pub mod windows;
 pub use field_layout::{FieldDisplayGroup, FieldLayout, FieldLayoutAccess};
 mod lists;
 mod runs;
 mod scopes;
-pub use fields::{FieldChange, FieldImpact, FieldMappingReference, FieldReferenceQuery, FieldView};
+pub use fields::{FieldChange, FieldView};
 mod model;
 pub mod planning;
 pub mod raw_snapshot;
@@ -158,15 +159,6 @@ impl AssetService {
                 run: Box::new(self.collection_run(tx, device, *run, scope).await?),
             },
             Command::FieldWrite { field, change } => self.field_write(tx, *field, change).await?,
-            Command::FieldReferences { field, query } => {
-                let page = self.field_mapping_references(tx, *field, query).await?;
-                Response::FieldReferences {
-                    field: *field,
-                    impact: self.field_impact(tx, *field).await?,
-                    mappings: page.items,
-                    next_cursor: page.next_cursor,
-                }
-            }
             Command::Detail { device, scope } => {
                 if scope
                     .devices
@@ -442,11 +434,6 @@ impl AssetService {
                     if &fresh != scope {
                         return Err(Error::Forbidden.into());
                     }
-                }
-                Command::FieldReferences { query, .. }
-                    if query.authority != current.query_binding(p)? =>
-                {
-                    return Err(Error::Forbidden.into());
                 }
                 _ => {}
             }

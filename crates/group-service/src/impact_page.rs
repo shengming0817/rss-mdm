@@ -1,5 +1,5 @@
 //! Fixed relationship projection; only authorized keyset rows leave PostgreSQL.
-use super::references::{Kind, Page, PageRequest, Relation};
+use super::impacts::{Kind, Page, PageRequest, Relation};
 use super::*;
 use sqlx::Row;
 fn kind_rank(kind: Kind) -> i32 {
@@ -17,7 +17,7 @@ fn relation_rank(relation: Relation) -> i32 {
     }
 }
 impl Groups {
-    pub(crate) async fn group_references_in(
+    pub(crate) async fn group_impacts_in(
         &self,
         tx: &mut PgTransaction<'_>,
         root: Uuid,
@@ -41,7 +41,7 @@ impl Groups {
                 rss_mdm_install_support::StorageProfile::Mdm
             ),
             rss_mdm_compliance_postgres::GROUP_REFERENCE_FACTS_SQL,
-            include_str!("references.sql")
+            include_str!("impacts.sql")
         );
         let row = tx
             .with_connection(move |c| {
@@ -73,7 +73,6 @@ impl Groups {
         Ok(Page {
             items: stored(serde_json::from_str(row.try_get("items")?))?,
             generation: row.try_get("generation")?,
-            blocked: row.try_get("blocked")?,
         })
     }
 }

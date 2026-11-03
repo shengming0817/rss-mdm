@@ -22,7 +22,7 @@ fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
 }
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_group_directory, get_device_groups, get_scope_directory, get_group_read, post_group_write, get_group_references, post_group_preview, get_group_page, get_scope_page, get_scope_read, post_scope_write, get_group_task, get_scope_task } }
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_group_directory, get_device_groups, get_scope_directory, get_group_read, post_group_write, get_group_references, get_group_impacts, get_scope_references, post_group_preview, get_group_page, get_scope_page, get_scope_read, post_scope_write, get_group_task, get_scope_task } }
         RoutesModule1 {
             get_group_directory: rss_mdm_http_contract::module::Route::new(
                 "/groups",
@@ -65,6 +65,22 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
                 get(
                     group_references,
                     &contracts::GROUP_REFERENCES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_group_impacts: rss_mdm_http_contract::module::Route::new(
+                "/groups/{id}/impacts",
+                get(
+                    group_impacts,
+                    &contracts::GROUP_IMPACTS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_scope_references: rss_mdm_http_contract::module::Route::new(
+                "/scopes/{id}/references",
+                get(
+                    scope_references,
+                    &contracts::SCOPE_REFERENCES,
                     &[RouteOperation::List],
                 ),
             ),
@@ -501,14 +517,14 @@ async fn device_groups(
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 
-async fn group_references(
+async fn group_impacts(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    params: rss_mdm_http_contract::query::OwnedQuery<GroupReferencesQuery>,
+    params: rss_mdm_http_contract::query::OwnedQuery<GroupImpactsQuery>,
 ) -> Result<
-    rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_group_service::references::References>>,
+    rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_group_service::impacts::Impacts>>,
     Error,
 > {
     (async {
@@ -517,9 +533,7 @@ async fn group_references(
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         let q = params.parse()?;
-        Ok(Json(
-            s.groups.references(&auth.proof, id, &q, &audit).await?,
-        ))
+        Ok(Json(s.groups.impacts(&auth.proof, id, &q, &audit).await?))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -641,21 +655,21 @@ impl rss_mdm_http_contract::query::QueryOwner for ScopeResultQuery {
     }
 }
 
-struct GroupReferencesQuery;
-impl rss_mdm_http_contract::query::QueryOwner for GroupReferencesQuery {
-    type Parsed = rss_mdm_group_service::references::Query;
+struct GroupImpactsQuery;
+impl rss_mdm_http_contract::query::QueryOwner for GroupImpactsQuery {
+    type Parsed = rss_mdm_group_service::impacts::Query;
     type Error = rss_mdm_group_service::Error;
     fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
         Some(rss_mdm_http_contract::QueryDeclaration::Window(
-            &rss_mdm_group_service::references::SCHEMA,
+            &rss_mdm_group_service::impacts::SCHEMA,
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {
         let mut schema = rss_mdm_http_contract::query::window_parameters(
-            &rss_mdm_group_service::references::SCHEMA,
+            &rss_mdm_group_service::impacts::SCHEMA,
         );
         schema.value["properties"]["kind"] = rss_mdm_http_contract::signature::Schema::request::<
-            rss_mdm_group_service::references::Kind,
+            rss_mdm_group_service::impacts::Kind,
         >()
         .value;
         schema.value["properties"]["relation"] =
@@ -663,6 +677,74 @@ impl rss_mdm_http_contract::query::QueryOwner for GroupReferencesQuery {
         schema
     }
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
-        rss_mdm_group_service::references::Query::parse(raw)
+        rss_mdm_group_service::impacts::Query::parse(raw)
     }
+}
+
+struct GroupReferencesQuery;
+impl rss_mdm_http_contract::query::WindowOwner for GroupReferencesQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_group_service::references::SCHEMA
+    }
+}
+async fn group_references(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<GroupReferencesQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_group_service::references::Entry>>,
+    >,
+    Error,
+> {
+    audit.resource_target(
+        rss_mdm_audit_integration::TargetKind::Group,
+        &id.to_string(),
+    );
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    let (q, _) = query.parse().map_err(|_| Error::Malformed)?;
+    Ok(rss_mdm_http_contract::CollectionResponse(Json(
+        s.groups.references(&auth.proof, id, &q).await?,
+    )))
+}
+
+struct ScopeReferencesQuery;
+impl rss_mdm_http_contract::query::WindowOwner for ScopeReferencesQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_scope_service::references::SCHEMA
+    }
+}
+async fn scope_references(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<ScopeReferencesQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_scope_service::references::Entry>>,
+    >,
+    Error,
+> {
+    audit.resource_target(
+        rss_mdm_audit_integration::TargetKind::Scope,
+        &id.to_string(),
+    );
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    let (q, _) = query.parse().map_err(|_| Error::Malformed)?;
+    Ok(rss_mdm_http_contract::CollectionResponse(Json(
+        s.scopes.references(&auth.proof, id, &q).await?,
+    )))
 }

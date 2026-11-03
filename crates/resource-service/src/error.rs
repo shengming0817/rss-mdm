@@ -15,6 +15,8 @@ pub enum Error {
     Resource(#[from] ResourceError),
     #[error("resource conflict")]
     Conflict,
+    #[error("object is still referenced")]
+    Referenced,
     #[error("commit outcome unknown")]
     CommitUnknown,
     #[error("rollback unconfirmed")]

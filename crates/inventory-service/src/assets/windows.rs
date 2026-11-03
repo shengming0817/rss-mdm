@@ -39,10 +39,3 @@ pub static COLLECTION_ITEMS: Schema = Schema {
     order: "sealed collection field ordinal",
     context: &["scope"],
 };
-pub static FIELD_REFERENCES: Schema = Schema {
-    id: "field_references",
-    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
-    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    order: "resource, version",
-    context: &[],
-};

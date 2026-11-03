@@ -67,6 +67,7 @@ impl From<rss_mdm_inventory_service::Error> for Error {
             I::Malformed => Self::Malformed,
             I::Unauthorized => Self::Unauthorized,
             I::Forbidden => Self::Forbidden,
+            I::Referenced => Self::Referenced,
             I::Conflict => Self::Conflict,
             I::NotFound => Self::NotFound,
             I::CommitUnknown => Self::CommitUnknown,

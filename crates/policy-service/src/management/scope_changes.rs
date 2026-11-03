@@ -37,6 +37,19 @@ impl ScopeChanges {
         self.validate(tx)?;
         Ok(rss_mdm_policy_postgres::scope::used_in(profile, tx, scope).await?)
     }
+    pub async fn references_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        scope: Uuid,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<rss_mdm_policy_postgres::scope::Reference>> {
+        self.validate(tx)?;
+        Ok(
+            rss_mdm_policy_postgres::scope::references_in(self.profile(), tx, scope, after, limit)
+                .await?,
+        )
+    }
     pub async fn publication_recorded_in(
         &self,
         tx: &mut PgTransaction<'_>,

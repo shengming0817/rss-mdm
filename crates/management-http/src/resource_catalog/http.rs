@@ -12,7 +12,7 @@ pub struct HttpState {
 }
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_directory, get_blueprints, get_read, post_write } }
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_directory, get_blueprints, get_read, get_references, post_write } }
         RoutesModule1 {
             get_directory: rss_mdm_http_contract::module::Route::new(
                 "/resources",
@@ -28,6 +28,14 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
                     read,
                     &contracts::RESOURCE,
                     &[RouteOperation::Get],
+                ),
+            ),
+            get_references: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}/versions/{version}/references",
+                get(
+                    references,
+                    &contracts::RESOURCE_REFERENCES,
+                    &[RouteOperation::List],
                 ),
             ),
             post_write: rss_mdm_http_contract::module::Route::new(
@@ -217,4 +225,35 @@ impl rss_mdm_http_contract::query::QueryOwner for ResourceDirectory {
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
         Self::Parsed::parse(raw)
     }
+}
+
+struct ResourceReferences;
+impl rss_mdm_http_contract::query::WindowOwner for ResourceReferences {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_resource_service::references::SCHEMA
+    }
+}
+async fn references(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((id, version)): Path<(String, String)>,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<ResourceReferences>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_resource_service::references::Entry>>,
+    >,
+    Error,
+> {
+    audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    let (q, _) = query.parse().map_err(|_| Error::Malformed)?;
+    Ok(rss_mdm_http_contract::CollectionResponse(Json(
+        s.catalog.references(&auth.proof, &id, &version, &q).await?,
+    )))
 }

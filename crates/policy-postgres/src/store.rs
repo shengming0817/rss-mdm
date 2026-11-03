@@ -490,9 +490,10 @@ impl PolicyReader {
         let count: i64 = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query_scalar(
-                        crate::storage_profile::sql(profile).store_resource_usage_in_1,
-                    )
+                    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                        "SELECT count(*) FROM ({}) facts",
+                        crate::resource_reference_facts_sql(profile)
+                    )))
                     .bind(tenant)
                     .bind(resource)
                     .bind(version)

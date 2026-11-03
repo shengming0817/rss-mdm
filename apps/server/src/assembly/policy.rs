@@ -239,6 +239,43 @@ impl rss_mdm_scope_service::sources::ScopeDependents for ScopeDependents {
     {
         Box::pin(async move { self.0.used_in(tx, scope).await.map_err(scope_error) })
     }
+    fn references_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        scope: uuid::Uuid,
+        after: Option<uuid::Uuid>,
+        limit: usize,
+    ) -> rss_mdm_scope_service::sources::Pending<
+        'a,
+        Vec<rss_mdm_scope_service::references::Entry>,
+        rss_mdm_scope_service::transaction::Fault,
+    > {
+        Box::pin(async move {
+            use rss_mdm_scope_service::references::{Entry, Kind, Release};
+            self.0
+                .references_in(tx, scope, after, limit)
+                .await
+                .map_err(scope_error)?
+                .into_iter()
+                .map(|r| {
+                    Ok(Entry {
+                        kind: Kind::Policy,
+                        id: r.id,
+                        version: r.version,
+                        revision: r.revision,
+                        roles: rss_mdm_scope_service::transaction::stored(serde_json::from_value(
+                            serde_json::json!(r.roles),
+                        ))?,
+                        release: if r.archived {
+                            Release::RetainedArchivedPolicy
+                        } else {
+                            Release::EditReferencingPolicy
+                        },
+                    })
+                })
+                .collect()
+        })
+    }
     fn publication_recorded_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,

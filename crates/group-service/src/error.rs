@@ -10,6 +10,8 @@ pub enum Error {
     Forbidden,
     #[error("group conflict")]
     Conflict,
+    #[error("object is still referenced")]
+    Referenced,
     #[error("group object not found")]
     NotFound,
     #[error("group commit outcome unknown")]
@@ -93,6 +95,7 @@ impl From<rss_mdm_inventory_service::Error> for Error {
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
             E::Conflict => Self::Conflict,
+            E::Referenced => Self::Referenced,
             E::NotFound => Self::NotFound,
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,

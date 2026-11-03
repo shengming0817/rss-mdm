@@ -9,6 +9,7 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
 pub mod directory;
+pub mod references;
 pub mod wire;
 
 use rss_mdm_resource as r;
@@ -316,8 +317,9 @@ impl ResourceCatalog {
                 self.software.validate_in(tx, version).await?;
             }
         }
-        json(&checked(
-            self.resources
+        json(
+            &self
+                .resources
                 .execute_in(
                     tx,
                     &pg::Request {
@@ -328,8 +330,12 @@ impl ResourceCatalog {
                         command,
                     },
                 )
-                .await?,
-        )?)
+                .await?
+                .map_err(|rejection| match rejection {
+                    pg::Rejection::Referenced => Error::Referenced,
+                    _ => Error::Conflict,
+                })?,
+        )
     }
     async fn resource_read(&self, tx: &mut PgTransaction<'_>, resource: &str) -> Result<Value> {
         let stored = checked(self.resources.get_in(tx, &id(resource)?).await?)?

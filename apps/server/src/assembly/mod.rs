@@ -867,3 +867,7 @@ mod device_t2;
 #[cfg(test)]
 #[path = "../../tests/owner_boundaries/mod.rs"]
 mod owner_boundaries_t2;
+
+#[cfg(test)]
+#[path = "../../tests/reference_blockers/mod.rs"]
+mod reference_blockers_t2;

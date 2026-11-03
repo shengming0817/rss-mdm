@@ -70,14 +70,17 @@ class HttpArtifactTests(unittest.TestCase):
         identity = 'sha256-' + 'a' * 64
         root = {'type': 'object', '$defs': {
             'FieldView': {'type': 'object', 'properties': {'nested': {'$ref': '#/$defs/Shared'}}},
-            'Shared': {'type': 'string'}, 'Unrelated': {'type': 'boolean'},
-            'FieldImpact': {'type': 'integer'}, 'FieldMappingReference': {'type': 'string'}}}
+            'Shared': {'type': 'string'}, 'Unrelated': {'type': 'boolean'}}}
         document['schemas'][identity] = root
         document['endpoints'] = []
         for method, path in [('POST', '/api/v1/resources/{id}'),
                              ('PUT', '/api/v1/asset-fields/{field}'),
                              ('GET', '/api/v1/asset-fields/{field}'),
-                             ('GET', '/api/v1/asset-fields/{field}/references')]:
+                             ('GET', '/api/v1/asset-fields/{field}/references'),
+                             ('GET', '/api/v1/resources/{id}/versions/{version}/references'),
+                             ('GET', '/api/v1/groups/{id}/references'),
+                             ('GET', '/api/v1/scopes/{id}/references'),
+                             ('GET', '/api/v1/groups/{id}/impacts')]:
             endpoint = copy.deepcopy(self.document['endpoints'][0])
             endpoint.update(listener='browser', method=method, path=path)
             endpoint['request'].update(body={'schema': {'schemaId': identity}},

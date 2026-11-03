@@ -92,7 +92,7 @@ impl Scopes {
                     return Err(Error::Conflict.into());
                 }
                 if self.dependents.used_in(tx, id).await? {
-                    return Err(Error::Conflict.into());
+                    return Err(Error::Referenced.into());
                 }
                 (
                     self.store.delete_in(tx, id, op.expected_revision).await?,

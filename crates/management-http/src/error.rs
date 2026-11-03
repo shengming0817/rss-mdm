@@ -35,6 +35,8 @@ pub enum Error {
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
+    #[error("object is still referenced")]
+    Referenced,
     #[error("query continuation does not match the current context")]
     QueryCursorInvalidated,
     #[error("read authority changed during the request")]

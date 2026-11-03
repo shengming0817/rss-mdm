@@ -9,13 +9,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 pub mod criteria;
 pub mod dependencies;
+pub mod impacts;
 mod input;
 mod model;
 mod mutation;
 pub mod pages;
 pub mod preview;
 pub mod references;
-pub use model::{DefinitionEdit, GroupChange, GroupStart, RequiredAuthority};
+pub use model::{DefinitionEdit, Freshness, GroupChange, GroupStart, RequiredAuthority};
 pub struct Dependencies {
     pub read_pool: sqlx::PgPool,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
@@ -157,29 +158,9 @@ impl Groups {
                 .await?,
         )
     }
-    async fn assert_unused_in(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
-        let binding = rss_mdm_scope_postgres::ScopeBinding::new(
-            rss_mdm_install_support::StorageProfile::Mdm,
-            self.runtime.clone(),
-            self.tenant,
-        );
-        let used = binding.group_used_in(tx, id).await.map_err(|e| match e {
-            rss_mdm_scope_postgres::BindingError::Storage(e) => Fault::Storage(e),
-            rss_mdm_scope_postgres::BindingError::TenantMismatch => Error::Forbidden.into(),
-            rss_mdm_scope_postgres::BindingError::Missing
-            | rss_mdm_scope_postgres::BindingError::Conflict
-            | rss_mdm_scope_postgres::BindingError::Invalid => {
-                Error::Unavailable(Failure::GroupStorage).into()
-            }
-        })?;
-        if used {
-            return Err(Error::Conflict.into());
-        }
-        Ok(())
-    }
 }
 
-mod reference_page;
+mod impact_page;
 
 mod definition;
 

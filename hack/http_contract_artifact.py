@@ -178,9 +178,12 @@ def collection_projection(document):
         'ResourceResponse': carrier('POST', '/api/v1/resources/{id}', 'response'),
         'FieldWrite': carrier('PUT', '/api/v1/asset-fields/{field}', 'request'),
         'FieldView': named(field, 'FieldView'),
-        'FieldImpact': named(field, 'FieldImpact'),
         'FieldReferenceQuery': carrier('GET', '/api/v1/asset-fields/{field}/references', 'query'),
-        'FieldMappingReference': named(field, 'FieldMappingReference'),
+        'FieldReferences': carrier('GET', '/api/v1/asset-fields/{field}/references', 'response'),
+        'ResourceReferences': carrier('GET', '/api/v1/resources/{id}/versions/{version}/references', 'response'),
+        'GroupReferences': carrier('GET', '/api/v1/groups/{id}/references', 'response'),
+        'ScopeReferences': carrier('GET', '/api/v1/scopes/{id}/references', 'response'),
+        'GroupImpacts': carrier('GET', '/api/v1/groups/{id}/impacts', 'response'),
     }
 
 

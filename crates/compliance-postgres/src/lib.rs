@@ -240,12 +240,6 @@ pub async fn receipt(
         .await?;
     Ok(())
 }
-/// Every retained current rule prevents deletion, including disabled rules.
-pub async fn group_used(c: &mut PgConnection, t: TenantId, id: Uuid) -> Result<bool> {
-    tenant(c, t).await?;
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_compliance.groups g JOIN mdm_compliance.rules r ON (r.tenant_id,r.id)=(g.tenant_id,g.rule_id) WHERE g.tenant_id=$1::uuid AND g.group_id=$2::uuid )").bind(t.to_string()).bind(id.to_string()).fetch_one(c).await
-}
-
 /// Verify the required runtime authority before using the adapter.
 pub async fn admit(c: &mut PgConnection, t: TenantId) -> Result<()> {
     tenant(c, t).await?;
@@ -294,22 +288,6 @@ pub async fn result_count(c: &mut PgConnection, t: TenantId, task: Uuid) -> Resu
     )
     .bind(t.to_string())
     .bind(task.to_string())
-    .fetch_one(c)
-    .await
-}
-
-/// Count current compliance definitions referring to a registered asset field.
-pub async fn field_references_in(
-    c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
-    field: &str,
-) -> Result<i64> {
-    crate::tenant(c, tenant).await?;
-    sqlx::query_scalar(
-        "SELECT count(*) FROM mdm_compliance.fields WHERE tenant_id=$1::uuid AND field=$2",
-    )
-    .bind(tenant.to_string())
-    .bind(field)
     .fetch_one(c)
     .await
 }
@@ -376,3 +354,9 @@ pub async fn group_changed_in(
   Ok(())
  })).await
 }
+
+/// Current exact-field references; deleted rules remove these edges atomically.
+pub const FIELD_REFERENCE_FACTS_SQL: &str = "SELECT r.id,r.revision FROM mdm_compliance.fields f JOIN mdm_compliance.rules r ON(r.tenant_id,r.id)=(f.tenant_id,f.rule_id) WHERE f.tenant_id=$1::uuid AND f.field=$2";
+
+/// Direct Group blockers, including disabled rules, selected by the reverse Group index.
+pub const GROUP_BLOCKER_FACTS_SQL: &str = "SELECT r.id,r.revision FROM mdm_compliance.groups g JOIN mdm_compliance.rules r ON(r.tenant_id,r.id)=(g.tenant_id,g.rule_id) WHERE g.tenant_id=$1::uuid AND g.group_id=$2::uuid";

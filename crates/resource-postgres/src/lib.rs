@@ -4,7 +4,7 @@
 mod artifacts;
 mod codec;
 pub mod directory;
-pub use artifacts::{artifact_referenced_in, profile_references_in};
+pub use artifacts::{PROFILE_REFERENCE_FACTS_SQL, artifact_referenced_in, profile_references_in};
 
 mod error;
 mod event;
@@ -55,7 +55,7 @@ pub(crate) const ADMISSION: Admission = Admission {
 /// Public Outbox function permissions, installed after the immutable initial product schema.
 pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
 
-pub use artifacts::{FieldMappingReference, FieldReferenceCounts, FieldReferences};
+pub use artifacts::{FieldMappingReference, FieldReferences};
 
 mod operations;
 pub use operations::{record_operation_in, replay_operation_in};

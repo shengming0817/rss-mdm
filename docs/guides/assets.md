@@ -25,7 +25,7 @@ macOS 原生软件清单使用无 itemKey 的有序列表：Identifier 是可选
 | GET /asset-fields?filter&sort&fields&limit&cursor | 版本化字段目录，返回 items/nextCursor；支持显式分页和元数据投影 |
 | GET /asset-fields/{field} | 当前可见字段的独立详情 |
 | PUT /asset-fields/{field} | Operation 包装的 put/delete，expectedRevision 为字段版本 |
-| GET /asset-fields/{field}/references | Group、模板、合规及保存查询引用计数 |
+| GET /asset-fields/{field}/references?limit&cursor | Group、Resource 版本、合规及保存查询的最小直接阻断摘要，返回 items/nextCursor |
 | GET /devices/{id}/collections/{run} | 当前设备所属采集的冻结身份、时间、字段质量及投递状态 |
 | GET /devices/{id}/collections/{run}/fields/{field}/items?limit=100&cursor=… | 冻结采集的逐行质量与已验证值；保留原始 ordinal、无效行和分页 |
 | GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产切面的清单分页，默认及最多 1000 条，且受字节预算限制 |
@@ -40,7 +40,7 @@ macOS 原生软件清单使用无 itemKey 的有序列表：Identifier 是可选
 | PUT /saved-queries/{id} | CAS put/delete |
 | POST /saved-queries/{id}/execute | 按当前权限执行，正文为 Operation，expectedRevision 为保存查询版本，input 为 `{}` |
 
-资产响应为 `{ "asset": { "kind": "detail|page|accepted|query_status|facets|assignment|saved|saved_list|field_list|field_descriptor", ... } }`。详情/列表的 fields 以字段键索引，包含 state、sources 和原始 lastKnown 证据；Manual revisions 供下一次 CAS 使用。数组通过独立 lists 返回状态、数量、摘要、来源和起始游标；用清单接口读取条目，详情不内嵌整份大清单。
+字段引用接口直接返回 `items/nextCursor` 分页，不使用 asset 包装。资产详情、赋值等响应使用 `{ "asset": { "kind": "detail|page|accepted|query_status|facets|assignment|saved|saved_list|field_list|field_descriptor", ... } }`。详情/列表的 fields 以字段键索引，包含 state、sources 和原始 lastKnown 证据；Manual revisions 供下一次 CAS 使用。数组通过独立 lists 返回状态、数量、摘要、来源和起始游标；用清单接口读取条目，详情不内嵌整份大清单。
 
 赋值例：
 
@@ -269,8 +269,8 @@ System 标准字段保持规范映射，不能将 subject 改写为 owner、替�
 `timeSeries` 中引用精确 key/revision。发布请求沿用 `Operation`，`expectedRevision`
 为前一版本；`GET /api/v1/asset-retention-policies/{key}/{revision}` 读取该历史版本。
 策略的原始数据、汇总及删除恢复时长互相约束，已发布版本不可原位改写。资产当前值仍无 TTL。
-字段类型、单位、Counter 含义变化须使用新字段身份。引用检查区分活跃采集模板、遥测
-Profile 与归档资源版本；归档引用只解释历史。
+字段类型、单位、Counter 含义变化须使用新字段身份。引用阻断覆盖所有未归档的采集模板与遥测
+Profile 版本，包括 frozen、active、deprecated；归档版本不再阻止字段退役。
 
 Resource 的 `telemetry_profile` 版本绑定一个精确的原生、脚本或 osquery 模板，冻结字段
 定义、采样/上传周期、执行与输出预算，并选择 current/history/both 投影。字段绑定持有
@@ -351,10 +351,16 @@ after（上一页 next 或 null），返回 reports 与 next；每页按当前 `
 纯手工字段不要求采集映射；新增字段不会自动创建默认 Policy 或扩大本地 Agent 能力。
 未知展示扩展仍按原产品规则保存，不参与可信字段解释。
 
-`GET /api/v1/asset-fields/{field}/references` 同时返回原引用计数，以及 `mappings` 和 `nextCursor`。
-`limit` 默认 1000、范围 1–1000，`cursor` 绑定租户、字段和页大小；后续页继续用相同条件。
-映射引用提供 resource/version/state/telemetry，状态来自 Resource owner，不证明 Policy 已启用或采集成功。
-此详情接口同时要求 InventoryFieldsWrite 和 ResourceRead；字段编辑本身沿原权限、CAS 与幂等规则。
+`GET /api/v1/asset-fields/{field}/references` 仅接受 `limit/cursor`，直接返回 `items/nextCursor`。
+每项包含 `source`、引用角色 `role` 和解除方式 `release`；来源覆盖 Group、未归档 Resource 版本、
+当前合规规则及未删除的保存查询。来源身份包含相应 id、revision 或 version；保存查询包含完整的
+instance/owner/id，即使属于同租户其他用户，也只返回最小身份，不返回名称、定义或内容。
+
+此接口只要求 InventoryFieldsWrite，不要求来源对象的详情权限。`limit` 默认及最大 1000、最小 1；
+游标绑定租户、字段、主体、当前权限和页大小，每页重新检查权限及目标，不承诺跨页快照。
+响应不提供总数或删除许可；查询结果只解释当前阻断，不能替代最终写入检查。
+字段编辑沿用原权限、CAS 与幂等规则，真实引用阻断返回 HTTP 409 `object_referenced`；
+版本冲突及保护规则保留各自错误语义。
 
 管理端映射与编辑契约由 [Collection schema](../../crates/management-http/schema/Collection.json) 派生提供，
 该独立消费视图由 `python3 hack/http_contract_artifact.py --write` 从完整 HTTP 契约的真实挂载输入/输出投影；不再维护单独的类型清单。
