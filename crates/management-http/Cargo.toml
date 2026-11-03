@@ -74,3 +74,4 @@ workspace=true
 
 [dev-dependencies]
 jsonschema.workspace = true
+rss-mdm-task-state.workspace = true

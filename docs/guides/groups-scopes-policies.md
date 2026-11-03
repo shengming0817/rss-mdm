@@ -260,6 +260,6 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 
 Scope continuation 固定已发布 revision/result、请求与授权；结果或授权变化拒绝旧 cursor。成员页每项返回 `object/available`；决策页保留已发布的历史 `qualification`，并另带当前 `available`，历史符合条件不代表当前仍可执行。每页在同一只读快照中解释当前设备可用性，普通可用性变化不会单独使 cursor 失效，也不会混入新的已发布结果。设备反向分组采用 live keyset，按当前授权、设备和查询条件读取当前关联、成员结果及新鲜度；跨页允许观察变化。
 
-设备 `GET /api/v1/devices/{device}/registrations` 使用统一目录查询，支持 `filter/sort/fields/limit/cursor`，默认和上限同为 1000。可过滤/排序字段为 `registrationId/source/generation/status`，可投影 `userContextId/enrollmentId/agentGrantId`；每页重新检查当前 credentials 权限。
+设备 `GET /api/v1/devices/{device}/registrations` 使用统一目录查询，支持 `filter/sort/fields/limit/cursor`，默认和上限同为 1000。可过滤/排序字段为 `registrationId/source/generation/status`，可投影 `userContextId/enrollmentId/certificateGrantId`；每页重新检查当前 credentials 权限。
 
 Scope 任务的 `completed` 表示集合结果和必要通道投影已原子发布，Policy 后续工作已持久接受；它不表示 Policy 已完成传播或设备执行。Policy 后续进度从相应 Policy/执行入口读取。Scope 来源等待、重启和替代任务由独立 Scope worker 恢复。

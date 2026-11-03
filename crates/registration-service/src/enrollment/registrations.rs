@@ -20,7 +20,7 @@ pub static SCHEMA: Schema = Schema {
         Field::scalar("status", Kind::Text),
         Field::output("userContextId"),
         Field::output("enrollmentId"),
-        Field::output("agentGrantId"),
+        Field::output("certificateGrantId"),
     ],
 };
 fn column(name: &str) -> &'static str {
@@ -110,4 +110,71 @@ pub struct Row {
     pub user_context_id: Option<uuid::Uuid>,
     pub enrollment_id: Option<uuid::Uuid>,
     pub certificate_grant_id: Option<uuid::Uuid>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn row(grant: Option<Uuid>) -> Row {
+        Row {
+            registration_id: Uuid::from_u128(1),
+            source: rss_mdm_inventory::ReportSource::AgentBuiltin,
+            generation: 1,
+            status: super::super::read::RegistrationState::Active,
+            user_context_id: None,
+            enrollment_id: None,
+            certificate_grant_id: grant,
+        }
+    }
+
+    #[test]
+    fn grant_projection_preserves_identity_and_distinguishes_omission_from_null() {
+        let grant = Uuid::from_u128(2);
+        for raw in ["", "fields=certificateGrantId"] {
+            let value = serde_json::to_value(
+                SCHEMA
+                    .parse(raw)
+                    .unwrap()
+                    .project_typed(row(Some(grant)))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(value["certificateGrantId"], json!(grant));
+            assert!(value.get("agentGrantId").is_none());
+        }
+        let value = serde_json::to_value(
+            SCHEMA
+                .parse("fields=registrationId")
+                .unwrap()
+                .project_typed(row(Some(grant)))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value, json!({"registrationId": Uuid::from_u128(1)}));
+        let value = serde_json::to_value(
+            SCHEMA
+                .parse("fields=certificateGrantId")
+                .unwrap()
+                .project_typed(row(None))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value, json!({"certificateGrantId": null}));
+    }
+
+    #[test]
+    fn grant_is_output_only_and_the_retired_field_is_not_accepted() {
+        for raw in [
+            "fields=agentGrantId",
+            "sort=certificateGrantId",
+            "sort=agentGrantId",
+            "filter=certificateGrantId==00000000-0000-0000-0000-000000000002",
+            "filter=agentGrantId==00000000-0000-0000-0000-000000000002",
+        ] {
+            assert!(SCHEMA.parse(raw).is_err(), "accepted {raw}");
+        }
+    }
 }

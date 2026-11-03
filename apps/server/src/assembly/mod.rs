@@ -844,6 +844,9 @@ mod device_reads;
 mod operation_reads;
 
 #[cfg(test)]
+#[path = "../../tests/registration/directory.rs"]
+mod registration_directory_t2;
+#[cfg(test)]
 #[path = "../../tests/registration/mod.rs"]
 mod registration_installation_t2;
 #[cfg(test)]

@@ -6,6 +6,13 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'execution.directory': dict(prefix='assembly::execution_owners_t2::directory::', profiles=('shared',),
+        inputs=('crates/management-http/src/execution/operations.rs', 'crates/management-http/src/execution/http.rs',
+                'apps/server/src/assembly/operation_reads/*', 'apps/server/tests/execution_owners/directory.rs',
+                'apps/server/tests/execution_owners/fixture.rs', 'apps/server/tests/execution_owners/retirement.rs')),
+    'registration.directory': dict(prefix='assembly::registration_directory_t2::', profiles=('shared',),
+        inputs=('crates/registration-service/src/enrollment/registrations.rs', 'crates/registration-service/src/storage_profile.rs',
+                'crates/management-http/src/enrollment/http.rs', 'apps/server/tests/registration/directory.rs')),
     'references.lifecycle': dict(prefix='assembly::reference_blockers_t2::', profiles=('shared',),
         inputs=('crates/resource-service/*','crates/resource-postgres/*','crates/group-service/*','crates/scope-service/*','crates/scope-postgres/*','crates/policy-postgres/*','crates/policy-service/src/management/scope_changes.rs','crates/inventory-service/src/assets/*','crates/compliance-postgres/*','crates/software-service/src/publication/*','crates/software-service/src/catalog/*','crates/management-http/*','crates/http-contract/*','apps/server/src/resource_usage.rs','apps/server/src/assembly/resource.rs','apps/server/src/assembly/policy.rs','apps/server/tests/reference_blockers/*')),
 

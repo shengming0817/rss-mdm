@@ -130,6 +130,7 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+jsonschema.workspace = true
 webauthn-authenticator-rs = {version="=0.5.5", default-features=false, features=["softpasskey"]}
 rss-transactional-messaging-postgres = { workspace = true, features = ["integration"] }
 tokio = { workspace = true, features = ["test-util", "process", "io-util"] }

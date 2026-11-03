@@ -121,7 +121,7 @@ pub enum Detail {
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(tag = "owner", rename_all = "snake_case")]
 pub enum Evidence {
-    Native(Box<Detail>),
+    Native { detail: Box<Detail> },
     Device(rss_mdm_device_service::control::queries::records::RunEvidence),
     Software(rss_mdm_software_service::deployment::queries::records::RunEvidence),
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
