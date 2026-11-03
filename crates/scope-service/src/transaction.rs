@@ -168,7 +168,7 @@ where
             Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
         > + Send,
 {
-    inspect_budget(runtime,tenant,deadline(),context,operation).await
+    inspect_budget(runtime, tenant, deadline(), context, operation).await
 }
 
 pub(crate) async fn inspect_budget<C: Send, R: Send, F>(

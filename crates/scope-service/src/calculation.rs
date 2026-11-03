@@ -16,7 +16,9 @@ impl Scopes {
     ) -> transaction::Result<()> {
         let head = self.store.head_in(tx, scope, true).await?;
         let asset_cut = candidate.clone();
-        let input=self.capture_definition_in(tx, &head.definition, candidate).await?;
+        let input = self
+            .capture_definition_in(tx, &head.definition, candidate)
+            .await?;
         let digest = fingerprint(head.revision, &input)?;
         self.store
             .create_run_in(
@@ -40,7 +42,9 @@ impl Scopes {
         Ok(())
     }
     pub(crate) async fn capture_definition_in(
-        &self, tx: &mut PgTransaction<'_>, definition: &rss_mdm_scope::ScopeDefinition,
+        &self,
+        tx: &mut PgTransaction<'_>,
+        definition: &rss_mdm_scope::ScopeDefinition,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<ScopeInput> {
         let asset_cut = candidate.clone();
@@ -102,6 +106,7 @@ impl Scopes {
         self.store.admit_in(tx).await?;
         let task = self.store.task_in(tx, id).await?;
         self.store.lock_scope_in(tx, task.scope).await?;
+        let task = self.store.task_in(tx, id).await?;
         if task.completed {
             return Ok(());
         }
@@ -278,10 +283,17 @@ impl Scopes {
                     }
                     checked(
                         self.groups
-                            .build_decisions_in(tx, set, run.source_cursor.clone(), 1000, rss_mdm_group::limits::BATCH_BYTES)
+                            .build_decisions_in(
+                                tx,
+                                set,
+                                run.source_cursor.clone(),
+                                1000,
+                                rss_mdm_group::limits::BATCH_BYTES,
+                            )
                             .await?,
                     )?
-                    .items.into_iter()
+                    .items
+                    .into_iter()
                     .map(|d| {
                         (
                             d.device,
@@ -311,9 +323,21 @@ impl Scopes {
             let input = if let Some(snapshot) = &source.snapshot {
                 let snapshot = snapshot.id;
                 tx.with_connection(move |c| {
-                    Box::pin(async move { reader.lookup(c, tenant, snapshot, &object, rss_mdm_group::limits::BATCH_BYTES).await })
+                    Box::pin(async move {
+                        reader
+                            .lookup(
+                                c,
+                                tenant,
+                                snapshot,
+                                &object,
+                                rss_mdm_group::limits::BATCH_BYTES,
+                            )
+                            .await
+                    })
                 })
-                .await?.ok_or(Error::Unavailable(Failure::Capacity))?.0
+                .await?
+                .ok_or(Error::Unavailable(Failure::Capacity))?
+                .0
             } else {
                 let rss_mdm_inventory_service::objects::ObjectRef::Endpoint(endpoint) = object
                 else {

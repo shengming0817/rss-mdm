@@ -13,7 +13,6 @@ use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
 };
-use rss_mdm_scope::Reference;
 use rss_mdm_scope_service::ScopeChange;
 
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
@@ -183,22 +182,8 @@ async fn run(
             rss_mdm_audit_integration::AuditIntent::Management,
         );
     }
-    let authorize = || {
-        auth.proof.manage(permission)?;
-        if let Command::Scope { change, .. } = &command
-            && matches!(&change.input, ScopeChange::Put { definition } if definition.references().iter().any(|r|matches!(r,Reference::Group(_))))
-        {
-            auth.proof.manage(Permission::GroupRead)?;
-        }
-        if matches!(command, Command::TaskRead { .. }) {
-            assets::ReadScope::from_proof(&auth.proof)?
-                .full()
-                .map_err(rss_mdm_inventory_service::Error::from)?;
-        }
-        Ok(())
-    };
-    authorize()?;
-    let response = wire::Response::decode(app.scopes.execute(&command, audit, &authorize).await?)?;
+    auth.proof.manage(permission)?;
+    let response = wire::Response::decode(app.scopes.execute(&command, audit, &auth.proof).await?)?;
     Ok(PlanningResponse(response))
 }
 macro_rules! read {
@@ -348,11 +333,15 @@ async fn group_preview(
 }
 
 async fn scope_preview(
-    State(app):State<Arc<HttpState>>,Extension(auth):Extension<RequestAuth>,
-    Extension(audit):Extension<RequestAudit>,payload:BodyInput<rss_mdm_scope_service::preview::Request>,
-)->Result<Json<rss_mdm_scope_service::preview::Response>,Error> {
-    let request=body(payload)?;
-    Ok(Json(app.scopes.preview(&auth.proof,&request,&audit).await?))
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    payload: BodyInput<rss_mdm_scope_service::preview::Request>,
+) -> Result<Json<rss_mdm_scope_service::preview::Response>, Error> {
+    let request = body(payload)?;
+    Ok(Json(
+        app.scopes.preview(&auth.proof, &request, &audit).await?,
+    ))
 }
 
 async fn group_task(

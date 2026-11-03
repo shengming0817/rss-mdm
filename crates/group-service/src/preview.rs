@@ -34,6 +34,7 @@ pub struct Request {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Response {
+    #[schemars(length(max = 1000))]
     pub items: Vec<ObjectRef>,
     /// False also covers a sample/work limit; an empty sample is then inconclusive.
     pub scan_complete: bool,

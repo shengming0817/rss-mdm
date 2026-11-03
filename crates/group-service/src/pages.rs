@@ -145,9 +145,16 @@ impl Groups {
             GroupPageKind::Decisions => {
                 let mut items = checked(
                     self.groups
-                        .build_decisions_in(tx, id, after, query.limit() + 1, rss_mdm_group::limits::BATCH_BYTES)
+                        .build_decisions_in(
+                            tx,
+                            id,
+                            after,
+                            query.limit() + 1,
+                            rss_mdm_group::limits::BATCH_BYTES,
+                        )
                         .await?,
-                )?.items;
+                )?
+                .items;
                 let more = items.len() > query.limit();
                 items.truncate(query.limit());
                 let next = if more {
@@ -172,9 +179,20 @@ impl Groups {
                         let input = tx
                             .with_connection(move |c| {
                                 Box::pin(async move {
-                                    match reader.lookup(c, tenant, snapshot, &key, rss_mdm_group::limits::BATCH_BYTES).await {
+                                    match reader
+                                        .lookup(
+                                            c,
+                                            tenant,
+                                            snapshot,
+                                            &key,
+                                            rss_mdm_group::limits::BATCH_BYTES,
+                                        )
+                                        .await
+                                    {
                                         Ok(Some((input, _))) => Ok(Some(input)),
-                                        Ok(None) => Err(sqlx::Error::Protocol("object byte budget".into())),
+                                        Ok(None) => {
+                                            Err(sqlx::Error::Protocol("object byte budget".into()))
+                                        }
                                         // Sparse deletions have a tombstone in this cut;
                                         // historical results retain their original cut.
                                         Err(sqlx::Error::RowNotFound) if no_match => Ok(None),

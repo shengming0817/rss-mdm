@@ -146,7 +146,9 @@ pub(crate) async fn explanation_on(
     reader: Option<&dyn rss_mdm_inventory_service::objects::ObjectReader>,
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let rows = rows_for(profile, c, tenant, run, channel, device).await?;
-    if reader.is_none() { return frozen_explanation(tenant, frozen, device, &rows); }
+    if reader.is_none() {
+        return frozen_explanation(tenant, frozen, device, &rows);
+    }
     let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;
     let mut current_target = false;
     let mut known = BTreeSet::new();
@@ -196,25 +198,45 @@ pub(crate) async fn explanation_on(
 
 /// The publication and draft preview interpret exactly the same frozen source rows.
 pub(crate) fn frozen_explanation(
-    tenant: TenantId, frozen: &ScopeInput, device: &str, rows: &[RowInput],
+    tenant: TenantId,
+    frozen: &ScopeInput,
+    device: &str,
+    rows: &[RowInput],
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
-    let mut known=BTreeSet::new();
-    let mut uncertain=BTreeSet::new();
+    let mut known = BTreeSet::new();
+    let mut uncertain = BTreeSet::new();
     for row in rows {
-        if row.unknown || !row.input.verified { uncertain.insert(row.source); }
-        else { known.insert(row.source); }
+        if row.unknown || !row.input.verified {
+            uncertain.insert(row.source);
+        } else {
+            known.insert(row.source);
+        }
     }
-    let at=Timepoint::try_from(frozen.as_of).map_err(|_|SourceError::Invariant)?;
-    resolve_membership(tenant,frozen,device,at,&known,&uncertain,None)
+    let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;
+    resolve_membership(tenant, frozen, device, at, &known, &uncertain, None)
 }
 
 /// A confirmed exclusion dominates uncertainty, including conflicting identities.
-pub(crate) fn qualification(result: Option<&s::MemberExplanation>, identities: usize) -> (bool,bool) {
-    let excluded=result.is_some_and(|r|r.reasons.contains(&s::ExclusionReason::ExplicitExclusion));
-    let pending=!excluded && (identities!=1 || result.is_some_and(|r|r.reasons.iter().any(|r|matches!(r,
-        s::ExclusionReason::UnknownTarget|s::ExclusionReason::UnknownLimitation|s::ExclusionReason::UnknownExclusion))));
-    let matched=!pending && result.is_some_and(|r|r.reasons.is_empty());
-    (matched,pending)
+pub(crate) fn qualification(
+    result: Option<&s::MemberExplanation>,
+    identities: usize,
+) -> (bool, bool) {
+    let excluded =
+        result.is_some_and(|r| r.reasons.contains(&s::ExclusionReason::ExplicitExclusion));
+    let pending = !excluded
+        && (identities != 1
+            || result.is_some_and(|r| {
+                r.reasons.iter().any(|r| {
+                    matches!(
+                        r,
+                        s::ExclusionReason::UnknownTarget
+                            | s::ExclusionReason::UnknownLimitation
+                            | s::ExclusionReason::UnknownExclusion
+                    )
+                })
+            }));
+    let matched = !pending && result.is_some_and(|r| r.reasons.is_empty());
+    (matched, pending)
 }
 
 pub(crate) fn resolve_membership(

@@ -67,8 +67,13 @@ pub trait ObjectReader: Send + Sync {
     /// The byte allowance is checked before material is decoded. None means the
     /// allowance was insufficient, not that the snapshot contains no objects.
     fn memberships_at<'a>(
-        &'a self, c: &'a mut PgConnection, tenant: TenantId, snapshot: Uuid,
-        device: &'a str, channel: rss_mdm_inventory::Channel, max_bytes: usize,
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        snapshot: Uuid,
+        device: &'a str,
+        channel: rss_mdm_inventory::Channel,
+        max_bytes: usize,
     ) -> Pending<'a, Option<(Vec<DeviceObject>, usize)>>;
 
     fn relation_revision<'a>(

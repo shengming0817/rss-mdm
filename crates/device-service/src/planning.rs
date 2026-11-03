@@ -152,10 +152,17 @@ impl ObjectReader for PlanningObjects {
     }
 
     fn memberships_at<'a>(
-        &'a self, c: &'a mut PgConnection, tenant: TenantId, snapshot: Uuid,
-        device: &'a str, channel: rss_mdm_inventory::Channel, max_bytes: usize,
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        snapshot: Uuid,
+        device: &'a str,
+        channel: rss_mdm_inventory::Channel,
+        max_bytes: usize,
     ) -> Pending<'a, Option<(Vec<DeviceObject>, usize)>> {
-        Box::pin(snapshots::memberships_at(c, tenant, snapshot, device, channel, max_bytes))
+        Box::pin(snapshots::memberships_at(
+            c, tenant, snapshot, device, channel, max_bytes,
+        ))
     }
 
     fn relation_revision<'a>(

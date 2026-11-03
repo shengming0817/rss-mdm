@@ -214,7 +214,10 @@ impl ScopeProjection {
                             .first()
                             .ok_or_else(|| sqlx::Error::Protocol("scope target missing".into()))?
                             .clone();
-                        let (matched,pending)=crate::channels::targets::qualification(result.as_ref(), identities.len());
+                        let (matched, pending) = crate::channels::targets::qualification(
+                            result.as_ref(),
+                            identities.len(),
+                        );
                         let entry = if matched || pending {
                             sqlx::query_scalar::<_, i64>(
                                 crate::storage_profile::sql(profile).projection_project_3,

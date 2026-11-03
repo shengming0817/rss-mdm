@@ -86,6 +86,25 @@ impl Scopes {
                 let task = self.enqueue_in(tx, Uuid::new_v4(), id).await?;
                 (revision, Some(task))
             }
+            ScopeChange::Recompute => {
+                let head = self.store.head_in(tx, id, true).await?;
+                if head.revision != op.expected_revision {
+                    return Err(Error::Conflict.into());
+                }
+                self.validate_references_in(tx, &head.definition).await?;
+                let old = self.store.pending_task_in(tx, id).await?;
+                if let Some(old) = old {
+                    if self.store.run_in(tx, old).await?.is_some() {
+                        self.store.phase_in(tx, old, "superseded").await?;
+                    }
+                    self.finish_in(tx, old, Some("superseded")).await?;
+                }
+                let new = self.enqueue_in(tx, Uuid::new_v4(), id).await?;
+                if let Some(old) = old {
+                    self.store.replace_task_in(tx, old, new).await?;
+                }
+                (head.revision, Some(new))
+            }
             ScopeChange::Delete => {
                 let head = self.store.head_in(tx, id, true).await?;
                 if head.revision != op.expected_revision {

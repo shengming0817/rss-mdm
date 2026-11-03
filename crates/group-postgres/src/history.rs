@@ -33,7 +33,9 @@ pub(crate) async fn selected_rows(
     for row in metadata {
         let size = row.try_get::<i32, _>("bytes")? as usize + 1024;
         if bytes + size > max_bytes.min(16 * 1024 * 1024) {
-            if devices.is_empty() { return Ok((Vec::new(), size)); }
+            if devices.is_empty() {
+                return Ok((Vec::new(), size));
+            }
             break;
         }
         bytes += size;

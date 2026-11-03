@@ -87,13 +87,18 @@ pub(super) async fn endpoint_at(
 }
 
 pub(super) async fn lookup(
-    c: &mut PgConnection, tenant: TenantId, snapshot: Uuid,
-    object: &ObjectRef, max_bytes: usize,
+    c: &mut PgConnection,
+    tenant: TenantId,
+    snapshot: Uuid,
+    object: &ObjectRef,
+    max_bytes: usize,
 ) -> Result<Option<(DeviceObject, usize)>, sqlx::Error> {
     let (input, bytes): (Option<serde_json::Value>, i64) = sqlx::query_as(
         "SELECT CASE WHEN octet_length(o.input::text)+1024<=$4 THEN o.input END,octet_length(o.input::text)::bigint+1024 FROM mdm_devices.object_cuts s CROSS JOIN LATERAL (SELECT input FROM mdm_devices.object_versions WHERE tenant_id=s.tenant_id AND object=$3 AND revision<=s.through ORDER BY revision DESC LIMIT 1) o WHERE s.tenant_id=$1::uuid AND s.id=$2 AND o.input IS NOT NULL"
     ).bind(tenant.to_string()).bind(snapshot).bind(object.key()).bind(max_bytes as i64).fetch_one(c).await?;
-    input.map(|input| Ok((decode(input)?,usize::try_from(bytes).map_err(storage)?))).transpose()
+    input
+        .map(|input| Ok((decode(input)?, usize::try_from(bytes).map_err(storage)?)))
+        .transpose()
 }
 pub(super) async fn validate(
     c: &mut PgConnection,
@@ -155,22 +160,43 @@ pub(super) async fn memberships(
 
 /// Select the last version first: an older membership is not proof at this cut.
 pub(super) async fn memberships_at(
-    c: &mut PgConnection, tenant: TenantId, snapshot: Uuid, device: &str,
-    channel: Channel, max_bytes: usize,
+    c: &mut PgConnection,
+    tenant: TenantId,
+    snapshot: Uuid,
+    device: &str,
+    channel: Channel,
+    max_bytes: usize,
 ) -> Result<Option<(Vec<DeviceObject>, usize)>, sqlx::Error> {
-    let through: i64 = sqlx::query_scalar("SELECT through FROM mdm_devices.object_cuts WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(tenant.to_string()).bind(snapshot).fetch_one(&mut *c).await?;
+    let through: i64 = sqlx::query_scalar(
+        "SELECT through FROM mdm_devices.object_cuts WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(snapshot)
+    .fetch_one(&mut *c)
+    .await?;
     let rows: Vec<(Option<serde_json::Value>,i64)> = sqlx::query_as(
         "WITH candidates AS (SELECT DISTINCT object FROM mdm_devices.object_versions WHERE tenant_id=$1::uuid AND revision<=$2 AND devices @> ARRAY[$3::text]), live AS (SELECT v.input,v.devices FROM candidates k CROSS JOIN LATERAL (SELECT input,devices FROM mdm_devices.object_versions WHERE tenant_id=$1::uuid AND object=k.object AND revision<=$2 ORDER BY revision DESC LIMIT 1) v WHERE v.input IS NOT NULL AND v.devices @> ARRAY[$3::text] ORDER BY k.object LIMIT 3), sized AS (SELECT input,octet_length(input::text)::bigint+1024 AS bytes FROM live) SELECT CASE WHEN sum(bytes) OVER ()<=$4 THEN input ELSE NULL END,bytes FROM sized"
     ).bind(tenant.to_string()).bind(through).bind(device).bind(max_bytes as i64).fetch_all(c).await?;
-    if rows.len()>2 { return Err(storage("ambiguous frozen membership")); }
-    if rows.iter().any(|(input,_)| input.is_none()) { return Ok(None); }
-    let mut objects=Vec::new();
-    let mut bytes=0usize;
-    for (input,size) in rows {
-        bytes=bytes.checked_add(usize::try_from(size).map_err(storage)?).ok_or_else(||storage("object bytes"))?;
-        let object:DeviceObject=decode(input.ok_or_else(||storage("object budget"))?)?;
-        if object.members.iter().any(|m|m.device==device && m.channel==channel) { objects.push(object); }
+    if rows.len() > 2 {
+        return Err(storage("ambiguous frozen membership"));
     }
-    Ok(Some((objects,bytes)))
+    if rows.iter().any(|(input, _)| input.is_none()) {
+        return Ok(None);
+    }
+    let mut objects = Vec::new();
+    let mut bytes = 0usize;
+    for (input, size) in rows {
+        bytes = bytes
+            .checked_add(usize::try_from(size).map_err(storage)?)
+            .ok_or_else(|| storage("object bytes"))?;
+        let object: DeviceObject = decode(input.ok_or_else(|| storage("object budget"))?)?;
+        if object
+            .members
+            .iter()
+            .any(|m| m.device == device && m.channel == channel)
+        {
+            objects.push(object);
+        }
+    }
+    Ok(Some((objects, bytes)))
 }

@@ -38,6 +38,20 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 `POST /api/v1/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation=<UUID>`
 上传原始字节，最后 activate。上传需 ResourceWrite，精确长度与 SHA-256 必须匹配声明，同一摘要不可覆盖。osquery 模板的内容是与声明 sql 完全一致的 UTF-8 SQL 字节，固定版本、摘要和合法参数；仅允许受控 SELECT、表/列/函数及平台，必须使用 system 和 collection purpose。`SELECT version FROM osquery_info` 是普通模板示例，可通过 `/0/version` 映射字段；输出为空与失败分别表达。服务端和 Agent 共同消费 SQL 校验与参数绑定规则，周期采集和按需刷新只引用已发布版本，不接受临时 SQL。
 
+## Scope 草稿预览与独立重算
+
+保存前可调用 `POST /api/v1/scopes/previews`，提交完整 `definition` 和 `channel`；编辑已有范围时携带 `editing.scopeId/expectedRevision`。
+此入口只读，不保存定义、发布成员或排队策略。`limitations:null` 表示不限制，`[]` 表示显式空限制。
+返回的是有界匹配样例；上限与预算由 [Scope preview owner](../../crates/scope-service/src/preview.rs) 持有。
+`scanComplete`、`stopReason` 与 `hasUnknown` 分别说明扫描结束、提前停止和已观察到的未知事实，
+未扫描完成或存在未知时，空样例不证明范围为空，也没有精确总数承诺。
+Group 条件预览的样例上限由其 [preview owner](../../crates/group-service/src/preview.rs) 持有，二者均不替代正式成员结果。
+
+重算已保存范围使用 `POST /api/v1/scopes/{id}`，携带原格式 `operationId/expectedRevision` 和 `input:{"action":"recompute"}`。
+定义修订保持不变，旧未完成任务标记为 superseded 并指向替代任务；新任务重新捕获来源。
+已有完整结果保留到新结果原子发布。回执中的 task 供原任务读取，正式成员仍使用固定 result 分页。
+结果未知时保留同一操作身份、CAS 与内容，显式重提原请求；读取当前定义不证明原操作成功，不自动重放写入。
+
 ## Policy 分配与权限
 
 在 `POST /api/v1/policies/{id}` 发送 `operationId`、`expectedRevision` 和 `input`。`input.action` 为 `put`、`enable` 或 `disable`。执行型定义示例：

@@ -1,7 +1,4 @@
-use crate::{
-    storage::{data, stored_shape},
-    *,
-};
+use crate::{storage::stored_shape, *};
 use rss_mdm_group::OperationId;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
@@ -152,14 +149,21 @@ impl GroupStore {
         limit: usize,
         max_bytes: usize,
     ) -> InTransaction<DecisionPage> {
-        self.sources.build_decisions_in(tx, id, after, limit, max_bytes).await
+        self.sources
+            .build_decisions_in(tx, id, after, limit, max_bytes)
+            .await
     }
     /// Look up frozen decisions within the caller's remaining decoded-byte budget.
     pub async fn source_decisions_in(
-        &self, tx: &mut PgTransaction<'_>, id: OperationId,
-        objects: &[String], max_bytes: usize,
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: OperationId,
+        objects: &[String],
+        max_bytes: usize,
     ) -> InTransaction<SourceDecisions> {
-        self.sources.source_decisions_in(tx, id, objects, max_bytes).await
+        self.sources
+            .source_decisions_in(tx, id, objects, max_bytes)
+            .await
     }
     /// Read a bounded page of the complete, prepared membership difference.
     pub async fn build_changes_in(

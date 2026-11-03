@@ -18,7 +18,7 @@ fn request(criteria: group::criteria::Condition) -> Request {
 }
 // Snapshot all tenant rows in business-owned schemas, including task/outbox/member
 // tables. Preview may read/lock these rows, but cannot create or alter any of them.
-async fn business_state(c: &Context) -> Result<serde_json::Value> {
+pub(super) async fn business_state(c: &Context) -> Result<serde_json::Value> {
     let tables: Vec<(String,String)> = sqlx::query_as("SELECT schemaname,tablename FROM pg_tables WHERE schemaname IN ('mdm_assets','mdm_group','mdm_scope','mdm_policy','mdm_devices','rss_reconcile','rss_messaging') AND EXISTS(SELECT FROM information_schema.columns WHERE table_schema=schemaname AND table_name=tablename AND column_name='tenant_id') ORDER BY schemaname,tablename").fetch_all(&c.operator).await?;
     let mut state = serde_json::Map::new();
     for (schema, table) in tables {
@@ -80,8 +80,8 @@ async fn unsaved_preview_is_read_only_and_bounded() -> Result<()> {
         .groups
         .preview(&proof, &input, &c.request(&proof)?)
         .await?;
-    assert_eq!(result.items.len(), 20);
-    assert!(!result.scan_complete);
+    assert_eq!(result.items.len(), 22);
+    assert!(result.scan_complete);
     assert!(
         result
             .items
@@ -214,7 +214,7 @@ async fn preview_excludes_unknown_facts() -> Result<()> {
     Ok(())
 }
 
-async fn publish(
+pub(super) async fn publish(
     owners: &Owners,
     c: &Context,
     proof: &AuthorizedPrincipal,

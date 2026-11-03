@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub enum ScopeChange {
     Put { definition: ScopeDefinition },
     Delete,
+    Recompute,
 }
 
 pub mod references;

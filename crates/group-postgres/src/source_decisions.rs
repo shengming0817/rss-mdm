@@ -1,5 +1,8 @@
 //! Frozen selected membership uses the same sparse-history owner as result pages.
-use crate::{GroupSources, SourceDecisions, Rejection, DecisionRecord, DecisionValue, InTransaction, storage::{data, stored_shape}};
+use crate::{
+    DecisionRecord, DecisionValue, GroupSources, InTransaction, Rejection, SourceDecisions,
+    storage::{data, stored_shape},
+};
 use rss_mdm_group::OperationId;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
@@ -22,8 +25,10 @@ impl GroupSources {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
         if build.request.patch.is_some() {
-            let bytes:usize = objects.iter().map(|s|s.len()+1024).sum();
-            if bytes>max_bytes { return Ok(Err(Rejection::PageBudgetExceeded)); }
+            let bytes: usize = objects.iter().map(|s| s.len() + 1024).sum();
+            if bytes > max_bytes {
+                return Ok(Err(Rejection::PageBudgetExceeded));
+            }
             let tenant = tx.tenant_id().to_string();
             let group = build.request.group.to_string();
             let base = build.request.base_calculation;
@@ -57,9 +62,15 @@ impl GroupSources {
         if bytes > max_bytes.min(rss_mdm_group::limits::BATCH_BYTES) {
             return Ok(Err(Rejection::PageBudgetExceeded));
         }
-        let rows =
-            crate::history::selected_rows(tx, id, None, Some(objects.to_vec()), objects.len(), max_bytes)
-                .await?;
+        let rows = crate::history::selected_rows(
+            tx,
+            id,
+            None,
+            Some(objects.to_vec()),
+            objects.len(),
+            max_bytes,
+        )
+        .await?;
         let mut result = std::collections::BTreeMap::new();
         for row in rows.0 {
             let object: String = row.try_get("object_id")?;
@@ -86,6 +97,9 @@ impl GroupSources {
             };
             result.insert(object, outcome);
         }
-        Ok(Ok(SourceDecisions { outcomes: result, bytes }))
+        Ok(Ok(SourceDecisions {
+            outcomes: result,
+            bytes,
+        }))
     }
 }

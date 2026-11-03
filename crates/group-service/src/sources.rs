@@ -101,7 +101,12 @@ impl Groups {
         let keys: Vec<_> = objects.iter().map(|o| o.key.id().to_string()).collect();
         for source in sources {
             let decisions = if let Some(run) = source.coordinates.member_set {
-                group_checked(self.groups.source_decisions_in(tx, run, &keys, rss_mdm_group::limits::BATCH_BYTES).await?)?.outcomes
+                group_checked(
+                    self.groups
+                        .source_decisions_in(tx, run, &keys, rss_mdm_group::limits::BATCH_BYTES)
+                        .await?,
+                )?
+                .outcomes
             } else {
                 std::collections::BTreeMap::new()
             };

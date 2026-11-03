@@ -4,7 +4,7 @@ use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use rss_mdm_scope_service::{Scopes, transaction};
 use std::sync::Arc;
 use uuid::Uuid;
-async fn open(c: &Context) -> Result<Arc<Scopes>> {
+pub(crate) async fn open(c: &Context) -> Result<Arc<Scopes>> {
     let owner = fixture::owner(c, "mdm_scope_runtime").await?;
     let pool = c.inputs.pool("shared", "mdm_scope_runtime").await?;
     Ok(crate::scopes::open(
@@ -133,6 +133,99 @@ async fn publication_is_atomic_replayable_and_rejects_stale_definition() -> Resu
     assert_eq!(snapshot(&c, old.scope, run).await?, committed);
     assert_eq!(admission(&restarted, old.scope, device).await?, eligible);
     drop(restarted);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: explicit recalculation fences every unfinished phase, preserves authored CAS and replays one task"]
+async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_scope_service::{Command, ScopeChange, operation::Operation};
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[
+            Permission::ScopeRead,
+            Permission::ScopeWrite,
+            Permission::InventoryRead,
+        ])
+        .await?;
+    let p = c.authenticate(&account).await?;
+    let object = fixture::endpoint(&c).await?;
+    let s = open(&c).await?;
+    for phase in ["sources", "project", "ready"] {
+        let old = fixture::published(&c, &object).await?;
+        let unfinished = fixture::staged(&c, &old, &object).await?;
+        sqlx::query("UPDATE mdm_scope.scope_runs SET phase=$3 WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string())
+            .bind(unfinished)
+            .bind(phase)
+            .execute(&c.operator)
+            .await?;
+        let command = Command::Scope {
+            id: old.scope,
+            change: Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 1,
+                input: ScopeChange::Recompute,
+            },
+        };
+        let receipt = s.execute(&command, &c.request(&p)?, &p).await?;
+        assert_eq!(receipt["revision"], 1);
+        let task = Uuid::parse_str(receipt["task"].as_str().unwrap())?;
+        assert_ne!(task, unfinished);
+        let replaced:(bool,Option<String>,Option<Uuid>)=sqlx::query_as("SELECT completed,failure,replacement_task FROM mdm_scope.tasks WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string()).bind(unfinished).fetch_one(&c.operator).await?;
+        assert_eq!(replaced, (true, Some("superseded".into()), Some(task)));
+        assert_eq!(
+            s.execute(&command, &c.request(&p)?, &p).await?,
+            receipt,
+            "lost response recovery must not create another task"
+        );
+        advance(&s, unfinished, &old.cut, false).await?;
+        let before:(i64,Uuid,i64)=sqlx::query_as("SELECT revision,resolution,calculation_revision FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string()).bind(old.scope).fetch_one(&c.operator).await?;
+        assert_eq!(before, (1, old.run, 1));
+        let mut wrong = Command::Scope {
+            id: old.scope,
+            change: Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 2,
+                input: ScopeChange::Recompute,
+            },
+        };
+        assert!(matches!(
+            s.execute(&wrong, &c.request(&p)?, &p).await,
+            Err(rss_mdm_scope_service::Error::Conflict)
+        ));
+        for _ in 0..20 {
+            advance(&s, task, &old.cut, false).await?;
+        }
+        let completed:(i64,Uuid,i64,i64,bool)=sqlx::query_as("SELECT s.revision,s.resolution,s.calculation_revision,s.resolution_revision,t.completed FROM mdm_scope.scopes s JOIN mdm_scope.tasks t ON(t.tenant_id,t.id)=(s.tenant_id,$3) WHERE s.tenant_id=$1::uuid AND s.id=$2")
+            .bind(c.tenant.to_string()).bind(old.scope).bind(task).fetch_one(&c.operator).await?;
+        assert_eq!(
+            (completed.0, completed.1, completed.2, completed.4),
+            (1, task, 2, true)
+        );
+        // A new operation performs a fresh calculation; an unchanged result keeps its semantic revision.
+        wrong = Command::Scope {
+            id: old.scope,
+            change: Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 1,
+                input: ScopeChange::Recompute,
+            },
+        };
+        let next = s.execute(&wrong, &c.request(&p)?, &p).await?;
+        let next = Uuid::parse_str(next["task"].as_str().unwrap())?;
+        for _ in 0..20 {
+            advance(&s, next, &old.cut, false).await?;
+        }
+        let current:(i64,i64,i64)=sqlx::query_as("SELECT revision,calculation_revision,resolution_revision FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string()).bind(old.scope).fetch_one(&c.operator).await?;
+        assert_eq!(current, (1, 3, completed.3));
+    }
+    drop(s);
     c.close().await;
     Ok(())
 }
