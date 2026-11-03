@@ -20,7 +20,7 @@ pub static SCHEMA: Schema = Schema {
         Field::scalar("status", Kind::Text),
         Field::output("userContextId"),
         Field::output("enrollmentId"),
-        Field::output("agentGrantId"),
+        Field::output("certificateGrantId"),
     ],
 };
 fn column(name: &str) -> &'static str {
