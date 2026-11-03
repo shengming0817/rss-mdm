@@ -1,4 +1,4 @@
-use super::tasks::{CalculationMode, TaskInput};
+use super::tasks::TaskInput;
 use super::*;
 use rss_mdm_group_postgres as g;
 
@@ -13,7 +13,7 @@ impl Groups {
         let TaskInput::Calculation {
             group: id,
             asset_cut,
-            mode: CalculationMode::Publish { automatic: true },
+            automatic: true,
             ..
         } = job
         else {
@@ -31,7 +31,7 @@ impl Groups {
         let tenant = self.tenant.to_string();
         let revision = current.revision.get();
         let existing:Option<Uuid>=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT j.id FROM mdm_assets.group_tasks j WHERE j.tenant_id=$1::uuid AND j.target=$2::uuid AND j.kind='group' AND NOT j.completed AND j.id<>$3::uuid AND (j.input->>'base_revision')::bigint=$4 AND j.input#>>'{mode,automatic}'='true' ORDER BY j.id LIMIT 1")
+            sqlx::query_scalar("SELECT j.id FROM mdm_assets.group_tasks j WHERE j.tenant_id=$1::uuid AND j.target=$2::uuid AND j.kind='group' AND NOT j.completed AND j.id<>$3::uuid AND (j.input->>'base_revision')::bigint=$4 AND j.input->>'automatic'='true' ORDER BY j.id LIMIT 1")
                 .bind(tenant).bind(id.to_string()).bind(task.to_string()).bind(revision).fetch_optional(c).await
         })).await?;
         if let Some(successor) = existing {
@@ -55,7 +55,6 @@ impl Groups {
                         task: Uuid::new_v4(),
                         expected: revision as u64,
                         patch,
-                        publish: true,
                         automatic: true,
                         at: checked_input(Timepoint::try_from(
                             self.clock
@@ -120,7 +119,6 @@ impl Groups {
             task,
             expected,
             patch,
-            publish,
             automatic,
             at,
         } = start;
@@ -223,15 +221,11 @@ impl Groups {
             group: id,
             base_revision: current.revision.get(),
             asset_cut,
-            mode: if publish {
-                CalculationMode::Publish { automatic }
-            } else {
-                CalculationMode::Preview
-            },
+            automatic,
         };
         if patch.is_none()
             && let Some(existing) = self
-                .reusable_group_job_in(tx, &current, &input_version, &sources, publish)
+                .reusable_group_job_in(tx, &current, &input_version, &sources)
                 .await?
         {
             return Ok(tasks::accepted(existing, &job));
@@ -258,7 +252,6 @@ impl Groups {
         current: &g::Group,
         input_version: &str,
         sources: &[rss_mdm_group::GroupSource],
-        publish: bool,
     ) -> Result<Option<Uuid>> {
         let tenant = self.tenant.to_string();
         let id = current.id.to_string();
@@ -267,7 +260,7 @@ impl Groups {
         let frozen = checked_input(serde_json::to_value(sources))?;
         let calculation = current.calculation_revision;
         let result=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,Uuid>("SELECT j.id FROM mdm_assets.group_tasks j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(b.tenant_id,b.group_id) WHERE j.tenant_id=$1::uuid AND b.group_id=$2::uuid AND b.rule_version IS NOT DISTINCT FROM $3 AND b.input_version=$4 AND convert_from(b.input,'UTF8')::jsonb->'sources'=$7::jsonb AND j.kind=$5 AND j.failure IS NULL AND (b.base_calculation=$6 OR g.member_set=b.id) ORDER BY j.completed DESC,j.id LIMIT 1").bind(tenant).bind(id).bind(rule).bind(version).bind(if publish {"group"}else{"group_preview"}).bind(calculation).bind(frozen).fetch_optional(c).await
+            sqlx::query_scalar::<_,Uuid>("SELECT j.id FROM mdm_assets.group_tasks j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(b.tenant_id,b.group_id) WHERE j.tenant_id=$1::uuid AND b.group_id=$2::uuid AND b.rule_version IS NOT DISTINCT FROM $3 AND b.input_version=$4 AND convert_from(b.input,'UTF8')::jsonb->'sources'=$6::jsonb AND j.kind='group' AND j.failure IS NULL AND (b.base_calculation=$5 OR g.member_set=b.id) ORDER BY j.completed DESC,j.id LIMIT 1").bind(tenant).bind(id).bind(rule).bind(version).bind(calculation).bind(frozen).fetch_optional(c).await
         })).await?;
         Ok(result)
     }
@@ -366,291 +359,61 @@ impl Groups {
         }
         if build.request.patch.is_some() {
             group_checked(self.groups.advance_static_in(tx, operation).await?)?;
-        } else if let Some(snapshot) = object_snapshot(&build.request.input_version)? {
-            let mut limit = 250;
-            loop {
-                let reader = self.objects.clone();
-                let tenant = self.tenant;
-                let after = build.cursor.clone();
-                let snapshot_id = snapshot.id;
-                let selected = build.request.changed_objects.clone();
-                let inputs = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move {
-                            reader
-                                .page(c, tenant, snapshot_id, after, limit, selected)
-                                .await
-                        })
-                    })
-                    .await?;
-                let ids: Vec<_> = inputs
-                    .iter()
-                    .flat_map(|o| o.members.iter().map(|m| m.device.clone()))
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect();
-                let reader = assets::planning::SnapshotReader::bind(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    self.runtime.clone(),
-                    tenant,
-                );
-                let catalog = tx
-                    .with_connection_context(&mut (asset_cut,), move |(asset_cut,), c| {
-                        Box::pin(async move {
-                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, asset_cut)
-                                .await
-                                .map_err(|_| sqlx::Error::Protocol("catalog unavailable".into()))
-                        })
-                    })
-                    .await?;
-                let raw_result = reader
-                    .summary_devices_in(tx, asset_cut, &ids, &catalog)
-                    .await;
-                let raw = match raw_result {
-                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
-                        rss_mdm_inventory_service::Error::Unavailable(
-                            rss_mdm_inventory_service::Failure::AssetBytesLimit
-                            | rss_mdm_inventory_service::Failure::AssetSourceLimit,
-                        ),
-                    )) if limit > 1 => {
-                        limit = (limit / 2).max(1);
-                        continue;
-                    }
-                    result => result?,
-                };
-                let rule = group_checked(
-                    self.groups
-                        .rule_in(
-                            tx,
-                            build.request.group,
-                            build
-                                .request
-                                .rule_version
-                                .as_deref()
-                                .ok_or(Error::Conflict)?,
-                        )
-                        .await?,
-                )?
-                .ok_or(Error::Conflict)?;
-                let condition = crate::condition_in(
-                    tx,
-                    tenant,
-                    build.request.group,
-                    build
-                        .request
-                        .rule_version
-                        .as_deref()
-                        .ok_or(Error::Conflict)?,
-                    &rule,
-                )
-                .await?;
-                let evaluation_progress = self
-                    .evaluation(tx, stored(Uuid::parse_str(&operation.to_string()))?)
-                    .await?;
-                let data = assets::planning::SnapshotReader::bind(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    self.runtime.clone(),
-                    tenant,
-                )
-                .condition_inputs_in(
-                    tx,
-                    evaluation_progress,
-                    rss_mdm_inventory_service::assets::planning::ConditionRequest {
-                        cut: asset_cut,
-                        devices: &raw,
-                        catalog: &catalog,
-                        authorization: &assets::ReadScope::all(),
-                        selection: condition.selection(),
-                        rule: &rule,
-                        associated: Some(&inputs),
-                    },
-                )
-                .await;
-                let data = match data {
-                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
-                        rss_mdm_inventory_service::Error::Unavailable(
-                            rss_mdm_inventory_service::Failure::AssetSourceLimit,
-                        ),
-                    )) if limit > 1 => {
-                        limit = 1;
-                        continue;
-                    }
-                    result => result?,
-                };
-                let mut data = match data {
-                    rss_mdm_inventory_service::assets::evaluation::EvaluationStep::Pending(
-                        progress,
-                    ) => {
-                        self.save_evaluation(
-                            tx,
-                            stored(Uuid::parse_str(&operation.to_string()))?,
-                            &progress,
-                        )
-                        .await?;
-                        return Ok(());
-                    }
-                    rss_mdm_inventory_service::assets::evaluation::EvaluationStep::Ready(facts) => {
-                        self.clear_evaluation(tx, stored(Uuid::parse_str(&operation.to_string()))?)
-                            .await?;
-                        facts
-                    }
-                };
-                match self
-                    .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
-                    .await
-                {
-                    Err(crate::transaction::Fault::Request(Error::Unavailable(
-                        Failure::AssetBytesLimit,
-                    ))) if limit > 1 => {
-                        limit = (limit / 2).max(1);
-                        continue;
-                    }
-                    result => result?,
-                }
-                let after = build
-                    .cursor
-                    .as_ref()
-                    .map(|s| checked_input(rss_mdm_group::ObjectKey::new(tenant, s)))
-                    .transpose()?;
-                if !data.objects.is_empty() {
-                    match self
-                        .groups
-                        .append_build_page_in(
-                            tx,
-                            operation,
-                            &rss_mdm_group::PageInput {
-                                tenant,
-                                id: "objects",
-                                version: &build.request.input_version,
-                                dictionary_version: rss_mdm_inventory::DICTIONARY,
-                                coverage: &data.coverage,
-                                objects: &data.objects,
-                                after: after.as_ref(),
-                            },
-                        )
-                        .await?
-                    {
-                        Err(g::Rejection::PageBudgetExceeded) if limit > 1 => {
-                            limit = (limit / 2).max(1);
-                            continue;
-                        }
-                        result => {
-                            group_checked(result)?;
-                        }
-                    }
-                }
-                if inputs.len() < limit {
-                    group_checked(
-                        self.groups
-                            .seal_build_in(tx, operation, build.processed + inputs.len())
-                            .await?,
-                    )?;
-                }
-                break;
-            }
         } else {
+            let version = build
+                .request
+                .rule_version
+                .as_deref()
+                .ok_or(Error::Unavailable(Failure::Runtime))?;
+            let rule = group_checked(
+                self.groups
+                    .rule_in(tx, build.request.group, version)
+                    .await?,
+            )?
+            .ok_or(Error::Unavailable(Failure::Runtime))?;
+            let condition =
+                crate::condition_in(tx, self.tenant, build.request.group, version, &rule).await?;
+            let snapshot = object_snapshot(&build.request.input_version)?;
+            let task = stored(Uuid::parse_str(&operation.to_string()))?;
             let after = build
                 .cursor
                 .as_ref()
                 .map(|s| stored(rss_mdm_group::ObjectKey::new(self.tenant, s)))
                 .transpose()?;
-            let mut limit = 1000;
+            let mut limit = if snapshot.is_some() { 250 } else { 1000 };
             loop {
-                let page = match self
-                    .asset_reader()
-                    .asset_page_in(
+                let progress = self.evaluation(tx, task).await?;
+                let page = self
+                    .condition_page_in(
                         tx,
-                        asset_cut,
-                        build.cursor.clone(),
-                        limit,
-                        &assets::ReadScope {
-                            collection_scope: rss_mdm_inventory::CollectionScope::Device,
-                            subject: "group".into(),
-                            authority: "internal".into(),
-                            devices: build
-                                .request
-                                .changed_objects
-                                .as_ref()
-                                .map(|d| d.iter().cloned().collect()),
-                        },
-                    )
-                    .await
-                {
-                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
-                        rss_mdm_inventory_service::Error::Unavailable(
-                            rss_mdm_inventory_service::Failure::AssetBytesLimit
-                            | rss_mdm_inventory_service::Failure::AssetSourceLimit,
-                        ),
-                    )) if limit > 1 => {
-                        limit = (limit / 2).max(1);
-                        continue;
-                    }
-                    result => result?,
-                };
-                let total = build
-                    .processed
-                    .checked_add(page.devices.len())
-                    .filter(|n| i64::try_from(*n).is_ok())
-                    .ok_or(Error::Unavailable(Failure::AssetObjectLimit))?;
-                let version = build
-                    .request
-                    .rule_version
-                    .as_deref()
-                    .ok_or(Error::Unavailable(Failure::Runtime))?;
-                let rule = group_checked(
-                    self.groups
-                        .rule_in(tx, build.request.group, version)
-                        .await?,
-                )?
-                .ok_or(Error::Unavailable(Failure::Runtime))?;
-                let condition =
-                    crate::condition_in(tx, self.tenant, build.request.group, version, &rule)
-                        .await?;
-                let evaluation_progress = self
-                    .evaluation(tx, stored(Uuid::parse_str(&operation.to_string()))?)
-                    .await?;
-                let data = self
-                    .asset_reader()
-                    .condition_inputs_in(
-                        tx,
-                        evaluation_progress,
-                        rss_mdm_inventory_service::assets::planning::ConditionRequest {
+                        crate::input::ConditionPageRequest {
                             cut: asset_cut,
-                            devices: &page.devices,
-                            catalog: &page.catalog,
-                            authorization: &assets::ReadScope::all(),
-                            selection: condition.selection(),
+                            snapshot: snapshot.as_ref(),
+                            condition: &condition,
                             rule: &rule,
-                            associated: None,
+                            after: build.cursor.clone(),
+                            limit,
+                            selected: build.request.changed_objects.clone(),
+                            progress,
                         },
                     )
                     .await;
-                let data = match data {
-                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
-                        rss_mdm_inventory_service::Error::Unavailable(
-                            rss_mdm_inventory_service::Failure::AssetSourceLimit,
-                        ),
-                    )) if limit > 1 => {
+                let page = match page {
+                    Err(Fault::Request(Error::Unavailable(
+                        Failure::AssetBytesLimit | Failure::AssetSourceLimit,
+                    ))) if limit > 1 => {
                         limit = 1;
                         continue;
                     }
                     result => result?,
                 };
-                let mut data = match data {
-                    rss_mdm_inventory_service::assets::evaluation::EvaluationStep::Pending(
-                        progress,
-                    ) => {
-                        self.save_evaluation(
-                            tx,
-                            stored(Uuid::parse_str(&operation.to_string()))?,
-                            &progress,
-                        )
-                        .await?;
+                let mut data = match page.evaluation {
+                    assets::evaluation::EvaluationStep::Pending(progress) => {
+                        self.save_evaluation(tx, task, &progress).await?;
                         return Ok(());
                     }
-                    rss_mdm_inventory_service::assets::evaluation::EvaluationStep::Ready(facts) => {
-                        self.clear_evaluation(tx, stored(Uuid::parse_str(&operation.to_string()))?)
-                            .await?;
+                    assets::evaluation::EvaluationStep::Ready(facts) => {
+                        self.clear_evaluation(tx, task).await?;
                         facts
                     }
                 };
@@ -658,9 +421,9 @@ impl Groups {
                     .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
                     .await
                 {
-                    Err(crate::transaction::Fault::Request(Error::Unavailable(
-                        Failure::AssetBytesLimit,
-                    ))) if limit > 1 => {
+                    Err(Fault::Request(Error::Unavailable(Failure::AssetBytesLimit)))
+                        if limit > 1 =>
+                    {
                         limit = (limit / 2).max(1);
                         continue;
                     }
@@ -669,7 +432,11 @@ impl Groups {
                 if !data.objects.is_empty() {
                     let page_input = rss_mdm_group::PageInput {
                         tenant: self.tenant,
-                        id: "assets",
+                        id: if snapshot.is_some() {
+                            "objects"
+                        } else {
+                            "assets"
+                        },
                         version: &build.request.input_version,
                         dictionary_version: rss_mdm_inventory::DICTIONARY,
                         coverage: &data.coverage,
@@ -690,7 +457,12 @@ impl Groups {
                         }
                     }
                 }
-                if page.next.is_none() {
+                if !page.more {
+                    let total = build
+                        .processed
+                        .checked_add(page.count)
+                        .filter(|n| i64::try_from(*n).is_ok())
+                        .ok_or(Error::Unavailable(Failure::AssetObjectLimit))?;
                     group_checked(self.groups.seal_build_in(tx, operation, total).await?)?;
                 }
                 break;
@@ -718,14 +490,12 @@ impl Groups {
         let TaskInput::Calculation {
             group: id,
             asset_cut,
-            mode,
             ..
         } = job
         else {
             return Err(Error::Unavailable(Failure::GroupStorage).into());
         };
         let id = *id;
-        let mode = *mode;
         let operation = checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?;
         let build = checked(self.groups.build_in(tx, operation).await?)?;
         if build.receipt.is_some() {
@@ -747,9 +517,6 @@ impl Groups {
         if !build.ready {
             return self.advance_group_difference_in(tx, operation).await;
         }
-        if matches!(mode, CalculationMode::Preview) {
-            return self.finish_task_in(tx, task, None).await;
-        }
         self.publish_group_job_in(tx, task, job, &build, candidate)
             .await
     }
@@ -764,14 +531,14 @@ impl Groups {
         let TaskInput::Calculation {
             group: id,
             asset_cut,
-            mode,
+            automatic,
             ..
         } = job
         else {
             return Err(Error::Malformed.into());
         };
         let id = *id;
-        let mode = *mode;
+        let automatic = *automatic;
         let operation = checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?;
         // The immutable old input remains historical evidence. Newer input cannot
         // be acknowledged by publishing this old result under its former asset_cut.
@@ -859,7 +626,7 @@ impl Groups {
         if changed {
             rss_mdm_compliance_postgres::group_changed_in(tx, id).await?;
         }
-        if dirty && matches!(mode, CalculationMode::Publish { automatic: true }) {
+        if dirty && automatic {
             let patch = build.request.patch.as_ref().map(|_| g::MemberPatch {
                 add: vec![],
                 remove: vec![],
@@ -873,7 +640,6 @@ impl Groups {
                     task: Uuid::new_v4(),
                     expected: receipt.group.revision.get() as u64,
                     patch,
-                    publish: true,
                     automatic: true,
                     at: checked_input(Timepoint::try_from(
                         self.clock
@@ -918,7 +684,6 @@ impl Groups {
                         task: Uuid::new_v4(),
                         expected: current.revision.get() as u64,
                         patch: None,
-                        publish: true,
                         automatic: true,
                         at: checked_input(Timepoint::try_from(
                             self.clock

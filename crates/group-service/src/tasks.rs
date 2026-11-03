@@ -14,16 +14,10 @@ pub enum TaskInput {
         group: Uuid,
         base_revision: i64,
         asset_cut: rss_mdm_inventory::AssetCut,
-        mode: CalculationMode,
+        automatic: bool,
     },
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CalculationMode {
-    Preview,
-    Publish { automatic: bool },
-}
 impl TaskInput {
     pub fn target(&self) -> Uuid {
         match self {
@@ -34,10 +28,6 @@ impl TaskInput {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Definition { .. } => "group_definition",
-            Self::Calculation {
-                mode: CalculationMode::Preview,
-                ..
-            } => "group_preview",
             Self::Calculation { .. } => "group",
         }
     }

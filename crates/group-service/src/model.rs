@@ -43,7 +43,6 @@ pub struct GroupStart {
     pub task: Uuid,
     pub expected: u64,
     pub patch: Option<rss_mdm_group_postgres::MemberPatch>,
-    pub publish: bool,
     pub automatic: bool,
     pub at: Timepoint,
 }

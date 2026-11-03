@@ -14,7 +14,7 @@ ALTER TABLE mdm_assets.group_selections ADD FOREIGN KEY(tenant_id,group_id,rule_
 GRANT SELECT,INSERT ON mdm_assets.group_selections TO mdm_inventory_runtime;
 CREATE TABLE mdm_assets.group_tasks (
  tenant_id uuid NOT NULL,id uuid NOT NULL,target uuid NOT NULL,
- kind text NOT NULL CHECK(kind IN('group_definition','group','group_preview')),
+ kind text NOT NULL CHECK(kind IN('group_definition','group')),
  input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576),
  completed boolean NOT NULL DEFAULT false,
  cursor text,replacement_task uuid,

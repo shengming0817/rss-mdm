@@ -16,10 +16,6 @@ use rss_mdm_http_contract::{
 use rss_mdm_scope::Reference;
 use rss_mdm_scope_service::ScopeChange;
 
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct EmptyInput {}
-
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
     value.map(|v| v.0).map_err(Error::from)
@@ -73,7 +69,7 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
                 ),
             ),
             post_group_preview: rss_mdm_http_contract::module::Route::new(
-                "/groups/{id}/previews",
+                "/groups/previews",
                 post(group_preview, &contracts::GROUPS, &[RouteOperation::Action]),
             ),
             get_group_page: rss_mdm_http_contract::module::Route::new(
@@ -323,22 +319,12 @@ async fn group_preview(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
-    payload: BodyInput<PreviewRequest>,
-) -> std::result::Result<GroupResponse, Error> {
+    payload: BodyInput<rss_mdm_group_service::preview::Request>,
+) -> std::result::Result<Json<rss_mdm_group_service::preview::Response>, Error> {
     let request = body(payload)?;
-    run_group(
-        &app,
-        &auth,
-        &audit,
-        Permission::GroupRead,
-        GroupCommand::GroupPreview {
-            id,
-            operation: request.operation_id,
-            expected_revision: request.expected_revision,
-        },
-    )
-    .await
+    Ok(Json(
+        app.groups.preview(&auth.proof, &request, &audit).await?,
+    ))
 }
 
 async fn group_task(
@@ -457,17 +443,6 @@ async fn run_group(
                 change.operation_id,
                 "management_write",
                 rss_mdm_audit_integration::AuditIntent::Management,
-            );
-        }
-        GroupCommand::GroupPreview { id, operation, .. } => {
-            audit.resource_target(
-                rss_mdm_audit_integration::TargetKind::Group,
-                &id.to_string(),
-            );
-            audit.operation(
-                *operation,
-                "management_read",
-                rss_mdm_audit_integration::AuditIntent::Routine,
             );
         }
         GroupCommand::TaskRead { target, .. } => {
@@ -690,13 +665,4 @@ impl rss_mdm_http_contract::query::QueryOwner for GroupReferencesQuery {
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
         rss_mdm_group_service::references::Query::parse(raw)
     }
-}
-
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PreviewRequest {
-    operation_id: Uuid,
-    expected_revision: u64,
-    #[serde(rename = "input")]
-    _input: EmptyInput,
 }

@@ -37,7 +37,7 @@ impl Groups {
         );
         self.lock_group_targets_in(tx, targets).await
     }
-    async fn lock_group_targets_in(
+    pub(crate) async fn lock_group_targets_in(
         &self,
         tx: &mut PgTransaction<'_>,
         targets: std::collections::BTreeSet<String>,

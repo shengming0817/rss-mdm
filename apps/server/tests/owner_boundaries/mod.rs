@@ -1,4 +1,5 @@
 //! Real independent Group and Compliance consumers of Inventory's bounded facts.
+mod preview;
 use crate::{authority_t2_support::Context, planning_t2_support as planning};
 use anyhow::{Context as _, Result};
 use rss_mdm_authorization_service::{Permission as P, context::AuthorizedPrincipal};
@@ -89,47 +90,50 @@ impl Owners {
             .await
             .with_context(|| format!("Group creation {id}"))?;
         if let Some(task) = result.get("task").and_then(serde_json::Value::as_str) {
-            use rss_reconcile::{DurableStore, ReconcileStep, Reconciler};
-            let task = Uuid::parse_str(task)?;
-            let timer = rss_mdm_device_service::control::recovery::Timer::new();
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let control =
-                rss_reconcile::Control::new(&timer, std::time::Duration::from_secs(15), &cancel);
-            let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
-            let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
-            let worker = group::runtime::GroupWork::new(self.groups.clone(), schedule.clone());
-            let target = group::tasks::target(c.tenant, task);
-            let mut batch = schedule
-                .claim_due(
-                    target.scope(),
-                    64,
-                    std::time::Duration::from_secs(30),
-                    &control,
-                )
-                .await?;
-            let index = batch
-                .claims
-                .iter()
-                .position(|claim| claim.target() == &target)
-                .expect("accepted task has a durable target");
-            let claim = batch.claims.swap_remove(index);
-            for _ in 0..8 {
-                let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
-                    anyhow::bail!("Group observation deferred")
-                };
-                if diff.drift() == rss_reconcile::DriftKind::Converged {
-                    break;
-                }
-                worker.apply(&claim, diff, &control).await?;
-            }
-            let (completed,failure):(bool,Option<String>)=sqlx::query_as("SELECT completed,failure FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(task).fetch_one(&c.operator).await?;
-            pool.close().await;
-            anyhow::ensure!(
-                completed && failure.is_none(),
-                "Group definition did not publish: {completed}, {failure:?}"
-            );
+            self.settle(c, Uuid::parse_str(task)?).await?;
         }
         Ok(id)
+    }
+    async fn settle(&self, c: &Context, task: Uuid) -> Result<()> {
+        use rss_reconcile::{DurableStore, ReconcileStep, Reconciler};
+        let timer = rss_mdm_device_service::control::recovery::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control =
+            rss_reconcile::Control::new(&timer, std::time::Duration::from_secs(15), &cancel);
+        let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
+        let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+        let worker = group::runtime::GroupWork::new(self.groups.clone(), schedule.clone());
+        let target = group::tasks::target(c.tenant, task);
+        let mut batch = schedule
+            .claim_due(
+                target.scope(),
+                64,
+                std::time::Duration::from_secs(30),
+                &control,
+            )
+            .await?;
+        let index = batch
+            .claims
+            .iter()
+            .position(|claim| claim.target() == &target)
+            .expect("accepted task has a durable target");
+        let claim = batch.claims.swap_remove(index);
+        for _ in 0..8 {
+            let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
+                anyhow::bail!("Group observation deferred")
+            };
+            if diff.drift() == rss_reconcile::DriftKind::Converged {
+                break;
+            }
+            worker.apply(&claim, diff, &control).await?;
+        }
+        let (completed,failure):(bool,Option<String>)=sqlx::query_as("SELECT completed,failure FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(task).fetch_one(&c.operator).await?;
+        pool.close().await;
+        anyhow::ensure!(
+            completed && failure.is_none(),
+            "Group task did not publish: {completed}, {failure:?}"
+        );
+        Ok(())
     }
 }
 async fn scope(c: &Context, groups: &[Uuid]) -> Result<Uuid> {

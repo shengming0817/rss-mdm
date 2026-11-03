@@ -10,11 +10,6 @@ pub enum Command {
     GroupRead {
         id: Uuid,
     },
-    GroupPreview {
-        id: Uuid,
-        operation: Uuid,
-        expected_revision: u64,
-    },
     GroupPage {
         group: Uuid,
         result: Uuid,
@@ -86,9 +81,7 @@ impl Groups {
             Ok(())
         };
         match command {
-            Command::Group { id, .. }
-            | Command::GroupRead { id }
-            | Command::GroupPreview { id, .. } => audit.resource_target(
+            Command::Group { id, .. } | Command::GroupRead { id } => audit.resource_target(
                 rss_mdm_audit_integration::TargetKind::Group,
                 &id.to_string(),
             ),
@@ -103,10 +96,7 @@ impl Groups {
         authorize()?;
         let budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
-        let candidate = if matches!(
-            command,
-            Command::Group { .. } | Command::GroupPreview { .. }
-        ) {
+        let candidate = if matches!(command, Command::Group { .. }) {
             Some(
                 rss_mdm_inventory_service::assets::cut::capture(
                     &self.audit_store,
@@ -217,16 +207,12 @@ impl Groups {
                             )?,
                         });
                     }
-                    if matches!(
-                        command,
-                        Command::Group { .. } | Command::GroupPreview { .. }
-                    ) {
+                    if matches!(command, Command::Group { .. }) {
                         s.check_task_transaction(tx)?;
                     }
                     authorize()?;
                     let operation = match command {
                         Command::Group { change, .. } => Some(change.operation_id),
-                        Command::GroupPreview { operation, .. } => Some(*operation),
                         _ => None,
                     };
                     if operation.is_some_and(|id| id.is_nil()) {
@@ -269,29 +255,6 @@ impl Groups {
                             .await?
                         }
                         Command::GroupRead { id } => s.group_read(tx, *id).await?,
-                        Command::GroupPreview {
-                            id,
-                            operation,
-                            expected_revision,
-                        } => {
-                            let accepted = s
-                                .start_group_job_in(
-                                    tx,
-                                    GroupStart {
-                                        asset_cut: candidate.ok_or(Error::Conflict)?.clone(),
-                                        authority: authority.clone(),
-                                        id: *id,
-                                        task: *operation,
-                                        expected: *expected_revision,
-                                        patch: None,
-                                        publish: false,
-                                        automatic: false,
-                                        at,
-                                    },
-                                )
-                                .await?;
-                            json(&accepted)?
-                        }
                         Command::GroupPage {
                             group,
                             result,
