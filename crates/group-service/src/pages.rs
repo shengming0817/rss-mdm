@@ -155,8 +155,25 @@ impl Groups {
                         .await?,
                 )?
                 .items;
-                let more = items.len() > query.limit();
+                let mut more = items.len() > query.limit();
                 items.truncate(query.limit());
+                // A short page may be byte-truncated. A bounded lookahead proves EOF
+                // without dropping the continuation or requiring an extra empty UI page.
+                if !more && let Some(last) = items.last() {
+                    more = !checked(
+                        self.groups
+                            .build_decisions_in(
+                                tx,
+                                id,
+                                Some(last.device.clone()),
+                                1,
+                                rss_mdm_group::limits::BATCH_BYTES,
+                            )
+                            .await?,
+                    )?
+                    .items
+                    .is_empty();
+                }
                 let next = if more {
                     items.last().map(|item| item.device.clone())
                 } else {

@@ -109,6 +109,27 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
             .await,
         Err(rss_mdm_scope_service::Error::Forbidden)
     ));
+    let da_access = c
+        .access()
+        .for_product(rss_mdm_audit_integration::StorageProfile::Da);
+    let da = rss_mdm_authorization_service::session::SessionAuthority::new(
+        c.authority.clone(),
+        c.tenant,
+    )
+    .authenticate(&da_access, account.credential()?)
+    .await?;
+    da.manage(P::ScopeRead)?;
+    let da_audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::StorageProfile::Da,
+        c.tenant.to_string(),
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    da.bind_audit(&da_audit)?;
+    assert!(matches!(
+        scopes.preview(&da, &request, &da_audit).await,
+        Err(rss_mdm_scope_service::Error::Forbidden)
+    ));
     // The same previously authenticated principal cannot retain a revoked grant.
     sqlx::query("UPDATE mdm_access.authorization_rules SET document=NULL,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string()).bind(account.rule).execute(&c.operator).await?;
@@ -322,7 +343,106 @@ async fn frozen_membership_does_not_follow_current_heads() -> Result<()> {
             .await
             .is_err()
     );
+    let deleted_cut = Uuid::new_v4();
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,2)")
+        .bind(c.tenant.to_string()).bind(deleted_cut).bind(published.cut.to_json()).execute(&mut *connection).await?;
+    let deleted = reader
+        .memberships_at(
+            &mut connection,
+            c.tenant,
+            deleted_cut,
+            &object.members[0].device,
+            Channel::Mdm,
+            16 * 1024,
+        )
+        .await?
+        .unwrap();
+    assert!(
+        deleted.0.is_empty(),
+        "a tombstone inside the cut must not resurrect the old membership"
+    );
     drop(connection);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: draft and publication agree on absence in a complete frozen Group set"]
+async fn frozen_set_absence_matches_formal_scope_publication() -> Result<()> {
+    use rss_mdm_scope_service::{Command, ScopeChange, operation::Operation, pages};
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[
+            P::ScopeRead,
+            P::ScopeWrite,
+            P::InventoryRead,
+            P::GroupRead,
+            P::GroupWrite,
+            P::GroupRecompute,
+        ])
+        .await?;
+    let p = c.authenticate(&account).await?;
+    let owners = Owners::open(&c).await?;
+    let scopes = crate::scope_t2::open(&c).await?;
+    planning::endpoint(&c).await?;
+    let empty = owners.create(&c, &p, None).await?;
+    let condition = serde_json::from_value(
+        json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"group","groupId":empty,"op":"member_of"}}),
+    )?;
+    let group = owners.create(&c, &p, Some(condition)).await?;
+    super::preview::publish(&owners, &c, &p, group).await?;
+    let new = planning::endpoint(&c).await?;
+    let draft = Request {
+        definition: ScopeDefinition {
+            targets: BTreeSet::from([Reference::Device(new.members[0].device.clone())]),
+            limitations: None,
+            exclusions: BTreeSet::from([Reference::Group(group)]),
+        },
+        channel: Channel::Mdm,
+        editing: None,
+    };
+    let preview = scopes.preview(&p, &draft, &c.request(&p)?).await?;
+    assert_eq!(preview.items, vec![new.object.clone()]);
+    assert!(preview.scan_complete && !preview.has_unknown);
+    let id = Uuid::new_v4();
+    let receipt = scopes
+        .execute(
+            &Command::Scope {
+                id,
+                change: Operation {
+                    operation_id: Uuid::new_v4(),
+                    expected_revision: 0,
+                    input: ScopeChange::Put {
+                        definition: draft.definition.clone(),
+                    },
+                },
+            },
+            &c.request(&p)?,
+            &p,
+        )
+        .await?;
+    let task = Uuid::parse_str(receipt["task"].as_str().unwrap())?;
+    for _ in 0..20 {
+        crate::scope_t2::advance(&scopes, task, &preview.asset_cut, false).await?;
+    }
+    let page = scopes
+        .page(
+            &p,
+            &pages::PageRequest {
+                scope: id,
+                result: task,
+                projection: pages::ScopePageKind::Members,
+                query: pages::ResultQuery::parse("channel=mdm")?,
+            },
+            &c.request(&p)?,
+        )
+        .await?;
+    assert_eq!(
+        page["page"]["items"],
+        json!([{"object":new.object,"available":true}])
+    );
+    drop(scopes);
+    drop(owners);
     c.close().await;
     Ok(())
 }

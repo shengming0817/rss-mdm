@@ -399,6 +399,41 @@ async fn source_evidence_budget_retries_a_smaller_page() -> Result<()> {
         .await?;
     assert_eq!(result.items.len(), 17);
     assert!(result.scan_complete);
+    let mut cursor = None;
+    let mut objects = std::collections::BTreeSet::new();
+    let mut pages = 0;
+    loop {
+        let query = format!(
+            "limit=20{}",
+            cursor
+                .as_ref()
+                .map_or(String::new(), |c| format!("&cursor={c}"))
+        );
+        let page = owners
+            .groups
+            .execute(
+                &group::Command::GroupPage {
+                    group: id,
+                    result: run,
+                    projection: group::pages::GroupPageKind::Decisions,
+                    query: group::pages::SCHEMA.parse(&query)?.0,
+                },
+                &c.request(&proof)?,
+                &proof,
+            )
+            .await?;
+        for item in page["page"]["items"].as_array().unwrap() {
+            assert!(objects.insert(serde_json::to_string(&item["object"])?));
+        }
+        pages += 1;
+        assert!(pages <= 3);
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(objects.len(), 17);
+    assert_eq!(pages, 2);
     drop(owners);
     c.close().await;
     Ok(())

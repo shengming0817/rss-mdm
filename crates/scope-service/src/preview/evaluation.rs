@@ -327,7 +327,10 @@ impl Scopes {
                     }
                     for (input, key) in objects.into_iter().zip(keys) {
                         match outcomes.outcomes.get(&key) {
-                            Some(rss_mdm_group::Outcome::NoMatch) => {}
+                            // Scope consumes a complete frozen set, exactly as source_page_in:
+                            // absent records are absent members. Group rule nesting separately
+                            // treats a missing evaluation as Unknown in its own owner.
+                            None | Some(rss_mdm_group::Outcome::NoMatch) => {}
                             outcome => rows.push(SourceRow {
                                 source: index,
                                 unknown: !matches!(outcome, Some(rss_mdm_group::Outcome::Match)),

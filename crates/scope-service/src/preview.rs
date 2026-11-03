@@ -63,7 +63,8 @@ impl Scopes {
         request: &Request,
         audit: &RequestAudit,
     ) -> std::result::Result<Response, Error> {
-        if proof.tenant_id() != self.tenant.to_string()
+        if audit.profile() != self.profile()
+            || proof.tenant_id() != self.tenant.to_string()
             || proof.initialization_authority().is_some()
         {
             return Err(Error::Forbidden);

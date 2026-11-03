@@ -17,7 +17,7 @@ pub(crate) async fn open(c: &Context) -> Result<Arc<Scopes>> {
     )
     .await?)
 }
-async fn advance(
+pub(crate) async fn advance(
     s: &Scopes,
     id: Uuid,
     cut: &rss_mdm_inventory::AssetCut,
