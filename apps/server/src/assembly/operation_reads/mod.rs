@@ -465,7 +465,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                     let reauthorization=row.get("reauthorization").cloned().map(serde_json::from_value).transpose().map_err(|_|Error::Unavailable(Failure::CommandInvariant))?;
                     let metadata:Metadata=serde_json::from_value(row).map_err(|_|Error::Unavailable(Failure::CommandInvariant))?;
                     let evidence=if !q.selects("evidence"){None}else{Some(match metadata.kind{
-                        KindOfOperation::Command=>Evidence::Native(Box::new(s.detail_on(c,p,grant,now,&metadata.device,metadata.id,true).await?)),
+                        KindOfOperation::Command=>Evidence::Native { detail: Box::new(s.detail_on(c,p,grant,now,&metadata.device,metadata.id,true).await?) },
                         KindOfOperation::ActionRun=>{
                             if let Some(v)=execution.remove(&metadata.id){Evidence::Device(v)}
                             else if let Some(v)=software.remove(&metadata.id){Evidence::Software(v)}
