@@ -92,11 +92,7 @@ pub async fn state_on(
         let state = if !capacity {
             S::CapacityBusy
         } else if candidate.available > now {
-            if schedule.window.is_some() {
-                S::OutsideWindow
-            } else {
-                S::Scheduled
-            }
+            waiting_time_reason(schedule, now, target.device.as_bytes())?
         } else {
             S::WaitingCheckIn
         };
@@ -149,4 +145,56 @@ pub async fn state_on(
         TaskAdmission::new(state, None).not_before(next),
         CurrentRecord::Unknown,
     ))
+}
+
+// Ask the production window calculator about now with jitter disabled. Merely configuring
+// a window does not make an otherwise open window the cause of a jitter delay.
+fn waiting_time_reason(
+    schedule: &rss_mdm_policy::schedule::Schedule,
+    now: i64,
+    identity: &[u8],
+) -> Result<S> {
+    let mut window = schedule.clone();
+    window.jitter_seconds = 0;
+    Ok(
+        if window.window.is_some()
+            && window
+                .occurrence(now, identity)?
+                .is_none_or(|slot| slot.available_at > now)
+        {
+            S::OutsideWindow
+        } else {
+            S::Scheduled
+        },
+    )
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn an_open_window_does_not_turn_jitter_into_an_outside_window_reason() {
+        let mut schedule:rss_mdm_policy::schedule::Schedule=serde_json::from_value(serde_json::json!({
+            "trigger":{"kind":"interval","anchor":0,"seconds":60},"notBefore":0,"until":null,
+            "jitterSeconds":60,"window":{"zone":"UTC","weekdays":[1,2,3,4,5,6,7],"startMinute":0,"endMinute":1440}
+        })).unwrap();
+        let now = (0..60)
+            .find(|at| {
+                schedule
+                    .occurrence(*at, b"device")
+                    .unwrap()
+                    .unwrap()
+                    .available_at
+                    > *at
+            })
+            .unwrap();
+        assert_eq!(
+            waiting_time_reason(&schedule, now, b"device").unwrap(),
+            S::Scheduled
+        );
+        schedule.window.as_mut().unwrap().start_minute = 60;
+        assert_eq!(
+            waiting_time_reason(&schedule, now, b"device").unwrap(),
+            S::OutsideWindow
+        );
+    }
 }
