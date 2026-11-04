@@ -104,10 +104,6 @@ pub(crate) struct Candidate {
     pub coordinate: i64,
 }
 /// Pure production trigger/slot selection, also consumed by read-only explanations.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the owner's existing trigger facts stay explicit"
-)]
 pub(crate) fn candidate(
     policy: &ScriptPolicy,
     target: &Target,

@@ -33,7 +33,7 @@ impl super::inputs::Inputs {
                 if !super::policy::agent_source_on(c, self.tenant, target).await? {
                     return Ok(waiting(S::ReportSourceUnavailable));
                 }
-                super::eligibility::check_on(
+                let assessment = super::eligibility::assessment_on(
                     c,
                     self.tenant,
                     store,
@@ -42,7 +42,14 @@ impl super::inputs::Inputs {
                     action.input.architecture,
                     &action.definition,
                 )
-                .await?
+                .await?;
+                match assessment {
+                    super::eligibility::Assessment::Unknown => {
+                        return Ok(waiting(S::ChannelUnknown));
+                    }
+                    super::eligibility::Assessment::Eligible => true,
+                    super::eligibility::Assessment::Unsupported => false,
+                }
             }
             Published::NativeCollection { action, .. } => {
                 self.native

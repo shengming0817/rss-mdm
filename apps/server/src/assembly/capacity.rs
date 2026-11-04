@@ -13,7 +13,7 @@ pub(crate) async fn available_on(
     tenant: rss_request_context::TenantId,
     device: &str,
     now: i64,
-) -> Result<bool, PgError> {
+) -> Result<bool, sqlx::Error> {
     let execution =
         rss_mdm_device_service::control::capacity::active_count_on(c, tenant, device, now).await?;
     let script = rss_mdm_script_service::storage::active_count_on(c, tenant, device, now).await?;

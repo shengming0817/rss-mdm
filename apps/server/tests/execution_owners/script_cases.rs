@@ -164,3 +164,68 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
     assert!(summary["result"]["diagnostics"].get("stderr").is_none());
     h.close().await
 }
+
+#[tokio::test]
+#[ignore = "T2: periodic assignment separates historical success, current trigger evidence and scoped read permission without writes"]
+async fn periodic_assignment_keeps_history_separate_from_current_admission() -> Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_management_http::execution::task_reads::Reads;
+    let h = Harness::open().await?;
+    let result=async {
+        let (policy,version)=h.policy("periodic-assignment").await?;
+        let task=h.run(version,"periodic-assignment",now()+300).await?;
+        let offer=h.claim().await?;
+        h.event(&offer,w::TaskEvent::Received).await?;
+        h.event(&offer,w::TaskEvent::Start).await?;
+        let at=now();
+        h.event(&offer,w::TaskEvent::Result(w::TaskResult::new(Some(0),w::OutputQuality::Complete,json!({"ok":true}),w::TaskDiagnostics::new("private stdout".into(),"private stderr".into(),1,at,None)?,at)?)).await?;
+        let account=h.c.account(&[Permission::PolicyRead,Permission::InventoryRead,Permission::OperationRead]).await?;
+        let proof=h.c.authenticate(&account).await?;
+        let query=rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA.page(Some(10),None,4096)?;
+        let codec=rss_mdm_query::cursor::CursorCodec::new(&[9;32])?;
+        let read=||async {
+            Ok::<Value,anyhow::Error>(serde_json::to_value(Reads::assignments(h.a.task_reads.as_ref(),&proof,&h.c.request(&proof)?,policy,&query,&codec).await?)?)
+        };
+        let first=read().await?;
+        assert_eq!(first["items"].as_array().unwrap().len(),1);
+        let row=&first["items"][0];
+        assert!(row.get("operationIds").is_none());
+        assert_eq!(row["taskAdmission"]["state"],"waiting_trigger");
+        assert_eq!(row["execution"]["latestRun"]["taskId"],task.to_string());
+        assert_eq!(row["execution"]["latestRun"]["state"]["execution"],"succeeded");
+        assert_eq!(row["execution"]["currentRecord"]["state"],"unknown");
+        assert!(!first.to_string().contains("private stdout"));
+        let (d,f):(Value,Value)=sqlx::query_as("SELECT p.definition,v.frozen FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.id=$2").bind(h.c.tenant.to_string()).bind(policy).fetch_one(&h.c.operator).await?;
+        let mut d:rss_mdm_policy::Definition=serde_json::from_value(d)?;
+        let script::policy::Published::Execution{mut action,frequency}=serde_json::from_value(f)?;
+        let schedule=super::mixed::interval();
+        if let rss_mdm_policy::Action::Execution{schedule:s,..}=&mut d.action {*s=schedule.clone();}else{unreachable!()}
+        action.input.schedule=schedule;
+        let current=super::mixed::publish(&h,policy,2,d,serde_json::to_value(script::policy::Published::Execution{action,frequency})?).await?;
+        let before:(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_script.runs WHERE tenant_id=$1::uuid),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid)").bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?;
+        let next=read().await?;
+        assert_eq!(next["items"][0]["taskAdmission"]["state"],"waiting_check_in");
+        assert_eq!(next["items"][0]["execution"]["currentRecord"]["state"],"absent");
+        assert_eq!(next["items"][0]["execution"]["latestRun"]["versionId"],version.to_string());
+        assert_ne!(version,current);
+        let restricted=h.c.account(&[Permission::PolicyRead,Permission::InventoryRead]).await?;
+        let restricted=h.c.authenticate(&restricted).await?;
+        let restricted=serde_json::to_value(Reads::assignments(h.a.task_reads.as_ref(),&restricted,&h.c.request(&restricted)?,policy,&query,&codec).await?)?;
+        assert_eq!(restricted["items"][0]["execution"],json!({"kind":"restricted"}));
+        assert!(restricted["items"][0]["taskAdmission"].is_null());
+        assert_eq!(restricted["items"][0]["availability"],next["items"][0]["availability"]);
+        let after:(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_script.runs WHERE tenant_id=$1::uuid),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid)").bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?;
+        assert_eq!(before,after);
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_script.runs SET state=jsonb_set(state,'{execution}','\"unknown\"') WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(task).execute(&mut *tx).await?;
+        tx.commit().await?;
+        assert_eq!(read().await?["items"][0]["taskAdmission"]["state"],"effect_unknown");
+        let target=rss_mdm_registration_service::device::endpoints::PrimaryRegistration{device:h.p.device().into(),channel:rss_mdm_inventory::Channel::Agent,registration_id:h.p.registration(),generation:h.p.generation()+1};
+        let mut tx=command::seed_transaction(&h.c).await?;
+        assert!(script::queries::latest_assignment_on(&mut tx,h.c.tenant,policy,&target).await?.is_none());
+        tx.rollback().await?;
+        Ok(())
+    }.await;
+    h.close().await?;
+    result
+}

@@ -161,6 +161,19 @@ pub async fn require_on(
     target: &Target,
     frozen: &crate::FrozenScript,
 ) -> Result<Eligibility> {
+    let eligibility = check_on(
+        c,
+        tenant,
+        store.clone(),
+        target,
+        frozen.input.platform,
+        frozen.input.architecture,
+        frozen.executor_profile(),
+    )
+    .await?;
+    if eligibility != Eligibility::Eligible {
+        return Ok(eligibility);
+    }
     if let rss_mdm_resource::ScriptPurpose::Collection { applicability, .. } =
         &frozen.definition.spec().purpose
         && !collection_requirements_on(store.clone(), c, tenant, target, applicability).await?
@@ -185,14 +198,5 @@ pub async fn require_on(
     {
         return Ok(Eligibility::Ineligible);
     }
-    check_on(
-        c,
-        tenant,
-        store,
-        target,
-        frozen.input.platform,
-        frozen.input.architecture,
-        frozen.executor_profile(),
-    )
-    .await
+    Ok(Eligibility::Eligible)
 }

@@ -202,7 +202,7 @@ pub async fn run_summaries_on(
     let mut selected = select(true);
     selected.push(" AND r.id=ANY($2)");
     let mut query = sqlx::QueryBuilder::new("WITH selected AS MATERIALIZED (");
-    query.push(selected.sql()).push("),budget AS(SELECT coalesce(sum(octet_length(document::text)),0)::bigint AS bytes FROM selected) SELECT document,bytes FROM budget LEFT JOIN selected ON bytes<=16777216");
+    query.push(selected.sql().as_str()).push("),budget AS(SELECT coalesce(sum(octet_length(document::text)),0)::bigint AS bytes FROM selected) SELECT document,bytes FROM budget LEFT JOIN selected ON bytes<=16777216");
     let rows = query
         .build()
         .bind(tenant.to_string())

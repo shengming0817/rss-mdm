@@ -131,12 +131,19 @@ pub async fn state_on(
             )
         }
         Trigger::Registration => (S::WaitingCheckIn, None),
-        _ => (
-            S::Scheduled,
-            schedule
+        _ => {
+            let next = schedule
                 .next_after(now, target.device.as_bytes())?
-                .map(|o| o.available_at),
-        ),
+                .map(|o| o.available_at);
+            (
+                if next.is_some() {
+                    S::Scheduled
+                } else {
+                    S::WaitingTrigger
+                },
+                next,
+            )
+        }
     };
     Ok((
         TaskAdmission::new(state, None).not_before(next),

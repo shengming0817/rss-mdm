@@ -110,7 +110,7 @@ pub(super) async fn assignments(
 
             }
             if !recurring {execution=AssignmentExecution::Operations{operation_ids:operations};}
-            items.push(Assignment{object:object.object,channel:object.channel,availability:object.availability,reason:object.reason,target:object.target,qualification:object.admission,sources:object.sources,scope_result:object.scope_result,task_admission,execution});
+            items.push(Assignment{object:object.object,channel:Some(object.channel),availability:object.availability,reason:object.reason,target:object.target,qualification:object.admission,sources:object.sources,scope_result:Some(object.scope_result),task_admission,execution});
         }
 
         Ok(rss_mdm_management_http::execution::task_reads::AssignmentPage{items,next_cursor:rss_mdm_scope_service::window::next(codec,&binding,next).map_err(window)?})
