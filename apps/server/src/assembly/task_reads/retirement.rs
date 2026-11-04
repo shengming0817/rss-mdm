@@ -27,7 +27,7 @@ fn item(input: &DeviceAssignment, enabled: bool) -> Value {
         "availability":if enabled&&eligible{"ready"}else{"unavailable"},
         "reason":if !enabled {Some("policy_disabled")}else if !input.object.verified {Some("association_unverified")}else if !eligible{Some("scope_not_eligible")}else{None},
         "qualification":input.admission,"eligibility":input.admission,
-        "sources":[input.object],"scopeResult":input.scope_result,"taskAdmission":null,"operationIds":[]})
+        "sources":[input.object],"scopeResult":input.scope_result,"taskAdmission":null,"execution":{"kind":"operations","operationIds":[]}})
 }
 pub async fn assignments_on(
     s: &Reads,
@@ -53,7 +53,7 @@ pub async fn assignments_on(
             .iter()
             .any(|(_, v)| v["object"] == json!(object.object))
         {
-            rows.push((object.object.key(), json!({"object":object.object,"channel":null,"target":null,"availability":"unavailable","reason":"source_removed","qualification":{"state":"excluded"},"sources":[object],"scopeResult":null,"taskAdmission":null,"operationIds":[]})));
+            rows.push((object.object.key(), json!({"object":object.object,"channel":null,"target":null,"availability":"unavailable","reason":"source_removed","qualification":{"state":"excluded"},"sources":[object],"scopeResult":null,"taskAdmission":null,"execution":{"kind":"operations","operationIds":[]}})));
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0));
@@ -74,7 +74,8 @@ pub async fn assignments_on(
         let ids = rss_mdm_device_service::lifecycle::policy_operations_in(c, tenant, policy, &key)
             .await
             .map_err(Error::from)?;
-        value["operationIds"] = serde_json::to_value(ids).map_err(|_| Error::Malformed)?;
+        value["execution"]["operationIds"] =
+            serde_json::to_value(ids).map_err(|_| Error::Malformed)?;
         items.push(value);
     }
     decode(

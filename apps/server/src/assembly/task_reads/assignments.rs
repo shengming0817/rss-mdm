@@ -1,6 +1,12 @@
 use super::*;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_policy::Action;
+use rss_mdm_management_http::execution::task_reads::{
+    Assignment, AssignmentExecution, RecurringRun,
+};
+use rss_mdm_policy::{
+    Action,
+    pages::{CurrentRecord, TaskAdmission, TaskAdmissionState},
+};
 use serde_json::json;
 use uuid::Uuid;
 pub(super) async fn assignments(
@@ -41,9 +47,20 @@ pub(super) async fn assignments(
         for value in retired {let row:rss_mdm_scope_service::channels::AssignmentObject=serde_json::from_value(value).map_err(|_|Error::Malformed)?;if !objects.iter().any(|o|o.object==row.object){objects.push(row);}}
         objects.sort_by_key(|o|o.object.key());
         let more=objects.len()>limit;objects.truncate(limit);let next=if more {objects.last().map(|o|o.object.key())}else{None};
+        let script_policy=if matches!(p.definition.action,Action::Execution{..}) {
+            Some(rss_mdm_script_service::policy::read_on(c,&s.policy_reader,&p).await.map_err(script_fault)?)
+        }else{None};
+        let collection_policy=if matches!(p.definition.action,Action::AgentCollection{..}|Action::NativeCollection{..}) {
+            Some(rss_mdm_inventory_service::collection::execution::policy::read_on(c,&s.policy_reader,&p).await?)
+        }else{None};
+        let recurring=script_policy.is_some() || collection_policy.is_some();
         let mut items=Vec::new();
         for mut object in objects {
             let mut operations=Vec::new();let mut task_admission=None;
+            let mut execution=if recurring {
+                if object.target.is_none(){task_admission=Some(TaskAdmission::new(if !p.state.is_enabled(){TaskAdmissionState::Paused}else{TaskAdmissionState::MissingRegistration},None));}
+                AssignmentExecution::Recurring{latest_run:None,current_record:CurrentRecord::Unknown}
+            }else{AssignmentExecution::Operations{operation_ids:vec![]}};
             if !p.state.is_enabled() {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
             if let Some(target)=&object.target {
                 let device=&target.device;
@@ -65,16 +82,38 @@ pub(super) async fn assignments(
                 };
                 if object.availability==rss_mdm_scope_service::channels::Availability::Ready && task_admission.as_ref().is_some_and(|a|!a.is_eligible()) {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
                 if (object.availability==rss_mdm_scope_service::channels::Availability::Ready||object.reason.as_deref()==Some("policy_disabled")) && let Some(reason)=diagnosis {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some(reason);}
-                operations.extend(rss_mdm_script_service::queries::assignment_ids_on(c,tenant,id,target,channel).await.map_err(script_fault)?);
-                operations.extend(rss_mdm_inventory_service::collection::execution::queries::assignment_ids_on(c,tenant,id,target,channel).await?);
+                if recurring {
+                    if current.require(a,Permission::OperationRead,Some(device)).is_err() {
+                        execution=AssignmentExecution::Restricted;
+                        task_admission=None;
+                    }else{
+                        let capacity=super::super::capacity::available_on(c,tenant,device,now).await.map_err(|_|Error::Unavailable(Failure::Database))?;
+                        let (admission,current_record,latest_run)=if let Some(policy)=&script_policy {
+                            let target_state=rss_mdm_script_service::Target{device:device.clone(),registration:target.registration_id,generation:target.generation};
+                            let (admission,record)=rss_mdm_script_service::assignment::state_on(c,tenant,policy,&s.source,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await.map_err(script_fault)?;
+                            let latest=rss_mdm_script_service::queries::latest_assignment_on(c,tenant,id,target).await.map_err(script_fault)?.map(RecurringRun::Script);
+                            (admission,record,latest)
+                        }else{
+                            let policy=collection_policy.as_ref().ok_or(Error::Unavailable(Failure::CommandInvariant))?;
+                            let target_state=rss_mdm_inventory_service::collection::execution::model::Target{device:device.clone(),registration:target.registration_id,generation:target.generation};
+                            let source=super::super::collection_ports::Source(s.source.clone());
+                            let (admission,record)=s.collections.assignment_state_on(c,policy,&source,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await?;
+                            let latest=rss_mdm_inventory_service::collection::execution::queries::latest_assignment_on(c,tenant,id,target,channel).await?.map(RecurringRun::Collection);
+                            (admission,record,latest)
+                        };
+                        task_admission=Some(admission);
+                        execution=AssignmentExecution::Recurring{latest_run:latest_run.map(Box::new),current_record};
+                    }
+                }
                 operations.sort();
                 if operations.windows(2).any(|ids|ids[0]==ids[1]) {return Err(Error::Unavailable(Failure::CommandInvariant));}
 
             }
-            items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"qualification":object.admission,"sources":object.sources,"scopeResult":object.scope_result,"taskAdmission":task_admission,"operationIds":operations}));
+            if !recurring {execution=AssignmentExecution::Operations{operation_ids:operations};}
+            items.push(Assignment{object:object.object,channel:object.channel,availability:object.availability,reason:object.reason,target:object.target,qualification:object.admission,sources:object.sources,scope_result:object.scope_result,task_admission,execution});
         }
 
-        serde_json::from_value(json!({"items":items,"nextCursor":rss_mdm_scope_service::window::next(codec,&binding,next).map_err(window)?})).map_err(|_|Error::Unavailable(Failure::CommandInvariant))
+        Ok(rss_mdm_management_http::execution::task_reads::AssignmentPage{items,next_cursor:rss_mdm_scope_service::window::next(codec,&binding,next).map_err(window)?})
         }.await?;
         Ok(page)
     })).await
