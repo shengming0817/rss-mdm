@@ -50,7 +50,7 @@ fn script(error: rss_mdm_script_service::Error) -> Error {
         S::Audit(_) => Error::Unavailable(Failure::Audit),
     }
 }
-fn script_fault(error: rss_mdm_script_service::transaction::Fault) -> Error {
+pub(super) fn script_fault(error: rss_mdm_script_service::transaction::Fault) -> Error {
     use rss_mdm_script_service::transaction::Fault as F;
     match error {
         F::Request(e) => script(e),

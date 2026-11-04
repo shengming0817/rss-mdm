@@ -29,6 +29,20 @@ pub enum NativeDelivery {
     Sent,
     Cancelled,
 }
+
+/// Report lifecycle, independent of report quality, asset projection and retirement certainty.
+/// The directory SQL mirrors this pure mapping and is checked against it on PostgreSQL.
+pub fn native_terminal_status(sealed: bool, reason: &str, result: &str) -> Option<&'static str> {
+    if !sealed {
+        return None;
+    }
+    Some(match reason {
+        "complete" if result == "failed" => "failed",
+        "complete" => "succeeded",
+        "timeout" => "expired",
+        _ => "cancelled",
+    })
+}
 pub struct NativeRun {
     pub id: Uuid,
     pub policy_version: Uuid,
@@ -56,4 +70,22 @@ pub struct NativeReport {
     pub result: String,
     pub reason: Option<String>,
     pub sealed_at: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::native_terminal_status;
+    #[test]
+    fn report_lifecycle_does_not_claim_projection_or_retirement_certainty() {
+        for (sealed, reason, result, expected) in [
+            (false, "timeout", "failed", None),
+            (true, "complete", "failed", Some("failed")),
+            (true, "complete", "snapshot", Some("succeeded")),
+            (true, "complete", "partial", Some("succeeded")),
+            (true, "timeout", "failed", Some("expired")),
+            (true, "revoked", "partial", Some("cancelled")),
+        ] {
+            assert_eq!(native_terminal_status(sealed, reason, result), expected);
+        }
+    }
 }

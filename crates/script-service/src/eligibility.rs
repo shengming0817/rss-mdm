@@ -144,16 +144,46 @@ pub async fn require_in(
     target: &Target,
     frozen: &crate::FrozenScript,
 ) -> Result<bool> {
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (target, frozen), |(target, frozen), c| {
+        Box::pin(async move {
+            Ok(require_on(c, tenant, store, target, frozen)
+                .await
+                .map(|v| v == Eligibility::Eligible))
+        })
+    })
+    .await?
+}
+pub async fn require_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    store: Arc<dyn agent_facts::Store>,
+    target: &Target,
+    frozen: &crate::FrozenScript,
+) -> Result<Eligibility> {
+    let eligibility = check_on(
+        c,
+        tenant,
+        store.clone(),
+        target,
+        frozen.input.platform,
+        frozen.input.architecture,
+        frozen.executor_profile(),
+    )
+    .await?;
+    if eligibility != Eligibility::Eligible {
+        return Ok(eligibility);
+    }
     if let rss_mdm_resource::ScriptPurpose::Collection { applicability, .. } =
         &frozen.definition.spec().purpose
-        && !collection_requirements_in(store.clone(), tx, target, applicability).await?
+        && !collection_requirements_on(store.clone(), c, tenant, target, applicability).await?
     {
-        return Ok(false);
+        return Ok(Eligibility::Ineligible);
     }
     let Some(binding) =
-        agent_facts::agent_binding_in(tx, store.clone(), target.registration).await?
+        agent_facts::agent_binding_on(c, tenant, store.clone(), target.registration).await?
     else {
-        return Ok(false);
+        return Ok(Eligibility::Unknown);
     };
     let platform = match frozen.input.platform {
         Platform::Windows => wire::TaskPlatform::Windows,
@@ -166,16 +196,7 @@ pub async fn require_in(
     )
     .is_err()
     {
-        return Ok(false);
+        return Ok(Eligibility::Ineligible);
     }
-    Ok(check_in(
-        tx,
-        store,
-        target,
-        frozen.input.platform,
-        frozen.input.architecture,
-        frozen.executor_profile(),
-    )
-    .await?
-        == Eligibility::Eligible)
+    Ok(Eligibility::Eligible)
 }

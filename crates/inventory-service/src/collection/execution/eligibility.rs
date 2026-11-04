@@ -97,6 +97,14 @@ pub async fn check_in(
     )
     .await?
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Assessment {
+    Eligible,
+    Unsupported,
+    Unknown,
+}
+
+/// The execution/preview boolean and the read explanation share this assessment.
 pub async fn check_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
@@ -106,13 +114,27 @@ pub async fn check_on(
     architecture: Architecture,
     definition: &rss_mdm_resource::AgentCollectionDefinition,
 ) -> Result<bool> {
+    Ok(
+        assessment_on(c, tenant, store, target, platform, architecture, definition).await?
+            == Assessment::Eligible,
+    )
+}
+pub async fn assessment_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    store: Arc<dyn agent_facts::Store>,
+    target: &Target,
+    platform: Platform,
+    architecture: Architecture,
+    definition: &rss_mdm_resource::AgentCollectionDefinition,
+) -> Result<Assessment> {
     if definition
         .spec()
         .mappings
         .values()
         .any(|m| m.counter_normalization.is_some())
     {
-        return Ok(false);
+        return Ok(Assessment::Unsupported);
     }
     let targets =
         agent_facts::agent_targets_on(c, tenant, store.clone(), vec![target.device.clone()])
@@ -121,19 +143,25 @@ pub async fn check_on(
         .into_iter()
         .find(|a| a.registration == target.registration && a.generation == target.generation)
     else {
-        return Ok(false);
+        return Ok(Assessment::Unknown);
     };
     let tenant = tenant.to_string();
     let registration = target.registration;
     let Some(announcement) = store.announcement(c, tenant, registration).await? else {
-        return Ok(false);
+        return Ok(Assessment::Unknown);
     };
     let environment = announcement.environment();
-    Ok(matches(
-        &agent.binding,
-        platform,
-        architecture,
-        definition,
-        environment,
-    ))
+    Ok(
+        if matches(
+            &agent.binding,
+            platform,
+            architecture,
+            definition,
+            environment,
+        ) {
+            Assessment::Eligible
+        } else {
+            Assessment::Unsupported
+        },
+    )
 }

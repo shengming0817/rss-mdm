@@ -127,6 +127,8 @@ pub enum Evidence {
     Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::Record),
     Access(rss_mdm_device_access_postgres::device_access::execution::queries::Record),
     Credential(rss_mdm_recovery_credentials::tasks::queries::Record),
+    Script(Box<rss_mdm_script_service::queries::Summary>),
+    Collection(Box<rss_mdm_inventory_service::collection::execution::queries::Summary>),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]

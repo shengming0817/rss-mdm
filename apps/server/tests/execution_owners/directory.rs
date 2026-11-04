@@ -82,3 +82,127 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
     h.close().await?;
     result
 }
+
+#[tokio::test]
+#[ignore = "T2: production HTTP directory includes Script and both Collection channels with matching statistics and authorization"]
+async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence() -> Result<()> {
+    use rss_mdm_authorization_service::context::RequestAuth;
+    use tower::ServiceExt;
+    let h = Harness::open().await?;
+    let result=async {
+        let (policy,version)=h.policy("directory-script").await?;
+        let script=h.run(version,"directory-script",now()+300).await?;
+        let (definition,frozen,_)=super::mixed::agent(&h)?;
+        let collection_policy=Uuid::new_v4();
+        let collection_version=super::mixed::publish(&h,collection_policy,1,definition,frozen).await?;
+        let collection=super::mixed::run(&h,collection_version,now()).await?;
+        let (native_policy,native,_)=super::retirement::native(&h,Some("timeout")).await?;
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_script.runs SET state=jsonb_set(jsonb_set(state,'{execution}','\"unknown\"'),'{startedAt}',to_jsonb($3::bigint)) WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(script).bind(now()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let account=h.c.account(&[Permission::OperationRead,Permission::PolicyRead,Permission::InventoryRead]).await?;
+        let proof=Arc::new(h.c.authenticate(&account).await?);
+        let operations:Arc<dyn Reads>=Arc::new(crate::assembly::operation_reads::Operations {
+            apple:Arc::new(rss_mdm_apple_channel::flow_store::Store{protection:h.a.resources.protection.clone()}),
+            tasks:h.a.task_reads.clone(),registration:h.a.registration.native.clone(),recovery:None,execution:h.a.service.clone(),
+        });
+        let router=rss_mdm_management_http::execution::http::read_routes().with_state::<()>(operations.clone())
+            .layer(axum::Extension(CursorCodec::new(&[8;32])?))
+            .layer(axum::Extension(RequestAuth{proof:proof.clone()}))
+            .layer(axum::Extension(h.c.request(&proof)?)).into_axum();
+        // Exercise the real mounted handlers and HTTP encoders over loopback transport.
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address=listener.local_addr()?;
+        let (stop,stopped)=tokio::sync::oneshot::channel::<()>();
+        let server=tokio::spawn(async move {
+            axum::serve(listener,router).with_graceful_shutdown(async{let _=stopped.await;}).await
+        });
+        let http=async {
+            let client=reqwest::Client::builder().timeout(std::time::Duration::from_secs(6)).build()?;
+            let base=format!("http://{address}");
+            let mut cursor=None::<String>;
+            let mut ids=std::collections::BTreeSet::new();
+            loop {
+                let mut query=vec![("limit".to_owned(),"1".into())];
+                if let Some(c)=&cursor{query.push(("cursor".into(),c.clone()));}
+                let response=client.get(format!("{base}/operations")).query(&query).send().await?;
+                assert_eq!(response.status(),reqwest::StatusCode::OK);
+                let value:Value=response.json().await?;
+                let rows=value["items"].as_array().unwrap();
+                assert_eq!(rows.len(),1);
+                let row=&rows[0];
+                let id=Uuid::parse_str(row["id"].as_str().unwrap())?;
+                assert!(ids.insert(id));
+                let owner=if id==script{"script"}else{"collection"};
+                assert_eq!(row["evidence"]["owner"],owner);
+                assert_eq!(row["kind"],"action_run");
+                assert!(row["evidence"].get("native").is_none());
+                if id==native{assert_eq!(row["status"],"expired");assert_eq!(row["evidence"]["report"]["reason"],"timeout");}
+                let policy=if id==script{policy}else if id==collection{collection_policy}else{native_policy};
+                assert_eq!(row["detailUrl"],format!("/api/v1/policies/{policy}/runs/{id}"));
+                cursor=value["nextCursor"].as_str().map(str::to_owned);
+                if cursor.is_none(){break;}
+                assert!(ids.len()<4);
+            }
+            assert_eq!(ids,[script,collection,native].into());
+            for (filter,count,unknown) in [
+                (String::new(),3,1),
+                (format!("device=={}",h.p.device()),2,1),
+                (format!("policy=={policy}"),1,1),
+                ("status==unknown".into(),1,1),
+                ("status==expired".into(),1,0),
+            ] {
+                let query=if filter.is_empty(){vec![]}else{vec![("filter",filter.as_str())]};
+                let page:Value=client.get(format!("{base}/operations")).query(&query).send().await?.error_for_status()?.json().await?;
+                let stats:Value=client.get(format!("{base}/operations/statistics")).query(&query).send().await?.error_for_status()?.json().await?;
+                assert_eq!(page["items"].as_array().unwrap().len(),count);
+                assert_eq!(stats["statistics"]["total"],count);
+                assert_eq!(stats["statistics"]["actionRuns"],count);
+                assert_eq!(stats["statistics"]["unknown"],unknown);
+            }
+            // Raw Agent Collection detail still requires its separate sensitive permission.
+            assert!(matches!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&proof,&h.c.request(&proof)?,collection_policy,collection).await,Err(rss_mdm_management_http::Error::Forbidden)));
+            assert!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&proof,&h.c.request(&proof)?,native_policy,native).await.is_ok());
+            let rule=rss_mdm_authorization_service::Rule{subject:rss_mdm_authorization_service::Subject::User{user:account.user.clone()},grants:vec![rss_mdm_authorization_service::Grant{operation:Permission::OperationRead,scope:rss_mdm_authorization_service::Scope::Device{id:h.p.device().into()}}]};
+            sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
+            let page:Value=client.get(format!("{base}/operations")).send().await?.error_for_status()?.json().await?;
+            assert_eq!(page["items"].as_array().unwrap().len(),2);
+            assert!(page["items"].as_array().unwrap().iter().all(|v|v["device"]==h.p.device()));
+            let stats:Value=client.get(format!("{base}/operations/statistics")).send().await?.error_for_status()?.json().await?;
+            assert_eq!(stats["statistics"]["total"],2);
+            Ok::<(),anyhow::Error>(())
+        }.await;
+        let _=stop.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(10),server).await???;
+        http?;
+        // A verified identity lacking OperationRead is rejected by the same production handler.
+        let denied=h.c.account(&[Permission::PolicyRead]).await?;
+        let denied=Arc::new(h.c.authenticate(&denied).await?);
+        let router=rss_mdm_management_http::execution::http::read_routes().with_state::<()>(operations)
+            .layer(axum::Extension(CursorCodec::new(&[8;32])?))
+            .layer(axum::Extension(RequestAuth{proof:denied.clone()}))
+            .layer(axum::Extension(h.c.request(&denied)?)).into_axum();
+        let response=router.oneshot(axum::http::Request::builder().uri("/operations").body(axum::body::Body::empty())?).await?;
+        assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN);
+        Ok(())
+    }.await;
+    h.close().await?;
+    result
+}
+
+#[tokio::test]
+#[ignore = "T2: PostgreSQL directory CASE and the native report owner share the exact terminal truth table"]
+async fn native_report_sql_matches_the_owner_terminal_projection() -> Result<()> {
+    let h = Harness::open().await?;
+    let result=async {
+        use rss_mdm_inventory_service::collection::execution::{model,queries};
+        for (sealed,reason,result) in [(false,"timeout","failed"),(true,"complete","failed"),(true,"complete","snapshot"),(true,"complete","partial"),(true,"timeout","failed"),(true,"revoked","partial")] {
+            let sql=format!("SELECT {} FROM (SELECT $1::bigint AS sealed_at,$2::text AS reason,$3::text AS result) report CROSS JOIN (SELECT 'sent'::text AS native_delivery) r",queries::NATIVE_STATUS_SQL);
+            let actual:String=sqlx::QueryBuilder::<sqlx::Postgres>::new(sql).build_query_scalar().bind(sealed.then_some(1i64)).bind(reason).bind(result).fetch_one(&h.c.operator).await?;
+            assert_eq!(actual,model::native_terminal_status(sealed,reason,result).unwrap_or("sent"));
+        }
+        Ok(())
+    }.await;
+    h.close().await?;
+    result
+}

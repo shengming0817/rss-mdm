@@ -46,9 +46,88 @@ pub async fn read_in(
         policy,
     })
 }
+/// Read the immutable execution material in the assignment's existing tenant snapshot.
+pub async fn read_on(
+    c: &mut sqlx::PgConnection,
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    policy: &rss_mdm_policy::Policy,
+) -> Result<ScriptPolicy> {
+    let version = checked(reader.version_on(c, policy.version).await?)?.ok_or(Error::NotFound)?;
+    if version.policy != policy.id {
+        return Err(Error::Conflict.into());
+    }
+    let Published::Execution { action, frequency } =
+        stored(serde_json::from_value(version.frozen))?;
+    Ok(ScriptPolicy {
+        id: policy.version,
+        owner: policy.id,
+        frozen: *action,
+        frequency,
+        active: policy.state.is_enabled(),
+        policy: policy.clone(),
+    })
+}
 impl ScriptPolicy {
     pub fn entry_source(&self) -> String {
         format!("scope:{}", self.policy.definition.scope)
+    }
+    async fn base_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        device: &str,
+        now: i64,
+    ) -> Result<Option<rss_mdm_policy::pages::TaskAdmission>> {
+        use rss_mdm_policy::pages::{TaskAdmission as A, TaskAdmissionState as S};
+        let schedule = &self.frozen.input.schedule;
+        let blocked = if !self.active {
+            Some(A::new(S::Paused, None))
+        } else if now < schedule.not_before {
+            Some(A::new(S::Scheduled, None).not_before(Some(schedule.not_before)))
+        } else if now >= schedule.ends_at() {
+            Some(A::new(S::ScheduleEnded, None))
+        } else if !rss_mdm_registration_service::lifecycle::work_allowed_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &tenant.to_string(),
+            device,
+        )
+        .await?
+        {
+            Some(A::new(S::LifecycleBlocked, None))
+        } else {
+            None
+        };
+        Ok(blocked)
+    }
+    fn scope_entry(
+        scope: rss_mdm_scope_service::channels::ScopeAdmission,
+    ) -> std::result::Result<i64, rss_mdm_policy::pages::TaskAdmission> {
+        use rss_mdm_policy::pages::{TaskAdmission as A, TaskAdmissionState as S};
+        match scope {
+            rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => Ok(entry),
+            rss_mdm_scope_service::channels::ScopeAdmission::Pending => {
+                Err(A::new(S::ScopePending, None))
+            }
+            rss_mdm_scope_service::channels::ScopeAdmission::Excluded => {
+                Err(A::new(S::OutsideScope, None))
+            }
+        }
+    }
+    /// Consume the Scope owner's qualification already read in this assignment snapshot.
+    /// This path never calls Scope's lock-taking execution admission entrypoint.
+    pub async fn entry_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        scope: rss_mdm_scope_service::channels::ScopeAdmission,
+        device: &str,
+        now: i64,
+    ) -> Result<std::result::Result<i64, rss_mdm_policy::pages::TaskAdmission>> {
+        if let Some(reason) = self.base_on(c, tenant, device, now).await? {
+            return Ok(Err(reason));
+        }
+        Ok(Self::scope_entry(scope))
     }
     pub async fn entry_in(
         &self,
@@ -57,44 +136,33 @@ impl ScriptPolicy {
         device: &str,
         now: i64,
     ) -> Result<Option<i64>> {
-        if !self.active
-            || now < self.frozen.input.schedule.not_before
-            || now >= self.frozen.input.schedule.ends_at()
-        {
-            return Ok(None);
-        }
+        crate::storage::lock_device(tx, device).await?;
         let tenant = tx.tenant_id();
-        let device = device.to_owned();
-        let source = service.source.clone();
-        let scope = self.policy.definition.scope;
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                Ok(async {
-                    if !rss_mdm_registration_service::lifecycle::work_allowed_in(
-                        rss_mdm_install_support::StorageProfile::Mdm,
-                        c,
-                        &tenant.to_string(),
-                        &device,
-                    )
-                    .await?
-                    {
-                        return Ok(None);
+        tx.with_connection_context(
+            &mut (self, device, service),
+            |(policy, device, service), c| {
+                Box::pin(async move {
+                    Ok(async {
+                        if policy.base_on(c, tenant, device, now).await?.is_some() {
+                            return Ok(None);
+                        }
+                        // Preserve the writer's Group/Scope/object fences and reuse its canonical qualification.
+                        let scope = service
+                            .source
+                            .admission_on(
+                                c,
+                                tenant,
+                                policy.policy.definition.scope,
+                                rss_mdm_inventory::Channel::Agent,
+                                device,
+                            )
+                            .await?;
+                        Ok(Self::scope_entry(scope).ok())
                     }
-                    Ok(
-                        match source
-                            .admission_on(c, tenant, scope, Channel::Agent, &device)
-                            .await?
-                        {
-                            rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => {
-                                Some(entry)
-                            }
-                            _ => None,
-                        },
-                    )
-                }
-                .await)
-            })
-        })
+                    .await)
+                })
+            },
+        )
         .await?
     }
     pub async fn authorized_in(

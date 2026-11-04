@@ -3,70 +3,70 @@ use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 pub(crate) struct Capacity;
 async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result<bool, PgError> {
     let tenant = tx.tenant_id();
-    let device = device.to_owned();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            let execution =
-                rss_mdm_device_service::control::capacity::active_count_on(c, tenant, &device, now)
-                    .await?;
-            let script =
-                rss_mdm_script_service::storage::active_count_on(c, tenant, &device, now).await?;
-            let collection =
-                rss_mdm_inventory_service::collection::execution::storage::active_count_on(
-                    c, tenant, &device, now,
-                )
-                .await?;
-            let software = rss_mdm_software_service::deployment::capacity::active_count_on(
-                c, tenant, &device, now,
-            )
-            .await?;
-            let registration =
-                rss_mdm_registration_service::enrollment::tasks::storage::active_count_on(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    c,
-                    tenant,
-                    &device,
-                    now,
-                )
-                .await?;
-            let access =
-                rss_mdm_device_access_postgres::device_access::execution::storage::active_count_on(
-                    c, tenant, &device, now,
-                )
-                .await?;
-            let credential_native =
-                rss_mdm_recovery_credentials::native::storage::active_count_on(c, tenant, &device)
-                    .await?;
-            let credential = rss_mdm_recovery_credentials::tasks::storage::active_count_on(
-                rss_mdm_install_support::StorageProfile::Mdm,
-                c,
-                tenant,
-                &device,
-                now,
-            )
-            .await?;
-            let da_credential = rss_mdm_recovery_credentials::tasks::storage::active_count_on(
-                rss_mdm_install_support::StorageProfile::Da,
-                c,
-                tenant,
-                &device,
-                now,
-            )
-            .await?;
-            Ok(execution
-                + da_credential
-                + script
-                + collection
-                + software
-                + registration
-                + access
-                + credential_native
-                + credential
-                < 128)
-        })
+    tx.with_connection_context(&mut (device,), |(device,), c| {
+        Box::pin(async move { available_on(c, tenant, device, now).await })
     })
     .await
 }
+pub(crate) async fn available_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    device: &str,
+    now: i64,
+) -> Result<bool, sqlx::Error> {
+    let execution =
+        rss_mdm_device_service::control::capacity::active_count_on(c, tenant, device, now).await?;
+    let script = rss_mdm_script_service::storage::active_count_on(c, tenant, device, now).await?;
+    let collection = rss_mdm_inventory_service::collection::execution::storage::active_count_on(
+        c, tenant, device, now,
+    )
+    .await?;
+    let software =
+        rss_mdm_software_service::deployment::capacity::active_count_on(c, tenant, device, now)
+            .await?;
+    let registration = rss_mdm_registration_service::enrollment::tasks::storage::active_count_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        tenant,
+        device,
+        now,
+    )
+    .await?;
+    let access =
+        rss_mdm_device_access_postgres::device_access::execution::storage::active_count_on(
+            c, tenant, device, now,
+        )
+        .await?;
+    let credential_native =
+        rss_mdm_recovery_credentials::native::storage::active_count_on(c, tenant, device).await?;
+    let credential = rss_mdm_recovery_credentials::tasks::storage::active_count_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        c,
+        tenant,
+        device,
+        now,
+    )
+    .await?;
+    let da_credential = rss_mdm_recovery_credentials::tasks::storage::active_count_on(
+        rss_mdm_install_support::StorageProfile::Da,
+        c,
+        tenant,
+        device,
+        now,
+    )
+    .await?;
+    Ok(execution
+        + da_credential
+        + script
+        + collection
+        + software
+        + registration
+        + access
+        + credential_native
+        + credential
+        < 128)
+}
+
 impl rss_mdm_device_service::control::capacity::DeviceCapacity for Capacity {
     fn available_in<'a>(
         &'a self,

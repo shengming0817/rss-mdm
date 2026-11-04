@@ -105,7 +105,32 @@ pub struct Assignment {
     pub sources: Vec<rss_mdm_scope_service::channels::DeviceObject>,
     pub scope_result: Option<Uuid>,
     pub task_admission: Option<rss_mdm_policy::pages::TaskAdmission>,
-    pub operation_ids: Vec<Uuid>,
+    pub execution: AssignmentExecution,
+}
+/// A single action-specific execution view; restricted never means that the device is ineligible.
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AssignmentExecution {
+    Operations {
+        operation_ids: Vec<Uuid>,
+    },
+    Recurring {
+        latest_run: Option<Box<RecurringRun>>,
+        current_record: rss_mdm_policy::pages::CurrentRecord,
+    },
+    Restricted,
+}
+/// Reuse the same redacted summaries as the original Policy history and global directory.
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RecurringRun {
+    Script(rss_mdm_script_service::queries::Summary),
+    Collection(rss_mdm_inventory_service::collection::execution::queries::Summary),
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -228,3 +228,75 @@ async fn native_detail_does_not_require_raw_evidence_permission() -> anyhow::Res
     ));
     h.close().await
 }
+
+#[tokio::test]
+#[ignore = "T2: Collection assignment interval follows actual starts and new versions without writing or reusing historical success"]
+async fn periodic_assignment_uses_actual_start_and_exact_current_version() -> anyhow::Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_management_http::execution::task_reads::Reads;
+    let h = Harness::open().await?;
+    let result=async {
+        let (definition,frozen,template)=super::mixed::agent(&h)?;
+        let announcement=w::TaskClaimRequest::new(Uuid::new_v4(),vec![w::ExecutorProfile::PowerShell7],context())?
+            .with_environment(rss_mdm_agent_wire::CollectionEnvironment{edition:None,tools:Default::default(),native_engines:template.spec().plan.requirements()})?;
+        assert!(h.delivery.claim(&h.p,&announcement,&request(&h.c)).await?.task().is_none());
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,'agent.native',$3,true) ON CONFLICT(tenant_id,registration,source) DO UPDATE SET enabled=true").bind(h.c.tenant.to_string()).bind(h.p.registration()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let policy=Uuid::new_v4();
+        let version=super::mixed::publish(&h,policy,1,definition.clone(),frozen.clone()).await?;
+        let account=h.c.account(&[Permission::PolicyRead,Permission::InventoryRead,Permission::OperationRead]).await?;
+        let proof=h.c.authenticate(&account).await?;
+        let query=rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA.page(Some(10),None,4096)?;
+        let codec=rss_mdm_query::cursor::CursorCodec::new(&[9;32])?;
+        let read=||async {Ok::<Value,anyhow::Error>(serde_json::to_value(Reads::assignments(h.a.task_reads.as_ref(),&proof,&h.c.request(&proof)?,policy,&query,&codec).await?)?)};
+        let first=read().await?;
+        assert_eq!(first["items"][0]["taskAdmission"]["state"],"waiting_check_in");
+        assert!(first["items"][0]["execution"]["latestRun"].is_null());
+        assert_eq!(first["items"][0]["execution"]["currentRecord"]["state"],"absent");
+        let created=now()-180;
+        let triggered=now()-90;
+        let started=now()-30;
+        let task=super::mixed::run(&h,version,created).await?;
+        let mut state=rss_mdm_task_state::RunState::new(created+300,created)?;
+        state.started_at=Some(started);
+        state.execution=rss_mdm_task_state::Execution::Succeeded;
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_inventory.collection_tasks SET agent_state=$3,triggered_at=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(task).bind(serde_json::to_value(state)?).bind(triggered).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let waiting=read().await?;
+        assert_eq!(waiting["items"][0]["taskAdmission"]["state"],"interval_not_elapsed");
+        assert_eq!(waiting["items"][0]["taskAdmission"]["nextAllowedStartAt"],started+3600);
+        assert_eq!(waiting["items"][0]["execution"]["latestRun"]["taskId"],task.to_string());
+        assert_eq!(waiting["items"][0]["execution"]["latestRun"]["state"]["execution"],"succeeded");
+        // Move the minimal historical fixture to a legal completed run whose interval is now due.
+        let created=created-3600;
+        let triggered=triggered-3600;
+        let started=started-3600;
+        let mut completed=rss_mdm_task_state::RunState::new(created+300,created)?;
+        completed.started_at=Some(started);
+        completed.execution=rss_mdm_task_state::Execution::Succeeded;
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_inventory.collection_tasks SET created_at=$3,available_at=$3,deadline=$4,triggered_at=$5,agent_state=$6 WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(h.c.tenant.to_string()).bind(task).bind(created).bind(created+300).bind(triggered).bind(serde_json::to_value(completed)?).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let due=read().await?;
+        assert_eq!(due["items"][0]["taskAdmission"]["state"],"waiting_check_in");
+        assert!(due["items"][0]["taskAdmission"].get("nextAllowedStartAt").is_none());
+        assert_eq!(due["items"][0]["execution"]["currentRecord"]["state"],"unknown");
+        assert_eq!(due["items"][0]["execution"]["latestRun"]["taskId"],task.to_string());
+        super::mixed::publish(&h,policy,2,definition,frozen).await?;
+        let next=read().await?;
+        assert_eq!(next["items"][0]["taskAdmission"]["state"],"waiting_check_in");
+        assert_eq!(next["items"][0]["execution"]["latestRun"]["versionId"],version.to_string());
+        let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid").bind(h.c.tenant.to_string()).fetch_one(&h.c.operator).await?;
+        assert_eq!(count,1);
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_policy.policies SET state='disabled' WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(policy).execute(&mut *tx).await?;
+        tx.commit().await?;
+        assert_eq!(read().await?["items"][0]["taskAdmission"]["state"],"paused");
+        Ok(())
+    }.await;
+    h.close().await?;
+    result
+}

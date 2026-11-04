@@ -25,31 +25,114 @@ pub(crate) fn register(
 ) -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     let router = {
         rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_task_trust_observation, get_task_trust_operation, get_task_trust, post_change_task_trust, post_create_recovery, ddm_routes, router_new, post_create, post_cancel, post_reauthorize } }
-        RegisterModule1 { get_task_trust_observation: rss_mdm_http_contract::module::Route::new("/task-signing/trust/devices/{device}/observation", get(task_trust_observation, &contracts::TASK_TRUST, &[RouteOperation::Get])),
-get_task_trust_operation: rss_mdm_http_contract::module::Route::new("/task-signing/operations/{id}", get(task_trust_operation, &contracts::TASK_TRUST_OPERATIONS, &[RouteOperation::Get])),
-get_task_trust: rss_mdm_http_contract::module::Route::new("/task-signing/trust", rss_mdm_http_contract::routing::get(task_trust, &contracts::TASK_TRUST, &[RouteOperation::Get])),
-post_change_task_trust: rss_mdm_http_contract::module::Route::new("/task-signing/trust", rss_mdm_http_contract::routing::post(change_task_trust, &contracts::TASK_TRUST, &[RouteOperation::Update])),
-post_create_recovery: rss_mdm_http_contract::module::Route::new("/devices/{device}/recovery-credentials/operations", post(create_recovery, &contracts::DEVICES,
-                &[RouteOperation::Action, RouteOperation::Create])),
-ddm_routes:{rss_mdm_http_contract::route_module!{struct DdmRoutes for [Browser]{get_ddm}} DdmRoutes{get_ddm:rss_mdm_http_contract::module::Route::new("/devices/{device}/ddm",get(ddm,&contracts::DEVICE_DECLARATIONS,&[RouteOperation::List]))}.assemble()}.bind_with(operations.as_ref(),Clone::clone),
-router_new: {
- rss_mdm_http_contract::route_module! { struct RegisterModule2 for [Browser] { get_directory, get_statistics, get_read } }
- RegisterModule2 { get_directory: rss_mdm_http_contract::module::Route::new("/operations", get(directory, &contracts::EXECUTIONS, &[RouteOperation::List])),
-get_statistics: rss_mdm_http_contract::module::Route::new("/operations/statistics", get(statistics, &contracts::EXECUTIONS, &[RouteOperation::Query])),
-get_read: rss_mdm_http_contract::module::Route::new("/devices/{device}/operations/{id}", get(read, &contracts::DEVICES, &[RouteOperation::Action])) }.assemble()
-}
-                .bind_with(operations.as_ref(), Clone::clone),
-post_create: rss_mdm_http_contract::module::Route::new("/devices/{device}/operations", post(create, &contracts::DEVICES,
-                &[RouteOperation::Action, RouteOperation::Create])),
-post_cancel: rss_mdm_http_contract::module::Route::new("/devices/{device}/operations/{id}/cancel", post(cancel, &contracts::DEVICES,
-                &[RouteOperation::Action, RouteOperation::Lifecycle])),
-post_reauthorize: rss_mdm_http_contract::module::Route::new("/devices/{device}/operations/{id}/reauthorize", post(reauthorize, &contracts::DEVICES,
-                &[RouteOperation::Action, RouteOperation::Lifecycle])) }.assemble()
+        RegisterModule1 {
+            get_task_trust_observation: rss_mdm_http_contract::module::Route::new(
+                "/task-signing/trust/devices/{device}/observation",
+                get(
+                    task_trust_observation,
+                    &contracts::TASK_TRUST,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_task_trust_operation: rss_mdm_http_contract::module::Route::new(
+                "/task-signing/operations/{id}",
+                get(
+                    task_trust_operation,
+                    &contracts::TASK_TRUST_OPERATIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_task_trust: rss_mdm_http_contract::module::Route::new(
+                "/task-signing/trust",
+                rss_mdm_http_contract::routing::get(
+                    task_trust,
+                    &contracts::TASK_TRUST,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_change_task_trust: rss_mdm_http_contract::module::Route::new(
+                "/task-signing/trust",
+                rss_mdm_http_contract::routing::post(
+                    change_task_trust,
+                    &contracts::TASK_TRUST,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            post_create_recovery: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/recovery-credentials/operations",
+                post(
+                    create_recovery,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
+            ),
+            ddm_routes: {
+                rss_mdm_http_contract::route_module! {struct DdmRoutes for [Browser]{get_ddm}}
+                DdmRoutes {
+                    get_ddm: rss_mdm_http_contract::module::Route::new(
+                        "/devices/{device}/ddm",
+                        get(
+                            ddm,
+                            &contracts::DEVICE_DECLARATIONS,
+                            &[RouteOperation::List],
+                        ),
+                    ),
+                }
+                .assemble()
+            }
+            .bind_with(operations.as_ref(), Clone::clone),
+            router_new: read_routes().bind_with(operations.as_ref(), Clone::clone),
+            post_create: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/operations",
+                post(
+                    create,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
+            ),
+            post_cancel: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/operations/{id}/cancel",
+                post(
+                    cancel,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            post_reauthorize: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/operations/{id}/reauthorize",
+                post(
+                    reauthorize,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+        }
+        .assemble()
     };
     match cursor {
         Some(cursor) => router.layer(Extension(cursor)),
         None => router,
     }
+}
+/// Read-only operation routes; the host supplies the original owners and request authority.
+pub fn read_routes()
+-> Router<Arc<dyn super::operations::Reads>, impl rss_mdm_http_contract::module::Declaration> {
+    rss_mdm_http_contract::route_module! { struct RegisterModule2 for [Browser] { get_directory, get_statistics, get_read } }
+    RegisterModule2 {
+        get_directory: rss_mdm_http_contract::module::Route::new(
+            "/operations",
+            get(directory, &contracts::EXECUTIONS, &[RouteOperation::List]),
+        ),
+        get_statistics: rss_mdm_http_contract::module::Route::new(
+            "/operations/statistics",
+            get(statistics, &contracts::EXECUTIONS, &[RouteOperation::Query]),
+        ),
+        get_read: rss_mdm_http_contract::module::Route::new(
+            "/devices/{device}/operations/{id}",
+            get(read, &contracts::DEVICES, &[RouteOperation::Action]),
+        ),
+    }
+    .assemble()
 }
 async fn directory(
     State(s): State<Arc<dyn super::operations::Reads>>,
