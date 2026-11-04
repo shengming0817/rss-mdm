@@ -164,18 +164,8 @@ pub async fn recover_one(
                 // A report is the only terminal authority; this event adds no second result state.
                 let result: String = row.try_get("result")?;
                 let reason: String = row.try_get("reason")?;
-                let status = if reason == "complete" {
-                    if result == "failed" {
-                        "failed"
-                    } else {
-                        "succeeded"
-                    }
-                } else if reason == "timeout" {
-                    // Native report deadlines are final; Script execution uncertainty is not.
-                    "expired"
-                } else {
-                    "cancelled"
-                };
+                let status = super::model::native_terminal_status(true, &reason, &result)
+                    .expect("sealed report has a terminal lifecycle status");
                 use rss_mdm_webhook_service::{events, model::*};
                 let event = Event {
                     event_id: events::identity(run.id, &format!("terminal:{status}")),

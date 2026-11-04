@@ -55,3 +55,5 @@ pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub mod preview;
 
 pub mod queries;
+
+pub mod assignment;

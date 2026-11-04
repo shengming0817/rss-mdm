@@ -28,9 +28,76 @@ pub async fn read_in(
         policy,
     })
 }
+/// Read the immutable execution material in the assignment's existing tenant snapshot.
+pub async fn read_on(
+    c: &mut sqlx::PgConnection,
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    policy: &rss_mdm_policy::Policy,
+) -> Result<CollectionPolicy> {
+    let version = checked(reader.version_on(c, policy.version).await?)?.ok_or(Error::NotFound)?;
+    if version.policy != policy.id {
+        return Err(Error::Conflict.into());
+    }
+    Ok(CollectionPolicy {
+        id: policy.version,
+        owner: policy.id,
+        frozen: stored(serde_json::from_value(version.frozen))?,
+        active: policy.state.is_enabled(),
+        policy: policy.clone(),
+    })
+}
 impl CollectionPolicy {
     pub fn entry_source(&self) -> String {
         format!("scope:{}", self.policy.definition.scope)
+    }
+    /// Same Policy/lifecycle/Scope facts used by mutation and read-only explanations.
+    pub async fn entry_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        source: &dyn super::participants::TargetAdmission,
+        device: &str,
+        now: i64,
+    ) -> Result<std::result::Result<i64, rss_mdm_policy::pages::TaskAdmission>> {
+        use rss_mdm_policy::pages::{TaskAdmission as A, TaskAdmissionState as S};
+        let schedule = &self.frozen.input().schedule;
+        let blocked = if !self.active {
+            Some(A::new(S::Paused, None))
+        } else if now < schedule.not_before {
+            Some(A::new(S::Scheduled, None).not_before(Some(schedule.not_before)))
+        } else if now >= schedule.ends_at() {
+            Some(A::new(S::ScheduleEnded, None))
+        } else if !rss_mdm_registration_service::lifecycle::work_allowed_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            c,
+            &tenant.to_string(),
+            device,
+        )
+        .await?
+        {
+            Some(A::new(S::LifecycleBlocked, None))
+        } else {
+            None
+        };
+        if let Some(reason) = blocked {
+            return Ok(Err(reason));
+        }
+        Ok(
+            match source
+                .admission_on(
+                    c,
+                    tenant,
+                    self.policy.definition.scope,
+                    self.frozen.channel(),
+                    device,
+                )
+                .await?
+            {
+                Admission::Eligible { entry } => Ok(entry),
+                Admission::Pending => Err(A::new(S::ScopePending, None)),
+                Admission::Excluded => Err(A::new(S::OutsideScope, None)),
+            },
+        )
     }
     pub async fn entry_in(
         &self,
@@ -39,41 +106,20 @@ impl CollectionPolicy {
         device: &str,
         now: i64,
     ) -> Result<Option<i64>> {
-        let input = self.frozen.input();
-        if !self.active || now < input.schedule.not_before || now >= input.schedule.ends_at() {
-            return Ok(None);
-        }
-        let source = service.source.clone();
+        // Mutation callers retain the original lifecycle fence; read-only callers never lock.
+        super::storage::lock_device(tx, device).await?;
         let tenant = tx.tenant_id();
-        let scope = self.policy.definition.scope;
-        let channel = self.frozen.channel();
-        let device = device.to_owned();
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                Ok(async {
-                    if !rss_mdm_registration_service::lifecycle::work_allowed_in(
-                        rss_mdm_install_support::StorageProfile::Mdm,
-                        c,
-                        &tenant.to_string(),
-                        &device,
-                    )
-                    .await?
-                    {
-                        return Ok(None);
-                    }
-                    Ok(
-                        match source
-                            .admission_on(c, tenant, scope, channel, &device)
-                            .await?
-                        {
-                            Admission::Eligible { entry } => Some(entry),
-                            _ => None,
-                        },
-                    )
-                }
-                .await)
-            })
-        })
+        tx.with_connection_context(
+            &mut (self, device, service),
+            |(policy, device, service), c| {
+                Box::pin(async move {
+                    Ok(policy
+                        .entry_on(c, tenant, service.source.as_ref(), device, now)
+                        .await
+                        .map(|entry| entry.ok()))
+                })
+            },
+        )
         .await?
     }
     pub async fn run_admission_in(
@@ -164,10 +210,20 @@ impl CollectionPolicy {
         Ok(self.active && agent_source_in(tx, target).await?)
     }
 }
+pub async fn agent_source_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    target: &Target,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='agent.native' AND enabled)")
+        .bind(tenant.to_string()).bind(target.registration).fetch_one(c).await?)
+}
 pub async fn agent_source_in(tx: &mut PgTransaction<'_>, target: &Target) -> Result<bool> {
-    let tenant = tx.tenant_id().to_string();
-    let registration = target.registration;
-    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='agent.native' AND enabled)").bind(tenant).bind(registration).fetch_one(c).await})).await?)
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (target,), |(target,), c| {
+        Box::pin(async move { Ok(agent_source_on(c, tenant, target).await) })
+    })
+    .await?
 }
 
 impl CollectionPolicy {

@@ -119,6 +119,35 @@ pub async fn save_run(
 
 /// The caller holds the device fence across this check and admission. Unknown is
 /// intentionally independent of Policy, version, registration, deadline and cancellation.
+pub struct Pending {
+    pub unknown: Option<Uuid>,
+    pub active: Option<Uuid>,
+    pub last: Option<i64>,
+}
+impl Pending {
+    pub fn blocked(&self) -> bool {
+        self.unknown.is_some() || self.active.is_some()
+    }
+}
+/// Shared read used by the locked admission and the read-only assignment explanation.
+pub async fn pending_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    policy: Uuid,
+    version: Uuid,
+    target: &crate::Target,
+    resource_id: &str,
+    now: i64,
+) -> Result<Pending> {
+    let (unknown, active, last) = sqlx::query_as("WITH candidates AS (SELECT r.id,(r.resource_id=$3 AND (r.state->>'execution'='unknown' OR (r.state->>'execution'='running' AND r.deadline<=$7))) AS unknown,(v.policy=$4 AND r.registration=$6 AND r.state->>'cancellation'<>'confirmed' AND (r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$7))) AS active FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND r.device=$2) SELECT (SELECT id FROM candidates WHERE unknown ORDER BY id LIMIT 1),(SELECT id FROM candidates WHERE active ORDER BY id LIMIT 1),(SELECT max(created_at) FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND policy_version=$5 AND registration=$6)")
+        .bind(tenant.to_string()).bind(&target.device).bind(resource_id).bind(policy).bind(version)
+        .bind(target.registration).bind(now).fetch_one(c).await?;
+    Ok(Pending {
+        unknown,
+        active,
+        last,
+    })
+}
 pub async fn pending_in(
     tx: &mut PgTransaction<'_>,
     policy: Uuid,
@@ -127,14 +156,17 @@ pub async fn pending_in(
     resource_id: &str,
     now: i64,
 ) -> Result<(bool, Option<i64>)> {
-    let tenant = tx.tenant_id().to_string();
-    let target = target.clone();
-    let resource = resource_id.to_owned();
-    Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND ((r.resource_id=$3 AND (r.state->>'execution'='unknown' OR (r.state->>'execution'='running' AND r.deadline<=$7))) OR (v.policy=$4 AND r.registration=$6 AND r.state->>'cancellation'<>'confirmed' AND (r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$7))))), (SELECT max(created_at) FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND policy_version=$5 AND registration=$6)")
-            .bind(tenant).bind(target.device).bind(resource).bind(policy).bind(version)
-            .bind(target.registration).bind(now).fetch_one(c).await
-    })).await?)
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (target, resource_id), |(target, resource), c| {
+        Box::pin(async move {
+            Ok(
+                pending_on(c, tenant, policy, version, target, resource, now)
+                    .await
+                    .map(|p| (p.blocked(), p.last)),
+            )
+        })
+    })
+    .await?
 }
 
 pub async fn active_count_on(

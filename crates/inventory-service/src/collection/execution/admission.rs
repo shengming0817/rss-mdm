@@ -54,76 +54,35 @@ pub async fn accept_for_device(
     if pending && !matches!(trigger, TriggerInput::Custom { .. }) {
         return Ok(());
     }
-    let tenant = tx.tenant_id().to_string();
-    let version = policy.id;
-    let device = target.device.clone();
+    let tenant = tx.tenant_id();
     let explicit_allowed = matches!(trigger, TriggerInput::Agent(_) | TriggerInput::Scheduled);
-    let explicit = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as::<_, (Uuid,i64,i64)>("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND $5 AND NOT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1")
-            .bind(tenant).bind(version).bind(device).bind(now).bind(explicit_allowed).fetch_optional(c).await
-    })).await?;
-    let schedule = &policy.frozen.input().schedule;
-    let (coordinate, event) = if let TriggerInput::Custom { request, at, .. } = trigger {
-        (at, format!("event:{request}"))
-    } else if let Some((request, at, _)) = explicit {
-        (at, format!("explicit:{request}"))
-    } else {
-        match (&schedule.trigger, trigger) {
-            (Trigger::Manual, _) => return Ok(()),
-            (Trigger::CheckIn { .. }, TriggerInput::Agent(request)) => {
-                if !check_in_interval_elapsed(&schedule.trigger, last, now) {
-                    return Ok(());
-                }
-                (now, format!("checkin:{request}"))
-            }
-            (Trigger::CheckIn { .. }, TriggerInput::CheckIn { event, at }) => {
-                if !check_in_interval_elapsed(&schedule.trigger, last, at) {
-                    return Ok(());
-                }
-                (at, format!("checkin:{event}"))
-            }
-            (Trigger::Registration, TriggerInput::Agent(_)) => {
-                (now, format!("registration:{}", target.registration))
-            }
-            (Trigger::Registration, TriggerInput::Registration { at }) => {
-                (at, format!("registration:{}", target.registration))
-            }
-            (Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. }, _) => {
-                let started = storage::last_started_in(tx, policy.id, target).await?;
-                let Some(due) = schedule.collection_due(started, now, target.device.as_bytes())?
-                else {
-                    return Ok(());
-                };
-                (due.coordinate, format!("timer:{}", due.coordinate))
-            }
-            _ => return Ok(()),
-        }
-    };
-    let occurrence = if explicit.is_some() {
-        event.clone()
-    } else {
-        policy_occurrence(
-            policy.frozen.frequency(),
-            target,
-            &policy.entry_source(),
-            entry,
-            &event,
-        )
-    };
-    let Some(slot) = schedule.occurrence(coordinate, target.device.as_bytes())? else {
+    let explicit = tx
+        .with_connection_context(&mut (policy, target), |(policy, target), c| {
+            Box::pin(async move {
+                Ok(explicit_on(c, tenant, policy.id, &target.device, now, explicit_allowed).await)
+            })
+        })
+        .await??;
+    let started = storage::last_started_in(tx, policy.id, target).await?;
+    let Some(candidate) = candidate(
+        policy,
+        target,
+        Some(trigger),
+        now,
+        last,
+        started,
+        explicit,
+        entry,
+    )?
+    else {
         return Ok(());
     };
-    let available = slot.available_at.max(now);
-    let deadline = available
-        .checked_add(i64::from(policy.frozen.input().run_lifetime_seconds))
-        .ok_or(Error::Malformed)?
-        .min(schedule.ends_at())
-        .min(slot.window_end.unwrap_or(i64::MAX))
-        .min(explicit.map_or(i64::MAX, |v| v.2))
-        .min(match trigger {
-            TriggerInput::Custom { deadline, .. } => deadline,
-            _ => i64::MAX,
-        });
+    let Candidate {
+        occurrence,
+        available,
+        deadline,
+        coordinate: _coordinate,
+    } = candidate;
     if deadline <= available
         || !occurrence_available_in(service, tx, policy.id, target, &occurrence, now).await?
     {
@@ -138,7 +97,7 @@ pub async fn accept_for_device(
                 TriggerInput::Custom { origin, .. } => origin,
                 _ => ActivityOrigin::Policy,
             },
-            triggered_at: native.then_some(coordinate),
+            triggered_at: native.then_some(_coordinate),
             target,
             id,
             occurrence,
@@ -148,6 +107,117 @@ pub async fn accept_for_device(
         },
     )
     .await
+}
+pub(crate) struct Candidate {
+    pub occurrence: String,
+    pub available: i64,
+    pub deadline: i64,
+    pub coordinate: i64,
+}
+/// Pure production trigger/slot selection, also consumed by read-only explanations.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the owner's existing trigger facts stay explicit"
+)]
+pub(crate) fn candidate(
+    policy: &CollectionPolicy,
+    target: &Target,
+    trigger: Option<TriggerInput>,
+    now: i64,
+    last: Option<i64>,
+    started: Option<i64>,
+    explicit: Option<(Uuid, i64, i64)>,
+    entry: i64,
+) -> Result<Option<Candidate>> {
+    let schedule = &policy.frozen.input().schedule;
+    let (coordinate, event) = if let Some(TriggerInput::Custom { request, at, .. }) = trigger {
+        (at, format!("event:{request}"))
+    } else if let Some((request, at, _)) = explicit {
+        (at, format!("explicit:{request}"))
+    } else {
+        match (&schedule.trigger, trigger) {
+            (Trigger::Manual, _) => return Ok(None),
+            (Trigger::CheckIn { .. }, Some(TriggerInput::Agent(request))) => {
+                if !check_in_interval_elapsed(&schedule.trigger, last, now) {
+                    return Ok(None);
+                }
+                (now, format!("checkin:{request}"))
+            }
+            (Trigger::CheckIn { .. }, Some(TriggerInput::CheckIn { event, at })) => {
+                if !check_in_interval_elapsed(&schedule.trigger, last, at) {
+                    return Ok(None);
+                }
+                (at, format!("checkin:{event}"))
+            }
+            (Trigger::Registration, Some(TriggerInput::Agent(_)) | None) => {
+                (now, format!("registration:{}", target.registration))
+            }
+            (Trigger::Registration, Some(TriggerInput::Registration { at })) => {
+                (at, format!("registration:{}", target.registration))
+            }
+            (Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. }, _) => {
+                let Some(due) = schedule.collection_due(started, now, target.device.as_bytes())?
+                else {
+                    return Ok(None);
+                };
+                (due.coordinate, format!("timer:{}", due.coordinate))
+            }
+            _ => return Ok(None),
+        }
+    };
+    let occurrence = if explicit.is_some() {
+        event.clone()
+    } else {
+        policy_occurrence(
+            policy.frozen.frequency(),
+            target,
+            &policy.entry_source(),
+            entry,
+            &event,
+        )
+    };
+    let Some(slot) = schedule.occurrence(coordinate, target.device.as_bytes())? else {
+        return Ok(None);
+    };
+    let available = slot.available_at.max(now);
+    let deadline = available
+        .checked_add(i64::from(policy.frozen.input().run_lifetime_seconds))
+        .ok_or(Error::Malformed)?
+        .min(schedule.ends_at())
+        .min(slot.window_end.unwrap_or(i64::MAX))
+        .min(explicit.map_or(i64::MAX, |v| v.2))
+        .min(match trigger {
+            Some(TriggerInput::Custom { deadline, .. }) => deadline,
+            _ => i64::MAX,
+        });
+    Ok((deadline > available).then_some(Candidate {
+        occurrence,
+        available,
+        deadline,
+        coordinate,
+    }))
+}
+pub(crate) async fn explicit_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    version: Uuid,
+    device: &str,
+    now: i64,
+    allowed: bool,
+) -> Result<Option<(Uuid, i64, i64)>> {
+    Ok(sqlx::query_as("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND $5 AND NOT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1")
+        .bind(tenant.to_string()).bind(version).bind(device).bind(now).bind(allowed).fetch_optional(c).await?)
+}
+/// Exact production deduplication identity; absence is never inferred from version history.
+pub(crate) async fn occurrence_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    version: Uuid,
+    device: &str,
+    occurrence: &str,
+) -> Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar("SELECT id FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND occurrence=$4")
+        .bind(tenant.to_string()).bind(version).bind(device).bind(occurrence).fetch_optional(c).await?)
 }
 pub struct RunInput<'a> {
     pub origin: ActivityOrigin,
@@ -301,13 +371,16 @@ pub async fn occurrence_available_in(
     occurrence: &str,
     now: i64,
 ) -> Result<bool> {
-    let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
-    let key = occurrence.to_owned();
-    let exists: bool = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND occurrence=$4)")
-            .bind(tenant).bind(version).bind(device).bind(key).fetch_one(c).await
-    })).await?;
+    let tenant = tx.tenant_id();
+    let exists = tx
+        .with_connection_context(&mut (target, occurrence), |(target, key), c| {
+            Box::pin(async move {
+                Ok(occurrence_on(c, tenant, version, &target.device, key)
+                    .await
+                    .map(|id| id.is_some()))
+            })
+        })
+        .await??;
     Ok(!exists
         && service
             .capacity

@@ -43,3 +43,5 @@ pub mod preview;
 mod windows_wake;
 
 pub mod queries;
+
+pub mod assignment;

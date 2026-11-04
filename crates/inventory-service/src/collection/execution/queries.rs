@@ -73,7 +73,7 @@ const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'devi
 const REPORT: &str = "CASE WHEN report.id IS NULL THEN NULL ELSE jsonb_build_object('id',report.id,'result',report.result,'reason',report.reason,'sealedAt',report.sealed_at,'projectionPending',report.delivery_pending) END";
 fn select(summary: bool) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut query = sqlx::QueryBuilder::new("SELECT jsonb_build_object(");
-    query.push(METADATA).push(",'channel',r.channel,'report',").push(REPORT).push(") || CASE WHEN r.channel='agent' THEN jsonb_build_object('state',r.agent_state,'attemptId',r.agent_state->'delivery'->>'attempt','result',").push(if summary {"r.agent_result-'native'"}else{"r.agent_result"}).push(") ELSE jsonb_build_object('delivery',r.native_delivery) END FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_access.collection_runs report ON report.tenant_id=r.tenant_id AND report.registration=r.registration AND report.id=CASE WHEN r.channel='agent' THEN (r.agent_state->'delivery'->>'attempt')::uuid ELSE r.collection_run END WHERE r.tenant_id=$1::uuid AND v.policy=$2");
+    query.push(METADATA).push(",'channel',r.channel,'report',").push(REPORT).push(") || CASE WHEN r.channel='agent' THEN jsonb_build_object('state',r.agent_state,'attemptId',r.agent_state->'delivery'->>'attempt','result',").push(if summary {"r.agent_result-'native'"}else{"r.agent_result"}).push(") ELSE jsonb_build_object('delivery',r.native_delivery) END AS document FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_access.collection_runs report ON report.tenant_id=r.tenant_id AND report.registration=r.registration AND report.id=CASE WHEN r.channel='agent' THEN (r.agent_state->'delivery'->>'attempt')::uuid ELSE r.collection_run END WHERE r.tenant_id=$1::uuid");
     query
 }
 pub async fn page_on(
@@ -83,7 +83,7 @@ pub async fn page_on(
     after: Option<(i64, Uuid)>,
     limit: usize,
 ) -> Result<Vec<Summary>> {
-    select(true).push(" AND ($3::bigint IS NULL OR (r.available_at,r.id)<($3,$4)) ORDER BY r.available_at DESC,r.id DESC LIMIT $5").build_query_scalar::<serde_json::Value>().bind(tenant).bind(policy).bind(after.map(|p|p.0)).bind(after.map(|p|p.1)).bind(limit as i64).fetch_all(c).await?.into_iter().map(|v|crate::transaction::stored(serde_json::from_value(v))).collect()
+    select(true).push(" AND v.policy=$2 AND ($3::bigint IS NULL OR (r.available_at,r.id)<($3,$4)) ORDER BY r.available_at DESC,r.id DESC LIMIT $5").build_query_scalar::<serde_json::Value>().bind(tenant).bind(policy).bind(after.map(|p|p.0)).bind(after.map(|p|p.1)).bind(limit as i64).fetch_all(c).await?.into_iter().map(|v|crate::transaction::stored(serde_json::from_value(v))).collect()
 }
 pub async fn detail_on(
     c: &mut sqlx::PgConnection,
@@ -102,7 +102,7 @@ pub async fn detail_on(
     }
     let mut record: Detail = crate::transaction::stored(serde_json::from_value(
         select(false)
-            .push(" AND r.id=$3")
+            .push(" AND v.policy=$2 AND r.id=$3")
             .build_query_scalar::<serde_json::Value>()
             .bind(tenant)
             .bind(policy)
@@ -127,15 +127,25 @@ pub async fn detail_on(
     Ok(record)
 }
 
-/// Correlate only original registration/generation coordinates, including declared Windows children.
-pub async fn assignment_ids_on(
+/// Latest historical run for the exact registration or its declared Windows children.
+pub async fn latest_assignment_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     policy: Uuid,
     target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
     channel: rss_mdm_inventory::Channel,
-) -> Result<Vec<Uuid>> {
-    Ok(sqlx::query_scalar("SELECT r.id FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.device=$3 AND r.channel=$6 AND ((r.registration=$4 AND r.generation=$5) OR ($6='mdm' AND EXISTS(SELECT 1 FROM mdm_access.registrations child WHERE child.tenant_id=r.tenant_id AND child.id=r.registration AND child.generation=r.generation AND child.device=r.device AND child.channel='mdm' AND child.purpose='windows_declared' AND child.parent_id=$4 AND child.parent_generation=$5))) ORDER BY r.id").bind(tenant.to_string()).bind(policy).bind(&target.device).bind(target.registration_id).bind(target.generation).bind(channel.as_str()).fetch_all(c).await?)
+) -> Result<Option<Summary>> {
+    select(true).push(" AND v.policy=$2 AND r.device=$3 AND r.channel=$6 AND ((r.registration=$4 AND r.generation=$5) OR ($6='mdm' AND EXISTS(SELECT 1 FROM mdm_access.registrations child WHERE child.tenant_id=r.tenant_id AND child.id=r.registration AND child.generation=r.generation AND child.device=r.device AND child.channel='mdm' AND child.purpose='windows_declared' AND child.parent_id=$4 AND child.parent_generation=$5))) ORDER BY r.available_at DESC,r.id DESC LIMIT 1")
+        .build_query_scalar::<serde_json::Value>().bind(tenant.to_string()).bind(policy).bind(&target.device)
+        .bind(target.registration_id).bind(target.generation).bind(channel.as_str()).fetch_optional(c).await?
+        .map(|v|crate::transaction::stored(serde_json::from_value(v))).transpose()
+}
+/// SQL counterpart of model::native_terminal_status; T2 compares their complete truth table.
+pub const NATIVE_STATUS_SQL: &str = "CASE WHEN report.sealed_at IS NULL THEN r.native_delivery WHEN report.reason='complete' THEN CASE WHEN report.result='failed' THEN 'failed' ELSE 'succeeded' END WHEN report.reason='timeout' THEN 'expired' ELSE 'cancelled' END";
+pub fn relation_sql() -> String {
+    format!(
+        "SELECT r.id,r.device,'action_run'::text AS kind,r.registration,r.generation,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,CASE WHEN r.channel='agent' THEN r.agent_state->>'execution' ELSE {NATIVE_STATUS_SQL} END AS status,0::bigint AS input_bytes FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_access.collection_runs report ON report.tenant_id=r.tenant_id AND report.registration=r.registration AND report.id=r.collection_run WHERE r.tenant_id=$1::uuid"
+    )
 }
 
 #[cfg(test)]
@@ -173,4 +183,45 @@ mod tests {
             assert_eq!(serde_json::to_value(typed).unwrap(), record);
         }
     }
+}
+
+/// Bounded, redacted evidence for directory rows already selected under device authorization.
+pub async fn run_summaries_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    ids: Vec<Uuid>,
+) -> Result<std::collections::BTreeMap<Uuid, Summary>> {
+    use sqlx::Row;
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    if ids.len() > 1000 {
+        return Err(Error::Malformed.into());
+    }
+    let expected = ids.len();
+    let mut selected = select(true);
+    selected.push(" AND r.id=ANY($2)");
+    let mut query = sqlx::QueryBuilder::new("WITH selected AS MATERIALIZED (");
+    query.push(selected.sql()).push("),budget AS(SELECT coalesce(sum(octet_length(document::text)),0)::bigint AS bytes FROM selected) SELECT document,bytes FROM budget LEFT JOIN selected ON bytes<=16777216");
+    let rows = query
+        .build()
+        .bind(tenant.to_string())
+        .bind(ids)
+        .fetch_all(c)
+        .await?;
+    let bytes: i64 = rows.first().ok_or(Error::Conflict)?.try_get("bytes")?;
+    if !(0..=16 * 1024 * 1024).contains(&bytes) {
+        return Err(Error::Unavailable(crate::Failure::Capacity).into());
+    }
+    if rows.len() != expected {
+        return Err(Error::Conflict.into());
+    }
+    rows.into_iter()
+        .map(|r| {
+            let summary: Summary =
+                crate::transaction::stored(serde_json::from_value(r.try_get("document")?))?;
+            let id = summary.metadata().task_id;
+            Ok((id, summary))
+        })
+        .collect()
 }
