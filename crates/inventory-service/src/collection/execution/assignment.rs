@@ -69,6 +69,16 @@ impl super::inputs::Inputs {
             admission::explicit_on(c, self.tenant, policy.id, &target.device, now, true).await?;
         let started = storage::last_started_on(c, self.tenant, policy.id, target).await?;
         let schedule = &policy.frozen.input().schedule;
+        if let Some(observed) = interval_without_trigger(
+            schedule,
+            started,
+            explicit.is_some(),
+            now,
+            policy.frozen.channel(),
+            capacity,
+        )? {
+            return Ok(observed);
+        }
         if let Some(candidate) =
             admission::candidate(policy, target, None, now, last, started, explicit, entry)?
         {
@@ -102,27 +112,112 @@ impl super::inputs::Inputs {
                 CurrentRecord::Absent,
             ));
         }
-        // Existing Collection validation permits only interval/every_trigger/coalesce_one.
-        // Actual starts, including custom events, reset the interval; the authored anchor does not.
-        let next = match (started, &schedule.trigger) {
-            (Some(at), Trigger::Interval { seconds, .. }) => {
-                at.checked_add(i64::from(*seconds)).filter(|at| *at > now)
-            }
-            _ => schedule
-                .next_after(now, target.device.as_bytes())?
-                .map(|o| o.available_at),
-        };
+        let next = schedule
+            .next_after(now, target.device.as_bytes())?
+            .map(|o| o.available_at);
         Ok((
-            TaskAdmission::new(
-                if started.is_some() {
-                    S::IntervalNotElapsed
-                } else {
-                    S::Scheduled
-                },
-                None,
-            )
-            .not_before(next),
+            TaskAdmission::new(S::Scheduled, None).not_before(next),
             CurrentRecord::Unknown,
         ))
+    }
+}
+
+/// A rolling interval acquires its timer coordinate at a future execution observation.
+/// A GET cannot mint that identity or bind jitter to its own clock. The last actual
+/// start still proves the minimum interval, independently of any future observation.
+fn interval_without_trigger(
+    schedule: &rss_mdm_policy::schedule::Schedule,
+    started: Option<i64>,
+    explicit: bool,
+    now: i64,
+    channel: rss_mdm_inventory::Channel,
+    capacity: bool,
+) -> Result<Option<(TaskAdmission, CurrentRecord)>> {
+    let (Some(started), Trigger::Interval { seconds, .. }) = (started, &schedule.trigger) else {
+        return Ok(None);
+    };
+    if explicit {
+        return Ok(None);
+    }
+    let lower = started
+        .checked_add(i64::from(*seconds))
+        .ok_or(crate::Error::Malformed)?;
+    let state = if now < lower {
+        S::IntervalNotElapsed
+    } else if !capacity {
+        S::CapacityBusy
+    } else if channel == rss_mdm_inventory::Channel::Agent {
+        S::WaitingCheckIn
+    } else {
+        S::Eligible
+    };
+    Ok(Some((
+        TaskAdmission::new(state, None).not_before((now < lower).then_some(lower)),
+        CurrentRecord::Unknown,
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rss_mdm_inventory::Channel;
+    fn schedule() -> rss_mdm_policy::schedule::Schedule {
+        serde_json::from_value(serde_json::json!({"trigger":{"kind":"interval","anchor":0,"seconds":60},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":60,"window":null})).unwrap()
+    }
+    #[test]
+    fn a_get_does_not_bind_the_next_observation_identity_or_jitter() {
+        let schedule = schedule();
+        assert_eq!(
+            schedule
+                .collection_due(Some(0), 100, b"device")
+                .unwrap()
+                .unwrap()
+                .available_at,
+            131
+        );
+        assert_eq!(
+            schedule
+                .collection_due(Some(0), 101, b"device")
+                .unwrap()
+                .unwrap()
+                .available_at,
+            122
+        );
+        for (channel, capacity, expected) in [
+            (Channel::Agent, true, S::WaitingCheckIn),
+            (Channel::Mdm, true, S::Eligible),
+            (Channel::Agent, false, S::CapacityBusy),
+        ] {
+            for now in [100, 101] {
+                let (admission, record) =
+                    interval_without_trigger(&schedule, Some(0), false, now, channel, capacity)
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(admission.state(), expected);
+                assert_eq!(record, CurrentRecord::Unknown);
+                assert_eq!(admission.next_allowed_start_at, None);
+            }
+        }
+    }
+    #[test]
+    fn real_interval_bounds_and_durable_trigger_identities_remain_distinct() {
+        let schedule = schedule();
+        let (admission, record) =
+            interval_without_trigger(&schedule, Some(0), false, 50, Channel::Agent, true)
+                .unwrap()
+                .unwrap();
+        assert_eq!(admission.state(), S::IntervalNotElapsed);
+        assert_eq!(admission.next_allowed_start_at, Some(60));
+        assert_eq!(record, CurrentRecord::Unknown);
+        assert!(
+            interval_without_trigger(&schedule, None, false, 100, Channel::Agent, true)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            interval_without_trigger(&schedule, Some(0), true, 100, Channel::Agent, true)
+                .unwrap()
+                .is_none()
+        );
     }
 }

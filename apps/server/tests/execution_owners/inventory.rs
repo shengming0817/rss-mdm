@@ -269,6 +269,22 @@ async fn periodic_assignment_uses_actual_start_and_exact_current_version() -> an
         assert_eq!(waiting["items"][0]["taskAdmission"]["nextAllowedStartAt"],started+3600);
         assert_eq!(waiting["items"][0]["execution"]["latestRun"]["taskId"],task.to_string());
         assert_eq!(waiting["items"][0]["execution"]["latestRun"]["state"]["execution"],"succeeded");
+        // Move the minimal historical fixture to a legal completed run whose interval is now due.
+        let created=created-3600;
+        let triggered=triggered-3600;
+        let started=started-3600;
+        let mut completed=rss_mdm_task_state::RunState::new(created+300,created)?;
+        completed.started_at=Some(started);
+        completed.execution=rss_mdm_task_state::Execution::Succeeded;
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_inventory.collection_tasks SET created_at=$3,available_at=$3,deadline=$4,triggered_at=$5,agent_state=$6 WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(h.c.tenant.to_string()).bind(task).bind(created).bind(created+300).bind(triggered).bind(serde_json::to_value(completed)?).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let due=read().await?;
+        assert_eq!(due["items"][0]["taskAdmission"]["state"],"waiting_check_in");
+        assert!(due["items"][0]["taskAdmission"].get("nextAllowedStartAt").is_none());
+        assert_eq!(due["items"][0]["execution"]["currentRecord"]["state"],"unknown");
+        assert_eq!(due["items"][0]["execution"]["latestRun"]["taskId"],task.to_string());
         super::mixed::publish(&h,policy,2,definition,frozen).await?;
         let next=read().await?;
         assert_eq!(next["items"][0]["taskAdmission"]["state"],"waiting_check_in");
