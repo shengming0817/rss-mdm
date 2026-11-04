@@ -71,15 +71,13 @@ impl ScriptPolicy {
     pub fn entry_source(&self) -> String {
         format!("scope:{}", self.policy.definition.scope)
     }
-    /// Same Policy/lifecycle/Scope facts used by mutation and read-only explanations.
-    pub async fn entry_on(
+    async fn base_on(
         &self,
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
-        source: &rss_mdm_scope_service::channels::ChannelTargets,
         device: &str,
         now: i64,
-    ) -> Result<std::result::Result<i64, rss_mdm_policy::pages::TaskAdmission>> {
+    ) -> Result<Option<rss_mdm_policy::pages::TaskAdmission>> {
         use rss_mdm_policy::pages::{TaskAdmission as A, TaskAdmissionState as S};
         let schedule = &self.frozen.input.schedule;
         let blocked = if !self.active {
@@ -100,29 +98,36 @@ impl ScriptPolicy {
         } else {
             None
         };
-        if let Some(reason) = blocked {
+        Ok(blocked)
+    }
+    fn scope_entry(
+        scope: rss_mdm_scope_service::channels::ScopeAdmission,
+    ) -> std::result::Result<i64, rss_mdm_policy::pages::TaskAdmission> {
+        use rss_mdm_policy::pages::{TaskAdmission as A, TaskAdmissionState as S};
+        match scope {
+            rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => Ok(entry),
+            rss_mdm_scope_service::channels::ScopeAdmission::Pending => {
+                Err(A::new(S::ScopePending, None))
+            }
+            rss_mdm_scope_service::channels::ScopeAdmission::Excluded => {
+                Err(A::new(S::OutsideScope, None))
+            }
+        }
+    }
+    /// Consume the Scope owner's qualification already read in this assignment snapshot.
+    /// This path never calls Scope's lock-taking execution admission entrypoint.
+    pub async fn entry_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        scope: rss_mdm_scope_service::channels::ScopeAdmission,
+        device: &str,
+        now: i64,
+    ) -> Result<std::result::Result<i64, rss_mdm_policy::pages::TaskAdmission>> {
+        if let Some(reason) = self.base_on(c, tenant, device, now).await? {
             return Ok(Err(reason));
         }
-        Ok(
-            match source
-                .admission_on(
-                    c,
-                    tenant,
-                    self.policy.definition.scope,
-                    rss_mdm_inventory::Channel::Agent,
-                    device,
-                )
-                .await?
-            {
-                rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => Ok(entry),
-                rss_mdm_scope_service::channels::ScopeAdmission::Pending => {
-                    Err(A::new(S::ScopePending, None))
-                }
-                rss_mdm_scope_service::channels::ScopeAdmission::Excluded => {
-                    Err(A::new(S::OutsideScope, None))
-                }
-            },
-        )
+        Ok(Self::scope_entry(scope))
     }
     pub async fn entry_in(
         &self,
@@ -131,17 +136,30 @@ impl ScriptPolicy {
         device: &str,
         now: i64,
     ) -> Result<Option<i64>> {
-        // Mutation callers retain the original lifecycle fence; read-only callers never lock.
         crate::storage::lock_device(tx, device).await?;
         let tenant = tx.tenant_id();
         tx.with_connection_context(
             &mut (self, device, service),
             |(policy, device, service), c| {
                 Box::pin(async move {
-                    Ok(policy
-                        .entry_on(c, tenant, service.source.as_ref(), device, now)
-                        .await
-                        .map(|entry| entry.ok()))
+                    Ok(async {
+                        if policy.base_on(c, tenant, device, now).await?.is_some() {
+                            return Ok(None);
+                        }
+                        // Preserve the writer's Group/Scope/object fences and reuse its canonical qualification.
+                        let scope = service
+                            .source
+                            .admission_on(
+                                c,
+                                tenant,
+                                policy.policy.definition.scope,
+                                rss_mdm_inventory::Channel::Agent,
+                                device,
+                            )
+                            .await?;
+                        Ok(Self::scope_entry(scope).ok())
+                    }
+                    .await)
                 })
             },
         )

@@ -14,7 +14,7 @@ impl super::inputs::Inputs {
         &self,
         c: &mut sqlx::PgConnection,
         policy: &CollectionPolicy,
-        source: &dyn super::participants::TargetAdmission,
+        scope: super::participants::Admission,
         store: std::sync::Arc<dyn super::agent_facts::Store>,
         target: &Target,
         now: i64,
@@ -22,7 +22,7 @@ impl super::inputs::Inputs {
     ) -> Result<(TaskAdmission, CurrentRecord)> {
         let waiting = |state| (TaskAdmission::new(state, None), CurrentRecord::Unknown);
         let entry = match policy
-            .entry_on(c, self.tenant, source, &target.device, now)
+            .entry_on(c, self.tenant, scope, &target.device, now)
             .await?
         {
             Ok(entry) => entry,

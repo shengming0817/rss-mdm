@@ -90,14 +90,14 @@ pub(super) async fn assignments(
                         let capacity=super::super::capacity::available_on(c,tenant,device,now).await.map_err(|_|Error::Unavailable(Failure::Database))?;
                         let (admission,current_record,latest_run)=if let Some(policy)=&script_policy {
                             let target_state=rss_mdm_script_service::Target{device:device.clone(),registration:target.registration_id,generation:target.generation};
-                            let (admission,record)=rss_mdm_script_service::assignment::state_on(c,tenant,policy,&s.source,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await.map_err(script_fault)?;
+                            let (admission,record)=rss_mdm_script_service::assignment::state_on(c,tenant,policy,object.admission,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await.map_err(script_fault)?;
                             let latest=rss_mdm_script_service::queries::latest_assignment_on(c,tenant,id,target).await.map_err(script_fault)?.map(RecurringRun::Script);
                             (admission,record,latest)
                         }else{
                             let policy=collection_policy.as_ref().ok_or(Error::Unavailable(Failure::CommandInvariant))?;
                             let target_state=rss_mdm_inventory_service::collection::execution::model::Target{device:device.clone(),registration:target.registration_id,generation:target.generation};
-                            let source=super::super::collection_ports::Source(s.source.clone());
-                            let (admission,record)=s.collections.assignment_state_on(c,policy,&source,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await?;
+                            let scope=super::super::collection_ports::admission(object.admission);
+                            let (admission,record)=s.collections.assignment_state_on(c,policy,scope,Arc::new(super::super::agent_facts::AgentFacts),&target_state,now,capacity).await?;
                             let latest=rss_mdm_inventory_service::collection::execution::queries::latest_assignment_on(c,tenant,id,target,channel).await?.map(RecurringRun::Collection);
                             (admission,record,latest)
                         };

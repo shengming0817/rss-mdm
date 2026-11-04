@@ -14,7 +14,7 @@ pub async fn state_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     policy: &ScriptPolicy,
-    source: &rss_mdm_scope_service::channels::ChannelTargets,
+    scope: rss_mdm_scope_service::channels::ScopeAdmission,
     store: std::sync::Arc<dyn crate::agent_facts::Store>,
     target: &Target,
     now: i64,
@@ -22,7 +22,7 @@ pub async fn state_on(
 ) -> Result<(TaskAdmission, CurrentRecord)> {
     let waiting = |state| (TaskAdmission::new(state, None), CurrentRecord::Unknown);
     let entry = match policy
-        .entry_on(c, tenant, source, &target.device, now)
+        .entry_on(c, tenant, scope, &target.device, now)
         .await?
     {
         Ok(entry) => entry,

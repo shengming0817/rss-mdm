@@ -124,6 +124,15 @@ fn scope_error(
         S::Invariant => Error::Unavailable(Failure::PlanningStorage).into(),
     }
 }
+pub(crate) fn admission(value: rss_mdm_scope_service::channels::ScopeAdmission) -> Admission {
+    match value {
+        rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => {
+            Admission::Eligible { entry }
+        }
+        rss_mdm_scope_service::channels::ScopeAdmission::Pending => Admission::Pending,
+        rss_mdm_scope_service::channels::ScopeAdmission::Excluded => Admission::Excluded,
+    }
+}
 impl TargetAdmission for Source {
     fn admission_on<'a>(
         &'a self,
@@ -134,22 +143,12 @@ impl TargetAdmission for Source {
         device: &'a str,
     ) -> Pending<'a, Admission> {
         Box::pin(async move {
-            Ok(
-                match self
-                    .0
+            Ok(admission(
+                self.0
                     .admission_on(c, tenant, scope, channel, device)
                     .await
-                    .map_err(scope_error)?
-                {
-                    rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => {
-                        Admission::Eligible { entry }
-                    }
-                    rss_mdm_scope_service::channels::ScopeAdmission::Pending => Admission::Pending,
-                    rss_mdm_scope_service::channels::ScopeAdmission::Excluded => {
-                        Admission::Excluded
-                    }
-                },
-            )
+                    .map_err(scope_error)?,
+            ))
         })
     }
     fn evidence_on<'a>(

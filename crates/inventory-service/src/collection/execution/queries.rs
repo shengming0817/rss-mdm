@@ -148,43 +148,6 @@ pub fn relation_sql() -> String {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn summaries_reject_native_values_and_round_trip_both_collection_channels() {
-        let value = json!({"queries":{},"planDigest":vec![1;32],"outputReference":{"bytes":5,"sha256":"digest"},"trusted":true,"receivedAt":1});
-        let result: AgentSummary = serde_json::from_value(value.clone()).unwrap();
-        let output = serde_json::to_value(result).unwrap();
-        assert!(output.get("native").is_none());
-        let mut private = value.clone();
-        private["native"] = json!({"private":"device-data"});
-        assert!(serde_json::from_value::<AgentSummary>(private).is_err());
-        assert!(
-            serde_json::from_value::<AgentSummary>(
-                json!({"nested":[{"native":{"secret":"value"}}]})
-            )
-            .is_err()
-        );
-        let id = Uuid::new_v4();
-        let common = json!({"taskId":id,"policyId":id,"versionId":id,"device":"device","registrationId":id,"generation":1,"occurrence":"once","availableAt":1,"deadline":100,"report":null});
-        let mut agent = common.clone();
-        agent["channel"] = json!("agent");
-        agent["state"] =
-            serde_json::to_value(rss_mdm_task_state::RunState::new(100, 1).unwrap()).unwrap();
-        agent["attemptId"] = json!(null);
-        agent["result"] = value;
-        let mut native = common;
-        native["channel"] = json!("mdm");
-        native["delivery"] = json!("sent");
-        for record in [agent, native] {
-            let typed: Summary = serde_json::from_value(record.clone()).unwrap();
-            assert_eq!(serde_json::to_value(typed).unwrap(), record);
-        }
-    }
-}
-
 /// Bounded, redacted evidence for directory rows already selected under device authorization.
 pub async fn run_summaries_on(
     c: &mut sqlx::PgConnection,
@@ -224,4 +187,41 @@ pub async fn run_summaries_on(
             Ok((id, summary))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn summaries_reject_native_values_and_round_trip_both_collection_channels() {
+        let value = json!({"queries":{},"planDigest":vec![1;32],"outputReference":{"bytes":5,"sha256":"digest"},"trusted":true,"receivedAt":1});
+        let result: AgentSummary = serde_json::from_value(value.clone()).unwrap();
+        let output = serde_json::to_value(result).unwrap();
+        assert!(output.get("native").is_none());
+        let mut private = value.clone();
+        private["native"] = json!({"private":"device-data"});
+        assert!(serde_json::from_value::<AgentSummary>(private).is_err());
+        assert!(
+            serde_json::from_value::<AgentSummary>(
+                json!({"nested":[{"native":{"secret":"value"}}]})
+            )
+            .is_err()
+        );
+        let id = Uuid::new_v4();
+        let common = json!({"taskId":id,"policyId":id,"versionId":id,"device":"device","registrationId":id,"generation":1,"occurrence":"once","availableAt":1,"deadline":100,"report":null});
+        let mut agent = common.clone();
+        agent["channel"] = json!("agent");
+        agent["state"] =
+            serde_json::to_value(rss_mdm_task_state::RunState::new(100, 1).unwrap()).unwrap();
+        agent["attemptId"] = json!(null);
+        agent["result"] = value;
+        let mut native = common;
+        native["channel"] = json!("mdm");
+        native["delivery"] = json!("sent");
+        for record in [agent, native] {
+            let typed: Summary = serde_json::from_value(record.clone()).unwrap();
+            assert_eq!(serde_json::to_value(typed).unwrap(), record);
+        }
+    }
 }
