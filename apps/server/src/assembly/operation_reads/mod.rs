@@ -95,7 +95,9 @@ fn relation(
         .push(" UNION ALL ")
         .push(rss_mdm_recovery_credentials::tasks::queries::DA_RELATION_SQL)
         .push(" UNION ALL ")
-        .push(rss_mdm_recovery_credentials::native::queries::RELATION_SQL);
+        .push(rss_mdm_recovery_credentials::native::queries::RELATION_SQL)
+        .push(" UNION ALL ").push(rss_mdm_script_service::queries::RELATION_SQL)
+        .push(" UNION ALL ").push(rss_mdm_inventory_service::collection::execution::queries::relation_sql());
     sql.push("),source_probe AS MATERIALIZED(SELECT id FROM executions LIMIT ")
         .push_bind(source_limit + 1)
         .push("),source_count AS MATERIALIZED (");
@@ -456,9 +458,13 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                 let access_ids=rss_mdm_device_access_postgres::device_access::execution::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let credential_ids=rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(rss_mdm_install_support::StorageProfile::Mdm, c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
                 let da_credential_ids=rss_mdm_recovery_credentials::tasks::storage::owned_ids_on(rss_mdm_install_support::StorageProfile::Da, c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
-                for id in &run_ids{if [access_ids.contains(id),credential_ids.contains(id),execution_ids.contains(id),software_ids.contains(id),enrollment_ids.contains(id)].into_iter().filter(|v|*v).count()!=1{return Err(Error::Unavailable(Failure::CommandInvariant));}}
+                let script_ids=rss_mdm_script_service::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
+                let collection_ids=rss_mdm_inventory_service::collection::execution::storage::owned_ids_on(c,s.tasks.tenant,&run_ids).await.map_err(sql)?;
+                for id in &run_ids{if [access_ids.contains(id),credential_ids.contains(id),da_credential_ids.contains(id),execution_ids.contains(id),software_ids.contains(id),enrollment_ids.contains(id),script_ids.contains(id),collection_ids.contains(id)].into_iter().filter(|v|*v).count()!=1{return Err(Error::Unavailable(Failure::CommandInvariant));}}
                 let mut execution=rss_mdm_device_service::control::directory::run_summaries_on(c,s.tasks.tenant,execution_ids.into_iter().collect()).await.map_err(execution_fault)?;
                 let mut software=rss_mdm_software_service::deployment::directory::run_summaries_on(c,s.tasks.tenant,software_ids.into_iter().collect()).await.map_err(software_fault)?;
+                let mut scripts=rss_mdm_script_service::queries::run_summaries_on(c,s.tasks.tenant,script_ids).await.map_err(super::task_reads::script_fault)?;
+                let mut collections=rss_mdm_inventory_service::collection::execution::queries::run_summaries_on(c,s.tasks.tenant,collection_ids).await?;
                 let mut items=Vec::with_capacity(page.items.len());
                 for row in page.items{
                     let authorization=row.get("authorization").cloned().map(serde_json::from_value).transpose().map_err(|_|Error::Unavailable(Failure::CommandInvariant))?;
@@ -469,10 +475,13 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                         KindOfOperation::ActionRun=>{
                             if let Some(v)=execution.remove(&metadata.id){Evidence::Device(v)}
                             else if let Some(v)=software.remove(&metadata.id){Evidence::Software(v)}
+                            else if let Some(v)=scripts.remove(&metadata.id){Evidence::Script(Box::new(v))}
+                            else if let Some(v)=collections.remove(&metadata.id){Evidence::Collection(Box::new(v))}
                             else if access_ids.contains(&metadata.id){Evidence::Access(rss_mdm_device_access_postgres::device_access::execution::queries::detail_on(c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::access_fault)?)}
                             else if credential_ids.contains(&metadata.id){Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm, c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::credential_fault)?)}
                             else if da_credential_ids.contains(&metadata.id){Evidence::Credential(rss_mdm_recovery_credentials::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Da, c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::credential_fault)?)}
-                            else{Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm, c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::enrollment_fault)?)}
+                            else if enrollment_ids.contains(&metadata.id){Evidence::Enrollment(rss_mdm_registration_service::enrollment::tasks::queries::detail_on(rss_mdm_install_support::StorageProfile::Mdm, c,&s.tasks.tenant.to_string(),metadata.policy.ok_or(Error::Conflict)?,metadata.id,p,grant).await.map_err(super::task_reads::enrollment_fault)?)}
+                            else{return Err(Error::Unavailable(Failure::CommandInvariant));}
                         }
                     })};
                     let detail_url=match metadata.kind{KindOfOperation::Command=>format!("/api/v1/devices/{}/operations/{}",url::form_urlencoded::byte_serialize(metadata.device.as_bytes()).collect::<String>().replace('+',"%20"),metadata.id),KindOfOperation::ActionRun=>format!("/api/v1/policies/{}/runs/{}",metadata.policy.ok_or(Error::Conflict)?,metadata.id)};
