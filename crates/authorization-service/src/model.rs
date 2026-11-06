@@ -38,6 +38,7 @@ pub enum Permission {
     InventoryRead,
     InventorySensitiveRead,
     InventoryFieldsWrite,
+    InventorySoftwareWrite,
     ComplianceRead,
     ComplianceRuleRead,
     ComplianceWrite,
@@ -156,6 +157,7 @@ impl Permission {
             | Self::CertificateArchiveExport
             | Self::InventorySensitiveRead
             | Self::InventoryFieldsWrite
+            | Self::InventorySoftwareWrite
             | Self::StorageConfigurationRead
             | Self::StorageConfigurationWrite
             | Self::RuntimeDiagnosticsRead
@@ -430,6 +432,7 @@ pub fn tenant_administrator_rule(user: User) -> Rule {
         Permission::InventoryRead,
         Permission::InventorySensitiveRead,
         Permission::InventoryFieldsWrite,
+        Permission::InventorySoftwareWrite,
         Permission::ComplianceRead,
         Permission::ComplianceRuleRead,
         Permission::ComplianceWrite,

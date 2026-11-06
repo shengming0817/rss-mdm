@@ -73,6 +73,7 @@ impl AssetService {
                 scope: scope.clone(),
                 asset_cut: cut.clone(),
                 as_of: at.unix_seconds(),
+                software: None,
             },
         )
         .await?;
@@ -93,6 +94,7 @@ impl AssetService {
             scope,
             asset_cut: cut,
             as_of,
+            ..
         } = job;
         let at = stored(Timepoint::try_from(*as_of))?;
         let catalog = catalog_at_in(tx, self.tenant, cut).await?;

@@ -14,6 +14,7 @@ use sqlx::Row;
 use std::sync::Arc;
 
 /// A caller-bound reader of immutable Group results with a narrow reference-lock capability.
+#[derive(Clone)]
 pub struct GroupSources {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,

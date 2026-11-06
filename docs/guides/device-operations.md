@@ -226,7 +226,7 @@ DA 因子材料通过 `/devices/{device}/device-access/materials/{id}/versions/{
 成功重试保留原 operationId；回执不含秘密，每次披露仍复核当前权限、主体和绑定。
 普通 recovery-credentials GET secret 不披露 DA 因子材料。此流程不访问个人 Vault、FileVault 或其他磁盘恢复材料。
 `device.access.changed` 生命周期事件复用 Webhook Outbox，包含操作和代际事实，不携带秘密；
-企业 Vault 消费者须自行按 eventId 去重并处理乱序。
+事件消费者须自行按 eventId 去重并处理乱序。
 
 ### 企业接入配置
 
@@ -251,3 +251,35 @@ FileVault 元数据的 subject 包含独立 custody 及 epoch；外层注册字�
 `POST /devices/{device}/recovery-credentials/filevault/configuration` 只配置已有 CMS 的采集授权，不安装 profile 或轮换密钥。
 `POST /devices/{device}/recovery-credentials/filevault/link` 要求已验证的 MDM/Agent 设备关联和两侧 SecurityOperate 权限；
 归并在同一事务中重新保护材料并保留历史，不能按接收顺序决定哪个 PRK 有效。真实恢复解锁仍须独立验证。
+
+
+## 用户 Vault 同步
+
+每个 DA 用户账号对应自己的 Vault；客户端查看和使用凭据，DA 只存密文。
+同步不要求 MDM 注册、OS 账号绑定或管理员权限。新设备登录 DA 后输入自己保存的恢复码；
+恢复码仅在客户端派生用途分离的恢复签名和根封装密钥，不上传服务器。
+加入时必须显式提供 reset_devices；false 为普通加入，true 表示退出全部旧设备并加入，
+由同一恢复证明绑定。后者更换本 Vault 的授权代次并清理旧设备、挑战和回执，保留加密内容；
+设备满额或旧设备全部丢失时可用。新代次拒绝所有旧请求，响应丢失后以新挑战查询原操作。
+日常设备只保留本地系统保护的 Vault 根与自己的独立设备签名钥，不保留恢复能力。
+企业管理员不能恢复或转交此 Vault，账号密码重置不改变恢复公钥。
+
+当前 V1 协议由 `agent-wire::vault` 持有。`POST /api/v1/da/vault/challenges` 签发
+绑定当前用户、同步代次、设备、操作和动作正文的 120 秒挑战；`POST /api/v1/da/vault/execute`
+完成签名请求。挑战携带服务端认证证明，签发不占持久名额；持钥证明通过后才原子记录一次性消费。
+普通操作的有效消费记录最多 256 条，过期自动清理；撤销和恢复不受普通操作的名额限制。Initialize/Join 需要恢复签名和新设备签名；其余动作需要当前有效设备签名。
+调用者不提供 owner；初始化、加入、移除和写入支持相同 operation/正文的精确重试，
+Operation 动作查询未知提交。所有重试仍检查当前会话、同步代次及设备授权。
+Read 返回当前变更和删除标记，每页最多四项；翻页时数据发生变化须从原 after 重新读取，
+完整读取之前不能推进本地同步水位。同条目冲突不自动覆盖，Write 批次全成全败。
+
+请求沿用 128 KiB 限制；每批最多四项，每项解码密文最多 24,000 字节；每用户最多
+10,000 个活动条目、32 MiB 编码密文、100,000 个保留条目身份（含删除标记）、
+100,000 个普通内容写操作回执和 32 个活动同步设备。每个授权代次的历史设备身份最多 10,000 个，不能重用。
+授权操作不受普通内容写回执额度限制，保证设备撤销和恢复可用。
+达到配额返回容量错误，不静默删去回执或删除标记。
+设备移除阻止后续同步，不擦除已下载内容；保留过恢复码的人仍具备重新加入的能力。
+本期不提供恢复码更换或整个 Vault 重加密。全部设备和恢复码丢失时无法恢复。
+
+本仓交付同步服务端和协议；Agent 解密、界面、Windows/macOS Provider 同步仍需消费固定
+服务端 revision 并独立验收。未开启同步时本机 Vault 保持独立，不上传本机 OS 保护材料。

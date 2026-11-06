@@ -111,8 +111,13 @@ impl From<rss_mdm_device_access_postgres::Error> for Error {
 }
 impl From<&rss_mdm_audit_integration::Error> for Error {
     fn from(e: &rss_mdm_audit_integration::Error) -> Self {
+        e.class().into()
+    }
+}
+impl From<rss_mdm_audit_integration::ErrorClass> for Error {
+    fn from(class: rss_mdm_audit_integration::ErrorClass) -> Self {
         use rss_mdm_audit_integration::ErrorClass as C;
-        match e.class() {
+        match class {
             C::CommitUnknown => Self::CommitUnknown,
             C::RollbackFailed => Self::RollbackFailed,
             C::RequestDeadline => Self::Classified(Failure::Deadline),

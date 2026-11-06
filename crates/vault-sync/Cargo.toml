@@ -1,0 +1,25 @@
+[package]
+name = "rss-mdm-vault-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[dependencies]
+rss-mdm-agent-wire.workspace = true
+rss-mdm-audit-integration.workspace = true
+rss-mdm-authorization-service.workspace = true
+rss-mdm-install-support.workspace = true
+rss-mdm-query.workspace = true
+rss-identity-postgres.workspace = true
+rss-request-context.workspace = true
+rss-transactional-messaging.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+ring.workspace = true
+sha2.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+sqlx = { workspace = true, features = ["json"] }
+[lints]
+workspace = true

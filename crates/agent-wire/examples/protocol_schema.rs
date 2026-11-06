@@ -3,6 +3,12 @@
 use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
+        "vault": {
+            "Prepare": schemars::schema_for!(rss_mdm_agent_wire::vault::Prepare),
+            "Challenge": schemars::schema_for!(rss_mdm_agent_wire::vault::Challenge),
+            "Execute": schemars::schema_for!(rss_mdm_agent_wire::vault::Execute),
+            "Response": schemars::schema_for!(rss_mdm_agent_wire::vault::Response)
+        },
         "da": {
             "Configuration": schemars::schema_for!(rss_mdm_agent_wire::da::Configuration),
             "StatusReport": schemars::schema_for!(rss_mdm_agent_wire::da::StatusReport),
