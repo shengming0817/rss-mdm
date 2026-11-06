@@ -6,7 +6,8 @@ mod current;
 pub mod diagnostics;
 pub mod gap_query;
 pub mod maintenance;
-pub const DIAGNOSTIC_ACCESS_CONTRACT: &str = r#"{"tables":[{"schema":"mdm_telemetry","table":"maintenance","read_write":false,"updates":[],"delete_policy":null}],"functions":[],"external_relations":[],"verified_schemas":[]}"#;
+/// Exact shared access privileges; retained maintenance reads never enable telemetry writes.
+pub const DIAGNOSTIC_ACCESS_CONTRACT: &str = include_str!("diagnostic-access.json");
 pub mod query;
 mod samples;
 /// Closed failures never retain sampled values, credentials or provider diagnostics.

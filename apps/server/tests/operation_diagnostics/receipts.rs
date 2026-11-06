@@ -31,7 +31,7 @@ pub(super) async fn actor_receipts(
         ),
         (
             "mdm_assets.group_operations",
-            json!({"task":Uuid::new_v4(),"kind":"group","target":"original-group","status_url":"/original-task"}),
+            json!({"task":Uuid::new_v4(),"kind":"group","target":"original-group","statusUrl":"/original-task"}),
         ),
         (
             "mdm_assets.operations",
@@ -75,12 +75,7 @@ pub(super) async fn seed(
         .bind(c.tenant.to_string()).bind(p.principal_id()).bind(p.instance_id()).bind(id).bind("a".repeat(64)).bind(json!({"revision":11}).to_string()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.operations(tenant_id,operation_id,actor,instance,digest,result) VALUES($1::uuid,$2,$3,$4,$5,$6)")
         .bind(c.tenant.to_string()).bind(id).bind(p.principal_id()).bind(p.instance_id()).bind(vec![17_u8;32]).bind(json!({"operationId":id,"devices":["original-device"],"state":"active"})).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_pki.operations(tenant_id,actor,instance,operation,phase,digest,receipt) VALUES($1::uuid,'service:device-pki','',$2,'admit',$3,$4)")
-        .bind(c.tenant.to_string()).bind(id).bind(vec![17_u8;32]).bind(b"null".to_vec()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_pki.signing(tenant_id,attempt,purpose,issuer,binding,deadline,digest,state) VALUES($1::uuid,$2,'agent',$3,$4,1700000900,$5,'unknown')")
-        .bind(c.tenant.to_string()).bind(id).bind("a".repeat(64)).bind(b"retained opaque signing intent".to_vec()).bind(vec![17_u8;32]).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_pki.revocations(tenant_id,attempt,purpose,issuer,serial,state) VALUES($1::uuid,$2,'agent',$3,'1','submitted')")
-        .bind(c.tenant.to_string()).bind(id).bind("a".repeat(64)).execute(&mut *tx).await?;
+    pki_receipts(&mut tx, &c.tenant.to_string(), id).await?;
     sqlx::query("INSERT INTO mdm_webhook.operations(tenant_id,id,fingerprint,response) VALUES($1::uuid,$2,$3,$4)")
         .bind(c.tenant.to_string()).bind(id).bind(vec![17_u8;32]).bind(json!({"id":Uuid::new_v4(),"revision":12,"enabled":false})).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_certificate_archive.operations(tenant_id,actor,instance,id,action,digest,result,created_at) VALUES($1::uuid,$2,$3::uuid,$4,'settings',$5,$6,1700000000)")
@@ -161,4 +156,19 @@ pub(super) async fn seed(
         .collect();
     cases.extend(progress::seed(c, p, id).await?);
     Ok(cases)
+}
+
+async fn pki_receipts(tx: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Result<()> {
+    sqlx::query("INSERT INTO mdm_pki.operations(tenant_id,actor,instance,operation,phase,digest,receipt) VALUES($1::uuid,'service:device-pki','',$2,'admit',$3,$4)")
+        .bind(tenant).bind(id).bind(vec![17_u8;32]).bind(b"null".to_vec()).execute(&mut *tx).await?;
+    // Retired issuer/certificate metadata is required by the original task foreign keys.
+    sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'agent',$2,1,'retired',$3,'legacy',1700000900)")
+        .bind(tenant).bind("a".repeat(64)).bind(b"retained issuer material".to_vec()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_pki.certificates(tenant_id,purpose,fingerprint,issuer,serial,not_after,certificate,verification_version,verification_trust) VALUES($1::uuid,'agent',sha256($2),$3,'1',1700000900,$2,1,$4)")
+        .bind(tenant).bind(b"retained certificate material".to_vec()).bind("a".repeat(64)).bind(vec![17_u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_pki.signing(tenant_id,attempt,purpose,issuer,binding,deadline,digest,state) VALUES($1::uuid,$2,'agent',$3,$4,1700000900,$5,'unknown')")
+        .bind(tenant).bind(id).bind("a".repeat(64)).bind(b"retained opaque signing intent".to_vec()).bind(vec![17_u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_pki.revocations(tenant_id,attempt,purpose,issuer,serial,state) VALUES($1::uuid,$2,'agent',$3,'1','submitted')")
+        .bind(tenant).bind(id).bind("a".repeat(64)).execute(&mut *tx).await?;
+    Ok(())
 }

@@ -194,34 +194,29 @@ impl AssetService {
                 Box::pin(async move {
                     let grant = crate::transaction::query_authority(tx, p).await?;
                     let task = s.query_task_in(tx, id).await?;
-                    let mut current = ReadScope::from_snapshot(p, &grant)?;
-                    current.collection_scope = task.input.scope.collection_scope.clone();
-                    if current != task.input.scope {
-                        return Err(Error::Forbidden.into());
-                    }
-                    if task.input.software.is_some() {
-                        current.full().map_err(|_| Error::Forbidden)?;
-                        grant.require(
-                            p,
-                            rss_mdm_authorization_service::Permission::InventorySensitiveRead,
-                            None,
-                        )?;
-                        grant.require(
-                            p,
-                            rss_mdm_authorization_service::Permission::GroupRead,
-                            None,
-                        )?;
-                    }
+                    let current = Self::query_receipt_scope(p, &grant, &task)?;
                     let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
                     value.recorded_at = Some(task.input.as_of);
                     value.accepted = Some(true);
                     value.executions.push(id);
-                    let Response::QueryStatus { status, .. } =
-                        s.asset_query_status(tx, id, &current).await?
-                    else {
-                        return Err(Error::Conflict.into());
-                    };
-                    value.state = Some(status);
+                    value.state = Some(if task.input.software.is_some() {
+                        let status = super::software::QueryStatus::from_progress(
+                            task.completed,
+                            task.started,
+                            task.failure.as_deref(),
+                        );
+                        stored(serde_json::to_value(status))?
+                            .as_str()
+                            .ok_or(Error::Conflict)?
+                            .into()
+                    } else {
+                        let Response::QueryStatus { status, .. } =
+                            s.asset_query_status(tx, id, &current).await?
+                        else {
+                            return Err(Error::Conflict.into());
+                        };
+                        status
+                    });
                     p.check_live()?;
                     Ok(Some(value))
                 })
@@ -229,5 +224,41 @@ impl AssetService {
             crate::transaction::TransactionOwner::Assets,
         )
         .await
+    }
+}
+
+impl AssetService {
+    /// Reuse each query owner's current read boundary without revalidating current configuration.
+    pub(super) fn query_receipt_scope(
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        grant: &rss_mdm_authorization_service::Snapshot,
+        task: &QueryTask,
+    ) -> Result<ReadScope> {
+        let mut current = ReadScope::from_snapshot(p, grant)?;
+        current.collection_scope = task.input.scope.collection_scope.clone();
+        let same_scope = if task.input.software.is_some() {
+            current == task.input.scope
+        } else {
+            current.subject == task.input.scope.subject
+                && current.collection_scope == task.input.scope.collection_scope
+                && current.devices == task.input.scope.devices
+        };
+        if !same_scope {
+            return Err(Error::Forbidden.into());
+        }
+        if task.input.software.is_some() {
+            current.full().map_err(|_| Error::Forbidden)?;
+            grant.require(
+                p,
+                rss_mdm_authorization_service::Permission::InventorySensitiveRead,
+                None,
+            )?;
+            grant.require(
+                p,
+                rss_mdm_authorization_service::Permission::GroupRead,
+                None,
+            )?;
+        }
+        Ok(current)
     }
 }

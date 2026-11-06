@@ -638,7 +638,7 @@ impl AssetService {
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
         use rss_mdm_authorization_service::Permission;
-        crate::transaction::inspect(&self.runtime,self.tenant,p,|p,tx|Box::pin(async move{
+        crate::transaction::inspect(&self.runtime,self.tenant,(self,p),|(service,p),tx|Box::pin(async move{
             let grant=crate::transaction::query_authority(tx,p).await?;
             let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();let instance=p.instance_id().to_owned();
             let raw:Option<Value>=tx.with_connection(move|c|Box::pin(async move{
@@ -677,7 +677,8 @@ impl AssetService {
                     if let Some(policy)=policy {let v=stored(serde_json::to_value(policy))?;s.revision=v["revision"].as_i64();}
                 },
                 Response::Accepted{task,..}=>{
-                    grant.require_all_devices(p,Permission::InventoryRead)?;
+                    let query = service.query_task_in(tx,task).await?;
+                    Self::query_receipt_scope(p,&grant,&query)?;
                     s.executions.push(task);s.accepted=Some(true);
                 },
                 Response::Saved{query}=>{

@@ -442,6 +442,21 @@ pub enum QueryStatus {
     Failed,
     Cancelled,
 }
+impl QueryStatus {
+    pub(in crate::assets) fn from_progress(
+        completed: bool,
+        started: bool,
+        failure: Option<&str>,
+    ) -> Self {
+        match failure {
+            Some("cancelled") => Self::Cancelled,
+            Some(_) => Self::Failed,
+            None if completed => Self::Completed,
+            None if started => Self::Running,
+            None => Self::Pending,
+        }
+    }
+}
 #[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultState {

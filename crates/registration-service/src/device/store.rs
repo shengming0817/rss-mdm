@@ -725,7 +725,7 @@ async fn revoke_on(
         operation_id: key,
         registration,
     };
-    audit.target_device(&device);
+    audit.target_device(device);
     crate::operations::save(
         profile,
         tx,

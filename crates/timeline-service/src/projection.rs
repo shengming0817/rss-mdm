@@ -196,8 +196,8 @@ pub(crate) fn operation_locator(
                 .unwrap_or(Value::Null),
         )
         .map_err(|_| Error::Integrity)?;
-    if let Some(locator) = &locator {
-        if event
+    if let Some(locator) = &locator
+        && (event
             .identity()
             .source()
             .source_id()
@@ -209,10 +209,9 @@ pub(crate) fn operation_locator(
             || !locator.owner.invocation()
                 && locator.actor.as_deref() != Some(view.actor.as_str())
                 && locator.actor.is_some()
-            || locator.instance.is_some() && locator.instance != view.instance_id
-        {
-            return Err(Error::Integrity);
-        }
+            || locator.instance.is_some() && locator.instance != view.instance_id)
+    {
+        return Err(Error::Integrity);
     }
     Ok(locator)
 }

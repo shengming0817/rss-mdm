@@ -629,6 +629,7 @@ pub(crate) fn administrator_rule(user: User, platform: bool) -> Rule {
                 Permission::TenantDelete,
                 Permission::TenantAdministratorCreate,
                 Permission::IdentityAccountsManage,
+                Permission::AuditRead,
             ]
             .into_iter()
             .map(|operation| Grant {

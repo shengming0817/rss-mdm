@@ -106,7 +106,10 @@ impl Permission {
         self.tenant_management()
             || matches!(
                 self,
-                Self::AuthorizationRead | Self::AuthorizationWrite | Self::IdentityAccountsManage
+                Self::AuthorizationRead
+                    | Self::AuthorizationWrite
+                    | Self::IdentityAccountsManage
+                    | Self::AuditRead
             )
     }
     /// Whether this permission is granted for devices rather than the tenant.

@@ -645,12 +645,12 @@ impl Service {
                 summary.object = raw["id"].as_str().map(str::to_owned);
                 summary.revision = raw["revision"].as_i64();
                 summary.enabled = raw["enabled"].as_bool();
-                if raw.get("eventId").is_some() {
-                    if let Some(id) = raw["id"].as_str() {
-                        summary
-                            .executions
-                            .push(Uuid::parse_str(id).map_err(|_| Error::Storage)?);
-                    }
+                if raw.get("eventId").is_some()
+                    && let Some(id) = raw["id"].as_str()
+                {
+                    summary
+                        .executions
+                        .push(Uuid::parse_str(id).map_err(|_| Error::Storage)?);
                 }
                 return Ok((Reply::OperationReceipt(summary), false));
             }

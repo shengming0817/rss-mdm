@@ -1,6 +1,10 @@
 //! Retained original tasks/material results, selected without running their mutation paths.
 use super::*;
 use sha2::{Digest, Sha256};
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one linear set of legal immutable rows prepares independent adapters for the same real HTTP consumer proof"
+)]
 pub(super) async fn seed(
     c: &Context,
     p: &AuthorizedPrincipal,

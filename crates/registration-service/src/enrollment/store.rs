@@ -265,7 +265,7 @@ async fn create_enrollment_on(
         source,
     };
     permission.check()?;
-    audit.target_device(&device);
+    audit.target_device(device);
     crate::operations::save(
         profile,
         tx,
@@ -504,7 +504,7 @@ async fn change_enrollment_on(
             .map_err(|_| Error::Storage)?,
     };
     permission.check()?;
-    audit.target_device(&device);
+    audit.target_device(device);
     crate::operations::save(
         profile,
         tx,

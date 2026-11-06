@@ -119,6 +119,10 @@ impl Fact {
         fact.request = context.request_coordinate();
         Ok(fact)
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "source identity, actual request provenance and independent outcome coordinates stay explicit at the single fact constructor"
+    )]
     fn new(
         context: &RequestAudit,
         source: &str,
@@ -199,18 +203,17 @@ impl Fact {
         if payload["details"].is_null() {
             payload["details"] = serde_json::json!({});
         }
-        if let Some(target) = &activity.target {
-            if let Some(locator) = payload
+        if let Some(target) = &activity.target
+            && let Some(locator) = payload
                 .get_mut("operationLocator")
                 .and_then(serde_json::Value::as_object_mut)
-            {
-                locator.insert("device".into(), serde_json::json!(target.device));
-                locator.insert(
-                    "registration".into(),
-                    serde_json::json!(target.registration),
-                );
-                locator.insert("generation".into(), serde_json::json!(target.generation));
-            }
+        {
+            locator.insert("device".into(), serde_json::json!(target.device));
+            locator.insert(
+                "registration".into(),
+                serde_json::json!(target.registration),
+            );
+            locator.insert("generation".into(), serde_json::json!(target.generation));
         }
         let details = payload["details"]
             .as_object_mut()

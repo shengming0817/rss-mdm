@@ -169,7 +169,7 @@ pub async fn operation_receipt(
                         #[derive(serde::Deserialize)]
                         #[serde(untagged)]
                         enum Original {
-                            Changed(rss_mdm_policy::View),
+                            Changed(Box<rss_mdm_policy::View>),
                             Rerun(crate::management::rerun::Receipt),
                         }
                         match serde_json::from_value::<Original>(v).map_err(|_| Error::Conflict)? {

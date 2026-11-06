@@ -14,7 +14,10 @@ mod receipts;
 /// Exercise the actual product composition, including its real owner pools and HTTP authority.
 #[tokio::test]
 #[ignore = "T2: production App diagnostics, original receipt namespaces and evidence continuation"]
-#[allow(clippy::disallowed_methods, reason = "real host monotonic clock")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "real host clock and independently polled test listener task"
+)]
 async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() -> Result<()> {
     use serde_json::{Value, json};
     let c = Context::open("shared", &[]).await?;
@@ -47,6 +50,22 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
     let instance = Uuid::new_v4();
     let foreign_operation = Uuid::new_v4();
     receipts::actor_receipts(&c, &proof, foreign_operation, instance).await?;
+    let old_pki = Uuid::new_v4();
+    sqlx::query("INSERT INTO mdm_pki.operations(tenant_id,actor,instance,operation,phase,digest,receipt) VALUES($1::uuid,$2,$3,$4,'distributing',$5,$6)")
+        .bind(c.tenant.to_string()).bind(proof.principal_id()).bind(instance.to_string()).bind(old_pki).bind(vec![17_u8;32]).bind(br#"{"revision":24,"state":"distributing"}"#.to_vec()).execute(&c.operator).await?;
+    let collision = c.request(&proof)?;
+    collision.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Pki,
+        old_pki,
+        "device_pki_rotation",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    collision.mark_rolled_back();
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    c.audit
+        .settle_request(&collision, 403, "denied", &budget.source_control())
+        .await?;
+    collision.finalize(None);
     // Request retries are independently settled; the original response remains one durable row.
     for _ in 0..55 {
         let attempt = c.request(&proof)?;
@@ -96,7 +115,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
     };
     let (stop, stopped) = tokio::sync::oneshot::channel();
     drop(reservation);
-    let server = crate::serve(
+    let mut server = tokio::spawn(crate::serve(
         config,
         async move {
             stopped
@@ -104,8 +123,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
                 .map_err(|_| std::io::Error::other("test stop closed"))
         },
         Arc::new(crate::Monotonic(std::time::Instant::now)),
-    );
-    tokio::pin!(server);
+    ));
     let exercise = async {
         tokio::time::timeout(Duration::from_secs(90), async {
             loop {
@@ -116,23 +134,38 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             }
         })
         .await?;
+        let mut failures = Vec::new();
         for (owner, case_id, query, expected) in &cases {
             let path = format!("/api/v1/operation-diagnostics/operations/{owner}/{case_id}{query}");
             let (status, body) = send(path).await?;
-            assert_eq!(status, 200, "{owner}: {body}");
-            assert_eq!(body["operation"]["owner"], *owner);
-            assert_eq!(
-                body["originalResult"]["availability"], "available",
-                "{owner}: {body}"
-            );
-            for (key, value) in expected.as_object().unwrap() {
-                assert_eq!(
-                    &body["originalResult"]["value"][key], value,
-                    "{owner}.{key}"
-                );
+            let matches = status == 200
+                && body["operation"]["owner"] == *owner
+                && body["originalResult"]["availability"] == "available"
+                && body["auditEvidence"]["availability"] == "not_requested"
+                && expected
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .all(|(key, value)| &body["originalResult"]["value"][key] == value);
+            if !matches {
+                failures.push(format!(
+                    "{owner} expected {expected}, received {status}: {body}"
+                ));
             }
-            assert_eq!(body["auditEvidence"]["availability"], "not_requested");
         }
+        anyhow::ensure!(
+            failures.is_empty(),
+            "owner diagnostics:\n{}",
+            failures.join("\n")
+        );
+        let (status, value) = send(format!("/api/v1/operation-diagnostics/operations/pki/{old_pki}?instance={instance}&includeAudit=true")).await?;
+        assert_eq!(status, 200, "{value}");
+        assert_eq!(value["originalResult"]["availability"], "available");
+        assert_eq!(value["operation"]["instance"], instance.to_string());
+        assert_eq!(
+            value["requestEvidence"]["availability"], "restricted",
+            "same UUID in current instance must not be attached to the original instance"
+        );
         let damaged = Uuid::new_v4();
         sqlx::query("INSERT INTO mdm_assets.group_operations(tenant_id,id,actor,instance,fingerprint,response) VALUES($1::uuid,$2,$3,$4::uuid,$5,'{\"damaged\":true}')")
             .bind(c.tenant.to_string()).bind(damaged).bind(proof.principal_id()).bind(proof.instance_id()).bind(vec![17_u8;32]).execute(&c.operator).await?;
@@ -217,7 +250,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
     };
     let outcome = tokio::select! { result = &mut server => anyhow::bail!("host exited during diagnostics proof: {result:?}"), result = exercise => result };
     let _ = stop.send(());
-    tokio::time::timeout(Duration::from_secs(70), &mut server).await??;
+    tokio::time::timeout(Duration::from_secs(70), &mut server).await???;
     c.close().await;
     outcome?;
     Ok(())
@@ -285,8 +318,21 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
             .await?,
         1
     );
-    let bytes:Vec<u8>=sqlx::query_scalar("SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND convert_from(canonical,'UTF8') LIKE '%'||$2||'%' LIMIT 1").bind(c.tenant.to_string()).bind(operation.to_string()).fetch_one(&c.operator).await?;
-    assert!(String::from_utf8(bytes)?.contains(&first_request.to_string()));
+    let rows: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business'",
+    ).bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
+    let mut original_request = None;
+    let mut original_event = None;
+    for bytes in rows {
+        let decoded = rss_audit_core::decode_untrusted(&bytes)?;
+        let coordinates = decoded.event().context().coordinates();
+        if coordinates.operation_id().map(|id| id.as_str()) == Some(operation.to_string().as_str())
+        {
+            original_request = coordinates.request_id().map(|id| id.as_str().to_owned());
+            original_event = Some(decoded.event().identity().event_id().as_str().to_owned());
+        }
+    }
+    assert_eq!(original_request, Some(first_request.to_string()));
     let timeline = c.database.timeline(c.audit.clone(), c.tenant, &[41; 32])?;
     let services = Arc::new(Services {
         timeline: timeline.clone(),
@@ -408,8 +454,8 @@ async fn original_result_survives_lost_response_new_config_and_index_failure() -
     .await?;
     a.finalize(None);
     // Corrupt only this tenant's rebuildable cache. Original Audit and receipt rows remain intact.
-    sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest) SELECT tenant_id,position,source_id,event_id,recorded_at,$2::uuid,$3,$4,'authorization_write','succeeded','{}','{}',jsonb_build_object('operation',jsonb_build_object('owner','authorization')),decode(repeat('00',32),'hex') FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND convert_from(canonical,'UTF8') LIKE '%'||$3::text||'%' LIMIT 1")
-        .bind(c.tenant.to_string()).bind(proof.instance_id()).bind(operation).bind(proof.principal_id()).execute(&c.operator).await?;
+    sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest) SELECT tenant_id,position,source_id,event_id,recorded_at,$2::uuid,$3,$4,'authorization_write','succeeded','{}','{}',jsonb_build_object('operation',jsonb_build_object('owner','authorization','actor',$4::text)),decode(repeat('00',32),'hex') FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$5")
+        .bind(c.tenant.to_string()).bind(proof.instance_id()).bind(operation).bind(proof.principal_id()).bind(original_event.expect("original business event")).execute(&c.operator).await?;
     let (status, body) = send(format!("{path}?includeAudit=true")).await?;
     assert_eq!(status, 200);
     assert_eq!(body["originalResult"]["value"]["revision"], 1);

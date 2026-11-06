@@ -20,6 +20,7 @@
   ],
   "external_relations": [
     "mdm_timeline.facts",
+    "mdm_policy.versions",
     "rss_da.installation_binding",
     "rss_da.installation_units",
     "rss_da.authorization_installation",

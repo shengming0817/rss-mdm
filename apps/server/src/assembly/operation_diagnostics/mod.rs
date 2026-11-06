@@ -15,6 +15,10 @@ mod installation;
 mod links;
 pub(crate) use installation::Installation;
 
+type OperationSections = (
+    Evidence<ReceiptSummary>,
+    Evidence<rss_mdm_management_http::execution::operations::Evidence>,
+);
 pub(crate) struct Diagnostics {
     pub state: Arc<super::Assembly>,
     pub apple: Arc<rss_mdm_apple_channel::HttpState>,
@@ -34,6 +38,48 @@ impl Reads for Diagnostics {
 impl Diagnostics {
     async fn read(&self, l: Lookup<'_>) -> Result<Detail, Error> {
         let p = l.auth.proof.as_ref();
+        self.validate_locator(p, &l)?;
+        let da_owner = p.profile() == rss_mdm_install_support::StorageProfile::Da
+            || matches!(
+                l.owner,
+                O::DeviceAccess
+                    | O::EnterpriseConfiguration
+                    | O::DaPublication
+                    | O::DaConfigurationExport
+                    | O::AgentDelivery
+            );
+        let da_proof = if da_owner && p.profile() != rss_mdm_install_support::StorageProfile::Da {
+            Some(self.da_proof(&l).await?)
+        } else {
+            None
+        };
+        let p = da_proof.as_ref().unwrap_or(p);
+        let da_source = da_owner || l.owner == O::DeviceAccessTask;
+        let operation = locator(p, &l, da_source)?;
+        let (original_result, execution_evidence) =
+            match self.result(p, &l, &operation, da_owner).await {
+                Ok(value) => value,
+                Err(e) if e.is_not_found() => (Evidence::NotFound, Evidence::NotFound),
+                Err(Error::Unavailable(_)) => (Evidence::Unavailable, Evidence::Unavailable),
+                Err(e) => return Err(e),
+            };
+        let audit_evidence = self.history(&l, p, da_source, &operation).await?;
+        let (audit_evidence, request_evidence) =
+            rss_mdm_management_http::operation_diagnostics::split_requests(audit_evidence);
+        p.check_live()?;
+        let (original_result_url, current_resource_url) =
+            links::urls(l.owner, l.operation, l.query, &original_result);
+        Ok(Detail {
+            operation,
+            original_result,
+            audit_evidence,
+            request_evidence,
+            execution_evidence,
+            original_result_url,
+            current_resource_url,
+        })
+    }
+    fn validate_locator(&self, p: &AuthorizedPrincipal, l: &Lookup<'_>) -> Result<(), Error> {
         p.check_live()?;
         if p.tenant_id() != self.state.identity.tenant.to_string()
             || actor_bound(l.owner)
@@ -59,56 +105,15 @@ impl Diagnostics {
         {
             return Err(Error::Malformed);
         }
-        let da_owner = p.profile() == rss_mdm_install_support::StorageProfile::Da
-            || matches!(
-                l.owner,
-                O::DeviceAccess
-                    | O::EnterpriseConfiguration
-                    | O::DaPublication
-                    | O::DaConfigurationExport
-                    | O::AgentDelivery
-            );
-        let da_proof = if da_owner && p.profile() != rss_mdm_install_support::StorageProfile::Da {
-            Some(self.da_proof(&l).await?)
-        } else {
-            None
-        };
-        let p = da_proof.as_ref().unwrap_or(p);
-        let da_source = da_owner || l.owner == O::DeviceAccessTask;
-        let operation = OperationLocator {
-            product: if da_source {
-                rss_mdm_install_support::StorageProfile::Da
-            } else {
-                p.profile()
-            },
-            owner: l.owner,
-            operation_id: l.operation,
-            actor: (actor_bound(l.owner) || l.owner.invocation()).then(|| {
-                l.query
-                    .actor
-                    .clone()
-                    .unwrap_or_else(|| p.principal_id().to_owned())
-            }),
-            instance: if l.owner == O::Pki && l.query.actor.as_deref() == Some("service:device-pki")
-            {
-                if l.query.instance.is_some() {
-                    return Err(Error::Malformed);
-                }
-                None
-            } else if actor_bound(l.owner) {
-                Some(
-                    l.query
-                        .instance
-                        .unwrap_or(Uuid::parse_str(p.instance_id()).map_err(|_| Error::Forbidden)?),
-                )
-            } else {
-                None
-            },
-            target: l.query.target.clone(),
-            device: l.query.device.clone(),
-            registration: l.query.registration,
-            generation: l.query.generation,
-        };
+        Ok(())
+    }
+    async fn result(
+        &self,
+        p: &AuthorizedPrincipal,
+        l: &Lookup<'_>,
+        operation: &OperationLocator,
+        da_owner: bool,
+    ) -> Result<OperationSections, Error> {
         let execution_owner = matches!(
             l.owner,
             O::DeviceControlRequest
@@ -125,7 +130,7 @@ impl Diagnostics {
                 | O::DeviceAccessTask
                 | O::CredentialTask
         );
-        let (original_result, execution_evidence) =
+        Ok(
             if matches!(l.owner, O::AppleAccountEnrollment | O::Initialization) {
                 let grant = rss_mdm_authorization_service::store::authorization_snapshot(
                     &self.state.access.authorization_store(),
@@ -136,97 +141,99 @@ impl Diagnostics {
                 // These owners keep current configuration / installation progress, not a historical receipt by operation ID.
                 (Evidence::NoDurableEvidence, Evidence::NoDurableEvidence)
             } else if matches!(l.owner, O::PkiSigning | O::PkiRevocation) {
-                let registry = if da_owner {
-                    self.state
-                        .da
-                        .as_ref()
-                        .and_then(|d| d.pki.as_ref())
-                        .ok_or(Error::Unavailable(Failure::Runtime))?
-                } else {
-                    &self.state.pki
-                };
-                match registry
-                    .task_receipt(p, l.owner, l.operation)
-                    .await
-                    .map_err(|e| match e {
-                        rss_mdm_pki_service::Error::Forbidden => Error::Forbidden,
-                        rss_mdm_pki_service::Error::Request => Error::Malformed,
-                        _ => Error::Unavailable(Failure::Database),
-                    }) {
-                    Ok(Some((original, execution))) => (
-                        Evidence::Available(original),
-                        Evidence::Available(
-                            rss_mdm_management_http::execution::operations::Evidence::Pki(
-                                execution,
-                            ),
-                        ),
-                    ),
-                    Ok(None) => (Evidence::NotFound, Evidence::NotFound),
-                    Err(Error::Unavailable(_)) => (Evidence::Unavailable, Evidence::Unavailable),
-                    Err(e) => return Err(e),
-                }
+                self.pki_task(p, l, da_owner).await?
             } else if da_owner && l.owner == O::CredentialTask {
-                match self.da_task(p, &operation).await {
-                    Ok(value) => value,
-                    Err(Error::Unavailable(_)) => (Evidence::Unavailable, Evidence::Unavailable),
-                    Err(e) => return Err(e),
-                }
+                self.da_task(p, operation).await?
             } else if execution_owner || l.owner.invocation() {
-                let result = if l.owner.invocation() {
-                    if l.query.actor.is_none() || l.query.instance.is_some() {
-                        return Err(Error::Malformed);
-                    }
-                    self.state
-                        .operation_reads
-                        .invocation(p, &operation, l.query)
-                        .await
-                } else {
-                    self.state
-                        .operation_reads
-                        .diagnostic(p, l.owner, l.operation, l.query)
-                        .await
-                };
-                match result {
-                    Ok(result) => (section(Ok(result.original))?, section(result.execution)?),
-                    Err(e) if e.is_not_found() => (Evidence::NotFound, Evidence::NotFound),
-                    Err(Error::Unavailable(_)) => (Evidence::Unavailable, Evidence::Unavailable),
-                    Err(e) => return Err(e),
-                }
+                self.execution(p, l, operation).await?
             } else {
-                let receipt = if da_owner {
-                    self.da_receipt(&l, p).await
-                } else {
-                    self.original(&l.auth.proof, l.audit, l.owner, l.operation, l.query)
-                        .await
-                };
-                let original = section(receipt)?;
-                let execution = if da_owner && l.owner == O::DeviceAccess {
-                    self.da_execution(
-                        p,
-                        l.query.device.as_deref().ok_or(Error::Malformed)?,
-                        l.operation,
-                    )
-                    .await?
-                } else {
-                    Evidence::NoDurableEvidence
-                };
-                (original, execution)
-            };
-        let audit_evidence = self.history(&l, p, da_source, &operation).await?;
-        let (audit_evidence, request_evidence) =
-            rss_mdm_management_http::operation_diagnostics::split_requests(audit_evidence);
-        p.check_live()?;
-        let (original_result_url, current_resource_url) =
-            links::urls(l.owner, l.operation, l.query, &original_result);
-        Ok(Detail {
-            operation,
-            original_result,
-            audit_evidence,
-            request_evidence,
-            execution_evidence,
-            original_result_url,
-            current_resource_url,
-        })
+                self.receipt(p, l, da_owner).await?
+            },
+        )
+    }
+    async fn receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        l: &Lookup<'_>,
+        da_owner: bool,
+    ) -> Result<OperationSections, Error> {
+        let receipt = if da_owner {
+            self.da_receipt(l, p).await
+        } else {
+            self.original(&l.auth.proof, l.audit, l.owner, l.operation, l.query)
+                .await
+        };
+        let original = section(receipt)?;
+        let execution = if da_owner && l.owner == O::DeviceAccess {
+            self.da_execution(
+                p,
+                l.query.device.as_deref().ok_or(Error::Malformed)?,
+                l.operation,
+            )
+            .await?
+        } else {
+            Evidence::NoDurableEvidence
+        };
+        Ok((original, execution))
+    }
+    async fn pki_task(
+        &self,
+        p: &AuthorizedPrincipal,
+        l: &Lookup<'_>,
+        da_owner: bool,
+    ) -> Result<OperationSections, Error> {
+        let registry = if da_owner {
+            self.state
+                .da
+                .as_ref()
+                .and_then(|d| d.pki.as_ref())
+                .ok_or(Error::Unavailable(Failure::Runtime))?
+        } else {
+            &self.state.pki
+        };
+        Ok(
+            match registry
+                .task_receipt(p, l.owner, l.operation)
+                .await
+                .map_err(|e| match e {
+                    rss_mdm_pki_service::Error::Forbidden => Error::Forbidden,
+                    rss_mdm_pki_service::Error::Request => Error::Malformed,
+                    _ => Error::Unavailable(Failure::Database),
+                }) {
+                Ok(Some((original, execution))) => (
+                    Evidence::Available(original),
+                    Evidence::Available(
+                        rss_mdm_management_http::execution::operations::Evidence::Pki(execution),
+                    ),
+                ),
+                Ok(None) => (Evidence::NotFound, Evidence::NotFound),
+                Err(Error::Unavailable(_)) => (Evidence::Unavailable, Evidence::Unavailable),
+                Err(e) => return Err(e),
+            },
+        )
+    }
+    async fn execution(
+        &self,
+        p: &AuthorizedPrincipal,
+        l: &Lookup<'_>,
+        operation: &OperationLocator,
+    ) -> Result<OperationSections, Error> {
+        let result = if l.owner.invocation() {
+            if l.query.actor.is_none() || l.query.instance.is_some() {
+                return Err(Error::Malformed);
+            }
+            self.state
+                .operation_reads
+                .invocation(p, operation, l.query)
+                .await
+        } else {
+            self.state
+                .operation_reads
+                .diagnostic(p, l.owner, l.operation, l.query)
+                .await
+        };
+        let result = result?;
+        Ok((section(Ok(result.original))?, section(result.execution)?))
     }
     async fn history(
         &self,
@@ -237,6 +244,14 @@ impl Diagnostics {
     ) -> Result<Evidence<rss_mdm_timeline_service::DiagnosticPage>, Error> {
         if !l.query.include_audit {
             return Ok(Evidence::NotRequested);
+        }
+        // Timeline authority is instance-bound. Never attach a same-UUID attempt from the
+        // reader's current instance to an explicitly selected receipt in another instance.
+        if operation
+            .instance
+            .is_some_and(|instance| instance.to_string() != p.instance_id())
+        {
+            return Ok(Evidence::Restricted);
         }
         // DeviceAccessTask keeps its existing MDM execution authority, but its facts are DA.
         let da_proof = if da_source && p.profile() != rss_mdm_install_support::StorageProfile::Da {
@@ -297,6 +312,10 @@ impl Diagnostics {
             _ => Ok(Evidence::Unavailable),
         }
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "the exhaustive static receipt-owner dispatch is intentionally kept auditable in one match"
+    )]
     async fn original(
         &self,
         p: &Arc<AuthorizedPrincipal>,
@@ -778,4 +797,44 @@ fn section<T>(value: Result<Option<T>, Error>) -> Result<Evidence<T>, Error> {
         }
         Err(e) => Err(e),
     }
+}
+
+fn locator(
+    p: &AuthorizedPrincipal,
+    l: &Lookup<'_>,
+    da_source: bool,
+) -> Result<OperationLocator, Error> {
+    Ok(OperationLocator {
+        product: if da_source {
+            rss_mdm_install_support::StorageProfile::Da
+        } else {
+            p.profile()
+        },
+        owner: l.owner,
+        operation_id: l.operation,
+        actor: (actor_bound(l.owner) || l.owner.invocation()).then(|| {
+            l.query
+                .actor
+                .clone()
+                .unwrap_or_else(|| p.principal_id().to_owned())
+        }),
+        instance: if l.owner == O::Pki && l.query.actor.as_deref() == Some("service:device-pki") {
+            if l.query.instance.is_some() {
+                return Err(Error::Malformed);
+            }
+            None
+        } else if actor_bound(l.owner) {
+            Some(
+                l.query
+                    .instance
+                    .unwrap_or(Uuid::parse_str(p.instance_id()).map_err(|_| Error::Forbidden)?),
+            )
+        } else {
+            None
+        },
+        target: l.query.target.clone(),
+        device: l.query.device.clone(),
+        registration: l.query.registration,
+        generation: l.query.generation,
+    })
 }

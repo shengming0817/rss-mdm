@@ -72,9 +72,9 @@ impl Operations {
                                 execution: Ok(None),
                             });
                         };
-                        if !receipt
+                        if receipt
                             .instance
-                            .is_some_and(|v| v.to_string() == p.instance_id())
+                            .is_none_or(|v| v.to_string() != p.instance_id())
                         {
                             return Ok(Diagnostic {
                                 original: None,
