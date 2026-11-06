@@ -167,7 +167,7 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
                 c.authority.clone(),
                 c.tenant,
             ),
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(8),
+            deadline: c.access().now() + std::time::Duration::from_secs(8),
         }))
         .layer(axum::middleware::from_fn({
             let proof = p.clone();

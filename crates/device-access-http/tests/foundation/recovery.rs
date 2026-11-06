@@ -1,5 +1,6 @@
 //! Cold restore on the existing isolated DA database; original files intentionally remain.
 use super::*;
+use anyhow::Context as _;
 use rss_da_app::{backup, config};
 use rss_mdm_install_support::maintenance::journal::Journal;
 use sqlx::Connection;
@@ -62,10 +63,14 @@ pub async fn verify(
             .await?;
     assert!(revoked > 0);
     connection.close().await?;
-    Box::pin(backup::capture(serde_json::from_value(request.clone())?)).await?;
+    Box::pin(backup::capture(serde_json::from_value(request.clone())?))
+        .await
+        .context("capture cold baseline")?;
     // Reconstruct a crash after Complete, before the final local cleanup.
     Journal::open(&material.directory)?.save("backup-operation.json", &Some(operation))?;
-    Box::pin(backup::capture(serde_json::from_value(request)?)).await?;
+    Box::pin(backup::capture(serde_json::from_value(request)?))
+        .await
+        .context("reenter completed capture")?;
     assert_eq!(
         Journal::open(&material.directory)?.load::<Option<Uuid>>("backup-operation.json")?,
         Some(None)
@@ -147,8 +152,12 @@ pub async fn verify(
             .is_err()
     );
     host::private(&verification_password, &password)?;
-    Box::pin(backup::restore(serde_json::from_value(restore.clone())?)).await?;
-    Box::pin(backup::restore(serde_json::from_value(restore)?)).await?;
+    Box::pin(backup::restore(serde_json::from_value(restore.clone())?))
+        .await
+        .context("resume verified restore")?;
+    Box::pin(backup::restore(serde_json::from_value(restore)?))
+        .await
+        .context("reenter completed restore")?;
     let mut connection = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
     let preserved: i64 =
         sqlx::query_scalar("SELECT count(*) FROM rss_da.registrations WHERE state='revoked'")

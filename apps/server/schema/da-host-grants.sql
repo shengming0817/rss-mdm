@@ -2,8 +2,6 @@ BEGIN;
 GRANT USAGE ON SCHEMA rss_da TO mdm_identity_runtime,mdm_command_runtime,mdm_access;
 GRANT SELECT ON rss_da.installation_units TO da_access;
 GRANT SELECT(instance_id,target,lineage) ON rss_da.installation_binding TO da_access,mdm_identity_runtime,mdm_command_runtime,mdm_access;
-GRANT SELECT ON rss_da.business_revision TO mdm_identity_runtime;
-GRANT SELECT ON rss_da.business_revision TO mdm_command_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.deployment_valid_until(uuid,bigint,jsonb,uuid,bigint) TO mdm_identity_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.platform_session_qualifications(uuid,jsonb,bigint) TO mdm_identity_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.platform_registration_matches(uuid,bigint,jsonb) TO mdm_command_runtime;

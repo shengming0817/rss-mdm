@@ -145,7 +145,7 @@ async fn access_directory(
         rss_mdm_http_contract::query::Window<AccessDirectory>,
     >,
 ) -> Result<NoStore<Json<wire::AccessDirectory>>, AgentError> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let deadline = app.authorization.now() + std::time::Duration::from_secs(8);
     bounded(async {
         let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
         let p = principal(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;

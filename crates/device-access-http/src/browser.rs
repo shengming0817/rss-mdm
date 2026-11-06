@@ -95,7 +95,7 @@ async fn authenticate(
         Err(r) => return r,
     };
     let audit = request.extensions().get::<RequestAudit>().cloned();
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let deadline = s.authorization.now() + Duration::from_secs(8);
     let result = tokio::time::timeout_at(deadline.into(), async {
         let principal = Principal::new(session)?;
         let proof = AuthorizedPrincipal::from_identity(&s.authorization, principal)?;

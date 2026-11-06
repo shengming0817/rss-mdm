@@ -198,7 +198,7 @@ impl Context {
         access::context::RequestAuth {
             proof,
             sessions: access::session::SessionAuthority::new(self.authority.clone(), self.tenant),
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(8),
+            deadline: self.access().now() + std::time::Duration::from_secs(8),
         }
     }
     pub fn request(&self, proof: &access::context::AuthorizedPrincipal) -> Result<RequestAudit> {

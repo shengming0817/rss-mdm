@@ -8,7 +8,7 @@ use rss_mdm_authorization_service::Permission;
 use rss_mdm_device_service::{Associations, ViewRef, personnel::Reader};
 use rss_mdm_inventory::{Evidence, FieldDefinition, FieldKey, Scalar, Source, State};
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use uuid::Uuid;
 
 fn evidence(actor: &str) -> Evidence {
@@ -68,7 +68,7 @@ async fn live_view_and_fixed_list_keep_distinct_read_semantics() -> Result<()> {
         assign(&c,&a,field,0,vec![1,2,3],proof.principal_id()).await?;
         assign(&c,&b,field,0,vec![8],proof.principal_id()).await?;
         let timer=rss_mdm_audit_integration::budget::RuntimeTimer;
-        let personnel=Reader::new(&c.authority,Instant::now()+Duration::from_secs(30),&timer,None);
+        let personnel=Reader::new(&c.authority,c.access().now()+Duration::from_secs(30),&timer,None);
         let reference=ViewRef::Endpoint(a.clone());
         let detail:Value=serde_json::to_value(service.view(&proof,&reference,&personnel).await?)?;
         let token=detail["lists"][field.as_str()]["sources"][0]["cursor"].as_str().expect("manual array source cursor");

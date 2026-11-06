@@ -6,6 +6,7 @@ pub struct AuthorizedPrincipal {
     profile: rss_mdm_install_support::StorageProfile,
     authority_profile: rss_mdm_install_support::StorageProfile,
     identity: Principal,
+    clock: Arc<dyn rss_request_context::Clock>,
     authorization: Option<crate::Snapshot>,
 }
 impl AuthorizedPrincipal {
@@ -20,6 +21,7 @@ impl AuthorizedPrincipal {
         Ok(Self {
             profile: access.profile(),
             authority_profile: access.authority_profile(),
+            clock: access.clock.clone(),
             identity,
             authorization: None,
         })
@@ -46,6 +48,7 @@ impl AuthorizedPrincipal {
         Self {
             profile: authority.profile(),
             authority_profile: authority.profile(),
+            clock: clock.clone(),
             identity: Principal {
                 subject: user.principal_id.clone(),
                 actor: crate::Actor::Account { user },
@@ -232,7 +235,7 @@ impl RequestAuth {
     ) -> Result<rss_transactional_messaging::policy::OperationDeadline, Error> {
         let remaining = self
             .deadline
-            .checked_duration_since(std::time::Instant::now())
+            .checked_duration_since(self.proof.clock.now())
             .ok_or(Error::Deadline)?;
         if remaining.is_zero() {
             return Err(Error::Deadline);
@@ -476,6 +479,7 @@ mod authority_tests {
             profile: product,
             authority_profile: source,
             identity: Principal::from_key(key),
+            clock: Arc::new(Clock(now)),
             authorization: None,
         };
         let snapshot = crate::Snapshot {

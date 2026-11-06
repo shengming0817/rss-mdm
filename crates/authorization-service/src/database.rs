@@ -21,6 +21,10 @@ impl Store {
             clock,
         }
     }
+    /// Current time from the host-injected authority clock.
+    pub fn now(&self) -> std::time::Instant {
+        self.clock.now()
+    }
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.profile
     }

@@ -286,9 +286,10 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         let manual = crate::planning_t2_support::endpoint(&h.c).await?.members[0].device.clone();
         let empty = crate::planning_t2_support::endpoint(&h.c).await?.members[0].device.clone();
         let mut seed = command::seed_transaction(&h.c).await?;
-        let field = rss_mdm_inventory::FieldKey::parse("device.name")?;
-        let catalog = rss_mdm_inventory_postgres::catalog_in(&mut seed,h.c.tenant).await?;
-        let definition = rss_mdm_inventory::CollectionDefinition::new("presence", "1", rss_mdm_inventory::Source::MdmWindows, vec![rss_mdm_inventory::CollectionField{definition:catalog.definition(field)?.clone(),scope:rss_mdm_inventory::CollectionScope::Device}])?;
+        let field = rss_mdm_inventory::FieldKey::parse("custom.query_presence")?;
+        let definition_field:rss_mdm_inventory::FieldDefinition=serde_json::from_value(json!({"key":field,"version":1,"valueType":{"kind":"string","maxLength":256,"allowEmpty":false},"nullable":true,"manual":true,"sources":{"mdm.windows":0,"manual":0},"platforms":["windows","macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null}))?;
+        assert!(rss_mdm_inventory_postgres::publish_field_in(&mut seed,h.c.tenant,0,&definition_field).await?);
+        let definition = rss_mdm_inventory::CollectionDefinition::new("presence", "1", rss_mdm_inventory::Source::MdmWindows, vec![rss_mdm_inventory::CollectionField{definition:definition_field,scope:rss_mdm_inventory::CollectionScope::Device}])?;
         rss_mdm_inventory_postgres::register_collection_in(&mut seed,h.c.tenant,&definition).await?;
         let registration = endpoint.members[0].registration_id;
         let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(h.c.tenant.to_string()).bind(registration).fetch_one(&mut *seed).await?;
@@ -297,7 +298,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,'mdm.windows',$10,1,'{\"kind\":\"device\"}')")
             .bind(h.c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field.as_str()).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String("observed".into()))?).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *seed).await?;
         let evidence=rss_mdm_inventory::Evidence{scope:rss_mdm_inventory::CollectionScope::Device,source:rss_mdm_inventory::Source::Manual,dataset:None,registration:None,registration_generation:None,epoch:None,snapshot_id:Uuid::new_v4().to_string(),observed_at:1,received_at:2,actor:Some("presence-fixture".into())};
-        assert_eq!(rss_mdm_inventory_postgres::assign_in(&mut seed,h.c.tenant,&manual,rss_mdm_inventory::builtin::ASSET_TAG,0,&rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("manual".into())),&evidence).await?,Some(1));
+        assert_eq!(rss_mdm_inventory_postgres::assign_in(&mut seed,h.c.tenant,&manual,field,0,&rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("manual".into())),&evidence).await?,Some(1));
         seed.commit().await?;
         let expected=std::collections::BTreeMap::from([(device.clone(),true),(manual.clone(),true),(empty.clone(),false)]);
         let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(

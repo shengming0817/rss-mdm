@@ -36,7 +36,7 @@ impl Http {
                     c.authority.clone(),
                     c.tenant,
                 ),
-                deadline: std::time::Instant::now() + std::time::Duration::from_secs(8),
+                deadline: c.access().now() + std::time::Duration::from_secs(8),
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let base = format!("http://{}", listener.local_addr()?);
