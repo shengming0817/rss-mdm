@@ -4,7 +4,7 @@
     "rss_da.vaults",
     "rss_da.vault_devices",
     "rss_da.vault_entries",
-    "rss_da.vault_challenges",
+    "rss_da.vault_nonces",
     "rss_da.vault_receipts"
   ],
   "functions": [],

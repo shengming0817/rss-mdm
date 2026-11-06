@@ -72,25 +72,8 @@ pub(crate) async fn prepare(
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *c)
             .await?;
-    sqlx::query(
-        "DELETE FROM rss_da.vault_challenges WHERE tenant_id=$1 AND owner=$2 AND expires_at<$3",
-    )
-    .bind(s.tenant)
-    .bind(s.owner())
-    .bind(now)
-    .execute(&mut *c)
-    .await?;
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM rss_da.vault_challenges WHERE tenant_id=$1 AND owner=$2",
-    )
-    .bind(s.tenant)
-    .bind(s.owner())
-    .fetch_one(&mut *c)
-    .await?;
-    if count >= 16 {
-        return Err(Error::Capacity);
-    }
-    let challenge = Challenge {
+    let mut challenge = Challenge {
+        server_proof: String::new(),
         installation: service.installation,
         tenant: s.tenant,
         instance: s.instance,
@@ -101,7 +84,10 @@ pub(crate) async fn prepare(
         expires_at: now + 120,
         request: r.clone(),
     };
-    sqlx::query("INSERT INTO rss_da.vault_challenges(tenant_id,owner,nonce,incarnation,document,expires_at) VALUES($1,$2,$3,$4,$5,$6)").bind(s.tenant).bind(s.owner()).bind(challenge.nonce).bind(inc).bind(serde_json::to_value(&challenge).map_err(|_|Error::Invalid)?).bind(challenge.expires_at).execute(c).await?;
+    challenge.server_proof = service
+        .cursor
+        .encode_bounded("vault.challenge.v1", &challenge_digest(&challenge)?, 4096)
+        .map_err(|_| Error::Storage)?;
     Ok((challenge, false))
 }
 pub(crate) async fn execute(
@@ -119,6 +105,13 @@ pub(crate) async fn execute(
         || h.principal != s.principal
         || h.incarnation != incarnation
     {
+        return Err(Error::Denied);
+    }
+    let issued: String = service
+        .cursor
+        .decode_bounded(&h.server_proof, "vault.challenge.v1", 4096)
+        .map_err(|_| Error::Denied)?;
+    if issued != challenge_digest(h)? {
         return Err(Error::Denied);
     }
     let existing = vault(c, s).await?;
@@ -180,8 +173,40 @@ pub(crate) async fn execute(
             true,
         ));
     }
-    let expected:Option<serde_json::Value>=sqlx::query_scalar("DELETE FROM rss_da.vault_challenges WHERE tenant_id=$1 AND owner=$2 AND nonce=$3 AND incarnation=$4 AND expires_at>=floor(extract(epoch FROM clock_timestamp()))::bigint RETURNING document").bind(s.tenant).bind(s.owner()).bind(h.nonce).bind(incarnation).fetch_optional(&mut *c).await?;
-    if expected != Some(serde_json::to_value(h).map_err(|_| Error::Invalid)?) {
+    let now: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *c)
+            .await?;
+    if h.expires_at < now {
+        return Err(Error::Denied);
+    }
+    // Only proven key holders allocate consumption records. A user session alone
+    // can obtain stateless challenges but cannot reserve any durable capacity.
+    sqlx::query(
+        "DELETE FROM rss_da.vault_nonces WHERE tenant_id=$1 AND owner=$2 AND expires_at<$3",
+    )
+    .bind(s.tenant)
+    .bind(s.owner())
+    .bind(now)
+    .execute(&mut *c)
+    .await?;
+    if !matches!(
+        request.action,
+        Action::Initialize { .. } | Action::Join { .. } | Action::Remove { .. }
+    ) {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM rss_da.vault_nonces WHERE tenant_id=$1 AND owner=$2",
+        )
+        .bind(s.tenant)
+        .bind(s.owner())
+        .fetch_one(&mut *c)
+        .await?;
+        if count >= 256 {
+            return Err(Error::Capacity);
+        }
+    }
+    let claimed=sqlx::query("INSERT INTO rss_da.vault_nonces(tenant_id,owner,nonce,incarnation,expires_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING").bind(s.tenant).bind(s.owner()).bind(h.nonce).bind(incarnation).bind(h.expires_at).execute(&mut *c).await?.rows_affected();
+    if claimed != 1 {
         return Err(Error::Denied);
     }
     let revision = existing.as_ref().map_or(0, |v| v.3);
@@ -223,7 +248,7 @@ pub(crate) async fn execute(
                     .bind(s.owner())
                     .execute(&mut *c)
                     .await?;
-                sqlx::query("DELETE FROM rss_da.vault_challenges WHERE tenant_id=$1 AND owner=$2")
+                sqlx::query("DELETE FROM rss_da.vault_nonces WHERE tenant_id=$1 AND owner=$2")
                     .bind(s.tenant)
                     .bind(s.owner())
                     .execute(&mut *c)
@@ -388,4 +413,10 @@ async fn write(
         .execute(c)
         .await?;
     Ok(next)
+}
+
+fn challenge_digest(h: &Challenge) -> Result<String, Error> {
+    let mut payload = h.clone();
+    payload.server_proof.clear();
+    Ok(digest(&payload.signing_bytes()?))
 }

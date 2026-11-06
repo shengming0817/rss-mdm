@@ -205,6 +205,10 @@
           "$ref": "#/$defs/Prepare",
           "description": "Request."
         },
+        "serverProof": {
+          "description": "Server-authenticated opaque challenge proof; included in client signatures.",
+          "type": "string"
+        },
         "tenant": {
           "description": "Tenant.",
           "format": "uuid",
@@ -217,6 +221,7 @@
         }
       },
       "required": [
+        "serverProof",
         "installation",
         "tenant",
         "instance",

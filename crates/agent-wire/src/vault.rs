@@ -113,6 +113,8 @@ pub struct Prepare {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Current Vault protocol value.
 pub struct Challenge {
+    /// Server-authenticated opaque challenge proof; included in client signatures.
+    pub server_proof: String,
     /// Installation.
     pub installation: Uuid,
     /// Tenant.
@@ -277,7 +279,7 @@ impl Challenge {
 
 /// Derived schema fingerprint.
 pub const SCHEMA_FINGERPRINT: &str =
-    "f3613eb9ad09a99fffa6d3dc5e84895f34ce7d82486972081315448c6187dfbc";
+    "718e2a0b59ccaa0967fd0febbd2279adb2c172ad2ad439c9254fc159dea7da3c";
 
 #[cfg(test)]
 mod tests {
@@ -292,6 +294,7 @@ mod tests {
         assert!(r.validate().is_err());
         assert!(bytes("!!!!", 32, 32).is_err());
         let mut h = Challenge {
+            server_proof: String::new(),
             installation: Uuid::new_v4(),
             tenant: Uuid::new_v4(),
             instance: Uuid::new_v4(),

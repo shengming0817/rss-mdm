@@ -58,6 +58,7 @@ async fn execute(
 fn map(e: rss_mdm_vault_sync::Error) -> Error {
     use rss_mdm_vault_sync::Error as E;
     match e {
+        E::Audit(class) => class.into(),
         E::Invalid => Error::Malformed,
         E::Denied => Error::Forbidden,
         E::Conflict => Error::Conflict,
@@ -67,5 +68,39 @@ fn map(e: rss_mdm_vault_sync::Error) -> Error {
         E::Storage => Error::Unavailable,
         E::CommitUnknown => Error::CommitUnknown,
         E::RollbackFailed => Error::RollbackFailed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+    use rss_mdm_audit_integration::{Error as Audit, ErrorClass, completion::ResponseFailure};
+    #[test]
+    fn audit_diagnosis_reaches_completion_without_provider_details() {
+        for (input, class) in [
+            (Audit::Receipt, ErrorClass::AuditIntegrity),
+            (Audit::Admission, ErrorClass::AuditAdmission),
+            (Audit::Isolation, ErrorClass::AuditIsolation),
+            (
+                Audit::Fact(rss_mdm_audit_integration::InvalidFact::Contract),
+                ErrorClass::AuditContract,
+            ),
+        ] {
+            let domain = rss_mdm_vault_sync::Error::from(input);
+            assert_eq!(domain, rss_mdm_vault_sync::Error::Audit(class));
+            let response = map(domain).into_response();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            );
+            let failure = response.extensions().get::<ResponseFailure>().unwrap();
+            match class {
+                ErrorClass::AuditIntegrity => {
+                    assert!(matches!(failure, ResponseFailure::AuditIntegrity))
+                }
+                _ => assert!(matches!(failure, ResponseFailure::AuditContract)),
+            }
+        }
     }
 }

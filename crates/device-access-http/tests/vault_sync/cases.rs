@@ -261,11 +261,9 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
     let a = signed(&c, &s, &p, &d1, &k1, None, update.clone()).await?;
     let b = signed(&c, &s, &p, &d2, &k2, None, update).await?;
     let mut backup = c.operator.acquire().await?;
-    sqlx::query(
-        "CREATE TEMP TABLE vault_saved_challenges AS SELECT * FROM rss_da.vault_challenges",
-    )
-    .execute(&mut *backup)
-    .await?;
+    sqlx::query("CREATE TEMP TABLE vault_saved_challenges AS SELECT * FROM rss_da.vault_nonces")
+        .execute(&mut *backup)
+        .await?;
     sqlx::query("CREATE TEMP TABLE vault_saved_receipts AS SELECT * FROM rss_da.vault_receipts")
         .execute(&mut *backup)
         .await?;
@@ -377,12 +375,76 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         s.execute(&p, &audit(&c), join).await.err(),
         Some(Error::Denied)
     );
+    // A revoked endpoint still has an account session, but unsigned Join
+    // challenges must not reserve storage or block a legitimate control operation.
+    let count_before: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.vault_nonces")
+        .fetch_one(&c.operator)
+        .await?;
+    for _ in 0..32 {
+        let d = device(&k2);
+        s.prepare(
+            &p,
+            &audit(&c),
+            Prepare {
+                operation: Uuid::new_v4(),
+                device: d.id,
+                action: Action::Join {
+                    device: d,
+                    reset_devices: false,
+                },
+            },
+        )
+        .await?;
+    }
+    let count_after: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.vault_nonces")
+        .fetch_one(&c.operator)
+        .await?;
+    assert_eq!(count_before, count_after);
+    let restored_device = device(&k2);
+    let legitimate = signed(
+        &c,
+        &s,
+        &p,
+        &restored_device,
+        &k2,
+        Some(&recovery),
+        Action::Join {
+            device: restored_device.clone(),
+            reset_devices: false,
+        },
+    )
+    .await?;
+    s.execute(&p, &audit(&c), legitimate).await?;
+    run(
+        &c,
+        &s,
+        &p,
+        &d1,
+        &k1,
+        Action::Remove {
+            device: restored_device.id,
+        },
+    )
+    .await?;
+    assert!(
+        s.prepare(
+            &p,
+            &audit(&c),
+            Prepare {
+                operation: Uuid::new_v4(),
+                device: d2.id,
+                action: Action::Devices
+            }
+        )
+        .await
+        .is_err()
+    );
     // Restore fencing must reject even a previously successful, receipted request.
     let mut conn = backup;
-    sqlx::query("DELETE FROM rss_da.vault_challenges")
+    sqlx::query("DELETE FROM rss_da.vault_nonces")
         .execute(&mut *conn)
         .await?;
-    sqlx::query("INSERT INTO rss_da.vault_challenges SELECT * FROM vault_saved_challenges")
+    sqlx::query("INSERT INTO rss_da.vault_nonces SELECT * FROM vault_saved_challenges")
         .execute(&mut *conn)
         .await?;
     sqlx::query("DELETE FROM rss_da.vault_receipts")
@@ -442,13 +504,29 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
     sqlx::raw_sql("CREATE FUNCTION public.reject_vault_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'vault audit rollback probe'; END $$; CREATE TRIGGER vault_audit_probe BEFORE INSERT ON rss_audit.records FOR EACH ROW EXECUTE FUNCTION public.reject_vault_audit();").execute(&mut *conn).await?;
     let failed = s.execute(&p, &audit(&c), failing.clone()).await;
     sqlx::raw_sql("DROP TRIGGER vault_audit_probe ON rss_audit.records; DROP FUNCTION public.reject_vault_audit();").execute(&mut *conn).await?;
-    assert!(failed.is_err());
+    assert!(matches!(failed, Err(Error::Audit(_))));
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.vault_devices WHERE id=$1")
         .bind(failing_device.id)
         .fetch_one(&mut *conn)
         .await?;
     assert_eq!(n, 0);
     s.execute(&p, &audit(&c), failing).await?;
+    // Failed Audit writes retain their safe classification instead of becoming
+    // ordinary storage failures; the HTTP adapter projects this to completion.
+    let probe = signed(&c, &s, &p, &d3, &k2, None, Action::Devices).await?;
+    let mut forged = probe.clone();
+    forged.challenge.expires_at += 1;
+    let bytes = forged.challenge.signing_bytes()?;
+    forged.signature = B64.encode(k2.sign(&bytes).as_ref());
+    assert_eq!(
+        s.execute(&p, &audit(&c), forged).await.err(),
+        Some(Error::Denied)
+    );
+    s.execute(&p, &audit(&c), probe.clone()).await?;
+    assert_eq!(
+        s.execute(&p, &audit(&c), probe).await.err(),
+        Some(Error::Denied)
+    );
     // Unknown commit is recovered through the same current device and operation.
     let unknown = signed(
         &c,
@@ -541,11 +619,11 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
     )
     .await?;
     // Removing required privileges must fail startup admission before serving traffic.
-    sqlx::query("REVOKE DELETE ON rss_da.vault_challenges FROM da_identity_runtime")
+    sqlx::query("REVOKE DELETE ON rss_da.vault_nonces FROM da_identity_runtime")
         .execute(&mut *conn)
         .await?;
     assert!(rss_mdm_vault_sync::verify_catalog(&mut conn).await.is_err());
-    sqlx::query("GRANT DELETE ON rss_da.vault_challenges TO da_identity_runtime")
+    sqlx::query("GRANT DELETE ON rss_da.vault_nonces TO da_identity_runtime")
         .execute(&mut *conn)
         .await?;
     rss_mdm_vault_sync::verify_catalog(&mut conn).await?;

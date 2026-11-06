@@ -13,6 +13,8 @@ pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const OBJECTS: &str = include_str!("../schema/objects.json");
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    #[error("vault audit failure")]
+    Audit(rss_mdm_audit_integration::ErrorClass),
     #[error("invalid vault request")]
     Invalid,
     #[error("vault authorization rejected")]
@@ -43,13 +45,13 @@ impl From<rss_mdm_agent_wire::runtime::WireError> for Error {
     }
 }
 impl From<rss_mdm_audit_integration::Error> for Error {
-    fn from(_: rss_mdm_audit_integration::Error) -> Self {
-        Self::Storage
+    fn from(e: rss_mdm_audit_integration::Error) -> Self {
+        Self::Audit(e.class())
     }
 }
 impl From<rss_mdm_audit_integration::InvalidFact> for Error {
     fn from(_: rss_mdm_audit_integration::InvalidFact) -> Self {
-        Self::Storage
+        Self::Audit(rss_mdm_audit_integration::ErrorClass::AuditContract)
     }
 }
 pub struct Service {
@@ -200,7 +202,7 @@ impl Service {
         use rss_mdm_audit_integration::TransactionError as T;
         let error = |e| match e {
             T::Operation(e) => e,
-            T::Storage(_) => Error::Storage,
+            T::Storage(e) => e.into(),
             T::Rollback { .. } => Error::RollbackFailed,
         };
         attempt.fold(
@@ -248,7 +250,7 @@ pub async fn verify_catalog(c: &mut PgConnection) -> Result<(), sqlx::Error> {
         "vaults",
         "vault_devices",
         "vault_entries",
-        "vault_challenges",
+        "vault_nonces",
         "vault_receipts",
     ] {
         let policies:Vec<(String,String,String,bool)>=sqlx::query_as("SELECT p.polname,pg_get_expr(p.polqual,p.polrelid),pg_get_expr(p.polwithcheck,p.polrelid),p.polcmd='*' AND p.polroles=ARRAY[0::oid] AND p.polpermissive FROM pg_policy p JOIN pg_class r ON r.oid=p.polrelid JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname='rss_da' AND r.relname=$1").bind(table).fetch_all(&mut *c).await?;

@@ -252,9 +252,10 @@ FileVault 元数据的 subject 包含独立 custody 及 epoch；外层注册字�
 日常设备只保留本地系统保护的 Vault 根与自己的独立设备签名钥，不保留恢复能力。
 企业管理员不能恢复或转交此 Vault，账号密码重置不改变恢复公钥。
 
-当前 V1 协议由 `agent-wire::vault` 持有。`POST /api/v1/da/vault/challenges` 预留
+当前 V1 协议由 `agent-wire::vault` 持有。`POST /api/v1/da/vault/challenges` 签发
 绑定当前用户、同步代次、设备、操作和动作正文的 120 秒挑战；`POST /api/v1/da/vault/execute`
-完成签名请求。Initialize/Join 需要恢复签名和新设备签名；其余动作需要当前有效设备签名。
+完成签名请求。挑战携带服务端认证证明，签发不占持久名额；持钥证明通过后才原子记录一次性消费。
+普通操作的有效消费记录最多 256 条，过期自动清理；撤销和恢复不受普通操作的名额限制。Initialize/Join 需要恢复签名和新设备签名；其余动作需要当前有效设备签名。
 调用者不提供 owner；初始化、加入、移除和写入支持相同 operation/正文的精确重试，
 Operation 动作查询未知提交。所有重试仍检查当前会话、同步代次及设备授权。
 Read 返回当前变更和删除标记，每页最多四项；翻页时数据发生变化须从原 after 重新读取，
