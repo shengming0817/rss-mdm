@@ -114,7 +114,7 @@ fn recovery_error(e: &rss_mdm_recovery_credentials::Error) -> Code {
         E::CommitUnknown => Code::OperationUnknown,
         E::RollbackFailed => Code::OperationRollbackUnconfirmed,
         E::Unsupported => Code::ActionNotSupported,
-        E::Configuration | E::Storage | E::Audit => Code::ServiceUnavailable,
+        E::Configuration | E::Storage | E::Audit | E::Deadline => Code::ServiceUnavailable,
     }
 }
 

@@ -46,14 +46,34 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
                 parameters.append_pair("fields", fields);
             }
             let query = SCHEMA.parse(&parameters.finish())?;
-            let page = operations
-                .directory(
-                    &h.c.read_auth(Arc::new(h.c.authenticate(&account).await?)),
-                    &query,
-                    &codec,
-                    &h.c.request(&proof)?,
-                )
+            let request = h.c.read_auth(Arc::new(h.c.authenticate(&account).await?));
+            let audit = h.c.request(&proof)?;
+            let mut fence = h.c.operator.begin().await?;
+            rss_mdm_authorization_service::lock_on(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                &mut fence,
+                proof.tenant_id(),
+                proof.instance_id(),
+            )
+            .await?;
+            let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *fence)
                 .await?;
+            let read = operations.directory(&request, &query, &codec, &audit);
+            let write = async {
+                h.c.wait_blocked(pid).await?;
+                let mut tx = command::seed_transaction(&h.c).await?;
+                sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)")
+                    .bind(h.c.tenant.to_string())
+                    .bind(format!("unrelated-{}", Uuid::new_v4()))
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                fence.rollback().await?;
+                Ok::<_, anyhow::Error>(())
+            };
+            let (page, ()) =
+                tokio::try_join!(async { Ok::<_, anyhow::Error>(read.await?) }, write)?;
             assert_eq!(page.items.len(), 1);
             let page = Page {
                 items: page
@@ -263,6 +283,23 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
     let result = async {
         let endpoint = crate::planning_t2_support::endpoint(&h.c).await?;
         let device = endpoint.members[0].device.clone();
+        let manual = crate::planning_t2_support::endpoint(&h.c).await?.members[0].device.clone();
+        let empty = crate::planning_t2_support::endpoint(&h.c).await?.members[0].device.clone();
+        let mut seed = command::seed_transaction(&h.c).await?;
+        let field = rss_mdm_inventory::FieldKey::parse("device.name")?;
+        let catalog = rss_mdm_inventory_postgres::catalog_in(&mut seed,h.c.tenant).await?;
+        let definition = rss_mdm_inventory::CollectionDefinition::new("presence", "1", rss_mdm_inventory::Source::MdmWindows, vec![rss_mdm_inventory::CollectionField{definition:catalog.definition(field)?.clone(),scope:rss_mdm_inventory::CollectionScope::Device}])?;
+        rss_mdm_inventory_postgres::register_collection_in(&mut seed,h.c.tenant,&definition).await?;
+        let registration = endpoint.members[0].registration_id;
+        let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(h.c.tenant.to_string()).bind(registration).fetch_one(&mut *seed).await?;
+        let scope=rss_mdm_registration_service::device::scope_dataset(rss_mdm_install_support::StorageProfile::Mdm,h.c.tenant,registration,"mdm.windows",epoch,"presence")?.encode()?;
+        let projection=rss_mdm_inventory_postgres::projection_scope(h.c.tenant);
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,'mdm.windows',$10,1,'{\"kind\":\"device\"}')")
+            .bind(h.c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field.as_str()).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String("observed".into()))?).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *seed).await?;
+        let evidence=rss_mdm_inventory::Evidence{scope:rss_mdm_inventory::CollectionScope::Device,source:rss_mdm_inventory::Source::Manual,dataset:None,registration:None,registration_generation:None,epoch:None,snapshot_id:Uuid::new_v4().to_string(),observed_at:1,received_at:2,actor:Some("presence-fixture".into())};
+        assert_eq!(rss_mdm_inventory_postgres::assign_in(&mut seed,h.c.tenant,&manual,rss_mdm_inventory::builtin::ASSET_TAG,0,&rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("manual".into())),&evidence).await?,Some(1));
+        seed.commit().await?;
+        let expected=std::collections::BTreeMap::from([(device.clone(),true),(manual.clone(),true),(empty.clone(),false)]);
         let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(
             h.c.database.registration(),
             h.c.tenant.to_string(),
@@ -286,8 +323,10 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
             .layer(axum::Extension(h.c.read_auth(proof.clone())))
             .layer(axum::Extension(h.c.request(&proof)?));
         for path in [
-            "/devices?limit=1".to_owned(),
+            "/devices?limit=100".to_owned(),
             format!("/devices/{device}"),
+            format!("/devices/{manual}"),
+            format!("/devices/{empty}"),
             "/devices/statistics".to_owned(),
         ] {
             let response = app
@@ -302,16 +341,28 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
             let bytes = axum::body::to_bytes(response.into_body(), 1_048_576).await?;
             let value: Value = serde_json::from_slice(&bytes)?;
             assert_eq!(status, axum::http::StatusCode::OK, "{path}: {value}");
-            if path == format!("/devices/{device}") {
-                assert_eq!(value["id"], device);
-                assert!(value["inventoryAvailable"].is_boolean());
+            if let Some(id)=value["id"].as_str() {
+                assert_eq!(value["inventoryAvailable"],expected[id]);
                 assert!(
                     value["capabilities"]
                         .as_array()
                         .is_some_and(|v| !v.is_empty())
                 );
             }
+            if let Some(rows)=value["items"].as_array() {
+                for (id,present) in &expected {
+                    let row=rows.iter().find(|row|row["id"]==*id).expect("seeded endpoint in directory");
+                    assert_eq!(row["inventoryAvailable"],*present);
+                }
+            }
         }
+        let mut seed=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2").bind(h.c.tenant.to_string()).bind(registration).execute(&mut *seed).await?;
+        seed.commit().await?;
+        let response=app.oneshot(axum::http::Request::builder().uri(format!("/devices/{device}")).body(axum::body::Body::empty())?).await?;
+        assert_eq!(response.status(),axum::http::StatusCode::OK);
+        let value:Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),1_048_576).await?)?;
+        assert_eq!(value["inventoryAvailable"],false,"revoked source must not count archived observations");
         let registration = h.c.database.registration();
         let mut tx = registration.snapshot(&h.c.tenant.to_string()).await?;
         let raw: bool =

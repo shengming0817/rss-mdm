@@ -181,6 +181,16 @@ impl Context {
                 .await?,
         )
     }
+    /// Observe the actual PostgreSQL wait graph; elapsed time is never a synchronization signal.
+    pub async fn wait_blocked(&self, pid: i32) -> Result<()> {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))").bind(pid).fetch_one(&self.operator).await?;
+                if blocked { return Ok::<_,anyhow::Error>(()); }
+                tokio::task::yield_now().await;
+            }
+        }).await?
+    }
     pub fn read_auth(
         &self,
         proof: Arc<access::context::AuthorizedPrincipal>,
