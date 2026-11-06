@@ -152,8 +152,8 @@ impl Diagnostics {
                         rss_mdm_pki_service::Error::Forbidden => Error::Forbidden,
                         rss_mdm_pki_service::Error::Request => Error::Malformed,
                         _ => Error::Unavailable(Failure::Database),
-                    })? {
-                    Some((original, execution)) => (
+                    }) {
+                    Ok(Some((original, execution))) => (
                         Evidence::Available(original),
                         Evidence::Available(
                             rss_mdm_management_http::execution::operations::Evidence::Pki(
@@ -161,10 +161,16 @@ impl Diagnostics {
                             ),
                         ),
                     ),
-                    None => (Evidence::NotFound, Evidence::NotFound),
+                    Ok(None) => (Evidence::NotFound, Evidence::NotFound),
+                    Err(Error::Unavailable(_)) => (Evidence::Unavailable, Evidence::Unavailable),
+                    Err(e) => return Err(e),
                 }
             } else if da_owner && l.owner == O::CredentialTask {
-                self.da_task(p, &operation).await?
+                match self.da_task(p, &operation).await {
+                    Ok(value) => value,
+                    Err(Error::Unavailable(_)) => (Evidence::Unavailable, Evidence::Unavailable),
+                    Err(e) => return Err(e),
+                }
             } else if execution_owner || l.owner.invocation() {
                 let result = if l.owner.invocation() {
                     if l.query.actor.is_none() || l.query.instance.is_some() {
@@ -173,24 +179,19 @@ impl Diagnostics {
                     self.state
                         .operation_reads
                         .invocation(p, &operation, l.query)
-                        .await?
+                        .await
                 } else {
                     self.state
                         .operation_reads
                         .diagnostic(p, l.owner, l.operation, l.query)
-                        .await?
+                        .await
                 };
-                (
-                    result
-                        .original
-                        .map_or(Evidence::NotFound, Evidence::Available),
-                    match result.execution {
-                        Ok(value) => value.map_or(Evidence::NotFound, Evidence::Available),
-                        Err(Error::Unavailable(_)) => Evidence::Unavailable,
-                        Err(e) if e.is_not_found() => Evidence::NotFound,
-                        Err(e) => return Err(e),
-                    },
-                )
+                match result {
+                    Ok(result) => (section(Ok(result.original))?, section(result.execution)?),
+                    Err(e) if e.is_not_found() => (Evidence::NotFound, Evidence::NotFound),
+                    Err(Error::Unavailable(_)) => (Evidence::Unavailable, Evidence::Unavailable),
+                    Err(e) => return Err(e),
+                }
             } else {
                 let receipt = if da_owner {
                     self.da_receipt(&l, p).await
@@ -198,26 +199,18 @@ impl Diagnostics {
                     self.original(&l.auth.proof, l.audit, l.owner, l.operation, l.query)
                         .await
                 };
-                let execution =
-                    if da_owner && l.owner == O::DeviceAccess && matches!(receipt, Ok(Some(_))) {
-                        self.da_execution(
-                            p,
-                            l.query.device.as_deref().ok_or(Error::Malformed)?,
-                            l.operation,
-                        )
-                        .await?
-                    } else {
-                        Evidence::NoDurableEvidence
-                    };
-                (
-                    match receipt {
-                        Ok(Some(v)) => Evidence::Available(v),
-                        Ok(None) => Evidence::NotFound,
-                        Err(e) if e.is_not_found() => Evidence::NotFound,
-                        Err(e) => return Err(e),
-                    },
-                    execution,
-                )
+                let original = section(receipt)?;
+                let execution = if da_owner && l.owner == O::DeviceAccess {
+                    self.da_execution(
+                        p,
+                        l.query.device.as_deref().ok_or(Error::Malformed)?,
+                        l.operation,
+                    )
+                    .await?
+                } else {
+                    Evidence::NoDurableEvidence
+                };
+                (original, execution)
             };
         let audit_evidence = self.history(&l, p, da_source, &operation).await?;
         let (audit_evidence, request_evidence) =
@@ -769,4 +762,20 @@ fn enum_name(value: impl serde::Serialize) -> Result<String, Error> {
         .as_str()
         .map(str::to_owned)
         .ok_or(Error::Conflict)
+}
+
+/// Preserve independent evidence while keeping authentication, authority and bad locators fail-closed.
+fn section<T>(value: Result<Option<T>, Error>) -> Result<Evidence<T>, Error> {
+    match value {
+        Ok(Some(value)) => Ok(Evidence::Available(value)),
+        Ok(None) => Ok(Evidence::NotFound),
+        Err(e) if e.is_not_found() => Ok(Evidence::NotFound),
+        Err(e)
+            if e.status().is_server_error()
+                && e.status() != axum::http::StatusCode::NOT_IMPLEMENTED =>
+        {
+            Ok(Evidence::Unavailable)
+        }
+        Err(e) => Err(e),
+    }
 }

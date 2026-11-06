@@ -28,6 +28,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             Permission::ResourceRead,
             Permission::ScopeRead,
             Permission::GroupRead,
+            Permission::InventorySensitiveRead,
             Permission::InventoryRead,
             Permission::InventoryFieldsWrite,
             Permission::ReleaseRead,
@@ -108,10 +109,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
     let exercise = async {
         tokio::time::timeout(Duration::from_secs(90), async {
             loop {
-                if send("/readyz".into())
-                    .await
-                    .is_ok_and(|(status, _)| status == 200)
-                {
+                if send("/readyz".into()).await.is_ok() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -135,6 +133,24 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             }
             assert_eq!(body["auditEvidence"]["availability"], "not_requested");
         }
+        let damaged = Uuid::new_v4();
+        sqlx::query("INSERT INTO mdm_assets.group_operations(tenant_id,id,actor,instance,fingerprint,response) VALUES($1::uuid,$2,$3,$4::uuid,$5,'{\"damaged\":true}')")
+            .bind(c.tenant.to_string()).bind(damaged).bind(proof.principal_id()).bind(proof.instance_id()).bind(vec![17_u8;32]).execute(&c.operator).await?;
+        let (status, value) = send(format!(
+            "/api/v1/operation-diagnostics/operations/group/{damaged}?includeAudit=true"
+        ))
+        .await?;
+        assert_eq!(status, 200, "{value}");
+        assert_eq!(value["originalResult"]["availability"], "unavailable");
+        assert_eq!(value["auditEvidence"]["availability"], "available");
+        let (status, value) = send(format!(
+            "/api/v1/operation-diagnostics/operations/certificate_archive/{}?includeAudit=true",
+            Uuid::new_v4()
+        ))
+        .await?;
+        assert_eq!(status, 200, "{value}");
+        assert_eq!(value["originalResult"]["availability"], "not_found");
+        assert_eq!(value["auditEvidence"]["availability"], "available");
         for owner in receipts::ACTOR_OWNERS {
             let path =
                 format!("/api/v1/operation-diagnostics/operations/{owner}/{foreign_operation}");

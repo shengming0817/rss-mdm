@@ -44,10 +44,12 @@ pub(super) async fn actor_receipts(
     ];
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     for (table, response) in rows {
-        let query = format!(
-            "INSERT INTO {table}(tenant_id,id,actor,instance,fingerprint,response) VALUES($1::uuid,$2,$3,$4,$5,$6)"
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("INSERT INTO ");
+        query.push(table).push(
+            "(tenant_id,id,actor,instance,fingerprint,response) VALUES($1::uuid,$2,$3,$4,$5,$6)",
         );
-        sqlx::query(&query)
+        query
+            .build()
             .bind(c.tenant.to_string())
             .bind(id)
             .bind(p.principal_id())
@@ -104,10 +106,10 @@ pub(super) async fn seed(
             Uuid::new_v4()
         );
         let response = json!({"requestId":id,"runId":Uuid::new_v4(),"policyId":Uuid::new_v4(),"policyRevision":revision,"policyVersion":Uuid::new_v4()});
-        let query = format!(
-            "INSERT INTO {table}(tenant_id,actor,id,fingerprint,response,device,registration,generation) VALUES($1::uuid,$2,$3,$4,$5,'original-device',$6,1)"
-        );
-        sqlx::query(&query)
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("INSERT INTO ");
+        query.push(table).push("(tenant_id,actor,id,fingerprint,response,device,registration,generation) VALUES($1::uuid,$2,$3,$4,$5,'original-device',$6,1)");
+        query
+            .build()
             .bind(c.tenant.to_string())
             .bind(&actor)
             .bind(id)

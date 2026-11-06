@@ -72,11 +72,7 @@ impl Reads for Installation {
                 })
             }
             .await;
-            let value = match value {
-                Ok(v) => v,
-                Err(e) if e.is_not_found() => None,
-                Err(e) => return Err(e),
-            };
+            let value = section(value)?;
             let audit_evidence = if !l.query.include_audit {
                 Evidence::NotRequested
             } else {
@@ -130,7 +126,7 @@ impl Reads for Installation {
                     registration: None,
                     generation: None,
                 },
-                original_result: value.map_or(Evidence::NotFound, Evidence::Available),
+                original_result: value,
                 audit_evidence,
                 request_evidence,
                 execution_evidence: Evidence::NoDurableEvidence,

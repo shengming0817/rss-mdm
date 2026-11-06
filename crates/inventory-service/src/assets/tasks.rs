@@ -199,6 +199,19 @@ impl AssetService {
                     if current != task.input.scope {
                         return Err(Error::Forbidden.into());
                     }
+                    if task.input.software.is_some() {
+                        current.full().map_err(|_| Error::Forbidden)?;
+                        grant.require(
+                            p,
+                            rss_mdm_authorization_service::Permission::InventorySensitiveRead,
+                            None,
+                        )?;
+                        grant.require(
+                            p,
+                            rss_mdm_authorization_service::Permission::GroupRead,
+                            None,
+                        )?;
+                    }
                     let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
                     value.recorded_at = Some(task.input.as_of);
                     value.accepted = Some(true);

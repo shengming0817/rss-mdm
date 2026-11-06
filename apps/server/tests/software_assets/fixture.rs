@@ -161,6 +161,7 @@ impl Http {
                     let tenant = tenant.clone();
                     async move {
                         let audit = rss_mdm_audit_integration::RequestAudit::new(
+                            rss_mdm_audit_integration::Origin::Request,
                             rss_mdm_install_support::StorageProfile::Mdm,
                             tenant,
                             "software-assets-t2",

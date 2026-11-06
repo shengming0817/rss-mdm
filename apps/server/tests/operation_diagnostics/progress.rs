@@ -110,9 +110,13 @@ pub(super) async fn seed(
     ] {
         sqlx::query("INSERT INTO rss_da.operations(tenant_id,instance,actor,operation_id,digest,result) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6)").bind(c.tenant.to_string()).bind(p.instance_id()).bind(p.principal_id()).bind(operation).bind("a".repeat(64)).bind(result).execute(&mut *tx).await?;
     }
+    let software_edit = Uuid::new_v4();
+    sqlx::query("INSERT INTO mdm_assets.operations(tenant_id,id,actor,instance,fingerprint,response) VALUES($1::uuid,$2,$3,$4::uuid,$5,$6)").bind(c.tenant.to_string()).bind(software_edit).bind(p.principal_id()).bind(p.instance_id()).bind(vec![17_u8;32])
+        .bind(json!({"tenantId":c.tenant.to_string(),"asset":{"kind":"software","response":{"kind":"mutation","receipt":{"kind":"written","resource":"standard","id":Uuid::new_v4(),"revision":23}}}})).execute(&mut *tx).await?;
     tx.commit().await?;
     let q = format!("?device={device}");
     Ok(vec![
+        ("asset", software_edit, "".into(), json!({"revision":23})),
         (
             "collection",
             id,

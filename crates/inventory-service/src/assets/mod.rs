@@ -651,7 +651,7 @@ impl AssetService {
             let mut s=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
             match envelope.asset {
                 Response::Software{response}=>{
-                    let _ = ReadScope::from_snapshot(p, &grant)?;
+                    ReadScope::from_snapshot(p, &grant)?.full().map_err(|_|Error::Forbidden)?;
                     grant.require(p,Permission::InventorySensitiveRead,None)?;
                     grant.require(p,Permission::GroupRead,None)?;
                     let software::Response::Mutation { receipt } = *response else { return Err(Error::Conflict.into()); };

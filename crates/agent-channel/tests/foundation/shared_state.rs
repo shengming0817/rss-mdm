@@ -130,7 +130,13 @@ async fn receipt(
                 |(store, value), tx| {
                     Box::pin(async move {
                         let old = store
-                            .replay_operation_in(tx, "same-actor", id, &[9; 32])
+                            .replay_operation_in(
+                                tx,
+                                "same-actor",
+                                "11111111-1111-4111-8111-111111111111",
+                                id,
+                                &[9; 32],
+                            )
                             .await
                             .map_err(|e| PgError::from(sqlx::Error::Protocol(e.to_string())))?;
                         if replay {
@@ -138,7 +144,14 @@ async fn receipt(
                         } else {
                             assert!(old.is_none());
                             store
-                                .record_operation_in(tx, "same-actor", id, &[9; 32], value)
+                                .record_operation_in(
+                                    tx,
+                                    "same-actor",
+                                    "11111111-1111-4111-8111-111111111111",
+                                    id,
+                                    &[9; 32],
+                                    value,
+                                )
                                 .await
                                 .map_err(|e| PgError::from(sqlx::Error::Protocol(e.to_string())))?;
                         }
@@ -154,7 +167,13 @@ async fn receipt(
             Box::pin(async move {
                 assert!(matches!(
                     store
-                        .replay_operation_in(tx, "same-actor", id, &[8; 32])
+                        .replay_operation_in(
+                            tx,
+                            "same-actor",
+                            "11111111-1111-4111-8111-111111111111",
+                            id,
+                            &[8; 32]
+                        )
                         .await,
                     Err(rss_mdm_scope_postgres::BindingError::Conflict)
                 ));

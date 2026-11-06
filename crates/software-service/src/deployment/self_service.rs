@@ -810,7 +810,11 @@ pub async fn diagnostic_on(
     let device = locator.device.as_deref().ok_or(Error::Malformed)?;
     let registration = locator.registration.ok_or(Error::Malformed)?;
     let generation = locator.generation.ok_or(Error::Malformed)?;
-    grant.require(p, Permission::OperationRead, Some(device))?;
+    grant.require(
+        p,
+        rss_mdm_authorization_service::Permission::OperationRead,
+        Some(device),
+    )?;
     let raw: Option<Value> = sqlx::query_scalar("SELECT response FROM mdm_software_deployment.action_receipts WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND device=$4 AND registration=$5 AND generation=$6")
         .bind(p.tenant_id()).bind(actor).bind(locator.operation_id)
         .bind(device).bind(registration).bind(generation).fetch_optional(c).await?;
