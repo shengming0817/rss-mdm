@@ -26,6 +26,7 @@ class T2Status(unittest.TestCase):
         for path in ('crates/webhook-service/src/management/mod.rs',
                      'crates/resource-service/src/directory.rs',
                      'crates/group-service/src/directory.rs',
+                     'crates/recovery-credentials/src/filevault_service.rs',
                      'crates/device-service/src/read.rs',
                      'crates/device-service/src/lifecycle_management.rs',
                      'apps/server/schema/da-shared-grants.sql',
