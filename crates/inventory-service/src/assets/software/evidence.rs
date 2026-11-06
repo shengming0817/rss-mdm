@@ -138,7 +138,7 @@ pub(super) fn resolve(
         },
         if native_id.is_empty()
             && (name.is_empty() || publisher.is_empty())
-            && !item.fields.get("location").is_some_and(|v| !v.is_empty())
+            && item.fields.get("location").is_none_or(|v| v.is_empty())
         {
             Some((&input.endpoint, &input.value.version, ordinal))
         } else {

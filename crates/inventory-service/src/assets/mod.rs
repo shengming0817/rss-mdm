@@ -452,12 +452,10 @@ impl AssetService {
                     if let software::Command::Receipt {
                         actor, instance, ..
                     } = command.as_ref()
+                        && (audit.snapshot().actor.as_ref() != Some(actor)
+                            || audit.snapshot().instance.as_ref() != Some(instance))
                     {
-                        if audit.snapshot().actor.as_ref() != Some(actor)
-                            || audit.snapshot().instance.as_ref() != Some(instance)
-                        {
-                            return Err(Error::Forbidden.into());
-                        }
+                        return Err(Error::Forbidden.into());
                     }
                     let scope = &access.scope;
                     let fresh = ReadScope::from_snapshot(p, &current)?;

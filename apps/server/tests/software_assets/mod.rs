@@ -113,7 +113,7 @@ async fn result_recovery_release_and_capacity() -> Result<()> {
         &endpoint,
         &definition,
         (0..1001)
-            .map(|i| installation("editor", &i.to_string()))
+            .map(|i| installation(&format!("editor-{i}"), &i.to_string()))
             .collect(),
     )
     .await?;
@@ -205,6 +205,23 @@ async fn result_recovery_release_and_capacity() -> Result<()> {
     .await?;
     assert_eq!(evidence, 0);
     tx.commit().await?;
+    // A superseded task must drain automatically, without a client release request.
+    let superseded = Uuid::new_v4();
+    assert_eq!(http.call(reqwest::Method::POST,"/software-asset-queries",Some(json!({"operationId":superseded,"expectedRevision":0,"input":{"context":"endpoint"}}))).await?.0,202);
+    put(
+        &http,
+        &format!("/standard-software/{}", Uuid::new_v4()),
+        0,
+        json!({"action":"put","definition":{"name":"New configuration","risk":"low"}}),
+    )
+    .await?;
+    fixture.settle(&c, superseded).await?;
+    let failed = http
+        .get(&format!("/software-asset-queries/{superseded}"))
+        .await?;
+    assert_eq!(response(&failed)["status"], "failed");
+    assert_eq!(response(&failed)["failure"], "superseded");
+    assert_eq!(response(&failed)["resultState"], "released");
     let mut tasks = Vec::new();
     for _ in 0..32 {
         let task = Uuid::new_v4();
@@ -720,11 +737,11 @@ async fn group_assessment_and_associated_domain() -> Result<()> {
     sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1::uuid,$2,1,'confirmed','verified software fixture','{}','fixture',1)").bind(c.tenant.to_string()).bind(association).execute(&mut *tx).await?;
     for member in &paired.members {
         sqlx::query("INSERT INTO mdm_devices.members(tenant_id,association_id,device,channel,registration_id,generation) VALUES($1::uuid,$2,$3,$4,$5,$6)")
-            .bind(c.tenant.to_string()).bind(association).bind(&member.device).bind(member.channel.as_str()).bind(member.registration_id).bind(member.generation as i64).execute(&mut *tx).await?;
+            .bind(c.tenant.to_string()).bind(association).bind(&member.device).bind(member.channel.as_str()).bind(member.registration_id).bind(member.generation).execute(&mut *tx).await?;
     }
     sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) VALUES($1::uuid,$2,1,$3,$4)")
         .bind(c.tenant.to_string()).bind(paired.object.key()).bind(serde_json::to_value(&paired)?).bind(paired.members.iter().map(|m|m.device.clone()).collect::<Vec<_>>()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.checkpoints(tenant_id,from_cut,rebuilding,object_revision,current_cut) VALUES($1::uuid,$2,false,1,$3)").bind(c.tenant.to_string()).bind(cut.to_json()).bind(snapshot).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.checkpoints(tenant_id,from_cut,rebuilding,object_revision,current_cut) VALUES($1::uuid,$2,false,1,$3) ON CONFLICT(tenant_id) DO UPDATE SET from_cut=excluded.from_cut,rebuilding=false,object_revision=1,current_cut=excluded.current_cut").bind(c.tenant.to_string()).bind(cut.to_json()).bind(snapshot).execute(&mut *tx).await?;
     tx.commit().await?;
     let associated = query(&c, &fixture, &http, json!({})).await?;
     let rows = http
@@ -751,13 +768,12 @@ async fn group_assessment_and_associated_domain() -> Result<()> {
         .0,
         409
     );
-    let pending = Uuid::new_v4();
-    owners.groups.execute(&rss_mdm_group_service::Command::Group {id:pending,change:Box::new(rss_mdm_group_service::operation::Operation {
-        operation_id:Uuid::new_v4(),expected_revision:0,input:rss_mdm_group_service::GroupChange::Create {
-            presentation:serde_json::from_value(json!({"name":"pending software group"}))?,asset_context:rss_mdm_group::AssetContext::Endpoint,
-            criteria:Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.os.name","op":"eq","value":{"kind":"string","value":"Windows"}}}))?),
-        },
-    })},&c.request(&proof)?,&proof).await?;
+    // Publish the definition task; leave its separate member-calculation task pending.
+    let pending = owners.create(&c, &proof, Some(serde_json::from_value(json!({
+        "selector":{"kind":"device"},"quantifier":"one","criteria":{
+            "kind":"predicate","field":"device.os.name","op":"eq","value":{"kind":"string","value":"Windows"}
+        }
+    }))?)).await?;
     put(&http,&format!("/standard-software/{standard}"),1,json!({"action":"put","definition":{"name":"Editor","risk":"high","assessments":{"endpoint":{"threshold":3,"allowedGroups":[pending]}}}})).await?;
     let uncertain = query(&c, &fixture, &http, json!({"context":"endpoint"})).await?;
     let rows = http

@@ -334,11 +334,6 @@ impl DurableStore for QueryWork {
         {
             return Err(ReconcileError::new(ErrorKind::BindingChanged));
         }
-        let completion = if matches!(completion, Completion::Suspended { .. }) {
-            Completion::Reobserve(Duration::from_millis(20))
-        } else {
-            completion
-        };
         let result = self.schedule.finish(claim, completion, &settlement).await;
         if result.is_ok() {
             self.assets

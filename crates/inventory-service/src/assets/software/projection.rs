@@ -10,8 +10,7 @@ impl AssetService {
         job: &Job,
         progress: &mut ObjectProgress,
         array: &ArrayInput,
-        ordinal: usize,
-        value: Scalar,
+        (ordinal, value): (usize, Scalar),
     ) -> Result<()> {
         let item = evidence::item(array.source, array.platform, &value)?;
         let matched =

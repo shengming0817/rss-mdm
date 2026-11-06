@@ -104,20 +104,17 @@ impl AssetService {
         task: Uuid,
     ) -> Result<()> {
         // One bounded page per protected worker step; each delete is replay safe.
-        for table in [
-            "software_evidence",
-            "software_members",
-            "software_objects",
-            "software_buckets",
+        for sql in [
+            "DELETE FROM mdm_assets.software_evidence WHERE ctid IN (SELECT ctid FROM mdm_assets.software_evidence WHERE tenant_id=$1::uuid AND run=$2 LIMIT 1000)",
+            "DELETE FROM mdm_assets.software_members WHERE ctid IN (SELECT ctid FROM mdm_assets.software_members WHERE tenant_id=$1::uuid AND run=$2 LIMIT 1000)",
+            "DELETE FROM mdm_assets.software_objects WHERE ctid IN (SELECT ctid FROM mdm_assets.software_objects WHERE tenant_id=$1::uuid AND run=$2 LIMIT 1000)",
+            "DELETE FROM mdm_assets.software_buckets WHERE ctid IN (SELECT ctid FROM mdm_assets.software_buckets WHERE tenant_id=$1::uuid AND run=$2 LIMIT 1000)",
         ] {
             let tenant = self.tenant.to_string();
-            let sql = format!(
-                "DELETE FROM mdm_assets.{table} WHERE ctid IN (SELECT ctid FROM mdm_assets.{table} WHERE tenant_id=$1::uuid AND run=$2 LIMIT 1000)"
-            );
             let deleted = tx
                 .with_connection(move |c| {
                     Box::pin(async move {
-                        Ok(sqlx::query(&sql)
+                        Ok(sqlx::query(sql)
                             .bind(tenant)
                             .bind(task)
                             .execute(c)

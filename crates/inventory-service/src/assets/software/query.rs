@@ -349,8 +349,15 @@ impl AssetService {
                 })
                 .await??;
             for (index, value) in chunk.items.into_iter().enumerate() {
-                self.software_evidence(tx, task, job, &mut progress, &array, start + index, value)
-                    .await?;
+                self.software_evidence(
+                    tx,
+                    task,
+                    job,
+                    &mut progress,
+                    &array,
+                    (start + index, value),
+                )
+                .await?;
             }
             if chunk.state.verified() {
                 progress.array += 1;
@@ -455,28 +462,28 @@ impl AssetService {
         let mut groups = BTreeMap::new();
         for (id, ready) in &job.group_ready {
             let mut decision = Decision::Unknown;
-            if *ready && object.verified {
-                if let Some(source) = job
+            if *ready
+                && object.verified
+                && let Some(source) = job
                     .coordinates
                     .groups
                     .iter()
                     .find(|g| g.group.to_string() == id.to_string())
-                {
-                    if let Some(set) = source.coordinates.member_set {
-                        let decisions = self
-                            .software_sources
-                            .groups
-                            .source_decisions_in(tx, set, std::slice::from_ref(&key), 1024 * 1024)
-                            .await?
-                            .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
-                        decision = match decisions.outcomes.get(&key) {
-                            Some(Outcome::Match) => Decision::Match,
-                            Some(Outcome::NoMatch) => Decision::NoMatch,
-                            _ => Decision::Unknown,
-                        };
-                    } else {
-                        decision = Decision::NoMatch;
-                    }
+            {
+                if let Some(set) = source.coordinates.member_set {
+                    let decisions = self
+                        .software_sources
+                        .groups
+                        .source_decisions_in(tx, set, std::slice::from_ref(&key), 1024 * 1024)
+                        .await?
+                        .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
+                    decision = match decisions.outcomes.get(&key) {
+                        Some(Outcome::Match) => Decision::Match,
+                        Some(Outcome::NoMatch) => Decision::NoMatch,
+                        _ => Decision::Unknown,
+                    };
+                } else {
+                    decision = Decision::NoMatch;
                 }
             }
             groups.insert(*id, decision);

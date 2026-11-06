@@ -368,6 +368,9 @@ pub(super) async fn agent_endpoint(
         .bind(c.tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(&device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,certificate_grant_id,state,purpose,epoch) VALUES($1::uuid,$2,$3,'agent',1,$4,'active','primary',$5)")
         .bind(c.tenant.to_string()).bind(registration).bind(&device).bind(grant).bind(epoch).execute(&mut *tx).await?;
+    let credential = Uuid::new_v4();
+    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2,$3,'agent',$4,'active')")
+        .bind(c.tenant.to_string()).bind(credential).bind(registration).bind(format!("{:x}",Sha256::digest(credential.as_bytes()))).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.builtin',$3,0,true)")
         .bind(c.tenant.to_string()).bind(registration).bind(epoch).execute(&mut *tx).await?;
     tx.commit().await?;
