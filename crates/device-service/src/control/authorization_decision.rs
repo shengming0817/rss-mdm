@@ -226,26 +226,34 @@ pub(crate) async fn batch(
             Reauthorization::Available { .. }
         ) && let Authority::DeviceControl { action, .. } = operation.authority
         {
-            controls.push((
-                operation.id,
-                operation.registration,
-                operation.registration_generation,
-                operation.request.clone(),
-                action,
-            ));
+            if device_control::matches(action, &operation.request)? {
+                controls.push((
+                    operation.id,
+                    device_control::Check {
+                        registration: operation.registration,
+                        generation: operation.registration_generation,
+                        source: operation.request.task.source(),
+                        action,
+                    },
+                ));
+            }
         }
     }
     let supported = if controls.is_empty() {
         BTreeMap::new()
     } else {
-        device_control::supported_on(
+        device_control::applicability_on(
             c,
             queries.tenant,
             queries.apple_results.clone(),
             queries.windows_results.clone(),
-            &controls,
+            &controls.iter().map(|(_, check)| *check).collect::<Vec<_>>(),
         )
         .await?
+        .into_iter()
+        .zip(controls.iter())
+        .map(|(state, (id, _))| (*id, state))
+        .collect()
     };
     let mut decisions = BTreeMap::new();
     let mut source_ids = Vec::new();
@@ -310,7 +318,7 @@ pub(crate) async fn batch(
                     status,
                     now,
                     registration,
-                    supported.get(&operation.id) == Some(&true),
+                    supported.get(&operation.id) == Some(&device_control::Applicability::Supported),
                     permitted,
                 )?,
             },

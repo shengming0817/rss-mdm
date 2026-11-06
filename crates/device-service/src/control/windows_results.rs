@@ -17,12 +17,12 @@ pub struct Evidence {
     pub assessment: rss_mdm_windows_mdm::native::verification::EffectAssessment,
 }
 pub trait Store: Send + Sync {
-    fn control_support<'a>(
+    fn control_applicability<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        checks: Vec<(Uuid, Uuid, i64, rss_mdm_windows_mdm::native::Request)>,
-    ) -> Pending<'a, BTreeMap<Uuid, bool>>;
+        checks: Vec<(usize, Uuid, i64, rss_mdm_windows_mdm::native::Request)>,
+    ) -> Pending<'a, BTreeMap<usize, crate::control::device_control::Applicability>>;
 
     fn sent<'a>(
         &'a self,
