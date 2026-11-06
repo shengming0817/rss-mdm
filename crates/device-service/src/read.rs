@@ -7,6 +7,23 @@ use sqlx::{PgConnection, Row};
 use std::time::Duration;
 use uuid::Uuid;
 
+/// The original receipt owner has exactly two author namespaces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ReceiptNamespace {
+    CurrentPrincipal,
+    AutomaticAssociation,
+}
+impl ReceiptNamespace {
+    pub const AUTOMATIC_ACTOR: &str = "device-associations";
+    pub(crate) const AUTOMATIC_INSTANCE: &str = "system";
+    fn coordinates(self, p: &AuthorizedPrincipal) -> (&str, &str) {
+        match self {
+            Self::CurrentPrincipal => (p.principal_id(), p.instance_id()),
+            Self::AutomaticAssociation => (Self::AUTOMATIC_ACTOR, Self::AUTOMATIC_INSTANCE),
+        }
+    }
+}
+
 pub(crate) async fn authorization(
     c: &mut PgConnection,
     proof: &AuthorizedPrincipal,
@@ -173,16 +190,18 @@ impl Associations {
         &self,
         p: &AuthorizedPrincipal,
         id: Uuid,
+        namespace: ReceiptNamespace,
     ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>> {
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(5));
-        self.audit.read(self.tenant,&budget.control(),p,|p,tx|Box::pin(async move{
-            tx.with_connection_context(p,|p,c|Box::pin(async move{
+        self.audit.read(self.tenant,&budget.control(),(p,namespace),|ctx,tx|Box::pin(async move{
+            tx.with_connection_context(ctx,|(p,namespace),c|Box::pin(async move{
                 let grant=authorization(c,p).await?;
+                let (actor,instance)=namespace.coordinates(p);
                 let raw:Option<serde_json::Value>=sqlx::query_scalar("SELECT result FROM mdm_devices.operations WHERE tenant_id=$1::uuid AND operation_id=$2 AND actor=$3 AND instance=$4")
-                    .bind(p.tenant_id()).bind(id).bind(p.principal_id()).bind(p.instance_id()).fetch_optional(&mut *c).await?;
+                    .bind(p.tenant_id()).bind(id).bind(actor).bind(instance).fetch_optional(&mut *c).await?;
                 let Some(raw)=raw else {return Ok(None)};
                 #[derive(serde::Deserialize)]
                 #[serde(untagged)]
@@ -191,10 +210,14 @@ impl Associations {
                     Asset(crate::lifecycle_management::AssetReceipt),
                     Force(crate::lifecycle_management::ForceReceipt),
                 }
-                let result:Stored=serde_json::from_value(raw).map_err(|_|Error::Storage)?;
+                let result:Stored=match namespace {
+                    ReceiptNamespace::CurrentPrincipal=>serde_json::from_value(raw).map_err(|_|Error::Storage)?,
+                    ReceiptNamespace::AutomaticAssociation=>Stored::Association(serde_json::from_value(raw).map_err(|_|Error::Storage)?),
+                };
                 let mut s=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
                 match result {
                     Stored::Association(result)=>{
+                        if result.members.len()!=2 || result.members[0].device==result.members[1].device || result.members[0].channel==result.members[1].channel {return Err(Error::Storage);}
                         authorize(&grant,p,&result.members,false)?;
                         s.object=Some(result.id.to_string());s.revision=Some(result.version);
                         s.state=serde_json::to_value(result.state).map_err(|_|Error::Storage)?.as_str().map(str::to_owned);

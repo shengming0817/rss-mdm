@@ -6,6 +6,8 @@ use rss_mdm_management_http::operation_diagnostics::Services;
 use std::{sync::Arc, time::Duration};
 use tower::ServiceExt;
 use uuid::Uuid;
+#[path = "operation_diagnostics/device.rs"]
+mod device;
 #[path = "operation_diagnostics/installation.rs"]
 mod installation;
 #[path = "operation_diagnostics/receipts.rs"]
@@ -47,6 +49,7 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
     let proof = c.authenticate(&manager).await?;
     let operation = Uuid::new_v4();
     let cases = receipts::seed(&c, &proof, operation).await?;
+    let background = device::seed(&c).await?;
     let instance = Uuid::new_v4();
     let foreign_operation = Uuid::new_v4();
     receipts::actor_receipts(&c, &proof, foreign_operation, instance).await?;
@@ -82,6 +85,8 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             .await?;
         attempt.finalize(None);
     }
+    // Reserve only this retirement's worker claim while comparing persisted progress snapshots.
+    let retirement_lease = device::hold_retirement(&c, operation).await?;
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
     let config = crate::host_t2_support::configuration(
@@ -158,6 +163,86 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             "owner diagnostics:\n{}",
             failures.join("\n")
         );
+        let (status, discovery) = send(format!(
+            "/api/v1/operation-diagnostics?owner=device_management&operationId={}",
+            background.operation
+        ))
+        .await?;
+        assert_eq!(status, 200, "{discovery}");
+        let item = discovery["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["operation"]["operationId"] == background.operation.to_string())
+            .expect("confirmed background locator");
+        assert_eq!(item["operationConfirmed"], true);
+        assert_eq!(item["fact"]["origin"], "background");
+        assert!(item["fact"]["requestId"].is_null());
+        let actor = item["operation"]["actor"].as_str().unwrap();
+        assert!(item["operation"]["instance"].is_null());
+        let background_path = format!(
+            "/api/v1/operation-diagnostics/operations/device_management/{}?actor={actor}",
+            background.operation
+        );
+        let (status, original) = send(background_path.clone()).await?;
+        assert_eq!(status, 200, "{original}");
+        assert_eq!(original["originalResult"]["availability"], "available");
+        assert_eq!(original["originalResult"]["value"]["revision"], 1);
+        assert!(original["operation"]["instance"].is_null());
+        assert_eq!(
+            send(format!("{background_path}&instance={instance}"))
+                .await?
+                .0,
+            400
+        );
+        assert_eq!(
+            send(format!(
+                "/api/v1/operation-diagnostics/operations/device_management/{}",
+                background.operation
+            ))
+            .await?
+            .1["originalResult"]["availability"],
+            "not_found"
+        );
+        let denied = client
+            .get(format!("http://{address}{background_path}"))
+            .header("host", "mdm.example.test")
+            .header("x-rss-public-origin", "https://mdm.example.test")
+            .header("x-forwarded-for", "127.0.0.1")
+            .header("cookie", &background.restricted_cookie)
+            .send()
+            .await?;
+        assert_eq!(
+            denied.status(),
+            403,
+            "one original member is outside current scope"
+        );
+        let retirement_path =
+            format!("/api/v1/operation-diagnostics/operations/retirement/{operation}");
+        let (status, before) = send(retirement_path.clone()).await?;
+        assert_eq!(status, 200, "{before}");
+        assert_eq!(before["executionEvidence"]["availability"], "available");
+        let channel = &before["executionEvidence"]["value"]["channels"][0];
+        assert_eq!(channel["reason"], "cleanup_waiting");
+        assert!(channel["blockingExecution"].is_string());
+        let execution = Uuid::new_v4();
+        sqlx::query("UPDATE mdm_devices.retirement_channels SET stage='complete',effect='unknown',execution=$3,blocking_execution=NULL,reason='forced_revoke_cleanup_unconfirmed' WHERE tenant_id=$1::uuid AND operation=$2")
+            .bind(c.tenant.to_string()).bind(operation).bind(execution).execute(&c.operator).await?;
+        let (status, after) = send(retirement_path).await?;
+        assert_eq!(status, 200, "{after}");
+        assert_eq!(
+            before["originalResult"], after["originalResult"],
+            "execution progress cannot change original admission"
+        );
+        assert_eq!(
+            after["executionEvidence"]["value"]["channels"][0]["stage"],
+            "complete"
+        );
+        assert_eq!(
+            after["executionEvidence"]["value"]["channels"][0]["execution"],
+            execution.to_string()
+        );
+        retirement_lease.release().await?;
         let (status, value) = send(format!("/api/v1/operation-diagnostics/operations/pki/{old_pki}?instance={instance}&includeAudit=true")).await?;
         assert_eq!(status, 200, "{value}");
         assert_eq!(value["originalResult"]["availability"], "available");

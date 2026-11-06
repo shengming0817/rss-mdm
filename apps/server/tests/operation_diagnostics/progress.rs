@@ -40,6 +40,11 @@ pub(super) async fn seed(
     let scope = rss_mdm_inventory_service::assets::ReadScope::from_proof(p)?;
     sqlx::query("INSERT INTO mdm_assets.asset_query_runs(tenant_id,id,input,completed) VALUES($1::uuid,$2,$3,true)").bind(c.tenant.to_string()).bind(id)
         .bind(json!({"query":{},"scope":scope,"asset_cut":cut,"as_of":1700000000})).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,origin,policy,version,object,occurrence,target,authority,delivery_seconds,created_at) VALUES($1::uuid,$2,'\"policy\"',$3,$4,$5,'manual',$6,$7,300,1700000000)")
+        .bind(c.tenant.to_string()).bind(id).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(endpoint.object.key())
+        .bind(serde_json::to_value(&endpoint)?).bind(serde_json::to_value(p.actor())?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.retirement_channels(tenant_id,operation,device,channel,registration,generation,stage,effect,blocking_execution,reason) VALUES($1::uuid,$2,$3,'mdm',$4,1,'cleanup','blocked',$5,'cleanup_waiting')")
+        .bind(c.tenant.to_string()).bind(id).bind(device).bind(registration).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     let policy = Uuid::new_v4();
     sqlx::query("INSERT INTO mdm_policy.requests(tenant_id,id,fingerprint,receipt) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(id).bind(vec![17_u8;32])
         .bind(json!({"operationId":id,"policyId":policy,"versionId":Uuid::new_v4(),"deadline":1700000010})).execute(&mut *tx).await?;
@@ -120,6 +125,12 @@ pub(super) async fn seed(
     tx.commit().await?;
     let q = format!("?device={device}");
     Ok(vec![
+        (
+            "retirement",
+            id,
+            "".into(),
+            json!({"accepted":true,"recordedAt":1700000000}),
+        ),
         ("asset", software_edit, "".into(), json!({"revision":23})),
         (
             "collection",

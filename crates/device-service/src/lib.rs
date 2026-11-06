@@ -20,6 +20,7 @@ mod identity;
 pub use identity::Hardware;
 mod identity_projection;
 mod read;
+pub use read::ReceiptNamespace;
 mod reconcile;
 pub mod worker;
 mod write;

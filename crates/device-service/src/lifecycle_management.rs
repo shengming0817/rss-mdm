@@ -53,6 +53,51 @@ impl Change<'_> {
     }
 }
 impl Associations {
+    /// Immutable admission summary; channel progress has its own independent read.
+    pub async fn retirement_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+    ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>> {
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
+        let budget = AuditBudget::new(std::time::Duration::from_secs(5));
+        self.audit
+            .read(self.tenant, &budget.control(), (self, p), |ctx, tx| {
+                Box::pin(async move {
+                    tx.with_connection_context(ctx, |(s, p), c| {
+                        Box::pin(async move {
+                            let auth = read::authorization(c, p).await?;
+                            let header = lifecycle::read_header_in(c, s.tenant, id).await?;
+                            if header.target.members.is_empty() || header.target.members.len() > 2 {
+                                return Err(Error::Storage);
+                            }
+                            for member in &header.target.members {
+                                auth.require(p, Permission::InventoryRead, Some(&member.device))?;
+                            }
+                            let mut result =
+                                rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                            result.accepted = Some(true);
+                            result.recorded_at = Some(header.created_at);
+                            result.object = Some(header.target.object.key());
+                            p.check_live()?;
+                            Ok(Some(result))
+                        })
+                    })
+                    .await
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |e| Err(crate::model::transaction_error(e)),
+                |e| Err(crate::model::transaction_error(e)),
+                |e| Err(crate::model::transaction_error(e)),
+                |e| Err(crate::model::transaction_error(e)),
+                |e| Err(crate::model::transaction_error(e)),
+            )
+    }
     pub async fn retirement(
         &self,
         p: &AuthorizedPrincipal,

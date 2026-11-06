@@ -109,9 +109,15 @@ pub(crate) async fn publish(
                 crate::identity_projection::association(c, tenant, &association).await?
             }
             Change::Write(request, hardware, state) => {
-                let result =
-                    write::persist(c, &t, "device-associations", &request, &hardware, state)
-                        .await?;
+                let result = write::persist(
+                    c,
+                    &t,
+                    ReceiptNamespace::AUTOMATIC_ACTOR,
+                    &request,
+                    &hardware,
+                    state,
+                )
+                .await?;
                 results.push((request.operation_id, result));
             }
         }
@@ -124,13 +130,13 @@ pub(crate) async fn publish(
         "device_association_automatic",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.identify_service("device-associations");
+    audit.identify_service(ReceiptNamespace::AUTOMATIC_ACTOR);
     let mut facts = Vec::new();
     for (operation, result) in results {
         let value = serde_json::to_value(&result).map_err(|_| Error::Storage)?;
         let digest =
             Sha256::digest(serde_json::to_vec(&result).map_err(|_| Error::Storage)?).to_vec();
-        sqlx::query("INSERT INTO mdm_devices.operations(tenant_id,operation_id,actor,instance,digest,result) VALUES($1::uuid,$2,'device-associations','system',$3,$4)").bind(&t).bind(operation).bind(digest).bind(&value).execute(&mut *c).await?;
+        sqlx::query("INSERT INTO mdm_devices.operations(tenant_id,operation_id,actor,instance,digest,result) VALUES($1::uuid,$2,$3,$4,$5,$6)").bind(&t).bind(operation).bind(ReceiptNamespace::AUTOMATIC_ACTOR).bind(ReceiptNamespace::AUTOMATIC_INSTANCE).bind(digest).bind(&value).execute(&mut *c).await?;
         let fact_audit = audit.fact_copy("device_association_automatic");
         fact_audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::DeviceManagement,

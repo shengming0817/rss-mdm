@@ -22,6 +22,18 @@ def listing(cases):
 
 
 class T2Status(unittest.TestCase):
+    def test_diagnostics_selects_its_actual_reader_and_wire_inputs(self):
+        for path in ('crates/webhook-service/src/management/mod.rs',
+                     'crates/resource-service/src/directory.rs',
+                     'crates/group-service/src/directory.rs',
+                     'crates/device-service/src/read.rs',
+                     'crates/device-service/src/lifecycle_management.rs',
+                     'apps/server/schema/da-shared-grants.sql',
+                     'apps/server/src/assembly/http.rs'):
+            with self.subTest(path=path):
+                self.assertIn('operation.diagnostics', affected([path]))
+        self.assertNotIn('operation.diagnostics', affected(['apps/server/tests/support/planning.rs']))
+
     def test_foundation_discovery_uses_its_independent_binary(self):
         module = 'agent.foundation'
         name = MODULES[module]['prefix'] + 'independent_enrollment_delivery'
@@ -124,7 +136,7 @@ class T2Status(unittest.TestCase):
         for schema in ('install.sql', 'relations.sql'):
             with self.subTest(schema=schema):
                 self.assertEqual(affected(['crates/device-service/schema/control-' + schema]),
-                                 ['agent.delivery', 'apple.protocol', 'device.control', 'device.retirement', 'policy.configuration', 'windows.protocol'])
+                                 ['agent.delivery', 'apple.protocol', 'device.control', 'device.retirement', 'operation.diagnostics', 'policy.configuration', 'windows.protocol'])
                 self.assertEqual(affected(['crates/agent-channel/schema/' + schema]),
                                  ['agent.delivery', 'agent.foundation', 'device.retirement', 'inventory.collection', 'script.delivery', 'task.composition', 'task.locking', 'task.recovery', 'task_trust'])
         for path in ('crates/device-service/src/lifecycle.rs',

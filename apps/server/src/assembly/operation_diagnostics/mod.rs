@@ -81,14 +81,20 @@ impl Diagnostics {
     }
     fn validate_locator(&self, p: &AuthorizedPrincipal, l: &Lookup<'_>) -> Result<(), Error> {
         p.check_live()?;
+        let background = background_namespace(l);
+        if background && l.query.instance.is_some() {
+            return Err(Error::Malformed);
+        }
         if p.tenant_id() != self.state.identity.tenant.to_string()
             || actor_bound(l.owner)
+                && !background
                 && !matches!(l.owner, O::RegistrationRecovery | O::Pki)
                 && l.query
                     .actor
                     .as_deref()
                     .is_some_and(|v| v != p.principal_id())
             || actor_bound(l.owner)
+                && !background
                 && !matches!(l.owner, O::RegistrationRecovery | O::Pki)
                 && l.query
                     .instance
@@ -140,6 +146,8 @@ impl Diagnostics {
                 grant.require(p, Permission::RegistrationConfigurationRead, None)?;
                 // These owners keep current configuration / installation progress, not a historical receipt by operation ID.
                 (Evidence::NoDurableEvidence, Evidence::NoDurableEvidence)
+            } else if l.owner == O::Retirement {
+                self.retirement(p, l.operation).await?
             } else if matches!(l.owner, O::PkiSigning | O::PkiRevocation) {
                 self.pki_task(p, l, da_owner).await?
             } else if da_owner && l.owner == O::CredentialTask {
@@ -174,6 +182,34 @@ impl Diagnostics {
         } else {
             Evidence::NoDurableEvidence
         };
+        Ok((original, execution))
+    }
+    async fn retirement(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+    ) -> Result<OperationSections, Error> {
+        let original = section(
+            self.state
+                .associations
+                .retirement_receipt(p, id)
+                .await
+                .map_err(Into::into),
+        )?;
+        let execution = section(
+            self.state
+                .associations
+                .retirement(p, id)
+                .await
+                .map(|value| {
+                    Some(
+                        rss_mdm_management_http::execution::operations::Evidence::Retirement(
+                            Box::new(value),
+                        ),
+                    )
+                })
+                .map_err(Into::into),
+        )?;
         Ok((original, execution))
     }
     async fn pki_task(
@@ -328,7 +364,17 @@ impl Diagnostics {
         match owner {
             O::DeviceManagement => s
                 .associations
-                .operation_receipt(p, id)
+                .operation_receipt(
+                    p,
+                    id,
+                    if q.actor.as_deref()
+                        == Some(rss_mdm_device_service::ReceiptNamespace::AUTOMATIC_ACTOR)
+                    {
+                        rss_mdm_device_service::ReceiptNamespace::AutomaticAssociation
+                    } else {
+                        rss_mdm_device_service::ReceiptNamespace::CurrentPrincipal
+                    },
+                )
                 .await
                 .map_err(Into::into),
             O::Asset => s.assets.operation_receipt(p, id).await.map_err(Into::into),
@@ -427,35 +473,6 @@ impl Diagnostics {
                 )
                 .await
                 .map_err(Into::into),
-            O::Retirement => {
-                let value = s.associations.retirement(p, id).await?;
-                let mut result = ReceiptSummary::new(id);
-                result.accepted = Some(true);
-                result.recorded_at = Some(value.created_at);
-                for channel in value.channels {
-                    if let Some(execution) = channel.execution {
-                        result.executions.push(execution);
-                    }
-                    result
-                        .stages
-                        .push(rss_mdm_audit_integration::operation::ReceiptStage {
-                            phase: serde_json::to_value(channel.stage)
-                                .map_err(|_| Error::Unavailable(Failure::Database))?
-                                .as_str()
-                                .ok_or(Error::Conflict)?
-                                .into(),
-                            revision: None,
-                            state: Some(
-                                serde_json::to_value(channel.effect)
-                                    .map_err(|_| Error::Unavailable(Failure::Database))?
-                                    .as_str()
-                                    .ok_or(Error::Conflict)?
-                                    .into(),
-                            ),
-                        });
-                }
-                Ok(Some(result))
-            }
             O::Policy => {
                 rss_mdm_policy_service::management::read::operation_receipt(&s.policies, p, id)
                     .await
@@ -725,7 +742,8 @@ impl Diagnostics {
                 result.revision = Some(v.revision);
                 Ok(Some(result))
             }
-            O::PkiSigning
+            O::Retirement
+            | O::PkiSigning
             | O::PkiRevocation
             | O::ScriptInvocation
             | O::SoftwareInvocation
@@ -818,7 +836,7 @@ fn locator(
                 .clone()
                 .unwrap_or_else(|| p.principal_id().to_owned())
         }),
-        instance: if l.owner == O::Pki && l.query.actor.as_deref() == Some("service:device-pki") {
+        instance: if background_namespace(l) {
             if l.query.instance.is_some() {
                 return Err(Error::Malformed);
             }
@@ -837,4 +855,15 @@ fn locator(
         registration: l.query.registration,
         generation: l.query.generation,
     })
+}
+
+fn background_namespace(l: &Lookup<'_>) -> bool {
+    matches!(
+        (l.owner, l.query.actor.as_deref()),
+        (O::Pki, Some("service:device-pki"))
+            | (
+                O::DeviceManagement,
+                Some(rss_mdm_device_service::ReceiptNamespace::AUTOMATIC_ACTOR)
+            )
+    )
 }
