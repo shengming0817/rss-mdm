@@ -124,11 +124,15 @@ impl Reconciler<PgClaim> for QueryWork {
                 &self.assets,
                 |assets, tx| {
                     Box::pin(async move {
-                        assets
-                            .query_task_in(tx, id)
-                            .await
-                            .map(|s| !s.completed)
-                            .map_err(|e| fault(e, &Mutex::new(None)))
+                        let pending: Result<bool> = async {
+                            let state = assets.query_task_in(tx, id).await?;
+                            Ok(!state.completed
+                                || state.input.software.is_some()
+                                    && assets.software_result_state(tx, id).await?
+                                        == software::ResultState::Releasing)
+                        }
+                        .await;
+                        pending.map_err(|e| fault(e, &Mutex::new(None)))
                     })
                 },
             )
@@ -177,12 +181,29 @@ impl Reconciler<PgClaim> for QueryWork {
                                 Box::pin(async move {
                                     let result: Result<()> = async {
                                         let state = assets.query_task_in(tx, id).await?;
+                                        if state.input.software.is_some()
+                                            && assets.software_result_state(tx, id).await?
+                                                == software::ResultState::Releasing
+                                        {
+                                            return assets.clean_software_result(tx, id).await;
+                                        }
                                         if state.completed {
                                             return Ok(());
                                         }
                                         assets
                                             .query_cursor_in(tx, id, state.cursor.clone())
                                             .await?;
+                                        if let Some(job) = &state.input.software {
+                                            return assets
+                                                .advance_software_query(
+                                                    tx,
+                                                    id,
+                                                    &state.input,
+                                                    job,
+                                                    state.cursor,
+                                                )
+                                                .await;
+                                        }
                                         assets
                                             .advance_asset_query_in(
                                                 tx,

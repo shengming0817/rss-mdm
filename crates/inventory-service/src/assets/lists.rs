@@ -305,7 +305,7 @@ impl AssetService {
     }
 }
 
-fn metadata_state(state: &rss_mdm_inventory::ArrayState) -> ListState {
+pub(super) fn metadata_state(state: &rss_mdm_inventory::ArrayState) -> ListState {
     use rss_mdm_inventory::ArrayState as S;
     match state {
         S::Known(value) => ListState::Known {

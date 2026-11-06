@@ -193,15 +193,25 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
         rss_mdm_inventory_service::transaction::deadline(),
     )
     .await?;
-    let assets = Arc::new(a::AssetService::new(
+    let assets = Arc::new(a::AssetService::new(a::AssetDependencies {
         inventory,
-        owner.audit.clone(),
-        owner.runtime.clone(),
-        c.tenant,
-        Arc::new(crate::clock::SystemClock),
-        &[7; 32],
-        messaging,
-    ));
+        audit_store: owner.audit.clone(),
+        runtime: owner.runtime.clone(),
+        tenant: c.tenant,
+        clock: Arc::new(crate::clock::SystemClock),
+        cursor_key: vec![7; 32],
+        reconcile_messaging: messaging,
+        software_sources: a::software::Sources {
+            objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+            groups: rss_mdm_group_postgres::GroupStore::new(
+                owner.runtime.clone(),
+                c.tenant,
+                rss_mdm_inventory_service::transaction::deadline(),
+            )
+            .await?
+            .source_reader(),
+        },
+    }));
     let reader = c.account(&[P::InventoryFieldsWrite]).await?;
     let reader = Arc::new(c.authenticate(&reader).await?);
     let http = Http::open(

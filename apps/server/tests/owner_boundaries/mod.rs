@@ -95,7 +95,7 @@ impl Owners {
         }
         Ok(id)
     }
-    async fn settle(&self, c: &Context, task: Uuid) -> Result<()> {
+    pub(super) async fn settle(&self, c: &Context, task: Uuid) -> Result<()> {
         use rss_reconcile::{DurableStore, ReconcileStep, Reconciler};
         let timer = rss_mdm_device_service::control::recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
