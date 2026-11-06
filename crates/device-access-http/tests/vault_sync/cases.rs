@@ -149,6 +149,16 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         },
     )
     .await?;
+    // Even valid recovery/device signatures cannot select a different tenant.
+    let mut cross_tenant = init.clone();
+    cross_tenant.challenge.tenant = Uuid::new_v4();
+    let payload = cross_tenant.challenge.signing_bytes()?;
+    cross_tenant.signature = B64.encode(k1.sign(&payload).as_ref());
+    cross_tenant.recovery_signature = Some(B64.encode(recovery.sign(&payload).as_ref()));
+    assert_eq!(
+        s.execute(&p, &audit(&c), cross_tenant).await.err(),
+        Some(Error::Denied)
+    );
     let mut wrong = init.clone();
     wrong.recovery_signature = None;
     assert_eq!(
