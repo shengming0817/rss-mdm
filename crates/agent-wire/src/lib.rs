@@ -41,3 +41,6 @@ pub mod osquery;
 pub mod activities;
 
 pub mod da;
+
+/// User-owned encrypted Vault synchronization.
+pub mod vault;

@@ -434,6 +434,14 @@ authorities(&frozen,&config)?;
    heads(&config,&input.administrator).await?;
 
   }
+  // Freeze outside the restored database. Retries reuse this incarnation; a new
+  // restore directory/operation creates a new one before writers can reconnect.
+  let vault_incarnation = match journal.load::<Uuid>("vault-incarnation.json").map_err(storage)? {
+   Some(value) => value,
+   None => { let value=Uuid::new_v4(); journal.save("vault-incarnation.json", &value).map_err(storage)?; value }
+  };
+  rss_mdm_vault_sync::restore_incarnation(&mut c,vault_incarnation).await.map_err(|_|Error::Storage)?;
+
   // Admit the exact production role while ordinary CONNECT remains fenced.
   sqlx::query("SET SESSION AUTHORIZATION da_access").execute(&mut c).await.map_err(|_|Error::Storage)?;
 

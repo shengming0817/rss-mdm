@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 autotests = false
 [dependencies]
+rss-mdm-vault-sync.workspace = true
 rss-mdm-pki-service.workspace = true
 rss-mdm-windows-mdm.workspace = true
 webauthn-rs-proto.workspace = true
@@ -73,3 +74,7 @@ rss-projection-postgres.workspace = true
 rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres = { workspace = true, features = ["integration"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "process"] }
+
+[[test]]
+name = "vault_sync"
+path = "tests/vault_sync.rs"

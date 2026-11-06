@@ -336,7 +336,7 @@ fn transaction_error(error: TransactionError<Error>) -> Error {
 }
 
 /// Sanitized closed audit diagnosis; carries no provider messages or request input.
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorClass {
     CommitUnknown,

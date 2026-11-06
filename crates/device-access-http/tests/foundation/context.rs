@@ -95,7 +95,7 @@ pub struct Context {
     pub operator: sqlx::PgPool,
     pub access: sqlx::PgPool,
     pub runtime: Arc<PgRuntime>,
-    identity_runtime: Arc<PgRuntime>,
+    pub(super) identity_runtime: Arc<PgRuntime>,
     pub proof_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     access_runtime: Arc<PgRuntime>,
     pub access_audit: Arc<rss_mdm_audit_integration::AuditStore>,

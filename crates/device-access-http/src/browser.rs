@@ -14,6 +14,7 @@ use rss_mdm_authorization_service::context::{AuthorizedPrincipal, Principal, Req
 use rss_mdm_http_contract::{Router, module::Declaration};
 use std::{sync::Arc, time::Duration};
 pub struct Services {
+    pub vault: Arc<rss_mdm_vault_sync::Service>,
     pub identity: Arc<Identity>,
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -35,8 +36,9 @@ pub fn router(state: Option<&Arc<Services>>) -> Router<(), impl Declaration + us
         pki: crate::pki::routes().bind_with(state.map(|s| &s.pki), Arc::clone),
     }
     .assemble();
-    rss_mdm_http_contract::route_module! {struct Protected for [Browser]{management at "/api/v1",platform}}
+    rss_mdm_http_contract::route_module! {struct Protected for [Browser]{management at "/api/v1",vault,platform}}
     let mut protected = Protected {
+        vault: crate::vault::routes(state.map(|s| s.vault.clone())),
         management,
         platform: crate::platform_sso::management_routes().bind_with(platform.as_ref(), Arc::clone),
     }

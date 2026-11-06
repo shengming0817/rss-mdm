@@ -71,6 +71,7 @@ LOCAL_PACKAGES = {
     "rss-mdm-compliance": "crates/compliance",
     "rss-mdm-compliance-postgres": "crates/compliance-postgres",
     "rss-mdm-audit-integration": "crates/audit-integration",
+    "rss-mdm-vault-sync": "crates/vault-sync",
     "rss-mdm-agent-wire": "crates/agent-wire",
     "rss-mdm-backend-postgres-support": "crates/backend-postgres-support",
     "rss-mdm-policy-postgres":"crates/policy-postgres",
@@ -225,7 +226,7 @@ def verify_audit_integration(data):
     require(len(ids) == 1, 'exactly one product audit integration package is required')
     identity = ids[0]
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
-    require(parents == {'rss-da-app','rss-mdm-device-access-postgres','rss-mdm-device-access-runtime','rss-mdm-group-service', 'rss-mdm-compliance-service', 'rss-mdm-script-service','rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',   'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
+    require(parents == {'rss-mdm-vault-sync','rss-da-app','rss-mdm-device-access-postgres','rss-mdm-device-access-runtime','rss-mdm-group-service', 'rss-mdm-compliance-service', 'rss-mdm-script-service','rss-mdm-task-trust','rss-mdm-webhook-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',   'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-device-access-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
     require(set(nodes[identity]['features']) <= {'default'}, 'audit integration exposes an unsupported feature')
     pending, visited = [identity], set()
     while pending:
