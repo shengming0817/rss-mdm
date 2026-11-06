@@ -557,6 +557,16 @@ impl AssetService {
                 scopes.extend(items.into_iter().map(|i| i.scope));
             }
             let platform = platform(&device);
+            // Coverage is required for every source that can map software on this platform.
+            // An unrelated complete list cannot prove a missing mapped source is empty.
+            let expected_sources: BTreeSet<_> = job
+                .configuration
+                .mappings
+                .iter()
+                .filter_map(|record| record.definition.as_ref())
+                .filter(|mapping| mapping.enabled && platform.is_none_or(|p| p == mapping.platform))
+                .map(|mapping| mapping.source)
+                .collect();
             for scope in scopes {
                 let tenant = self.tenant;
                 let cut = &input.asset_cut;
@@ -583,7 +593,10 @@ impl AssetService {
                     for source in SoftwareSource::ALL {
                         let field =
                             checked_input(rss_mdm_inventory::FieldKey::parse(source.field()))?;
-                        let Some(resolved) = summary.arrays.get(&field) else {
+                        let resolved = summary.arrays.get(&field);
+                        coverage_unknown |= expected_sources.contains(&source)
+                            && resolved.is_none_or(|r| !matches!(r.state, ArrayState::Known(_)));
+                        let Some(resolved) = resolved else {
                             continue;
                         };
                         known |= matches!(resolved.state, ArrayState::Known(_));

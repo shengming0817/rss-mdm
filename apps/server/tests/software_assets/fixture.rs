@@ -231,14 +231,18 @@ pub(super) fn installation(id: &str, version: &str) -> Scalar {
     )
 }
 pub(super) async fn definitions(c: &Context) -> Result<rss_mdm_inventory::CollectionDefinition> {
+    definitions_for(c, &[s::SoftwareSource::Installations]).await
+}
+pub(super) async fn definitions_for(
+    c: &Context,
+    software: &[s::SoftwareSource],
+) -> Result<rss_mdm_inventory::CollectionDefinition> {
     use rss_mdm_inventory::*;
     let fields: Vec<_> = builtin::fields()
         .into_iter()
         .filter(|f| {
-            matches!(
-                f.key.as_str(),
-                "device.os.name" | "device.software.installations"
-            )
+            f.key.as_str() == "device.os.name"
+                || software.iter().any(|s| s.field() == f.key.as_str())
         })
         .collect();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
@@ -268,6 +272,22 @@ pub(super) async fn facts(
     c: &Context,
     object: &rss_mdm_inventory_service::objects::DeviceObject,
     definition: &rss_mdm_inventory::CollectionDefinition,
+    items: Vec<Scalar>,
+) -> Result<()> {
+    facts_for(
+        c,
+        object,
+        definition,
+        s::SoftwareSource::Installations,
+        items,
+    )
+    .await
+}
+pub(super) async fn facts_for(
+    c: &Context,
+    object: &rss_mdm_inventory_service::objects::DeviceObject,
+    definition: &rss_mdm_inventory::CollectionDefinition,
+    software: s::SoftwareSource,
     items: Vec<Scalar>,
 ) -> Result<()> {
     use rss_mdm_inventory::*;
@@ -313,7 +333,7 @@ pub(super) async fn facts(
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     for (key, value) in [
         ("device.os.name", Scalar::String("Windows".into())),
-        ("device.software.installations", Scalar::Array(items)),
+        (software.field(), Scalar::Array(items)),
     ] {
         let field = builtin::fields()
             .into_iter()

@@ -51,6 +51,93 @@ const ADMIN: &[P] = &[
 ];
 
 #[tokio::test]
+#[ignore = "T2: complete Win32 coverage cannot prove a missing Store list empty for tenant software thresholds"]
+async fn missing_mapping_source_is_unknown_until_its_complete_empty_list() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let fixture = Fixture::open(&c).await?;
+    let account = c.account(ADMIN).await?;
+    let http = Http::open(&c, &fixture, Arc::new(c.authenticate(&account).await?)).await?;
+    let collection = fixture::definitions_for(
+        &c,
+        &[
+            s::SoftwareSource::WindowsStore,
+            s::SoftwareSource::WindowsWin32,
+        ],
+    )
+    .await?;
+    let a = planning::endpoint(&c).await?;
+    let b = planning::endpoint(&c).await?;
+    let mut store: std::collections::BTreeMap<String, Scalar> = [
+        ("id", "editor"),
+        ("origin", "windows.appx"),
+        ("name", "Editor"),
+        ("publisher", "Acme"),
+        ("version", "1"),
+        ("architecture", "x64"),
+        ("registered_users_native", "2"),
+        ("collection_scope", "device"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.into(), Scalar::String(v.into())))
+    .collect();
+    for key in ["is_bundle", "is_framework", "is_provisioned"] {
+        store.insert(key.into(), Scalar::Boolean(false));
+    }
+    store.insert("package_status".into(), Scalar::Integer(0));
+    fixture::facts_for(
+        &c,
+        &a,
+        &collection,
+        s::SoftwareSource::WindowsStore,
+        vec![Scalar::Object(store)],
+    )
+    .await?;
+    fixture::facts_for(&c, &b, &collection, s::SoftwareSource::WindowsWin32, vec![]).await?;
+    let standard = Uuid::new_v4();
+    let path = format!("/standard-software/{standard}");
+    let definition = |threshold| json!({"action":"put","definition":{"name":"Editor","risk":"medium","assessments":{"endpoint":{"threshold":threshold}}}});
+    put(&http, &path, 0, definition(2)).await?;
+    put(&http,&format!("/software-mappings/{}",Uuid::new_v4()),0,json!({"action":"put","definition":{
+        "standard":standard,"enabled":true,"source":"device.software.windows.store","platform":"windows","filter":"nativeId==editor"
+    }})).await?;
+    let task = query(&c, &fixture, &http, json!({"context":"endpoint"})).await?;
+    let rows = http
+        .get(&format!("/software-asset-queries/{task}/software"))
+        .await?;
+    assert_eq!(response(&rows)["items"][0]["assessmentDevices"], 1);
+    assert_eq!(response(&rows)["items"][0]["thresholdState"], "unknown");
+    let coverage = http
+        .get(&format!("/software-asset-queries/{task}/coverage"))
+        .await?;
+    let missing = response(&coverage)["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["object"]["id"] == b.members[0].device)
+        .context("missing Store device")?;
+    assert_eq!(missing["unknown"], true);
+    put(&http, &path, 1, definition(1)).await?;
+    let task = query(&c, &fixture, &http, json!({"context":"endpoint"})).await?;
+    let rows = http
+        .get(&format!("/software-asset-queries/{task}/software"))
+        .await?;
+    assert_eq!(response(&rows)["items"][0]["thresholdState"], "reached");
+    put(&http, &path, 2, definition(2)).await?;
+    // Only a complete Store list can clear that source's uncertainty. A still has no Win32 list.
+    fixture::facts_for(&c, &b, &collection, s::SoftwareSource::WindowsStore, vec![]).await?;
+    let task = query(&c, &fixture, &http, json!({"context":"endpoint"})).await?;
+    let rows = http
+        .get(&format!("/software-asset-queries/{task}/software"))
+        .await?;
+    assert_eq!(response(&rows)["items"][0]["assessmentDevices"], 1);
+    assert_eq!(response(&rows)["items"][0]["thresholdState"], "below");
+    http.close().await;
+    drop(fixture);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "T2: configuration readers wait for the configuration transaction before binding revision and records"]
 async fn configuration_capture_is_serialized_with_writes() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
