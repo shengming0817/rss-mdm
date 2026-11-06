@@ -1,5 +1,5 @@
 //! App composes bounded reads; preparation and result interpretation stay with each owner.
-use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
+use rss_mdm_authorization_service::{Permission, Snapshot};
 use rss_mdm_management_http::{Error, Failure};
 use std::sync::Arc;
 mod preview;

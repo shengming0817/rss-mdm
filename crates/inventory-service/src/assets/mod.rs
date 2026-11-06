@@ -19,6 +19,7 @@ pub mod evaluation;
 pub mod filter;
 
 mod directory;
+pub use directory::directory_presence_on;
 pub mod field_directory;
 mod field_layout;
 pub mod field_references;

@@ -185,7 +185,7 @@ async fn assignments(
     (async {
         let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
         service
-            .assignments(&auth.proof, &audit, id, &page, &codec)
+            .assignments(&auth, &audit, id, &page, &codec)
             .await
             .map(Json)
     })

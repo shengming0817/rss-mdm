@@ -122,7 +122,15 @@ pub(super) async fn qualify_on(
     match (config.access.as_ref(), basis) {
         (Some(Access::Device), Basis::Device) => Ok(Some(wire::SelfServiceSubject::Device {})),
         (Some(Access::AuthenticatedUser | Access::Users { .. }), Basis::User { reference }) => {
-            let facts = match sessions.recheck(reference).await {
+            let facts = match sessions
+                .recheck(
+                    reference,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        std::time::Duration::from_secs(10),
+                    ),
+                )
+                .await
+            {
                 Ok(facts) => facts,
                 Err(
                     crate::deployment::authorization::Error::Unauthorized

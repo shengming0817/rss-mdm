@@ -1,6 +1,6 @@
 //! Device registration directory: current authorization and complete SQL candidates precede paging.
 use crate::{Error, Store, database::db};
-use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
+use rss_mdm_authorization_service::Permission;
 use rss_mdm_query::{
     Page,
     cursor::CursorCodec,
@@ -41,11 +41,12 @@ fn error(e: rss_mdm_query::Error) -> Error {
 pub async fn list(
     profile: rss_mdm_install_support::StorageProfile,
     database: &Store,
-    proof: &AuthorizedPrincipal,
+    request: &rss_mdm_authorization_service::context::RequestAuth,
     device: &str,
     query: &Query,
     codec: &CursorCodec,
 ) -> Result<Page<rss_mdm_query::directory::Projection<Row>>, Error> {
+    let proof = request.proof.as_ref();
     if profile != proof.profile() || profile != database.profile() {
         return Err(crate::Error::Forbidden);
     }
@@ -95,7 +96,7 @@ pub async fn list(
         .map_err(|_| Error::Corrupt)?;
     let page = query.page_typed(rows, codec, &binding).map_err(error)?;
     tx.rollback().await.map_err(db)?;
-    database.confirm_query(proof, &before).await?;
+    database.confirm_query(request, &before).await?;
     Ok(page)
 }
 

@@ -101,7 +101,7 @@ async fn list(
         audit.target_device(&device);
         let q = query.parse().map_err(|_| Error::Malformed)?;
         s.credentials
-            .list(&auth.proof, &device, &q, &s.cursor)
+            .list(&auth, &device, &q, &s.cursor)
             .await
             .map(Json)
             .map_err(Into::into)

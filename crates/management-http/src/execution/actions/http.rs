@@ -83,7 +83,7 @@ async fn runs(
         audit.plan(id);
         let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
         app.tasks
-            .runs(&auth.proof, &audit, id, &page, &codec)
+            .runs(&auth, &audit, id, &page, &codec)
             .await
             .map(Json)
     })
@@ -103,7 +103,7 @@ async fn run(
     );
     audit.plan(id);
     audit.target(&task.to_string());
-    app.tasks.run(&auth.proof, &audit, id, task).await.map(Json)
+    app.tasks.run(&auth, &audit, id, task).await.map(Json)
 }
 
 use rss_mdm_audit_integration::RequestAudit;

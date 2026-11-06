@@ -47,7 +47,12 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             }
             let query = SCHEMA.parse(&parameters.finish())?;
             let page = operations
-                .directory(&proof, &query, &codec, &h.c.request(&proof)?)
+                .directory(
+                    &h.c.read_auth(Arc::new(h.c.authenticate(&account).await?)),
+                    &query,
+                    &codec,
+                    &h.c.request(&proof)?,
+                )
                 .await?;
             assert_eq!(page.items.len(), 1);
             let page = Page {
@@ -86,7 +91,6 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
 #[tokio::test]
 #[ignore = "T2: production HTTP directory includes Script and both Collection channels with matching statistics and authorization"]
 async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence() -> Result<()> {
-    use rss_mdm_authorization_service::context::RequestAuth;
     use tower::ServiceExt;
     let h = Harness::open().await?;
     let result=async {
@@ -108,7 +112,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         });
         let router=rss_mdm_management_http::execution::http::read_routes().with_state::<()>(operations.clone())
             .layer(axum::Extension(CursorCodec::new(&[8;32])?))
-            .layer(axum::Extension(RequestAuth{proof:proof.clone()}))
+            .layer(axum::Extension(h.c.read_auth(proof.clone())))
             .layer(axum::Extension(h.c.request(&proof)?)).into_axum();
         // Exercise the real mounted handlers and HTTP encoders over loopback transport.
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -161,8 +165,8 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
                 assert_eq!(stats["statistics"]["unknown"],unknown);
             }
             // Raw Agent Collection detail still requires its separate sensitive permission.
-            assert!(matches!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&proof,&h.c.request(&proof)?,collection_policy,collection).await,Err(rss_mdm_management_http::Error::Forbidden)));
-            assert!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&proof,&h.c.request(&proof)?,native_policy,native).await.is_ok());
+            assert!(matches!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,collection_policy,collection).await,Err(rss_mdm_management_http::Error::Forbidden)));
+            assert!(rss_mdm_management_http::execution::task_reads::Reads::run(h.a.task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,native_policy,native).await.is_ok());
             let rule=rss_mdm_authorization_service::Rule{subject:rss_mdm_authorization_service::Subject::User{user:account.user.clone()},grants:vec![rss_mdm_authorization_service::Grant{operation:Permission::OperationRead,scope:rss_mdm_authorization_service::Scope::Device{id:h.p.device().into()}}]};
             sqlx::query("UPDATE mdm_access.authorization_rules SET document=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(account.rule).bind(serde_json::to_value(rule)?).execute(&h.c.operator).await?;
             let page:Value=client.get(format!("{base}/operations")).send().await?.error_for_status()?.json().await?;
@@ -180,7 +184,7 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         let denied=Arc::new(h.c.authenticate(&denied).await?);
         let router=rss_mdm_management_http::execution::http::read_routes().with_state::<()>(operations)
             .layer(axum::Extension(CursorCodec::new(&[8;32])?))
-            .layer(axum::Extension(RequestAuth{proof:denied.clone()}))
+            .layer(axum::Extension(h.c.read_auth(denied.clone())))
             .layer(axum::Extension(h.c.request(&denied)?)).into_axum();
         let response=router.oneshot(axum::http::Request::builder().uri("/operations").body(axum::body::Body::empty())?).await?;
         assert_eq!(response.status(),axum::http::StatusCode::FORBIDDEN);
@@ -203,6 +207,125 @@ async fn native_report_sql_matches_the_owner_terminal_projection() -> Result<()>
         }
         Ok(())
     }.await;
+    h.close().await?;
+    result
+}
+
+#[tokio::test]
+#[ignore = "T2: controlled concurrent writes cannot mix an execution snapshot; Identity revocation rejects delivery"]
+async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
+    let h = Harness::open().await?;
+    let result = async {
+        let account = h.c.account(&[Permission::OperationRead]).await?;
+        let request = h.c.read_auth(Arc::new(h.c.authenticate(&account).await?));
+        let tenant = h.c.tenant.to_string();
+        let (observed, wait_observed) = tokio::sync::oneshot::channel();
+        let (committed, wait_committed) = tokio::sync::oneshot::channel();
+        let writer = async {
+            wait_observed.await?;
+            let mut tx = command::seed_transaction(&h.c).await?;
+            sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)")
+                .bind(&tenant).bind(format!("unrelated-{}", Uuid::new_v4())).execute(&mut *tx).await?;
+            tx.commit().await?;
+            committed.send(()).unwrap();
+            Ok::<_, anyhow::Error>(())
+        };
+        let reader = h.a.task_reads.snapshot(&request, (tenant.clone(), Some(observed), Some(wait_committed)), |state, c, _, _| Box::pin(async move {
+            let before: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&state.0).fetch_one(&mut *c).await.map_err(crate::assembly::task_reads::sql)?;
+            state.1.take().unwrap().send(()).unwrap();
+            state.2.take().unwrap().await.unwrap();
+            let after: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&state.0).fetch_one(&mut *c).await.map_err(crate::assembly::task_reads::sql)?;
+            assert_eq!(before, after);
+            Ok(before)
+        }));
+        let (before, ()) = tokio::try_join!(async { Ok::<_,anyhow::Error>(reader.await?) }, writer)?;
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.devices WHERE tenant_id=$1::uuid").bind(&tenant).fetch_one(&h.c.operator).await?;
+        assert_eq!(after, before + 1);
+        let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) = account.credential()? else { unreachable!() };
+        let session = h.c.authority.inspect_session(h.c.tenant, secret, request.remaining()?).await?;
+        let rejected = h.a.task_reads.snapshot(&request, (&h.c.authority, Some(session)), |state, _, _, _| Box::pin(async move {
+            state.0.revoke_current_session(state.1.take().unwrap(), rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(3))).await.map_err(|_|rss_mdm_management_http::Error::Unauthorized)?;
+            Ok(())
+        })).await;
+        assert!(matches!(rejected, Err(rss_mdm_management_http::Error::Unauthorized)));
+        Ok(())
+    }.await;
+    h.close().await?;
+    result
+}
+
+#[tokio::test]
+#[ignore = "T2: raw directory and detail consume actual access/command roles and the same Inventory snapshot"]
+async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<()> {
+    use rss_mdm_management_http::enrollment::directory as http;
+    use tower::ServiceExt;
+    let h = Harness::open().await?;
+    let result = async {
+        let endpoint = crate::planning_t2_support::endpoint(&h.c).await?;
+        let device = endpoint.members[0].device.clone();
+        let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(
+            h.c.database.registration(),
+            h.c.tenant.to_string(),
+            h.c.audit.clone(),
+        ));
+        let reads = Arc::new(crate::assembly::device_reads::Devices {
+            tasks: h.a.task_reads.clone(),
+            devices: devices.clone(),
+            windows: true,
+            apple: false,
+        });
+        let account = h.c.account(&[Permission::InventoryRead]).await?;
+        let proof = Arc::new(h.c.authenticate(&account).await?);
+        let app = http::routes()
+            .into_axum()
+            .with_state(Arc::new(http::HttpState {
+                cursor: CursorCodec::new(&[7; 32])?,
+                devices,
+                reads,
+            }))
+            .layer(axum::Extension(h.c.read_auth(proof.clone())))
+            .layer(axum::Extension(h.c.request(&proof)?));
+        for path in [
+            "/devices?limit=1".to_owned(),
+            format!("/devices/{device}"),
+            "/devices/statistics".to_owned(),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(&path)
+                        .body(axum::body::Body::empty())?,
+                )
+                .await?;
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1_048_576).await?;
+            let value: Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(status, axum::http::StatusCode::OK, "{path}: {value}");
+            if path == format!("/devices/{device}") {
+                assert_eq!(value["id"], device);
+                assert!(value["inventoryAvailable"].is_boolean());
+                assert!(
+                    value["capabilities"]
+                        .as_array()
+                        .is_some_and(|v| !v.is_empty())
+                );
+            }
+        }
+        let registration = h.c.database.registration();
+        let mut tx = registration.snapshot(&h.c.tenant.to_string()).await?;
+        let raw: bool =
+            sqlx::query_scalar("SELECT has_table_privilege(current_user,'mdm.inventory','SELECT')")
+                .fetch_one(&mut *tx)
+                .await?;
+        assert!(
+            !raw,
+            "presence must not grant the access role raw fact payloads"
+        );
+        tx.rollback().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
     h.close().await?;
     result
 }

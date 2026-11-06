@@ -183,14 +183,14 @@ async fn agent_collection_preview_requires_host_signing() -> Result<()> {
             Permission::InventorySensitiveRead,
         ])
         .await?;
-    let proof = h.c.authenticate(&account).await?;
+    let proof = std::sync::Arc::new(h.c.authenticate(&account).await?);
     let input = rss_mdm_policy::pages::Preview {
         definition: Box::new(definition),
         scope_result: None,
     };
     let result = Reads::preview(
         unsigned.task_reads.as_ref(),
-        &proof,
+        &h.c.read_auth(proof.clone()),
         &h.c.request(&proof)?,
         &input,
         &rss_mdm_policy::pages::PREVIEW_SCHEMA.page(Some(10), None, 4096)?,

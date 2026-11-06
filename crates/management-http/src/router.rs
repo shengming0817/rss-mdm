@@ -282,7 +282,6 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                     Arc::new(crate::enrollment::directory::HttpState {
                         cursor: s.query_cursor.clone(),
                         devices: s.devices.clone(),
-                        assets: s.assets.clone(),
                         reads: s.device_reads.clone(),
                     })
                 },

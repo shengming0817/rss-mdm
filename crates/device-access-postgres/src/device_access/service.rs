@@ -6,9 +6,7 @@ use crate::{
 };
 use rss_mdm_agent_wire::runtime::{AccessBegin, AccessChallenge, AccessConfirm};
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_authorization_service::{
-    Permission, context::AuthorizedPrincipal, session::SessionAuthority,
-};
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 
@@ -69,11 +67,11 @@ impl Service {
     pub async fn device_access_directory(
         &self,
         device: &rss_mdm_registration_service::DevicePrincipal,
-        employee: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         query: &rss_mdm_query::window::Query,
         admission: &dyn Admission,
-        sessions: &SessionAuthority,
     ) -> Result<rss_mdm_agent_wire::runtime::AccessDirectory, Error> {
+        let employee = request.proof.as_ref();
         if device.tenant() != self.tenant || employee.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
@@ -85,7 +83,7 @@ impl Service {
             .session()?
             .reference()
             .map_err(|_| Error::Unauthorized)?;
-        sessions.recheck(&reference).await?;
+        let fresh = request.revalidate().await?;
         let mut tx = self.store.snapshot(employee.tenant_id()).await?;
         let endpoint = crate::delivery::resolve_on(&mut tx, device).await?;
         rss_mdm_registration_service::lifecycle::require_work_in(
@@ -95,11 +93,16 @@ impl Service {
             endpoint.device(),
         )
         .await?;
-        let before = super::directory::authorization_binding(&mut tx, employee).await?;
-        let revision = super::directory::revision(&mut tx, employee.tenant_id()).await?;
+        let before = rss_mdm_authorization_service::snapshot_on(
+            employee.authority_profile(),
+            &mut tx,
+            employee.tenant_id(),
+            employee.instance_id(),
+        )
+        .await?
+        .query_binding_revalidated(employee, fresh.as_ref().ok_or(Error::Unauthorized)?)?;
         let binding = rss_mdm_query::cursor::fingerprint(&(
             "device_access.discovery",
-            revision,
             &who,
             &reference,
             endpoint.device(),
@@ -162,7 +165,7 @@ impl Service {
             .transpose()
             .map_err(|_| Error::Malformed)?;
         tx.rollback().await.map_err(db)?;
-        sessions.recheck(&reference).await?;
+        let fresh = request.revalidate().await?;
         let mut current = self.store.begin(employee.tenant_id()).await?;
         let current_endpoint = crate::delivery::resolve_on(&mut current, device).await?;
         if current_endpoint.registration() != endpoint.registration()
@@ -177,16 +180,29 @@ impl Service {
             endpoint.device(),
         )
         .await?;
-        rss_mdm_authorization_service::lock_on(
+        rss_mdm_authorization_service::lock_shared_on(
             employee.authority_profile(),
             &mut current,
             employee.tenant_id(),
             employee.instance_id(),
         )
         .await?;
-        if revision != super::directory::revision(&mut current, employee.tenant_id()).await?
-            || before != super::directory::authorization_binding(&mut current, employee).await?
+        if before
+            != request.current_binding(
+                &rss_mdm_authorization_service::snapshot_on(
+                    employee.authority_profile(),
+                    &mut current,
+                    employee.tenant_id(),
+                    employee.instance_id(),
+                )
+                .await?,
+                fresh.as_ref(),
+            )?
         {
+            return Err(Error::ReadConflict);
+        }
+        let current_local = admission.local_session(&mut current, device).await?;
+        if current_local.account != local.account {
             return Err(Error::ReadConflict);
         }
         employee.check_live()?;

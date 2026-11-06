@@ -1,7 +1,7 @@
 //! Aggregate operation HTTP contract; App composes the final producer reads.
 use super::task_reads::Pending;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_authorization_service::context::AuthorizedPrincipal;
+use rss_mdm_authorization_service::context::RequestAuth;
 use rss_mdm_query::{
     cursor::CursorCodec,
     directory::{Field, Kind, Query, Schema},
@@ -177,7 +177,7 @@ pub enum Reauthorization {
 pub trait Reads: Send + Sync {
     fn declarations<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        proof: &'a RequestAuth,
         device: &'a str,
         query: &'a rss_mdm_query::window::Query,
         audit: &'a RequestAudit,
@@ -186,27 +186,27 @@ pub trait Reads: Send + Sync {
 
     fn directory<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        proof: &'a RequestAuth,
         q: &'a Query,
         codec: &'a CursorCodec,
         audit: &'a RequestAudit,
     ) -> Pending<'a, Page>;
     fn statistics<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        proof: &'a RequestAuth,
         q: &'a Query,
         audit: &'a RequestAudit,
     ) -> Pending<'a, rss_mdm_query::Statistics<Statistics>>;
     fn detail<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        proof: &'a RequestAuth,
         device: &'a str,
         id: Uuid,
         audit: &'a RequestAudit,
     ) -> Pending<'a, Detail>;
     fn change<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        proof: &'a RequestAuth,
         device: &'a str,
         id: Uuid,
         change: &'a rss_mdm_device_service::control::Change,

@@ -349,7 +349,7 @@ impl EnrollmentService {
     }
     pub async fn registrations(
         &self,
-        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &str,
         page: &rss_mdm_query::directory::Query,
         codec: &rss_mdm_query::cursor::CursorCodec,
@@ -357,7 +357,7 @@ impl EnrollmentService {
     {
         let profile = self.profile();
 
-        registrations::list(profile, &self.access, proof, device, page, codec).await
+        registrations::list(profile, &self.access, request, device, page, codec).await
     }
     pub async fn cancel(
         &self,

@@ -10,9 +10,6 @@ use rss_request_context::TenantId;
 use serde::Serialize;
 use std::{sync::Arc, time::Instant};
 
-/// One absolute host deadline, frozen before loading authorization.
-#[derive(Clone, Copy)]
-pub struct RequestDeadline(pub Instant);
 /// The host must recheck its exact tenant/instance binding before observing components.
 pub trait Source: Send + Sync {
     fn snapshot<'a>(
@@ -260,7 +257,6 @@ async fn read(
     State(source): State<Arc<dyn Source>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Extension(deadline): Extension<RequestDeadline>,
 ) -> Result<Json<Snapshot>, Error> {
     audit.set_action(
         "runtime_diagnostics_read",
@@ -271,7 +267,7 @@ async fn read(
         .manage(rss_mdm_authorization_service::Permission::RuntimeDiagnosticsRead)?;
     let tenant = TenantId::parse(auth.proof.tenant_id()).map_err(|_| Error::Unauthorized)?;
     source
-        .snapshot(tenant, auth.proof.instance_id(), deadline.0)
+        .snapshot(tenant, auth.proof.instance_id(), auth.deadline)
         .await
         .map(Json)
 }

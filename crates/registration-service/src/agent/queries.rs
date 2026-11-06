@@ -223,10 +223,11 @@ impl Service {
     }
     pub async fn request_directory(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &str,
         q: &Query,
     ) -> Result<Page<Projection<Request>>, Error> {
+        let p = request.proof.as_ref();
         let profile = self.profile();
 
         self.query_tenant(p)?;
@@ -263,14 +264,15 @@ impl Service {
             .page_typed(rows, &self.cursor, &binding)
             .map_err(query_error)?;
         tx.rollback().await.map_err(db)?;
-        self.store.confirm_query(p, &before).await?;
+        self.store.confirm_query(request, &before).await?;
         Ok(page)
     }
     pub async fn request_details(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         id: Uuid,
     ) -> Result<Request, Error> {
+        let p = request.proof.as_ref();
         let profile = self.profile();
 
         self.query_tenant(p)?;
@@ -298,16 +300,17 @@ impl Service {
             .map_err(db)?;
         let value = serde_json::from_value(row).map_err(|_| Error::Corrupt)?;
         tx.rollback().await.map_err(db)?;
-        self.store.confirm_query(p, &before).await?;
+        self.store.confirm_query(request, &before).await?;
         Ok(value)
     }
     pub async fn registration_recovery_operation(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         registration: Uuid,
         operation: Uuid,
         identity: &ReceiptIdentity,
     ) -> Result<Option<wire::GrantReceipt>, Error> {
+        let p = request.proof.as_ref();
         let profile = self.profile();
 
         self.query_tenant(p)?;
@@ -346,15 +349,16 @@ impl Service {
             None
         };
         tx.rollback().await.map_err(db)?;
-        self.store.confirm_query(p, &before).await?;
+        self.store.confirm_query(request, &before).await?;
         Ok(value)
     }
     pub async fn issuance_recovery_operations(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         id: Uuid,
         q: &Query,
     ) -> Result<Page<Projection<Operation>>, Error> {
+        let p = request.proof.as_ref();
         let profile = self.profile();
 
         self.query_tenant(p)?;
@@ -397,17 +401,18 @@ impl Service {
             .page_typed(rows, &self.cursor, &binding)
             .map_err(query_error)?;
         tx.rollback().await.map_err(db)?;
-        self.store.confirm_query(p, &before).await?;
+        self.store.confirm_query(request, &before).await?;
         Ok(page)
     }
     /// The selected submitter is a locator. Only the current caller's device permission grants access.
     pub async fn issuance_recovery_operation(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         id: Uuid,
         operation: Uuid,
         identity: &ReceiptIdentity,
     ) -> Result<Option<wire::Candidate>, Error> {
+        let p = request.proof.as_ref();
         let profile = self.profile();
 
         self.query_tenant(p)?;
@@ -471,7 +476,7 @@ impl Service {
             None
         };
         tx.rollback().await.map_err(db)?;
-        self.store.confirm_query(p, &before).await?;
+        self.store.confirm_query(request, &before).await?;
         Ok(value)
     }
 }

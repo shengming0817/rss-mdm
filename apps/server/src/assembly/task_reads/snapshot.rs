@@ -5,7 +5,7 @@ use sqlx::Acquire;
 impl Reads {
     pub(crate) async fn snapshot<C: Send, R: Send, F>(
         &self,
-        proof: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         context: C,
         operation: F,
     ) -> Result<R, Error>
@@ -19,14 +19,14 @@ impl Reads {
                 Box<dyn std::future::Future<Output = Result<R, Error>> + Send + 'c>,
             > + Send,
     {
-        self.snapshot_registered(proof, context, |ctx, c, grant, now, _| {
+        self.snapshot_registered(request, context, |ctx, c, grant, now, _| {
             operation(ctx, c, grant, now)
         })
         .await
     }
     pub(crate) async fn snapshot_registered<C: Send, R: Send, F>(
         &self,
-        proof: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         mut context: C,
         operation: F,
     ) -> Result<R, Error>
@@ -44,15 +44,16 @@ impl Reads {
                 Box<dyn std::future::Future<Output = Result<R, Error>> + Send + 'c>,
             > + Send,
     {
+        let proof = request.proof.as_ref();
         proof.check_live()?;
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let start = self.clock.now();
-        let remaining = || {
-            std::time::Duration::from_secs(6)
-                .saturating_sub(self.clock.now().saturating_duration_since(start))
-        };
+        let deadline_at = request
+            .deadline
+            .min(start + std::time::Duration::from_secs(6));
+        let remaining = || deadline_at.saturating_duration_since(self.clock.now());
         let deadline = || Error::Unavailable(Failure::RequestDeadline);
         let mut connection = tokio::time::timeout(remaining(), self.read_pool.acquire())
             .await
@@ -82,6 +83,9 @@ impl Reads {
             }
         };
         drop(connection);
+        let fresh = tokio::time::timeout(remaining(), request.revalidate())
+            .await
+            .map_err(|_| deadline())??;
         let mut connection = tokio::time::timeout(remaining(), self.read_pool.acquire())
             .await
             .map_err(|_| deadline())?
@@ -92,7 +96,7 @@ impl Reads {
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(remaining().as_millis().max(1).to_string()).execute(&mut *tx).await.map_err(sql)?;
             rss_mdm_authorization_service::lock_shared_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
             let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),proof.instance_id()).await?;
-            if grant.query_binding(proof)?!=binding {return Err(Error::QueryReadConflict);}
+            if request.current_binding(&grant, fresh.as_ref())?!=binding {return Err(Error::QueryReadConflict);}
             if let Some((device,expected))=&registration {
                 use rss_mdm_registration_service::device::endpoints;
                 endpoints::lock_in(rss_mdm_install_support::StorageProfile::Mdm, &mut tx,proof.tenant_id(),device,rss_mdm_inventory::Channel::Mdm).await?;

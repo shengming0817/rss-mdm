@@ -436,7 +436,10 @@ async fn authenticate_inner(
         .await
     {
         Ok((proof, credential)) => {
-            let proof = AuthorizedPrincipal::from_identity(app.access.profile(), proof);
+            let proof = match AuthorizedPrincipal::from_identity(&app.access, proof) {
+                Ok(proof) => proof,
+                Err(error) => return Error::from(error).into_response(),
+            };
             if let Some(audit) = parts.extensions.get::<RequestAudit>()
                 && let Err(error) = proof.bind_audit(audit)
             {
@@ -447,9 +450,6 @@ async fn authenticate_inner(
                 return Error::Unavailable(Failure::Runtime).into_response();
             };
             let deadline = clock.now() + Duration::from_secs(8);
-            parts
-                .extensions
-                .insert(crate::runtime_diagnostics::RequestDeadline(deadline));
             let content_owned = parts
                 .extensions
                 .get::<axum::extract::MatchedPath>()
@@ -481,7 +481,12 @@ async fn authenticate_inner(
                 .extensions
                 .insert(crate::http_operation::RequestContinuation::new(credential));
             parts.extensions.insert(RequestAuth {
+                sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                    app.identity.authority.clone(),
+                    app.identity.tenant,
+                ),
                 proof: Arc::new(proof),
+                deadline,
             });
             let request = Request::from_parts(parts, body);
             if content_owned {

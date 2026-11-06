@@ -1,7 +1,7 @@
 //! Application composition port for Policy task reads across concrete business owners.
 use crate::Error;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_authorization_service::context::AuthorizedPrincipal;
+use rss_mdm_authorization_service::context::RequestAuth;
 use rss_mdm_query::{cursor::CursorCodec, window::Query};
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
@@ -10,7 +10,7 @@ pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send +
 pub trait Reads: Send + Sync {
     fn preview<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        proof: &'a RequestAuth,
         audit: &'a RequestAudit,
         input: &'a rss_mdm_policy::pages::Preview,
         query: &'a Query,
@@ -18,7 +18,7 @@ pub trait Reads: Send + Sync {
     ) -> Pending<'a, Preview>;
     fn runs<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        proof: &'a RequestAuth,
         audit: &'a RequestAudit,
         policy: uuid::Uuid,
         page: &'a Query,
@@ -26,14 +26,14 @@ pub trait Reads: Send + Sync {
     ) -> Pending<'a, RunPage>;
     fn run<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        proof: &'a RequestAuth,
         audit: &'a RequestAudit,
         policy: uuid::Uuid,
         id: uuid::Uuid,
     ) -> Pending<'a, RunDetail>;
     fn assignments<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        proof: &'a RequestAuth,
         audit: &'a RequestAudit,
         policy: uuid::Uuid,
         page: &'a Query,

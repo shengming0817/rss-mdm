@@ -109,7 +109,15 @@ pub async fn resolve(binding: &Binding, sessions: &SessionAuthority) -> Result<C
     if let Some(reference) = &binding.reference {
         value.state = CurrentUserState::Invalidated;
         if binding.registration_valid {
-            match sessions.recheck(reference).await {
+            match sessions
+                .recheck(
+                    reference,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        std::time::Duration::from_secs(10),
+                    ),
+                )
+                .await
+            {
                 Ok(facts) => {
                     facts.check_live().map_err(|_| Error::Unauthorized)?;
                     value.state = CurrentUserState::Active;
@@ -269,7 +277,7 @@ impl Service {
                     }
                     write_stage(*request_id, "identity_session_recheck");
                     if let Some(reference) = reference {
-                        sessions.recheck(reference).await?;
+                        sessions.recheck(reference, rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(10))).await?;
                     }
                     if let Some(user) = user {
                         registration_user::initialize_on(profile, c, device.device(), user).await?;

@@ -83,10 +83,6 @@ pub fn units() -> Vec<Unit> {
             rss_mdm_recovery_credentials::task_relations_sql(DA),
         ),
         (
-            "directory-v1",
-            rss_mdm_device_access_postgres::DIRECTORY_SQL,
-        ),
-        (
             "identity-proof-v1",
             rss_mdm_device_access_postgres::PROOF_SQL,
         ),

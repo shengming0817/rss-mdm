@@ -191,7 +191,8 @@ MODULES = {
     'foundation.authorization': dict(
         prefix='foundation_t2::authorization::', profiles=('shared', 'transaction'),
         inputs=('crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
-                'apps/server/tests/foundation/authorization.rs')),
+                'crates/management-http/src/authorization/http.rs', 'crates/device-access-http/src/browser.rs',
+                'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs')),
     'foundation.audit': dict(
         prefix='foundation_t2::audit::', profiles=('audit',),
         inputs=('crates/management-http/src/boundary.rs', 'crates/audit-integration/src/*',

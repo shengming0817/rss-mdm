@@ -39,15 +39,17 @@ impl Store {
     /// Check current authorization only after the data snapshot has been released.
     pub async fn confirm_query(
         &self,
-        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         expected: &str,
     ) -> Result<(), Error> {
+        let proof = request.proof.as_ref();
+        let fresh = request.revalidate().await?;
         if proof.profile() != self.profile {
             return Err(Error::Forbidden);
         }
         proof.check_live()?;
         let mut tx = self.begin(proof.tenant_id()).await?;
-        rss_mdm_authorization_service::lock_on(
+        rss_mdm_authorization_service::lock_shared_on(
             proof.authority_profile(),
             &mut tx,
             proof.tenant_id(),
@@ -61,7 +63,7 @@ impl Store {
             proof.instance_id(),
         )
         .await?;
-        if current.query_binding(proof)? != expected {
+        if request.current_binding(&current, fresh.as_ref())? != expected {
             return Err(Error::ReadConflict);
         }
         if proof.profile() != self.profile {

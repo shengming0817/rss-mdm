@@ -171,10 +171,13 @@ pub(crate) async fn authenticate(
             _ => Error::Unauthorized,
         },
     )?;
-    AuthorizedPrincipal::new(rss_mdm_install_support::StorageProfile::Mdm, session)?
-        .load_authorization(&app.access.authorization)
-        .await
-        .map_err(Into::into)
+    AuthorizedPrincipal::from_identity(
+        &app.access.authorization,
+        rss_mdm_authorization_service::context::Principal::new(session)?,
+    )?
+    .load_authorization(&app.access.authorization)
+    .await
+    .map_err(Into::into)
 }
 fn domain(value: &str) -> Result<String, Error> {
     let value = value.to_ascii_lowercase();
@@ -454,7 +457,15 @@ pub async fn progress_in(
         .bind(&context.tenant).bind(context.enrollment).bind(context.authorization_version).fetch_one(c).await.map_err(crate::database::db)?;
     let reference =
         serde_json::from_value(reference).map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
-    let required = match sessions.recheck(&reference).await {
+    let required = match sessions
+        .recheck(
+            &reference,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                std::time::Duration::from_secs(10),
+            ),
+        )
+        .await
+    {
         Ok(_) => false,
         Err(rss_mdm_authorization_service::Error::Unauthorized) => true,
         Err(error) => return Err(error.into()),

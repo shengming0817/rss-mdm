@@ -148,10 +148,7 @@ fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
 }
 async fn list(
     State(s): State<Arc<Associations>>,
-    (Extension(identity), Extension(deadline)): (
-        Extension<rss_identity_postgres::Authority>,
-        Extension<crate::runtime_diagnostics::RequestDeadline>,
-    ),
+    Extension(identity): Extension<rss_identity_postgres::Authority>,
     Extension(platform): Extension<
         Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     >,
@@ -177,7 +174,7 @@ async fn list(
                 &query.parse().map_err(|_| Error::Malformed)?,
                 &rss_mdm_device_service::personnel::Reader::new(
                     &identity,
-                    deadline.0,
+                    a.deadline,
                     &rss_mdm_audit_integration::budget::RuntimeTimer,
                     platform.as_ref(),
                 ),
@@ -190,10 +187,7 @@ async fn list(
 }
 async fn statistics(
     State(s): State<Arc<Associations>>,
-    (Extension(identity), Extension(deadline)): (
-        Extension<rss_identity_postgres::Authority>,
-        Extension<crate::runtime_diagnostics::RequestDeadline>,
-    ),
+    Extension(identity): Extension<rss_identity_postgres::Authority>,
     Extension(platform): Extension<
         Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     >,
@@ -217,7 +211,7 @@ async fn statistics(
             &query,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                deadline.0,
+                a.deadline,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
                 platform.as_ref(),
             ),
@@ -227,10 +221,7 @@ async fn statistics(
 }
 async fn detail(
     State(s): State<Arc<Associations>>,
-    (Extension(identity), Extension(deadline)): (
-        Extension<rss_identity_postgres::Authority>,
-        Extension<crate::runtime_diagnostics::RequestDeadline>,
-    ),
+    Extension(identity): Extension<rss_identity_postgres::Authority>,
     Extension(platform): Extension<
         Option<rss_mdm_device_access::deployment::PlatformConfiguration>,
     >,
@@ -253,7 +244,7 @@ async fn detail(
             &reference,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                deadline.0,
+                a.deadline,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
                 platform.as_ref(),
             ),
@@ -263,10 +254,7 @@ async fn detail(
 }
 async fn items(
     State(s): State<Arc<Associations>>,
-    (Extension(identity), Extension(deadline)): (
-        Extension<rss_identity_postgres::Authority>,
-        Extension<crate::runtime_diagnostics::RequestDeadline>,
-    ),
+    Extension(identity): Extension<rss_identity_postgres::Authority>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id, field)): Path<(String, String, String)>,
@@ -294,7 +282,7 @@ async fn items(
                 q.limit(),
                 &rss_mdm_device_service::personnel::Reader::new(
                     &identity,
-                    deadline.0,
+                    a.deadline,
                     &rss_mdm_audit_integration::budget::RuntimeTimer,
                     None,
                 ),

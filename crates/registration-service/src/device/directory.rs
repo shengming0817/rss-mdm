@@ -153,7 +153,7 @@ impl DeviceService {
     /// Selection and the optional Inventory projection share one read-only snapshot.
     pub async fn directory<F>(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         q: &Query,
         codec: &CursorCodec,
         presence: F,
@@ -171,6 +171,7 @@ impl DeviceService {
                 >,
             > + Send,
     {
+        let p = request.proof.as_ref();
         let profile = self.profile();
 
         q.require_schema(&SCHEMA).map_err(error)?;
@@ -238,15 +239,16 @@ impl DeviceService {
             })
             .collect::<Result<Vec<_>, _>>()?;
         tx.rollback().await.map_err(db)?;
-        self.access.confirm_query(p, &grant).await?;
+        self.access.confirm_query(request, &grant).await?;
         Ok(rss_mdm_query::Page { items, next_cursor })
     }
 
     pub async fn directory_statistics(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         q: &Query,
     ) -> Result<rss_mdm_query::Statistics<DeviceStatistics>, Error> {
+        let p = request.proof.as_ref();
         let profile = self.profile();
 
         q.require_schema(&SCHEMA).map_err(error)?;
@@ -291,14 +293,15 @@ impl DeviceService {
         )?;
         let value = value.ok_or(Error::Corrupt)?;
         tx.rollback().await.map_err(db)?;
-        self.access.confirm_query(p, &grant).await?;
+        self.access.confirm_query(request, &grant).await?;
         serde_json::from_value(value).map_err(|_| Error::Corrupt)
     }
     pub async fn directory_device(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &str,
     ) -> Result<Item, Error> {
+        let p = request.proof.as_ref();
         let profile = self.profile();
 
         if p.tenant_id() != self.tenant {
@@ -312,7 +315,7 @@ impl DeviceService {
         let grant = current.query_binding(p)?;
         let item = self.directory_device_on(&mut tx, device).await?;
         tx.rollback().await.map_err(db)?;
-        self.access.confirm_query(p, &grant).await?;
+        self.access.confirm_query(request, &grant).await?;
         Ok(item)
     }
     /// Read one already-authorized identity on the caller's snapshot connection.

@@ -122,15 +122,25 @@ pub fn view(b: super::Binding) -> BindingView {
 impl Service {
     pub async fn device_access_binding(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &str,
         id: uuid::Uuid,
     ) -> Result<BindingView, Error> {
+        let p = request.proof.as_ref();
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.store.begin(p.tenant_id()).await?;
-        super::service::authorize(&mut tx, p, device, Permission::AccountWrite).await?;
+        let mut tx = self.store.snapshot(p.tenant_id()).await?;
+        rss_mdm_authorization_service::snapshot_on(
+            p.authority_profile(),
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?
+        .require(p, Permission::AccountWrite, Some(device))
+        .map_err(rss_mdm_authorization_service::Error::from)?;
+        let before = authorization_binding(&mut tx, p).await?;
         let b = super::storage::get_in(
             &mut tx,
             uuid::Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Corrupt)?,
@@ -142,15 +152,17 @@ impl Service {
         }
         p.check_live()?;
         tx.rollback().await.map_err(db)?;
+        self.store.confirm_query(request, &before).await?;
         Ok(view(b))
     }
     pub async fn device_access_bindings(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &str,
         q: &Query,
         codec: &CursorCodec,
     ) -> Result<Page<rss_mdm_query::directory::Projection<BindingView>>, Error> {
+        let p = request.proof.as_ref();
         q.require_schema(&SCHEMA).map_err(error)?;
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -166,7 +178,6 @@ impl Service {
         .require(p, Permission::AccountWrite, Some(device))
         .map_err(rss_mdm_authorization_service::Error::from)?;
         let before = authorization_binding(&mut tx, p).await?;
-        let generation = revision(&mut tx, p.tenant_id()).await?;
         let binding = q
             .binding(&(
                 p.tenant_id(),
@@ -174,7 +185,6 @@ impl Service {
                 p.principal_id(),
                 device,
                 &before,
-                generation,
             ))
             .map_err(error)?;
         let after = q.after(codec, &binding).map_err(error)?;
@@ -200,35 +210,7 @@ impl Service {
         p.check_live()?;
         let page = q.page_typed(rows, codec, &binding).map_err(error)?;
         tx.rollback().await.map_err(db)?;
-        confirm(self, p, &before, generation).await?;
+        self.store.confirm_query(request, &before).await?;
         Ok(page)
     }
-}
-
-pub(crate) async fn revision(c: &mut PgConnection, tenant: &str) -> Result<i64, Error> {
-    Ok(
-        sqlx::query_scalar(
-            "SELECT revision FROM rss_da.business_revision WHERE tenant_id=$1::uuid",
-        )
-        .bind(tenant)
-        .fetch_optional(c)
-        .await
-        .map_err(db)?
-        .unwrap_or(0),
-    )
-}
-pub(crate) async fn confirm(
-    service: &Service,
-    p: &AuthorizedPrincipal,
-    authorization: &str,
-    expected: i64,
-) -> Result<(), Error> {
-    service.store.confirm_query(p, authorization).await?;
-    let mut tx = service.store.snapshot(p.tenant_id()).await?;
-    let observed = revision(&mut tx, p.tenant_id()).await?;
-    tx.rollback().await.map_err(db)?;
-    if observed != expected {
-        return Err(Error::ReadConflict);
-    }
-    Ok(())
 }

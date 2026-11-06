@@ -37,4 +37,5 @@ GRANT SELECT ON mdm_assets.directory_fields TO mdm_access,mdm_identity_runtime;
 GRANT USAGE ON SCHEMA mdm_assets TO mdm_identity_runtime;
 -- The same-connection registration projection reads only manual-fact presence.
 GRANT SELECT(tenant_id,device) ON mdm.manual_assignments TO mdm_access,mdm_command_runtime;
+GRANT SELECT ON mdm.inventory_presence TO mdm_access,mdm_command_runtime;
 COMMIT;

@@ -53,7 +53,7 @@ async fn certificate_grants_survive_sql_projection_and_isolated_paging() -> Resu
         seed(&c, c.tenant, &other_device, 2).await?;
         seed(&c, other, &device, 2).await?;
         let account = c.account(&[Permission::Credentials]).await?;
-        let proof = c.authenticate(&account).await?;
+        let proof = c.read_auth(std::sync::Arc::new(c.authenticate(&account).await?));
         let store = c.database.registration();
         let codec = CursorCodec::new(&[8; 32])?;
         let document = crate::http_contract_document().map_err(|e| anyhow::anyhow!("{e:?}"))?;
@@ -110,6 +110,7 @@ async fn certificate_grants_survive_sql_projection_and_isolated_paging() -> Resu
             .append_pair("limit", "1")
             .append_pair("cursor", &cursor);
         let query = SCHEMA.parse(&parameters.finish())?;
+        seed(&c, c.tenant, &format!("unrelated-{}", Uuid::new_v4()), 2).await?;
         let second = list(StorageProfile::Mdm, &store, &proof, &device, &query, &codec).await?;
         assert_eq!(second.items.len(), 1);
         assert!(second.next_cursor.is_none());
@@ -156,7 +157,7 @@ async fn certificate_grants_survive_sql_projection_and_isolated_paging() -> Resu
             assert!(row.get("certificateGrantId").is_none());
         }
         let reader = c.account(&[Permission::OperationRead]).await?;
-        let denied = c.authenticate(&reader).await?;
+        let denied = c.read_auth(std::sync::Arc::new(c.authenticate(&reader).await?));
         assert!(matches!(
             list(
                 StorageProfile::Mdm,

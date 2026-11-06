@@ -307,7 +307,6 @@ pub(crate) fn from_state(
             device_reads: Arc::new(super::device_reads::Devices {
                 tasks: state.task_reads.clone(),
                 devices: state.devices.clone(),
-                assets: state.assets.clone(),
                 windows: state.windows.is_some(),
                 apple: state.apple.is_some(),
             }),

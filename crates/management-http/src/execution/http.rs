@@ -156,7 +156,7 @@ async fn directory(
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         let q = query.parse().map_err(|_| Error::Malformed)?;
-        let page = s.directory(&auth.proof, &q, &codec, &audit).await?;
+        let page = s.directory(&auth, &q, &codec, &audit).await?;
         let items = page
             .items
             .into_iter()
@@ -183,7 +183,7 @@ async fn statistics(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     let q = query.parse().map_err(|_| Error::Malformed)?;
-    Ok(Json(s.statistics(&auth.proof, &q, &audit).await?))
+    Ok(Json(s.statistics(&auth, &q, &audit).await?))
 }
 async fn create(
     State(app): State<Arc<HttpState>>,
@@ -223,7 +223,7 @@ async fn read(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     audit.target_device(&device);
-    app.detail(&auth.proof, &device, id, &audit).await.map(Json)
+    app.detail(&auth, &device, id, &audit).await.map(Json)
 }
 async fn cancel(
     State(app): State<Arc<HttpState>>,
@@ -240,7 +240,7 @@ async fn cancel(
     );
     audit.target_device(&device);
     app.operations
-        .change(&auth.proof, &device, id, &change, None, &audit)
+        .change(&auth, &device, id, &change, None, &audit)
         .await
         .map(Json)
 }
@@ -263,7 +263,7 @@ async fn reauthorize(
     );
     audit.target_device(&device);
     app.operations
-        .change(&auth.proof, &device, id, &revision, Some(&change), &audit)
+        .change(&auth, &device, id, &revision, Some(&change), &audit)
         .await
         .map(Json)
 }
@@ -298,7 +298,7 @@ async fn ddm(
     (async {
         let (query, _) = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(crate::execution::projection::ddm(
-            s.declarations(&auth.proof, &device, &query, &audit, &codec)
+            s.declarations(&auth, &device, &query, &audit, &codec)
                 .await?,
         )))
     })

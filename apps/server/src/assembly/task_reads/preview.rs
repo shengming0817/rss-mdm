@@ -6,45 +6,46 @@ use serde_json::json;
 impl Port for Reads {
     fn assignments<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         audit: &'a rss_mdm_audit_integration::RequestAudit,
         policy: uuid::Uuid,
         page: &'a rss_mdm_query::window::Query,
         codec: &'a rss_mdm_query::cursor::CursorCodec,
     ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::AssignmentPage> {
         Box::pin(super::assignments::assignments(
-            self, proof, audit, policy, page, codec,
+            self, request, audit, policy, page, codec,
         ))
     }
 
     fn runs<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         audit: &'a rss_mdm_audit_integration::RequestAudit,
         policy: uuid::Uuid,
         page: &'a rss_mdm_query::window::Query,
         codec: &'a rss_mdm_query::cursor::CursorCodec,
     ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::RunPage> {
-        Box::pin(Reads::runs(self, proof, audit, policy, page, codec))
+        Box::pin(Reads::runs(self, request, audit, policy, page, codec))
     }
     fn run<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         audit: &'a rss_mdm_audit_integration::RequestAudit,
         policy: uuid::Uuid,
         id: uuid::Uuid,
     ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::RunDetail> {
-        Box::pin(Reads::run(self, proof, audit, policy, id))
+        Box::pin(Reads::run(self, request, audit, policy, id))
     }
 
     fn preview<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         audit: &'a rss_mdm_audit_integration::RequestAudit,
         input: &'a rss_mdm_policy::pages::Preview,
         query: &'a rss_mdm_query::window::Query,
         codec: &'a rss_mdm_query::cursor::CursorCodec,
     ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::Preview> {
+        let proof = request.proof.as_ref();
         Box::pin(async move {
             if matches!(
                 input.definition.action,
@@ -66,13 +67,13 @@ impl Port for Reads {
                 input.definition.action,
                 Action::DeviceAccess { .. } | Action::Credential { .. }
             ) {
-                return access_credentials(self, proof, audit, input, query, codec).await;
+                return access_credentials(self, request, audit, input, query, codec).await;
             }
             if matches!(input.definition.action, Action::RequestMdmEnrollment { .. }) {
-                return enrollment(self, proof, audit, input, query, codec).await;
+                return enrollment(self, request, audit, input, query, codec).await;
             }
             if matches!(input.definition.action, Action::UnmanageDevice { .. }) {
-                return retirement(self, proof, audit, input, query, codec).await;
+                return retirement(self, request, audit, input, query, codec).await;
             }
             if matches!(input.definition.action, Action::Configuration { .. }) {
                 return Err(Error::Unsupported);
@@ -130,7 +131,7 @@ impl Port for Reads {
                 }
                 _ => unreachable!(),
             };
-            self.snapshot(proof,(proof,input,query,codec,&verified,self),|ctx,c,grant,_now|Box::pin(async move {
+            self.snapshot(request,(proof,input,query,codec,&verified,self),|ctx,c,grant,_now|Box::pin(async move {
                 let (proof,input,query,codec,verified,s)=*ctx;
                 grant.require(proof,Permission::PolicyRead,None)?;
                 grant.require(proof,Permission::ResourceRead,None)?;
@@ -175,12 +176,13 @@ impl Port for Reads {
 
 async fn enrollment(
     s: &Reads,
-    proof: &AuthorizedPrincipal,
+    request: &rss_mdm_authorization_service::context::RequestAuth,
     audit: &rss_mdm_audit_integration::RequestAudit,
     input: &rss_mdm_policy::pages::Preview,
     query: &rss_mdm_query::window::Query,
     codec: &rss_mdm_query::cursor::CursorCodec,
 ) -> Result<rss_mdm_management_http::execution::task_reads::Preview, Error> {
+    let proof = request.proof.as_ref();
     use rss_mdm_management_http::execution::task_reads::{Preview, PreviewTarget};
     input.definition.validate().map_err(|_| Error::Malformed)?;
     query
@@ -192,7 +194,7 @@ async fn enrollment(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     s.snapshot(
-        proof,
+        request,
         (s, proof, input, query, codec),
         |ctx, c, grant, now| {
             Box::pin(async move {
@@ -305,12 +307,13 @@ async fn enrollment(
 
 async fn access_credentials(
     s: &Reads,
-    proof: &AuthorizedPrincipal,
+    request: &rss_mdm_authorization_service::context::RequestAuth,
     audit: &rss_mdm_audit_integration::RequestAudit,
     input: &rss_mdm_policy::pages::Preview,
     query: &rss_mdm_query::window::Query,
     codec: &rss_mdm_query::cursor::CursorCodec,
 ) -> Result<rss_mdm_management_http::execution::task_reads::Preview, Error> {
+    let proof = request.proof.as_ref();
     use rss_mdm_management_http::execution::task_reads::{Preview, PreviewTarget};
     input.definition.validate().map_err(|_| Error::Malformed)?;
     query
@@ -322,7 +325,7 @@ async fn access_credentials(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     s.snapshot(
-        proof,
+        request,
         (s, proof, input, query, codec),
         |ctx, c, grant, _now| {
             Box::pin(async move {
@@ -416,12 +419,13 @@ async fn access_credentials(
 
 async fn retirement(
     s: &Reads,
-    proof: &AuthorizedPrincipal,
+    request: &rss_mdm_authorization_service::context::RequestAuth,
     audit: &rss_mdm_audit_integration::RequestAudit,
     input: &rss_mdm_policy::pages::Preview,
     query: &rss_mdm_query::window::Query,
     codec: &rss_mdm_query::cursor::CursorCodec,
 ) -> Result<rss_mdm_management_http::execution::task_reads::Preview, Error> {
+    let proof = request.proof.as_ref();
     query
         .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
         .map_err(|_| Error::Malformed)?;
@@ -431,7 +435,7 @@ async fn retirement(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     s.snapshot(
-        proof,
+        request,
         (s, proof, input, query, codec),
         |ctx, c, grant, _| {
             Box::pin(async move {

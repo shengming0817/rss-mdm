@@ -164,3 +164,161 @@ async fn authorization_receipt_and_final_fact_share_commit_and_rollback() -> Res
     context.close().await;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "T2: product/source binding precedes purpose checks and current Identity facts fence reads"]
+async fn embedded_source_is_bound_before_purpose_and_revocation_blocks_reads() -> Result<()> {
+    use access::context::{AuthorizedPrincipal, Principal};
+    use rss_mdm_install_support::StorageProfile;
+    let c = Context::open("shared", &[]).await?;
+    let result = async {
+        let account = c.account(&[Permission::InventoryRead]).await?;
+        let da = c.access().for_product(StorageProfile::Da);
+        let access::credential::RequestCredential::Cookie(secret) = account.credential()? else {
+            unreachable!()
+        };
+        let authenticated = c
+            .authority
+            .inspect_session(
+                c.tenant,
+                secret,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    std::time::Duration::from_secs(3),
+                ),
+            )
+            .await?;
+        let bound = AuthorizedPrincipal::from_identity(&da, Principal::new(authenticated)?)?;
+        assert_eq!(bound.profile(), StorageProfile::Da);
+        assert_eq!(bound.authority_profile(), StorageProfile::Mdm);
+        da.require_tenant_purpose(&bound, false).await?;
+        assert!(
+            bound.authorization().is_err(),
+            "identity-only binding must not load grants"
+        );
+        let bound = bound.load_authorization(&da).await?;
+        let request = c.read_auth(std::sync::Arc::new(bound));
+        let fresh = request.revalidate().await?;
+        request.current_binding(request.proof.authorization()?, fresh.as_ref())?;
+        assert!(
+            request
+                .current_binding(request.proof.authorization()?, None)
+                .is_err()
+        );
+        let access::credential::RequestCredential::Cookie(secret) = account.credential()? else {
+            unreachable!()
+        };
+        let revoked = c
+            .authority
+            .inspect_session(c.tenant, secret, request.remaining()?)
+            .await?;
+        c.authority
+            .revoke_current_session(
+                revoked,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    std::time::Duration::from_secs(3),
+                ),
+            )
+            .await?;
+        assert!(matches!(
+            request.revalidate().await,
+            Err(access::Error::Unauthorized)
+        ));
+        Ok(())
+    }
+    .await;
+    c.close().await;
+    result
+}
+
+#[tokio::test]
+#[ignore = "T2: actual cookie authentication binds embedded DA authority before tenant purpose and optional grants"]
+async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
+    use access::context::RequestAuth;
+    use axum::{Extension, Router, routing::get};
+    use rss_mdm_install_support::StorageProfile;
+    use rss_mdm_management_http::authorization::http::{
+        AuthenticationState, identity_only, protect,
+    };
+    use std::{sync::Arc, time::Duration};
+    use tower::ServiceExt;
+    let c = Context::open("shared", &[]).await?;
+    let result = async {
+        let origin = "https://query-test.invalid";
+        let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
+            c.authority.clone(),
+            "query-test.invalid".into(),
+            origin.parse()?,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                Duration::from_secs(6),
+            ),
+        )
+        .await?;
+        let state = Arc::new(AuthenticationState {
+            identity: Arc::new(rss_mdm_management_http::identity::Identity {
+                authority: c.authority.clone(),
+                webauthn,
+                http: rss_identity_http_axum::HttpConfig::new(origin, Duration::from_secs(8))?,
+                tenant: c.tenant,
+            }),
+            access: Arc::new(c.access().for_product(StorageProfile::Da)),
+            requests: Arc::new(tokio::sync::Semaphore::new(4)),
+        });
+        let protected = Router::new()
+            .route(
+                "/protected",
+                get(|Extension(auth): Extension<RequestAuth>| async move {
+                    assert_eq!(auth.proof.profile(), StorageProfile::Da);
+                    assert_eq!(auth.proof.authority_profile(), StorageProfile::Mdm);
+                    auth.proof
+                        .require(Permission::InventoryRead, Some("device"))
+                        .map_err(rss_mdm_management_http::Error::from)?;
+                    Ok::<_, rss_mdm_management_http::Error>(axum::http::StatusCode::OK)
+                }),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(state.clone(), protect));
+        let identity = Router::new()
+            .route(
+                "/identity",
+                get(|Extension(auth): Extension<RequestAuth>| async move {
+                    assert!(auth.proof.authorization().is_err());
+                    assert_eq!(auth.proof.authority_profile(), StorageProfile::Mdm);
+                    axum::http::StatusCode::OK
+                }),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(state, identity_only));
+        let app = protected
+            .merge(identity)
+            .layer(Extension(crate::clock::monotonic()));
+        let allowed = c.account(&[Permission::InventoryRead]).await?;
+        let denied = c.account(&[Permission::ResourceRead]).await?;
+        for (account, path, expected) in [
+            (&allowed, "/protected", 200),
+            (&denied, "/protected", 403),
+            (&denied, "/identity", 200),
+        ] {
+            let access::credential::RequestCredential::Cookie(secret) = account.credential()?
+            else {
+                unreachable!()
+            };
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .header("host", "query-test.invalid")
+                        .header("origin", origin)
+                        .header(
+                            "cookie",
+                            format!("__Host-identity-session={}", secret.expose()),
+                        )
+                        .body(axum::body::Body::empty())?,
+                )
+                .await?;
+            assert_eq!(response.status().as_u16(), expected, "{path}");
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    c.close().await;
+    result
+}

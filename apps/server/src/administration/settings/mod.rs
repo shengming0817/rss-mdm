@@ -2,7 +2,7 @@
 use crate::Error;
 use model::*;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_authorization_service::context::{AuthorizedPrincipal, RequestAuth};
+use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 pub(crate) mod http;
 pub(crate) mod model;
 use std::{collections::BTreeMap, sync::Arc};
@@ -561,9 +561,7 @@ impl Directory {
         match directory(
             &self.apple_store,
             self.tenant,
-            &RequestAuth {
-                proof: proof.clone(),
-            },
+            proof,
             purpose,
             &loaded_versions,
         )

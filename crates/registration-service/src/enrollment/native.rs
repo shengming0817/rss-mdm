@@ -333,7 +333,14 @@ pub async fn account(
         source: ReportSource::MdmApple,
     };
     tx.rollback().await.map_err(db)?;
-    let proof = sessions.recheck(&reference).await?;
+    let proof = sessions
+        .recheck(
+            &reference,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                std::time::Duration::from_secs(10),
+            ),
+        )
+        .await?;
     if proof.account().tenant.to_string() != data.tenant
         || proof.account().principal.as_uuid().to_string() != data.actor
         || proof.instance().to_string() != data.instance
