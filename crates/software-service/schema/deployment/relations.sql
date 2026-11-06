@@ -81,6 +81,8 @@ GRANT EXECUTE ON FUNCTION mdm_software_deployment.save_retired_action(uuid,uuid,
 
 GRANT UPDATE(software_effect) ON mdm_software_deployment.action_runs TO mdm_command_runtime;
 
+-- Immutable request coordinates used by the tenant-scoped activity projection.
+GRANT SELECT(tenant_id,actor,id,operation) ON mdm_software_deployment.requests TO mdm_access;
 COMMIT;
 
 ALTER TABLE mdm_software_deployment.software_stage_stats ADD FOREIGN KEY(tenant_id,version) REFERENCES mdm_policy.versions(tenant_id,id);

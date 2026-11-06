@@ -364,6 +364,7 @@ fn authentication_transport(
         .collect();
     Description {
         owner: "management-http::authorization::http::authenticate_and_run",
+        rejections: crate::identity_contract::authentication_rejections(),
         alternatives,
         conditional_response_headers,
     }

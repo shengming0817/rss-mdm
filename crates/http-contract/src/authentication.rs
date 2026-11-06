@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Serialize)]
 pub struct Description {
     pub owner: &'static str,
+    /// Responses emitted before the declared handler is entered.
+    pub rejections: Vec<crate::signature::Response>,
     /// Exactly one credential presentation is accepted; mixing presentations is rejected.
     pub alternatives: Vec<Credential>,
     pub conditional_response_headers: Vec<ConditionalHeader>,

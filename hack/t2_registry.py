@@ -8,6 +8,10 @@ PACKAGE = 'rss-mdm-app'
 MODULES = {
     'execution.directory': dict(prefix='assembly::execution_owners_t2::directory::', profiles=('shared',),
         inputs=('crates/management-http/src/execution/operations.rs', 'crates/management-http/src/execution/http.rs',
+                'crates/timeline-service/*', 'apps/server/src/assembly/timeline_associations.rs',
+                'apps/server/src/assembly/native_ownership.rs', 'apps/server/src/assembly/task_ownership.rs',
+                'crates/registration-service/schema/tasks/relations.sql', 'crates/recovery-credentials/schema/task-relations.sql',
+                'crates/software-service/schema/deployment/relations.sql', 'apps/server/schema/da-host-grants.sql',
                 'apps/server/src/assembly/operation_reads/*', 'apps/server/tests/execution_owners/directory.rs',
                 'apps/server/tests/execution_owners/fixture.rs', 'apps/server/tests/execution_owners/retirement.rs',
                 'crates/script-service/src/queries.rs', 'crates/inventory-service/src/collection/execution/queries.rs',
@@ -144,7 +148,7 @@ MODULES = {
                 'apps/server/src/assembly/configuration_*', 'apps/server/src/assembly/native_ownership.rs',
                 'apps/server/src/assembly/policy*', 'crates/device-service/src/control/recovery.rs',
                 'crates/device-service/schema/control-*', 'apps/server/src/assembly/command-admission.sql',
-                'apps/server/tests/policy/*', 'apps/server/tests/support/planning.rs')),
+                'apps/server/schema/messaging-runtime.sql', 'apps/server/src/owner_storage.rs', 'apps/server/src/lifecycle.rs', 'apps/server/tests/policy/*', 'apps/server/tests/support/planning.rs')),
     'agent.delivery': dict(prefix='agent_t2::', profiles=('shared',),
         inputs=('crates/agent-channel/*', 'crates/device-service/schema/control-*', 'crates/device-service/src/control/actions/agent.rs',
                 'crates/device-service/src/control/actions/poll.rs', 'crates/device-service/src/control/agent_facts.rs',
@@ -192,6 +196,7 @@ MODULES = {
         prefix='foundation_t2::authorization::', profiles=('shared', 'transaction'),
         inputs=('crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
                 'crates/management-http/src/authorization/http.rs', 'crates/device-access-http/src/browser.rs',
+                'crates/http-contract/*', 'crates/management-http/src/identity_contract.rs',
                 'apps/server/src/assembly/device_access/*', 'apps/server/tests/foundation/authorization.rs')),
     'foundation.audit': dict(
         prefix='foundation_t2::audit::', profiles=('audit',),

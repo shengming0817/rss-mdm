@@ -385,3 +385,58 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
     h.close().await?;
     result
 }
+
+#[tokio::test]
+#[ignore = "T2: current activity projection reads native change coordinates under the admitted access role"]
+async fn activity_read_correlates_native_cancellation_with_only_coordinate_privileges() -> Result<()>
+{
+    use rss_mdm_timeline_service::activities::{Query, Reader};
+    let mut h = Harness::open().await?;
+    let result = async {
+        let native = super::retirement::native_controls(&mut h, 1).await?;
+        let account = h.c.account(&[Permission::OperationRead, Permission::OperationCancel]).await?;
+        let proof = h.c.authenticate(&account).await?;
+        let operation = Uuid::from_u128(1);
+        let change = Uuid::new_v4();
+        let revision: i64 = sqlx::query_scalar("SELECT revision FROM mdm_devices.control_operations WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(h.c.tenant.to_string()).bind(operation).fetch_one(&h.c.operator).await?;
+        let audit = RequestAudit::new(rss_mdm_install_support::StorageProfile::Mdm, h.c.tenant.to_string(), "command_cancel", AuditIntent::Management);
+        proof.bind_audit(&audit)?;
+        audit.operation(change, "command_cancel", AuditIntent::Management);
+        h.a.service.change(&proof, &native.device, operation, &rss_mdm_device_service::control::Change { request_id: change, expected_revision: revision }, None, &audit).await?;
+        let timeline = h.c.database.timeline(h.c.audit.clone(), h.c.tenant, &[7;32])?;
+        let reader = Reader::Management { proof: &proof, device: &native.device };
+        let query = Query { operation: Some(operation), ..Default::default() };
+        let mut found = None;
+        for _ in 0..4 {
+            let page = timeline.activities(&reader, &query, false).await?;
+            if let Some(item) = page.items.into_iter().find(|item| item.links.request == Some(change)) {
+                found = Some(item);
+                break;
+            }
+        }
+        let item = found.expect("the actual cancellation fact was projected");
+        assert_eq!(item.links.operation, Some(operation));
+        let detail = timeline.activity_detail(&reader, &item.id, false).await?;
+        assert_eq!(detail.activity.id, item.id);
+        let pool = h.c.inputs.pool("shared", "mdm_access").await?;
+        let mut c = pool.acquire().await?;
+        assert!(sqlx::query_scalar::<_,bool>(rss_mdm_timeline_service::ACCESS_ADMISSION_SQL).fetch_one(&mut *c).await?);
+        for relation in ["mdm_software_deployment.requests", "mdm_registration_tasks.requests", "mdm_recovery_tasks.requests"] {
+            assert!(!sqlx::query_scalar::<_,bool>("SELECT has_column_privilege(current_user,to_regclass($1),'response','SELECT')")
+                .bind(relation).fetch_one(&mut *c).await?);
+        }
+        drop(c);
+        pool.close().await;
+        // Admission rejects an accidental grant of request payload, without publishing it
+        // to another connection or changing other tests' capabilities.
+        let mut probe = h.c.operator.begin().await?;
+        sqlx::query("GRANT SELECT(response) ON mdm_recovery_tasks.requests TO mdm_access").execute(&mut *probe).await?;
+        sqlx::query("SET LOCAL ROLE mdm_access").execute(&mut *probe).await?;
+        assert!(!sqlx::query_scalar::<_,bool>(rss_mdm_timeline_service::ACCESS_ADMISSION_SQL).fetch_one(&mut *probe).await?);
+        probe.rollback().await?;
+        Ok(())
+    }.await;
+    h.close().await?;
+    result
+}

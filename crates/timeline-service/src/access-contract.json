@@ -33,7 +33,18 @@
     "mdm_policy.versions",
     "mdm_planning.configuration_operations",
     "mdm_script.runs",
-    "mdm_inventory.collection_tasks"
+    "mdm_inventory.collection_tasks",
+    "mdm_software_deployment.operations",
+    "mdm_software_deployment.action_runs",
+    "mdm_registration_tasks.operations",
+    "mdm_registration_tasks.runs",
+    "mdm_recovery_tasks.operations",
+    "mdm_recovery_tasks.runs",
+    "mdm_software_deployment.requests",
+    "mdm_registration_tasks.requests",
+    "mdm_recovery_tasks.requests",
+    "rss_da.access_runs",
+    "rss_da.credential_runs"
   ],
   "verified_schemas": []
 }

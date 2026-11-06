@@ -316,6 +316,50 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
                 .await?;
             assert_eq!(response.status().as_u16(), expected, "{path}");
         }
+        // The real authentication owner can reject before the handler. Its response must
+        // survive the same generated endpoint contract consumed by browsers.
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/protected")
+                    .header("host", "query-test.invalid")
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4096).await?)?;
+        assert_eq!(body, serde_json::json!({"code":"invalid_credential"}));
+        let contract = crate::http_contract_document().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let endpoint = contract["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["method"] == "GET" && e["path"] == "/api/v1/device-views/{kind}/{id}")
+            .unwrap();
+        let responses = endpoint["responses"].as_array().unwrap();
+        assert!(
+            responses
+                .iter()
+                .filter(|r| r["status"] == 401)
+                .any(|response| {
+                    let id = response["body"]["schema"]["schemaId"].as_str().unwrap();
+                    jsonschema::validator_for(&contract["schemas"][id])
+                        .unwrap()
+                        .is_valid(&body)
+                })
+        );
+        assert!(
+            !responses
+                .iter()
+                .filter(|r| r["status"] == 403)
+                .any(|response| {
+                    let id = response["body"]["schema"]["schemaId"].as_str().unwrap();
+                    jsonschema::validator_for(&contract["schemas"][id])
+                        .unwrap()
+                        .is_valid(&body)
+                })
+        );
         Ok::<_, anyhow::Error>(())
     }
     .await;

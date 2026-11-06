@@ -118,8 +118,12 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     let key = crate::device_material_support::protection(&c)?;
     let policy = seed(&c, published.scope, &object, &key).await?;
     let device = &object.members[0].device;
-    let command = Fixture::open(&c, false).await?;
-    let owner = planning::owner(&c, "mdm_policy_runtime").await?;
+    let command = Fixture::open(&c, false)
+        .await
+        .map_err(|error| anyhow::anyhow!("configuration command fixture: {error:?}"))?;
+    let owner = planning::owner(&c, "mdm_policy_runtime")
+        .await
+        .map_err(|error| anyhow::anyhow!("configuration policy runtime: {error:?}"))?;
     let app = crate::assembly::policy::application(
         &owner,
         c.tenant,
@@ -128,7 +132,8 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         key.clone(),
         None,
     )
-    .await?;
+    .await
+    .map_err(|error| anyhow::anyhow!("configuration application: {error:?}"))?;
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::StorageProfile::Mdm,
         c.tenant.to_string(),
@@ -195,6 +200,13 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     );
     wake(&app, device).await?;
     step(&worker, c.tenant, device).await?;
+    // The production Policy role owns this outbox relay, including claim and settlement.
+    let timer = rss_mdm_policy_service::clock::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
+    let configuration = app.configuration.as_ref().expect("MDM configuration");
+    assert_eq!(configuration.relay_once(&control).await?, 1);
+    assert_eq!(configuration.relay_once(&control).await?, 0);
     let committed = counts(&c, device).await?;
     assert_eq!(committed, (2, 2, 1, 1, 1, 1, 1, 1));
     let identity:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id,o.authority,r.actor FROM mdm_planning.configuration_operations o JOIN mdm_planning.configuration_receipts r USING(tenant_id,id) WHERE o.tenant_id=$1::uuid AND o.device=$2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?;
