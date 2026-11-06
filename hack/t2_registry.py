@@ -135,7 +135,7 @@ MODULES = {
                 'apps/server/tests/execution_owners/*', 'apps/server/tests/support/planning.rs',
                 'apps/server/tests/support/command_runtime.rs', 'apps/server/tests/task_trust/support.rs',
                 'hack/task_trust_materials.py')),
-    'device.control': dict(prefix='assembly::device_t2::', profiles=('shared',), inputs=('crates/device-service/*','apps/server/tests/device/*','apps/server/src/assembly/*','apps/server/tests/support/command_runtime.rs','apps/server/tests/support/native_identity.rs','hack/native_protocol_materials.py')),
+    'device.control': dict(prefix='assembly::device_t2::', profiles=('shared',), inputs=('crates/device-service/*','crates/management-http/src/enrollment/directory.rs','crates/apple-channel/src/native.rs','crates/apple-channel/src/protocol_types.rs','crates/apple-channel/src/flow_store.rs','crates/apple-mdm/src/applicability.rs','crates/windows-channel/src/results.rs','apps/server/tests/device/*','apps/server/src/assembly/*','apps/server/tests/support/command_runtime.rs','apps/server/tests/support/native_identity.rs','hack/native_protocol_materials.py')),
     'scope.publication': dict(prefix='scope_t2::', profiles=('shared',),
         inputs=('crates/scope-service/*', 'crates/scope-postgres/*', 'crates/device-service/src/planning*',
                 'apps/server/src/scopes.rs', 'apps/server/tests/scope/*', 'apps/server/tests/support/planning.rs')),

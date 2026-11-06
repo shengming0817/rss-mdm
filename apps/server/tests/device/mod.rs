@@ -1,3 +1,4 @@
+mod applicability;
 mod fixture;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
