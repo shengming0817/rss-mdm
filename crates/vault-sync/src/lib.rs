@@ -230,6 +230,10 @@ pub async fn restore_incarnation(
         .bind(incarnation)
         .execute(&mut *c)
         .await?;
+    sqlx::query("UPDATE rss_da.vaults SET incarnation=$1")
+        .bind(incarnation)
+        .execute(&mut *c)
+        .await?;
     sqlx::query("UPDATE rss_da.vault_devices SET active=false")
         .execute(c)
         .await?;
@@ -266,7 +270,7 @@ pub async fn verify_catalog(c: &mut PgConnection) -> Result<(), sqlx::Error> {
         {
             return Err(sqlx::Error::Protocol("vault RLS drift".into()));
         }
-        let valid:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE n.nspname='rss_da' AND c.relname=$1 AND a.grantee<>c.relowner AND (a.grantee<>to_regrole('da_identity_runtime')::oid OR a.is_grantable OR a.privilege_type NOT IN('SELECT','INSERT','UPDATE','DELETE'))) AND has_table_privilege('da_identity_runtime','rss_da.'||$1,'SELECT,INSERT') AND NOT has_table_privilege('da_identity_runtime','rss_da.'||$1,'TRUNCATE,REFERENCES,TRIGGER')").bind(table).fetch_one(&mut *c).await?;
+        let valid:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE n.nspname='rss_da' AND c.relname=$1 AND a.grantee<>c.relowner AND (a.grantee<>to_regrole('da_identity_runtime')::oid OR a.is_grantable OR a.privilege_type NOT IN('SELECT','INSERT','UPDATE','DELETE'))) AND has_table_privilege('da_identity_runtime','rss_da.'||$1,'SELECT') AND has_table_privilege('da_identity_runtime','rss_da.'||$1,'INSERT') AND CASE WHEN $1='vault_epochs' THEN NOT has_table_privilege('da_identity_runtime','rss_da.'||$1,'UPDATE,DELETE') ELSE has_table_privilege('da_identity_runtime','rss_da.'||$1,'UPDATE') AND has_table_privilege('da_identity_runtime','rss_da.'||$1,'DELETE') END AND NOT has_table_privilege('da_identity_runtime','rss_da.'||$1,'TRUNCATE,REFERENCES,TRIGGER')").bind(table).fetch_one(&mut *c).await?;
         if !valid {
             return Err(sqlx::Error::Protocol("vault privilege drift".into()));
         }

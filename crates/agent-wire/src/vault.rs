@@ -1,7 +1,12 @@
 //! User-owned Vault synchronization, current V1. No enterprise recovery authority.
 //! Recovery material is 32 random client bytes; HKDF-SHA256 with independent
 //! `rss-vault-v1/recovery-signing` and `rss-vault-v1/root-wrapping` info domains
-//! derives an Ed25519 seed and AES-256-GCM wrapping key. Neither reaches the server.
+//! derives an Ed25519 seed and AES-256-GCM wrapping key (32-byte outputs).
+//! HKDF uses an empty salt; the IKM is the decoded 32-byte recovery material,
+//! never its display text. A Vault root is 32 random bytes. The encoded root
+//! envelope is nonce[12] || AES-256-GCM ciphertext[32] || tag[16], using a fresh
+//! random nonce and `root_aad` below. Only the derived Ed25519 PUBLIC key is sent.
+//! Neither secret derived key reaches the server.
 //! Clients retain only the unwrapped Vault root and their independent device key.
 use crate::runtime::WireError;
 use schemars::JsonSchema;
@@ -54,17 +59,19 @@ pub enum Action {
     Initialize {
         /// Vault.
         vault: Uuid,
-        /// Recovery key.
+        /// Derived recovery Ed25519 PUBLIC key (32 bytes, unpadded base64url).
         recovery_key: String,
-        /// Root envelope.
+        /// Root nonce[12] || ciphertext[32] || tag[16], unpadded base64url.
         root_envelope: String,
         /// Device.
         device: Device,
     },
     /// Join operation or result.
     Join {
-        /// Device.
+        /// New independently generated sync device.
         device: Device,
+        /// Explicit recovery: invalidate all previous endpoint grants and requests.
+        reset_devices: bool,
     },
     /// Remove operation or result.
     Remove {
@@ -175,7 +182,7 @@ pub enum Response {
         entries: Vec<Entry>,
         /// Next cursor.
         next_cursor: Option<String>,
-        /// Root envelope.
+        /// Root nonce[12] || ciphertext[32] || tag[16], unpadded base64url.
         root_envelope: String,
     },
     /// Devices operation or result.
@@ -202,13 +209,13 @@ impl Prepare {
                     return Err(bad());
                 }
                 bytes(recovery_key, 32, 32)?;
-                bytes(root_envelope, 28, 4096)?;
+                bytes(root_envelope, 60, 60)?;
                 if device.id != self.device {
                     return Err(bad());
                 }
                 bytes(&device.public_key, 32, 32)?;
             }
-            Action::Join { device } => {
+            Action::Join { device, .. } => {
                 if device.id != self.device {
                     return Err(bad());
                 }
@@ -270,7 +277,7 @@ impl Challenge {
 
 /// Derived schema fingerprint.
 pub const SCHEMA_FINGERPRINT: &str =
-    "10129b30433a43d46807fb4117f9e7c21011a1fa272e014821c8b117a6280be4";
+    "f3613eb9ad09a99fffa6d3dc5e84895f34ce7d82486972081315448c6187dfbc";
 
 #[cfg(test)]
 mod tests {
@@ -304,5 +311,113 @@ mod tests {
         let mut json = serde_json::to_value(h).unwrap();
         json["unknown"] = true.into();
         assert!(serde_json::from_value::<Challenge>(json).is_err());
+    }
+}
+
+/// Stable root-envelope AAD. A restore incarnation is intentionally excluded.
+/// JSON is encoded only by this shared typed function, never by a caller map.
+pub fn root_aad(
+    installation: Uuid,
+    tenant: Uuid,
+    instance: Uuid,
+    principal: Uuid,
+    vault: Uuid,
+) -> Result<Vec<u8>, WireError> {
+    if [installation, tenant, instance, principal, vault]
+        .iter()
+        .any(Uuid::is_nil)
+    {
+        return Err(WireError::InvalidValue);
+    }
+    serde_json::to_vec(&(
+        "rss-vault-root.v1",
+        installation,
+        tenant,
+        instance,
+        principal,
+        vault,
+    ))
+    .map_err(|_| WireError::InvalidValue)
+}
+/// Entry AEAD AAD binds its opaque ID to the stable Vault owner. Ciphertext uses
+/// nonce[12] || AES-256-GCM encrypted credential JSON || tag[16], with a fresh nonce.
+/// The encrypted content schema belongs to the Agent; servers never inspect it.
+pub fn entry_aad(
+    installation: Uuid,
+    tenant: Uuid,
+    instance: Uuid,
+    principal: Uuid,
+    vault: Uuid,
+    entry: Uuid,
+) -> Result<Vec<u8>, WireError> {
+    if entry.is_nil() {
+        return Err(WireError::InvalidValue);
+    }
+    let root = root_aad(installation, tenant, instance, principal, vault)?;
+    serde_json::to_vec(&("rss-vault-entry.v1", root, entry)).map_err(|_| WireError::InvalidValue)
+}
+
+#[cfg(test)]
+mod vectors {
+    use super::*;
+    use ring::{
+        aead, hkdf,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|v| format!("{v:02x}")).collect()
+    }
+    #[test]
+    fn independent_recovery_and_root_envelope_vector() {
+        // Fixed vector independently generated with Node crypto; not production key material.
+        let material: Vec<u8> = (0..32).collect();
+        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&material);
+        let mut signing = [0; 32];
+        let mut wrapping = [0; 32];
+        prk.expand(&[b"rss-vault-v1/recovery-signing"], hkdf::HKDF_SHA256)
+            .unwrap()
+            .fill(&mut signing)
+            .unwrap();
+        prk.expand(&[b"rss-vault-v1/root-wrapping"], hkdf::HKDF_SHA256)
+            .unwrap()
+            .fill(&mut wrapping)
+            .unwrap();
+        assert_eq!(
+            hex(&signing),
+            "aba90a15f23e176c3c14c1a0e25bf4c992d69dc9cb866df17096ef5a045a1736"
+        );
+        assert_eq!(
+            hex(&wrapping),
+            "591bd1454c4c75a457a3ca5fbd3a0000f2dea36e07223232190709c236f4962d"
+        );
+        let key = Ed25519KeyPair::from_seed_unchecked(&signing).unwrap();
+        assert_eq!(
+            hex(key.public_key().as_ref()),
+            "da8f67c66be9330e5df77551be94f5f4278c0f23617518435047bda595d8addd"
+        );
+        let aad = root_aad(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            Uuid::from_u128(3),
+            Uuid::from_u128(4),
+            Uuid::from_u128(5),
+        )
+        .unwrap();
+        let nonce: [u8; 12] = std::array::from_fn(|i| i as u8);
+        let key =
+            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &wrapping).unwrap());
+        let mut body: Vec<u8> = (32..64).collect();
+        key.seal_in_place_append_tag(
+            aead::Nonce::assume_unique_for_key(nonce),
+            aead::Aad::from(&aad),
+            &mut body,
+        )
+        .unwrap();
+        let mut envelope = nonce.to_vec();
+        envelope.extend(body);
+        assert_eq!(
+            hex(&envelope),
+            "000102030405060708090a0bcbea132788988039719305cc7c7433e9aef75fafa3022160b621b90d929a044e439690719365f63e2dabff2a64cf8bb4"
+        );
     }
 }

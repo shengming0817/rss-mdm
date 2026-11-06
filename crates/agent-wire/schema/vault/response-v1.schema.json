@@ -126,7 +126,7 @@
           "type": "integer"
         },
         "root_envelope": {
-          "description": "Root envelope.",
+          "description": "Root nonce[12] || ciphertext[32] || tag[16], unpadded base64url.",
           "type": "string"
         }
       },

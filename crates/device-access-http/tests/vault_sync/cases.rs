@@ -17,7 +17,7 @@ fn device(k: &Ed25519KeyPair) -> Device {
 fn audit(c: &Context) -> RequestAudit {
     RequestAudit::new(DA, c.tenant.to_string(), "vault_test", AuditIntent::Routine)
 }
-async fn user(c: &Context) -> Result<AuthorizedPrincipal> {
+async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
     use rss_identity_core::account::{LoginKey, Password, PasswordKdf};
     let id = Uuid::new_v4();
     let login = format!("vault-{id}");
@@ -67,14 +67,17 @@ async fn user(c: &Context) -> Result<AuthorizedPrincipal> {
             ),
         )
         .await?;
-    Ok(c.sessions
+    let secret = issued.secret().expose().to_owned();
+    let actor = c
+        .sessions
         .authenticate(
             &c.authorization,
             rss_mdm_authorization_service::credential::RequestCredential::Bearer(
                 rss_identity_core::session::BearerSecret::parse(issued.secret().expose().into())?,
             ),
         )
-        .await?)
+        .await?;
+    Ok((actor, secret))
 }
 async fn signed(
     c: &Context,
@@ -124,8 +127,8 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         c.proof_audit.clone(),
         rss_mdm_query::cursor::CursorCodec::new(&[8; 32])?,
     );
-    let p = user(&c).await?;
-    let other = user(&c).await?;
+    let (p, session_secret) = user(&c).await?;
+    let (other, _) = user(&c).await?;
     let recovery = key();
     let k1 = key();
     let d1 = device(&k1);
@@ -141,7 +144,7 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         Action::Initialize {
             vault: Uuid::new_v4(),
             recovery_key: B64.encode(recovery.public_key().as_ref()),
-            root_envelope: B64.encode([7; 48]),
+            root_envelope: B64.encode([7; 60]),
             device: d1.clone(),
         },
     )
@@ -165,7 +168,10 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         &d2,
         &k2,
         Some(&recovery),
-        Action::Join { device: d2.clone() },
+        Action::Join {
+            device: d2.clone(),
+            reset_devices: false,
+        },
     )
     .await?;
     s.execute(&p, &audit(&c), join.clone()).await?;
@@ -243,6 +249,7 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         }],
     };
     let a = signed(&c, &s, &p, &d1, &k1, None, update.clone()).await?;
+    let b = signed(&c, &s, &p, &d2, &k2, None, update).await?;
     let mut backup = c.operator.acquire().await?;
     sqlx::query(
         "CREATE TEMP TABLE vault_saved_challenges AS SELECT * FROM rss_da.vault_challenges",
@@ -252,14 +259,17 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
     sqlx::query("CREATE TEMP TABLE vault_saved_receipts AS SELECT * FROM rss_da.vault_receipts")
         .execute(&mut *backup)
         .await?;
-    let b = signed(&c, &s, &p, &d2, &k2, None, update).await?;
     let aa = audit(&c);
     let ab = audit(&c);
-    let (a_result, b_result) = tokio::join!(s.execute(&p, &aa, a.clone()), s.execute(&p, &ab, b));
+    let (a_result, b_result) =
+        tokio::join!(s.execute(&p, &aa, a.clone()), s.execute(&p, &ab, b.clone()));
     assert_ne!(a_result.is_ok(), b_result.is_ok());
-    if a_result.is_ok() {
-        s.execute(&p, &audit(&c), a.clone()).await?;
-    }
+    let committed = if a_result.is_ok() {
+        a.clone()
+    } else {
+        b.clone()
+    };
+    s.execute(&p, &audit(&c), committed.clone()).await?;
     let stale = signed(
         &c,
         &s,
@@ -277,6 +287,15 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         s.execute(&p, &audit(&c), stale).await.err(),
         Some(Error::Cursor)
     );
+    let rejected_id = Uuid::new_v4();
+    let owner = format!("{}:{}", p.instance_id(), p.principal_id());
+    let before_revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM rss_da.vaults WHERE tenant_id=$1::uuid AND owner=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(&owner)
+    .fetch_one(&c.operator)
+    .await?;
     let batch = signed(
         &c,
         &s,
@@ -287,7 +306,7 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         Action::Write {
             items: vec![
                 Mutation {
-                    id: Uuid::new_v4(),
+                    id: rejected_id,
                     expected_revision: 0,
                     ciphertext: Some(B64.encode([4; 40])),
                 },
@@ -301,10 +320,13 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
     )
     .await;
     let batch = batch?;
+    let rejected_operation = batch.challenge.request.operation;
     assert_eq!(
         s.execute(&p, &audit(&c), batch).await.err(),
         Some(Error::Conflict)
     );
+    let unchanged:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT revision FROM rss_da.vaults WHERE tenant_id=$1::uuid AND owner=$2),(SELECT count(*) FROM rss_da.vault_entries WHERE tenant_id=$1::uuid AND owner=$2 AND id=$3),(SELECT count(*) FROM rss_da.vault_receipts WHERE tenant_id=$1::uuid AND owner=$2 AND operation=$4)").bind(c.tenant.to_string()).bind(&owner).bind(rejected_id).bind(rejected_operation).fetch_one(&c.operator).await?;
+    assert_eq!(unchanged, (before_revision, 0, 0));
     run(
         &c,
         &s,
@@ -362,7 +384,7 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
     let epoch = Uuid::new_v4();
     rss_mdm_vault_sync::restore_incarnation(&mut conn, epoch).await?;
     assert_eq!(
-        s.execute(&p, &audit(&c), a).await.err(),
+        s.execute(&p, &audit(&c), committed).await.err(),
         Some(Error::Denied)
     );
     let d3 = device(&k2);
@@ -373,7 +395,10 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         &d3,
         &k2,
         Some(&recovery),
-        Action::Join { device: d3.clone() },
+        Action::Join {
+            device: d3.clone(),
+            reset_devices: false,
+        },
     )
     .await?;
     s.execute(&p, &audit(&c), join).await?;
@@ -389,6 +414,152 @@ async fn user_sync_atomicity_and_recovery() -> Result<()> {
         },
     )
     .await?;
+    // Audit append failure must roll back device admission and challenge consumption.
+    let failing_device = device(&k1);
+    let failing = signed(
+        &c,
+        &s,
+        &p,
+        &failing_device,
+        &k1,
+        Some(&recovery),
+        Action::Join {
+            device: failing_device.clone(),
+            reset_devices: false,
+        },
+    )
+    .await?;
+    sqlx::raw_sql("CREATE FUNCTION public.reject_vault_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'vault audit rollback probe'; END $$; CREATE TRIGGER vault_audit_probe BEFORE INSERT ON rss_audit.records FOR EACH ROW EXECUTE FUNCTION public.reject_vault_audit();").execute(&mut *conn).await?;
+    let failed = s.execute(&p, &audit(&c), failing.clone()).await;
+    sqlx::raw_sql("DROP TRIGGER vault_audit_probe ON rss_audit.records; DROP FUNCTION public.reject_vault_audit();").execute(&mut *conn).await?;
+    assert!(failed.is_err());
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.vault_devices WHERE id=$1")
+        .bind(failing_device.id)
+        .fetch_one(&mut *conn)
+        .await?;
+    assert_eq!(n, 0);
+    s.execute(&p, &audit(&c), failing).await?;
+    // Unknown commit is recovered through the same current device and operation.
+    let unknown = signed(
+        &c,
+        &s,
+        &p,
+        &d3,
+        &k2,
+        None,
+        Action::Write {
+            items: vec![Mutation {
+                id: Uuid::new_v4(),
+                expected_revision: 0,
+                ciphertext: Some(B64.encode([6; 40])),
+            }],
+        },
+    )
+    .await?;
+    c.identity_runtime.inject_next_transaction_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
+    assert_eq!(
+        s.execute(&p, &audit(&c), unknown.clone()).await.err(),
+        Some(Error::CommitUnknown)
+    );
+    run(
+        &c,
+        &s,
+        &p,
+        &d3,
+        &k2,
+        Action::Operation {
+            operation: unknown.challenge.request.operation,
+        },
+    )
+    .await?;
+    s.execute(&p, &audit(&c), unknown).await?;
+    // Quota exhaustion must never disable device removal or recovery-code admission.
+    let owner = format!("{}:{}", p.instance_id(), p.principal_id());
+    sqlx::query("INSERT INTO rss_da.vault_receipts(tenant_id,owner,operation,incarnation,device,control,digest,document) SELECT $1::uuid,$2,gen_random_uuid(),$3,$4,false,'fixture','{}'::jsonb FROM generate_series(1,100000)").bind(c.tenant.to_string()).bind(&owner).bind(epoch).bind(d3.id).execute(&mut *conn).await?;
+    run(&c, &s, &p, &d3, &k2, Action::Remove { device: d3.id }).await?;
+    sqlx::query("INSERT INTO rss_da.vault_devices(tenant_id,owner,id,incarnation,public_key,active) SELECT $1::uuid,$2,gen_random_uuid(),$3,$4,true FROM generate_series(1,32)").bind(c.tenant.to_string()).bind(&owner).bind(epoch).bind(&d3.public_key).execute(&mut *conn).await?;
+    let d4 = device(&k2);
+    let ordinary = signed(
+        &c,
+        &s,
+        &p,
+        &d4,
+        &k2,
+        Some(&recovery),
+        Action::Join {
+            device: d4.clone(),
+            reset_devices: false,
+        },
+    )
+    .await?;
+    assert_eq!(
+        s.execute(&p, &audit(&c), ordinary).await.err(),
+        Some(Error::Capacity)
+    );
+    let reset = signed(
+        &c,
+        &s,
+        &p,
+        &d4,
+        &k2,
+        Some(&recovery),
+        Action::Join {
+            device: d4.clone(),
+            reset_devices: true,
+        },
+    )
+    .await?;
+    let response = s.execute(&p, &audit(&c), reset).await?;
+    let Response::Receipt { receipt } = response else {
+        panic!("receipt")
+    };
+    assert_ne!(receipt.incarnation, epoch);
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.vault_devices WHERE tenant_id=$1::uuid AND owner=$2 AND active").bind(c.tenant.to_string()).bind(&owner).fetch_one(&mut *conn).await?;
+    assert_eq!(count, 1);
+    run(
+        &c,
+        &s,
+        &p,
+        &d4,
+        &k2,
+        Action::Read {
+            after: 0,
+            cursor: None,
+        },
+    )
+    .await?;
+    // Removing required privileges must fail startup admission before serving traffic.
+    sqlx::query("REVOKE DELETE ON rss_da.vault_challenges FROM da_identity_runtime")
+        .execute(&mut *conn)
+        .await?;
+    assert!(rss_mdm_vault_sync::verify_catalog(&mut conn).await.is_err());
+    sqlx::query("GRANT DELETE ON rss_da.vault_challenges TO da_identity_runtime")
+        .execute(&mut *conn)
+        .await?;
+    rss_mdm_vault_sync::verify_catalog(&mut conn).await?;
+    let stale = signed(&c, &s, &p, &d4, &k2, None, Action::Devices).await?;
+    let deadline = || {
+        rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(
+            10,
+        ))
+    };
+    let session = c
+        .authority
+        .inspect_bearer(
+            c.tenant,
+            rss_identity_core::session::BearerSecret::parse(session_secret)?,
+            deadline(),
+        )
+        .await?;
+    c.authority
+        .revoke_current_session(session, deadline())
+        .await?;
+    assert_eq!(
+        s.execute(&p, &audit(&c), stale).await.err(),
+        Some(Error::Denied)
+    );
     drop(conn);
     c.close().await;
     Ok(())

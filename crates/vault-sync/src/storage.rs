@@ -24,13 +24,22 @@ async fn epoch(c: &mut PgConnection, s: &Scope) -> Result<Uuid, Error> {
         .bind(s.tenant)
         .execute(&mut *c)
         .await?;
-    Ok(sqlx::query_scalar(
+    let restored: Uuid = sqlx::query_scalar(
         "SELECT incarnation FROM rss_da.vault_epochs WHERE tenant_id=$1 FOR SHARE",
     )
     .bind(s.tenant)
-    .fetch_one(c)
-    .await?)
+    .fetch_one(&mut *c)
+    .await?;
+    Ok(
+        sqlx::query_scalar("SELECT incarnation FROM rss_da.vaults WHERE tenant_id=$1 AND owner=$2")
+            .bind(s.tenant)
+            .bind(s.owner())
+            .fetch_optional(c)
+            .await?
+            .unwrap_or(restored),
+    )
 }
+
 async fn vault(
     c: &mut PgConnection,
     s: &Scope,
@@ -102,7 +111,7 @@ pub(crate) async fn execute(
 ) -> Result<(Response, bool), Error> {
     let h = &r.challenge;
     let request = &h.request;
-    let incarnation = epoch(c, s).await?;
+    let mut incarnation = epoch(c, s).await?;
     if h.installation != service.installation
         || h.tenant != s.tenant
         || h.instance != s.instance
@@ -138,7 +147,7 @@ pub(crate) async fn execute(
             )?;
             device.public_key.clone()
         }
-        Action::Join { device } => {
+        Action::Join { device, .. } => {
             verify(
                 &existing.as_ref().ok_or(Error::NotFound)?.1,
                 r.recovery_signature.as_deref().ok_or(Error::Denied)?,
@@ -185,11 +194,40 @@ pub(crate) async fn execute(
             if existing.is_some() {
                 return Err(Error::Conflict);
             }
-            sqlx::query("INSERT INTO rss_da.vaults(tenant_id,owner,id,recovery_key,root_envelope) VALUES($1,$2,$3,$4,$5)").bind(s.tenant).bind(s.owner()).bind(vault).bind(recovery_key).bind(root_envelope).execute(&mut *c).await?;
+            sqlx::query("INSERT INTO rss_da.vaults(tenant_id,owner,id,recovery_key,root_envelope,incarnation) VALUES($1,$2,$3,$4,$5,$6)").bind(s.tenant).bind(s.owner()).bind(vault).bind(recovery_key).bind(root_envelope).bind(incarnation).execute(&mut *c).await?;
             join(c, s, device, incarnation).await?;
             0
         }
-        Action::Join { device } => {
+        Action::Join {
+            device,
+            reset_devices,
+        } => {
+            if *reset_devices {
+                incarnation = Uuid::new_v4();
+                sqlx::query(
+                    "UPDATE rss_da.vaults SET incarnation=$3 WHERE tenant_id=$1 AND owner=$2",
+                )
+                .bind(s.tenant)
+                .bind(s.owner())
+                .bind(incarnation)
+                .execute(&mut *c)
+                .await?;
+                sqlx::query("DELETE FROM rss_da.vault_devices WHERE tenant_id=$1 AND owner=$2")
+                    .bind(s.tenant)
+                    .bind(s.owner())
+                    .execute(&mut *c)
+                    .await?;
+                sqlx::query("DELETE FROM rss_da.vault_receipts WHERE tenant_id=$1 AND owner=$2")
+                    .bind(s.tenant)
+                    .bind(s.owner())
+                    .execute(&mut *c)
+                    .await?;
+                sqlx::query("DELETE FROM rss_da.vault_challenges WHERE tenant_id=$1 AND owner=$2")
+                    .bind(s.tenant)
+                    .bind(s.owner())
+                    .execute(&mut *c)
+                    .await?;
+            }
             join(c, s, device, incarnation).await?;
             revision
         }
@@ -283,13 +321,13 @@ pub(crate) async fn execute(
         }
     };
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM rss_da.vault_receipts WHERE tenant_id=$1 AND owner=$2",
+        "SELECT count(*) FROM rss_da.vault_receipts WHERE tenant_id=$1 AND owner=$2 AND NOT control",
     )
     .bind(s.tenant)
     .bind(s.owner())
     .fetch_one(&mut *c)
     .await?;
-    if count >= 100_000 {
+    if count >= 100_000 && matches!(request.action, Action::Write { .. }) {
         return Err(Error::Capacity);
     }
     let receipt = Receipt {
@@ -297,7 +335,7 @@ pub(crate) async fn execute(
         incarnation,
         revision,
     };
-    sqlx::query("INSERT INTO rss_da.vault_receipts(tenant_id,owner,operation,incarnation,device,digest,document) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(s.tenant).bind(s.owner()).bind(request.operation).bind(incarnation).bind(request.device).bind(hash).bind(serde_json::to_value(&receipt).map_err(|_|Error::Storage)?).execute(c).await?;
+    sqlx::query("INSERT INTO rss_da.vault_receipts(tenant_id,owner,operation,incarnation,device,digest,document,control) VALUES($1,$2,$3,$4,$5,$6,$7,$8)").bind(s.tenant).bind(s.owner()).bind(request.operation).bind(incarnation).bind(request.device).bind(hash).bind(serde_json::to_value(&receipt).map_err(|_|Error::Storage)?).bind(!matches!(request.action,Action::Write{..})).execute(c).await?;
     Ok((Response::Receipt { receipt }, false))
 }
 async fn join(c: &mut PgConnection, s: &Scope, d: &Device, inc: Uuid) -> Result<(), Error> {

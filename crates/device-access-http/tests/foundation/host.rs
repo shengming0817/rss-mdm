@@ -264,7 +264,7 @@ async fn vault_user_http(c: &Context, client: &reqwest::Client, origin: &str) ->
         action: Action::Initialize {
             vault: Uuid::new_v4(),
             recovery_key: B64.encode(recovery.public_key().as_ref()),
-            root_envelope: B64.encode([3; 48]),
+            root_envelope: B64.encode([3; 60]),
             device: d,
         },
     };
