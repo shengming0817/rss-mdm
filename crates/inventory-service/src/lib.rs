@@ -28,7 +28,9 @@ pub const INSTALL_SQL: &str = concat!(
     "\n",
     include_str!("../schema/collection-tasks.sql"),
     "\n",
-    include_str!("../schema/task-retirement.sql")
+    include_str!("../schema/task-retirement.sql"),
+    "\n",
+    include_str!("../schema/software-assets.sql")
 );
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = concat!(

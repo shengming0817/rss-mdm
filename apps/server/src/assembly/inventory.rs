@@ -76,13 +76,19 @@ impl Services {
         Ok(Self {
             groups: group_service,
             assets: Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
-                inventory,
-                audit_store.clone(),
-                runtime.clone(),
-                tenant,
-                Arc::new(crate::clock::InventoryClock(clock.clone())),
-                key,
-                messaging.clone(),
+                rss_mdm_inventory_service::assets::AssetDependencies {
+                    inventory,
+                    audit_store: audit_store.clone(),
+                    runtime: runtime.clone(),
+                    tenant,
+                    clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
+                    cursor_key: key.to_vec(),
+                    reconcile_messaging: messaging.clone(),
+                    software_sources: rss_mdm_inventory_service::assets::software::Sources {
+                        objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+                        groups: groups.source_reader(),
+                    },
+                },
             )),
             compliance: Arc::new(rss_mdm_compliance_service::Compliance::new(
                 rss_mdm_compliance_service::Dependencies {

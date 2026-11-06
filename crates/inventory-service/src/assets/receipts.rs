@@ -86,15 +86,16 @@ pub async fn receipt(
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let actor = audit.snapshot().actor.ok_or(Error::Malformed)?;
+    let instance = audit.snapshot().instance.ok_or(Error::Malformed)?;
     let digest = fingerprint.to_vec();
     let response = stored(serde_json::to_string(value))?;
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_assets.operations(tenant_id,id,fingerprint,response,actor) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5)")
+            sqlx::query("INSERT INTO mdm_assets.operations(tenant_id,id,fingerprint,response,actor,instance) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5,$6)")
                 .bind(tenant)
                 .bind(id.to_string())
                 .bind(digest)
-                .bind(response).bind(actor)
+                .bind(response).bind(actor).bind(instance)
                 .execute(c)
                 .await?;
             Ok(())

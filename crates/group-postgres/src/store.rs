@@ -76,6 +76,11 @@ impl GroupStore {
             tenant,
         })
     }
+    /// Borrow the read capabilities of this already admitted Group owner.
+    pub fn source_reader(&self) -> crate::GroupSources {
+        self.sources.clone()
+    }
+
     /// Return the tenant used for all reads, writes, rules and operation identities.
     pub fn tenant(&self) -> TenantId {
         self.tenant

@@ -225,6 +225,9 @@ pub struct Summary {
     deny_unknown_fields
 )]
 pub enum Response {
+    Software {
+        response: Box<software::Response>,
+    },
     InventoryScopes {
         device: String,
         asset_cut: AssetCut,
@@ -318,6 +321,10 @@ pub enum Response {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
+    Software {
+        command: Box<software::Command>,
+        access: software::Access,
+    },
     InventoryScopes {
         device: String,
         scope: ReadScope,
@@ -412,6 +419,7 @@ pub enum Command {
 impl Command {
     pub fn operation(&self) -> Option<Uuid> {
         match self {
+            Self::Software { command, .. } => command.operation(),
             Self::FieldLayoutWrite { change } => Some(change.operation_id),
             Self::FieldWrite { change, .. } => Some(change.operation_id),
             Self::RetentionWrite { change } => Some(change.operation_id),
