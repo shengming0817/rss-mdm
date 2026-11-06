@@ -225,18 +225,17 @@ pub(crate) async fn batch(
             reauthorization(operation, status, now, registration, true, permitted)?,
             Reauthorization::Available { .. }
         ) && let Authority::DeviceControl { action, .. } = operation.authority
+            && device_control::matches(action, &operation.request)?
         {
-            if device_control::matches(action, &operation.request)? {
-                controls.push((
-                    operation.id,
-                    device_control::Check {
-                        registration: operation.registration,
-                        generation: operation.registration_generation,
-                        source: operation.request.task.source(),
-                        action,
-                    },
-                ));
-            }
+            controls.push((
+                operation.id,
+                device_control::Check {
+                    registration: operation.registration,
+                    generation: operation.registration_generation,
+                    source: operation.request.task.source(),
+                    action,
+                },
+            ));
         }
     }
     let supported = if controls.is_empty() {

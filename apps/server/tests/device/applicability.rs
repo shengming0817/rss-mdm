@@ -203,6 +203,21 @@ async fn windows(c: &Context, n: &native::Native, version: &str) -> Result<()> {
     tx.commit().await?;
     Ok(())
 }
+async fn change(c: &Context, query: &'static str, id: Uuid) -> Result<(), sqlx::Error> {
+    let mut tx = c.operator.begin().await?;
+    sqlx::query(
+        "SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','6000',true)",
+    )
+    .bind(c.tenant.to_string())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(query)
+        .bind(c.tenant.to_string())
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
+}
 async fn effects(c: &Context) -> Result<Vec<i64>> {
     // Count exactly this tenant's durable business effects, including PIN custody and probes.
     let mut counts = Vec::new();
@@ -292,15 +307,15 @@ async fn supported_snapshot_never_authorizes_a_later_write() -> Result<()> {
         input.action = Action::Wipe { confirmed:true,expected_registration_id:n.registration,expected_generation:2 };
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Conflict)));
         let input = wipe(&n);
-        sqlx::query("DELETE FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(n.registration).execute(&c.operator).await?;
+        change(&c, "DELETE FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=$2", n.registration).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Unsupported)));
         windows(&c,&n,"10.0.22631.0").await?;
         let input = wipe(&n);
-        sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(n.registration).execute(&c.operator).await?;
+        change(&c, "UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2", n.registration).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Conflict)));
-        sqlx::query("UPDATE mdm_access.registrations SET state='active' WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(n.registration).execute(&c.operator).await?;
+        change(&c, "UPDATE mdm_access.registrations SET state='active' WHERE tenant_id=$1::uuid AND id=$2", n.registration).await?;
         let input = wipe(&n);
-        sqlx::query("DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(account.rule).execute(&c.operator).await?;
+        change(&c, "DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2", account.rule).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Forbidden)));
         assert_eq!(effects(&c).await?,before);
         Ok(())
@@ -317,11 +332,31 @@ async fn apple_facts(
     c: &Context,
     a: &Fixture,
     n: &native::Native,
+    proof: &AuthorizedPrincipal,
     silicon: Option<bool>,
     version: Option<&str>,
 ) -> Result<()> {
+    use rss_mdm_device_service::control::{
+        Create, NativeTarget, authority::Authority, device_control::Kind,
+    };
     use rss_mdm_native_protection::ProtectionContext;
     use sha2::{Digest, Sha256};
+    let operation = Uuid::new_v4();
+    let input = Create {
+        operation_id: operation,
+        deadline: time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+        input_version: "device-control-v1".into(),
+        target: NativeTarget::Device,
+        task: Kind::Restart.native_shape(rss_mdm_inventory::ReportSource::MdmApple)?,
+    };
+    let authority = Authority::DeviceControl {
+        action: Kind::Restart,
+        confirmation: None,
+        required: vec![Permission::DeviceControl],
+        actor: proof.actor(),
+    };
+    crate::apple_t2::support::operation(c, n, &a.resources.protection, &input, authority, None)
+        .await?;
     let mut tx = command::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state,access_rights) VALUES($1::uuid,$2,$3,'active',8191) ON CONFLICT(tenant_id,registration) DO NOTHING").bind(c.tenant.to_string()).bind(n.registration).bind(&n.device).execute(&mut *tx).await?;
     // This fixture starts at the accepted, authenticated evidence boundary being read.
@@ -337,7 +372,6 @@ async fn apple_facts(
     if let Some(v) = silicon {
         facts.insert("IsAppleSilicon".into(), plist::Value::Boolean(v));
     }
-    let operation = Uuid::new_v4();
     for (phase, key, facts) in [
         ("resolve_device", "QueryResponses", facts),
         ("resolve_security", "SecurityInfo", plist::Dictionary::new()),
@@ -373,7 +407,7 @@ async fn apple_reads_distinguish_platform_evidence_and_product_configuration() -
         let n=native::seed(&c,"apple").await?;
         let account=c.account(&[Permission::InventoryRead,Permission::DeviceControl,Permission::DeviceWipe]).await?;
         let p=Arc::new(c.authenticate(&account).await?);
-        apple_facts(&c,&a,&n,Some(true),Some("15.0.1")).await?;
+        apple_facts(&c,&a,&n,&p,Some(true),Some("15.0.1")).await?;
         let before=effects(&c).await?;
         let body=read(&c,&http,&p,&n).await?;
         for kind in ["restart","lock","wipe"] { assert_eq!(capability(&body,kind)["devicePrerequisite"]["state"],"supported"); }
@@ -384,21 +418,21 @@ async fn apple_reads_distinguish_platform_evidence_and_product_configuration() -
         assert!(matches!(a.service.create_control(&p,&n.device,&lock,&c.request(&p)?).await,Err(ControlError::Unsupported)));
         assert!(!format!("{:?}",lock.action).contains(pin));
         assert_eq!(effects(&c).await?,before);
-        apple_facts(&c,&a,&n,None,Some("15.0.1")).await?;
+        apple_facts(&c,&a,&n,&p,None,Some("15.0.1")).await?;
         let body=read(&c,&http,&p,&n).await?;
         for kind in ["lock","wipe"] { assert_eq!(capability(&body,kind)["devicePrerequisite"]["state"],"unknown"); }
         assert_eq!(capability(&body,"restart")["devicePrerequisite"]["state"],"supported");
-        apple_facts(&c,&a,&n,Some(false),Some("15.0.1")).await?;
+        apple_facts(&c,&a,&n,&p,Some(false),Some("15.0.1")).await?;
         assert_eq!(capability(&read(&c,&http,&p,&n).await?,"wipe")["devicePrerequisite"]["state"],"unsupported");
-        apple_facts(&c,&a,&n,Some(true),None).await?;
+        apple_facts(&c,&a,&n,&p,Some(true),None).await?;
         assert_eq!(capability(&read(&c,&http,&p,&n).await?,"restart")["devicePrerequisite"]["state"],"unknown");
-        apple_facts(&c,&a,&n,Some(true),Some("15.0.1")).await?;
-        sqlx::query("UPDATE mdm_apple.devices SET access_rights=1 WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(n.registration).execute(&c.operator).await?;
+        apple_facts(&c,&a,&n,&p,Some(true),Some("15.0.1")).await?;
+        change(&c, "UPDATE mdm_apple.devices SET access_rights=1 WHERE tenant_id=$1::uuid AND registration=$2", n.registration).await?;
         let body=read(&c,&http,&p,&n).await?;
         assert_eq!(capability(&body,"wipe")["devicePrerequisite"]["state"],"unsupported");
         assert_eq!(capability(&body,"wipe")["permission"]["allowed"],true);
         assert!(matches!(a.service.create_control(&p,&n.device,&wipe(&n),&c.request(&p)?).await,Err(ControlError::Unsupported)));
-        apple_facts(&c,&a,&n,Some(true),Some("corrupt")).await?;
+        apple_facts(&c,&a,&n,&p,Some(true),Some("corrupt")).await?;
         assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,503);
         Ok(())
     }.await;
@@ -424,14 +458,14 @@ async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Res
         let outsider=foreign.account(&[Permission::InventoryRead]).await?;
         assert_eq!(http.get(&foreign,Arc::new(foreign.authenticate(&outsider).await?),&n.device).await?.0,403);
         windows(&c,&n,"10.0.22631.0").await?;
-        sqlx::query("UPDATE mdm_windows.capabilities SET generation=2 WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(n.registration).execute(&c.operator).await?;
+        change(&c, "UPDATE mdm_windows.capabilities SET generation=2 WHERE tenant_id=$1::uuid AND registration=$2", n.registration).await?;
         assert_eq!(capability(&read(&c,&http,&p,&n).await?,"wipe")["devicePrerequisite"]["state"],"unknown");
-        sqlx::query("UPDATE mdm_windows.capabilities SET generation=1,os_version='corrupt' WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(n.registration).execute(&c.operator).await?;
+        change(&c, "UPDATE mdm_windows.capabilities SET generation=1,os_version='corrupt' WHERE tenant_id=$1::uuid AND registration=$2", n.registration).await?;
         assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,503);
         windows(&c,&n,"10.0.22631.0").await?;
-        sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(n.registration).execute(&c.operator).await?;
+        change(&c, "UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2", n.registration).await?;
         assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,409);
-        sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(n.registration).execute(&c.operator).await?;
+        change(&c, "UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2", n.registration).await?;
         let body=read(&c,&http,&p,&n).await?;
         for kind in ["restart","lock","wipe"] { assert_eq!(capability(&body,kind)["devicePrerequisite"],json!({"state":"blocked","reason":"not_registered"})); }
         Ok(())
@@ -461,13 +495,13 @@ async fn snapshot_revalidates_authority_and_registration_before_return() -> Resu
                 *registration=Some((n.device.clone(),endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm,connection,&c.tenant.to_string(),&n.device,rss_mdm_inventory::Channel::Mdm).await?));
                 // A second real connection commits while the first retains its RR snapshot.
                 if change_registration {
-                    sqlx::query("UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(n.credential).execute(&c.operator).await.map_err(crate::assembly::task_reads::sql)?;
+                    change(c, "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2", n.credential).await.map_err(crate::assembly::task_reads::sql)?;
                 } else {
-                    sqlx::query("DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(account.rule).execute(&c.operator).await.map_err(crate::assembly::task_reads::sql)?;
+                    change(c, "DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2", account.rule).await.map_err(crate::assembly::task_reads::sql)?;
                 }
                 Ok(())
             })).await;
-            assert!(matches!(result,Err(rss_mdm_management_http::Error::QueryReadConflict)));
+            assert!(matches!(result,Err(rss_mdm_management_http::Error::QueryReadConflict)), "{result:?}");
         }
         Ok(())
     }.await;

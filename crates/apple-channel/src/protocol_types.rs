@@ -479,7 +479,7 @@ mod tests {
         );
         context.version = Some(Version::parse("15.0.1").unwrap());
         context.apple_silicon = Some(false);
-        assert!(!check(ControlKind::Wipe, &context).is_ok());
+        assert!(check(ControlKind::Wipe, &context).is_err());
         assert_eq!(check(ControlKind::Lock, &context), Ok(()));
         context.apple_silicon = None;
         assert!(matches!(
@@ -496,9 +496,9 @@ mod tests {
         ));
         context.apple_silicon = Some(true);
         context.version = Some(Version::parse("11.4").unwrap());
-        assert!(!check(ControlKind::Lock, &context).is_ok());
-        assert!(!check(ControlKind::Wipe, &context).is_ok());
+        assert!(check(ControlKind::Lock, &context).is_err());
+        assert!(check(ControlKind::Wipe, &context).is_err());
         context.enrollment = Enrollment::User;
-        assert!(!check(ControlKind::Restart, &context).is_ok());
+        assert!(check(ControlKind::Restart, &context).is_err());
     }
 }
