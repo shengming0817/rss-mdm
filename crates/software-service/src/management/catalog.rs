@@ -94,7 +94,8 @@ pub async fn write_source<C: ManagementContentPort>(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.target(&id);
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwareCatalog,
         op.operation_id,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -183,7 +184,8 @@ pub async fn write_version<C: ManagementContentPort>(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwareCatalog,
         op.operation_id,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -375,7 +377,8 @@ pub async fn import<C: ManagementContentPort>(
         rss_mdm_audit_integration::TargetKind::Resource,
         &op.input.resource,
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwareCatalog,
         op.operation_id,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,

@@ -25,6 +25,7 @@ pub async fn audit(
     let result = if let Some(id) = operation {
         let fact = rss_mdm_audit_integration::Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Asset,
             &format!(
                 "assets:{}:{id}",
                 audit.snapshot().actor.as_deref().unwrap_or("")

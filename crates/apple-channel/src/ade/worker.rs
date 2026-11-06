@@ -44,6 +44,7 @@ pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
         return Ok(false);
     }
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.clone(),
         "apple_ade_worker",
@@ -72,6 +73,7 @@ pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
                     for (id, phase, attempt) in changes {
                         let fact = Fact::business(
                             audit,
+                            rss_mdm_audit_integration::operation::OperationOwner::AppleAde,
                             &format!("ade:{id}:{phase}:{attempt}"),
                             if phase == "interrupted" { 503 } else { 409 },
                             if phase == "interrupted" {
@@ -357,13 +359,15 @@ async fn finish(
     response: Result<Value, client::RemoteError>,
 ) -> Result<(), Error> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.into(),
         "apple_ade_worker",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.identify_service("service:apple-ade");
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::AppleAde,
         work.id,
         "apple_ade_worker",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -411,7 +415,7 @@ async fn finish(
             };
             Ok(evidence)
         })).await?;
-        if let Some((status,outcome))=committed{let fact=Fact::business(audit, &format!("ade:{}:finish:{}",work.id,work.attempt), status, outcome, Some(work.id))?;app.audit_store.append(tx, &fact).await.map_err(Error::from)?;}
+        if let Some((status,outcome))=committed{let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::AppleAde, &format!("ade:{}:finish:{}",work.id,work.attempt), status, outcome, Some(work.id))?;app.audit_store.append(tx, &fact).await.map_err(Error::from)?;}
         audit.mark_commit_started();Ok(())
     })).await;
     let settled = crate::operations::settle(result, &audit);

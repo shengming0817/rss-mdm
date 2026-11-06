@@ -874,3 +874,9 @@ mod owner_boundaries_t2;
 #[cfg(test)]
 #[path = "../../tests/reference_blockers/mod.rs"]
 mod reference_blockers_t2;
+
+mod operation_diagnostics;
+
+#[cfg(test)]
+#[path = "../../tests/operation_diagnostics.rs"]
+mod operation_diagnostics_t2;

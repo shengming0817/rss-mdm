@@ -121,7 +121,7 @@ impl Service {
                         }
                     };
 
-                    let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("agent-native:{task}:{}", input.operation_id), 200, "success", Some(receipt.enrollment_id))?;
+                    let fact = rss_mdm_audit_integration::Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask, &format!("agent-native:{task}:{}", input.operation_id), 200, "success", Some(receipt.enrollment_id))?;
                     (if replay { Ok(()) } else { s.transactions.audit_store.append_in(tx, &fact).await })?;
                     Ok(NativeEnrollmentReceipt {
                         enrollment_id: receipt.enrollment_id,

@@ -137,7 +137,7 @@ pub(crate) async fn send(
         a.identify_device(p.registration());
         a.registration(p.registration());
         a.target(p.device());
-        facts.push(Fact::business(
+        facts.push(Fact::observation(
             &a,
             &format!("apple-pki:{id}:dispatch"),
             200,
@@ -223,7 +223,7 @@ pub(crate) async fn receive(
     a.registration(p.registration());
     a.target(p.device());
     Ok(Some(AppleReception::Collection {
-        facts: vec![Fact::business(
+        facts: vec![Fact::observation(
             &a,
             &format!("apple-pki:{id}:confirmed"),
             200,

@@ -136,7 +136,8 @@ impl Service {
         p.require(Permission::RegistrationConfigurationWrite, None)?;
         p.session()?;
         p.bind_audit(audit)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::TaskTrust,
             operation,
             "task_signing_change",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -161,7 +162,7 @@ impl Service {
                 p.check_live()?;Ok::<_,Error>((value,replayed))
             })).await?;
 
-            let fact=Fact::business(audit, &format!("task-signing:{}:{operation}",usage.as_str()), 200, "success", None).map_err(|_|Error::Malformed)?;
+            let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::TaskTrust, &format!("task-signing:{}:{operation}",usage.as_str()), 200, "success", None).map_err(|_|Error::Malformed)?;
             (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)
@@ -212,7 +213,8 @@ impl Service {
 
         self.require_device(p, audit)?;
         input.validate().map_err(|_| Error::Malformed)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::TaskTrust,
             input.operation,
             "task_signing_ack",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -252,6 +254,7 @@ impl Service {
 
                         let fact = Fact::business(
                             audit,
+                            rss_mdm_audit_integration::operation::OperationOwner::TaskTrust,
                             &format!("task-signing-ack:{}:{}", usage.as_str(), input.operation),
                             200,
                             "success",
@@ -293,7 +296,8 @@ impl Service {
         if input.registration != p.registration() || input.generation != p.generation() as u64 {
             return Err(Error::Forbidden);
         }
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::TaskTrust,
             input.operation,
             "task_trust_observe",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -330,6 +334,7 @@ impl Service {
 
                         let fact = Fact::business(
                             audit,
+                            rss_mdm_audit_integration::operation::OperationOwner::TaskTrust,
                             &format!("task-trust-observe:{}", input.operation),
                             200,
                             "success",
@@ -448,6 +453,7 @@ mod tests {
     #[test]
     fn settlement_preserves_unknown_and_failed_rollback() {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             uuid::Uuid::new_v4().to_string(),
             "task-trust",

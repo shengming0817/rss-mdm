@@ -197,6 +197,7 @@ async fn execute(
     let proof = authority.principal(&state.authorization).await?;
     proof.require_initialization_target(&step.target)?;
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         "baseline_initialize",
@@ -204,7 +205,8 @@ async fn execute(
     );
     proof.bind_audit(&audit)?;
     let operation = manifest::id(tenant, &format!("operation:{}", step.key));
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Initialization,
         operation,
         "baseline_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -392,6 +394,7 @@ pub(crate) async fn reserve(
     }
     let operation = manifest::id(tenant, "intent");
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         "baseline_initialize",
@@ -401,13 +404,15 @@ pub(crate) async fn reserve(
         &authority.user().principal_id,
         &authority.user().instance_id,
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Initialization,
         operation,
         "baseline_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
+        rss_mdm_audit_integration::operation::OperationOwner::Initialization,
         &format!("baseline:{operation}"),
         200,
         "success",

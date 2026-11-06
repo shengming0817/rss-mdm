@@ -503,6 +503,14 @@ impl ResourceCatalog {
         audit: &RequestAudit,
         proof: &crate::authorization::context::AuthorizedPrincipal,
     ) -> std::result::Result<Value, Error> {
+        if let Command::Resource { change, .. } = command {
+            audit.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Resource,
+                change.operation_id,
+                "management_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
+        }
         let (Command::Resource { id, .. } | Command::ResourceRead { id }) = command;
         audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
         let permission = match command {

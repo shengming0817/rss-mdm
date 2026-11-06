@@ -168,6 +168,7 @@ impl Groups {
                 Some(_) => "automation_failed",
             };
             let audit = rss_mdm_audit_integration::RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Background,
                 rss_mdm_audit_integration::StorageProfile::Mdm,
                 self.tenant.to_string(),
                 action,
@@ -178,13 +179,15 @@ impl Groups {
                 rss_mdm_audit_integration::TargetKind::Group,
                 &target.to_string(),
             );
-            audit.operation(
+            audit.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::GroupTask,
                 id,
                 action,
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
             let fact = rss_mdm_audit_integration::Fact::business(
                 &audit,
+                rss_mdm_audit_integration::operation::OperationOwner::GroupTask,
                 &format!("group-task:{id}:terminal"),
                 200,
                 if failure.is_some() {
@@ -355,4 +358,46 @@ pub struct TaskRead {
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskDiagnostic {
     GroupInputPending,
+}
+
+impl Groups {
+    pub async fn task_receipt(
+        &self,
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        crate::transaction::inspect(&self.runtime, self.tenant, (self, p), |(s, p), tx| {
+            Box::pin(async move {
+                let grant = crate::transaction::query_authority(tx, p).await?;
+                grant.require(
+                    p,
+                    rss_mdm_authorization_service::Permission::GroupRead,
+                    None,
+                )?;
+                grant.require_all_devices(
+                    p,
+                    rss_mdm_authorization_service::Permission::InventoryRead,
+                )?;
+                let state = s.read_task_in(tx, id).await?;
+                let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                value.object = Some(state.input.target().to_string());
+                value.accepted = Some(true);
+                value.executions.push(id);
+                value.state = Some(
+                    if state.failure.is_some() {
+                        "failed"
+                    } else if state.completed {
+                        "completed"
+                    } else {
+                        "pending"
+                    }
+                    .into(),
+                );
+                p.check_live()?;
+                Ok(Some(value))
+            })
+        })
+        .await
+    }
 }

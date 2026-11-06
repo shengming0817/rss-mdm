@@ -141,6 +141,7 @@ impl DeviceService {
                         }
                         let fact = rss_mdm_audit_integration::Fact::business(
                             inputs.audit,
+                            rss_mdm_audit_integration::operation::OperationOwner::Registration,
                             &format!(
                                 "credential_revoke:{}:{}",
                                 inputs.admin.principal_id(),
@@ -724,12 +725,14 @@ async fn revoke_on(
         operation_id: key,
         registration,
     };
+    audit.target_device(&device);
     crate::operations::save(
         profile,
         tx,
         operation,
         &serde_json::to_string(&receipt).expect("closed receipt"),
         audit,
+        false,
     )
     .await?;
     Ok((receipt, false))

@@ -3653,6 +3653,7 @@ dependencies = [
  "rss-request-context",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4259,6 +4260,7 @@ name = "rss-mdm-install-support"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",

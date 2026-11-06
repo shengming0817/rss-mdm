@@ -101,6 +101,7 @@ pub async fn fail_in(
     })).await?;
     if let Some(generation) = generation {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             tx.tenant_id().to_string(),
             "automation_failed",
@@ -110,6 +111,7 @@ pub async fn fail_in(
         audit.target("asset_ingress");
         let fact = rss_mdm_audit_integration::Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Configuration,
             &format!("configuration-ingress:{generation}:failed"),
             200,
             "failed",

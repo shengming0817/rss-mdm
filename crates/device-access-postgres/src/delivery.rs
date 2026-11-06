@@ -218,7 +218,8 @@ impl Service {
             "{:x}",
             Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Malformed)?)
         );
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::AgentDelivery,
             input.operation_id,
             "da_agent_delivery",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -312,4 +313,22 @@ pub async fn for_binding_on(
         },
     )
     .await
+}
+
+impl Service {
+    /// Original revision receipt; session admission does not consume a step-up proof.
+    pub async fn delivery_operation(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+    ) -> Result<i64, Error> {
+        self.read_with_session(p,(p,id),|ctx,c|Box::pin(async move{
+            let(p,id)=*ctx;
+            rss_mdm_authorization_service::lock_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;
+            rss_mdm_authorization_service::snapshot_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?.require_all_devices(p,Permission::AccountWrite)?;
+            let raw:Option<String>=sqlx::query_scalar("SELECT result FROM rss_da.operations WHERE tenant_id=$1::uuid AND instance=$2::uuid AND actor=$3::uuid AND operation_id=$4")
+                .bind(p.tenant_id()).bind(p.instance_id()).bind(p.principal_id()).bind(id).fetch_optional(c).await.map_err(db)?;
+            raw.ok_or(Error::NotFound)?.parse().map_err(|_|Error::NotFound)
+        })).await
+    }
 }

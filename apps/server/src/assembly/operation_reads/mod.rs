@@ -129,8 +129,28 @@ impl Operations {
         redacted: bool,
     ) -> Result<Detail, Error> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
-        use super::native_ownership::{self, Owner};
-        match native_ownership::on(c, self.tasks.tenant, id).await? {
+        let owner = super::native_ownership::on(c, self.tasks.tenant, id).await?;
+        self.detail_owned_on(c, proof, grant, now, device, id, redacted, owner)
+            .await
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one existing owner read with exact namespace and current authority"
+    )]
+    async fn detail_owned_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        proof: &AuthorizedPrincipal,
+        grant: &Grant,
+        now: i64,
+        device: &str,
+        id: Uuid,
+        redacted: bool,
+        owner: super::native_ownership::Owner,
+    ) -> Result<Detail, Error> {
+        grant.require(proof, Permission::OperationRead, Some(device))?;
+        use super::native_ownership::Owner;
+        match owner {
             Owner::Device => self
                 .tasks
                 .execution
@@ -584,3 +604,5 @@ fn recovery_fault(e: rss_mdm_recovery_credentials::native::transaction::Fault) -
         F::Request(e) => e.into(),
     }
 }
+
+mod diagnostics;

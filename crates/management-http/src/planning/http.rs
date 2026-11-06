@@ -176,7 +176,8 @@ async fn run(
         _ => None,
     };
     if let Some(id) = operation {
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Scope,
             id,
             audit.snapshot().action,
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -456,7 +457,8 @@ async fn run_group(
                 rss_mdm_audit_integration::TargetKind::Group,
                 &id.to_string(),
             );
-            audit.operation(
+            audit.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Group,
                 change.operation_id,
                 "management_write",
                 rss_mdm_audit_integration::AuditIntent::Management,

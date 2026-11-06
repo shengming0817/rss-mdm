@@ -477,7 +477,14 @@ impl Catalog {
             storage::receipt(tx, id, hash, value).await?;
             event::append(&self.writer, tx, key, id, value).await?;
         }
-        let fact = Fact::business(audit, &format!("software:{id}"), 200, "success", None)?;
+        let fact = Fact::business(
+            audit,
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareCatalog,
+            &format!("software:{id}"),
+            200,
+            "success",
+            None,
+        )?;
         (if replayed {
             Ok(())
         } else {

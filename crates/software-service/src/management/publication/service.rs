@@ -167,7 +167,8 @@ pub async fn write(
             .as_deref()
             .unwrap_or(&request.operation_id.to_string()),
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwarePublication,
         request.operation_id,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -442,3 +443,28 @@ impl PublicationDirectory {
     }
 }
 pub use super::directory::{list, targets};
+
+impl PublicationDirectory {
+    /// Original management admission, distinct from the publication's later external outcome.
+    pub async fn operation_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: uuid::Uuid,
+    ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+        p.manage(Permission::ReleaseRead)?;
+        crate::management::transaction::inspect(&self.runtime,self.tenant,(self,p),|(_,p),tx|Box::pin(async move{
+            crate::management::transaction::current(tx,p).await?.require(p,Permission::ReleaseRead,None)?;
+            let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();
+            let raw:Option<Value>=tx.with_connection(move|c|Box::pin(async move{
+                sqlx::query_scalar("SELECT response FROM mdm_publication.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3")
+                    .bind(tenant).bind(actor).bind(id).fetch_optional(c).await
+            })).await?;
+            raw.map(|v|{
+                let mut s=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                s.object=Some(v["record"].as_str().ok_or(Error::Conflict)?.into());
+                s.recorded_at=Some(v["as_of"].as_i64().ok_or(Error::Conflict)?);
+                s.accepted=Some(true);Ok(s)
+            }).transpose()
+        }),crate::management::transaction::TransactionOwner::Publication).await
+    }
+}

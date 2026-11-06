@@ -143,3 +143,103 @@ pub struct Resolved {
     pub capability: rss_mdm_agent_wire::runtime::CapabilityDescriptor,
     pub policy: rss_mdm_policy::View,
 }
+
+/// Safe original Policy result; current configuration is never used as a substitute.
+pub async fn operation_receipt(
+    service: &Policies,
+    p: &AuthorizedPrincipal,
+    id: Uuid,
+) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+    p.manage(Permission::PolicyRead)?;
+    crate::transaction::inspect(
+        &service.runtime,
+        service.tenant,
+        (service, p),
+        |(s, p), tx| {
+            Box::pin(async move {
+                crate::action_admission::current(tx, p).await?.require(
+                    p,
+                    Permission::PolicyRead,
+                    None,
+                )?;
+                let value = checked(s.policy_store.operation_in(tx, id).await?)?;
+                value
+                    .map(|v| {
+                        let mut s = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                        #[derive(serde::Deserialize)]
+                        #[serde(untagged)]
+                        enum Original {
+                            Changed(rss_mdm_policy::View),
+                            Rerun(crate::management::rerun::Receipt),
+                        }
+                        match serde_json::from_value::<Original>(v).map_err(|_| Error::Conflict)? {
+                            Original::Changed(v) => {
+                                s.object = Some(v.id.to_string());
+                                s.revision = Some(v.revision);
+                            }
+                            Original::Rerun(v) => {
+                                if v.operation_id != id {
+                                    return Err(Error::Conflict.into());
+                                }
+                                s.object = Some(v.policy_id.to_string());
+                                s.accepted = Some(true);
+                            }
+                        }
+                        Ok(s)
+                    })
+                    .transpose()
+            })
+        },
+    )
+    .await
+}
+
+pub async fn work_receipt(
+    service: &Policies,
+    p: &AuthorizedPrincipal,
+    id: Uuid,
+) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+    crate::transaction::inspect(
+        &service.runtime,
+        service.tenant,
+        (service, p),
+        |(s, p), tx| {
+            Box::pin(async move {
+                let grant = crate::action_admission::current(tx, p).await?;
+                let (work, complete, failure, _, forwarded) =
+                    crate::worker::jobs::read_in(s.profile(), tx, id).await?;
+                grant.require(
+                    p,
+                    if matches!(
+                        work,
+                        rss_mdm_policy_postgres::work::Work::PolicyScope { .. }
+                    ) {
+                        Permission::ScopeRead
+                    } else {
+                        Permission::PolicyRead
+                    },
+                    None,
+                )?;
+                let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                value.object = Some(work.target());
+                value.accepted = Some(true);
+                value.executions.push(id);
+                value.state = Some(
+                    if failure.is_some() {
+                        "failed"
+                    } else if complete {
+                        "completed"
+                    } else if forwarded {
+                        "running"
+                    } else {
+                        "pending"
+                    }
+                    .into(),
+                );
+                p.check_live()?;
+                Ok(Some(value))
+            })
+        },
+    )
+    .await
+}

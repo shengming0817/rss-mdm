@@ -6,10 +6,11 @@ pub use intent::{AuditIntent, SensitiveAction};
 
 pub use rss_mdm_install_support::StorageProfile;
 mod context;
+pub mod operation;
 mod settlement;
 pub use context::{
-    AuthenticationKind, FailureReason, ManagementResult, RequestAudit, Snapshot, SoftwareFact,
-    TargetKind, WriteOutcome,
+    AuthenticationKind, FailureReason, ManagementResult, Origin, RequestAudit, Snapshot,
+    SoftwareFact, TargetKind, WriteOutcome,
 };
 
 mod fact;

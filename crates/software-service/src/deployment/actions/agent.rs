@@ -241,8 +241,15 @@ impl SoftwareService {
                     crate::preparation::execution::validate_task_admission(task)
                         .map_err(|_| Error::Forbidden)?;
                 }
-                let fact = Fact::business(audit, &event_key, 200, "success", None)?
-                    .with_activity(offer_activity.as_ref().ok_or(Error::Conflict)?)?;
+                let fact = Fact::business(
+                    audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
+                    &event_key,
+                    200,
+                    "success",
+                    None,
+                )?
+                .with_activity(offer_activity.as_ref().ok_or(Error::Conflict)?)?;
                 Ok((payload, fact, run.deadline))
             })
             .transpose()
@@ -529,7 +536,14 @@ impl SoftwareService {
                 &run.target.device,
             )
             .await?;
-        let fact = Fact::business(audit, &event_key, 200, "success", None)?;
+        let fact = Fact::business(
+            audit,
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
+            &event_key,
+            200,
+            "success",
+            None,
+        )?;
         let fact = if let Some(details) = software_audit.clone() {
             fact.with_details(details)?
         } else {

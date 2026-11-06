@@ -250,6 +250,7 @@ async fn exercise(c: &Context) -> Result<()> {
     };
     let audit = || {
         RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Request,
             DA,
             c.tenant.to_string(),
             "agent_claim",

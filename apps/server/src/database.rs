@@ -103,6 +103,7 @@ impl Database {
         key: &[u8],
     ) -> Result<std::sync::Arc<rss_mdm_timeline_service::Timeline>, Error> {
         rss_mdm_timeline_service::Timeline::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             self.pool.clone(),
             audit,
             tenant,

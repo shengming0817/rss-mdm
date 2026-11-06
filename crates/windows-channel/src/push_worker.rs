@@ -37,6 +37,7 @@ struct Wake {
 }
 fn audit(tenant: &str, id: Uuid, registration: Uuid) -> RequestAudit {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.into(),
         "windows_push",
@@ -140,7 +141,7 @@ async fn attempt(
                 })).await?;
                 if sealed.is_some() {
 
-                    let fact=Fact::business(audit, &format!("windows-push:{id}:lease"), 200, "success", None).map_err(Error::from)?;
+                    let fact=Fact::observation(audit, &format!("windows-push:{id}:lease"), 200, "success", None).map_err(Error::from)?;
                     store.append(tx, &fact).await.map_err(Error::from)?;audit.mark_commit_started();
                 }
                 Ok(sealed)
@@ -239,7 +240,7 @@ async fn settle(
         })).await?;
         if let Some((changed,_))=changed {
 
-            let fact=Fact::business(audit, &format!("windows-push:{}:settle",wake.id), 200, "success", None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision,"retryAfter":retry_after}))).map_err(Error::from)?;
+            let fact=Fact::observation(audit, &format!("windows-push:{}:settle",wake.id), 200, "success", None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision,"retryAfter":retry_after}))).map_err(Error::from)?;
             (if !changed { Ok(()) } else { store.append(tx, &fact).await }).map_err(Error::from)?;audit.mark_commit_started();
         }
         Ok(changed.map_or(RECONCILE, |(_, wait)| wait))

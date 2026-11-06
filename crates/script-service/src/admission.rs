@@ -286,12 +286,14 @@ pub async fn queue_run_in(
     crate::wake::run_in(&service.reconcile_messaging, tx, id).await?;
     tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'command_relay')").execute(c).await?;Ok(())})).await?;
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tx.tenant_id().to_string(),
         "script_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Script,
         id,
         "script_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -302,8 +304,15 @@ pub async fn queue_run_in(
     audit.registration(input.target.registration);
     let result: Result<()> = async {
         let run = storage::read_run(tx, id).await?;
-        let fact = Fact::business(&audit, &format!("script:{id}:accept"), 202, "success", None)?
-            .with_activity(&crate::activity::run(&run, ActivityPhase::Accepted))?;
+        let fact = Fact::business(
+            &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Script,
+            &format!("script:{id}:accept"),
+            202,
+            "success",
+            None,
+        )?
+        .with_activity(&crate::activity::run(&run, ActivityPhase::Accepted))?;
         service.audit_store.append_in(tx, &fact).await?;
         Ok(())
     }

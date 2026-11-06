@@ -120,6 +120,14 @@ impl Scopes {
             return Err(Error::Forbidden);
         }
         proof.bind_audit(audit)?;
+        if let Command::Scope { change, .. } = command {
+            audit.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Scope,
+                change.operation_id,
+                "management_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
+        }
         match command {
             Command::Scope { id, .. } | Command::ScopeRead { id } => audit.resource_target(
                 rss_mdm_audit_integration::TargetKind::Scope,

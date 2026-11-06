@@ -19,6 +19,7 @@
     }
   ],
   "external_relations": [
+    "mdm_timeline.facts",
     "rss_da.installation_binding",
     "rss_da.installation_units",
     "rss_da.authorization_installation",

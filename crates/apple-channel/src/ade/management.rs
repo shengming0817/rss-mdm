@@ -149,7 +149,8 @@ pub async fn configure(
     .map_err(|_| Error::Conflict)??;
     let op = operation_id(&headers)?;
     p.bind_audit(&audit)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::AppleAde,
         op,
         "apple_ade_configuration",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -212,7 +213,8 @@ pub async fn operation(
     let p = proof(&auth, true)?;
     let op = operation_id(&headers)?;
     p.bind_audit(&audit)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::AppleAde,
         op,
         "apple_ade_operation",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -452,7 +454,14 @@ async fn append(
     op: Uuid,
     replayed: bool,
 ) -> Result<(), Error> {
-    let fact = Fact::business(audit, &format!("apple-ade:{op}"), 200, "success", Some(op))?;
+    let fact = Fact::business(
+        audit,
+        rss_mdm_audit_integration::operation::OperationOwner::AppleAde,
+        &format!("apple-ade:{op}"),
+        200,
+        "success",
+        Some(op),
+    )?;
     (if replayed {
         Ok(())
     } else {
@@ -774,4 +783,64 @@ pub enum DeviceOutcome {
     NotAccessible,
     Throttled,
     Unknown,
+}
+
+/// Original ADE admission and its owner-recorded state, without rerunning remote work.
+pub async fn diagnostic_receipt(
+    app: &HttpState,
+    p: &AuthorizedPrincipal,
+    id: Uuid,
+) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+    if p.tenant_id() != app.identity.tenant().to_string() {
+        return Err(Error::Forbidden);
+    }
+    let mut tx = app.access.begin_read(p.tenant_id()).await?;
+    rss_mdm_authorization_service::lock_shared_on(
+        p.authority_profile(),
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Forbidden)?;
+    rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Forbidden)?
+    .require(
+        p,
+        rss_mdm_authorization_service::Permission::RegistrationConfigurationRead,
+        None,
+    )
+    .map_err(|_| Error::Forbidden)?;
+    let row=sqlx::query("SELECT organization,receipt,state,created_at FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(p.tenant_id()).bind(id).fetch_optional(&mut *tx).await.map_err(db)?;
+    let result = row
+        .map(|row| {
+            let value: Value = row.try_get("receipt").map_err(db)?;
+            let mut s = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+            s.object = Some(
+                row.try_get::<Uuid, _>("organization")
+                    .map_err(db)?
+                    .to_string(),
+            );
+            s.revision = value["revision"].as_i64();
+            s.accepted = Some(true);
+            let state: OperationState =
+                crate::management_query::decode(Value::String(row.try_get("state").map_err(db)?))?;
+            s.state = serde_json::to_value(state)
+                .map_err(|_| Error::Malformed)?
+                .as_str()
+                .map(str::to_owned);
+            s.recorded_at = Some(row.try_get("created_at").map_err(db)?);
+            Ok::<_, Error>(s)
+        })
+        .transpose()?;
+    tx.rollback().await.map_err(db)?;
+    p.check_live()?;
+    Ok(result)
 }

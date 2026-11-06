@@ -122,3 +122,39 @@ impl Scopes {
         Ok(serde_json::json!({"id":id,"revision":revision,"task":task}))
     }
 }
+
+impl Scopes {
+    /// Original actor-bound Scope receipt under the current Scope read permission.
+    pub async fn operation_receipt(
+        &self,
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        use rss_mdm_authorization_service::Permission;
+        p.manage(Permission::ScopeRead)?;
+        crate::transaction::inspect(&self.runtime, self.tenant, (self, p), |(s, p), tx| {
+            Box::pin(async move {
+                crate::action_admission::current(tx, p).await?.require(
+                    p,
+                    Permission::ScopeRead,
+                    None,
+                )?;
+                let value = s.store.operation_in(tx, p.principal_id(), id).await?;
+                value
+                    .map(|v| {
+                        let mut s = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                        s.object = Some(v["id"].as_str().ok_or(Error::Conflict)?.into());
+                        s.revision = Some(v["revision"].as_i64().ok_or(Error::Conflict)?);
+                        if let Some(task) = v["task"].as_str() {
+                            s.executions
+                                .push(Uuid::parse_str(task).map_err(|_| Error::Conflict)?);
+                        }
+                        Ok(s)
+                    })
+                    .transpose()
+            })
+        })
+        .await
+    }
+}

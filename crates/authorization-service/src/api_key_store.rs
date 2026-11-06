@@ -68,7 +68,8 @@ pub async fn change_key(
         key: change.operation_id,
         digest: &digest,
     };
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Authorization,
         change.operation_id,
         "api_key_change",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -76,6 +77,7 @@ pub async fn change_key(
     audit.target(&id.to_string());
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
+        rss_mdm_audit_integration::operation::OperationOwner::Authorization,
         &format!("api_key:{}:{}", proof.principal_id(), change.operation_id),
         200,
         "success",

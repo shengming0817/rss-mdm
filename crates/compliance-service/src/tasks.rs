@@ -103,6 +103,7 @@ impl Compliance {
             Some(_) => "automation_failed",
         };
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             t.to_string(),
             action,
@@ -110,13 +111,15 @@ impl Compliance {
         );
         audit.identify_service("service:compliance");
         audit.target(&state.input.rule.to_string());
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::ComplianceTask,
             id,
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let fact = rss_mdm_audit_integration::Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::ComplianceTask,
             &format!("compliance:{id}:terminal"),
             200,
             if failure.is_some() {

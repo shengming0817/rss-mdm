@@ -5,6 +5,35 @@ use serde_json::Value;
 use sqlx::Row;
 use uuid::Uuid;
 impl ScopeBinding {
+    /// Original actor-bound receipt; lookup never enters mutation/replay admission.
+    pub async fn operation_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        actor: &str,
+        id: Uuid,
+    ) -> Result<Option<Value>, BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        let sql = crate::storage_profile::sql(self.profile()).operation_replay;
+        let row = tx
+            .with_connection_context(&mut (actor, &tenant), |(actor, tenant), c| {
+                Box::pin(async move {
+                    sqlx::query(sql)
+                        .bind(*tenant)
+                        .bind(*actor)
+                        .bind(id)
+                        .fetch_optional(c)
+                        .await
+                })
+            })
+            .await?;
+        row.map(|r| {
+            r.try_get("response")
+                .map_err(PgError::from)
+                .map_err(BindingError::from)
+        })
+        .transpose()
+    }
     pub async fn replay_operation_in(
         &self,
         tx: &mut PgTransaction<'_>,

@@ -306,12 +306,14 @@ pub async fn queue_run_in(
     super::wake::run_in(&service.reconcile_messaging, tx, id).await?;
     tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'command_relay')").execute(c).await?;Ok(())})).await?;
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tx.tenant_id().to_string(),
         "collection_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,
         id,
         "collection_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -324,6 +326,7 @@ pub async fn queue_run_in(
         let activity = super::activity::accepted(id, version, input.target, input.origin);
         let fact = Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,
             &format!("collection:{id}:accept"),
             202,
             "success",

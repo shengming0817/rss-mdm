@@ -945,7 +945,8 @@ impl Transactions {
         )?;
         let fact_audit = audit.transaction_copy();
         fact_audit.identify_service("configuration-policy");
-        fact_audit.operation(
+        fact_audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Configuration,
             input.operation_id,
             "command_accept",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -1031,7 +1032,8 @@ impl Transactions {
                     }
                 };
                 let context = audit.transaction_copy();
-                context.operation(
+                context.owned_operation(
+                    rss_mdm_audit_integration::operation::OperationOwner::Configuration,
                     operation.unwrap_or(policy),
                     "configuration_claim",
                     AuditIntent::Management,
@@ -1046,8 +1048,15 @@ impl Transactions {
                     audit.request_id(),
                     operation.map_or_else(|| "none".into(), |id| id.to_string())
                 );
-                let fact = Fact::business(&context, &key, 200, "success", None)?
-                    .with_activity(&activity)?;
+                let fact = Fact::business(
+                    &context,
+                    rss_mdm_audit_integration::operation::OperationOwner::Configuration,
+                    &key,
+                    200,
+                    "success",
+                    None,
+                )?
+                .with_activity(&activity)?;
                 context.finalize(None);
                 self.audit_store.append_in(tx, &fact).await?;
             }

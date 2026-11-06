@@ -501,18 +501,7 @@ pub async fn timeline_device_in(
     tenant: &str,
     actor: &str,
     operation: Uuid,
-    event_id: &str,
 ) -> std::result::Result<Option<String>, sqlx::Error> {
-    use sha2::Digest;
-    // Verify this owner's immutable source key; do not infer ownership from a UUID collision.
-    if event_id
-        != format!(
-            "e-{:x}",
-            Sha256::digest(format!("assets:{actor}:{operation}").as_bytes())
-        )
-    {
-        return Ok(None);
-    }
     sqlx::query_scalar("SELECT response->'asset'->>'device' FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND response->'asset'->>'kind'='assignment'")
         .bind(tenant).bind(actor).bind(operation).fetch_optional(c).await.map(Option::flatten)
 }
@@ -581,3 +570,55 @@ impl AssetService {
 }
 
 pub mod enrollment;
+
+impl AssetService {
+    /// Safe original management metadata; full asset/query material keeps its own read path.
+    pub async fn operation_receipt(
+        &self,
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        use rss_mdm_authorization_service::Permission;
+        crate::transaction::inspect(&self.runtime,self.tenant,p,|p,tx|Box::pin(async move{
+            let grant=crate::transaction::query_authority(tx,p).await?;
+            let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();
+            let raw:Option<Value>=tx.with_connection(move|c|Box::pin(async move{
+                sqlx::query_scalar("SELECT response FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3")
+                    .bind(tenant).bind(actor).bind(id).fetch_optional(c).await
+            })).await?;
+            let Some(raw)=raw else{return Ok(None)};
+            let envelope:AssetEnvelope=stored(serde_json::from_value(raw))?;
+            if envelope.tenant_id!=p.tenant_id(){return Err(Error::Forbidden.into());}
+            let mut s=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+            match envelope.asset {
+                Response::Assignment{device,field:_,revision}=>{
+                    grant.require(p,Permission::InventoryRead,Some(&device))?;
+                    s.object=Some(device);s.revision=Some(revision);
+                },
+                Response::FieldLayoutWritten{revision}=>{
+                    grant.require(p,Permission::InventoryFieldsWrite,None)?;
+                    s.revision=Some(i64::try_from(revision).map_err(|_|Error::Conflict)?);
+                },
+                Response::Field{field,version,definition:_}=>{
+                    grant.require(p,Permission::InventoryFieldsWrite,None)?;
+                    s.object=Some(field.as_str().to_owned());s.revision=Some(i64::try_from(version).map_err(|_|Error::Conflict)?);
+                },
+                Response::RetentionPolicy{policy}=>{
+                    grant.require(p,Permission::InventoryFieldsWrite,None)?;
+                    if let Some(policy)=policy {let v=stored(serde_json::to_value(policy))?;s.revision=v["revision"].as_i64();}
+                },
+                Response::Accepted{task,..}=>{
+                    grant.require_all_devices(p,Permission::InventoryRead)?;
+                    s.executions.push(task);s.accepted=Some(true);
+                },
+                Response::Saved{query}=>{
+                    grant.require_all_devices(p,Permission::InventoryRead)?;
+                    let v=stored(serde_json::to_value(query))?;s.object=v["id"].as_str().map(str::to_owned);s.revision=v["revision"].as_i64();
+                },
+                _=>return Err(Error::Conflict.into()),
+            }
+            p.check_live()?;Ok(Some(s))
+        }),crate::transaction::TransactionOwner::Assets).await
+    }
+}

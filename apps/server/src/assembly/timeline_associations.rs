@@ -1,6 +1,8 @@
+//! Static source-owner dispatch. UUID spelling and event hashes do not select an owner.
+use rss_mdm_audit_integration::operation::{OperationLocator, OperationOwner as O};
 use rss_mdm_timeline_service::{
     Error,
-    associations::{Association, Associations, Identity},
+    associations::{Association, Associations},
 };
 use std::{future::Future, pin::Pin};
 pub(crate) struct Producers;
@@ -10,127 +12,31 @@ impl Associations for Producers {
         c: &'a mut sqlx::PgConnection,
         tenant: &'a str,
         actor: &'a str,
-        identity: Identity,
+        locator: &'a OperationLocator,
     ) -> Pin<Box<dyn Future<Output = Result<Association, Error>> + Send + 'a>> {
         Box::pin(async move {
-            use super::native_ownership::{self, Owner};
-            use rss_mdm_device_service::control::timeline as execution;
-            let identity = match identity {
-                Identity::Operation(id) => {
-                    let parsed = rss_request_context::TenantId::parse(tenant)
-                        .map_err(|_| Error::Integrity)?;
-                    let owner = native_ownership::on(c, parsed, id)
-                        .await
-                        .map_err(|e| match e {
-                            rss_mdm_policy_service::Error::NotFound => Error::NotFound,
-                            rss_mdm_policy_service::Error::Unavailable(
-                                rss_mdm_policy_service::Failure::CommandInvariant,
-                            ) => Error::Integrity,
-                            _ => Error::Storage,
-                        })?;
-                    if owner == Owner::Software {
-                        return Ok(
-                            rss_mdm_software_service::deployment::timeline::association_in(
-                                c,
-                                tenant,
-                                actor,
-                                rss_mdm_software_service::deployment::timeline::Identity::Operation(
-                                    id,
-                                ),
-                            )
-                            .await?,
-                        );
-                    }
-                    if owner == Owner::Registration {
-                        return Ok(rss_mdm_registration_service::installation::timeline::association_in(c,tenant,actor,rss_mdm_registration_service::installation::timeline::Identity::Operation(id)).await?);
-                    }
-                    if owner == Owner::Recovery {
-                        return Ok(
-                            rss_mdm_recovery_credentials::native::timeline::association_in(
-                                c,
-                                tenant,
-                                actor,
-                                rss_mdm_recovery_credentials::native::timeline::Identity::Operation(
-                                    id,
-                                ),
-                            )
-                            .await?,
-                        );
-                    }
-                    if owner == Owner::Configuration {
-                        return Ok(
-                            rss_mdm_policy_service::configuration::storage::association_on(
-                                c, tenant, id,
-                            )
-                            .await?,
-                        );
-                    }
-                    execution::Identity::Operation(id)
-                }
-                Identity::ActionRun(id) => {
-                    let tenant_id = rss_request_context::TenantId::parse(tenant)
-                        .map_err(|_| Error::Integrity)?;
-                    use super::task_ownership::{self, Owner as TaskOwner};
-                    let owner =
-                        task_ownership::on(c, tenant_id, id)
-                            .await
-                            .map_err(|e| match e {
-                                sqlx::Error::RowNotFound => Error::NotFound,
-                                sqlx::Error::Protocol(_) => Error::Integrity,
-                                _ => Error::Storage,
-                            })?;
-                    match owner {
-                        TaskOwner::Script => return Ok(rss_mdm_script_service::storage::association_on(c, tenant, id).await?),
-                        TaskOwner::Collection => return Ok(rss_mdm_inventory_service::collection::execution::storage::association_on(c, tenant, id).await?),
-                        TaskOwner::Software=>return Ok(rss_mdm_software_service::deployment::timeline::association_in(c,tenant,actor,rss_mdm_software_service::deployment::timeline::Identity::ActionRun(id)).await?),
-                        TaskOwner::Registration=>return Ok(rss_mdm_registration_service::enrollment::tasks::storage::association_on(rss_mdm_install_support::StorageProfile::Mdm, c,tenant,id).await?),
-                        TaskOwner::Access=>return Ok(rss_mdm_device_access_postgres::device_access::execution::storage::association_on(c,tenant,id).await?),
-                        TaskOwner::Credential(profile)=>return Ok(rss_mdm_recovery_credentials::tasks::storage::association_on(profile, c,tenant,id).await?),
-                        TaskOwner::Device => execution::Identity::ActionRun(id),
-                    }
-                }
-                Identity::ChangeRequest(id) => {
-                    let mut associations = Vec::new();
-                    associations.extend(
-                        execution::association_in(
-                            c,
-                            tenant,
-                            actor,
-                            execution::Identity::ChangeRequest(id),
-                        )
-                        .await?,
-                    );
-                    associations.extend(
-                        rss_mdm_software_service::deployment::timeline::association_in(
-                            c,
-                            tenant,
-                            actor,
-                            rss_mdm_software_service::deployment::timeline::Identity::ChangeRequest(
-                                id,
-                            ),
-                        )
-                        .await?,
-                    );
-                    associations.extend(rss_mdm_registration_service::installation::timeline::association_in(c,tenant,actor,rss_mdm_registration_service::installation::timeline::Identity::ChangeRequest(id)).await?);
-                    associations.extend(
-                        rss_mdm_recovery_credentials::native::timeline::association_in(
-                            c,
-                            tenant,
-                            actor,
-                            rss_mdm_recovery_credentials::native::timeline::Identity::ChangeRequest(
-                                id,
-                            ),
-                        )
-                        .await?,
-                    );
-                    return match associations.len() {
-                        0 => Ok(None),
-                        1 => Ok(associations.pop()),
-                        _ => Err(Error::Integrity),
-                    };
-                }
+            let id = locator.operation_id;
+            use rss_mdm_device_service::control::timeline as device;
+            use rss_mdm_recovery_credentials::native::timeline as recovery;
+            use rss_mdm_registration_service::installation::timeline as installation;
+            use rss_mdm_software_service::deployment::timeline as software;
+            let result=match locator.owner {
+                O::DeviceControl=>device::association_in(c,tenant,actor,device::Identity::Operation(id)).await?,
+                O::DeviceAction=>device::association_in(c,tenant,actor,device::Identity::ActionRun(id)).await?,
+                O::DeviceControlRequest=>device::association_in(c,tenant,actor,device::Identity::ChangeRequest(id)).await?,
+                O::SoftwareDeployment=>software::association_in(c,tenant,actor,software::Identity::Operation(id)).await?,
+                O::SoftwareAction=>software::association_in(c,tenant,actor,software::Identity::ActionRun(id)).await?,
+                O::Installation=>installation::association_in(c,tenant,actor,installation::Identity::Operation(id)).await?,
+                O::RecoveryCommand=>recovery::association_in(c,tenant,actor,recovery::Identity::Operation(id)).await?,
+                O::Configuration=>rss_mdm_policy_service::configuration::storage::association_on(c,tenant,id).await?,
+                O::Script=>rss_mdm_script_service::storage::association_on(c,tenant,id).await?,
+                O::CollectionExecution=>rss_mdm_inventory_service::collection::execution::storage::association_on(c,tenant,id).await?,
+                O::EnrollmentTask=>rss_mdm_registration_service::enrollment::tasks::storage::association_on(rss_mdm_install_support::StorageProfile::Mdm,c,tenant,id).await?,
+                O::DeviceAccessTask=>rss_mdm_device_access_postgres::device_access::execution::storage::association_on(c,tenant,id).await?,
+                O::CredentialTask=>rss_mdm_recovery_credentials::tasks::storage::association_on(locator.product,c,tenant,id).await?,
+                _=>None,
             };
-            Ok(execution::association_in(c, tenant, actor, identity).await?)
+            Ok(result)
         })
     }
 }

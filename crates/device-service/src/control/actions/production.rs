@@ -112,12 +112,14 @@ pub(crate) async fn queue_run_in(
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tx.tenant_id().to_string(),
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceAction,
         id,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -128,11 +130,18 @@ pub(crate) async fn queue_run_in(
     audit.registration(registration);
     let result: Result<()> = async {
         let run = super::storage::read_run(tx, id).await?;
-        let fact = Fact::business(&audit, &format!("action:{id}:accept"), 202, "success", None)?
-            .with_activity(&super::activity::run(
-                &run,
-                rss_mdm_audit_integration::activity::ActivityPhase::Accepted,
-            ))?;
+        let fact = Fact::business(
+            &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceAction,
+            &format!("action:{id}:accept"),
+            202,
+            "success",
+            None,
+        )?
+        .with_activity(&super::activity::run(
+            &run,
+            rss_mdm_audit_integration::activity::ActivityPhase::Accepted,
+        ))?;
         service.audit_store.append_in(tx, &fact).await?;
         crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::CommandRelay)
             .await?;

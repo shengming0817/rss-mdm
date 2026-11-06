@@ -68,3 +68,5 @@ pub mod policy_events;
 #[cfg(test)]
 #[path = "../tests/http_contract.rs"]
 mod http_contract_tests;
+
+pub mod operation_diagnostics;

@@ -371,7 +371,7 @@ async fn commit(
                     } else {
                         "windows_entra_terms_start"
                     };
-                    let fact = Fact::business(
+                    let fact = Fact::observation(
                         a,
                         &format!("{action}:{}", stored.id),
                         302,

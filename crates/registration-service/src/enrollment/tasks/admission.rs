@@ -289,12 +289,14 @@ pub async fn queue_run_in(
     crate::enrollment::tasks::wake::run_in(profile, &service.reconcile_messaging, tx, id).await?;
     tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'command_relay')").execute(c).await?;Ok(())})).await?;
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         profile,
         tx.tenant_id().to_string(),
         "enrollment_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
         id,
         "enrollment_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -307,6 +309,7 @@ pub async fn queue_run_in(
         let run = storage::read_run(profile, tx, id).await?;
         let fact = Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
             &format!("enrollment:{id}:accept"),
             202,
             "success",

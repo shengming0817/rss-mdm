@@ -141,7 +141,7 @@ impl Credentials {
         );
         audit.target_device(device);
 
-        let fact = Fact::business(
+        let fact = Fact::observation(
             audit,
             &format!(
                 "recovery:read:{}",
@@ -250,7 +250,7 @@ impl Credentials {
         );
         audit.target_device(device);
 
-        let fact = Fact::business(
+        let fact = Fact::observation(
             audit,
             &format!("recovery:revoke:{}", audit.request_id()),
             200,

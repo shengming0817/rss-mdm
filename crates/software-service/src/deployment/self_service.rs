@@ -486,7 +486,14 @@ impl SoftwareService {
         if let Some(proof) = proof {
             proof.check_live()?;
         }
-        let fact = Fact::business(audit, &event_key, 202, "success", None)?;
+        let fact = Fact::business(
+            audit,
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
+            &event_key,
+            202,
+            "success",
+            None,
+        )?;
         service
             .transactions
             .audit_store

@@ -154,7 +154,8 @@ impl Service {
             if id.is_nil() {
                 return Err(Error::Invalid);
             }
-            audit.operation(
+            audit.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Webhook,
                 id,
                 if matches!(command, Command::Redrive { .. }) {
                     "webhook_redrive_intent"
@@ -255,6 +256,7 @@ impl Service {
                         if let Some(id) = operation(command) {
                             let fact = rss_mdm_audit_integration::Fact::business(
                                 audit,
+                                rss_mdm_audit_integration::operation::OperationOwner::Webhook,
                                 &format!("webhook:{id}"),
                                 200,
                                 "success",
@@ -612,6 +614,46 @@ impl Service {
         let t = self.host.tenant;
         let replayed = self.lock_operation_on(c, command).await?;
         let value = match command {
+            Command::OperationReceipt(id) => {
+                rss_mdm_authorization_service::lock_shared_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    p.tenant_id(),
+                    p.instance_id(),
+                )
+                .await
+                .map_err(|_| Error::Storage)?;
+                rss_mdm_authorization_service::snapshot_on(
+                    rss_mdm_install_support::StorageProfile::Mdm,
+                    c,
+                    p.tenant_id(),
+                    p.instance_id(),
+                )
+                .await
+                .map_err(|_| Error::Storage)?
+                .require(p, Permission::WebhookRead, None)?;
+                let raw: Value = sqlx::query_scalar(
+                    "SELECT response FROM mdm_webhook.operations WHERE tenant_id=$1 AND id=$2",
+                )
+                .bind(t)
+                .bind(id)
+                .fetch_optional(c)
+                .await
+                .map_err(|_| Error::Storage)?
+                .ok_or(Error::NotFound)?;
+                let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(*id);
+                summary.object = raw["id"].as_str().map(str::to_owned);
+                summary.revision = raw["revision"].as_i64();
+                summary.enabled = raw["enabled"].as_bool();
+                if raw.get("eventId").is_some() {
+                    if let Some(id) = raw["id"].as_str() {
+                        summary
+                            .executions
+                            .push(Uuid::parse_str(id).map_err(|_| Error::Storage)?);
+                    }
+                }
+                return Ok((Reply::OperationReceipt(summary), false));
+            }
             Command::Materials
             | Command::MaterialOperation(..)
             | Command::PrepareMaterial(..)
@@ -717,7 +759,8 @@ impl Service {
                 operation,
                 ..
             } => {
-                audit.operation(
+                audit.owned_operation(
+                    rss_mdm_audit_integration::operation::OperationOwner::Webhook,
                     *operation,
                     "webhook_write",
                     rss_mdm_audit_integration::AuditIntent::Management,
@@ -733,7 +776,8 @@ impl Service {
                 operation,
                 ..
             } => {
-                audit.operation(
+                audit.owned_operation(
+                    rss_mdm_audit_integration::operation::OperationOwner::Webhook,
                     *operation,
                     if matches!(&command, Command::Redrive { .. }) {
                         "webhook_redrive"

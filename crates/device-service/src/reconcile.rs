@@ -118,6 +118,7 @@ pub(crate) async fn publish(
     }
 
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         t.clone(),
         "device_association_automatic",
@@ -131,7 +132,8 @@ pub(crate) async fn publish(
             Sha256::digest(serde_json::to_vec(&result).map_err(|_| Error::Storage)?).to_vec();
         sqlx::query("INSERT INTO mdm_devices.operations(tenant_id,operation_id,actor,instance,digest,result) VALUES($1::uuid,$2,'device-associations','system',$3,$4)").bind(&t).bind(operation).bind(digest).bind(&value).execute(&mut *c).await?;
         let fact_audit = audit.fact_copy("device_association_automatic");
-        fact_audit.operation(
+        fact_audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceManagement,
             operation,
             "device_association_automatic",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -140,6 +142,7 @@ pub(crate) async fn publish(
         facts.push(
             Fact::business(
                 &fact_audit,
+                rss_mdm_audit_integration::operation::OperationOwner::DeviceManagement,
                 &format!("device_association:{operation}"),
                 200,
                 "success",

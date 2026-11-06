@@ -104,7 +104,7 @@ async fn configurations(
         .map(Json)
         .map_err(error)
 }
-pub(crate) fn error(e: rss_mdm_telemetry_service::Error) -> Error {
+pub fn error(e: rss_mdm_telemetry_service::Error) -> Error {
     use rss_mdm_telemetry_service::Error as T;
     match e {
         T::Unsupported => Error::Unsupported,

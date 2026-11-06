@@ -231,12 +231,14 @@ pub async fn seal(
     // The terminal fact is audited in the caller's transaction. Its owner records commit
     // uncertainty (HTTP envelope or retention task); this helper never commits independently.
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         profile,
         run.scope.tenant().to_string(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Collection,
         run.id,
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -247,6 +249,7 @@ pub async fn seal(
 
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
+        rss_mdm_audit_integration::operation::OperationOwner::Collection,
         &format!("collection:{}:finish", run.id),
         200,
         if result == "failed" {
@@ -486,6 +489,7 @@ impl Delivery {
             return Ok(0);
         }
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             profile,
             tenant.into(),
             "collection_finish",

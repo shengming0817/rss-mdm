@@ -14,6 +14,12 @@ impl Policies {
         audit: &RequestAudit,
     ) -> std::result::Result<Receipt, Error> {
         let profile = self.profile();
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Policy,
+            op.operation_id,
+            "management_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
 
         proof.manage(Permission::PolicyWrite)?;
         run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,op,audit),|ctx,tx|Box::pin(async move {
@@ -37,7 +43,7 @@ impl Policies {
 
             let value=Receipt {operation_id:op.operation_id,policy_id:id,version_id:policy.version,deadline:op.input.deadline};
             checked(s.policy_store.receipt_in(tx,op.operation_id,&hash,&stored(serde_json::to_value(&value))?).await?)?;
-            s.audit_store.append_in(tx, &Fact::business(audit, &format!("policy:{id}:rerun:{}",op.operation_id), 200, "success", None)?).await?;
+            s.audit_store.append_in(tx, &Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::Policy, &format!("policy:{id}:rerun:{}",op.operation_id), 200, "success", None)?).await?;
             proof.check_live()?;Ok(value)
         }),).await
     }

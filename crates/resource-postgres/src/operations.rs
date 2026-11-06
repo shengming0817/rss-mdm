@@ -2,6 +2,20 @@
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use serde_json::Value;
 use sqlx::Row;
+/// Read the original actor-bound response without taking a replay lock or writing.
+pub async fn read_operation_in(
+    tx: &mut PgTransaction<'_>,
+    actor: &str,
+    id: &str,
+) -> Result<Option<Value>, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    let actor = actor.to_owned();
+    let id = id.to_owned();
+    tx.with_connection(move |c|Box::pin(async move {
+        sqlx::query_scalar("SELECT response FROM mdm_resource_catalog.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3::uuid")
+            .bind(tenant).bind(actor).bind(id).fetch_optional(c).await
+    })).await
+}
 /// Lock and read a complete application receipt in the caller transaction.
 pub async fn replay_operation_in(
     tx: &mut PgTransaction<'_>,

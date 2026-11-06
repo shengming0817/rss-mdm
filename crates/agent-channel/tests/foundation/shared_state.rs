@@ -221,10 +221,10 @@ server.serve_forever()
                 use sha2::{Digest,Sha256};
                 let hash=Sha256::digest(serde_json::to_vec(&trust)?);
                 let id=Uuid::from_bytes(hash[..16].try_into()?);
-                let request=RequestAudit::new(profile,c.tenant.to_string(),"device_pki_admit",AuditIntent::Management);
+                let request=RequestAudit::new(rss_mdm_audit_integration::Origin::Request, profile,c.tenant.to_string(),"device_pki_admit",AuditIntent::Management);
                 request.identify_service("service:device-pki");
                 request.operation(id,"device_pki_admit",AuditIntent::Management);
-                let fact=rss_mdm_audit_integration::Fact::business(&request,&format!("pki:{id}:admit"),200,"success",None)?;
+                let fact=rss_mdm_audit_integration::Fact::observation(&request,&format!("pki:{id}:admit"),200,"success",None)?;
                 let append=runtime.local_tx_with_context(c.tenant,deadline(),(&audit,&fact),|(audit,fact),tx|Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     audit.append_in(tx,fact).await.map_err(PgError::from)

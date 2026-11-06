@@ -3,6 +3,7 @@ use uuid::Uuid;
 #[derive(Clone, serde::Serialize)]
 pub enum Command {
     Materials,
+    OperationReceipt(Uuid),
     MaterialOperation(Uuid),
     PrepareMaterial(Uuid, crate::materials::Prepare),
     TransitionMaterial(Uuid, crate::materials::Transition),

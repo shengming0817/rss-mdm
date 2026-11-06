@@ -101,7 +101,8 @@ async fn change_authorization<T: serde::Serialize + Sync>(
         key: change.operation_id,
         digest: &digest,
     };
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Authorization,
         change.operation_id,
         "authorization_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -109,6 +110,7 @@ async fn change_authorization<T: serde::Serialize + Sync>(
     audit.target(&id.to_string());
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
+        rss_mdm_audit_integration::operation::OperationOwner::Authorization,
         &format!(
             "authorization_write:{}:{}",
             proof.principal_id(),
@@ -491,7 +493,8 @@ pub(crate) async fn initialize_verified_user(
         return Err(Error::Malformed);
     }
     audit.set_principal(&user.principal_id, &user.instance_id);
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Authorization,
         key,
         "authorization_initialize",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -512,6 +515,7 @@ pub(crate) async fn initialize_verified_user(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
+        rss_mdm_audit_integration::operation::OperationOwner::Authorization,
         &format!("authorization_initialize:{}:{}", user.principal_id, key),
         200,
         "success",
@@ -677,4 +681,75 @@ pub(crate) async fn grant_verified_administrator_on(
         revision: 1,
         deleted: false,
     })
+}
+
+/// Original safe receipt for authorization rules, groups and credential administration.
+/// Secret creation responses are deliberately not persisted or reconstructed here.
+pub async fn operation_receipt(
+    store: &rss_mdm_audit_integration::AuditStore,
+    p: &AuthorizedPrincipal,
+    id: Uuid,
+) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+    p.require(Permission::AuthorizationRead, None)?;
+    let tenant =
+        rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Malformed)?;
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+    let result = store
+        .read(tenant, &budget.control(), p, |p, tx| {
+            Box::pin(async move {
+                tx.with_connection_context(p, |p, c| {
+                    Box::pin(async move {
+                        lock_shared(p.authority_profile(), c, p.tenant_id(), p.instance_id())
+                            .await?;
+                        snapshot_on(p.authority_profile(), c, p.tenant_id(), p.instance_id())
+                            .await?
+                            .require(p, Permission::AuthorizationRead, None)?;
+                        let sql =
+                            crate::storage_profile::sql(p.authority_profile()).operations_replay_1;
+                        let row = sqlx::query(sql)
+                            .bind(p.tenant_id())
+                            .bind(p.principal_id())
+                            .bind(id.to_string())
+                            .fetch_optional(c)
+                            .await
+                            .map_err(db)?;
+                        let Some(row) = row else { return Ok(None) };
+                        if row.try_get::<String, _>("instance").map_err(db)? != p.instance_id() {
+                            return Ok(None);
+                        }
+                        let receipt: Receipt =
+                            serde_json::from_str(row.try_get("result").map_err(db)?)
+                                .map_err(|_| Error::Corrupt)?;
+                        let mut summary =
+                            rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                        summary.object = Some(receipt.id.to_string());
+                        summary.revision =
+                            Some(i64::try_from(receipt.revision).map_err(|_| Error::Corrupt)?);
+                        summary.state = Some(
+                            if receipt.deleted {
+                                "deleted"
+                            } else {
+                                "recorded"
+                            }
+                            .into(),
+                        );
+                        p.check_live()?;
+                        Ok::<_, Error>(Some(summary))
+                    })
+                })
+                .await
+            })
+        })
+        .await;
+    fn failure(
+        e: rss_mdm_audit_integration::TransactionError<Error>,
+    ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+        Err(match e {
+            rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+            rss_mdm_audit_integration::TransactionError::Storage(e) => e.into(),
+            rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        })
+    }
+    result.fold(Ok, failure, failure, failure, failure, failure)
 }

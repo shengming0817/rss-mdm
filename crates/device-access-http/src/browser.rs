@@ -126,6 +126,7 @@ pub fn envelope(router: axum::Router, state: Arc<Services>) -> axum::Router {
 }
 async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next) -> Response {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         rss_mdm_install_support::StorageProfile::Da,
         s.identity.tenant.to_string(),
         "da_browser",

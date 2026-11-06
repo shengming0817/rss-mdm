@@ -524,6 +524,7 @@ pub async fn issue_in(
         &op,
         &serde_json::to_string(&receipt).map_err(|_| Error::Corrupt)?,
         audit,
+        true,
     )
     .await?;
     Ok((receipt, false))

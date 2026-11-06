@@ -479,6 +479,7 @@ async fn verify_access_recovery(
         id: Uuid,
     ) -> Result<RunState, execution::Error> {
         let request = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Request,
             StorageProfile::Da,
             c.tenant.to_string(),
             "da-recovery-proof",
@@ -649,6 +650,7 @@ async fn verify_access_recovery(
         let input =
             w::TaskEventRequest::new(Uuid::new_v4(), task.attempt_id, event, context.clone())?;
         let request = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Request,
             StorageProfile::Da,
             c.tenant.to_string(),
             "disabled-host-settlement",
@@ -832,6 +834,7 @@ async fn recover_credential(
     id: Uuid,
 ) -> Result<rss_mdm_task_state::RunState, recovery::tasks::Error> {
     let request = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         StorageProfile::Da,
         c.tenant.to_string(),
         "rss-credential-recovery-proof",
@@ -993,6 +996,7 @@ async fn retire_credential(
     abort: bool,
 ) -> Result<Vec<String>, recovery::tasks::Error> {
     let request = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         StorageProfile::Da,
         c.tenant.to_string(),
         "rss-credential-retirement-proof",

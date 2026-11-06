@@ -171,3 +171,34 @@ impl Groups {
 pub fn schema() -> &'static rss_mdm_query::directory::Schema {
     &rss_mdm_group_postgres::directory::SCHEMA
 }
+
+impl Groups {
+    /// Safe historical management result from the original actor's receipt.
+    pub async fn operation_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        p.manage(Permission::GroupRead)?;
+        crate::transaction::inspect(&self.runtime,self.tenant,(self,p),|(_,p),tx|Box::pin(async move {
+            let grant=crate::transaction::query_authority(tx,p).await?;
+            grant.require(p,Permission::GroupRead,None)?;
+            grant.require_all_devices(p,Permission::InventoryRead)?;
+            let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();
+            let value:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{
+                sqlx::query_scalar("SELECT response FROM mdm_assets.group_operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3")
+                    .bind(tenant).bind(actor).bind(id).fetch_optional(c).await
+            })).await?;
+            value.map(|v|{
+                let mut s=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                match crate::response::Response::decode(v)? {
+                    crate::response::Response::GroupReceipt(v)=>{s.object=Some(v.group.id.to_string());s.revision=Some(v.group.revision);s.executions.extend(v.task);},
+                    crate::response::Response::JobAccepted(v)=>{s.object=Some(v.target);s.accepted=Some(true);s.executions.push(v.task);},
+                    _=>return Err(Error::Conflict.into()),
+                }
+                Ok(s)
+            }).transpose()
+        })).await
+    }
+}

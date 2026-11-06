@@ -24,6 +24,7 @@ pub(crate) async fn advance(
     rollback: bool,
 ) -> Result<(), rss_mdm_scope_service::Error> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         s.tenant.to_string(),
         "scope_reconcile",

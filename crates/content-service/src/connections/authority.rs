@@ -223,7 +223,7 @@ impl Authority {
                 p.check_live()?;Ok::<_,Failure>((value,replayed))
             })).await?;
 
-            let fact=Fact::business(audit, &format!("storage-provision:{operation}"), 202, "success", None)?;
+            let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::StorageConnection, &format!("storage-provision:{operation}"), 202, "success", None)?;
             (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)
@@ -264,7 +264,7 @@ impl Authority {
                 p.check_live()?;Ok::<_,Failure>((value,replayed))
             })).await?;
 
-            let fact=Fact::business(audit, &format!("storage-migration:{operation}"), 202, "success", None)?;
+            let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::StorageMigration, &format!("storage-migration:{operation}"), 202, "success", None)?;
             (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)
@@ -304,7 +304,7 @@ impl Authority {
                 p.check_live()?;Ok::<_,Failure>((value,replayed))
             })).await?;
 
-            let fact=Fact::business(audit, &format!("storage-migration-cancel:{operation}"), 202, "success", None)?;
+            let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::StorageMigration, &format!("storage-migration-cancel:{operation}"), 202, "success", None)?;
             (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)

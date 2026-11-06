@@ -59,7 +59,7 @@ GRANT SELECT,INSERT ON mdm_telemetry.resources TO mdm_telemetry_runtime;
 -- Idempotent management intent and the last confirmed bounded step, never sampled data.
 CREATE TABLE mdm_telemetry.maintenance (
  tenant_id uuid NOT NULL, id uuid NOT NULL, binding bytea NOT NULL CHECK(octet_length(binding)=32),
- result jsonb, PRIMARY KEY(tenant_id,id)
+ request jsonb NOT NULL, result jsonb, PRIMARY KEY(tenant_id,id)
 );
 ALTER TABLE mdm_telemetry.maintenance ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.maintenance FORCE ROW LEVEL SECURITY;

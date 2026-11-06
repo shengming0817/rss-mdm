@@ -4,12 +4,14 @@ use super::*;
 pub fn rejected_audits(c: &Context) -> [RequestAudit; 2] {
     [
         RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Request,
             StorageProfile::Mdm,
             c.tenant.to_string(),
             "boundary",
             AuditIntent::Management,
         ),
         RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Request,
             DA,
             Uuid::new_v4().to_string(),
             "boundary",
@@ -101,6 +103,7 @@ pub async fn task_trust(
         assert_eq!(snapshot(c).await?, before);
     }
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         DA,
         c.tenant.to_string(),
         "task_trust",
@@ -110,6 +113,7 @@ pub async fn task_trust(
     service.acknowledge_task_trust(p, &audit, &ack).await?;
     audit.finalize(None);
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         DA,
         c.tenant.to_string(),
         "task_trust",
@@ -145,7 +149,13 @@ pub async fn registration(
         audit.finalize(None);
         assert_eq!(snapshot(c).await?, before);
     }
-    let audit = RequestAudit::new(DA, c.tenant.to_string(), "pki_ack", AuditIntent::Management);
+    let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
+        DA,
+        c.tenant.to_string(),
+        "pki_ack",
+        AuditIntent::Management,
+    );
     service.acknowledge_trust(peer, &input, &audit).await?;
     audit.finalize(None);
     assert_ne!(snapshot(c).await?, before);

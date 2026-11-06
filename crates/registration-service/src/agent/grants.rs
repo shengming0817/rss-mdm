@@ -11,7 +11,8 @@ impl Service {
         version(input.wire_version, input.operation_id)?;
         let bound = hex(csr(&input.csr)?.spki());
         let d = digest(input)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_authorization_request",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -122,7 +123,8 @@ impl Service {
 
         self.proof(p, a)?;
         version(wire::API_VERSION, operation)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             operation,
             "agent_grant_authorize",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -238,6 +240,7 @@ impl Service {
                     &op,
                     &serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,
                     a,
+                    false,
                 )
                 .await?;
                 Ok(Change {
@@ -260,7 +263,8 @@ impl Service {
 
         self.proof(p, a)?;
         version(wire::API_VERSION, operation)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             operation,
             "agent_grant_revoke",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -318,6 +322,7 @@ impl Service {
                     &op,
                     &serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,
                     a,
+                    false,
                 )
                 .await?;
                 Ok(Change {
@@ -381,7 +386,8 @@ impl Service {
         self.proof(p, a)?;
         version(input.wire_version, input.operation_id)?;
         let bound = hex(csr(&input.csr)?.spki());
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::RegistrationRecovery,
             input.operation_id,
             "agent_recovery_grant",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -408,7 +414,7 @@ impl Service {
                     if row.try_get::<String, _>("state").map_err(db)? != "active" {
                         return Err(Error::Forbidden);
                     }
-                    a.target(&device);
+                    a.target_device(&device);
                     if let Some(id) = sqlx::query_scalar::<_, Uuid>(
                         crate::storage_profile::sql(profile).certificate_grants_recovery_2,
                     )
@@ -530,7 +536,8 @@ impl Service {
         let d = digest(&(principal.registration(), principal.credential(), input))?;
         a.identify_device(principal.registration());
         a.target(principal.device());
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_renewal_grant",
             rss_mdm_audit_integration::AuditIntent::Management,

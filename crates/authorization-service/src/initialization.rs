@@ -111,7 +111,8 @@ pub async fn complete_verified_administrator(
     }
     user.validate(&user.tenant_id, &user.instance_id)?;
     audit.set_principal(&user.principal_id, &user.instance_id);
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Authorization,
         operation,
         "authorization_transfer",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -120,6 +121,7 @@ pub async fn complete_verified_administrator(
 
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
+        rss_mdm_audit_integration::operation::OperationOwner::Authorization,
         &format!("authorization-transfer:{operation}"),
         200,
         "success",

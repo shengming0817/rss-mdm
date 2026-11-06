@@ -92,6 +92,7 @@ pub async fn settle_dispatch_failures(
 
         let fact = Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Configuration,
             &format!("native-dispatch-failure:{id}"),
             200,
             "failed",
@@ -172,7 +173,8 @@ pub(crate) async fn native_fact_in(
         Task::Macos { .. } => ActivityEffect::Unknown,
     });
     let context = audit.transaction_copy();
-    context.operation(
+    context.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Configuration,
         op.id,
         "command_reconcile",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -181,6 +183,7 @@ pub(crate) async fn native_fact_in(
     context.registration(op.registration);
     let fact = Fact::business(
         &context,
+        rss_mdm_audit_integration::operation::OperationOwner::Configuration,
         &format!("command:{}:receipt:{version}", op.id),
         200,
         "success",

@@ -20,7 +20,8 @@ pub async fn replace<C: ManagementContentPort>(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.target(&source);
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwareSourceSnapshot,
         op.operation_id,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -79,6 +80,7 @@ pub async fn replace<C: ManagementContentPort>(
                 .await?;
                 let fact = rss_mdm_audit_integration::Fact::business(
                     audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::SoftwareSourceSnapshot,
                     &format!("software-source-snapshot:{source}:{operation}"),
                     200,
                     "success",

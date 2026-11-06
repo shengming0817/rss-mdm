@@ -473,7 +473,8 @@ impl Service {
         if input.operation_id.is_nil() {
             return Err(Error::Malformed.into());
         }
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_connections_save",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -543,6 +544,7 @@ impl Service {
                     })
                     .map_err(|_| Error::Corrupt)?,
                     audit,
+                    false,
                 )
                 .await?;
                 Ok(Change {
@@ -567,7 +569,8 @@ impl Service {
         if input.operation_id.is_nil() {
             return Err(Error::Malformed.into());
         }
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_connections_publish",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -694,6 +697,7 @@ impl Service {
                     })
                     .map_err(|_| Error::Corrupt)?,
                     audit,
+                    false,
                 )
                 .await?;
                 Ok(Change {
@@ -770,7 +774,8 @@ impl Service {
         let p = self.authenticate(peer).await?;
         audit.identify_device(p.registration());
         audit.target(p.device());
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_connections_ack",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -872,7 +877,8 @@ impl Service {
         let principal = self.authenticate(peer).await?;
         audit.identify_device(principal.registration());
         audit.target(principal.device());
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_connections_failure",
             rss_mdm_audit_integration::AuditIntent::Management,

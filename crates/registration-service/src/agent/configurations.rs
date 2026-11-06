@@ -267,7 +267,8 @@ impl Service {
             &input.quantity,
             &input.targets,
         ))?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::AgentConfiguration,
             input.operation_id,
             "agent_configuration_create",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -455,7 +456,8 @@ impl Service {
         self.proof(p, a)?;
         p.manage(Permission::AgentEnrollmentWrite)?;
         version(1, operation)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             operation,
             "agent_configuration_revoke",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -487,7 +489,7 @@ impl Service {
                 .execute(&mut *c)
                 .await
                 .map_err(db)?;
-                crate::operations::save(profile, c, &op, "null", a).await?;
+                crate::operations::save(profile, c, &op, "null", a, false).await?;
                 Ok(Change {
                     value: (),
                     replay: false,
@@ -521,7 +523,8 @@ impl Service {
         input.runtime.validate().map_err(|_| Error::Malformed)?;
         let spki = hex(csr(&input.csr)?.spki());
         let d = digest(input)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_configuration_exchange",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -686,7 +689,8 @@ impl Service {
         let profile = self.profile();
 
         version(input.wire_version, input.operation_id)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_reservation_cancel",
             rss_mdm_audit_integration::AuditIntent::Management,

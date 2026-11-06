@@ -120,6 +120,7 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
     .await?;
     da.manage(P::ScopeRead)?;
     let da_audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Da,
         c.tenant.to_string(),
         "management_read",
@@ -169,6 +170,7 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
                 let proof = proof.clone();
                 async move {
                     let audit = rss_mdm_audit_integration::RequestAudit::new(
+                        rss_mdm_audit_integration::Origin::Request,
                         rss_mdm_audit_integration::StorageProfile::Mdm,
                         tenant.to_string(),
                         "management_read",

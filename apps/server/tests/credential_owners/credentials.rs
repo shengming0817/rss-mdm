@@ -315,7 +315,7 @@ async fn sensitive_disclosure_requires_confirmed_audit_commit() -> Result<()> {
         )
         .await?;
     assert_eq!(result.secret.as_str(), "Owner-test-Password!42");
-    let fact = rss_mdm_audit_integration::Fact::business(
+    let fact = rss_mdm_audit_integration::Fact::observation(
         &audit,
         &format!("recovery:read:{}", audit.request_id()),
         200,

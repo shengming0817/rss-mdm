@@ -82,6 +82,48 @@ pub async fn detail_on(
             .await?,
     ))
 }
+/// Exact task lookup for diagnostics, retaining the owner's existing bounded projection.
+pub async fn diagnostic_on(
+    c: &mut sqlx::PgConnection,
+    proof: &AuthorizedPrincipal,
+    grant: &Snapshot,
+    locator: &rss_mdm_audit_integration::operation::OperationLocator,
+) -> Result<Option<Record>> {
+    if locator.product != proof.profile() {
+        return Err(Error::Forbidden.into());
+    }
+    let device = locator.device.as_deref().ok_or(Error::Malformed)?;
+    grant.require(proof, Permission::OperationRead, Some(device))?;
+    let relation = match proof.profile() {
+        rss_mdm_install_support::StorageProfile::Mdm => RELATION_SQL,
+        rss_mdm_install_support::StorageProfile::Da => DA_RELATION_SQL,
+    };
+    let mut sql = sqlx::QueryBuilder::<sqlx::Postgres>::new("WITH owned AS (");
+    sql.push(relation).push(") SELECT policy FROM owned WHERE id=$2 AND device=$3 AND ($4::uuid IS NULL OR registration=$4) AND ($5::bigint IS NULL OR generation=$5)");
+    let policy: Option<Uuid> = sql
+        .build_query_scalar()
+        .bind(proof.tenant_id())
+        .bind(locator.operation_id)
+        .bind(device)
+        .bind(locator.registration)
+        .bind(locator.generation)
+        .fetch_optional(&mut *c)
+        .await?;
+    match policy {
+        Some(policy) => detail_on(
+            proof.profile(),
+            c,
+            proof.tenant_id(),
+            policy,
+            locator.operation_id,
+            proof,
+            grant,
+        )
+        .await
+        .map(Some),
+        None => Ok(None),
+    }
+}
 
 /// Correlate only the original Agent registration and generation.
 pub async fn assignment_ids_on(

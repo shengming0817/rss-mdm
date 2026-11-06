@@ -28,13 +28,15 @@ pub async fn audit_recovery(
     }
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             tx.tenant_id().to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("collection-recovery");
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,
             run.id,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -47,6 +49,7 @@ pub async fn audit_recovery(
         use sha2::Digest;
         let fact = Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,
             &format!(
                 "collection:{}:recover:{:x}",
                 run.id,
@@ -78,12 +81,14 @@ impl CollectionService {
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,
             id,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -100,7 +105,7 @@ impl CollectionService {
                 Ok(old)
             })).await?.ok_or(Error::Unavailable(crate::Failure::PlanningStorage))?;
             if old { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
-            else { service.transactions.audit_store.append_in(tx,&Fact::business(audit,&format!("collection:{id}:dispatch"),200,"success",None)?).await?; }
+            else { service.transactions.audit_store.append_in(tx,&Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,&format!("collection:{id}:dispatch"),200,"success",None)?).await?; }
             super::wake::run_in(&service.transactions.reconcile_messaging,tx,id).await?;
             Ok(())
         }),crate::transaction::TransactionOwner::Collections).await;

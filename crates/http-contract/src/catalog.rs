@@ -1165,3 +1165,12 @@ pub static GROUP_IMPACTS: Resource = Resource {
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
 };
+
+pub static OPERATION_DIAGNOSTICS: Resource = Resource {
+    id: "operation_diagnostics",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "operation_diagnostics.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::OPERATION_DIAGNOSTICS),
+};

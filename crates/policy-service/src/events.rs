@@ -118,7 +118,8 @@ impl Events {
                 None,
             ),
         };
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::PolicyEvent,
             input.operation_id,
             "policy_event",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -358,7 +359,7 @@ impl Events {
                                 .append_in(
                                     tx,
                                     &rss_mdm_audit_integration::Fact::business(
-                                        audit,
+                                        audit, rss_mdm_audit_integration::operation::OperationOwner::PolicyEvent,
                                         &format!("policy-event:{batch}:{member}"),
                                         200,
                                         "rejected",
@@ -427,7 +428,7 @@ impl Events {
                         .append_in(
                             tx,
                             &rss_mdm_audit_integration::Fact::business(
-                                audit,
+                                audit, rss_mdm_audit_integration::operation::OperationOwner::PolicyEvent,
                                 &format!("policy-event:{batch}:accepted"),
                                 202,
                                 "success",
@@ -476,13 +477,15 @@ impl Application {
         let input: wire::PolicyEventRequest =
             stored(serde_json::from_value(row.try_get("input")?))?;
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             self.profile(),
             self.tenant.to_string(),
             "policy_event_member",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("policy-event");
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::PolicyEventMember,
             member,
             "policy_event_member",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -577,6 +580,7 @@ impl Application {
                 tx,
                 &rss_mdm_audit_integration::Fact::business(
                     &audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::PolicyEventMember,
                     &format!("policy-event:{batch}:{member}"),
                     200,
                     "success",
@@ -785,6 +789,7 @@ impl Application {
         let profile = self.profile();
 
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             self.profile(),
             self.tenant.to_string(),
             "policy_event_member",
@@ -822,7 +827,8 @@ impl Application {
             };
             audit.registration(target.registration);
             audit.target_device(&target.device);
-            audit.operation(
+            audit.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::PolicyEventMember,
                 member,
                 "policy_event_member",
                 rss_mdm_audit_integration::AuditIntent::Management,
@@ -832,6 +838,7 @@ impl Application {
                     tx,
                     &rss_mdm_audit_integration::Fact::business(
                         &audit,
+                        rss_mdm_audit_integration::operation::OperationOwner::PolicyEventMember,
                         &format!("policy-event:{batch}:{member}"),
                         200,
                         "rejected",

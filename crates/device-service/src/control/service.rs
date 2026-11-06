@@ -200,7 +200,7 @@ impl Service {
             let command=service.transactions.required_command(tx,&current).await?;
             let mut activity=crate::control::timeline::native_activity(&current,command.status(),rss_mdm_audit_integration::activity::ActivityPhase::Changed);
             activity.links.request=Some(change.request_id);
-            let fact = Fact::business(audit, &event_key, 200, "success", None)?.with_activity(&activity)?;
+            let fact = Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::DeviceControlRequest, &event_key, 200, "success", None)?.with_activity(&activity)?;
             service.transactions.audit_store.append_in(tx, &fact).await?;receipt(tx,change.request_id,id,fingerprint,&result,audit).await?;proof.check_live()?;Ok(result)
         })).await
     }
@@ -344,6 +344,7 @@ async fn created(
     };
     let fact = Fact::business(
         audit,
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
         &format!(
             "command:{}:{id}:accept",
             audit.snapshot().actor.ok_or(Error::Malformed)?

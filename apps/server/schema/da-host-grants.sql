@@ -88,3 +88,7 @@ GRANT SELECT ON rss_da.report_heads,rss_da.report_history,rss_da.signing_heads,r
 GRANT SELECT,INSERT ON rss_da.configuration_exports TO mdm_identity_runtime;
 GRANT SELECT(tenant_id,usage,key_id,max_verify_until),UPDATE(max_verify_until) ON rss_da.signing_keys TO mdm_identity_runtime;
 COMMIT;
+
+-- Hosted diagnostics read the shared rebuildable index through the DA authority transaction.
+GRANT USAGE ON SCHEMA mdm_timeline TO da_access;
+GRANT SELECT ON mdm_timeline.facts TO da_access;

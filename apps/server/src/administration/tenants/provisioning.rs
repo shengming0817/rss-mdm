@@ -58,12 +58,7 @@ impl Service {
         if progress.administrator_id.is_some() {
             return Ok(receipt);
         }
-        let child_audit = RequestAudit::new(
-            rss_mdm_audit_integration::StorageProfile::Mdm,
-            self.management.to_string(),
-            "tenant_administrator_create",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
+        let child_audit = audit.transaction_copy();
         proof.bind_audit(&child_audit)?;
         let result = self
             .create_administrator(
@@ -98,7 +93,8 @@ impl Service {
         name: &str,
         digest: &str,
     ) -> std::result::Result<(Receipt, Uuid), Error> {
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::TenantAdministration,
             operation,
             "tenant_provision",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -106,6 +102,7 @@ impl Service {
         audit.require_final_request();
         let fact = Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::TenantAdministration,
             &format!("tenant-provision:{operation}"),
             202,
             "success",

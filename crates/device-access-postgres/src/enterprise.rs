@@ -260,7 +260,8 @@ impl Service {
                 serde_json::to_vec(&(input, target_fingerprint)).map_err(|_| Error::Malformed)?
             )
         );
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::EnterpriseConfiguration,
             input.operation_id,
             "enterprise_configuration",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -459,4 +460,24 @@ pub fn verify_signature(
     )
     .verify(payload, &bytes)
     .map_err(|_| Error::Unauthorized)
+}
+
+impl Service {
+    /// Read the original result under the current session and original actor namespace.
+    pub async fn enterprise_operation(
+        &self,
+        actor: &AuthorizedPrincipal,
+        id: Uuid,
+    ) -> Result<Record, Error> {
+        if id.is_nil() {
+            return Err(Error::Malformed);
+        }
+        self.read_with_session(actor,(actor,id),|ctx,c|Box::pin(async move{
+            let(actor,id)=*ctx;
+            authorize(c,actor,Permission::EnterpriseApplicationsRead).await?;
+            let raw:Option<String>=sqlx::query_scalar("SELECT result FROM rss_da.operations WHERE tenant_id=$1::uuid AND instance=$2::uuid AND actor=$3::uuid AND operation_id=$4")
+                .bind(actor.tenant_id()).bind(actor.instance_id()).bind(actor.principal_id()).bind(id).fetch_optional(c).await.map_err(db)?;
+            serde_json::from_str(&raw.ok_or(Error::NotFound)?).map_err(|_|Error::NotFound)
+        })).await
+    }
 }

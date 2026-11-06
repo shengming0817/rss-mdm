@@ -140,7 +140,8 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         p.bind_audit(audit)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceManagement,
             change.operation(),
             change.name(),
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -197,7 +198,7 @@ impl Associations {
         .bind(p.tenant_id()).bind(change.operation()).bind(p.principal_id()).bind(p.instance_id()).bind(*digest).bind(result.clone()).execute(c).await?;
       Ok::<_,Error>((result,false))
     })).await?;
-    let fact=Fact::business(audit, &format!("device-lifecycle:{}",change.operation()), 200, "success", None)?.with_details(result.clone())?;
+    let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::DeviceManagement, &format!("device-lifecycle:{}",change.operation()), 200, "success", None)?.with_details(result.clone())?;
     (if replay { Ok(()) } else { s.audit.append(tx, &fact).await })?;p.check_live()?;audit.mark_commit_started();Ok(result)
   })).await;
         attempt.fold(

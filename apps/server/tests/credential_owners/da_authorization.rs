@@ -71,6 +71,7 @@ async fn proof(
 
 fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
     rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         StorageProfile::Da,
         c.tenant.to_string(),
         "da-delivery-proof",

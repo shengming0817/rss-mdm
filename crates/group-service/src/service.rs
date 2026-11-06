@@ -62,6 +62,14 @@ impl Groups {
             return Err(Error::Forbidden);
         }
         proof.bind_audit(audit)?;
+        if let Command::Group { change, .. } = command {
+            audit.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Group,
+                change.operation_id,
+                "management_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
+        }
         let permission = match command {
             Command::Group { change, .. }
                 if matches!(change.input, GroupChange::Recompute { .. }) =>

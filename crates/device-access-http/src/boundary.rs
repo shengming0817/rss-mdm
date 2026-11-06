@@ -53,6 +53,7 @@ impl rss_mdm_http_contract::signature::Input for Administrator {
 }
 pub async fn admit(State(s): State<Arc<Services>>, mut request: Request, next: Next) -> Response {
     let a = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         rss_mdm_install_support::StorageProfile::Da,
         s.sessions.tenant().to_string(),
         "da_http",

@@ -127,6 +127,7 @@ impl AssetService {
             Some(_) => "automation_failed",
         };
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             self.tenant.to_string(),
             action,
@@ -134,13 +135,15 @@ impl AssetService {
         );
         audit.identify_service("service:asset-query");
         audit.target(&task.to_string());
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::AssetQuery,
             task,
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let fact = rss_mdm_audit_integration::Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::AssetQuery,
             &format!("asset-query:{task}:terminal"),
             200,
             if failure.is_some() {
@@ -164,5 +167,51 @@ impl AssetService {
         );
         result?;
         Ok(())
+    }
+}
+
+impl AssetService {
+    pub async fn query_receipt(
+        &self,
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        crate::transaction::inspect(
+            &self.runtime,
+            self.tenant,
+            (self, p),
+            |(s, p), tx| {
+                Box::pin(async move {
+                    let grant = crate::transaction::query_authority(tx, p).await?;
+                    let task = s.query_task_in(tx, id).await?;
+                    let mut current = ReadScope::from_snapshot(p, &grant)?;
+                    current.collection_scope = task.input.scope.collection_scope.clone();
+                    if current != task.input.scope {
+                        return Err(Error::Forbidden.into());
+                    }
+                    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                    value.recorded_at = Some(task.input.as_of);
+                    value.accepted = Some(true);
+                    value.executions.push(id);
+                    value.state = Some(
+                        if task.failure.is_some() {
+                            "failed"
+                        } else if task.completed {
+                            "completed"
+                        } else if task.started {
+                            "running"
+                        } else {
+                            "pending"
+                        }
+                        .into(),
+                    );
+                    p.check_live()?;
+                    Ok(Some(value))
+                })
+            },
+            crate::transaction::TransactionOwner::Assets,
+        )
+        .await
     }
 }

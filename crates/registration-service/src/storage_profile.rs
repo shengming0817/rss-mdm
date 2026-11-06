@@ -365,6 +365,9 @@ CREATE TABLE "###, $access_schema, r###"registration_operations (
     operation_id uuid NOT NULL,
     digest text NOT NULL,
     result text NOT NULL,
+    action text NOT NULL CHECK(length(action) BETWEEN 1 AND 128),
+    device text,
+    self_enrollment boolean NOT NULL,
     CONSTRAINT operations_digest_check CHECK ((length(digest) = 64)),
     CONSTRAINT operations_result_check CHECK ((octet_length(result) <= 65536))
 );
@@ -866,8 +869,8 @@ COMMIT;
                 lifecycle_authorize_reenrollment_in_3: concat!("UPDATE ", $access_schema, "requests r SET state='cancelled' FROM ", $access_schema, "grants g WHERE(r.tenant_id,r.grant_id)=(g.tenant_id,g.id) AND g.tenant_id=$1::uuid AND g.device=$2 AND r.state='pending'"),
                 lifecycle_authorize_reenrollment_in_4: concat!("UPDATE ", $access_schema, "certificate_grants SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2 AND state<>'revoked'"),
                 lifecycle_authorize_reenrollment_in_5: concat!("UPDATE ", $access_schema, "devices SET retirement=NULL WHERE tenant_id=$1::uuid AND id=$2"),
-                operations_read_1: concat!("SELECT digest,result,instance FROM ", $access_schema, "registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid"),
-                operations_save_result_1: concat!("INSERT INTO ", $access_schema, "registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6,$7)"),
+                operations_read_1: concat!("SELECT digest,result,instance,action,device,self_enrollment FROM ", $access_schema, "registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid"),
+                operations_save_result_1: concat!("INSERT INTO ", $access_schema, "registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery,action,device,self_enrollment) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6,$7,$8,$9,$10)"),
                 enrollment_agent_policy_create_in_1: concat!("SELECT l.*,g.device,r.state,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.source FROM ", $access_schema, "agent_native_enrollments l JOIN ", $access_schema, "requests r ON(r.tenant_id,r.id)=(l.tenant_id,l.request) JOIN ", $access_schema, "grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE l.tenant_id=$1::uuid AND l.task=$2"),
                 enrollment_agent_policy_create_in_2: concat!("INSERT INTO ", $access_schema, "grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) VALUES($1::uuid,$2,$3,$4,$5,'enrollment','consumed',clock_timestamp(),to_timestamp($6))"),
                 enrollment_agent_policy_create_in_3: concat!("INSERT INTO ", $access_schema, "requests(tenant_id,id,grant_id,state,source,expected_generation,password_digest,password_version,expires_at,issuance_operation,windows_profile,self_service,authority_kind) VALUES($1::uuid,$2,$3,'pending',$4,0,$5,1,to_timestamp($6),$7,$8,false,'agent_policy')"),
