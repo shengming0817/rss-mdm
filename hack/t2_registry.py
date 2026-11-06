@@ -6,6 +6,11 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'inventory.software-assets': dict(prefix='assembly::software_assets_t2::', profiles=('shared',),
+        inputs=('crates/inventory-service/*', 'crates/inventory-postgres/*', 'crates/inventory/*',
+                'crates/management-http/src/assets/*', 'crates/http-contract/*', 'crates/authorization-service/*',
+                'crates/group-postgres/*', 'crates/device-service/src/planning*', 'apps/server/src/assembly/inventory.rs',
+                'apps/server/tests/software_assets/*')),
     'execution.directory': dict(prefix='assembly::execution_owners_t2::directory::', profiles=('shared',),
         inputs=('crates/management-http/src/execution/operations.rs', 'crates/management-http/src/execution/http.rs',
                 'apps/server/src/assembly/operation_reads/*', 'apps/server/tests/execution_owners/directory.rs',

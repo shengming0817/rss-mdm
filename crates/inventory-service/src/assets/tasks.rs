@@ -10,6 +10,7 @@ pub struct QueryInput {
     pub scope: ReadScope,
     pub asset_cut: AssetCut,
     pub as_of: i64,
+    pub software: Option<Box<super::software::Job>>,
 }
 pub struct QueryTask {
     pub input: QueryInput,

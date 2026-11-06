@@ -1,3 +1,5 @@
+#[path = "software.rs"]
+mod software;
 use super::*;
 use crate::authorization::Permission;
 use crate::authorization::context::RequestAuth;
@@ -23,8 +25,9 @@ fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
 
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_fields, get_field_layout, put_field_layout_write, get_collection_items, get_field_read, put_field_write, post_retention_write, get_retention_read, get_field_references, post_search, get_query_status, get_query_items, get_query_facets, get_detail, post_inventory_scopes, get_collection_run, post_list_items, put_manual, get_saved_list, get_saved_read, put_saved_write, post_saved_execute } }
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { software_routes, get_fields, get_field_layout, put_field_layout_write, get_collection_items, get_field_read, put_field_write, post_retention_write, get_retention_read, get_field_references, post_search, get_query_status, get_query_items, get_query_facets, get_detail, post_inventory_scopes, get_collection_run, post_list_items, put_manual, get_saved_list, get_saved_read, put_saved_write, post_saved_execute } }
         RoutesModule1 {
+            software_routes: software::routes(),
             get_fields: rss_mdm_http_contract::module::Route::new(
                 "/asset-fields",
                 get(fields, &contracts::ASSET_FIELDS, &[RouteOperation::List]),
@@ -212,6 +215,13 @@ fn authorize(
     command: &Command,
 ) -> std::result::Result<(), rss_mdm_inventory_service::Error> {
     match command {
+        Command::Software { command, .. } => {
+            rss_mdm_inventory_service::assets::software::Access::from_proof(&auth.proof)?;
+            if command.writes_configuration() {
+                auth.proof.manage(Permission::InventorySoftwareWrite)?;
+            }
+            Ok(())
+        }
         Command::FieldLayoutRead { access } => {
             if &field_access(auth)? == access {
                 Ok(())
@@ -271,6 +281,7 @@ async fn run(
         },
     );
     match &command {
+        Command::Software { .. } => audit.target("software-assets"),
         Command::FieldLayoutRead { .. } | Command::FieldLayoutWrite { .. } => {
             audit.target("asset-field-layout")
         }

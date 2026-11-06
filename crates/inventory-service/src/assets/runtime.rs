@@ -183,6 +183,17 @@ impl Reconciler<PgClaim> for QueryWork {
                                         assets
                                             .query_cursor_in(tx, id, state.cursor.clone())
                                             .await?;
+                                        if let Some(job) = &state.input.software {
+                                            return assets
+                                                .advance_software_query(
+                                                    tx,
+                                                    id,
+                                                    &state.input,
+                                                    job,
+                                                    state.cursor,
+                                                )
+                                                .await;
+                                        }
                                         assets
                                             .advance_asset_query_in(
                                                 tx,

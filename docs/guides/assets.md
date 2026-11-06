@@ -16,6 +16,44 @@ macOS 原生软件清单使用无 itemKey 的有序列表：Identifier 是可选
 
 ## API
 
+### 软件资产
+
+软件资产归 Inventory 管理，独立于软件 Resource、来源导入和分发。当前入口面向租户全量资产管理员，读取要求
+`inventory_read/all_devices`、`inventory_sensitive_read/tenant` 和 `group_read/tenant`；配置写入另需
+`inventory_software_write/tenant`。租户管理员初始化包含该写权限。
+
+- `GET /standard-software`、`GET /standard-software/{id}`：标准软件目录及详情。
+- `PUT /standard-software/{id}`：`Operation` 包装的 `{"action":"put","definition":...}` 或 `{"action":"delete"}`。
+  定义包含 `name`、必选 `risk: low|medium|high`、`tags`、`assessments.endpoint/associatedDevice`。
+  各域独立配置 `threshold`、`allowedGroups`；null 表示关闭，启用的允许组并集不能为空。
+- `GET /software-mappings`、`GET /software-mappings/{id}`、`PUT /software-mappings/{id}`：同样以 CAS 管理映射。
+  映射指定 `standard` UUID、`enabled`、`source` 字段、`platform`、`origin` 和单条目 RSQL `filter`。
+  通用 installations 字段必须指定 origin；规则须精确限定 id/nativeId，或同时限定名称和发布者/路径。
+- `GET /software-asset-operations/{operation}`：核实本人的原操作回执；null 表示未读到回执，不证明失败。
+- `POST /software-asset-queries`：提交 `Operation`，首次 `expectedRevision=0`，返回 202 和任务身份。
+  `input.context` 默认为 `associated_device`，也支持 `endpoint`；`devices` 复用资产查询条件，
+  `groups:{combine:union|intersection,ids:[...]}` 限定同域设备集合；`software` 分别提供 standards、risks、tags 和条目 filter。
+- `GET /software-asset-queries/{task}`：状态、坐标、已处理和无法确定的对象数量。
+- `GET /software-asset-queries/{task}/software`：完整软件聚合；每个桶返回筛选设备数、全租户评估设备数、阈值与允许安装判断。
+- `GET /software-asset-queries/{task}/software/{bucket}/breakdowns/{dimension}`：按任务已选择的维度展开。
+- `GET /software-asset-queries/{task}/software/{bucket}/devices` 与其 `/{object}/evidence`：固定设备明细和原安装证据。
+- `GET /software-asset-queries/{task}/coverage`：所有统计对象的采集质量与最后可信观察坐标，包括尚无确认安装的对象。
+
+上述分页接口使用 `limit/cursor`，默认 100、最多 1000，另受页字节预算限制。路径中的 bucket/object 按 URL 路径段编码。
+条目过滤字段为 id、nativeId、name、version、publisher、platform、origin、source、component、location；
+支持 `==`、`!=`、`=in=`、`=out=`，name/publisher/component 另支持 `=icontains=`，version 仅支持精确等值或集合。
+AND/OR 作用于同一条安装记录。`dimensions` 支持 version、component、publisher、platform、os、architecture、device_group。
+缺少维度值不推造值，分桶数不可相加作为总设备数。
+
+阈值始终评估对应域的租户全量，临时过滤仅改变筛选数量；已确认数量达到阈值时告警，数量不足且覆盖不确定时返回 unknown。
+允许组任一明确匹配即合规，所有组明确不匹配才违规；关闭返回 disabled，缺决策返回 unknown。未安装设备不属于安装违规集合。
+配置、映射、关联或 Group 坐标变化使旧结果返回冲突并要求新建查询；普通新采集不改写已完成快照，显式刷新才观察新事实。
+Windows 原生包的 Users 仅按已识别的安装状态判定；未识别的原生用户列表保留为无法判断，不能凭非空列表、IsProvisioned=false 或 PackageStatus=0 判为已安装。
+当前或保留证据分别标记 confirmed，不将预置、未知或最后已知值冒充确认安装；采集时间不构成 TTL 或实时性承诺。
+
+单次查询沿既有资产任务恢复，最多处理 100 万统计对象，软件派生证据最多 1000 万条、约 1 GiB；冻结配置最多
+4096 条且受任务输入字节预算限制。超限明确失败，失败任务不提供部分聚合作为完整结果。Web 控制台另行交付。
+
 路径前缀 `/api/v1`，使用现有权威会话；写和 POST 查询要求 Origin、X-Identity-Request、CSRF。错误返回既有产品 JSON。
 
 | 方法、路径 | 内容 |
