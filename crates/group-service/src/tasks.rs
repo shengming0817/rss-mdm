@@ -384,16 +384,10 @@ impl Groups {
                 value.object = Some(state.input.target().to_string());
                 value.accepted = Some(true);
                 value.executions.push(id);
-                value.state = Some(
-                    if state.failure.is_some() {
-                        "failed"
-                    } else if state.completed {
-                        "completed"
-                    } else {
-                        "pending"
-                    }
-                    .into(),
-                );
+                let detail = s
+                    .task_read_in(tx, id, &state.input.target().to_string())
+                    .await?;
+                value.state = Some(detail["status"].as_str().ok_or(Error::Conflict)?.into());
                 p.check_live()?;
                 Ok(Some(value))
             })

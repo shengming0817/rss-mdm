@@ -9,7 +9,8 @@ MODULES = {
     'operation.diagnostics': dict(prefix='assembly::operation_diagnostics_t2::', profiles=('shared',),
         inputs=('apps/server/src/assembly/operation_diagnostics/*','crates/management-http/src/operation_diagnostics.rs',
                 'crates/audit-integration/*','crates/timeline-service/*','crates/authorization-service/*',
-                'apps/server/tests/operation_diagnostics.rs')),
+                'apps/server/tests/operation_diagnostics.rs','apps/server/tests/operation_diagnostics/*',
+                'apps/server/tests/support/host.rs')),
     'execution.directory': dict(prefix='assembly::execution_owners_t2::directory::', profiles=('shared',),
         inputs=('crates/management-http/src/execution/operations.rs', 'crates/management-http/src/execution/http.rs',
                 'apps/server/src/assembly/operation_reads/*', 'apps/server/tests/execution_owners/directory.rs',
@@ -219,7 +220,7 @@ MODULES = {
                 'crates/policy-service/src/worker/completion.rs', 'crates/policy-service/src/configuration/source_changes.rs',
                 'crates/policy-service/schema/configuration-source-changes.sql',
                 'apps/server/src/scope_group_changes.rs', 'apps/server/src/assembly/*',
-                'apps/server/tests/foundation/lifecycle.rs')),
+                'apps/server/tests/foundation/lifecycle.rs','apps/server/tests/support/host.rs')),
 }
 SUPPORT = ('apps/server/tests/support/authority.rs',)
 

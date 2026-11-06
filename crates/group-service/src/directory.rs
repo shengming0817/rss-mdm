@@ -185,10 +185,10 @@ impl Groups {
             let grant=crate::transaction::query_authority(tx,p).await?;
             grant.require(p,Permission::GroupRead,None)?;
             grant.require_all_devices(p,Permission::InventoryRead)?;
-            let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();
+            let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();let instance=p.instance_id().to_owned();
             let value:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{
-                sqlx::query_scalar("SELECT response FROM mdm_assets.group_operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3")
-                    .bind(tenant).bind(actor).bind(id).fetch_optional(c).await
+                sqlx::query_scalar("SELECT response FROM mdm_assets.group_operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND instance=$4::uuid")
+                    .bind(tenant).bind(actor).bind(id).bind(instance).fetch_optional(c).await
             })).await?;
             value.map(|v|{
                 let mut s=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);

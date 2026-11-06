@@ -150,7 +150,10 @@ impl Diagnostics {
                 ),
             )),
             Err(rss_mdm_device_access_postgres::Error::NotFound) => Ok(Evidence::NoDurableEvidence),
-            Err(e) => Err(da_error(e)),
+            Err(e) => match da_error(e) {
+                Error::Unavailable(_) => Ok(Evidence::Unavailable),
+                error => Err(error),
+            },
         }
     }
     pub(super) async fn da_receipt(
@@ -259,10 +262,22 @@ impl Diagnostics {
                     .pki
                     .as_ref()
                     .ok_or(Error::Unavailable(Failure::Runtime))?
-                    .operation_receipt(p, id)
+                    .operation_receipt(
+                        p,
+                        id,
+                        l.query.actor.as_deref().unwrap_or(p.principal_id()),
+                        if l.query.actor.as_deref() == Some("service:device-pki") {
+                            None
+                        } else {
+                            Some(l.query.instance.unwrap_or(
+                                Uuid::parse_str(p.instance_id()).map_err(|_| Error::Malformed)?,
+                            ))
+                        },
+                    )
                     .await
                     .map_err(|e| match e {
                         rss_mdm_pki_service::Error::Forbidden => Error::Forbidden,
+                        rss_mdm_pki_service::Error::Request => Error::Malformed,
                         rss_mdm_pki_service::Error::NotFound => Error::NotFound,
                         _ => Error::Unavailable(Failure::Database),
                     });

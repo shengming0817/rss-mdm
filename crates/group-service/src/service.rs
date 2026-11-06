@@ -236,7 +236,8 @@ impl Groups {
                         command,
                     ))?;
                     if let Some(id) = operation
-                        && let Some(old) = receipts::replay(tx, actor, id, &digest).await?
+                        && let Some(old) =
+                            receipts::replay(tx, actor, proof.instance_id(), id, &digest).await?
                     {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
@@ -285,7 +286,8 @@ impl Groups {
                         Command::TaskRead { id, target } => s.task_read_in(tx, *id, target).await?,
                     };
                     if let Some(id) = operation {
-                        receipts::receipt(tx, actor, id, &digest, &result).await?;
+                        receipts::receipt(tx, actor, proof.instance_id(), id, &digest, &result)
+                            .await?;
                     }
                     receipts::audit(tx, &s.audit_store, audit, operation, false).await?;
                     authorize()?;

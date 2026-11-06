@@ -45,6 +45,7 @@ pub struct Snapshot {
     pub device_target: Option<String>,
     pub operation_id: Option<Uuid>,
     pub operation_owner: Option<crate::operation::OperationOwner>,
+    pub receipt_actor: Option<String>,
     pub registration_id: Option<Uuid>,
     pub registration_generation: Option<i64>,
     pub write_outcome: WriteOutcome,
@@ -139,6 +140,7 @@ impl RequestAudit {
                     device_target: None,
                     operation_id: None,
                     operation_owner: None,
+                    receipt_actor: None,
                     registration_id: None,
                     registration_generation: None,
                     write_outcome: WriteOutcome::CommitNotStarted,
@@ -327,11 +329,21 @@ impl RequestAudit {
             .snapshot
             .operation_owner = Some(owner);
     }
+    /// The owner's durable receipt namespace; separate from the authenticated audit actor.
+    pub fn receipt_actor(&self, actor: &str) {
+        self.0
+            .state
+            .lock()
+            .expect("audit lock")
+            .snapshot
+            .receipt_actor = Some(actor.to_owned());
+    }
     /// Attach an operation coordinate; its presence does not imply successful execution or replay.
     pub fn operation(&self, id: Uuid, action: &'static str, intent: crate::AuditIntent) {
         self.intent(intent);
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.operation_owner = None;
+        state.snapshot.receipt_actor = None;
         state.snapshot.operation_id = Some(id);
         state.snapshot.action = action;
     }

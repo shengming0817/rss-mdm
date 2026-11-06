@@ -594,60 +594,48 @@ pub enum Progress {
     },
 }
 
-impl Service {
-    /// Observe accepted maintenance and its last confirmed step without advancing it.
-    pub async fn operation_receipt(
-        &self,
-        p: &AuthorizedPrincipal,
-        id: uuid::Uuid,
-    ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Denied);
-        }
-        let failure = Mutex::new(None);
-        let result=self.runtime.local_tx_with_context(self.tenant,crate::deadline(),(self,p,&failure),|ctx,tx|Box::pin(async move{
-            let (service,p,failure)=*ctx;
-            tx.with_connection_context(&mut (service,p,failure),|ctx,c|Box::pin(async move{
-                let(service,p,failure)=*ctx;
-                let read=async {
-                    use sqlx::Row;
-                    let row=sqlx::query("SELECT request,binding,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2")
-                        .bind(service.tenant.to_string()).bind(id).fetch_optional(&mut *c).await?;
-                    let Some(row)=row else{return Ok(None)};
-                    let input:Request=serde_json::from_value(row.try_get("request")?)?;
-                    use sha2::Digest;
-                    if input.id!=id || sha2::Sha256::digest(serde_json::to_vec(&input)?).as_slice()!=row.try_get::<Vec<u8>,_>("binding")? {return Err(Error::Storage);}
-                    rss_mdm_authorization_service::lock_shared_on(rss_mdm_install_support::StorageProfile::Mdm,c,p.tenant_id(),p.instance_id()).await.map_err(|_|Error::Storage)?;
-                    let grant=rss_mdm_authorization_service::snapshot_on(rss_mdm_install_support::StorageProfile::Mdm,c,p.tenant_id(),p.instance_id()).await.map_err(|_|Error::Storage)?;
-                    grant.require(p,Permission::InventoryRead,Some(&input.device)).map_err(|_|Error::Denied)?;
-                    grant.require(p,Permission::OperationRead,Some(&input.device)).map_err(|_|Error::Denied)?;
-                    let value:Option<Json>=row.try_get("result")?;
-                    let progress=value.map(serde_json::from_value::<Progress>).transpose()?;
-                    let mut summary=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
-                    summary.object=Some(input.resource);summary.accepted=Some(true);
-                    summary.state=Some(match progress {None=>"accepted",Some(Progress::More{..})=>"more",Some(Progress::Complete{..})=>"complete",Some(Progress::Blocked{..})=>"blocked"}.into());
-                    p.check_live().map_err(|_|Error::Denied)?;Ok::<_,Error>(Some(summary))
-                }.await;
-                read.map_err(|e|{*failure.lock().expect("diagnostic error")=Some(e);sqlx::Error::Protocol("telemetry receipt rejected".into())})
-            })).await
-        })).await;
-        result.fold(
-            Ok,
-            |_| {
-                Err(failure
-                    .lock()
-                    .expect("diagnostic error")
-                    .unwrap_or(Error::Storage))
-            },
-            |_| {
-                Err(failure
-                    .lock()
-                    .expect("diagnostic error")
-                    .unwrap_or(Error::Storage))
-            },
-            |_| Err(Error::Storage),
-            |_| Err(Error::Storage),
-            |_| Err(Error::Storage),
-        )
+/// Observe accepted maintenance without constructing a live telemetry backend or advancing it.
+pub async fn operation_receipt_on(
+    c: &mut sqlx::PgConnection,
+    p: &AuthorizedPrincipal,
+    grant: &rss_mdm_authorization_service::Snapshot,
+    id: uuid::Uuid,
+) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+    use sha2::Digest;
+    use sqlx::Row;
+    if p.profile() != rss_mdm_install_support::StorageProfile::Mdm {
+        return Err(Error::Denied);
     }
+    let row=sqlx::query("SELECT request,binding,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(p.tenant_id()).bind(id).fetch_optional(c).await?;
+    let Some(row) = row else { return Ok(None) };
+    let input: Request = serde_json::from_value(row.try_get("request")?)?;
+    if input.id != id
+        || sha2::Sha256::digest(serde_json::to_vec(&input)?).as_slice()
+            != row.try_get::<Vec<u8>, _>("binding")?
+    {
+        return Err(Error::Storage);
+    }
+    grant
+        .require(p, Permission::InventoryRead, Some(&input.device))
+        .map_err(|_| Error::Denied)?;
+    grant
+        .require(p, Permission::OperationRead, Some(&input.device))
+        .map_err(|_| Error::Denied)?;
+    let value: Option<Json> = row.try_get("result")?;
+    let progress = value.map(serde_json::from_value::<Progress>).transpose()?;
+    let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+    summary.object = Some(input.resource);
+    summary.accepted = Some(true);
+    summary.state = Some(
+        match progress {
+            None => "accepted",
+            Some(Progress::More { .. }) => "more",
+            Some(Progress::Complete { .. }) => "complete",
+            Some(Progress::Blocked { .. }) => "blocked",
+        }
+        .into(),
+    );
+    p.check_live().map_err(|_| Error::Denied)?;
+    Ok(Some(summary))
 }

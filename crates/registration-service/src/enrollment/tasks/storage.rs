@@ -276,10 +276,12 @@ pub async fn receipt(
     id: Uuid,
     fingerprint: Vec<u8>,
     response: &Value,
+    target: &crate::enrollment::tasks::Target,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let actor = actor.to_owned();
     let response = response.clone();
+    let target = target.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).enrollment_tasks_storage_receipt_1)
@@ -288,6 +290,9 @@ pub async fn receipt(
                 .bind(id)
                 .bind(fingerprint)
                 .bind(response)
+                .bind(target.device)
+                .bind(target.registration)
+                .bind(target.generation)
                 .execute(c)
                 .await?;
             Ok(())

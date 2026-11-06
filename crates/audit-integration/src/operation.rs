@@ -32,6 +32,9 @@ pub enum OperationOwner {
     Collection,
     CollectionExecution,
     Script,
+    ScriptInvocation,
+    SoftwareInvocation,
+    EnrollmentInvocation,
     Resource,
     Content,
     StorageConnection,
@@ -52,6 +55,8 @@ pub enum OperationOwner {
     DeviceAccessTask,
     CertificateArchive,
     Pki,
+    PkiSigning,
+    PkiRevocation,
     Authorization,
     TaskTrust,
     Smtp,
@@ -67,6 +72,13 @@ pub enum OperationOwner {
     WindowsWns,
 }
 impl OperationOwner {
+    pub const fn invocation(self) -> bool {
+        matches!(
+            self,
+            Self::ScriptInvocation | Self::SoftwareInvocation | Self::EnrollmentInvocation
+        )
+    }
+
     /// Receipt namespaces that include the authenticated author (and, where stored, instance).
     pub const fn actor_bound(self) -> bool {
         matches!(
@@ -128,10 +140,20 @@ impl OperationLocator {
             product,
             owner,
             operation_id,
-            actor: owner
-                .actor_bound()
-                .then(|| snapshot.actor.clone())
-                .flatten(),
+            actor: if owner.invocation() {
+                Some(
+                    snapshot
+                        .receipt_actor
+                        .clone()
+                        .filter(|v| !v.is_empty() && v.len() <= 256)
+                        .ok_or(crate::InvalidFact::Coordinates)?,
+                )
+            } else {
+                owner
+                    .actor_bound()
+                    .then(|| snapshot.actor.clone())
+                    .flatten()
+            },
             instance: snapshot
                 .instance
                 .as_deref()

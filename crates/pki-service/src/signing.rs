@@ -223,7 +223,7 @@ impl SigningStore {
         );
         a.identify_service("service:device-pki-signing");
         a.owned_operation(
-            rss_mdm_audit_integration::operation::OperationOwner::Pki,
+            rss_mdm_audit_integration::operation::OperationOwner::PkiSigning,
             intent.attempt,
             "device_pki_signing_claim",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -363,7 +363,7 @@ impl SigningStore {
         );
         a.identify_service("service:device-pki-signing");
         a.owned_operation(
-            rss_mdm_audit_integration::operation::OperationOwner::Pki,
+            rss_mdm_audit_integration::operation::OperationOwner::PkiSigning,
             attempt,
             "device_pki_signing_result",
             rss_mdm_audit_integration::AuditIntent::Management,

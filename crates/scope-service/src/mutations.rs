@@ -140,7 +140,10 @@ impl Scopes {
                     Permission::ScopeRead,
                     None,
                 )?;
-                let value = s.store.operation_in(tx, p.principal_id(), id).await?;
+                let value = s
+                    .store
+                    .operation_in(tx, p.principal_id(), p.instance_id(), id)
+                    .await?;
                 value
                     .map(|v| {
                         let mut s = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);

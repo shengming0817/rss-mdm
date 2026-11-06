@@ -329,3 +329,65 @@ fn rejected_nil_operation_does_not_prevent_recording_the_request_attempt() {
     assert!(event.context().coordinates().request_id().is_some());
     a.finalize(None);
 }
+
+#[test]
+fn receipt_subject_is_not_the_authenticated_actor_or_a_run_namespace() {
+    use rss_mdm_audit_integration::{
+        AuditIntent, Origin, StorageProfile, operation::OperationOwner as O,
+    };
+    let audit = RequestAudit::new(
+        Origin::Request,
+        StorageProfile::Mdm,
+        "f47ac10b-58cc-4372-a567-0e02b2c3d479".into(),
+        "self_service_invoke",
+        AuditIntent::Management,
+    );
+    let registration = uuid::Uuid::new_v4();
+    audit.identify_device(registration);
+    let request = uuid::Uuid::new_v4();
+    audit.owned_operation(
+        O::ScriptInvocation,
+        request,
+        "self_service_invoke",
+        AuditIntent::Management,
+    );
+    audit.receipt_actor(&format!("self-service:device:{registration}:1"));
+    audit.registration_at(registration, 1);
+    let fact = Fact::business(
+        &audit,
+        O::ScriptInvocation,
+        "invocation",
+        202,
+        "success",
+        None,
+    )
+    .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(
+        fact.event(rss_contract::Timepoint::try_from(1_i64).unwrap())
+            .unwrap()
+            .context()
+            .payload()
+            .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(payload["operationLocator"]["owner"], "script_invocation");
+    assert_eq!(
+        payload["operationLocator"]["actor"],
+        format!("self-service:device:{registration}:1")
+    );
+    assert_eq!(
+        audit.snapshot().actor,
+        Some(format!("device:{registration}"))
+    );
+    let run = audit.fact_copy("script_accept");
+    run.owned_operation(
+        O::Script,
+        uuid::Uuid::new_v4(),
+        "script_accept",
+        AuditIntent::Management,
+    );
+    assert_eq!(run.request_coordinate(), Some(audit.request_id()));
+    assert!(run.snapshot().receipt_actor.is_none());
+    assert_eq!(audit.snapshot().operation_id, Some(request));
+    audit.finalize(None);
+}

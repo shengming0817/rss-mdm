@@ -454,10 +454,10 @@ impl PublicationDirectory {
         p.manage(Permission::ReleaseRead)?;
         crate::management::transaction::inspect(&self.runtime,self.tenant,(self,p),|(_,p),tx|Box::pin(async move{
             crate::management::transaction::current(tx,p).await?.require(p,Permission::ReleaseRead,None)?;
-            let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();
+            let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();let instance=p.instance_id().to_owned();
             let raw:Option<Value>=tx.with_connection(move|c|Box::pin(async move{
-                sqlx::query_scalar("SELECT response FROM mdm_publication.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3")
-                    .bind(tenant).bind(actor).bind(id).fetch_optional(c).await
+                sqlx::query_scalar("SELECT response FROM mdm_publication.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND instance=$4::uuid")
+                    .bind(tenant).bind(actor).bind(id).bind(instance).fetch_optional(c).await
             })).await?;
             raw.map(|v|{
                 let mut s=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);

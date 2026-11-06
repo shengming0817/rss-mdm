@@ -56,6 +56,7 @@ fn column(name: &str) -> &'static str {
     }
 }
 const PAGE_SOURCES: i64 = 1_048_576;
+const CONFIGURATION_RELATION: &str = "SELECT id,device,kind,registration,generation,source_kind,policy_version,policy,deadline,status,input_bytes FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid";
 const STATISTICS_SOURCES: i64 = 4_194_304;
 fn check_sources(rows: i64, limit: i64, stage: &'static str) -> Result<(), Error> {
     if rows < 0 {
@@ -81,7 +82,9 @@ fn relation(
 ) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut sql = sqlx::QueryBuilder::new("WITH tenant_context AS(SELECT ");
     sql.push_bind(tenant).push("::uuid),executions AS(");
-    sql.push("SELECT id,device,kind,registration,generation,source_kind,policy_version,policy,deadline,status,input_bytes FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid UNION ALL ").push(rss_mdm_device_service::control::directory::RELATION_SQL)
+    sql.push(CONFIGURATION_RELATION)
+        .push(" UNION ALL ")
+        .push(rss_mdm_device_service::control::directory::RELATION_SQL)
         .push(" UNION ALL ")
         .push(rss_mdm_software_service::deployment::directory::RELATION_SQL)
         .push(" UNION ALL ")
@@ -96,8 +99,10 @@ fn relation(
         .push(rss_mdm_recovery_credentials::tasks::queries::DA_RELATION_SQL)
         .push(" UNION ALL ")
         .push(rss_mdm_recovery_credentials::native::queries::RELATION_SQL)
-        .push(" UNION ALL ").push(rss_mdm_script_service::queries::RELATION_SQL)
-        .push(" UNION ALL ").push(rss_mdm_inventory_service::collection::execution::queries::relation_sql());
+        .push(" UNION ALL ")
+        .push(rss_mdm_script_service::queries::RELATION_SQL)
+        .push(" UNION ALL ")
+        .push(rss_mdm_inventory_service::collection::execution::queries::relation_sql());
     sql.push("),source_probe AS MATERIALIZED(SELECT id FROM executions LIMIT ")
         .push_bind(source_limit + 1)
         .push("),source_count AS MATERIALIZED (");

@@ -121,6 +121,7 @@ pub enum Detail {
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(tag = "owner", rename_all = "snake_case")]
 pub enum Evidence {
+    Pki(rss_mdm_pki_service::registry::OperationProgress),
     Offboarding(rss_mdm_device_access_postgres::device_access::lifecycle::DiagnosticProgress),
     Native { detail: Box<Detail> },
     Device(rss_mdm_device_service::control::queries::records::RunEvidence),

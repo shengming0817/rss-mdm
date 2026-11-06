@@ -72,6 +72,27 @@ impl Context {
         }
         let mut identity_tenants = vec![tenant];
         identity_tenants.extend_from_slice(additional_tenants);
+        Self::connect(profile, inputs, operator, tenant, identity_tenants).await
+    }
+    pub async fn management(profile: &str) -> Result<Self> {
+        let inputs = Inputs::load()?;
+        let operator = inputs.pool(profile, "postgres").await?;
+        let tenant = identity::management_tenant(
+            &inputs.database(profile, "mdm_identity_runtime"),
+            InstanceId::parse(&inputs.installation.instance_id)?,
+        )
+        .await?;
+        sqlx::query("INSERT INTO identity_authority.guard(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
+            .bind(tenant.to_string()).execute(&operator).await?;
+        Self::connect(profile, inputs, operator, tenant, vec![tenant]).await
+    }
+    async fn connect(
+        profile: &str,
+        inputs: Inputs,
+        operator: PgPool,
+        tenant: TenantId,
+        identity_tenants: Vec<TenantId>,
+    ) -> Result<Self> {
         let database = crate::Database::connect(
             inputs.database(profile, "mdm_access").options()?,
             &config::AuditConfig::Plain {},

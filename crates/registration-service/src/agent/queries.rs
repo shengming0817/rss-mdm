@@ -308,46 +308,8 @@ impl Service {
         operation: Uuid,
         identity: &ReceiptIdentity,
     ) -> Result<Option<wire::GrantReceipt>, Error> {
-        let profile = self.profile();
-
         self.query_tenant(p)?;
-        identity.validate()?;
-        let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        let device: String = sqlx::query_scalar(
-            crate::storage_profile::sql(profile).agent_queries_registration_recovery_operation_1,
-        )
-        .bind(p.tenant_id())
-        .bind(registration)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db)?
-        .ok_or(Error::NotFound)?;
-        let before = authorize(profile, &mut tx, p, &device)
-            .await
-            .map_err(conceal)?;
-        let row = sqlx::query(
-            crate::storage_profile::sql(profile).agent_queries_registration_recovery_operation_2,
-        )
-        .bind(p.tenant_id())
-        .bind(operation)
-        .bind(registration)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db)?;
-        let value = if let Some(row) = row {
-            if row.try_get::<String, _>("actor").map_err(db)? != identity.actor
-                || row.try_get::<String, _>("instance").map_err(db)? != identity.instance
-                || row.try_get::<Uuid, _>("target_registration").map_err(db)? != registration
-            {
-                return Err(Error::Conflict);
-            }
-            Some(receipt(&row)?)
-        } else {
-            None
-        };
-        tx.rollback().await.map_err(db)?;
-        self.store.confirm_query(p, &before).await?;
-        Ok(value)
+        registration_recovery_operation(&self.store, p, registration, operation, identity).await
     }
     pub async fn issuance_recovery_operations(
         &self,
@@ -474,4 +436,57 @@ impl Service {
         self.store.confirm_query(p, &before).await?;
         Ok(value)
     }
+}
+
+/// Query retained recovery provenance without requiring a live issuer or recovery writer.
+pub async fn registration_recovery_operation(
+    store: &crate::database::Store,
+    p: &AuthorizedPrincipal,
+    registration: Uuid,
+    operation: Uuid,
+    identity: &ReceiptIdentity,
+) -> Result<Option<wire::GrantReceipt>, Error> {
+    let profile = store.profile();
+
+    p.check_live()?;
+    if p.profile() != profile {
+        return Err(Error::Forbidden);
+    }
+    identity.validate()?;
+    let mut tx = store.snapshot(p.tenant_id()).await?;
+    let device: String = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).agent_queries_registration_recovery_operation_1,
+    )
+    .bind(p.tenant_id())
+    .bind(registration)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?
+    .ok_or(Error::NotFound)?;
+    let before = authorize(profile, &mut tx, p, &device)
+        .await
+        .map_err(conceal)?;
+    let row = sqlx::query(
+        crate::storage_profile::sql(profile).agent_queries_registration_recovery_operation_2,
+    )
+    .bind(p.tenant_id())
+    .bind(operation)
+    .bind(registration)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?;
+    let value = if let Some(row) = row {
+        if row.try_get::<String, _>("actor").map_err(db)? != identity.actor
+            || row.try_get::<String, _>("instance").map_err(db)? != identity.instance
+            || row.try_get::<Uuid, _>("target_registration").map_err(db)? != registration
+        {
+            return Err(Error::Conflict);
+        }
+        Some(receipt(&row)?)
+    } else {
+        None
+    };
+    tx.rollback().await.map_err(db)?;
+    store.confirm_query(p, &before).await?;
+    Ok(value)
 }

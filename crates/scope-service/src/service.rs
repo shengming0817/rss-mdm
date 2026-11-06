@@ -257,6 +257,7 @@ impl Scopes {
                 .replay_operation_in(
                     tx,
                     actor.as_deref().ok_or(Error::Malformed)?,
+                    proof.instance_id(),
                     id,
                     &fingerprint,
                 )
@@ -282,6 +283,7 @@ impl Scopes {
                 .record_operation_in(
                     tx,
                     actor.as_deref().ok_or(Error::Malformed)?,
+                    proof.instance_id(),
                     id,
                     &fingerprint,
                     &value,

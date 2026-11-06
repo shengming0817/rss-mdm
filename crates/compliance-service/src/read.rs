@@ -290,17 +290,12 @@ impl Compliance {
                 value.revision = Some(state.input.revision);
                 value.accepted = Some(true);
                 value.executions.push(id);
+                let detail = s.task(tx, state.input.rule, id).await?;
                 value.state = Some(
-                    if state.failure.is_some() {
-                        "failed"
-                    } else if state.completed {
-                        "published"
-                    } else if state.started {
-                        "evaluating"
-                    } else {
-                        "queued"
-                    }
-                    .into(),
+                    stored(serde_json::to_value(detail.phase))?
+                        .as_str()
+                        .ok_or(Error::Conflict)?
+                        .into(),
                 );
                 p.check_live()?;
                 Ok(Some(value))

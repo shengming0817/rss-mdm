@@ -54,7 +54,7 @@ pub(crate) async fn run<C: Send, R: Send>(
                     }
                     let fact = Fact::business(
                         a,
-                        rss_mdm_audit_integration::operation::OperationOwner::Pki,
+                        a.snapshot().operation_owner.ok_or(Error::Request)?,
                         &change.key,
                         200,
                         "success",

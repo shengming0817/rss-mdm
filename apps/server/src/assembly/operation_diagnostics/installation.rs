@@ -26,47 +26,56 @@ impl Reads for Installation {
             let id = l.operation;
             let mut original_result_url = None;
             let mut current_resource_url = None;
-            let value = match l.owner {
-                O::TenantAdministration => {
-                    let value = self
-                        .tenants
-                        .as_ref()
-                        .ok_or(Error::Unavailable(Failure::Runtime))?
-                        .operation_receipt(p, id)
-                        .await?;
-                    let mut result = ReceiptSummary::new(id);
-                    use crate::administration::tenants::ReceiptResult as R;
-                    match value.result {
-                        R::Tenant(v) => {
-                            result.object = Some(v.tenant_id);
-                            result.revision = Some(v.revision);
+            let value = async {
+                Ok::<_, Error>(match l.owner {
+                    O::TenantAdministration => {
+                        let value = self
+                            .tenants
+                            .as_ref()
+                            .ok_or(Error::Unavailable(Failure::Runtime))?
+                            .operation_receipt(p, id)
+                            .await?;
+                        let mut result = ReceiptSummary::new(id);
+                        use crate::administration::tenants::ReceiptResult as R;
+                        match value.result {
+                            R::Tenant(v) => {
+                                result.object = Some(v.tenant_id);
+                                result.revision = Some(v.revision);
+                            }
+                            R::Administrator(v) => {
+                                result.object = Some(v.tenant_id);
+                                result.revision = Some(
+                                    i64::try_from(v.rule_revision).map_err(|_| Error::Conflict)?,
+                                );
+                                result.accepted = Some(true);
+                            }
+                            R::Provisioning(v) => {
+                                result.object = Some(v.tenant_id.to_string());
+                                result.revision =
+                                    Some(i64::try_from(v.revision).map_err(|_| Error::Conflict)?);
+                                result.state = Some(enum_name(v.phase)?);
+                            }
                         }
-                        R::Administrator(v) => {
-                            result.object = Some(v.tenant_id);
-                            result.revision =
-                                Some(i64::try_from(v.rule_revision).map_err(|_| Error::Conflict)?);
-                            result.accepted = Some(true);
-                        }
-                        R::Provisioning(v) => {
-                            result.object = Some(v.tenant_id.to_string());
-                            result.revision =
-                                Some(i64::try_from(v.revision).map_err(|_| Error::Conflict)?);
-                            result.state = Some(enum_name(v.phase)?);
-                        }
+                        original_result_url =
+                            Some(format!("/api/v1/tenant-administration/operations/{id}"));
+                        current_resource_url = result
+                            .object
+                            .as_ref()
+                            .map(|id| format!("/api/v1/tenant-administration/tenants/{id}"));
+                        Some(result)
                     }
-                    original_result_url =
-                        Some(format!("/api/v1/tenant-administration/operations/{id}"));
-                    current_resource_url = result
-                        .object
-                        .as_ref()
-                        .map(|id| format!("/api/v1/tenant-administration/tenants/{id}"));
-                    Some(result)
-                }
-                O::Authorization => {
-                    rss_mdm_authorization_service::store::operation_receipt(&self.audit, p, id)
-                        .await?
-                }
-                _ => return Err(Error::Malformed),
+                    O::Authorization => {
+                        rss_mdm_authorization_service::store::operation_receipt(&self.audit, p, id)
+                            .await?
+                    }
+                    _ => return Err(Error::Malformed),
+                })
+            }
+            .await;
+            let value = match value {
+                Ok(v) => v,
+                Err(e) if e.is_not_found() => None,
+                Err(e) => return Err(e),
             };
             let audit_evidence = if !l.query.include_audit {
                 Evidence::NotRequested
@@ -79,6 +88,7 @@ impl Reads for Installation {
                         &rss_mdm_timeline_service::Query {
                             operation_id: Some(id),
                             owner: Some(l.owner),
+                            cursor: l.query.cursor.clone(),
                             ..Default::default()
                         },
                     )
@@ -90,6 +100,12 @@ impl Reads for Installation {
                                 rss_mdm_audit_integration::SensitiveAction::AuditHistoryRead,
                             ));
                         Evidence::Available(page)
+                    }
+                    Err(rss_mdm_timeline_service::Error::Conflict) => {
+                        return Err(Error::QueryCursorInvalidated);
+                    }
+                    Err(rss_mdm_timeline_service::Error::Malformed) => {
+                        return Err(Error::Malformed);
                     }
                     Err(rss_mdm_timeline_service::Error::Forbidden) => Evidence::Restricted,
                     Err(_) => Evidence::Unavailable,

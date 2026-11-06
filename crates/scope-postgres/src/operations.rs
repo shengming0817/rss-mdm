@@ -10,6 +10,7 @@ impl ScopeBinding {
         &self,
         tx: &mut PgTransaction<'_>,
         actor: &str,
+        instance: &str,
         id: Uuid,
     ) -> Result<Option<Value>, BindingError> {
         self.validate_in(tx)?;
@@ -27,6 +28,14 @@ impl ScopeBinding {
                 })
             })
             .await?;
+        if let Some(row) = &row
+            && row
+                .try_get::<String, _>("instance")
+                .map_err(PgError::from)?
+                != instance
+        {
+            return Ok(None);
+        }
         row.map(|r| {
             r.try_get("response")
                 .map_err(PgError::from)
@@ -38,6 +47,7 @@ impl ScopeBinding {
         &self,
         tx: &mut PgTransaction<'_>,
         actor: &str,
+        instance: &str,
         id: Uuid,
         fingerprint: &[u8],
     ) -> Result<Option<Value>, BindingError> {
@@ -72,6 +82,10 @@ impl ScopeBinding {
             .try_get::<Vec<u8>, _>("fingerprint")
             .map_err(PgError::from)?
             != fingerprint
+            || row
+                .try_get::<String, _>("instance")
+                .map_err(PgError::from)?
+                != instance
         {
             return Err(BindingError::Conflict);
         }
@@ -81,6 +95,7 @@ impl ScopeBinding {
         &self,
         tx: &mut PgTransaction<'_>,
         actor: &str,
+        instance: &str,
         id: Uuid,
         fingerprint: &[u8],
         response: &Value,
@@ -92,8 +107,8 @@ impl ScopeBinding {
         let tenant = self.tenant.to_string();
         let sql = crate::storage_profile::sql(self.profile());
         tx.with_connection_context(
-            &mut (actor, &tenant, fingerprint, response),
-            |(actor, tenant, fingerprint, response), c| {
+            &mut (actor, instance, &tenant, fingerprint, response),
+            |(actor, instance, tenant, fingerprint, response), c| {
                 Box::pin(async move {
                     sqlx::query(sql.operation_receipt)
                         .bind(*tenant)
@@ -101,6 +116,7 @@ impl ScopeBinding {
                         .bind(id)
                         .bind(*fingerprint)
                         .bind(*response)
+                        .bind(*instance)
                         .execute(c)
                         .await?;
                     Ok(())

@@ -341,6 +341,15 @@ impl SoftwareService {
             .await?
             .ok_or(Error::Forbidden)?;
         let actor = actor(p, &subject);
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareInvocation,
+            input.operation_id,
+            "self_service_invoke",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.receipt_actor(&actor);
+        audit.target_device(p.device());
+        audit.registration_at(p.registration(), p.generation());
         let event_key = format!("{actor}:{}", input.operation_id);
         let plan = db::load_source(
             &service.transactions,
@@ -443,6 +452,7 @@ impl SoftwareService {
             &service.transactions,
             tx,
             production::RunInput {
+                request: Some(audit),
                 origin: match input.source {
                     wire::SelfServiceCaller::Human => {
                         rss_mdm_audit_integration::activity::ActivityOrigin::Human
@@ -480,6 +490,7 @@ impl SoftwareService {
             input.operation_id,
             hash.clone(),
             &response,
+            &target,
             None,
         )
         .await?;
@@ -488,7 +499,7 @@ impl SoftwareService {
         }
         let fact = Fact::business(
             audit,
-            rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareInvocation,
             &event_key,
             202,
             "success",
@@ -781,4 +792,38 @@ fn required_activity_user<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<Option<rss_mdm_audit_integration::activity::ActivityUser>, D::Error> {
     Option::deserialize(d)
+}
+
+/// Read the immutable self-service response under current device authority without replaying it.
+pub async fn diagnostic_on(
+    c: &mut sqlx::PgConnection,
+    p: &AuthorizedPrincipal,
+    grant: &rss_mdm_authorization_service::Snapshot,
+    locator: &rss_mdm_audit_integration::operation::OperationLocator,
+) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>> {
+    if locator.owner != rss_mdm_audit_integration::operation::OperationOwner::SoftwareInvocation
+        || locator.product != p.profile()
+    {
+        return Err(Error::Malformed.into());
+    }
+    let actor = locator.actor.as_deref().ok_or(Error::Malformed)?;
+    let device = locator.device.as_deref().ok_or(Error::Malformed)?;
+    let registration = locator.registration.ok_or(Error::Malformed)?;
+    let generation = locator.generation.ok_or(Error::Malformed)?;
+    grant.require(p, Permission::OperationRead, Some(device))?;
+    let raw: Option<Value> = sqlx::query_scalar("SELECT response FROM mdm_software_deployment.action_receipts WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND device=$4 AND registration=$5 AND generation=$6")
+        .bind(p.tenant_id()).bind(actor).bind(locator.operation_id)
+        .bind(device).bind(registration).bind(generation).fetch_optional(c).await?;
+    let Some(raw) = raw else { return Ok(None) };
+    let response: wire::SelfServiceAccepted = stored(serde_json::from_value(raw))?;
+    if response.request_id != locator.operation_id {
+        return Err(Error::Malformed.into());
+    }
+    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(locator.operation_id);
+    value.object = Some(device.into());
+    value.accepted = Some(true);
+    value.revision = Some(i64::try_from(response.policy_revision).map_err(|_| Error::Malformed)?);
+    value.executions.push(response.run_id);
+    p.check_live()?;
+    Ok(Some(value))
 }

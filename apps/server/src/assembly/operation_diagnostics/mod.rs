@@ -37,18 +37,27 @@ impl Diagnostics {
         p.check_live()?;
         if p.tenant_id() != self.state.identity.tenant.to_string()
             || actor_bound(l.owner)
-                && l.owner != O::RegistrationRecovery
+                && !matches!(l.owner, O::RegistrationRecovery | O::Pki)
                 && l.query
                     .actor
                     .as_deref()
                     .is_some_and(|v| v != p.principal_id())
             || actor_bound(l.owner)
-                && l.owner != O::RegistrationRecovery
+                && !matches!(l.owner, O::RegistrationRecovery | O::Pki)
                 && l.query
                     .instance
                     .is_some_and(|v| v.to_string() != p.instance_id())
         {
             return Err(Error::Forbidden);
+        }
+        if l.owner == O::Pki
+            && l.query.instance.is_none()
+            && l.query
+                .actor
+                .as_deref()
+                .is_some_and(|v| v != "service:device-pki" && v != p.principal_id())
+        {
+            return Err(Error::Malformed);
         }
         let da_owner = p.profile() == rss_mdm_install_support::StorageProfile::Da
             || matches!(
@@ -65,21 +74,28 @@ impl Diagnostics {
             None
         };
         let p = da_proof.as_ref().unwrap_or(p);
+        let da_source = da_owner || l.owner == O::DeviceAccessTask;
         let operation = OperationLocator {
-            product: if da_owner {
+            product: if da_source {
                 rss_mdm_install_support::StorageProfile::Da
             } else {
                 p.profile()
             },
             owner: l.owner,
             operation_id: l.operation,
-            actor: actor_bound(l.owner).then(|| {
+            actor: (actor_bound(l.owner) || l.owner.invocation()).then(|| {
                 l.query
                     .actor
                     .clone()
                     .unwrap_or_else(|| p.principal_id().to_owned())
             }),
-            instance: if actor_bound(l.owner) {
+            instance: if l.owner == O::Pki && l.query.actor.as_deref() == Some("service:device-pki")
+            {
+                if l.query.instance.is_some() {
+                    return Err(Error::Malformed);
+                }
+                None
+            } else if actor_bound(l.owner) {
                 Some(
                     l.query
                         .instance
@@ -119,17 +135,61 @@ impl Diagnostics {
                 grant.require(p, Permission::RegistrationConfigurationRead, None)?;
                 // These owners keep current configuration / installation progress, not a historical receipt by operation ID.
                 (Evidence::NoDurableEvidence, Evidence::NoDurableEvidence)
+            } else if matches!(l.owner, O::PkiSigning | O::PkiRevocation) {
+                let registry = if da_owner {
+                    self.state
+                        .da
+                        .as_ref()
+                        .and_then(|d| d.pki.as_ref())
+                        .ok_or(Error::Unavailable(Failure::Runtime))?
+                } else {
+                    &self.state.pki
+                };
+                match registry
+                    .task_receipt(p, l.owner, l.operation)
+                    .await
+                    .map_err(|e| match e {
+                        rss_mdm_pki_service::Error::Forbidden => Error::Forbidden,
+                        rss_mdm_pki_service::Error::Request => Error::Malformed,
+                        _ => Error::Unavailable(Failure::Database),
+                    })? {
+                    Some((original, execution)) => (
+                        Evidence::Available(original),
+                        Evidence::Available(
+                            rss_mdm_management_http::execution::operations::Evidence::Pki(
+                                execution,
+                            ),
+                        ),
+                    ),
+                    None => (Evidence::NotFound, Evidence::NotFound),
+                }
             } else if da_owner && l.owner == O::CredentialTask {
                 self.da_task(p, &operation).await?
-            } else if execution_owner {
-                let (receipt, execution) = self
-                    .state
-                    .operation_reads
-                    .diagnostic(p, l.owner, l.operation, l.query)
-                    .await?;
+            } else if execution_owner || l.owner.invocation() {
+                let result = if l.owner.invocation() {
+                    if l.query.actor.is_none() || l.query.instance.is_some() {
+                        return Err(Error::Malformed);
+                    }
+                    self.state
+                        .operation_reads
+                        .invocation(p, &operation, l.query)
+                        .await?
+                } else {
+                    self.state
+                        .operation_reads
+                        .diagnostic(p, l.owner, l.operation, l.query)
+                        .await?
+                };
                 (
-                    receipt.map_or(Evidence::NotFound, Evidence::Available),
-                    execution.map_or(Evidence::NotFound, Evidence::Available),
+                    result
+                        .original
+                        .map_or(Evidence::NotFound, Evidence::Available),
+                    match result.execution {
+                        Ok(value) => value.map_or(Evidence::NotFound, Evidence::Available),
+                        Err(Error::Unavailable(_)) => Evidence::Unavailable,
+                        Err(e) if e.is_not_found() => Evidence::NotFound,
+                        Err(e) => return Err(e),
+                    },
                 )
             } else {
                 let receipt = if da_owner {
@@ -159,54 +219,7 @@ impl Diagnostics {
                     execution,
                 )
             };
-        let da_timeline = if da_owner {
-            Some(
-                self.state.timeline.for_source(
-                    rss_mdm_install_support::StorageProfile::Da,
-                    self.state
-                        .da
-                        .as_ref()
-                        .ok_or(Error::Unavailable(Failure::Runtime))?
-                        .audit
-                        .clone(),
-                ),
-            )
-        } else {
-            None
-        };
-        let timeline = da_timeline.as_ref().unwrap_or(self.state.timeline.as_ref());
-        let audit_evidence = if !l.query.include_audit {
-            Evidence::NotRequested
-        } else if p.require(Permission::AuditRead, None).is_err() {
-            Evidence::Restricted
-        } else {
-            let query = rss_mdm_timeline_service::Query {
-                operation_id: Some(l.operation),
-                owner: Some(l.owner),
-                device: l.query.device.clone(),
-                actor: operation.actor.clone(),
-                target_id: l.query.target.clone(),
-                registration_id: l.query.registration,
-                generation: l.query.generation,
-                ..Default::default()
-            };
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                timeline.diagnostics(p, "operation_detail", &query),
-            )
-            .await
-            {
-                Ok(Ok(page)) => {
-                    l.audit
-                        .intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
-                            rss_mdm_audit_integration::SensitiveAction::AuditHistoryRead,
-                        ));
-                    Evidence::Available(page)
-                }
-                Ok(Err(rss_mdm_timeline_service::Error::Forbidden)) => Evidence::Restricted,
-                _ => Evidence::Unavailable,
-            }
-        };
+        let audit_evidence = self.history(&l, p, da_source, &operation).await?;
         let (audit_evidence, request_evidence) =
             rss_mdm_management_http::operation_diagnostics::split_requests(audit_evidence);
         p.check_live()?;
@@ -221,6 +234,75 @@ impl Diagnostics {
             original_result_url,
             current_resource_url,
         })
+    }
+    async fn history(
+        &self,
+        l: &Lookup<'_>,
+        p: &AuthorizedPrincipal,
+        da_source: bool,
+        operation: &OperationLocator,
+    ) -> Result<Evidence<rss_mdm_timeline_service::DiagnosticPage>, Error> {
+        if !l.query.include_audit {
+            return Ok(Evidence::NotRequested);
+        }
+        // DeviceAccessTask keeps its existing MDM execution authority, but its facts are DA.
+        let da_proof = if da_source && p.profile() != rss_mdm_install_support::StorageProfile::Da {
+            match self.da_proof(l).await {
+                Ok(proof) => Some(proof),
+                Err(Error::Forbidden | Error::Unauthorized) => return Ok(Evidence::Restricted),
+                Err(Error::Unavailable(_)) => return Ok(Evidence::Unavailable),
+                Err(e) => return Err(e),
+            }
+        } else {
+            None
+        };
+        let p = da_proof.as_ref().unwrap_or(p);
+        if p.require(Permission::AuditRead, None).is_err() {
+            return Ok(Evidence::Restricted);
+        }
+        let da_timeline = if da_source {
+            let Some(da) = &self.state.da else {
+                return Ok(Evidence::Unavailable);
+            };
+            Some(self.state.timeline.for_source(
+                rss_mdm_install_support::StorageProfile::Da,
+                da.audit.clone(),
+            ))
+        } else {
+            None
+        };
+        let timeline = da_timeline.as_ref().unwrap_or(self.state.timeline.as_ref());
+        let query = rss_mdm_timeline_service::Query {
+            operation_id: Some(l.operation),
+            owner: Some(l.owner),
+            device: l.query.device.clone(),
+            actor: operation.actor.clone(),
+            target_id: l.query.target.clone(),
+            registration_id: l.query.registration,
+            generation: l.query.generation,
+            cursor: l.query.cursor.clone(),
+            ..Default::default()
+        };
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            timeline.diagnostics(p, "operation_detail", &query),
+        )
+        .await
+        {
+            Ok(Ok(page)) => {
+                l.audit
+                    .intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+                        rss_mdm_audit_integration::SensitiveAction::AuditHistoryRead,
+                    ));
+                Ok(Evidence::Available(page))
+            }
+            Ok(Err(rss_mdm_timeline_service::Error::Forbidden)) => Ok(Evidence::Restricted),
+            Ok(Err(rss_mdm_timeline_service::Error::Conflict)) => {
+                Err(Error::QueryCursorInvalidated)
+            }
+            Ok(Err(rss_mdm_timeline_service::Error::Malformed)) => Err(Error::Malformed),
+            _ => Ok(Evidence::Unavailable),
+        }
     }
     async fn original(
         &self,
@@ -239,15 +321,18 @@ impl Diagnostics {
                 .map_err(Into::into),
             O::Asset => s.assets.operation_receipt(p, id).await.map_err(Into::into),
             O::AgentConfiguration => {
-                let service = s
-                    .agent_enrollment
-                    .as_ref()
-                    .ok_or(Error::Unavailable(Failure::Runtime))?;
-                let value = service.configuration_operation(p, id).await.map_err(|e| {
-                    e.source
-                        .map(Error::from)
-                        .unwrap_or(Error::Unavailable(Failure::Database))
-                })?;
+                let value =
+                    rss_mdm_registration_service::agent::configurations::configuration_operation(
+                        &s.access.registration(),
+                        p,
+                        id,
+                    )
+                    .await
+                    .map_err(|e| {
+                        e.source
+                            .map(Error::from)
+                            .unwrap_or(Error::Unavailable(Failure::Database))
+                    })?;
                 Ok(value.map(|v| {
                     let mut r = ReceiptSummary::new(id);
                     r.object = Some(v.configuration.configuration_id.to_string());
@@ -256,10 +341,6 @@ impl Diagnostics {
                 }))
             }
             O::RegistrationRecovery => {
-                let service = s
-                    .agent_enrollment
-                    .as_ref()
-                    .ok_or(Error::Unavailable(Failure::Runtime))?;
                 let identity = rss_mdm_registration_service::agent::queries::ReceiptIdentity {
                     actor: q.actor.clone().unwrap_or_else(|| p.principal_id().into()),
                     instance: q
@@ -267,8 +348,9 @@ impl Diagnostics {
                         .map(|v| v.to_string())
                         .unwrap_or_else(|| p.instance_id().into()),
                 };
-                let value = service
-                    .registration_recovery_operation(
+                let value =
+                    rss_mdm_registration_service::agent::queries::registration_recovery_operation(
+                        &s.access.registration(),
                         p,
                         q.registration.ok_or(Error::Malformed)?,
                         id,
@@ -480,13 +562,51 @@ impl Diagnostics {
                 }
                 Ok(Some(result))
             }
-            O::Telemetry => s
-                .telemetry
-                .as_ref()
-                .ok_or(Error::Unavailable(Failure::Runtime))?
-                .operation_receipt(p, id)
-                .await
-                .map_err(rss_mdm_management_http::telemetry::error),
+            O::Telemetry => {
+                let budget = rss_mdm_audit_integration::budget::AuditBudget::new(
+                    std::time::Duration::from_secs(5),
+                );
+                let result = s
+                    .audit_store
+                    .read(s.identity.tenant, &budget.control(), p, |p, tx| {
+                        Box::pin(async move {
+                            tx.with_connection_context(p, |p, c| {
+                                Box::pin(async move {
+                                    rss_mdm_authorization_service::lock_shared_on(
+                                        p.authority_profile(),
+                                        c,
+                                        p.tenant_id(),
+                                        p.instance_id(),
+                                    )
+                                    .await?;
+                                    let grant = rss_mdm_authorization_service::snapshot_on(
+                                        p.authority_profile(),
+                                        c,
+                                        p.tenant_id(),
+                                        p.instance_id(),
+                                    )
+                                    .await?;
+                                    rss_mdm_telemetry_service::maintenance::operation_receipt_on(
+                                        c, p, &grant, id,
+                                    )
+                                    .await
+                                    .map_err(rss_mdm_management_http::telemetry::error)
+                                })
+                            })
+                            .await
+                        })
+                    })
+                    .await;
+                fn failure(
+                    e: rss_mdm_audit_integration::TransactionError<Error>,
+                ) -> Result<Option<ReceiptSummary>, Error> {
+                    Err(match e {
+                        rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+                        _ => Error::Unavailable(Failure::Database),
+                    })
+                }
+                result.fold(Ok, failure, failure, failure, failure, failure)
+            }
             O::AppleAde => rss_mdm_apple_channel::ade::diagnostic_receipt(&self.apple, p, id)
                 .await
                 .map_err(|e| Error::from(crate::Error::Apple(e))),
@@ -520,11 +640,27 @@ impl Diagnostics {
                 }
                 Ok(Some(result))
             }
-            O::Pki => s.pki.operation_receipt(p, id).await.map_err(|e| match e {
-                rss_mdm_pki_service::Error::Forbidden => Error::Forbidden,
-                rss_mdm_pki_service::Error::NotFound => Error::NotFound,
-                _ => Error::Unavailable(Failure::Database),
-            }),
+            O::Pki => s
+                .pki
+                .operation_receipt(
+                    p,
+                    id,
+                    q.actor.as_deref().unwrap_or(p.principal_id()),
+                    if q.actor.as_deref() == Some("service:device-pki") {
+                        None
+                    } else {
+                        Some(q.instance.unwrap_or(
+                            Uuid::parse_str(p.instance_id()).map_err(|_| Error::Malformed)?,
+                        ))
+                    },
+                )
+                .await
+                .map_err(|e| match e {
+                    rss_mdm_pki_service::Error::Forbidden => Error::Forbidden,
+                    rss_mdm_pki_service::Error::Request => Error::Malformed,
+                    rss_mdm_pki_service::Error::NotFound => Error::NotFound,
+                    _ => Error::Unavailable(Failure::Database),
+                }),
             O::Webhook => {
                 let value = s
                     .webhooks
@@ -577,7 +713,12 @@ impl Diagnostics {
                 result.revision = Some(v.revision);
                 Ok(Some(result))
             }
-            O::DeviceControl
+            O::PkiSigning
+            | O::PkiRevocation
+            | O::ScriptInvocation
+            | O::SoftwareInvocation
+            | O::EnrollmentInvocation
+            | O::DeviceControl
             | O::DeviceAction
             | O::DeviceControlRequest
             | O::Installation

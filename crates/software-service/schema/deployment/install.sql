@@ -83,6 +83,9 @@ CREATE TABLE mdm_software_deployment.agent_admission (
 ALTER TABLE ONLY mdm_software_deployment.agent_admission FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_software_deployment.action_receipts (
+    device text NOT NULL,
+    registration uuid NOT NULL,
+    generation bigint NOT NULL CHECK(generation > 0),
     tenant_id uuid NOT NULL,
     actor text NOT NULL,
     id uuid NOT NULL,

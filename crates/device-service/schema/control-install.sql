@@ -178,6 +178,7 @@ ALTER TABLE ONLY mdm_devices.unmanage_policy_recovery FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_devices.control_requests (
     tenant_id uuid NOT NULL,
     actor text NOT NULL CHECK(length(actor)>0),
+    instance uuid,
     id uuid NOT NULL,
     operation uuid NOT NULL,
     fingerprint bytea NOT NULL,

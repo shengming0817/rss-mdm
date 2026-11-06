@@ -28,10 +28,16 @@ pub struct LocatorQuery {
     pub target: Option<String>,
     pub registration: Option<Uuid>,
     pub generation: Option<i64>,
+    /// Continue both evidence sections with the unchanged locator and includeAudit=true.
+    pub cursor: Option<String>,
 }
 impl LocatorQuery {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.generation.is_some_and(|v| v < 1)
+        if self
+            .cursor
+            .as_ref()
+            .is_some_and(|v| !self.include_audit || v.is_empty() || v.len() > 4096)
+            || self.generation.is_some_and(|v| v < 1)
             || self.instance.is_some_and(|v| v.is_nil())
             || self.registration.is_some_and(|v| v.is_nil())
             || [&self.actor, &self.device, &self.target]

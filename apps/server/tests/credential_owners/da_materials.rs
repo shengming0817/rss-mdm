@@ -471,6 +471,70 @@ async fn verify_access_recovery(
         .bind(agent.device()).bind(agent.registration()).bind(agent.generation()).bind(format!("binding:{}",binding.id))
         .bind(at).bind(at+600).bind(&original).bind(vec![7_u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
+    // Diagnostic lookup uses the actual DA authority and the original frozen registration.
+    let account = c
+        .account(&[rss_mdm_authorization_service::Permission::OperationRead])
+        .await?;
+    let proof = rss_mdm_authorization_service::session::SessionAuthority::new(
+        c.authority.clone(),
+        c.tenant,
+    )
+    .authenticate(
+        &c.access().for_product(StorageProfile::Da),
+        account.credential()?,
+    )
+    .await?;
+    let mut locator = rss_mdm_audit_integration::operation::OperationLocator {
+        product: StorageProfile::Da,
+        owner: rss_mdm_audit_integration::operation::OperationOwner::CredentialTask,
+        operation_id: credential_id,
+        actor: None,
+        instance: None,
+        target: None,
+        device: Some(agent.device().into()),
+        registration: Some(agent.registration()),
+        generation: Some(agent.generation()),
+    };
+    let read_pool = c.inputs.pool("shared", "da_access").await?;
+    let mut read = read_pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(c.tenant.to_string())
+        .execute(&mut *read)
+        .await?;
+    let value = recovery::tasks::queries::diagnostic_on(
+        &mut read,
+        &proof,
+        proof.authorization()?,
+        &locator,
+    )
+    .await?
+    .expect("retained DA credential task");
+    assert_eq!(value.task_id, credential_id);
+    assert_eq!(value.registration_id, agent.registration());
+    locator.registration = Some(Uuid::new_v4());
+    assert!(
+        recovery::tasks::queries::diagnostic_on(
+            &mut read,
+            &proof,
+            proof.authorization()?,
+            &locator
+        )
+        .await?
+        .is_none()
+    );
+    locator.product = StorageProfile::Mdm;
+    assert!(
+        recovery::tasks::queries::diagnostic_on(
+            &mut read,
+            &proof,
+            proof.authorization()?,
+            &locator
+        )
+        .await
+        .is_err()
+    );
+    read.rollback().await?;
+    read_pool.close().await;
     async fn recover(
         c: &Context,
         runtime: &rss_transactional_messaging_postgres::PgRuntime,

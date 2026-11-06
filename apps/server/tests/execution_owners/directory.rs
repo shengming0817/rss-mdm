@@ -26,7 +26,7 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             device: Some(native.device.clone()),
             ..Default::default()
         };
-        let (receipt, evidence) = operations
+        let result = operations
             .diagnostic(
                 &proof,
                 rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
@@ -34,12 +34,12 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
                 &locator,
             )
             .await?;
-        assert_eq!(receipt.unwrap().executions, [Uuid::from_u128(1)]);
+        assert_eq!(result.original.unwrap().executions, [Uuid::from_u128(1)]);
         assert!(matches!(
-            evidence,
+            result.execution?,
             Some(rss_mdm_management_http::execution::operations::Evidence::Native { .. })
         ));
-        let (other_receipt, other_evidence) = operations
+        let other = operations
             .diagnostic(
                 &proof,
                 rss_mdm_audit_integration::operation::OperationOwner::SoftwareDeployment,
@@ -48,7 +48,7 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             )
             .await?;
         assert!(
-            other_receipt.is_none() && other_evidence.is_none(),
+            other.original.is_none() && other.execution?.is_none(),
             "another owner cannot claim the same UUID"
         );
         let codec = CursorCodec::new(&[7; 32])?;
@@ -137,14 +137,25 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         });
         for (owner,id,device) in [(rss_mdm_audit_integration::operation::OperationOwner::Script,script,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,collection,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,native,native_object.members[0].device.as_str())] {
             let locator=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(device.into()),..Default::default()};
-            let(receipt,evidence)=operations.diagnostic(&proof,owner,id,&locator).await?;
-            assert_eq!(receipt.unwrap().accepted,Some(true));
-            let evidence=serde_json::to_value(evidence.unwrap())?;
+            let result=operations.diagnostic(&proof,owner,id,&locator).await?;
+            assert_eq!(result.original.unwrap().accepted,Some(true));
+            let evidence=serde_json::to_value(result.execution?.unwrap())?;
             assert_eq!(evidence["owner"],if owner==rss_mdm_audit_integration::operation::OperationOwner::Script{"script"}else{"collection"});
             assert!(!evidence.to_string().contains("stdout"));
             let wrong=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(device.into()),registration:Some(Uuid::new_v4()),..Default::default()};
             assert!(operations.diagnostic(&proof,owner,id,&wrong).await.is_err());
         }
+        // A damaged execution projection must not discard independently confirmed admission.
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_script.runs SET result=$3 WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(h.c.tenant.to_string()).bind(script).bind(json!({"private":"must-not-escape"})).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let result=operations.diagnostic(&proof,rss_mdm_audit_integration::operation::OperationOwner::Script,script,&rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(h.p.device().into()),..Default::default()}).await?;
+        assert_eq!(result.original.unwrap().accepted,Some(true));
+        assert!(matches!(result.execution,Err(rss_mdm_management_http::Error::Unavailable(_))));
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_script.runs SET result=NULL WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(script).execute(&mut *tx).await?;
+        tx.commit().await?;
         let router=rss_mdm_management_http::execution::http::read_routes().with_state::<()>(operations.clone())
             .layer(axum::Extension(CursorCodec::new(&[8;32])?))
             .layer(axum::Extension(RequestAuth{proof:proof.clone()}))

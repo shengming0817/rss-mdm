@@ -89,7 +89,9 @@ pub async fn diagnostic_on(
     grant: &Snapshot,
     locator: &rss_mdm_audit_integration::operation::OperationLocator,
 ) -> Result<Option<Record>> {
-    if locator.product != proof.profile() {
+    if locator.product != proof.profile()
+        || locator.owner != rss_mdm_audit_integration::operation::OperationOwner::CredentialTask
+    {
         return Err(Error::Forbidden.into());
     }
     let device = locator.device.as_deref().ok_or(Error::Malformed)?;

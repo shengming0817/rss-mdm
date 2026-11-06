@@ -205,6 +205,7 @@ impl crate::deployment::transactions::Transactions {
                     self,
                     tx,
                     production::RunInput {
+                        request: None,
                         origin,
                         invocation: None,
                         source: runs::Source::Policy {

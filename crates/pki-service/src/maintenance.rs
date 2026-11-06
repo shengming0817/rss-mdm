@@ -467,7 +467,7 @@ impl Registry {
                             failures: row.try_get("failures").map_err(|_| Error::Storage)?,
                         };
                         a.owned_operation(
-                            rss_mdm_audit_integration::operation::OperationOwner::Pki,
+                            rss_mdm_audit_integration::operation::OperationOwner::PkiRevocation,
                             job.attempt,
                             "device_pki_revoke_dispatch",
                             rss_mdm_audit_integration::AuditIntent::Management,
@@ -517,7 +517,7 @@ impl Registry {
         );
         a.identify_service("service:device-pki");
         a.owned_operation(
-            rss_mdm_audit_integration::operation::OperationOwner::Pki,
+            rss_mdm_audit_integration::operation::OperationOwner::PkiRevocation,
             job.attempt,
             "device_pki_revoke_submit",
             rss_mdm_audit_integration::AuditIntent::Management,

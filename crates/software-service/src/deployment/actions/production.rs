@@ -62,6 +62,7 @@ impl AdmissionTrigger {}
 
 /// Only the authenticated device can cause its own recurring execution to be admitted.
 pub struct RunInput<'a> {
+    pub request: Option<&'a rss_mdm_audit_integration::RequestAudit>,
     pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
     pub invocation: Option<crate::deployment::self_service::Invocation>,
     pub source: db::Source,
@@ -78,6 +79,7 @@ pub(crate) async fn queue_run_in(
     input: RunInput<'_>,
 ) -> Result<()> {
     let RunInput {
+        request,
         origin,
         invocation,
         source,
@@ -158,20 +160,26 @@ pub(crate) async fn queue_run_in(
     })).await?;
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
-    let audit = rss_mdm_audit_integration::RequestAudit::new(
-        rss_mdm_audit_integration::Origin::Background,
-        rss_mdm_audit_integration::StorageProfile::Mdm,
-        tx.tenant_id().to_string(),
-        "command_accept",
-        rss_mdm_audit_integration::AuditIntent::Management,
-    );
+    let audit = request
+        .map(|a| a.fact_copy("command_accept"))
+        .unwrap_or_else(|| {
+            rss_mdm_audit_integration::RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Background,
+                rss_mdm_audit_integration::StorageProfile::Mdm,
+                tx.tenant_id().to_string(),
+                "command_accept",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            )
+        });
     audit.owned_operation(
         rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
         id,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.identify_service("execution-admission");
+    if request.is_none() {
+        audit.identify_service("execution-admission");
+    }
     source.audit(&audit);
     audit.target(&id.to_string());
     audit.registration(registration);

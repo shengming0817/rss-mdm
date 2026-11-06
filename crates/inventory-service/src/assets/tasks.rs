@@ -194,18 +194,12 @@ impl AssetService {
                     value.recorded_at = Some(task.input.as_of);
                     value.accepted = Some(true);
                     value.executions.push(id);
-                    value.state = Some(
-                        if task.failure.is_some() {
-                            "failed"
-                        } else if task.completed {
-                            "completed"
-                        } else if task.started {
-                            "running"
-                        } else {
-                            "pending"
-                        }
-                        .into(),
-                    );
+                    let Response::QueryStatus { status, .. } =
+                        s.asset_query_status(tx, id, &current).await?
+                    else {
+                        return Err(Error::Conflict.into());
+                    };
+                    value.state = Some(status);
                     p.check_live()?;
                     Ok(Some(value))
                 })

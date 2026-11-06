@@ -569,6 +569,7 @@ impl ResourceCatalog {
                             pg::replay_operation_in(
                                 tx,
                                 &audit.snapshot().actor.ok_or(Error::Malformed)?,
+                                proof.instance_id(),
                                 &id.to_string(),
                                 &fingerprint,
                             )
@@ -599,6 +600,7 @@ impl ResourceCatalog {
                         pg::record_operation_in(
                             tx,
                             &audit.snapshot().actor.ok_or(Error::Malformed)?,
+                            proof.instance_id(),
                             &id.to_string(),
                             &fingerprint,
                             &value,

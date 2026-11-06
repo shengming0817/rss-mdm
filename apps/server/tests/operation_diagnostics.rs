@@ -6,6 +6,206 @@ use rss_mdm_management_http::operation_diagnostics::Services;
 use std::{sync::Arc, time::Duration};
 use tower::ServiceExt;
 use uuid::Uuid;
+#[path = "operation_diagnostics/installation.rs"]
+mod installation;
+#[path = "operation_diagnostics/receipts.rs"]
+mod receipts;
+
+/// Exercise the actual product composition, including its real owner pools and HTTP authority.
+#[tokio::test]
+#[ignore = "T2: production App diagnostics, original receipt namespaces and evidence continuation"]
+#[allow(clippy::disallowed_methods, reason = "real host monotonic clock")]
+async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() -> Result<()> {
+    use serde_json::{Value, json};
+    let c = Context::open("shared", &[]).await?;
+    let manager = c
+        .account(&[
+            Permission::PolicyRead,
+            Permission::RegistrationConfigurationRead,
+            Permission::SecurityOperate,
+            Permission::EnterpriseApplicationsRead,
+            Permission::AccountWrite,
+            Permission::ResourceRead,
+            Permission::ScopeRead,
+            Permission::GroupRead,
+            Permission::InventoryRead,
+            Permission::InventoryFieldsWrite,
+            Permission::ReleaseRead,
+            Permission::ComplianceRuleRead,
+            Permission::AgentEnrollmentRead,
+            Permission::Credentials,
+            Permission::CertificateArchiveRead,
+            Permission::WebhookRead,
+            Permission::AuditRead,
+            Permission::OperationRead,
+        ])
+        .await?;
+    let proof = c.authenticate(&manager).await?;
+    let operation = Uuid::new_v4();
+    let cases = receipts::seed(&c, &proof, operation).await?;
+    let instance = Uuid::new_v4();
+    let foreign_operation = Uuid::new_v4();
+    receipts::actor_receipts(&c, &proof, foreign_operation, instance).await?;
+    // Request retries are independently settled; the original response remains one durable row.
+    for _ in 0..55 {
+        let attempt = c.request(&proof)?;
+        attempt.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Resource,
+            operation,
+            "resource_change",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        attempt.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        c.audit
+            .settle_request(&attempt, 200, "success", &budget.source_control())
+            .await?;
+        attempt.finalize(None);
+    }
+    let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = reservation.local_addr()?;
+    let config = crate::host_t2_support::configuration(
+        &c.inputs,
+        "shared",
+        c.tenant,
+        address,
+        Uuid::new_v4(),
+    )?;
+    let config = serde_json::from_value(config)?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(12))
+        .build()?;
+    let access::credential::RequestCredential::Cookie(cookie) = manager.credential()? else {
+        anyhow::bail!("cookie required")
+    };
+    let cookie = format!("__Host-identity-session={}", cookie.expose());
+    let send = |path: String| {
+        let request = client
+            .get(format!("http://{address}{path}"))
+            .header("host", "mdm.example.test")
+            .header("x-rss-public-origin", "https://mdm.example.test")
+            .header("x-forwarded-for", "127.0.0.1")
+            .header("cookie", &cookie);
+        async move {
+            let response = request.send().await?;
+            let status = response.status();
+            Ok::<_, anyhow::Error>((status, response.json::<Value>().await?))
+        }
+    };
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    drop(reservation);
+    let server = crate::serve(
+        config,
+        async move {
+            stopped
+                .await
+                .map_err(|_| std::io::Error::other("test stop closed"))
+        },
+        Arc::new(crate::Monotonic(std::time::Instant::now)),
+    );
+    tokio::pin!(server);
+    let exercise = async {
+        tokio::time::timeout(Duration::from_secs(90), async {
+            loop {
+                if send("/readyz".into())
+                    .await
+                    .is_ok_and(|(status, _)| status == 200)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await?;
+        for (owner, case_id, query, expected) in &cases {
+            let path = format!("/api/v1/operation-diagnostics/operations/{owner}/{case_id}{query}");
+            let (status, body) = send(path).await?;
+            assert_eq!(status, 200, "{owner}: {body}");
+            assert_eq!(body["operation"]["owner"], *owner);
+            assert_eq!(
+                body["originalResult"]["availability"], "available",
+                "{owner}: {body}"
+            );
+            for (key, value) in expected.as_object().unwrap() {
+                assert_eq!(
+                    &body["originalResult"]["value"][key], value,
+                    "{owner}.{key}"
+                );
+            }
+            assert_eq!(body["auditEvidence"]["availability"], "not_requested");
+        }
+        for owner in receipts::ACTOR_OWNERS {
+            let path =
+                format!("/api/v1/operation-diagnostics/operations/{owner}/{foreign_operation}");
+            let (status, body) = send(path.clone()).await?;
+            assert_eq!(status, 200, "{owner}: {body}");
+            assert_eq!(
+                body["originalResult"]["availability"], "not_found",
+                "stored foreign instance must not become current instance"
+            );
+            assert_eq!(send(format!("{path}?instance={instance}")).await?.0, 403);
+        }
+        let path = format!(
+            "/api/v1/operation-diagnostics/operations/resource/{operation}?includeAudit=true"
+        );
+        let mut cursor: Option<String> = None;
+        let mut requests = std::collections::BTreeSet::new();
+        for _ in 0..3 {
+            let url = if let Some(cursor) = &cursor {
+                let encoded: String =
+                    url::form_urlencoded::byte_serialize(cursor.as_bytes()).collect();
+                format!("{path}&cursor={encoded}")
+            } else {
+                path.clone()
+            };
+            let (status, body) = send(url).await?;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["originalResult"]["value"]["revision"], 7);
+            assert_eq!(
+                body["requestEvidence"]["availability"], "available",
+                "{body}"
+            );
+            for item in body["requestEvidence"]["value"]["items"]
+                .as_array()
+                .unwrap()
+            {
+                requests.insert(item["fact"]["requestId"].as_str().unwrap().to_owned());
+            }
+            cursor = body["requestEvidence"]["value"]["nextCursor"]
+                .as_str()
+                .map(str::to_owned);
+            if let Some(cursor) = &cursor {
+                let encoded: String =
+                    url::form_urlencoded::byte_serialize(cursor.as_bytes()).collect();
+                assert_eq!(send(format!("/api/v1/operation-diagnostics/operations/scope/{operation}?includeAudit=true&cursor={encoded}")).await?.0, 409);
+            } else {
+                break;
+            }
+        }
+        assert_eq!(
+            requests.len(),
+            55,
+            "continuation reaches the oldest request attempt"
+        );
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_resource_catalog.operations WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string()).bind(operation).fetch_one(&c.operator).await?;
+        assert_eq!(count, 1);
+        assert_eq!(
+            c.audit_count("mdm.business", &operation.to_string())
+                .await?,
+            0,
+            "reads and request settlement never manufacture original business facts"
+        );
+        Ok::<_, anyhow::Error>(json!({"requests":requests.len()}))
+    };
+    let outcome = tokio::select! { result = &mut server => anyhow::bail!("host exited during diagnostics proof: {result:?}"), result = exercise => result };
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(70), &mut server).await??;
+    c.close().await;
+    outcome?;
+    Ok(())
+}
 
 #[allow(
     clippy::disallowed_methods,

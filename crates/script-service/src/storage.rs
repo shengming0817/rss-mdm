@@ -232,13 +232,15 @@ pub async fn receipt(
     id: Uuid,
     fingerprint: Vec<u8>,
     response: &Value,
+    target: &crate::Target,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let actor = actor.to_owned();
     let response = response.clone();
+    let target = target.clone();
     tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_script.receipts(tenant_id,actor,id,fingerprint,response) VALUES($1::uuid,$2,$3,$4,$5)")
-            .bind(tenant).bind(actor).bind(id).bind(fingerprint).bind(response).execute(c).await?;
+        sqlx::query("INSERT INTO mdm_script.receipts(tenant_id,actor,id,fingerprint,response,device,registration,generation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(tenant).bind(actor).bind(id).bind(fingerprint).bind(response).bind(target.device).bind(target.registration).bind(target.generation).execute(c).await?;
         Ok(())
     })).await?;
     Ok(())

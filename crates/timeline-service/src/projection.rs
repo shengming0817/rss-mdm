@@ -206,7 +206,9 @@ pub(crate) fn operation_locator(
             != (locator.product == rss_mdm_audit_integration::StorageProfile::Da)
             || Some(locator.operation_id) != view.operation_id
             || locator.operation_id.is_nil()
-            || locator.actor.as_deref() != Some(view.actor.as_str()) && locator.actor.is_some()
+            || !locator.owner.invocation()
+                && locator.actor.as_deref() != Some(view.actor.as_str())
+                && locator.actor.is_some()
             || locator.instance.is_some() && locator.instance != view.instance_id
         {
             return Err(Error::Integrity);

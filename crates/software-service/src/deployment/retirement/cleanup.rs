@@ -247,6 +247,7 @@ impl Transactions {
                 self,
                 tx,
                 production::RunInput {
+                    request: None,
                     origin,
                     invocation: None,
                     source: runs::Source::RetirementSoftware {

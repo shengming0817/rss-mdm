@@ -116,6 +116,7 @@ impl ResourceCatalog {
                 let raw = rss_mdm_resource_postgres::read_operation_in(
                     tx,
                     p.principal_id(),
+                    p.instance_id(),
                     &id.to_string(),
                 )
                 .await?;
