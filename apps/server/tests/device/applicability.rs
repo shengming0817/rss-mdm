@@ -19,6 +19,7 @@ struct Http {
     state: Arc<directory::HttpState>,
     observation: rt::ObservationResource,
     projection: rt::ProjectionResource,
+    inventory_owner: crate::owner_storage::OwnerRuntime,
 }
 impl Http {
     async fn open(c: &Context, a: &Fixture) -> Result<Self> {
@@ -43,6 +44,17 @@ impl Http {
                 return Err(e.into());
             }
         };
+        let inventory_owner =
+            match crate::planning_t2_support::owner(c, "mdm_inventory_runtime").await {
+                Ok(owner) => owner,
+                Err(e) => {
+                    let a = projection.shutdown().await;
+                    let b = observation.shutdown().await;
+                    a?;
+                    b?;
+                    return Err(e);
+                }
+            };
         let result = async {
             let inventory = Arc::new(rt::InventoryRuntime::new(
                 observation.store.clone(),
@@ -54,19 +66,31 @@ impl Http {
                 Arc::new(rt::Readiness::default()),
             ));
             let messaging = rss_reconcile_postgres::PgMessagingStore::new(
-                a.resources.storage.runtime.clone(),
+                inventory_owner.runtime.clone(),
                 c.tenant,
                 rss_mdm_inventory_service::transaction::deadline(),
             )
             .await?;
             let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
-                inventory,
-                c.audit.clone(),
-                a.resources.storage.runtime.clone(),
-                c.tenant,
-                Arc::new(crate::clock::SystemClock),
-                &[7; 32],
-                messaging,
+                rss_mdm_inventory_service::assets::AssetDependencies {
+                    inventory,
+                    audit_store: inventory_owner.audit.clone(),
+                    runtime: inventory_owner.runtime.clone(),
+                    tenant: c.tenant,
+                    clock: Arc::new(crate::clock::SystemClock),
+                    cursor_key: vec![7; 32],
+                    reconcile_messaging: messaging,
+                    software_sources: rss_mdm_inventory_service::assets::software::Sources {
+                        objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+                        groups: rss_mdm_group_postgres::GroupStore::new(
+                            inventory_owner.runtime.clone(),
+                            c.tenant,
+                            rss_mdm_inventory_service::transaction::deadline(),
+                        )
+                        .await?
+                        .source_reader(),
+                    },
+                },
             ));
             let reads = Arc::new(crate::assembly::device_reads::Devices {
                 tasks: a.task_reads.clone(),
@@ -88,10 +112,14 @@ impl Http {
                 state,
                 observation,
                 projection,
+                inventory_owner,
             }),
             Err(e) => {
-                projection.shutdown().await?;
-                observation.shutdown().await?;
+                inventory_owner.runtime.close().await;
+                let a = projection.shutdown().await;
+                let b = observation.shutdown().await;
+                a?;
+                b?;
                 Err(e)
             }
         }
@@ -122,6 +150,7 @@ impl Http {
     }
     async fn close(self) -> Result<()> {
         drop(self.state);
+        self.inventory_owner.runtime.close().await;
         let a = self.projection.shutdown().await;
         let b = self.observation.shutdown().await;
         a?;
