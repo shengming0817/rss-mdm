@@ -170,6 +170,7 @@ pub async fn verify(
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let observed: rss_mdm_agent_wire::pki::Trust = response.json().await?;
         assert_eq!(observed.purpose, rss_mdm_agent_wire::pki::Purpose::DaDevice);
+        vault_user_http(c, &client, &origin).await?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -198,4 +199,103 @@ pub async fn verify(
             })
             .collect(),
     })
+}
+
+async fn vault_user_http(c: &Context, client: &reqwest::Client, origin: &str) -> Result<()> {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use rss_mdm_agent_wire::vault::*;
+    let id = Uuid::new_v4();
+    let login = format!("vault-http-{id}");
+    let password = "vault-http-test-only-password";
+    let kdf = rss_identity_core::account::PasswordKdf::new();
+    let hash = kdf
+        .hash(rss_identity_core::account::Password::new(password.into())?)
+        .await?;
+    kdf.close();
+    kdf.wait_closed().await;
+    let mut tx = c.seed().await?;
+    sqlx::query(
+        "INSERT INTO identity_authority.accounts(tenant_id,principal_id) VALUES($1::uuid,$2)",
+    )
+    .bind(c.tenant.to_string())
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("INSERT INTO identity_authority.local_credentials(tenant_id,principal_id,login_key,password_hash) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(id).bind(&login).bind(hash.as_str()).execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT INTO identity_authority.memberships(tenant_id,principal_id) VALUES($1::uuid,$2)",
+    )
+    .bind(c.tenant.to_string())
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    let grants:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.authorization_rules WHERE tenant_id=$1::uuid AND document::text LIKE $2").bind(c.tenant.to_string()).bind(format!("%{id}%")).fetch_one(&mut *tx).await?;
+    assert_eq!(grants, 0);
+    tx.commit().await?;
+    let login_response = client
+        .post(format!(
+            "{origin}/api/v1/identity/tenants/{}/login",
+            c.tenant
+        ))
+        .header("origin", origin)
+        .header("x-identity-request", "1")
+        .json(&serde_json::json!({"login":login,"password":password}))
+        .send()
+        .await?;
+    assert_eq!(login_response.status(), reqwest::StatusCode::OK);
+    let cookie = login_response.headers()["set-cookie"]
+        .to_str()?
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let login_value: serde_json::Value = login_response.json().await?;
+    let csrf = login_value["csrfToken"].as_str().unwrap();
+    let recovery = Ed25519KeyPair::from_seed_unchecked(&[8; 32]).unwrap();
+    let key = Ed25519KeyPair::from_seed_unchecked(&[9; 32]).unwrap();
+    let d = Device {
+        id: Uuid::new_v4(),
+        public_key: B64.encode(key.public_key().as_ref()),
+    };
+    let request = Prepare {
+        operation: Uuid::new_v4(),
+        device: d.id,
+        action: Action::Initialize {
+            vault: Uuid::new_v4(),
+            recovery_key: B64.encode(recovery.public_key().as_ref()),
+            root_envelope: B64.encode([3; 60]),
+            device: d,
+        },
+    };
+    let post = |path: &str| {
+        client
+            .post(format!("{origin}/api/v1/da/vault/{path}"))
+            .header("origin", origin)
+            .header("cookie", &cookie)
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", csrf)
+    };
+    let response = post("challenges").json(&request).send().await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let h: Challenge = response.json().await?;
+    let payload = h.signing_bytes()?;
+    let mut execute = Execute {
+        challenge: h,
+        signature: B64.encode(key.sign(&payload).as_ref()),
+        recovery_signature: None,
+    };
+    assert_eq!(
+        post("execute").json(&execute).send().await?.status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+    execute.recovery_signature = Some(B64.encode(recovery.sign(&payload).as_ref()));
+    let response = post("execute").json(&execute).send().await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert!(matches!(
+        response.json::<Response>().await?,
+        Response::Receipt { .. }
+    ));
+    Ok(())
 }

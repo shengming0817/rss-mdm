@@ -1,0 +1,426 @@
+//! User-owned Vault synchronization, current V1. No enterprise recovery authority.
+//! Recovery material is 32 random client bytes; HKDF-SHA256 with independent
+//! `rss-vault-v1/recovery-signing` and `rss-vault-v1/root-wrapping` info domains
+//! derives an Ed25519 seed and AES-256-GCM wrapping key (32-byte outputs).
+//! HKDF uses an empty salt; the IKM is the decoded 32-byte recovery material,
+//! never its display text. A Vault root is 32 random bytes. The encoded root
+//! envelope is nonce[12] || AES-256-GCM ciphertext[32] || tag[16], using a fresh
+//! random nonce and `root_aad` below. Only the derived Ed25519 PUBLIC key is sent.
+//! Neither secret derived key reaches the server.
+//! Clients retain only the unwrapped Vault root and their independent device key.
+use crate::runtime::WireError;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+/// Maximum encoded record, including its AEAD nonce and tag.
+pub const RECORD_BYTES: usize = 24_000;
+/// Maximum atomic mutation batch.
+pub const BATCH_ITEMS: usize = 4;
+/// Canonical unpadded base64url public material, signatures and ciphertext.
+pub fn bytes(value: &str, min: usize, max: usize) -> Result<Vec<u8>, WireError> {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    if value.len() > max.saturating_mul(2) {
+        return Err(WireError::InvalidValue);
+    }
+    let b = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| WireError::InvalidValue)?;
+    if b.len() < min || b.len() > max || URL_SAFE_NO_PAD.encode(&b) != value {
+        return Err(WireError::InvalidValue);
+    }
+    Ok(b)
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Current Vault protocol value.
+pub struct Device {
+    /// Id.
+    pub id: Uuid,
+    /// Public key.
+    pub public_key: String,
+}
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Current Vault protocol value.
+pub struct Mutation {
+    /// Id.
+    pub id: Uuid,
+    /// Expected revision.
+    pub expected_revision: i64,
+    /// Ciphertext.
+    pub ciphertext: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// Current Vault protocol value.
+pub enum Action {
+    /// Initialize operation or result.
+    Initialize {
+        /// Vault.
+        vault: Uuid,
+        /// Derived recovery Ed25519 PUBLIC key (32 bytes, unpadded base64url).
+        recovery_key: String,
+        /// Root nonce[12] || ciphertext[32] || tag[16], unpadded base64url.
+        root_envelope: String,
+        /// Device.
+        device: Device,
+    },
+    /// Join operation or result.
+    Join {
+        /// New independently generated sync device.
+        device: Device,
+        /// Explicit recovery: invalidate all previous endpoint grants and requests.
+        reset_devices: bool,
+    },
+    /// Remove operation or result.
+    Remove {
+        /// Device.
+        device: Uuid,
+    },
+    /// Write operation or result.
+    Write {
+        /// Items.
+        items: Vec<Mutation>,
+    },
+    /// Read operation or result.
+    Read {
+        /// After.
+        after: i64,
+        /// Cursor.
+        cursor: Option<String>,
+    },
+    /// Devices operation or result.
+    Devices,
+    /// Operation operation or result.
+    Operation {
+        /// Operation.
+        operation: Uuid,
+    },
+}
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Current Vault protocol value.
+pub struct Prepare {
+    /// Operation.
+    pub operation: Uuid,
+    /// Device.
+    pub device: Uuid,
+    /// Action.
+    pub action: Action,
+}
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Current Vault protocol value.
+pub struct Challenge {
+    /// Server-authenticated opaque challenge proof; included in client signatures.
+    pub server_proof: String,
+    /// Installation.
+    pub installation: Uuid,
+    /// Tenant.
+    pub tenant: Uuid,
+    /// Instance.
+    pub instance: Uuid,
+    /// Principal.
+    pub principal: Uuid,
+    /// Incarnation.
+    pub incarnation: Uuid,
+    /// Vault.
+    pub vault: Uuid,
+    /// Nonce.
+    pub nonce: Uuid,
+    /// Expires at.
+    pub expires_at: i64,
+    /// Request.
+    pub request: Prepare,
+}
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Current Vault protocol value.
+pub struct Execute {
+    /// Challenge.
+    pub challenge: Challenge,
+    /// Signature.
+    pub signature: String,
+    /// Recovery signature.
+    pub recovery_signature: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Current Vault protocol value.
+pub struct Entry {
+    /// Id.
+    pub id: Uuid,
+    /// Revision.
+    pub revision: i64,
+    /// Ciphertext.
+    pub ciphertext: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Current Vault protocol value.
+pub struct Receipt {
+    /// Operation.
+    pub operation: Uuid,
+    /// Incarnation.
+    pub incarnation: Uuid,
+    /// Revision.
+    pub revision: i64,
+}
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// Current Vault protocol value.
+pub enum Response {
+    /// Receipt operation or result.
+    Receipt {
+        /// Receipt.
+        receipt: Receipt,
+    },
+    /// Changes operation or result.
+    Changes {
+        /// Revision.
+        revision: i64,
+        /// Entries.
+        entries: Vec<Entry>,
+        /// Next cursor.
+        next_cursor: Option<String>,
+        /// Root nonce[12] || ciphertext[32] || tag[16], unpadded base64url.
+        root_envelope: String,
+    },
+    /// Devices operation or result.
+    Devices {
+        /// Devices.
+        devices: Vec<Device>,
+    },
+}
+impl Prepare {
+    /// Reject malformed or unbounded requests before reserving a challenge.
+    pub fn validate(&self) -> Result<(), WireError> {
+        let bad = || WireError::InvalidValue;
+        if self.operation.is_nil() || self.device.is_nil() {
+            return Err(bad());
+        }
+        match &self.action {
+            Action::Initialize {
+                vault,
+                recovery_key,
+                root_envelope,
+                device,
+            } => {
+                if vault.is_nil() {
+                    return Err(bad());
+                }
+                bytes(recovery_key, 32, 32)?;
+                bytes(root_envelope, 60, 60)?;
+                if device.id != self.device {
+                    return Err(bad());
+                }
+                bytes(&device.public_key, 32, 32)?;
+            }
+            Action::Join { device, .. } => {
+                if device.id != self.device {
+                    return Err(bad());
+                }
+                bytes(&device.public_key, 32, 32)?;
+            }
+            Action::Remove { device } | Action::Operation { operation: device } => {
+                if device.is_nil() {
+                    return Err(bad());
+                }
+            }
+            Action::Write { items } => {
+                if items.is_empty() || items.len() > BATCH_ITEMS {
+                    return Err(bad());
+                }
+                let mut ids = std::collections::BTreeSet::new();
+                for i in items {
+                    if i.id.is_nil() || i.expected_revision < 0 || !ids.insert(i.id) {
+                        return Err(bad());
+                    }
+                    if let Some(c) = &i.ciphertext {
+                        bytes(c, 28, RECORD_BYTES)?;
+                    } else if i.expected_revision == 0 {
+                        return Err(bad());
+                    }
+                }
+            }
+            Action::Read { after, cursor } => {
+                if *after < 0 || cursor.as_ref().is_some_and(|v| v.len() > 4096) {
+                    return Err(bad());
+                }
+            }
+            Action::Devices => {}
+        }
+        Ok(())
+    }
+}
+impl Challenge {
+    /// Single canonical signing payload; signatures never cover caller-selected JSON keys.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, WireError> {
+        self.request.validate()?;
+        if [
+            self.installation,
+            self.tenant,
+            self.instance,
+            self.principal,
+            self.incarnation,
+            self.vault,
+            self.nonce,
+        ]
+        .iter()
+        .any(Uuid::is_nil)
+            || self.expires_at <= 0
+        {
+            return Err(WireError::InvalidValue);
+        }
+        serde_json::to_vec(&("rss-vault-sync.v1", self)).map_err(|_| WireError::InvalidValue)
+    }
+}
+
+/// Derived schema fingerprint.
+pub const SCHEMA_FINGERPRINT: &str =
+    "718e2a0b59ccaa0967fd0febbd2279adb2c172ad2ad439c9254fc159dea7da3c";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bounded_batches_and_canonical_proofs() {
+        let r = Prepare {
+            operation: Uuid::new_v4(),
+            device: Uuid::new_v4(),
+            action: Action::Write { items: vec![] },
+        };
+        assert!(r.validate().is_err());
+        assert!(bytes("!!!!", 32, 32).is_err());
+        let mut h = Challenge {
+            server_proof: String::new(),
+            installation: Uuid::new_v4(),
+            tenant: Uuid::new_v4(),
+            instance: Uuid::new_v4(),
+            principal: Uuid::new_v4(),
+            incarnation: Uuid::new_v4(),
+            vault: Uuid::new_v4(),
+            nonce: Uuid::new_v4(),
+            expires_at: 99,
+            request: Prepare {
+                action: Action::Devices,
+                ..r
+            },
+        };
+        let original = h.signing_bytes().unwrap();
+        h.incarnation = Uuid::new_v4();
+        assert_ne!(original, h.signing_bytes().unwrap());
+        let mut json = serde_json::to_value(h).unwrap();
+        json["unknown"] = true.into();
+        assert!(serde_json::from_value::<Challenge>(json).is_err());
+    }
+}
+
+/// Stable root-envelope AAD. A restore incarnation is intentionally excluded.
+/// JSON is encoded only by this shared typed function, never by a caller map.
+pub fn root_aad(
+    installation: Uuid,
+    tenant: Uuid,
+    instance: Uuid,
+    principal: Uuid,
+    vault: Uuid,
+) -> Result<Vec<u8>, WireError> {
+    if [installation, tenant, instance, principal, vault]
+        .iter()
+        .any(Uuid::is_nil)
+    {
+        return Err(WireError::InvalidValue);
+    }
+    serde_json::to_vec(&(
+        "rss-vault-root.v1",
+        installation,
+        tenant,
+        instance,
+        principal,
+        vault,
+    ))
+    .map_err(|_| WireError::InvalidValue)
+}
+/// Entry AEAD AAD binds its opaque ID to the stable Vault owner. Ciphertext uses
+/// nonce[12] || AES-256-GCM encrypted credential JSON || tag[16], with a fresh nonce.
+/// The encrypted content schema belongs to the Agent; servers never inspect it.
+pub fn entry_aad(
+    installation: Uuid,
+    tenant: Uuid,
+    instance: Uuid,
+    principal: Uuid,
+    vault: Uuid,
+    entry: Uuid,
+) -> Result<Vec<u8>, WireError> {
+    if entry.is_nil() {
+        return Err(WireError::InvalidValue);
+    }
+    let root = root_aad(installation, tenant, instance, principal, vault)?;
+    serde_json::to_vec(&("rss-vault-entry.v1", root, entry)).map_err(|_| WireError::InvalidValue)
+}
+
+#[cfg(test)]
+mod vectors {
+    use super::*;
+    use ring::{
+        aead, hkdf,
+        signature::{Ed25519KeyPair, KeyPair},
+    };
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|v| format!("{v:02x}")).collect()
+    }
+    #[test]
+    fn independent_recovery_and_root_envelope_vector() {
+        // Fixed vector independently generated with Node crypto; not production key material.
+        let material: Vec<u8> = (0..32).collect();
+        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(&material);
+        let mut signing = [0; 32];
+        let mut wrapping = [0; 32];
+        prk.expand(&[b"rss-vault-v1/recovery-signing"], hkdf::HKDF_SHA256)
+            .unwrap()
+            .fill(&mut signing)
+            .unwrap();
+        prk.expand(&[b"rss-vault-v1/root-wrapping"], hkdf::HKDF_SHA256)
+            .unwrap()
+            .fill(&mut wrapping)
+            .unwrap();
+        assert_eq!(
+            hex(&signing),
+            "aba90a15f23e176c3c14c1a0e25bf4c992d69dc9cb866df17096ef5a045a1736"
+        );
+        assert_eq!(
+            hex(&wrapping),
+            "591bd1454c4c75a457a3ca5fbd3a0000f2dea36e07223232190709c236f4962d"
+        );
+        let key = Ed25519KeyPair::from_seed_unchecked(&signing).unwrap();
+        assert_eq!(
+            hex(key.public_key().as_ref()),
+            "da8f67c66be9330e5df77551be94f5f4278c0f23617518435047bda595d8addd"
+        );
+        let aad = root_aad(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            Uuid::from_u128(3),
+            Uuid::from_u128(4),
+            Uuid::from_u128(5),
+        )
+        .unwrap();
+        let nonce: [u8; 12] = std::array::from_fn(|i| i as u8);
+        let key =
+            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &wrapping).unwrap());
+        let mut body: Vec<u8> = (32..64).collect();
+        key.seal_in_place_append_tag(
+            aead::Nonce::assume_unique_for_key(nonce),
+            aead::Aad::from(&aad),
+            &mut body,
+        )
+        .unwrap();
+        let mut envelope = nonce.to_vec();
+        envelope.extend(body);
+        assert_eq!(
+            hex(&envelope),
+            "000102030405060708090a0bcbea132788988039719305cc7c7433e9aef75fafa3022160b621b90d929a044e439690719365f63e2dabff2a64cf8bb4"
+        );
+    }
+}

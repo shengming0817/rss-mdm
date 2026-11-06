@@ -577,7 +577,7 @@ pub async fn assemble(
                 pool,
                 audit.clone(),
                 p.keys.clone(),
-                Some(proof_audit),
+                Some(proof_audit.clone()),
                 Some(Arc::new(
                     rss_mdm_device_access_postgres::recovery::eligibility::AccessEligibility {
                         admission: Some(runtime.admission.clone()),
@@ -601,6 +601,12 @@ pub async fn assemble(
     });
 
     let state = Arc::new(http::browser::Services {
+        vault: Arc::new(rss_mdm_vault_sync::Service::new(
+            tenant,
+            config.installation.instance,
+            proof_audit.clone(),
+            cursor.clone(),
+        )),
         pki: Arc::new(http::pki::HttpState {
             registry: pki.clone(),
             cursor: cursor.clone(),

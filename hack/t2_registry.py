@@ -11,6 +11,7 @@ MODULES = {
                 'crates/management-http/src/assets/*', 'crates/http-contract/*', 'crates/authorization-service/*',
                 'crates/group-postgres/*', 'crates/device-service/src/planning*', 'apps/server/src/assembly/inventory.rs',
                 'apps/server/tests/software_assets/*')),
+    'vault.sync': dict(package='rss-mdm-device-access-http', target='vault_sync', installer=None, prefix='vault_sync::', profiles=('da_foundation',), inputs=('crates/vault-sync/*', 'crates/agent-wire/src/vault.rs', 'crates/device-access-http/src/vault.rs', 'crates/device-access-http/src/browser.rs', 'crates/device-access-http/tests/vault_sync*', 'apps/da-server/*', 'crates/device-access-runtime/src/installation.rs')),
     'execution.directory': dict(prefix='assembly::execution_owners_t2::directory::', profiles=('shared',),
         inputs=('crates/management-http/src/execution/operations.rs', 'crates/management-http/src/execution/http.rs',
                 'apps/server/src/assembly/operation_reads/*', 'apps/server/tests/execution_owners/directory.rs',

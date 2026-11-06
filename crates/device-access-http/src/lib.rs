@@ -440,3 +440,5 @@ pub fn contract() -> Result<serde_json::Value, Error> {
     ])
     .map_err(|_| Error::Unavailable)
 }
+
+mod vault;
