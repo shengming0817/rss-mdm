@@ -79,9 +79,9 @@ impl Service {
         request: Prepare,
     ) -> Result<Challenge, Error> {
         request.validate()?;
-        self.transaction(actor, audit, request, |s, c, scope, r| {
+        Box::pin(self.transaction(actor, audit, request, |s, c, scope, r| {
             Box::pin(storage::prepare(s, c, scope, r))
-        })
+        }))
         .await
     }
     pub async fn execute(
@@ -101,9 +101,9 @@ impl Service {
                 AuditIntent::Management,
             );
         }
-        self.transaction(actor, audit, request, |s, c, scope, r| {
+        Box::pin(self.transaction(actor, audit, request, |s, c, scope, r| {
             Box::pin(storage::execute(s, c, scope, r))
-        })
+        }))
         .await
     }
     async fn transaction<C: Send, R: Send>(
@@ -134,67 +134,69 @@ impl Service {
             principal: Uuid::parse_str(actor.principal_id()).map_err(|_| Error::Denied)?,
         };
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let attempt = self
-            .audit
-            .write(
-                self.tenant,
-                &budget.source_control(),
-                (self, input, scope, Some(f), session, audit),
-                |ctx, tx| {
-                    Box::pin(async move {
-                        let (value, replay) = tx
-                            .with_connection_context(ctx, |ctx, c| {
-                                Box::pin(async move {
-                                    rss_identity_postgres::recheck_authenticated_session_on(
-                                        c, ctx.4,
-                                    )
+        // Keep nested transaction futures off native handler/test stacks.
+        let attempt = Box::pin(self.audit.write(
+            self.tenant,
+            &budget.source_control(),
+            (self, input, scope, Some(f), session, audit),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (value, replay) = tx
+                        .with_connection_context(ctx, |ctx, c| {
+                            Box::pin(async move {
+                                rss_identity_postgres::recheck_authenticated_session_on(c, ctx.4)
                                     .await
                                     .map_err(|_| Error::Denied)?;
-                                    let installation: Uuid = sqlx::query_scalar(
-                                        "SELECT instance_id FROM rss_da.installation_binding",
-                                    )
-                                    .fetch_one(&mut *c)
-                                    .await?;
-                                    if installation != ctx.0.installation {
-                                        return Err(Error::Denied);
-                                    }
-                                    sqlx::query("SELECT set_config('rss.vault_owner',$1,true)")
-                                        .bind(ctx.2.owner())
-                                        .execute(&mut *c)
-                                        .await?;
-                                    // Serialize initialization, authorization changes, reads and writes for this user.
-                                    sqlx::query(
-                                        "SELECT pg_advisory_xact_lock(hashtextextended($1,2931))",
-                                    )
-                                    .bind(format!("{}:{}", ctx.2.tenant, ctx.2.owner()))
+                                let installation: Uuid = sqlx::query_scalar(
+                                    "SELECT instance_id FROM rss_da.installation_binding",
+                                )
+                                .fetch_one(&mut *c)
+                                .await?;
+                                if installation != ctx.0.installation {
+                                    return Err(Error::Denied);
+                                }
+                                sqlx::query("SELECT set_config('rss.vault_owner',$1,true)")
+                                    .bind(ctx.2.owner())
                                     .execute(&mut *c)
                                     .await?;
-                                    (ctx.3.take().ok_or(Error::Storage)?)(ctx.0, c, &ctx.2, &ctx.1)
-                                        .await
-                                })
+                                // Serialize initialization, authorization changes, reads and writes for this user.
+                                sqlx::query(
+                                    "SELECT pg_advisory_xact_lock(hashtextextended($1,2931))",
+                                )
+                                .bind(format!("{}:{}", ctx.2.tenant, ctx.2.owner()))
+                                .execute(&mut *c)
+                                .await?;
+                                (ctx.3.take().ok_or(Error::Storage)?)(ctx.0, c, &ctx.2, &ctx.1)
+                                    .await
                             })
-                            .await?;
-                        if !replay && ctx.5.snapshot().intent == AuditIntent::Management {
-                            let snapshot = ctx.5.snapshot();
-                            let fact = Fact::business(
-                                ctx.5,
-                                &format!(
-                                    "vault:{}:{}",
-                                    snapshot.action,
-                                    snapshot.operation_id.ok_or(Error::Invalid)?
-                                ),
-                                200,
-                                "success",
-                                None,
-                            )?;
-                            ctx.0.audit.append(tx, &fact).await?;
-                        }
-                        ctx.5.mark_commit_started();
-                        Ok(value)
-                    })
-                },
-            )
-            .await;
+                        })
+                        .await?;
+                    if !replay && ctx.5.snapshot().intent == AuditIntent::Management {
+                        let snapshot = ctx.5.snapshot();
+                        let fact = Fact::business(
+                            ctx.5,
+                            &format!(
+                                "vault:{}:{}",
+                                snapshot.action,
+                                snapshot.operation_id.ok_or(Error::Invalid)?
+                            ),
+                            200,
+                            "success",
+                            None,
+                        )?;
+                        ctx.0.audit.append(tx, &fact).await?;
+                    }
+                    if replay {
+                        ctx.5.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
+                    ctx.5.mark_commit_started();
+                    Ok(value)
+                })
+            },
+        ))
+        .await;
         use rss_mdm_audit_integration::TransactionError as T;
         let error = |e| match e {
             T::Operation(e) => e,

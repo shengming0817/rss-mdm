@@ -24,12 +24,13 @@ async fn epoch(c: &mut PgConnection, s: &Scope) -> Result<Uuid, Error> {
         .bind(s.tenant)
         .execute(&mut *c)
         .await?;
-    let restored: Uuid = sqlx::query_scalar(
-        "SELECT incarnation FROM rss_da.vault_epochs WHERE tenant_id=$1 FOR SHARE",
-    )
-    .bind(s.tenant)
-    .fetch_one(&mut *c)
-    .await?;
+    // Cold restore fences and drains every database writer before changing this epoch.
+    // A read here deliberately needs no UPDATE privilege on the restore authority.
+    let restored: Uuid =
+        sqlx::query_scalar("SELECT incarnation FROM rss_da.vault_epochs WHERE tenant_id=$1")
+            .bind(s.tenant)
+            .fetch_one(&mut *c)
+            .await?;
     Ok(
         sqlx::query_scalar("SELECT incarnation FROM rss_da.vaults WHERE tenant_id=$1 AND owner=$2")
             .bind(s.tenant)
@@ -135,10 +136,10 @@ pub(crate) async fn execute(
             if *vault != h.vault {
                 return Err(Error::Denied);
             }
-            if let Some(v) = &existing {
-                if recovery_key != &v.1 {
-                    return Err(Error::Denied);
-                }
+            if let Some(v) = &existing
+                && recovery_key != &v.1
+            {
+                return Err(Error::Denied);
             }
             verify(
                 recovery_key,

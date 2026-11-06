@@ -120,15 +120,15 @@ async fn run(
 #[tokio::test]
 #[ignore = "T2: real user sessions, sync SQL, replay and restore fencing"]
 async fn user_sync_atomicity_and_recovery() -> Result<()> {
-    let c = Context::open().await?;
+    let c = Box::pin(Context::open()).await?;
     let s = Service::new(
         c.tenant,
         Uuid::parse_str(&c.inputs.installation.instance_id)?,
         c.proof_audit.clone(),
         rss_mdm_query::cursor::CursorCodec::new(&[8; 32])?,
     );
-    let (p, session_secret) = user(&c).await?;
-    let (other, _) = user(&c).await?;
+    let (p, session_secret) = Box::pin(user(&c)).await?;
+    let (other, _) = Box::pin(user(&c)).await?;
     let recovery = key();
     let k1 = key();
     let d1 = device(&k1);
