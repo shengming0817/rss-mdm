@@ -169,7 +169,15 @@ impl AppleResults for AppleFacts {
             self.0
                 .control_applicability(c, tenant, &requests)
                 .await
-                .map_err(error)?
+                .map_err(|e| match e {
+                    // These are persisted accepted reports, not caller-supplied input.
+                    rss_mdm_apple_channel::Error::Malformed => {
+                        rss_mdm_device_service::control::Error::Unavailable(
+                            rss_mdm_device_service::control::Failure::CommandInvariant,
+                        )
+                    }
+                    other => error(other),
+                })?
                 .into_iter()
                 .map(|(id, result)| {
                     use rss_mdm_apple_mdm::{applicability::Rejection, native::Error as E};

@@ -369,6 +369,8 @@ async fn apple_reads_distinguish_platform_evidence_and_product_configuration() -
         assert_eq!(capability(&body,"wipe")["devicePrerequisite"]["state"],"unsupported");
         assert_eq!(capability(&body,"wipe")["permission"]["allowed"],true);
         assert!(matches!(a.service.create_control(&p,&n.device,&wipe(&n),&c.request(&p)?).await,Err(ControlError::Unsupported)));
+        apple_facts(&c,&a,&n,Some(true),Some("corrupt")).await?;
+        assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,503);
         Ok(())
     }.await;
     let closed = http.close().await;
