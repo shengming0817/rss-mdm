@@ -61,6 +61,8 @@ pub async fn verify(
             .fetch_one(&mut connection)
             .await?;
     assert!(revoked > 0);
+    let old_vault_epoch = Uuid::new_v4();
+    sqlx::query("INSERT INTO rss_da.vault_epochs(tenant_id,incarnation) VALUES($1,$2) ON CONFLICT(tenant_id) DO UPDATE SET incarnation=excluded.incarnation").bind(runtime.installation.tenant).bind(old_vault_epoch).execute(&mut connection).await?;
     connection.close().await?;
     Box::pin(backup::capture(serde_json::from_value(request.clone())?)).await?;
     // Reconstruct a crash after Complete, before the final local cleanup.
@@ -150,6 +152,15 @@ pub async fn verify(
     Box::pin(backup::restore(serde_json::from_value(restore.clone())?)).await?;
     Box::pin(backup::restore(serde_json::from_value(restore)?)).await?;
     let mut connection = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
+    let new_epoch: Uuid =
+        sqlx::query_scalar("SELECT incarnation FROM rss_da.vault_epochs WHERE tenant_id=$1")
+            .bind(runtime.installation.tenant)
+            .fetch_one(&mut connection)
+            .await?;
+    assert_ne!(
+        old_vault_epoch, new_epoch,
+        "cold restore must not resurrect the backup's sync authority"
+    );
     let preserved: i64 =
         sqlx::query_scalar("SELECT count(*) FROM rss_da.registrations WHERE state='revoked'")
             .fetch_one(&mut connection)

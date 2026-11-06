@@ -1,0 +1,12 @@
+{
+  "tables": [
+    "rss_da.vault_epochs",
+    "rss_da.vaults",
+    "rss_da.vault_devices",
+    "rss_da.vault_entries",
+    "rss_da.vault_challenges",
+    "rss_da.vault_receipts"
+  ],
+  "functions": [],
+  "views": []
+}

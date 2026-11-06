@@ -1,0 +1,21 @@
+{
+  "apiVersion": 1,
+  "schemas": [
+    {
+      "type": "Prepare",
+      "file": "prepare-v1.schema.json"
+    },
+    {
+      "type": "Challenge",
+      "file": "challenge-v1.schema.json"
+    },
+    {
+      "type": "Execute",
+      "file": "execute-v1.schema.json"
+    },
+    {
+      "type": "Response",
+      "file": "response-v1.schema.json"
+    }
+  ]
+}

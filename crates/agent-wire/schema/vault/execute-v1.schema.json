@@ -1,0 +1,329 @@
+{
+  "$defs": {
+    "Action": {
+      "description": "Current Vault protocol value.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Initialize operation or result.",
+          "properties": {
+            "device": {
+              "$ref": "#/$defs/Device",
+              "description": "Device."
+            },
+            "kind": {
+              "const": "initialize",
+              "type": "string"
+            },
+            "recovery_key": {
+              "description": "Recovery key.",
+              "type": "string"
+            },
+            "root_envelope": {
+              "description": "Root envelope.",
+              "type": "string"
+            },
+            "vault": {
+              "description": "Vault.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "vault",
+            "recovery_key",
+            "root_envelope",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Join operation or result.",
+          "properties": {
+            "device": {
+              "$ref": "#/$defs/Device",
+              "description": "Device."
+            },
+            "kind": {
+              "const": "join",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Remove operation or result.",
+          "properties": {
+            "device": {
+              "description": "Device.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "remove",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "device"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Write operation or result.",
+          "properties": {
+            "items": {
+              "description": "Items.",
+              "items": {
+                "$ref": "#/$defs/Mutation"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "write",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "items"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Read operation or result.",
+          "properties": {
+            "after": {
+              "description": "After.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "cursor": {
+              "description": "Cursor.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "read",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "after"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Devices operation or result.",
+          "properties": {
+            "kind": {
+              "const": "devices",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Operation operation or result.",
+          "properties": {
+            "kind": {
+              "const": "operation",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Operation.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "operation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Challenge": {
+      "additionalProperties": false,
+      "description": "Current Vault protocol value.",
+      "properties": {
+        "expiresAt": {
+          "description": "Expires at.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "incarnation": {
+          "description": "Incarnation.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "installation": {
+          "description": "Installation.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "instance": {
+          "description": "Instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "nonce": {
+          "description": "Nonce.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "principal": {
+          "description": "Principal.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/Prepare",
+          "description": "Request."
+        },
+        "tenant": {
+          "description": "Tenant.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Vault.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "installation",
+        "tenant",
+        "instance",
+        "principal",
+        "incarnation",
+        "vault",
+        "nonce",
+        "expiresAt",
+        "request"
+      ],
+      "type": "object"
+    },
+    "Device": {
+      "additionalProperties": false,
+      "description": "Current Vault protocol value.",
+      "properties": {
+        "id": {
+          "description": "Id.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "publicKey": {
+          "description": "Public key.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "publicKey"
+      ],
+      "type": "object"
+    },
+    "Mutation": {
+      "additionalProperties": false,
+      "description": "Current Vault protocol value.",
+      "properties": {
+        "ciphertext": {
+          "description": "Ciphertext.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedRevision": {
+          "description": "Expected revision.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "description": "Id.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expectedRevision"
+      ],
+      "type": "object"
+    },
+    "Prepare": {
+      "additionalProperties": false,
+      "description": "Current Vault protocol value.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/Action",
+          "description": "Action."
+        },
+        "device": {
+          "description": "Device.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "operation": {
+          "description": "Operation.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "device",
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Current Vault protocol value.",
+  "properties": {
+    "challenge": {
+      "$ref": "#/$defs/Challenge",
+      "description": "Challenge."
+    },
+    "recoverySignature": {
+      "description": "Recovery signature.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "signature": {
+      "description": "Signature.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "challenge",
+    "signature"
+  ],
+  "title": "Execute",
+  "type": "object",
+  "$id": "https://rss.example/da/vault/v1/Execute"
+}

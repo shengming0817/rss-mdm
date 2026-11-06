@@ -3151,6 +3151,7 @@ dependencies = [
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-task-trust",
+ "rss-mdm-vault-sync",
  "rss-observation-postgres",
  "rss-projection-postgres",
  "rss-request-context",
@@ -3955,6 +3956,7 @@ dependencies = [
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-task-trust",
+ "rss-mdm-vault-sync",
  "rss-mdm-windows-mdm",
  "rss-observation-postgres",
  "rss-projection-postgres",
@@ -4052,6 +4054,7 @@ dependencies = [
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-task-trust",
+ "rss-mdm-vault-sync",
  "rss-observation-postgres",
  "rss-projection-postgres",
  "rss-request-context",
@@ -5116,6 +5119,28 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-vault-sync"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ring",
+ "rss-identity-postgres",
+ "rss-mdm-agent-wire",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-install-support",
+ "rss-mdm-query",
+ "rss-request-context",
+ "rss-transactional-messaging",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
  "uuid",
 ]
 
