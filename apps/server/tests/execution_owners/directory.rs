@@ -263,10 +263,13 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
         assert_eq!(after, before + 1);
         let rss_mdm_authorization_service::credential::RequestCredential::Cookie(secret) = account.credential()? else { unreachable!() };
         let session = h.c.authority.inspect_session(h.c.tenant, secret, request.remaining()?).await?;
-        let rejected = h.a.task_reads.snapshot(&request, (&h.c.authority, Some(session)), |state, _, _, _| Box::pin(async move {
-            state.0.revoke_current_session(state.1.take().unwrap(), rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(3))).await.map_err(|_|rss_mdm_management_http::Error::Unauthorized)?;
+        let mut revoked = false;
+        let rejected = h.a.task_reads.snapshot(&request, (&h.c.authority, Some(session), &mut revoked), |state, _, _, _| Box::pin(async move {
+            state.0.revoke_current_session(state.1.take().unwrap(), rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(3))).await.expect("Identity revocation must commit before testing the response tail");
+            *state.2 = true;
             Ok(())
         })).await;
+        assert!(revoked, "the failure must occur after the callback committed revocation");
         assert!(matches!(rejected, Err(rss_mdm_management_http::Error::Unauthorized)));
         Ok(())
     }.await;
@@ -342,19 +345,20 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
             let bytes = axum::body::to_bytes(response.into_body(), 1_048_576).await?;
             let value: Value = serde_json::from_slice(&bytes)?;
             assert_eq!(status, axum::http::StatusCode::OK, "{path}: {value}");
-            if let Some(id)=value["id"].as_str() {
-                assert_eq!(value["inventoryAvailable"],expected[id]);
-                assert!(
-                    value["capabilities"]
-                        .as_array()
-                        .is_some_and(|v| !v.is_empty())
-                );
-            }
-            if let Some(rows)=value["items"].as_array() {
+            if path == "/devices/statistics" {
+                assert!(value["statistics"]["total"].as_u64().is_some_and(|n| n >= expected.len() as u64));
+                assert!(value["asOf"].as_i64().is_some());
+            } else if path.starts_with("/devices?") {
+                let rows = value["items"].as_array().expect("directory must contain an items array");
                 for (id,present) in &expected {
                     let row=rows.iter().find(|row|row["id"]==*id).expect("seeded endpoint in directory");
                     assert_eq!(row["inventoryAvailable"],*present);
                 }
+            } else {
+                let id = value["id"].as_str().expect("detail must contain its endpoint id");
+                assert_eq!(path,format!("/devices/{id}"));
+                assert_eq!(value["inventoryAvailable"],expected[id]);
+                assert!(!value["capabilities"].as_array().expect("detail capabilities").is_empty());
             }
         }
         let mut seed=command::seed_transaction(&h.c).await?;
