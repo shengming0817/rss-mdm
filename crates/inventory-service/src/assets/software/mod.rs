@@ -14,6 +14,7 @@ mod model;
 pub use model::*;
 mod evidence;
 mod filter;
+mod lifecycle;
 mod projection;
 mod query;
 mod read;

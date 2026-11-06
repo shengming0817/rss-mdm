@@ -20,6 +20,13 @@ impl AssetService {
                         .bind(&tenant)
                         .execute(&mut *c)
                         .await?;
+                    } else {
+                        sqlx::query(
+                            "SELECT pg_advisory_xact_lock_shared(hashtextextended($1::text,3026))",
+                        )
+                        .bind(&tenant)
+                        .execute(&mut *c)
+                        .await?;
                     }
                     sqlx::query_scalar(
                         "SELECT revision FROM mdm_assets.software_heads WHERE tenant_id=$1::uuid",
@@ -222,6 +229,7 @@ impl AssetService {
                 )
                 .await
             }
+            Command::Release { id, change } => self.software_release(tx, scope, *id, change).await,
             _ => self.software_read(tx, scope, command).await,
         }
     }

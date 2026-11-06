@@ -106,7 +106,10 @@ impl AssetService {
             return Err(Error::Forbidden.into());
         }
         let job = state.input.software.as_ref().ok_or(Error::NotFound)?;
-        self.software_current(tx, job).await?;
+        let result_state = self.software_result_state(tx, id).await?;
+        if result_state == ResultState::Retained {
+            self.software_current(tx, job).await?;
+        }
         let coordinates = job.coordinates.clone();
         let tenant = self.tenant.to_string();
         let uncertain:i64=tx.with_connection(move|c|Box::pin(async move {
@@ -115,23 +118,25 @@ impl AssetService {
         if matches!(command, Command::Status { .. }) {
             return Ok(Response::Status {
                 task: id,
-                status: if state.failure.is_some() {
-                    "failed"
+                status: if state.failure.as_deref() == Some("cancelled") {
+                    QueryStatus::Cancelled
+                } else if state.failure.is_some() {
+                    QueryStatus::Failed
                 } else if state.completed {
-                    "completed"
+                    QueryStatus::Completed
                 } else if state.started {
-                    "running"
+                    QueryStatus::Running
                 } else {
-                    "pending"
-                }
-                .into(),
+                    QueryStatus::Pending
+                },
+                result_state,
                 failure: state.failure,
                 coordinates,
                 processed: state.summary.total as u64,
                 unknown: state.summary.unknown as u64,
             });
         }
-        if !state.completed || state.failure.is_some() {
+        if result_state != ResultState::Retained || !state.completed || state.failure.is_some() {
             return Err(Error::Conflict.into());
         }
         match command {

@@ -89,6 +89,10 @@ impl Fixture {
         })
     }
     pub async fn settle(&self, c: &Context, task: Uuid) -> Result<()> {
+        anyhow::ensure!(self.work(c, task, 256).await?, "query did not finish");
+        Ok(())
+    }
+    pub async fn work(&self, c: &Context, task: Uuid, steps: usize) -> Result<bool> {
         use rss_reconcile::{DurableStore, ReconcileStep, Reconciler};
         let timer = rss_mdm_device_service::control::recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -112,16 +116,26 @@ impl Fixture {
             .position(|claim| claim.target() == &target)
             .context("query claim")?;
         let claim = batch.claims.swap_remove(index);
-        for _ in 0..256 {
+        for _ in 0..steps {
             let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
                 anyhow::bail!("query deferred")
             };
             if diff.drift() == rss_reconcile::DriftKind::Converged {
-                return Ok(());
+                schedule
+                    .finish(&claim, rss_reconcile::Completion::Converged, &control)
+                    .await?;
+                for other in &batch.claims {
+                    schedule.release(other, &control).await?;
+                }
+                return Ok(true);
             }
             worker.apply(&claim, diff, &control).await?;
         }
-        anyhow::bail!("query did not finish")
+        schedule.release(&claim, &control).await?;
+        for other in &batch.claims {
+            schedule.release(other, &control).await?;
+        }
+        Ok(false)
     }
 }
 pub(super) struct Http {
@@ -258,13 +272,27 @@ pub(super) async fn facts(
 ) -> Result<()> {
     use rss_mdm_inventory::*;
     let registration = object.members[0].registration_id;
+    let source = match object.members[0].channel {
+        Channel::Mdm => ReportSource::MdmWindows,
+        Channel::Agent => ReportSource::AgentBuiltin,
+    };
+    let definition = CollectionDefinition::new(
+        "software-assets",
+        1,
+        if source == ReportSource::MdmWindows {
+            Source::MdmWindows
+        } else {
+            Source::AgentBuiltin
+        },
+        definition.bindings().to_vec(),
+    )?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(c.tenant.to_string()).bind(registration).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3").bind(c.tenant.to_string()).bind(registration).bind(source.as_str()).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
         registration,
-        "mdm.windows",
+        source.as_str(),
         epoch,
         "software-assets",
     )?;
@@ -273,13 +301,14 @@ pub(super) async fn facts(
         &mut tx,
         &c.tenant.to_string(),
         &registration.to_string(),
-        ReportSource::MdmWindows,
+        source,
         &epoch.to_string(),
         1,
         i64::from(u32::MAX),
     )
     .await?
     .context("sequence")?;
+    rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &definition).await?;
     let projection = rss_mdm_inventory_postgres::projection_scope(c.tenant);
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     for (key, value) in [
@@ -313,9 +342,44 @@ pub(super) async fn facts(
         } else {
             (Some(serde_json::to_string(&value)?), None)
         };
-        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,value_version,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'known',$11,'mdm.windows',$12,$13,$14) ON CONFLICT(tenant_id,journal,generation,scope,field,field_scope) DO UPDATE SET value=excluded.value,value_version=excluded.value_version,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,collection_sequence=excluded.collection_sequence,state='known'")
-            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key).bind(scalar).bind(version).bind(Uuid::new_v4().to_string()).bind(now).bind(registration.to_string()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,value_version,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'known',$11,$15,$12,$13,$14) ON CONFLICT(tenant_id,journal,generation,scope,field,field_scope) DO UPDATE SET value=excluded.value,value_version=excluded.value_version,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,collection_sequence=excluded.collection_sequence,state='known'")
+            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key).bind(scalar).bind(version).bind(Uuid::new_v4().to_string()).bind(now).bind(registration.to_string()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).bind(source.as_str()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())
+}
+
+pub(super) async fn agent_endpoint(
+    c: &Context,
+) -> Result<rss_mdm_inventory_service::objects::DeviceObject> {
+    use rss_mdm_inventory_service::objects::{DeviceObject, ObjectRef};
+    use rss_mdm_registration_service::device::endpoints::PrimaryRegistration;
+    let registration = Uuid::new_v4();
+    let grant = Uuid::new_v4();
+    let epoch = Uuid::new_v4();
+    let device = format!("software-agent-{registration}");
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)")
+        .bind(c.tenant.to_string())
+        .bind(&device)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO mdm_access.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1::uuid,$2,$2,'download','software-fixture',$3,$4,'windows',repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')")
+        .bind(c.tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(&device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,certificate_grant_id,state,purpose,epoch) VALUES($1::uuid,$2,$3,'agent',1,$4,'active','primary',$5)")
+        .bind(c.tenant.to_string()).bind(registration).bind(&device).bind(grant).bind(epoch).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.builtin',$3,0,true)")
+        .bind(c.tenant.to_string()).bind(registration).bind(epoch).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(DeviceObject {
+        object: ObjectRef::Endpoint(device.clone()),
+        association_version: None,
+        verified: true,
+        members: vec![PrimaryRegistration {
+            device,
+            registration_id: registration,
+            generation: 1,
+            channel: rss_mdm_inventory::Channel::Agent,
+        }],
+    })
 }

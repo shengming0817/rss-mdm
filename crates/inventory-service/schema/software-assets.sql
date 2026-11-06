@@ -11,6 +11,7 @@ CREATE TABLE mdm_assets.software_records (
 );
 CREATE TABLE mdm_assets.software_progress (
  tenant_id uuid NOT NULL, run uuid NOT NULL, document jsonb,
+ result_state text NOT NULL DEFAULT 'retained' CHECK(result_state IN('retained','releasing','released')),
  uncertain bigint NOT NULL DEFAULT 0 CHECK(uncertain BETWEEN 0 AND 1000000),
  items bigint NOT NULL DEFAULT 0 CHECK(items BETWEEN 0 AND 10000000),
  bytes bigint NOT NULL DEFAULT 0 CHECK(bytes BETWEEN 0 AND 1073741824),
@@ -44,6 +45,7 @@ CREATE TABLE mdm_assets.software_evidence (
  FOREIGN KEY(tenant_id,run,bucket) REFERENCES mdm_assets.software_buckets(tenant_id,run,id)
 );
 CREATE INDEX software_members_selected ON mdm_assets.software_members(tenant_id,run,bucket,object) WHERE selected;
+CREATE INDEX software_evidence_object ON mdm_assets.software_evidence(tenant_id,run,object,bucket COLLATE "C") WHERE confirmed;
 DO $$
 DECLARE t text;
 BEGIN
@@ -57,6 +59,7 @@ BEGIN
 END $$;
 GRANT UPDATE(revision) ON mdm_assets.software_heads TO mdm_inventory_runtime;
 GRANT UPDATE(revision,document) ON mdm_assets.software_records TO mdm_inventory_runtime;
-GRANT UPDATE(document,items,bytes,uncertain) ON mdm_assets.software_progress TO mdm_inventory_runtime;
+GRANT UPDATE(document,items,bytes,uncertain,result_state) ON mdm_assets.software_progress TO mdm_inventory_runtime;
 GRANT UPDATE(selected) ON mdm_assets.software_members TO mdm_inventory_runtime;
+GRANT DELETE ON mdm_assets.software_evidence,mdm_assets.software_members,mdm_assets.software_objects,mdm_assets.software_buckets TO mdm_inventory_runtime;
 COMMIT;

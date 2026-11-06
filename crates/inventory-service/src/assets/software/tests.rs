@@ -156,6 +156,40 @@ fn duplicate_rules_same_target_are_one_mapping_and_other_targets_conflict() {
     .unwrap();
     assert_eq!(resolved.standard, None);
     assert!(matches!(resolved.identity,Identity::Conflict {candidates,..} if candidates.len()==2));
+    // Same raw identity at another version may hit a different conflicting target/rule set.
+    let third = Uuid::new_v4();
+    configuration.standards.push(standard(third));
+    configuration.mappings.push(mapping(
+        Uuid::new_v4(),
+        third,
+        "nativeId==editor;version==2",
+    ));
+    let second = evidence::item(
+        input.source,
+        input.platform,
+        &value("editor", "Editor", "2", "Acme", "installed"),
+    )
+    .unwrap();
+    let another = evidence::resolve(
+        &configuration,
+        &predicates(&configuration),
+        &input,
+        1,
+        &second,
+    )
+    .unwrap();
+    assert_ne!(resolved.key, another.key);
+    assert!(matches!(another.identity,Identity::Conflict {candidates,..} if candidates.len()==3));
+    configuration.mappings.reverse();
+    let reversed = evidence::resolve(
+        &configuration,
+        &predicates(&configuration),
+        &input,
+        1,
+        &second,
+    )
+    .unwrap();
+    assert_eq!(another.key, reversed.key);
 }
 #[test]
 fn unmapped_names_do_not_merge_publishers_or_anonymous_instances() {

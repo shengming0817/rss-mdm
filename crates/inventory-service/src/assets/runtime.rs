@@ -124,11 +124,15 @@ impl Reconciler<PgClaim> for QueryWork {
                 &self.assets,
                 |assets, tx| {
                     Box::pin(async move {
-                        assets
-                            .query_task_in(tx, id)
-                            .await
-                            .map(|s| !s.completed)
-                            .map_err(|e| fault(e, &Mutex::new(None)))
+                        let pending: Result<bool> = async {
+                            let state = assets.query_task_in(tx, id).await?;
+                            Ok(!state.completed
+                                || state.input.software.is_some()
+                                    && assets.software_result_state(tx, id).await?
+                                        == software::ResultState::Releasing)
+                        }
+                        .await;
+                        pending.map_err(|e| fault(e, &Mutex::new(None)))
                     })
                 },
             )
@@ -177,6 +181,12 @@ impl Reconciler<PgClaim> for QueryWork {
                                 Box::pin(async move {
                                     let result: Result<()> = async {
                                         let state = assets.query_task_in(tx, id).await?;
+                                        if state.input.software.is_some()
+                                            && assets.software_result_state(tx, id).await?
+                                                == software::ResultState::Releasing
+                                        {
+                                            return assets.clean_software_result(tx, id).await;
+                                        }
                                         if state.completed {
                                             return Ok(());
                                         }
@@ -324,6 +334,11 @@ impl DurableStore for QueryWork {
         {
             return Err(ReconcileError::new(ErrorKind::BindingChanged));
         }
+        let completion = if matches!(completion, Completion::Suspended { .. }) {
+            Completion::Reobserve(Duration::from_millis(20))
+        } else {
+            completion
+        };
         let result = self.schedule.finish(claim, completion, &settlement).await;
         if result.is_ok() {
             self.assets

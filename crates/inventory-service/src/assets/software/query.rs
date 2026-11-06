@@ -30,6 +30,7 @@ impl AssetService {
         if let Some(text) = &input.software.filter {
             filter::compile(text)?;
         }
+        self.admit_software_result(tx).await?;
         let configuration = self.software_configuration(tx).await?;
         let reader = &self.software_sources.objects;
         let tenant = self.tenant;

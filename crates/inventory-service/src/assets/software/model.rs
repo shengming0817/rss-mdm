@@ -244,6 +244,10 @@ pub enum Command {
     Search {
         change: Box<Operation<Query>>,
     },
+    Release {
+        id: Uuid,
+        change: Operation<ReleaseInput>,
+    },
     Status {
         id: Uuid,
     },
@@ -279,6 +283,7 @@ impl Command {
             Self::PutStandard { change, .. } => Some(change.operation_id),
             Self::PutMapping { change, .. } => Some(change.operation_id),
             Self::Search { change } => Some(change.operation_id),
+            Self::Release { change, .. } => Some(change.operation_id),
             _ => None,
         }
     }
@@ -421,6 +426,28 @@ pub enum MutationReceipt {
         task: Uuid,
         status_url: String,
     },
+    ReleaseRequested {
+        task: Uuid,
+    },
+}
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseInput {}
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultState {
+    Retained,
+    Releasing,
+    Released,
 }
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(
@@ -453,7 +480,8 @@ pub enum Response {
     },
     Status {
         task: Uuid,
-        status: String,
+        status: QueryStatus,
+        result_state: ResultState,
         failure: Option<String>,
         coordinates: Coordinates,
         processed: u64,

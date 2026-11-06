@@ -120,6 +120,7 @@ pub(super) fn resolve(
             rules.push(record.id);
         }
     }
+    rules.sort_unstable();
     let name = item.fields.get("name").cloned().unwrap_or_default();
     let native_id = item.fields.get("nativeId").cloned().unwrap_or_default();
     let publisher = item.fields.get("publisher").cloned().unwrap_or_default();
@@ -176,7 +177,7 @@ pub(super) fn resolve(
         )
     } else {
         (
-            format!("conflict:{raw}"),
+            format!("conflict:{}", digest(&(&raw, &candidates, &rules))?),
             Identity::Conflict {
                 name,
                 candidates: candidates.into_iter().collect(),

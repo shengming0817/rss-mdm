@@ -33,7 +33,10 @@ macOS 原生软件清单使用无 itemKey 的有序列表：Identifier 是可选
 - `POST /software-asset-queries`：提交 `Operation`，首次 `expectedRevision=0`，返回 202 和任务身份。
   `input.context` 默认为 `associated_device`，也支持 `endpoint`；`devices` 复用资产查询条件，
   `groups:{combine:union|intersection,ids:[...]}` 限定同域设备集合；`software` 分别提供 standards、risks、tags 和条目 filter。
-- `GET /software-asset-queries/{task}`：状态、坐标、已处理和无法确定的对象数量。
+- `GET /software-asset-queries/{task}`：闭合状态 pending/running/completed/failed/cancelled、结果保留状态
+  retained/releasing/released、坐标、已处理和无法确定的对象数量。
+- `POST /software-asset-queries/{task}/release`：以 `Operation`（`expectedRevision=0,input={}`）释放本人的结果，
+  未完成任务同时取消；同一操作可查询原回执，重复释放幂等。重新授权后仍可释放自己的旧结果。
 - `GET /software-asset-queries/{task}/software`：完整软件聚合；每个桶返回筛选设备数、全租户评估设备数、阈值与允许安装判断。
 - `GET /software-asset-queries/{task}/software/{bucket}/breakdowns/{dimension}`：按任务已选择的维度展开。
 - `GET /software-asset-queries/{task}/software/{bucket}/devices` 与其 `/{object}/evidence`：固定设备明细和原安装证据。
@@ -52,7 +55,10 @@ Windows 原生包的 Users 仅按已识别的安装状态判定；未识别的�
 当前或保留证据分别标记 confirmed，不将预置、未知或最后已知值冒充确认安装；采集时间不构成 TTL 或实时性承诺。
 
 单次查询沿既有资产任务恢复，最多处理 100 万统计对象，软件派生证据最多 1000 万条、约 1 GiB；冻结配置最多
-4096 条且受任务输入字节预算限制。超限明确失败，失败任务不提供部分聚合作为完整结果。Web 控制台另行交付。
+4096 条且受任务输入字节预算限制。每租户最多 32 份尚未清理完的结果，满额返回容量错误，须先释放；
+新查询不会淘汰仍有效的旧分页。成功结果保留至显式释放，失败结果由原任务 worker 自动分批清理；
+新查询提交时也检查已完成结果，并清理已失效快照。清理可恢复且不删除 Inventory 原始事实，任务状态、操作回执和审计继续保留。
+超限明确失败，失败或已释放任务不提供部分聚合作为完整结果。Web 控制台另行交付。
 
 路径前缀 `/api/v1`，使用现有权威会话；写和 POST 查询要求 Origin、X-Identity-Request、CSRF。错误返回既有产品 JSON。
 

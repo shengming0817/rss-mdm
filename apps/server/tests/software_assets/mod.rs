@@ -51,6 +51,203 @@ const ADMIN: &[P] = &[
 ];
 
 #[tokio::test]
+#[ignore = "T2: configuration readers wait for the configuration transaction before binding revision and records"]
+async fn configuration_capture_is_serialized_with_writes() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let fixture = Fixture::open(&c).await?;
+    let account = c.account(ADMIN).await?;
+    let http = Http::open(&c, &fixture, Arc::new(c.authenticate(&account).await?)).await?;
+    let id = Uuid::new_v4();
+    put(
+        &http,
+        &format!("/standard-software/{id}"),
+        0,
+        json!({"action":"put","definition":{"name":"Before","risk":"low"}}),
+    )
+    .await?;
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text,3026))")
+        .bind(c.tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let rows = {
+        let request = http.get("/standard-software");
+        tokio::pin!(request);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), &mut request)
+                .await
+                .is_err()
+        );
+        sqlx::query("UPDATE mdm_assets.software_records SET revision=2,document=jsonb_set(document,'{name}','\"After\"') WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_assets.software_heads SET revision=2 WHERE tenant_id=$1::uuid")
+            .bind(c.tenant.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        request.await?
+    };
+    assert_eq!(response(&rows)["items"][0]["revision"], 2);
+    assert_eq!(response(&rows)["items"][0]["definition"]["name"], "After");
+    let task = query(&c, &fixture, &http, json!({"context":"endpoint"})).await?;
+    assert_eq!(
+        response(&http.get(&format!("/software-asset-queries/{task}")).await?)["coordinates"]["configurationRevision"],
+        2
+    );
+    http.close().await;
+    drop(fixture);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: software result recovery and release use bounded durable worker steps, receipts and keep Inventory facts"]
+async fn result_recovery_release_and_capacity() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let fixture = Fixture::open(&c).await?;
+    let account = c.account(ADMIN).await?;
+    let http = Http::open(&c, &fixture, Arc::new(c.authenticate(&account).await?)).await?;
+    let definition = definitions(&c).await?;
+    let endpoint = planning::endpoint(&c).await?;
+    facts(
+        &c,
+        &endpoint,
+        &definition,
+        (0..1001)
+            .map(|i| installation("editor", &i.to_string()))
+            .collect(),
+    )
+    .await?;
+    let task = Uuid::new_v4();
+    let input = json!({"operationId":task,"expectedRevision":0,"input":{"context":"endpoint"}});
+    assert_eq!(
+        http.call(
+            reqwest::Method::POST,
+            "/software-asset-queries",
+            Some(input)
+        )
+        .await?
+        .0,
+        202
+    );
+    assert!(!fixture.work(&c, task, 1).await?);
+    // A newly opened owner resumes the persisted array scan and unique memberships.
+    drop(fixture);
+    let fixture = Fixture::open(&c).await?;
+    fixture.settle(&c, task).await?;
+    let rows = http
+        .get(&format!("/software-asset-queries/{task}/software"))
+        .await?;
+    assert_eq!(response(&rows)["items"][0]["devices"], 1);
+    let release = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{}});
+    let path = format!("/software-asset-queries/{task}/release");
+    let (status, first) = http
+        .call(reqwest::Method::POST, &path, Some(release.clone()))
+        .await?;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(
+        http.call(reqwest::Method::POST, &path, Some(release.clone()))
+            .await?
+            .1,
+        first
+    );
+    assert_eq!(
+        response(
+            &http
+                .get(&format!(
+                    "/software-asset-operations/{}",
+                    release["operationId"].as_str().unwrap()
+                ))
+                .await?
+        )["receipt"]["task"],
+        task.to_string()
+    );
+    assert_eq!(
+        http.call(
+            reqwest::Method::GET,
+            &format!("/software-asset-queries/{task}/software"),
+            None
+        )
+        .await?
+        .0,
+        409
+    );
+    assert!(!fixture.work(&c, task, 1).await?);
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_assets.software_evidence WHERE tenant_id=$1::uuid AND run=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(task)
+    .fetch_one(&mut *tx)
+    .await?;
+    assert_eq!(remaining, 1);
+    tx.commit().await?;
+    drop(fixture);
+    let fixture = Fixture::open(&c).await?;
+    fixture.settle(&c, task).await?;
+    assert_eq!(
+        response(&http.get(&format!("/software-asset-queries/{task}")).await?)["resultState"],
+        "released"
+    );
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    let facts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mdm.array_items WHERE tenant_id=$1::uuid")
+            .bind(c.tenant.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+    assert_eq!(facts, 1001);
+    let evidence: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_assets.software_evidence WHERE tenant_id=$1::uuid AND run=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(task)
+    .fetch_one(&mut *tx)
+    .await?;
+    assert_eq!(evidence, 0);
+    tx.commit().await?;
+    let mut tasks = Vec::new();
+    for _ in 0..32 {
+        let task = Uuid::new_v4();
+        tasks.push(task);
+        assert_eq!(
+            http.call(
+                reqwest::Method::POST,
+                "/software-asset-queries",
+                Some(
+                    json!({"operationId":task,"expectedRevision":0,"input":{"context":"endpoint"}})
+                )
+            )
+            .await?
+            .0,
+            202
+        );
+    }
+    assert_eq!(http.call(reqwest::Method::POST,"/software-asset-queries",Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"context":"endpoint"}}))).await?.0,503);
+    let cancel = tasks[0];
+    assert_eq!(
+        http.call(
+            reqwest::Method::POST,
+            &format!("/software-asset-queries/{cancel}/release"),
+            Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{}}))
+        )
+        .await?
+        .0,
+        200
+    );
+    fixture.settle(&c, cancel).await?;
+    let status = http
+        .get(&format!("/software-asset-queries/{cancel}"))
+        .await?;
+    assert_eq!(response(&status)["status"], "cancelled");
+    assert_eq!(response(&status)["resultState"], "released");
+    assert_eq!(http.call(reqwest::Method::POST,"/software-asset-queries",Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"context":"endpoint"}}))).await?.0,202);
+    http.close().await;
+    drop(fixture);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "T2: software configuration CAS, actor receipts, authorization and tenant isolation use real HTTP and owner transactions"]
 async fn configuration_http_and_receipts() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
@@ -95,6 +292,31 @@ async fn configuration_http_and_receipts() -> Result<()> {
     assert_eq!(
         response(&http.get(&path).await?)["record"]["definition"]["name"],
         "Renamed"
+    );
+    let stale = Uuid::new_v4();
+    let (status, _) = http
+        .call(
+            reqwest::Method::PUT,
+            &path,
+            Some(json!({
+                "operationId":stale,"expectedRevision":1,
+                "input":{"action":"put","definition":{"name":"Stale overwrite","risk":"low"}}
+            })),
+        )
+        .await?;
+    assert_eq!(status, 409);
+    assert_eq!(response(&http.get(&path).await?)["record"]["revision"], 2);
+    assert_eq!(
+        response(&http.get(&path).await?)["record"]["definition"]["name"],
+        "Renamed"
+    );
+    assert!(
+        response(
+            &http
+                .get(&format!("/software-asset-operations/{stale}"))
+                .await?
+        )["receipt"]
+            .is_null()
     );
     let second = Uuid::new_v4();
     put(
@@ -414,7 +636,7 @@ async fn group_assessment_and_associated_domain() -> Result<()> {
     let http = Http::open(&c, &fixture, proof.clone()).await?;
     let definition = definitions(&c).await?;
     let a = planning::endpoint(&c).await?;
-    let b = planning::endpoint(&c).await?;
+    let b = fixture::agent_endpoint(&c).await?;
     facts(&c, &a, &definition, vec![installation("editor", "1")]).await?;
     facts(&c, &b, &definition, vec![installation("editor", "1")]).await?;
     let owners = super::owner_boundaries_t2::Owners::open(&c).await?;
@@ -488,9 +710,20 @@ async fn group_assessment_and_associated_domain() -> Result<()> {
     let snapshot = Uuid::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)").bind(c.tenant.to_string()).bind(snapshot).bind(cut.to_json()).execute(&mut *tx).await?;
-    for object in [&a, &b] {
-        sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) VALUES($1::uuid,$2,1,$3,$4)").bind(c.tenant.to_string()).bind(object.object.key()).bind(serde_json::to_value(object)?).bind(vec![object.members[0].device.clone()]).execute(&mut *tx).await?;
+    let association = Uuid::new_v4();
+    let paired = rss_mdm_inventory_service::objects::DeviceObject {
+        object: rss_mdm_inventory_service::objects::ObjectRef::Association(association),
+        association_version: Some(1),
+        verified: true,
+        members: vec![a.members[0].clone(), b.members[0].clone()],
+    };
+    sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1::uuid,$2,1,'confirmed','verified software fixture','{}','fixture',1)").bind(c.tenant.to_string()).bind(association).execute(&mut *tx).await?;
+    for member in &paired.members {
+        sqlx::query("INSERT INTO mdm_devices.members(tenant_id,association_id,device,channel,registration_id,generation) VALUES($1::uuid,$2,$3,$4,$5,$6)")
+            .bind(c.tenant.to_string()).bind(association).bind(&member.device).bind(member.channel.as_str()).bind(member.registration_id).bind(member.generation as i64).execute(&mut *tx).await?;
     }
+    sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) VALUES($1::uuid,$2,1,$3,$4)")
+        .bind(c.tenant.to_string()).bind(paired.object.key()).bind(serde_json::to_value(&paired)?).bind(paired.members.iter().map(|m|m.device.clone()).collect::<Vec<_>>()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.checkpoints(tenant_id,from_cut,rebuilding,object_revision,current_cut) VALUES($1::uuid,$2,false,1,$3)").bind(c.tenant.to_string()).bind(cut.to_json()).bind(snapshot).execute(&mut *tx).await?;
     tx.commit().await?;
     let associated = query(&c, &fixture, &http, json!({})).await?;
@@ -501,8 +734,10 @@ async fn group_assessment_and_associated_domain() -> Result<()> {
         response(&rows)["coordinates"]["context"],
         "associated_device"
     );
-    assert_eq!(response(&rows)["items"][0]["devices"], 2, "{rows}");
-    assert_eq!(response(&rows)["items"][0]["compliance"]["disabled"], 2);
+    assert_eq!(response(&rows)["items"][0]["devices"], 1, "{rows}");
+    assert_eq!(response(&rows)["items"][0]["compliance"]["disabled"], 1);
+    assert_eq!(response(&rows)["items"][0]["assessmentDevices"], 1);
+    assert_eq!(response(&rows)["items"][0]["thresholdState"], "below");
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm_devices.checkpoints SET relation_revision=relation_revision+1 WHERE tenant_id=$1::uuid").bind(c.tenant.to_string()).execute(&mut *tx).await?;
     tx.commit().await?;

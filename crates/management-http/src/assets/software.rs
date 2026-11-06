@@ -11,7 +11,7 @@ pub(super) fn routes()
 -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     rss_mdm_http_contract::route_module! { struct SoftwareRoutes for [Browser] {
         standards, standard, standard_write, mappings, mapping, mapping_write, receipt,
-        search, status, buckets, breakdowns, devices, evidence, coverage
+        search, release, status, buckets, breakdowns, devices, evidence, coverage
     } }
     SoftwareRoutes {
         standards: Route::new(
@@ -84,6 +84,14 @@ pub(super) fn routes()
                 search,
                 &contracts::SOFTWARE_ASSET_QUERIES,
                 &[RouteOperation::Create],
+            ),
+        ),
+        release: Route::new(
+            "/software-asset-queries/{id}/release",
+            post(
+                release,
+                &contracts::SOFTWARE_ASSET_QUERIES,
+                &[RouteOperation::Delete],
             ),
         ),
         status: Route::new(
@@ -403,4 +411,23 @@ async fn coverage(
     )
     .await
     .map(CollectionResponse)
+}
+
+async fn release(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+    payload: BodyInput<Operation<model::ReleaseInput>>,
+) -> Result<HttpResponse, Error> {
+    invoke(
+        &app,
+        &auth,
+        &audit,
+        model::Command::Release {
+            id,
+            change: body(payload)?,
+        },
+    )
+    .await
 }

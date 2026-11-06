@@ -118,6 +118,14 @@ impl AssetService {
                 .bind(tenant).bind(task).bind(reason).execute(c).await?.rows_affected())
         })).await?;
         self.clear_evaluation(tx, task).await?;
+        if failure.is_some() {
+            let tenant = self.tenant.to_string();
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query("UPDATE mdm_assets.software_progress SET result_state='releasing' WHERE tenant_id=$1::uuid AND run=$2 AND result_state='retained'")
+                    .bind(tenant).bind(task).execute(c).await?;
+                Ok(())
+            })).await?;
+        }
         if changed == 0 {
             self.query_task_in(tx, task).await?;
             return Ok(());
