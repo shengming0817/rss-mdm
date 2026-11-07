@@ -167,6 +167,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             }
         }
         bounded_sort_pages(&http).await?;
+        text_range_boundaries(&http).await?;
         for filter in ["presentation.name=icontains=σ", "presentation.name=icontains=ς", "presentation.name=icontains='.'", "presentation.name=icontains='[*]'", "id=icontains='/'"] {
             assert_eq!(http.selected("/api/v1/resources",filter).await?["id"],"scripts/install");
         }
@@ -273,6 +274,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
                 "{path}: {filter}"
             );
         }
+        unicode_bidirectional(&c, &http).await?;
         seed::corrupt_resource(&c,true).await?;
         let (status,body)=http.get("/api/v1/resources",&[("filter","id=in=(a-directory-script,b-directory-script)"),("limit","1")]).await?;
         seed::corrupt_resource(&c,false).await?;
@@ -387,5 +389,84 @@ async fn bounded_sort_pages(http: &Http) -> Result<()> {
         assert_eq!(status, 200, "{next}");
         assert_ne!(body["items"][0]["id"], next["items"][0]["id"]);
     }
+    Ok(())
+}
+
+async fn text_range_boundaries(http: &Http) -> Result<()> {
+    let (status, all) = http.get("/api/v1/policies", &[("sort", "id")]).await?;
+    assert_eq!(status, 200, "{all}");
+    for boundary in [
+        "policy_".to_owned(),
+        "policy_7".to_owned(),
+        format!("policy_{}", "f".repeat(40)),
+    ] {
+        let (status, result) = http
+            .get(
+                "/api/v1/policies",
+                &[
+                    ("filter", &format!("toolName=gt={boundary}")),
+                    ("sort", "id"),
+                ],
+            )
+            .await?;
+        assert_eq!(status, 200, "{result}");
+        let expected = all["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["toolName"].as_str().unwrap() > boundary.as_str())
+            .map(|r| r["id"].clone())
+            .collect::<Vec<_>>();
+        let actual = result["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "boundary {boundary}");
+    }
+    Ok(())
+}
+async fn unicode_bidirectional(c: &Context, http: &Http) -> Result<()> {
+    let classes: &[&[&str]] = &[
+        &["Σ", "σ", "ς"],
+        &["I", "i", "İ", "ı"],
+        &["ß", "ẞ"],
+        &["É", "é"],
+        &["K", "k", "K"],
+        &["Μ", "μ", "µ"],
+        &["S", "s", "ſ"],
+    ];
+    let mut revision = 2;
+    for class in classes {
+        for stored in *class {
+            seed::literal_name(c, stored, revision).await?;
+            revision += 1;
+            for needle in *class {
+                assert_eq!(
+                    http.selected(
+                        "/api/v1/resources",
+                        &format!("id==scripts/install;presentation.name=icontains={needle}")
+                    )
+                    .await?["id"],
+                    "scripts/install",
+                    "stored {stored}, needle {needle}"
+                );
+            }
+        }
+    }
+    seed::literal_name(c, "ß", revision).await?;
+    let (status, body) = http
+        .get(
+            "/api/v1/resources",
+            &[(
+                "filter",
+                "id==scripts/install;presentation.name=icontains=ss",
+            )],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["items"], json!([]));
+    seed::literal_name(c, "Σ.[*] O'Reilly", revision + 1).await?;
     Ok(())
 }

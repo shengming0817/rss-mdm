@@ -40,7 +40,7 @@ Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如
 
 目录的 `request.query_owner` 与实际执行使用同一份领域声明。公开业务模型中的标量、嵌套业务属性和标量集合默认进入过滤范围；可信存储绑定及权限仍由原 owner 持有。字段描述给出 `kind`、`operators`、`filter/sort/output`、`nullable` 和 `limitation`，客户端直接消费，不另维护白名单。
 
-例如 Resource 使用 `presentation.name=icontains=工具;presentation.category=in=(Tools,Office)`，证书使用 `latest.metadata.labels=containsall=(managed,mac)`，Webhook 使用 `settings.presentation.name=icontains=receiver`，ADE Profile 使用 `configuration.name=icontains=Mac`。URL 仍须标准编码；`==` 为精确比较，`=icontains=` 使用 PostgreSQL Unicode 简单大小写匹配进行字面包含（如 Σ/σ/ς；不展开 ß 为 ss），`%`、`_` 和引号不会变成 SQL 通配或代码。
+例如 Resource 使用 `presentation.name=icontains=工具;presentation.category=in=(Tools,Office)`，证书使用 `latest.metadata.labels=containsall=(managed,mac)`，Webhook 使用 `settings.presentation.name=icontains=receiver`，ADE Profile 使用 `configuration.name=icontains=Mac`。URL 仍须标准编码；`==` 为精确比较，`=icontains=` 在两侧使用 PostgreSQL `pg_c_utf8` 的 `upper(lower(...))` 统一简单大小写后进行字面包含（Σ/σ/ς、I/i/İ/ı 各为同一类；ß/ẞ 同类但不展开为 ss），`%`、`_` 和引号不会变成 SQL 通配或代码。
 
 过滤、排序与返回分别声明。嵌套属性可过滤不代表可以使用 `fields=父对象.属性`；当前目录返回原有顶层容器，可排序标量使用稳定唯一键及 NULLS LAST。普通可空目录元数据的缺失和 JSON null 作为 SQL NULL，使用 `=isnull=true`／`=isnotnull=true`；`!=` 不匹配空值。设备与资产已有 unknown/conflict 语义由原 owner 保持。
 

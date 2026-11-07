@@ -96,6 +96,7 @@ fn identity_ranges_and_literal_fragments_have_distinct_validation() {
     }
     for input in [
         "filter=id==%2F",
+        "filter=id=gt=%2F",
         "filter=activeVersion=gt=1",
         "filter=id=icontains=%0A",
     ] {

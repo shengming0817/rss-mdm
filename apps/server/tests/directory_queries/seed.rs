@@ -739,3 +739,22 @@ fn assert_seek_index(plan: &Value) {
     }
     assert!(indexed, "late cursor is not an index range: {plan}");
 }
+
+pub(super) async fn literal_name(c: &Context, name: &str, revision: u64) -> Result<()> {
+    let owner = planning::owner(c, "mdm_resource_runtime").await?;
+    let store = ResourceStore::new(
+        owner.runtime.clone(),
+        c.tenant,
+        crate::authority_t2_support::deadline(),
+    )
+    .await?;
+    let result = resource_change(
+        &store,
+        "scripts/install",
+        revision,
+        Command::Present(serde_json::from_value(json!({"name":name}))?),
+    )
+    .await;
+    owner.runtime.close().await;
+    result
+}

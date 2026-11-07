@@ -185,11 +185,20 @@ impl Field {
                 .sort_bytes
                 .is_none_or(|limit| serde_json::to_vec(value).is_ok_and(|v| v.len() <= limit))
     }
+    pub(crate) fn valid_operand(&self, operator: Operator, value: &Value) -> bool {
+        if self.kind == Kind::Text && (operator == Operator::Icontains || operator.range()) {
+            // A substring or lexical boundary need not have a stored value's length.
+            // Explicit domain constructors still apply to complete range values.
+            text_operand(value)
+                && (operator == Operator::Icontains
+                    || self.validator.is_none_or(|validate| validate(value)))
+        } else {
+            self.valid(value)
+        }
+    }
     pub(crate) fn valid(&self, value: &Value) -> bool {
         let shape = match self.kind.scalar() {
-            Kind::Text => value
-                .as_str()
-                .is_some_and(|s| s.len() <= 4096 && !s.chars().any(char::is_control)),
+            Kind::Text => text_operand(value),
             Kind::Uuid => value.as_str().is_some_and(|s| {
                 uuid::Uuid::parse_str(s).is_ok_and(|v| !v.is_nil() && v.to_string() == s)
             }),
@@ -254,4 +263,10 @@ impl Serialize for Field {
         out.serialize_field("limitation", &self.reason)?;
         out.end()
     }
+}
+
+fn text_operand(value: &Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|s| s.len() <= 4096 && !s.chars().any(char::is_control))
 }

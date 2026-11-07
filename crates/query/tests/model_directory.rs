@@ -214,3 +214,38 @@ fn documented_closed_map_keys_keep_their_declared_types() {
             .is_ok()
     );
 }
+
+#[test]
+fn text_range_boundaries_are_not_stored_values_or_seek_positions() {
+    #[derive(JsonSchema, serde::Serialize)]
+    struct Address {
+        id: i64,
+        #[schemars(length(min = 39, max = 39))]
+        tool: String,
+    }
+    let model = Box::leak(Box::new(
+        Schema::derived::<Address>("address", &["id"], 1, 2, &[]).unwrap(),
+    ));
+    for op in ["lt", "le", "gt", "ge"] {
+        for boundary in ["policy_7".to_owned(), "z".repeat(64)] {
+            assert!(
+                model
+                    .parse(&format!("filter=tool={op}={boundary}&sort=tool"))
+                    .is_ok()
+            );
+        }
+    }
+    assert!(
+        model
+            .parse(&format!("filter=tool=gt={}", "a".repeat(4097)))
+            .is_err()
+    );
+    assert!(model.parse("filter=tool=gt=%0A").is_err());
+    assert!(
+        model
+            .parse("sort=tool")
+            .unwrap()
+            .position(&serde_json::json!({"id":1,"tool":"policy_7"}))
+            .is_err()
+    );
+}

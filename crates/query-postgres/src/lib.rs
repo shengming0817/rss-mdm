@@ -135,13 +135,14 @@ fn expression(
             operator: Operator::Icontains,
             values,
         } => {
-            // PostgreSQL ARE's quoted mode makes every caller character literal.
-            // Unicode simple case matching is independent of the stable C sort collation.
-            let literal = values[0].as_str().ok_or(Error::Invalid)?;
-            sql.push("(")
+            // Apply the same Unicode simple-case normalization to both operands.
+            // pg_c_utf8 upper(lower(x)) is symmetric across upper/lower variants;
+            // strpos keeps every character literal and C ordering stays separate.
+            sql.push("strpos(upper(lower((")
                 .push(columns.column(field)?)
-                .push(") COLLATE pg_catalog.\"pg_c_utf8\" ~* ")
-                .push_bind(format!("(?q){literal}"));
+                .push(") COLLATE pg_catalog.\"pg_c_utf8\")),upper(lower((");
+            value(sql, &values[0])?;
+            sql.push(") COLLATE pg_catalog.\"pg_c_utf8\")))>0");
         }
         Expression::Compare {
             field,

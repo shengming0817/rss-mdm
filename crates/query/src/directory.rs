@@ -376,15 +376,7 @@ fn scalar(field: &Field, operator: Operator, input: String) -> Result<Value> {
         ),
         _ => Value::from(input),
     };
-    // A literal fragment is not a complete domain value (e.g. "/" inside a Resource ID).
-    let valid = if operator == Operator::Icontains {
-        value
-            .as_str()
-            .is_some_and(|s| s.len() <= 4096 && !s.chars().any(char::is_control))
-    } else {
-        field.valid(&value)
-    };
-    if valid {
+    if field.valid_operand(operator, &value) {
         Ok(value)
     } else {
         Err(Error::Invalid)
