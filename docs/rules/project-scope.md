@@ -31,7 +31,7 @@ RSS 提供其明确接纳的公共契约、事务消息、Saga、投影、状态
 
 ## MDM 产品审计接入（#2498）
 
-`rss-mdm-audit-integration` 是产品内唯一审计接缝，直接消费者限定为 App、device-service、pki-service、certificate-archive-service、recovery-credentials、timeline-service、task-trust、software-service、authorization-service、registration-service、inventory-service、scope-service、resource-service、policy-service、content-service，以及 webhook-service、mail-service、telemetry-service、management-http、device-access-http、device-access-postgres、device-access-runtime、agent-channel、windows-channel、apple-channel；实际依赖集合由 CI 校验。
+`rss-mdm-audit-integration` 是产品内唯一审计接缝，直接消费者限定为 App、vault-sync、device-service、pki-service、certificate-archive-service、recovery-credentials、timeline-service、task-trust、software-service、authorization-service、registration-service、inventory-service、scope-service、resource-service、policy-service、content-service，以及 webhook-service、mail-service、telemetry-service、management-http、device-access-http、device-access-postgres、device-access-runtime、agent-channel、windows-channel、apple-channel；实际依赖集合由 CI 校验。
 不反向依赖 App、Identity 或任何 MDM 领域/应用包，纯领域核心不得依赖它。
 固定产品来源使用 install-support 的 StorageProfile；审计上下文显式绑定产品，MDM/DA 事实使用独立 source identity，共用公共 Audit 存储。
 活动事实共享 agent-wire 唯一持有的闭合协议枚举（#2937）；该纯协议依赖的生产闭包仍由 CI 独立校验，不引入业务实现或运行时。

@@ -553,6 +553,7 @@ impl Service {
             let event = crate::control::transaction::fingerprint(&(id, &before, &after))?;
             let fact = rss_mdm_audit_integration::Fact::business(
                 audit,
+                rss_mdm_audit_integration::operation::OperationOwner::Retirement,
                 &format!(
                     "retirement:{id}:{}",
                     crate::control::transaction::fingerprint(&event)?

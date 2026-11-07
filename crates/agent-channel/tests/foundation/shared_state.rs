@@ -130,7 +130,13 @@ async fn receipt(
                 |(store, value), tx| {
                     Box::pin(async move {
                         let old = store
-                            .replay_operation_in(tx, "same-actor", id, &[9; 32])
+                            .replay_operation_in(
+                                tx,
+                                "same-actor",
+                                "11111111-1111-4111-8111-111111111111",
+                                id,
+                                &[9; 32],
+                            )
                             .await
                             .map_err(|e| PgError::from(sqlx::Error::Protocol(e.to_string())))?;
                         if replay {
@@ -138,7 +144,14 @@ async fn receipt(
                         } else {
                             assert!(old.is_none());
                             store
-                                .record_operation_in(tx, "same-actor", id, &[9; 32], value)
+                                .record_operation_in(
+                                    tx,
+                                    "same-actor",
+                                    "11111111-1111-4111-8111-111111111111",
+                                    id,
+                                    &[9; 32],
+                                    value,
+                                )
                                 .await
                                 .map_err(|e| PgError::from(sqlx::Error::Protocol(e.to_string())))?;
                         }
@@ -154,7 +167,13 @@ async fn receipt(
             Box::pin(async move {
                 assert!(matches!(
                     store
-                        .replay_operation_in(tx, "same-actor", id, &[8; 32])
+                        .replay_operation_in(
+                            tx,
+                            "same-actor",
+                            "11111111-1111-4111-8111-111111111111",
+                            id,
+                            &[8; 32]
+                        )
                         .await,
                     Err(rss_mdm_scope_postgres::BindingError::Conflict)
                 ));
@@ -221,10 +240,10 @@ server.serve_forever()
                 use sha2::{Digest,Sha256};
                 let hash=Sha256::digest(serde_json::to_vec(&trust)?);
                 let id=Uuid::from_bytes(hash[..16].try_into()?);
-                let request=RequestAudit::new(profile,c.tenant.to_string(),"device_pki_admit",AuditIntent::Management);
+                let request=RequestAudit::new(rss_mdm_audit_integration::Origin::Request, profile,c.tenant.to_string(),"device_pki_admit",AuditIntent::Management);
                 request.identify_service("service:device-pki");
                 request.operation(id,"device_pki_admit",AuditIntent::Management);
-                let fact=rss_mdm_audit_integration::Fact::business(&request,&format!("pki:{id}:admit"),200,"success",None)?;
+                let fact=rss_mdm_audit_integration::Fact::observation(&request,&format!("pki:{id}:admit"),200,"success",None)?;
                 let append=runtime.local_tx_with_context(c.tenant,deadline(),(&audit,&fact),|(audit,fact),tx|Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     audit.append_in(tx,fact).await.map_err(PgError::from)

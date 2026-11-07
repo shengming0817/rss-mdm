@@ -191,10 +191,35 @@ pub async fn policy_operations_in(
         .bind(tenant.to_string()).bind(object).bind(policy).fetch_all(c).await?)
 }
 
-pub async fn read_in(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result<Retirement> {
-    let t = tenant.to_string();
+pub(crate) struct RetirementHeader {
+    pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
+    pub id: Uuid,
+    pub policy: Uuid,
+    pub version: Uuid,
+    pub target: DeviceObject,
+    pub created_at: i64,
+    pub forced_at: Option<i64>,
+}
+pub(crate) async fn read_header_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    id: Uuid,
+) -> Result<RetirementHeader> {
     let row=sqlx::query("SELECT policy,version,target,created_at,forced_at,origin FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(&t).bind(id).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
+        .bind(tenant.to_string()).bind(id).fetch_optional(c).await?.ok_or(Error::NotFound)?;
+    Ok(RetirementHeader {
+        origin: serde_json::from_value(row.try_get("origin")?).map_err(|_| Error::Storage)?,
+        id,
+        policy: row.try_get("policy")?,
+        version: row.try_get("version")?,
+        target: serde_json::from_value(row.try_get("target")?).map_err(|_| Error::Storage)?,
+        created_at: row.try_get("created_at")?,
+        forced_at: row.try_get("forced_at")?,
+    })
+}
+pub async fn read_in(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result<Retirement> {
+    let header = read_header_in(c, tenant, id).await?;
+    let t = tenant.to_string();
     let rows=sqlx::query("SELECT device,channel,registration,generation,parent_registration,stage,effect,execution,blocking_execution,reason FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device,channel")
         .bind(&t).bind(id).fetch_all(c).await?;
     let mut channels = Vec::new();
@@ -216,13 +241,13 @@ pub async fn read_in(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result
         });
     }
     Ok(Retirement {
-        origin: serde_json::from_value(row.try_get("origin")?).map_err(|_| Error::Storage)?,
-        id,
-        policy: row.try_get("policy")?,
-        version: row.try_get("version")?,
-        target: serde_json::from_value(row.try_get("target")?).map_err(|_| Error::Storage)?,
-        created_at: row.try_get("created_at")?,
-        forced_at: row.try_get("forced_at")?,
+        origin: header.origin,
+        id: header.id,
+        policy: header.policy,
+        version: header.version,
+        target: header.target,
+        created_at: header.created_at,
+        forced_at: header.forced_at,
         channels,
     })
 }

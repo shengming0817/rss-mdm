@@ -50,6 +50,7 @@ mod tests {
         ];
         for (index, (attempt, expected)) in cases.into_iter().enumerate() {
             let audit = RequestAudit::new(
+                crate::Origin::Request,
                 crate::StorageProfile::Mdm,
                 "tenant".into(),
                 "recovery",

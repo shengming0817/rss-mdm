@@ -63,8 +63,8 @@ pub async fn enroll(
                 .bind(tenant).bind(id).bind(organization).bind(machine.serial()).bind(machine.udid()).bind(config.try_get::<i64,_>("server_revision").map_err(db)?).bind(config.try_get::<i64,_>("assignment_revision").map_err(db)?).bind(profile).bind(config.try_get::<i64,_>("profile_revision").map_err(db)?).bind(&digest).bind(json!({"product":machine.product(),"osVersion":machine.os_version(),"build":machine.build(),"removable":setup.removable})).bind(sealed).execute(c).await.map_err(db)?;
             Ok::<_,Error>((bytes,id,false))
         })).await?;
-        audit.operation(id,"apple_ade_enrollment", rss_mdm_audit_integration::AuditIntent::Management);
-        let fact=Fact::business(audit, &format!("ade-enroll:{id}"), 200, "success", Some(id))?;
+        audit.owned_operation(rss_mdm_audit_integration::operation::OperationOwner::AppleAde, id,"apple_ade_enrollment", rss_mdm_audit_integration::AuditIntent::Management);
+        let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::AppleAde, &format!("ade-enroll:{id}"), 200, "success", Some(id))?;
         (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;audit.mark_commit_started();Ok(bytes)
     })).await;
     let bytes = crate::operations::settle(result, &audit)?;

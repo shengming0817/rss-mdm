@@ -73,6 +73,7 @@ async fn admit(
             request_intent,
         );
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         envelope.profile,
         envelope.tenant.clone(),
         route_action(route),
@@ -142,6 +143,7 @@ pub async fn authentication(
 ) -> Response {
     let started = envelope.clock.now();
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         envelope.profile,
         envelope.tenant.clone(),
         "authentication",
@@ -552,6 +554,7 @@ mod tests {
                 ));
             }
             let audit = RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Request,
                 rss_mdm_install_support::StorageProfile::Mdm,
                 "11111111-1111-4111-8111-111111111111".into(),
                 "protected_request",

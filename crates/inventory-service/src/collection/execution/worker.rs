@@ -194,6 +194,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             return Err(failure(Error::Unavailable(crate::Failure::PlanningStorage)));
         }
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             service.transactions.tenant.to_string(),
             "command_reconcile",

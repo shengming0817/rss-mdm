@@ -185,12 +185,14 @@ pub async fn receipt(
     id: Uuid,
     fingerprint: Vec<u8>,
     response: &Value,
+    target: &crate::deployment::Target,
     audit_details: Option<Value>,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let actor = actor.to_owned();
     let response = response.clone();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software_deployment.action_receipts(tenant_id,actor,id,fingerprint,response,audit_details) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)").bind(tenant).bind(actor).bind(id.to_string()).bind(fingerprint).bind(response).bind(audit_details).execute(c).await?;Ok(())})).await?;
+    let target = target.clone();
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software_deployment.action_receipts(tenant_id,actor,id,fingerprint,response,audit_details,device,registration,generation) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(actor).bind(id.to_string()).bind(fingerprint).bind(response).bind(audit_details).bind(target.device).bind(target.registration).bind(target.generation).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
 pub async fn audit_details(

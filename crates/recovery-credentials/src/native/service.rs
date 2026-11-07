@@ -108,6 +108,7 @@ async fn created(
     };
     let fact = Fact::business(
         audit,
+        rss_mdm_audit_integration::operation::OperationOwner::RecoveryCommand,
         &format!(
             "command:{}:{id}:accept",
             audit.snapshot().actor.ok_or(Error::Malformed)?

@@ -102,6 +102,12 @@ impl Policies {
         audit: &RequestAudit,
     ) -> std::result::Result<rss_mdm_policy::View, Error> {
         let profile = self.profile();
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Policy,
+            op.operation_id,
+            "management_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
 
         proof.require_initialization_target(&id.to_string())?;
         audit.resource_target(
@@ -266,7 +272,7 @@ impl Policies {
                         rss_mdm_audit_integration::activity::ActivityPhase::Changed);
                     activity.links.policy=Some(policy.id); activity.links.version=Some(policy.version);
                     activity.links.request=Some(op.operation_id); activity.origin=ActivityOrigin::Human;
-                    let fact = Fact::business(audit, &format!("policy:{id}:{}", op.operation_id), 200, "success", None)?.with_activity(&activity)?;
+                    let fact = Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::Policy, &format!("policy:{id}:{}", op.operation_id), 200, "success", None)?.with_activity(&activity)?;
                     s.audit_store.append_in(tx, &fact).await?;
                     p.check_live()?;
                     Ok(value)

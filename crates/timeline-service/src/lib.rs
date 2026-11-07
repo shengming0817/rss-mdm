@@ -4,7 +4,10 @@ mod cursor;
 mod model;
 mod projection;
 mod service;
-pub use model::{AUDIT, Coverage, DEVICE_TIMELINE, Error, FactView, Page, Query};
+pub use model::OPERATION_DIAGNOSTICS;
+pub use model::{
+    AUDIT, Coverage, DEVICE_TIMELINE, DiagnosticFact, DiagnosticPage, Error, FactView, Page, Query,
+};
 pub use projection::project;
 pub use service::Timeline;
 /// Fresh product read-model schema; does not modify the Audit component.

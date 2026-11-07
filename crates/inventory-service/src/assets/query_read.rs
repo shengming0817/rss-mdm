@@ -23,6 +23,9 @@ impl AssetService {
         scope: &ReadScope,
     ) -> Result<QueryState> {
         let state = self.query_task_in(tx, task).await?;
+        if state.input.software.is_some() {
+            return Err(Error::NotFound.into());
+        }
         let owner = state.input.scope;
         let completed = state.completed;
         let failure = state.failure;

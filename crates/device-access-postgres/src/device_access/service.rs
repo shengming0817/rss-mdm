@@ -224,10 +224,13 @@ impl Service {
         let(actor,device,id)=*ctx;
         authorize(c,actor,device,Permission::AccountWrite).await?;
         let result:Option<String>=sqlx::query_scalar("SELECT result FROM rss_da.operations WHERE tenant_id=$1::uuid AND actor=$2::uuid AND instance=$3::uuid AND operation_id=$4")
-            .bind(actor.tenant_id()).bind(actor.principal_id()).bind(actor.instance_id()).bind(id).fetch_optional(c).await.map_err(db)?;
+            .bind(actor.tenant_id()).bind(actor.principal_id()).bind(actor.instance_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
         let value:Binding=serde_json::from_str(&result.ok_or(Error::NotFound)?).map_err(|_|Error::NotFound)?;
         value.validate()?;
         if value.device!=device || value.tenant.to_string()!=actor.tenant_id(){return Err(Error::NotFound);}
+        // A subject offboarding receipt represents all frozen targets, not only its initiating device.
+        let offboarding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rss_da.lifecycles WHERE tenant_id=$1::uuid AND operation=$2)").bind(actor.tenant_id()).bind(id).fetch_one(&mut *c).await.map_err(db)?;
+        if offboarding {super::lifecycle::load_on(c,actor,device,id,false).await?;}
         Ok(value)
         })).await
     }
@@ -304,7 +307,8 @@ impl Service {
             .validate()
             .map_err(|_| Error::Malformed)?;
         let who = person(employee)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceAccess,
             input.operation_id,
             "device_access_confirm",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -374,7 +378,8 @@ impl Service {
             return Err(Error::Malformed);
         }
         actor.require(Permission::AccountWrite, Some(device))?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceAccess,
             input.operation_id,
             "device_access_change",
             rss_mdm_audit_integration::AuditIntent::Management,

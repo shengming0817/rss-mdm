@@ -99,6 +99,7 @@ impl Maintenance {
         let profile = self.profile();
 
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             self.profile(),
             self.tenant.to_string(),
             "recovery_credential_maintenance",
@@ -275,7 +276,7 @@ impl Maintenance {
                         .await??;
                     changed |= rewrapped > 0;
                     if changed {
-                        let fact = rss_mdm_audit_integration::Fact::business(
+                        let fact = rss_mdm_audit_integration::Fact::observation(
                             audit,
                             &format!("recovery:maintenance:{}", audit.request_id()),
                             200,

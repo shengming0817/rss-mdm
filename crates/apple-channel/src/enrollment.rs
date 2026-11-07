@@ -159,7 +159,7 @@ pub(crate) async fn download(
 
                 })).await?;
 
-            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-profile:{attempt}"), 200, "success", Some(auth.id)).map_err(Error::from)?;
+            let fact = rss_mdm_audit_integration::Fact::observation(audit, &format!("apple-profile:{attempt}"), 200, "success", Some(auth.id)).map_err(Error::from)?;
             (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;
             if replayed { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             audit.mark_commit_started();
@@ -271,7 +271,7 @@ pub(crate) async fn challenge(
 
                 })).await?;
 
-            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-scep:{}:consume", csr.attempt()), 200, "success", Some(auth.id)).map_err(Error::from)?;
+            let fact = rss_mdm_audit_integration::Fact::observation(audit, &format!("apple-scep:{}:consume", csr.attempt()), 200, "success", Some(auth.id)).map_err(Error::from)?;
             app.audit_store.append(tx, &fact).await.map_err(Error::from)?;
             audit.mark_commit_started();
             Ok(())
@@ -407,7 +407,7 @@ pub(crate) async fn notify(
                         )
                         .await?;
 
-                    let fact = rss_mdm_audit_integration::Fact::business(
+                    let fact = rss_mdm_audit_integration::Fact::observation(
                         audit,
                         &format!("apple-scep:{}:notify", leaf.attempt()),
                         200,
@@ -526,7 +526,7 @@ pub async fn bind(
                             .await
                             .map_err(Error::from)?;
                     }
-                    let fact = rss_mdm_audit_integration::Fact::business(
+                    let fact = rss_mdm_audit_integration::Fact::observation(
                         inputs.audit,
                         &format!("apple-bind:{}", inputs.leaf.attempt()),
                         200,

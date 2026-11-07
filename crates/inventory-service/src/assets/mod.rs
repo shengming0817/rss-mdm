@@ -33,6 +33,7 @@ pub use fields::{FieldChange, FieldView};
 mod model;
 pub mod planning;
 pub mod raw_snapshot;
+pub mod software;
 mod summaries;
 pub use summaries::DeviceSummary;
 mod checkpoint;
@@ -63,6 +64,16 @@ impl AssetService {
         cut: Option<&AssetCut>,
     ) -> Result<AssetEnvelope> {
         let response = match command {
+            Command::Software { command, access } => {
+                match self.software_dispatch(tx, command, access, cut).await? {
+                    software::Response::Mutation {
+                        receipt: software::MutationReceipt::Accepted { task, status_url },
+                    } => Response::Accepted { task, status_url },
+                    response => Response::Software {
+                        response: Box::new(response),
+                    },
+                }
+            }
             Command::InventoryScopes {
                 device,
                 scope,
@@ -270,7 +281,19 @@ pub struct AssetEnvelope {
 mod tests;
 
 /// Asset algorithms and resources, independently constructible from planning workflows.
+pub struct AssetDependencies {
+    pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
+    pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub tenant: TenantId,
+    pub clock: Arc<dyn crate::clock::Clock>,
+    pub cursor_key: Vec<u8>,
+    pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
+    pub software_sources: software::Sources,
+}
+
 pub struct AssetService {
+    software_sources: software::Sources,
     worker_health: std::sync::Mutex<crate::worker_health::ObservationState>,
     task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
@@ -282,16 +305,19 @@ pub struct AssetService {
     asset_cursor_key: ring::hmac::Key,
 }
 impl AssetService {
-    pub fn new(
-        inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
-        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-        runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        tenant: TenantId,
-        clock: Arc<dyn crate::clock::Clock>,
-        cursor_key: &[u8],
-        reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
-    ) -> Self {
+    pub fn new(dependencies: AssetDependencies) -> Self {
+        let AssetDependencies {
+            inventory,
+            audit_store,
+            runtime,
+            tenant,
+            clock,
+            cursor_key,
+            reconcile_messaging,
+            software_sources,
+        } = dependencies;
         Self {
+            software_sources,
             task_status: Default::default(),
             worker_health: Default::default(),
             inventory,
@@ -300,7 +326,7 @@ impl AssetService {
             runtime,
             tenant,
             clock,
-            asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
+            asset_cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
         }
     }
     pub async fn execute(
@@ -354,6 +380,9 @@ impl AssetService {
         let budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
         let cut = if matches!(
+            command,
+            Command::Software { command, .. } if matches!(command.as_ref(), software::Command::Search { .. })
+        ) || matches!(
             command,
             Command::Detail { .. }
                 | Command::ListItems { .. }
@@ -420,6 +449,35 @@ impl AssetService {
         if let Some(p) = principal {
             let current = query_authority(tx, p).await?;
             match command {
+                Command::Software { command, access } => {
+                    if let software::Command::Receipt {
+                        actor, instance, ..
+                    } = command.as_ref()
+                        && (audit.snapshot().actor.as_ref() != Some(actor)
+                            || audit.snapshot().instance.as_ref() != Some(instance))
+                    {
+                        return Err(Error::Forbidden.into());
+                    }
+                    let scope = &access.scope;
+                    let fresh = ReadScope::from_snapshot(p, &current)?;
+                    if &fresh != scope {
+                        return Err(Error::Forbidden.into());
+                    }
+                    fresh.full().map_err(|_| Error::Forbidden)?;
+                    current.require(
+                        p,
+                        crate::authorization::Permission::InventorySensitiveRead,
+                        None,
+                    )?;
+                    current.require(p, crate::authorization::Permission::GroupRead, None)?;
+                    if command.writes_configuration() {
+                        current.require(
+                            p,
+                            crate::authorization::Permission::InventorySoftwareWrite,
+                            None,
+                        )?;
+                    }
+                }
                 Command::Search { scope, .. }
                 | Command::QueryStatus { scope, .. }
                 | Command::QueryItems { scope, .. }
@@ -502,18 +560,7 @@ pub async fn timeline_device_in(
     tenant: &str,
     actor: &str,
     operation: Uuid,
-    event_id: &str,
 ) -> std::result::Result<Option<String>, sqlx::Error> {
-    use sha2::Digest;
-    // Verify this owner's immutable source key; do not infer ownership from a UUID collision.
-    if event_id
-        != format!(
-            "e-{:x}",
-            Sha256::digest(format!("assets:{actor}:{operation}").as_bytes())
-        )
-    {
-        return Ok(None);
-    }
     sqlx::query_scalar("SELECT response->'asset'->>'device' FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND response->'asset'->>'kind'='assignment'")
         .bind(tenant).bind(actor).bind(operation).fetch_optional(c).await.map(Option::flatten)
 }
@@ -582,3 +629,66 @@ impl AssetService {
 }
 
 pub mod enrollment;
+
+impl AssetService {
+    /// Safe original management metadata; full asset/query material keeps its own read path.
+    pub async fn operation_receipt(
+        &self,
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        use rss_mdm_authorization_service::Permission;
+        crate::transaction::inspect(&self.runtime,self.tenant,(self,p),|(service,p),tx|Box::pin(async move{
+            let grant=crate::transaction::query_authority(tx,p).await?;
+            let tenant=p.tenant_id().to_owned();let actor=p.principal_id().to_owned();let instance=p.instance_id().to_owned();
+            let raw:Option<Value>=tx.with_connection(move|c|Box::pin(async move{
+                sqlx::query_scalar("SELECT response FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND instance=$4::uuid")
+                    .bind(tenant).bind(actor).bind(id).bind(instance).fetch_optional(c).await
+            })).await?;
+            let Some(raw)=raw else{return Ok(None)};
+            let envelope:AssetEnvelope=stored(serde_json::from_value(raw))?;
+            if envelope.tenant_id!=p.tenant_id(){return Err(Error::Forbidden.into());}
+            let mut s=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+            match envelope.asset {
+                Response::Software{response}=>{
+                    ReadScope::from_snapshot(p, &grant)?.full().map_err(|_|Error::Forbidden)?;
+                    grant.require(p,Permission::InventorySensitiveRead,None)?;
+                    grant.require(p,Permission::GroupRead,None)?;
+                    let software::Response::Mutation { receipt } = *response else { return Err(Error::Conflict.into()); };
+                    match receipt {
+                        software::MutationReceipt::Written { id,revision,.. } => {s.object=Some(id.to_string());s.revision=Some(i64::try_from(revision).map_err(|_|Error::Conflict)?);},
+                        software::MutationReceipt::Accepted { task,.. } | software::MutationReceipt::ReleaseRequested { task } => {s.executions.push(task);s.accepted=Some(true);},
+                    }
+                },
+                Response::Assignment{device,field:_,revision}=>{
+                    grant.require(p,Permission::InventoryRead,Some(&device))?;
+                    s.object=Some(device);s.revision=Some(revision);
+                },
+                Response::FieldLayoutWritten{revision}=>{
+                    grant.require(p,Permission::InventoryFieldsWrite,None)?;
+                    s.revision=Some(i64::try_from(revision).map_err(|_|Error::Conflict)?);
+                },
+                Response::Field{field,version,definition:_}=>{
+                    grant.require(p,Permission::InventoryFieldsWrite,None)?;
+                    s.object=Some(field.as_str().to_owned());s.revision=Some(i64::try_from(version).map_err(|_|Error::Conflict)?);
+                },
+                Response::RetentionPolicy{policy}=>{
+                    grant.require(p,Permission::InventoryFieldsWrite,None)?;
+                    if let Some(policy)=policy {let v=stored(serde_json::to_value(policy))?;s.revision=v["revision"].as_i64();}
+                },
+                Response::Accepted{task,..}=>{
+                    let query = service.query_task_in(tx,task).await?;
+                    Self::query_receipt_scope(p,&grant,&query)?;
+                    s.executions.push(task);s.accepted=Some(true);
+                },
+                Response::Saved{query}=>{
+                    grant.require_all_devices(p,Permission::InventoryRead)?;
+                    let v=stored(serde_json::to_value(query))?;s.object=v["id"].as_str().map(str::to_owned);s.revision=v["revision"].as_i64();
+                },
+                _=>return Err(Error::Conflict.into()),
+            }
+            p.check_live()?;Ok(Some(s))
+        }),crate::transaction::TransactionOwner::Assets).await
+    }
+}

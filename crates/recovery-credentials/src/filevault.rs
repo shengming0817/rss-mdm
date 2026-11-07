@@ -182,9 +182,9 @@ pub async fn configure(
         return Err(Error::Conflict);
     }
     let result = configuration(c, source, protection).await?;
-    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts(tenant_id,registration,generation,operation,purpose,digest,receipt) VALUES($1,$2,$3,$4,'configure',$5,$6)")
+    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts(tenant_id,registration,generation,operation,purpose,digest,receipt,devices) VALUES($1,$2,$3,$4,'configure',$5,$6,$7)")
         .bind(source.tenant).bind(source.registration).bind(source.generation).bind(input.operation_id).bind(digest)
-        .bind(serde_json::to_value(&result).map_err(|_|Error::Malformed)?).execute(c).await?;
+        .bind(serde_json::to_value(&result).map_err(|_|Error::Malformed)?).bind(vec![source.device.clone()]).execute(c).await?;
     Ok(result)
 }
 pub async fn receipt(
@@ -327,9 +327,9 @@ pub async fn receive(
         version: value.version,
         escrowed: true,
     };
-    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts(tenant_id,registration,generation,operation,purpose,digest,receipt) VALUES($1,$2,$3,$4,'upload',$5,$6)")
+    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts(tenant_id,registration,generation,operation,purpose,digest,receipt,devices) VALUES($1,$2,$3,$4,'upload',$5,$6,$7)")
         .bind(source.tenant).bind(source.registration).bind(source.generation).bind(input.operation_id).bind(digest)
-        .bind(serde_json::to_value(&receipt).map_err(|_|Error::Malformed)?).execute(c).await?;
+        .bind(serde_json::to_value(&receipt).map_err(|_|Error::Malformed)?).bind(vec![source.device.clone()]).execute(c).await?;
     Ok(receipt)
 }
 /// Revoke only this ingress. A surviving source keeps the same custody and encrypted history.

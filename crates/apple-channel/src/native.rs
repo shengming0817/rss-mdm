@@ -30,13 +30,17 @@ pub(crate) fn rights(mask: i32) -> Vec<&'static str> {
 }
 
 /// Only authenticated evidence from this exact registration generation is usable.
-pub(crate) async fn controls_supported(
+pub(crate) async fn control_applicability(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     tenant: &str,
     requests: &[crate::protocol_types::AppleControlCheck],
-) -> Result<std::collections::BTreeMap<Uuid, bool>, Error> {
+) -> Result<std::collections::BTreeMap<usize, Result<(), rss_mdm_apple_mdm::native::Error>>, Error>
+{
     use std::collections::BTreeMap;
+    if requests.len() > 1000 {
+        return Err(Error::Malformed);
+    }
     let registrations = requests.iter().map(|r| r.registration).collect::<Vec<_>>();
     let generations = requests.iter().map(|r| r.generation).collect::<Vec<_>>();
     let rows=sqlx::query("WITH targets AS (SELECT DISTINCT * FROM unnest($2::uuid[],$3::bigint[]) AS t(registration,generation)), selected AS (SELECT t.*,o.operation FROM targets t LEFT JOIN LATERAL (SELECT d.operation FROM mdm_apple.attempts d JOIN mdm_apple.attempts s ON(s.tenant_id,s.operation,s.registration,s.generation)=(d.tenant_id,d.operation,d.registration,d.generation) WHERE d.tenant_id=$1::uuid AND d.registration=t.registration AND d.generation=t.generation AND d.phase='resolve_device' AND s.phase='resolve_security' AND d.state='acknowledged' AND s.state='acknowledged' AND d.accepted AND s.accepted ORDER BY greatest(d.received_at,s.received_at) DESC,d.operation LIMIT 1) o ON true), evidence AS MATERIALIZED (SELECT t.registration,t.generation,a.id,a.phase,a.response,d.access_rights FROM selected t JOIN mdm_apple.devices d ON(d.tenant_id,d.registration)=($1::uuid,t.registration) AND d.state='active' JOIN mdm_apple.attempts a ON(a.tenant_id,a.registration,a.generation,a.operation)=($1::uuid,t.registration,t.generation,t.operation) WHERE a.phase IN('resolve_device','resolve_security') AND a.state='acknowledged' AND a.accepted), budget AS(SELECT coalesce(sum(octet_length(response)),0)::bigint AS bytes FROM evidence) SELECT evidence.*,budget.bytes FROM budget LEFT JOIN evidence ON budget.bytes<=16777216")
@@ -93,17 +97,28 @@ pub(crate) async fn controls_supported(
             rights: mask,
         }) = reports.get(&(request.registration, request.generation))
         {
-            let context = Context::from_reports(device, Some(security), Channel::Device)?;
-            request.action.supports_apple(&context)
-                && request
-                    .command
-                    .compile(&rss_mdm_apple_mdm::native::Target {
-                        context: &context,
-                        access_rights: &rights(*mask),
-                    })
-                    .is_ok()
+            let facts = device
+                .get("QueryResponses")
+                .and_then(plist::Value::as_dictionary)
+                .ok_or(Error::Malformed)?;
+            if facts.contains_key("OSVersion") {
+                let context = Context::from_reports(device, Some(security), Channel::Device)?;
+                request
+                    .action
+                    .applicability(&context, &request.command, &rights(*mask))
+            } else {
+                Err(rss_mdm_apple_mdm::native::Error::Applicability(
+                    rss_mdm_apple_mdm::applicability::Rejection::MissingEvidence(
+                        rss_mdm_apple_mdm::applicability::Condition::Version,
+                    ),
+                ))
+            }
         } else {
-            false
+            Err(rss_mdm_apple_mdm::native::Error::Applicability(
+                rss_mdm_apple_mdm::applicability::Rejection::MissingEvidence(
+                    rss_mdm_apple_mdm::applicability::Condition::Version,
+                ),
+            ))
         };
         result.insert(request.id, supported);
     }

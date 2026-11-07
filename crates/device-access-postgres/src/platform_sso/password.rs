@@ -108,7 +108,8 @@ pub async fn login(app: &Context, audit: &RequestAudit, token: &str) -> Result<V
     let user = Uuid::parse_str(&claims.sub).map_err(|_| Error::Unauthorized)?;
     let budget = AuditBudget::new(Duration::from_secs(10));
     let operation = Uuid::new_v4();
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceAccess,
         operation,
         "apple_platform_password",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -131,6 +132,7 @@ pub async fn login(app: &Context, audit: &RequestAudit, token: &str) -> Result<V
                         .await?;
                     let fact = Fact::business(
                         audit,
+                        rss_mdm_audit_integration::operation::OperationOwner::DeviceAccess,
                         &format!("psso-password-prepare:{operation}"),
                         200,
                         "success",
@@ -182,6 +184,7 @@ pub async fn login(app: &Context, audit: &RequestAudit, token: &str) -> Result<V
                         .await?;
                     let fact = Fact::business(
                         audit,
+                        rss_mdm_audit_integration::operation::OperationOwner::DeviceAccess,
                         &format!("psso-password-finish:{operation}"),
                         if *state == "succeeded" {
                             200

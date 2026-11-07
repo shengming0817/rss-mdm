@@ -315,7 +315,7 @@ async fn report_inner(
             let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),
                 |(principal, scope, input, batch), c| Box::pin(async move {crate::bindings::inventory_in(principal.profile(),c,principal).await?;let accepted=crate::collection::agent::accept_in(principal.profile(),c,principal,scope,batch,input).await.map_err(Error::from)?;crate::device::store::record_communication_in(principal.profile(),c,principal).await?;Ok::<_,Error>(accepted)})).await?;
             let result = match input.body() { wire::ReportBody::Snapshot(_) => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
-            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("agent-report:{}", input.report_id()), 202, "success", None)
+            let fact = rss_mdm_audit_integration::Fact::observation(audit, &format!("agent-report:{}", input.report_id()), 202, "success", None)
                 .and_then(|fact| fact.with_details(serde_json::json!({"reportId":input.report_id(),"collectionResult":result,"receivedAt":received_at})))
                 .map_err(Error::from)?;
             (if !fresh { Ok(()) } else { store.append(tx, &fact).await }).map_err(Error::from)?;

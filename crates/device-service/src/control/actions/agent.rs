@@ -147,8 +147,15 @@ impl Service {
         .await?;
         offer
             .map(|payload| {
-                let fact = Fact::business(audit, &event_key, 200, "success", None)?
-                    .with_activity(offer_activity.as_ref().ok_or(Error::Conflict)?)?;
+                let fact = Fact::business(
+                    audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::DeviceAction,
+                    &event_key,
+                    200,
+                    "success",
+                    None,
+                )?
+                .with_activity(offer_activity.as_ref().ok_or(Error::Conflict)?)?;
                 Ok((payload, fact, run.deadline))
             })
             .transpose()
@@ -346,7 +353,14 @@ impl Service {
             &run.target.device,
         )
         .await?;
-        let fact = Fact::business(audit, &event_key, 200, "success", None)?;
+        let fact = Fact::business(
+            audit,
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceAction,
+            &event_key,
+            200,
+            "success",
+            None,
+        )?;
         let fact = fact.with_activity(&super::activity::run(
             &run,
             super::activity::phase(input.event()),

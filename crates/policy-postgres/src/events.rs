@@ -3,6 +3,48 @@ use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use serde_json::Value;
 use sqlx::postgres::PgRow;
 use uuid::Uuid;
+/// Read one member in its frozen device namespace, without advancing dispatch.
+pub async fn member_operation_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+    device: String,
+) -> Result<Option<(Uuid, i64, String)>, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_as(crate::storage_profile::sql(profile).event_member_operation)
+                .bind(tenant)
+                .bind(id)
+                .bind(device)
+                .fetch_optional(c)
+                .await
+        })
+    })
+    .await
+}
+/// Original accepted batch without replay locks or member counts.
+pub async fn operation_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    tx: &mut PgTransaction<'_>,
+    actor: String,
+    id: Uuid,
+    device: String,
+) -> Result<Option<(Uuid, i64)>, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query_as(crate::storage_profile::sql(profile).event_operation)
+                .bind(tenant)
+                .bind(actor)
+                .bind(id)
+                .bind(device)
+                .fetch_optional(c)
+                .await
+        })
+    })
+    .await
+}
 /// Read the original accepted batch by caller and operation identity.
 pub async fn replay_in(
     profile: rss_mdm_install_support::StorageProfile,

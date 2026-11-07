@@ -7,6 +7,23 @@ use sqlx::{PgConnection, Row};
 use std::time::Duration;
 use uuid::Uuid;
 
+/// The original receipt owner has exactly two author namespaces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ReceiptNamespace {
+    CurrentPrincipal,
+    AutomaticAssociation,
+}
+impl ReceiptNamespace {
+    pub const AUTOMATIC_ACTOR: &str = "device-associations";
+    pub(crate) const AUTOMATIC_INSTANCE: &str = "system";
+    fn coordinates(self, p: &AuthorizedPrincipal) -> (&str, &str) {
+        match self {
+            Self::CurrentPrincipal => (p.principal_id(), p.instance_id()),
+            Self::AutomaticAssociation => (Self::AUTOMATIC_ACTOR, Self::AUTOMATIC_INSTANCE),
+        }
+    }
+}
+
 pub(crate) async fn authorization(
     c: &mut PgConnection,
     proof: &AuthorizedPrincipal,
@@ -164,5 +181,62 @@ impl Associations {
         })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))?;
         self.confirm_scope(proof, &grants, None, &budget).await?;
         Ok(value)
+    }
+}
+
+impl Associations {
+    /// Original association response, authorized against all its original devices.
+    pub async fn operation_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+        namespace: ReceiptNamespace,
+    ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>> {
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
+        let budget = AuditBudget::new(Duration::from_secs(5));
+        self.audit.read(self.tenant,&budget.control(),(p,namespace),|ctx,tx|Box::pin(async move{
+            tx.with_connection_context(ctx,|(p,namespace),c|Box::pin(async move{
+                let grant=authorization(c,p).await?;
+                let (actor,instance)=namespace.coordinates(p);
+                let raw:Option<serde_json::Value>=sqlx::query_scalar("SELECT result FROM mdm_devices.operations WHERE tenant_id=$1::uuid AND operation_id=$2 AND actor=$3 AND instance=$4")
+                    .bind(p.tenant_id()).bind(id).bind(actor).bind(instance).fetch_optional(&mut *c).await?;
+                let Some(raw)=raw else {return Ok(None)};
+                #[derive(serde::Deserialize)]
+                #[serde(untagged)]
+                enum Stored {
+                    Association(Association),
+                    Asset(crate::lifecycle_management::AssetReceipt),
+                    Force(crate::lifecycle_management::ForceReceipt),
+                }
+                let result:Stored=match namespace {
+                    ReceiptNamespace::CurrentPrincipal=>serde_json::from_value(raw).map_err(|_|Error::Storage)?,
+                    ReceiptNamespace::AutomaticAssociation=>Stored::Association(serde_json::from_value(raw).map_err(|_|Error::Storage)?),
+                };
+                let mut s=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                match result {
+                    Stored::Association(result)=>{
+                        if result.members.len()!=2 || result.members[0].device==result.members[1].device || result.members[0].channel==result.members[1].channel {return Err(Error::Storage);}
+                        authorize(&grant,p,&result.members,false)?;
+                        s.object=Some(result.id.to_string());s.revision=Some(result.version);
+                        s.state=serde_json::to_value(result.state).map_err(|_|Error::Storage)?.as_str().map(str::to_owned);
+                    },
+                    Stored::Asset(result)=>{
+                        if result.operation_id!=id || result.devices.is_empty(){return Err(Error::Storage);}
+                        for device in &result.devices {grant.require(p,Permission::InventoryRead,Some(device))?;}
+                        s.state=serde_json::to_value(result.state).map_err(|_|Error::Storage)?.as_str().map(str::to_owned);
+                    },
+                    Stored::Force(result)=>{
+                        if result.operation_id!=id{return Err(Error::Storage);}
+                        let record=crate::lifecycle::read_in(c,rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_|Error::Malformed)?,result.retirement_id).await?;
+                        for channel in record.channels {grant.require(p,Permission::InventoryRead,Some(&channel.device))?;}
+                        s.object=Some(result.retirement_id.to_string());
+                        s.state=Some("revocation_pending".into());
+                    },
+                }
+                p.check_live()?;Ok::<_,Error>(Some(s))
+            })).await
+        })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)))
     }
 }

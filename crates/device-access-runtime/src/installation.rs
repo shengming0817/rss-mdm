@@ -7,6 +7,7 @@ use sqlx::{PgConnection, Postgres, Transaction};
 const DA: StorageProfile = StorageProfile::Da;
 pub fn units() -> Vec<Unit> {
     vec![
+        ("vault-sync-v1", rss_mdm_vault_sync::INSTALL_SQL),
         (
             "authorization-installation-v1",
             rss_mdm_authorization_service::installation::DA_INSTALL_SQL,
@@ -94,6 +95,7 @@ pub fn units() -> Vec<Unit> {
 }
 pub fn manifests() -> Vec<&'static str> {
     vec![
+        rss_mdm_vault_sync::OBJECTS,
         rss_mdm_authorization_service::installation::DA_OBJECT_MANIFEST,
         rss_mdm_registration_service::identity_object_manifest(DA),
         rss_mdm_registration_service::DA_IDENTITY_PROJECTION_MANIFEST,
@@ -162,6 +164,7 @@ impl Host for Composition {
 }
 pub async fn verify_catalog(c: &mut PgConnection) -> Result<(), sqlx::Error> {
     rss_mdm_install_support::catalog::verify_schema(c, DA, &manifests()).await?;
+    rss_mdm_vault_sync::verify_catalog(c).await?;
     rss_mdm_device_access_postgres::admission::verify_authority(c).await
 }
 /// Owner contracts are common; each host adds only its actual integration grants.

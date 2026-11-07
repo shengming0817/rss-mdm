@@ -176,6 +176,7 @@ impl ScriptService {
                 audit.target(&run.id.to_string());
                 let fact = Fact::business(
                     audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::Script,
                     &format!("script:{id}:offer:{attempt}"),
                     200,
                     "success",
@@ -365,6 +366,7 @@ impl ScriptService {
         };
         let fact = Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Script,
             &format!("script:{id}:event:{}", input.operation_id()),
             200,
             "success",

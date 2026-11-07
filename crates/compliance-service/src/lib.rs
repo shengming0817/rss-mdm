@@ -100,6 +100,14 @@ impl Compliance {
     ) -> std::result::Result<Reply, Error> {
         proof.check_live()?;
         proof.bind_audit(audit)?;
+        if let Some(id) = command.operation() {
+            audit.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Compliance,
+                id,
+                "compliance_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
+        }
         let budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
         let candidate = if matches!(command, Command::Put { .. } | Command::Recompute { .. }) {
@@ -184,6 +192,7 @@ impl Compliance {
         if let Some(id) = id {
             let fact = rss_mdm_audit_integration::Fact::business(
                 audit,
+                rss_mdm_audit_integration::operation::OperationOwner::Compliance,
                 &format!("compliance:{id}"),
                 200,
                 "success",

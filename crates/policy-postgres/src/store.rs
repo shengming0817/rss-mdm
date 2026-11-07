@@ -210,6 +210,28 @@ impl PolicyStore {
             .await?;
         Ok(written)
     }
+    /// Read an immutable management receipt without executing or replaying a command.
+    pub async fn operation_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> InTransaction<Option<Value>> {
+        input!(self.check(tx)?);
+        let tenant = self.tenant.to_string();
+        let sql = crate::storage_profile::sql(self.profile()).store_replay_in_1;
+        let row = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query(sql)
+                        .bind(tenant)
+                        .bind(id)
+                        .fetch_optional(c)
+                        .await
+                })
+            })
+            .await?;
+        Ok(Ok(row.map(|r| r.try_get("receipt")).transpose()?))
+    }
     /// Recover a fixed request identity. A different body under that identity is rejected.
     pub async fn replay_in(
         &self,

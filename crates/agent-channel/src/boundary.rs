@@ -98,6 +98,7 @@ pub async fn admit(
         route_action(route)
     };
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         envelope.profile,
         envelope.tenant.clone(),
         action,

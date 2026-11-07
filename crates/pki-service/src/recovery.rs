@@ -110,7 +110,8 @@ impl Registry {
         let request =
             Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Request)?).to_vec();
         let bytes = serde_json::to_vec(&chain).map_err(|_| Error::Request)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Pki,
             input.operation,
             "device_pki_signing_recover",
             rss_mdm_audit_integration::AuditIntent::Management,

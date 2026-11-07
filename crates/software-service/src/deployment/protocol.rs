@@ -310,6 +310,7 @@ pub(super) async fn settle_dispatch_failures(
 
         let fact = Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareDeployment,
             &format!("native-dispatch-failure:{id}"),
             200,
             "failed",

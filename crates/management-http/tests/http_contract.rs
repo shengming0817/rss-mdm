@@ -109,6 +109,10 @@ fn authentication_owner_resolves_final_paths_and_cookie_activity() {
     let management = crate::tenant_administration::contract_routes(
         crate::router::workspace_routes().bind_with(None::<&()>, |_| ()),
         application_routes(),
+        crate::operation_diagnostics::routes().bind_with(
+            None::<&std::sync::Arc<crate::operation_diagnostics::Services>>,
+            Clone::clone,
+        ),
     );
     // This subtree's configured static route is validated with its capture sibling by App.
     assert!(!management.endpoints().is_empty());

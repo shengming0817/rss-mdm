@@ -520,6 +520,7 @@ mod authority_tests {
 
         let audit = |product| {
             rss_mdm_audit_integration::RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Background,
                 product,
                 proof.tenant_id().into(),
                 "test",

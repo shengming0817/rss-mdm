@@ -93,7 +93,7 @@ pub(super) async fn admit(
         })).await?;
         let id=admission.coordinates().id;
         a.operation(id,"enrollment_issue", rss_mdm_audit_integration::AuditIntent::Management);
-        let fact=Fact::business(a, &format!("windows-entra-admit:{id}"), 200, "success", Some(id)).map_err(Error::from)?;
+        let fact=Fact::observation(a, &format!("windows-entra-admit:{id}"), 200, "success", Some(id)).map_err(Error::from)?;
         (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;a.mark_commit_started();Ok(admission)
     })).await;
     crate::operations::settle(result, a)

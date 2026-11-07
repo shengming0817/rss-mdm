@@ -277,12 +277,14 @@ impl Service {
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
             id,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -303,7 +305,7 @@ impl Service {
                 let operation=storage::load(tx,&service.transactions.protection,operation_id).await?;
                 let mut activity=crate::control::timeline::native_activity(&operation,service.transactions.required_command(tx,&operation).await?.status(),rss_mdm_audit_integration::activity::ActivityPhase::Dispatched);
                 activity.delivery=Some(ActivityDelivery::Dispatched);
-                let fact=Fact::business(audit, &format!("command:{}:dispatch",operation.id), 200, "success", None)?.with_activity(&activity)?;
+                let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::DeviceControl, &format!("command:{}:dispatch",operation.id), 200, "success", None)?.with_activity(&activity)?;
                 service.transactions.audit_store.append_in(tx, &fact).await?;
                 if matches!(&operation.request.task, crate::control::Task::Windows { .. }) {
                     crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::WindowsPush).await?;
@@ -525,14 +527,15 @@ pub(crate) async fn apply_prepared(
                 }
                 let fact_audit = audit.transaction_copy();
                 fact_audit.identify_service("command-recovery");
-                fact_audit.operation(
+                fact_audit.owned_operation(
+                    rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
                     id,
                     "command_reconcile",
                     rss_mdm_audit_integration::AuditIntent::Management,
                 );
                 fact_audit.target_device(&operation.device);
                 fact_audit.registration(operation.registration);
-                let fact = Fact::business(&fact_audit, &format!("command:{id}:recover:{}", command.version()), 200, "success", None)?
+                let fact = Fact::business(&fact_audit, rss_mdm_audit_integration::operation::OperationOwner::DeviceControl, &format!("command:{id}:recover:{}", command.version()), 200, "success", None)?
                     .with_details(serde_json::json!({"previousVersion":previous_version,"after":service::status(command.status()),"version":command.version()}))?
                     .with_activity(&crate::control::timeline::native_activity(&operation, command.status(), rss_mdm_audit_integration::activity::ActivityPhase::Reconciled))?;
                 fact_audit.finalize(None);
@@ -573,6 +576,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                 ));
             }
             let audit = RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Background,
                 rss_mdm_audit_integration::StorageProfile::Mdm,
                 self.transactions.tenant.to_string(),
                 "management_read",
@@ -628,6 +632,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
             }
             {
                 let audit = RequestAudit::new(
+                    rss_mdm_audit_integration::Origin::Background,
                     rss_mdm_audit_integration::StorageProfile::Mdm,
                     self.transactions.tenant.to_string(),
                     "management_write",

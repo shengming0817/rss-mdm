@@ -206,6 +206,7 @@ impl Service {
                 audit.target(&run.id.to_string());
                 let fact = Fact::business(
                     audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
                     &format!("enrollment:{id}:offer:{attempt}"),
                     200,
                     "success",
@@ -382,6 +383,7 @@ impl Service {
         };
         let fact = Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
             &format!("enrollment:{id}:event:{}", input.operation_id()),
             200,
             "success",

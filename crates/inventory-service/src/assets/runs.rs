@@ -27,6 +27,31 @@ pub struct RunView {
     array_fields: BTreeSet<FieldKey>,
 }
 impl AssetService {
+    /// Only non-field collection evidence is exposed; inventory values retain their own scopes.
+    pub async fn collection_receipt(
+        &self,
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+        registration: Option<Uuid>,
+        generation: Option<i64>,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        crate::transaction::inspect(&self.runtime,self.tenant,(self,p,device),|ctx,tx|Box::pin(async move{
+            let(s,p,device)=*ctx;
+            query_authority(tx,p).await?.require(p,rss_mdm_authorization_service::Permission::InventoryRead,Some(device))?;
+            let tenant=s.tenant.to_string();let device_key=device.to_string();
+            let row=tx.with_connection(move|c|Box::pin(async move{
+                sqlx::query("SELECT c.started_at,c.sealed_at,c.result FROM mdm_access.collection_runs c JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND r.device=$3 AND ($4::uuid IS NULL OR r.id=$4) AND ($5::bigint IS NULL OR r.generation=$5)")
+                    .bind(tenant).bind(id).bind(device_key).bind(registration).bind(generation).fetch_optional(c).await
+            })).await?;
+            p.check_live()?;
+            row.map(|row|{
+                let mut value=rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                value.object=Some(device.into());value.recorded_at=Some(row.try_get("started_at")?);value.completed_at=row.try_get("sealed_at")?;value.state=Some(row.try_get("result")?);value.executions.push(id);Ok(value)
+            }).transpose()
+        }),crate::transaction::TransactionOwner::Assets).await
+    }
     pub(super) async fn collection_run(
         &self,
         tx: &mut PgTransaction<'_>,

@@ -177,6 +177,13 @@ impl Service {
         })
         .await
     }
+    pub(crate) async fn operation_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+    ) -> std::result::Result<Receipt, Error> {
+        self.read(p, Read::Operation(id)).await?.receipt()
+    }
     pub(crate) async fn summary(
         &self,
         proof: &AuthorizedPrincipal,
@@ -253,7 +260,8 @@ impl Service {
             Action::AdministratorCreate | Action::Provision => return Err(Error::Malformed),
         };
         proof.require(permission, None)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::TenantAdministration,
             input.operation_id,
             "tenant_registry_write",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -263,6 +271,7 @@ impl Service {
 
         let fact = Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::TenantAdministration,
             &format!("tenant-registry:{}", input.operation_id),
             200,
             "success",

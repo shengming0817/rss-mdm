@@ -222,3 +222,85 @@ impl Compliance {
         })
     }
 }
+
+impl crate::Compliance {
+    /// Safe projection of the stored change/recompute result, independent of current rule state.
+    pub async fn operation_receipt(
+        &self,
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        id: uuid::Uuid,
+    ) -> std::result::Result<
+        Option<rss_mdm_audit_integration::operation::ReceiptSummary>,
+        crate::Error,
+    > {
+        use rss_mdm_authorization_service::Permission;
+        p.manage(Permission::ComplianceRuleRead)?;
+        crate::transaction::inspect(&self.runtime, self.tenant, p, |p, tx| {
+            Box::pin(async move {
+                crate::transaction::query_authority(tx, p).await?.require(
+                    p,
+                    Permission::ComplianceRuleRead,
+                    None,
+                )?;
+                let tenant = tx.tenant_id();
+                let row = tx
+                    .with_connection(move |c| {
+                        Box::pin(
+                            async move { rss_mdm_compliance_postgres::replay(c, tenant, id).await },
+                        )
+                    })
+                    .await?;
+                row.map(|(_, v)| {
+                    let mut s = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                    s.object = v["id"].as_str().map(str::to_owned);
+                    s.revision = v["revision"].as_i64();
+                    if let Some(task) = v["task"].as_str() {
+                        s.executions
+                            .push(uuid::Uuid::parse_str(task).map_err(|_| crate::Error::Conflict)?);
+                    }
+                    if s.object.is_none() && s.executions.is_empty() {
+                        return Err(crate::Error::Conflict.into());
+                    }
+                    Ok(s)
+                })
+                .transpose()
+            })
+        })
+        .await
+    }
+}
+
+impl Compliance {
+    pub async fn task_receipt(
+        &self,
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        crate::transaction::inspect(&self.runtime, self.tenant, (self, p), |(s, p), tx| {
+            Box::pin(async move {
+                crate::transaction::query_authority(tx, p).await?.require(
+                    p,
+                    rss_mdm_authorization_service::Permission::ComplianceRuleRead,
+                    None,
+                )?;
+                let state = s.read_task_in(tx, id).await?;
+                let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                value.object = Some(state.input.rule.to_string());
+                value.revision = Some(state.input.revision);
+                value.accepted = Some(true);
+                value.executions.push(id);
+                let detail = s.task(tx, state.input.rule, id).await?;
+                value.state = Some(
+                    stored(serde_json::to_value(detail.phase))?
+                        .as_str()
+                        .ok_or(Error::Conflict)?
+                        .into(),
+                );
+                p.check_live()?;
+                Ok(Some(value))
+            })
+        })
+        .await
+    }
+}

@@ -267,7 +267,8 @@ impl Service {
             &input.quantity,
             &input.targets,
         ))?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::AgentConfiguration,
             input.operation_id,
             "agent_configuration_create",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -412,36 +413,10 @@ impl Service {
         p: &AuthorizedPrincipal,
         operation: Uuid,
     ) -> Result<Option<Read>, Failure> {
-        let profile = self.profile();
-
-        p.manage(Permission::AgentEnrollmentRead)?;
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden.into());
         }
-        if operation.is_nil() {
-            return Err(Error::Malformed.into());
-        }
-        let mut tx = self.store.begin(p.tenant_id()).await?;
-        authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
-        let id: Option<Uuid> = sqlx::query_scalar(
-            crate::storage_profile::sql(profile).agent_configurations_configuration_operation_1,
-        )
-        .bind(p.tenant_id())
-        .bind(operation)
-        .bind(p.principal_id())
-        .bind(p.instance_id())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db)?;
-        let out = if let Some(id) = id {
-            let row = row(profile, &mut tx, p.tenant_id(), id).await?;
-            Some(read_on(profile, &mut tx, p.tenant_id(), &row).await?)
-        } else {
-            None
-        };
-        p.check_live()?;
-        tx.commit().await.map_err(db)?;
-        Ok(out)
+        configuration_operation(&self.store, p, operation).await
     }
     pub async fn revoke_configuration(
         &self,
@@ -455,7 +430,8 @@ impl Service {
         self.proof(p, a)?;
         p.manage(Permission::AgentEnrollmentWrite)?;
         version(1, operation)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             operation,
             "agent_configuration_revoke",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -487,7 +463,7 @@ impl Service {
                 .execute(&mut *c)
                 .await
                 .map_err(db)?;
-                crate::operations::save(profile, c, &op, "null", a).await?;
+                crate::operations::save(profile, c, &op, "null", a, false).await?;
                 Ok(Change {
                     value: (),
                     replay: false,
@@ -521,7 +497,8 @@ impl Service {
         input.runtime.validate().map_err(|_| Error::Malformed)?;
         let spki = hex(csr(&input.csr)?.spki());
         let d = digest(input)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_configuration_exchange",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -686,7 +663,8 @@ impl Service {
         let profile = self.profile();
 
         version(input.wire_version, input.operation_id)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_reservation_cancel",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -732,6 +710,44 @@ impl Service {
         .await
         .map_err(Into::into)
     }
+}
+
+/// Original configuration receipt remains readable when no issuer or Agent listener is enabled.
+pub async fn configuration_operation(
+    store: &crate::database::Store,
+    p: &AuthorizedPrincipal,
+    operation: Uuid,
+) -> Result<Option<Read>, Failure> {
+    let profile = store.profile();
+
+    p.manage(Permission::AgentEnrollmentRead)?;
+    if p.profile() != profile {
+        return Err(Error::Forbidden.into());
+    }
+    if operation.is_nil() {
+        return Err(Error::Malformed.into());
+    }
+    let mut tx = store.snapshot(p.tenant_id()).await?;
+    authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
+    let id: Option<Uuid> = sqlx::query_scalar(
+        crate::storage_profile::sql(profile).agent_configurations_configuration_operation_1,
+    )
+    .bind(p.tenant_id())
+    .bind(operation)
+    .bind(p.principal_id())
+    .bind(p.instance_id())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db)?;
+    let out = if let Some(id) = id {
+        let row = row(profile, &mut tx, p.tenant_id(), id).await?;
+        Some(read_on(profile, &mut tx, p.tenant_id(), &row).await?)
+    } else {
+        None
+    };
+    p.check_live()?;
+    tx.rollback().await.map_err(db)?;
+    Ok(out)
 }
 
 #[cfg(test)]

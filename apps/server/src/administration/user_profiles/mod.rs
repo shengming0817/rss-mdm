@@ -110,7 +110,8 @@ impl Backend {
         input: &Change,
     ) -> Result<Receipt, Error> {
         self.authorize(p, audit)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::UserProfile,
             input.operation_id,
             "user_attribute_definition_change",
             rss_mdm_audit_integration::AuditIntent::Management,

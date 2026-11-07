@@ -3,6 +3,90 @@ use super::*;
 pub use rss_mdm_policy_postgres::directory::{BATCHES, MEMBERS};
 use rss_mdm_query::cursor::CursorCodec;
 impl Events {
+    pub async fn member_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        crate::transaction::inspect(
+            &self.application.runtime,
+            self.application.tenant,
+            (self, p, device),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (s, p, device) = *ctx;
+                    crate::action_admission::current(tx, p).await?.require(
+                        p,
+                        Permission::OperationRead,
+                        Some(device),
+                    )?;
+                    let row = rss_mdm_policy_postgres::events::member_operation_in(
+                        s.profile(),
+                        tx,
+                        id,
+                        device.into(),
+                    )
+                    .await?;
+                    p.check_live()?;
+                    Ok(row.map(|(policy, revision, state)| {
+                        let mut value =
+                            rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                        value.object = Some(policy.to_string());
+                        value.revision = Some(revision);
+                        value.state = Some(state);
+                        value
+                    }))
+                })
+            },
+        )
+        .await
+    }
+    /// Resolve the original caller namespace, without replaying event dispatch.
+    pub async fn operation_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        let caller = Caller::Management { actor: p.actor() }.key()?;
+        crate::transaction::inspect(
+            &self.application.runtime,
+            self.application.tenant,
+            (self, p, device, caller),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (s, p, device, caller) = ctx;
+                    crate::action_admission::current(tx, p).await?.require(
+                        p,
+                        Permission::OperationRead,
+                        Some(device),
+                    )?;
+                    let row = rss_mdm_policy_postgres::events::operation_in(
+                        s.profile(),
+                        tx,
+                        caller.clone(),
+                        id,
+                        device.to_string(),
+                    )
+                    .await?;
+                    p.check_live()?;
+                    Ok(row.map(|(batch, at)| {
+                        let mut value =
+                            rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                        value.object = Some(device.to_string());
+                        value.recorded_at = Some(at);
+                        value.accepted = Some(true);
+                        value.executions.push(batch);
+                        value
+                    }))
+                })
+            },
+        )
+        .await
+    }
     pub async fn read_management(
         &self,
         proof: &AuthorizedPrincipal,

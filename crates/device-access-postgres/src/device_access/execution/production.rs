@@ -119,12 +119,14 @@ pub(crate) async fn queue_run_in(
     })).await?;
     super::wake::run_in(&service.reconcile_messaging, tx, id).await?;
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Da,
         tx.tenant_id().to_string(),
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceAccessTask,
         id,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -134,11 +136,18 @@ pub(crate) async fn queue_run_in(
     audit.target(&id.to_string());
     audit.registration(binding.registration);
     let run = db::read_run(tx, id).await?;
-    let fact = Fact::business(&audit, &format!("access:{id}:accept"), 202, "success", None)?
-        .with_activity(&super::activity::run(
-            &run,
-            rss_mdm_audit_integration::activity::ActivityPhase::Accepted,
-        ))?;
+    let fact = Fact::business(
+        &audit,
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceAccessTask,
+        &format!("access:{id}:accept"),
+        202,
+        "success",
+        None,
+    )?
+    .with_activity(&super::activity::run(
+        &run,
+        rss_mdm_audit_integration::activity::ActivityPhase::Accepted,
+    ))?;
     let result = service.audit_store.append_in(tx, &fact).await;
     audit.finalize(
         result

@@ -6,7 +6,20 @@ use axum::{
 };
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let code = match &self {
+        let code = self.code();
+        let mut response = (code.status(), Json(Body { code })).into_response();
+        response.extensions_mut().insert(self);
+        response
+    }
+}
+
+impl Error {
+    /// The existing ingress classification, also used by independent diagnostic sections.
+    pub fn status(&self) -> StatusCode {
+        self.code().status()
+    }
+    fn code(&self) -> Code {
+        match self {
             Error::FirstUseNotReady => Code::FirstUseNotReady,
             Error::FirstUseOperationMissing => Code::FirstUseOperationNotFound,
             Error::Archive(e) => archive_error(e),
@@ -73,10 +86,7 @@ impl IntoResponse for Error {
                 }
             },
             Error::Configuration(_) | Error::Unavailable(_) => Code::ServiceUnavailable,
-        };
-        let mut response = (code.status(), Json(Body { code })).into_response();
-        response.extensions_mut().insert(self);
-        response
+        }
     }
 }
 

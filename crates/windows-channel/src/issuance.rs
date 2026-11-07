@@ -518,7 +518,7 @@ pub(crate) async fn complete(
                     for fact in &inputs.facts {
                         store.append(tx, fact).await.map_err(Error::from)?;
                     }
-                    let fact = rss_mdm_audit_integration::Fact::business(
+                    let fact = rss_mdm_audit_integration::Fact::observation(
                         inputs.audit,
                         &format!(
                             "enrollment_issue:{}:{}",
@@ -896,6 +896,7 @@ pub(crate) async fn prepare_transaction<C: Send, R: Send>(
     > + Send,
 ) -> Result<R, Error> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         "windows_signing_prepare",
@@ -924,7 +925,7 @@ pub(crate) async fn prepare_transaction<C: Send, R: Send>(
                             "windows_signing_prepare",
                             rss_mdm_audit_integration::AuditIntent::Management,
                         );
-                        let fact = rss_mdm_audit_integration::Fact::business(
+                        let fact = rss_mdm_audit_integration::Fact::observation(
                             audit,
                             &format!("windows-signing-replace:{old}:{new}"),
                             200,

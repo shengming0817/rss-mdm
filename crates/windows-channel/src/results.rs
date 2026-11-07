@@ -431,12 +431,12 @@ impl Results {
 }
 
 impl Results {
-    pub async fn control_support_on(
+    pub async fn control_applicability_on(
         &self,
         c: &mut PgConnection,
         tenant: TenantId,
-        checks: Vec<(Uuid, Uuid, i64, rss_mdm_windows_mdm::native::Request)>,
-    ) -> Result<BTreeMap<Uuid, bool>> {
+        checks: Vec<(usize, Uuid, i64, rss_mdm_windows_mdm::native::Request)>,
+    ) -> Result<BTreeMap<usize, std::result::Result<(), rss_mdm_windows_mdm::native::Error>>> {
         if checks.len() > 1000 {
             return Err(Error::Malformed);
         }
@@ -449,18 +449,16 @@ impl Results {
         Ok(checks
             .into_iter()
             .map(|(id, registration, generation, request)| {
-                let supported =
-                    capabilities
-                        .get(&(registration, generation))
-                        .is_some_and(|(v, e)| {
-                            rss_mdm_windows_mdm::native::Context::from_capabilities(
-                                v,
-                                *e as u32,
-                                rss_mdm_windows_mdm::native::Scope::Device,
-                                rss_mdm_windows_mdm::native::Enrollment::Primary,
-                            )
-                            .is_ok_and(|ctx| request.compile(ctx, 1).is_ok())
-                        });
+                let supported = match capabilities.get(&(registration, generation)) {
+                    None => Err(rss_mdm_windows_mdm::native::Error::MissingEvidence),
+                    Some((v, e)) => rss_mdm_windows_mdm::native::Context::from_capabilities(
+                        v,
+                        *e as u32,
+                        rss_mdm_windows_mdm::native::Scope::Device,
+                        rss_mdm_windows_mdm::native::Enrollment::Primary,
+                    )
+                    .and_then(|ctx| request.compile(ctx, 1).map(|_| ())),
+                };
                 (id, supported)
             })
             .collect())

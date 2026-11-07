@@ -38,6 +38,7 @@ pub enum Permission {
     InventoryRead,
     InventorySensitiveRead,
     InventoryFieldsWrite,
+    InventorySoftwareWrite,
     ComplianceRead,
     ComplianceRuleRead,
     ComplianceWrite,
@@ -105,7 +106,10 @@ impl Permission {
         self.tenant_management()
             || matches!(
                 self,
-                Self::AuthorizationRead | Self::AuthorizationWrite | Self::IdentityAccountsManage
+                Self::AuthorizationRead
+                    | Self::AuthorizationWrite
+                    | Self::IdentityAccountsManage
+                    | Self::AuditRead
             )
     }
     /// Whether this permission is granted for devices rather than the tenant.
@@ -156,6 +160,7 @@ impl Permission {
             | Self::CertificateArchiveExport
             | Self::InventorySensitiveRead
             | Self::InventoryFieldsWrite
+            | Self::InventorySoftwareWrite
             | Self::StorageConfigurationRead
             | Self::StorageConfigurationWrite
             | Self::RuntimeDiagnosticsRead
@@ -430,6 +435,7 @@ pub fn tenant_administrator_rule(user: User) -> Rule {
         Permission::InventoryRead,
         Permission::InventorySensitiveRead,
         Permission::InventoryFieldsWrite,
+        Permission::InventorySoftwareWrite,
         Permission::ComplianceRead,
         Permission::ComplianceRuleRead,
         Permission::ComplianceWrite,

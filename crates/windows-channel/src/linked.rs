@@ -470,7 +470,7 @@ pub(crate) async fn complete(
             Ok(false)
         })).await?;
         for fact in facts.iter() { app.audit_store.append(tx, fact).await.map_err(Error::from)?; }
-        let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("windows-linked:{id}:issued"), 200, "success", Some(*id)).map_err(Error::from)?;
+        let fact = rss_mdm_audit_integration::Fact::observation(audit, &format!("windows-linked:{id}:issued"), 200, "success", Some(*id)).map_err(Error::from)?;
         (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;
         audit.mark_commit_started(); Ok(())
     })).await;

@@ -52,8 +52,15 @@ pub(crate) async fn run<C: Send, R: Send>(
                     if change.key.is_empty() {
                         return Ok((change.value, false));
                     }
-                    let fact = Fact::business(a, &change.key, 200, "success", None)
-                        .map_err(|e| Error::Audit(e.into()))?;
+                    let fact = Fact::business(
+                        a,
+                        a.snapshot().operation_owner.ok_or(Error::Request)?,
+                        &change.key,
+                        200,
+                        "success",
+                        None,
+                    )
+                    .map_err(|e| Error::Audit(e.into()))?;
                     (if change.replay {
                         Ok(())
                     } else {

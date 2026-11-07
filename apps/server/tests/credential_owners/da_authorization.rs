@@ -71,6 +71,7 @@ async fn proof(
 
 fn audit(c: &Context) -> rss_mdm_audit_integration::RequestAudit {
     rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         StorageProfile::Da,
         c.tenant.to_string(),
         "da-delivery-proof",
@@ -180,6 +181,17 @@ pub(super) async fn authorize(
         1
     );
     let accepted = counts(c).await?;
+    assert_eq!(
+        service
+            .delivery_operation(&actor, authorization.operation_id)
+            .await?,
+        1
+    );
+    assert_eq!(
+        counts(c).await?,
+        accepted,
+        "original receipt read consumes no proof or business fact"
+    );
     assert_eq!(accepted, (before.0 + 1, before.1 + 1, before.2 + 1));
     assert_eq!(
         service
@@ -207,6 +219,12 @@ pub(super) async fn authorize(
         "a stale DA actor cannot replay after its MDM rule is revoked"
     );
     assert_eq!(counts(c).await?, accepted);
+    assert!(matches!(
+        service
+            .delivery_operation(&actor, authorization.operation_id)
+            .await,
+        Err(pg::Error::Forbidden)
+    ));
     let copied_rules: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM rss_da.authorization_rules WHERE tenant_id=$1::uuid",
     )

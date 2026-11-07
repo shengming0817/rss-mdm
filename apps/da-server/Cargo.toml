@@ -10,6 +10,7 @@ name = "rss-da"
 path = "src/main.rs"
 
 [dependencies]
+rss-mdm-vault-sync.workspace = true
 rss-mdm-device-access-runtime.workspace = true
 rss-mdm-device-access-http.workspace = true
 rss-mdm-device-access-postgres.workspace = true

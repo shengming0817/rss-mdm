@@ -69,12 +69,13 @@ pub async fn save(
     operation: &Operation<'_>,
     result: &str,
     audit: &RequestAudit,
+    self_enrollment: bool,
 ) -> Result<(), Error> {
     if profile != operation.profile() {
         return Err(Error::Forbidden);
     }
 
-    save_result(profile, tx, operation, result, None, audit).await
+    save_result(profile, tx, operation, result, None, audit, self_enrollment).await
 }
 pub(crate) async fn save_issuance_recovery(
     profile: rss_mdm_install_support::StorageProfile,
@@ -94,6 +95,7 @@ pub(crate) async fn save_issuance_recovery(
         &serde_json::to_string(&id).map_err(|_| Error::Corrupt)?,
         Some(id),
         audit,
+        false,
     )
     .await
 }
@@ -104,6 +106,7 @@ async fn save_result(
     result: &str,
     issuance: Option<Uuid>,
     audit: &RequestAudit,
+    self_enrollment: bool,
 ) -> Result<(), Error> {
     if profile != operation.profile() {
         return Err(Error::Forbidden);
@@ -130,6 +133,9 @@ async fn save_result(
         .bind(result)
         .bind(proof.instance)
         .bind(issuance)
+        .bind(facts.action)
+        .bind(&facts.device_target)
+        .bind(self_enrollment)
         .execute(&mut *tx)
         .await
         .map_err(db)?;
@@ -222,4 +228,124 @@ impl<'a> Operation<'a> {
     pub fn profile(&self) -> rss_mdm_install_support::StorageProfile {
         self.actor.profile
     }
+}
+
+/// Read a source-owned management receipt and recheck the original target's current permission.
+/// The result contains safe coordinates only, never an enrollment secret or recovery material.
+pub async fn diagnostic_receipt(
+    store: &rss_mdm_audit_integration::AuditStore,
+    p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    id: Uuid,
+) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+    use rss_mdm_authorization_service::Permission;
+    let tenant =
+        rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Malformed)?;
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+    let attempt = store
+        .read(tenant, &budget.control(), p, |p, tx| {
+            Box::pin(async move {
+                tx.with_connection_context(p, |p, c| {
+                    Box::pin(async move {
+                        rss_mdm_authorization_service::lock_shared_on(
+                            p.authority_profile(),
+                            c,
+                            p.tenant_id(),
+                            p.instance_id(),
+                        )
+                        .await?;
+                        let grant = rss_mdm_authorization_service::snapshot_on(
+                            p.authority_profile(),
+                            c,
+                            p.tenant_id(),
+                            p.instance_id(),
+                        )
+                        .await?;
+                        let row =
+                            sqlx::query(crate::storage_profile::sql(p.profile()).operations_read_1)
+                                .bind(p.tenant_id())
+                                .bind(p.principal_id())
+                                .bind(id.to_string())
+                                .fetch_optional(c)
+                                .await
+                                .map_err(db)?;
+                        let Some(row) = row else { return Ok(None) };
+                        if row.try_get::<String, _>("instance").map_err(db)? != p.instance_id() {
+                            return Ok(None);
+                        }
+                        let action: String = row.try_get("action").map_err(db)?;
+                        let device: Option<String> = row.try_get("device").map_err(db)?;
+                        if !row.try_get::<bool, _>("self_enrollment").map_err(db)? {
+                            let (permission, target) = match action.as_str() {
+                                "registration_admission_change"
+                                | "registration_quota_change"
+                                | "windows_entra_policy"
+                                | "agent_connections_save"
+                                | "agent_connections_publish" => {
+                                    (Permission::RegistrationConfigurationRead, None)
+                                }
+                                "registration_user_change"
+                                | "enrollment_create"
+                                | "enrollment_resume"
+                                | "enrollment_cancel" => (
+                                    Permission::Enrollment,
+                                    Some(device.as_deref().ok_or(Error::Corrupt)?),
+                                ),
+                                "credential_revoke" => (
+                                    Permission::Credentials,
+                                    Some(device.as_deref().ok_or(Error::Corrupt)?),
+                                ),
+                                "agent_settings_update" | "agent_configuration_revoke" => {
+                                    (Permission::AgentEnrollmentRead, None)
+                                }
+                                "agent_grant_authorize" | "agent_grant_revoke" => {
+                                    (Permission::AgentEnrollmentRead, None)
+                                }
+                                "device_certificate_result" | "da_registration_revoke" => (
+                                    Permission::Credentials,
+                                    Some(device.as_deref().ok_or(Error::Corrupt)?),
+                                ),
+                                _ => return Err(Error::Corrupt),
+                            };
+                            grant
+                                .require(p, permission, target)
+                                .map_err(rss_mdm_authorization_service::Error::from)?;
+                        }
+                        let raw: serde_json::Value =
+                            serde_json::from_str(row.try_get("result").map_err(db)?)
+                                .map_err(|_| Error::Corrupt)?;
+                        let mut summary =
+                            rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                        summary.object = raw
+                            .get("enrollmentId")
+                            .or_else(|| raw.get("registrationId"))
+                            .or_else(|| raw.get("grantId"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .or(device);
+                        if action == "device_certificate_result" {
+                            summary.object = raw.as_str().map(str::to_owned);
+                        }
+                        summary.revision = raw.get("revision").and_then(serde_json::Value::as_i64);
+                        summary.state = raw
+                            .get("status")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned);
+                        summary.accepted = Some(true);
+                        p.check_live()?;
+                        Ok::<_, Error>(Some(summary))
+                    })
+                })
+                .await
+            })
+        })
+        .await;
+    attempt.fold(
+        Ok,
+        |e| Err(transaction_error(e)),
+        |e| Err(transaction_error(e)),
+        |e| Err(transaction_error(e)),
+        |e| Err(transaction_error(e)),
+        |e| Err(transaction_error(e)),
+    )
 }

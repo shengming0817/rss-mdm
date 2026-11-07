@@ -19,4 +19,11 @@ GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO da_
 -- Hosted DA authorization borrows the existing host authority, with no mirrored grants.
 GRANT SELECT ON mdm_access.authorization_rules,mdm_access.user_groups,mdm_access.api_keys,mdm_access.api_network_policy TO da_access;
 GRANT EXECUTE ON FUNCTION mdm_access.operation_authority_valid(jsonb,text,text,bigint),mdm_access.operation_authority_valid_until(jsonb,text,text,bigint) TO da_access;
+
+-- Hosted diagnostics read the shared rebuildable index through the DA authority transaction.
+GRANT USAGE ON SCHEMA mdm_timeline TO da_access;
+GRANT SELECT ON mdm_timeline.facts TO da_access;
+-- Hosted credential tasks retain a policy-version coordinate, not policy contents.
+GRANT USAGE ON SCHEMA mdm_policy TO da_access;
+GRANT SELECT(tenant_id,id,policy) ON mdm_policy.versions TO da_access;
 COMMIT;

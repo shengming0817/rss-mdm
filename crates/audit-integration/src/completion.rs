@@ -156,6 +156,7 @@ mod tests {
     #[test]
     fn ordinary_reads_never_depend_on_transaction_or_audit_state() {
         let audit = RequestAudit::new(
+            crate::Origin::Request,
             crate::StorageProfile::Mdm,
             "tenant".into(),
             "read",
@@ -182,6 +183,7 @@ mod tests {
     fn sensitive_reads_cannot_be_downgraded_by_routine_helpers() {
         use crate::{AuditIntent as I, SensitiveAction as S};
         let audit = RequestAudit::new(
+            crate::Origin::Request,
             crate::StorageProfile::Mdm,
             "tenant".into(),
             "secret",
@@ -234,6 +236,7 @@ mod tests {
     #[test]
     fn operation_coordinate_does_not_claim_request_replay() {
         let audit = RequestAudit::new(
+            crate::Origin::Request,
             crate::StorageProfile::Mdm,
             "11111111-1111-4111-8111-111111111111".into(),
             "command_read",

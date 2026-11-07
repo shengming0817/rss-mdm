@@ -96,3 +96,50 @@ pub struct Blueprints {
     pub categories: [&'static str; 6],
     pub items: Vec<r::blueprints::Blueprint>,
 }
+
+impl ResourceCatalog {
+    /// Read the immutable original response under current authority, without replaying a write.
+    pub async fn operation_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: uuid::Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        p.manage(Permission::ResourceRead)?;
+        crate::transaction::inspect(&self.runtime, self.tenant, (self, p), |(_, p), tx| {
+            Box::pin(async move {
+                crate::transaction::current(tx, p).await?.require(
+                    p,
+                    Permission::ResourceRead,
+                    None,
+                )?;
+                let raw = rss_mdm_resource_postgres::read_operation_in(
+                    tx,
+                    p.principal_id(),
+                    p.instance_id(),
+                    &id.to_string(),
+                )
+                .await?;
+                raw.map(|v| {
+                    let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                    match crate::wire::Response::decode(v)? {
+                        crate::wire::Response::Receipt(v) => {
+                            summary.object = Some(v.resource);
+                            summary.revision = Some(
+                                i64::try_from(v.storage_revision).map_err(|_| Error::Conflict)?,
+                            );
+                        }
+                        crate::wire::Response::Read(v) => {
+                            summary.object = Some(v.id);
+                            summary.revision =
+                                Some(i64::try_from(v.revision).map_err(|_| Error::Conflict)?);
+                        }
+                    }
+                    Ok(summary)
+                })
+                .transpose()
+            })
+        })
+        .await
+    }
+}

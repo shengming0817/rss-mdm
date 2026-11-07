@@ -132,6 +132,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
     let input = w::TaskClaimRequest::new(Uuid::new_v4(), vec![], context)?;
     let request = || {
         RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Request,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             c.tenant.to_string(),
             "agent_claim",

@@ -366,7 +366,7 @@ pub(crate) async fn reauthentication(
                     .await?;
 
                     let fact = rss_mdm_audit_integration::Fact::business(
-                        audit,
+                        audit, rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,
                         &format!("apple-account-reauthentication:{flow}"),
                         401,
                         "success",

@@ -98,6 +98,7 @@ pub enum TransportObservation {
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum Reply {
+    OperationReceipt(rss_mdm_audit_integration::operation::ReceiptSummary),
     Materials(materials::PublicDirectory),
     MaterialOperation(MaterialOperation),
     Material(materials::Material),
@@ -118,6 +119,7 @@ pub fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> 
 impl Reply {
     pub fn from_command(command: &Command, value: Value) -> Result<Self, Error> {
         Ok(match command {
+            Command::OperationReceipt(_) => Self::OperationReceipt(decode(value)?),
             Command::Materials => Self::Materials(decode(value)?),
             Command::MaterialOperation(_) => Self::MaterialOperation(decode(value)?),
             Command::PrepareMaterial(..) => Self::Material(decode(value)?),

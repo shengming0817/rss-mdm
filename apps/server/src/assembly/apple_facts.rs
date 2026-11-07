@@ -133,12 +133,18 @@ impl AppleResults for AppleFacts {
         })
     }
 
-    fn device_controls_supported<'a>(
+    fn control_applicability<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
         requests: &'a [AppleControlCheck],
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, bool>> {
+    ) -> Pending<
+        'a,
+        std::collections::BTreeMap<
+            usize,
+            rss_mdm_device_service::control::device_control::Applicability,
+        >,
+    > {
         Box::pin(async move {
             let requests = requests
                 .iter()
@@ -161,9 +167,38 @@ impl AppleResults for AppleFacts {
                 })
                 .collect::<Vec<_>>();
             self.0
-                .device_controls_supported(c, tenant, &requests)
+                .control_applicability(c, tenant, &requests)
                 .await
-                .map_err(error)
+                .map_err(|e| match e {
+                    // These are persisted accepted reports, not caller-supplied input.
+                    rss_mdm_apple_channel::Error::Malformed => {
+                        rss_mdm_device_service::control::Error::Unavailable(
+                            rss_mdm_device_service::control::Failure::CommandInvariant,
+                        )
+                    }
+                    other => error(other),
+                })?
+                .into_iter()
+                .map(|(id, result)| {
+                    use rss_mdm_apple_mdm::{applicability::Rejection, native::Error as E};
+                    use rss_mdm_device_service::control::device_control::Applicability as A;
+                    let state = match result {
+                        Ok(()) => A::Supported,
+                        Err(
+                            E::Unsupported
+                            | E::AccessRight
+                            | E::Applicability(Rejection::Unsupported(_)),
+                        ) => A::Unsupported,
+                        Err(E::Applicability(Rejection::MissingEvidence(_))) => A::Unknown,
+                        Err(_) => {
+                            return Err(rss_mdm_device_service::control::Error::Unavailable(
+                                rss_mdm_device_service::control::Failure::CommandInvariant,
+                            ));
+                        }
+                    };
+                    Ok((id, state))
+                })
+                .collect()
         })
     }
 

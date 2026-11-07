@@ -283,19 +283,26 @@ pub async fn current_registration(
     Ok((rows[0].1, rows[0].2))
 }
 
+pub struct RequestReceipt {
+    pub fingerprint: Vec<u8>,
+    pub response: serde_json::Value,
+    pub instance: Option<Uuid>,
+}
+
 pub async fn read_on(
     conn: &mut PgConnection,
     tenant: &str,
     id: Uuid,
     actor: &str,
-) -> std::result::Result<Option<(Vec<u8>, serde_json::Value)>, sqlx::Error> {
-    let row=sqlx::query("SELECT fingerprint,response::text FROM mdm_devices.control_requests WHERE tenant_id=$1::uuid AND id=$2::uuid AND actor=$3").bind(tenant).bind(id.to_string()).bind(actor).fetch_optional(conn).await?;
+) -> std::result::Result<Option<RequestReceipt>, sqlx::Error> {
+    let row=sqlx::query("SELECT fingerprint,response::text,instance FROM mdm_devices.control_requests WHERE tenant_id=$1::uuid AND id=$2::uuid AND actor=$3").bind(tenant).bind(id.to_string()).bind(actor).fetch_optional(conn).await?;
     row.map(|r| {
-        Ok((
-            r.try_get("fingerprint")?,
-            serde_json::from_str(&r.try_get::<String, _>("response")?)
+        Ok(RequestReceipt {
+            fingerprint: r.try_get("fingerprint")?,
+            response: serde_json::from_str(&r.try_get::<String, _>("response")?)
                 .map_err(|_| sqlx::Error::Protocol("stored request".into()))?,
-        ))
+            instance: r.try_get("instance")?,
+        })
     })
     .transpose()
 }

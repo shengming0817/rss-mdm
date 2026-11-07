@@ -446,6 +446,7 @@ impl Service {
         let audit = audit.clone();
         let fact = rss_mdm_audit_integration::Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Telemetry,
             &format!("telemetry-maintenance:{}", input.id),
             202,
             "success",
@@ -466,8 +467,8 @@ impl Service {
             let replayed = tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
                     authorize(c,tenant,&actor,&intent).await?;
-                    let inserted=sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING")
-                        .bind(tenant.to_string()).bind(intent.id).bind(binding.as_slice()).execute(&mut *c).await?.rows_affected();
+                    let inserted=sqlx::query("INSERT INTO mdm_telemetry.maintenance(tenant_id,id,binding,request) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
+                        .bind(tenant.to_string()).bind(intent.id).bind(binding.as_slice()).bind(serde_json::to_value(&intent)?).execute(&mut *c).await?.rows_affected();
                     let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
                         .bind(tenant.to_string()).bind(intent.id).fetch_one(c).await?;
                     if stored.as_slice()!=binding.as_slice() {return Err(Error::Conflict);}
@@ -591,4 +592,50 @@ pub enum Progress {
         #[schemars(schema_with = "crate::contract_schema::maintenance_block")]
         reason: MaintenanceBlock,
     },
+}
+
+/// Observe accepted maintenance without constructing a live telemetry backend or advancing it.
+pub async fn operation_receipt_on(
+    c: &mut sqlx::PgConnection,
+    p: &AuthorizedPrincipal,
+    grant: &rss_mdm_authorization_service::Snapshot,
+    id: uuid::Uuid,
+) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+    use sha2::Digest;
+    use sqlx::Row;
+    if p.profile() != rss_mdm_install_support::StorageProfile::Mdm {
+        return Err(Error::Denied);
+    }
+    let row=sqlx::query("SELECT request,binding,result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(p.tenant_id()).bind(id).fetch_optional(c).await?;
+    let Some(row) = row else { return Ok(None) };
+    let input: Request = serde_json::from_value(row.try_get("request")?)?;
+    if input.id != id
+        || sha2::Sha256::digest(serde_json::to_vec(&input)?).as_slice()
+            != row.try_get::<Vec<u8>, _>("binding")?
+    {
+        return Err(Error::Storage);
+    }
+    grant
+        .require(p, Permission::InventoryRead, Some(&input.device))
+        .map_err(|_| Error::Denied)?;
+    grant
+        .require(p, Permission::OperationRead, Some(&input.device))
+        .map_err(|_| Error::Denied)?;
+    let value: Option<Json> = row.try_get("result")?;
+    let progress = value.map(serde_json::from_value::<Progress>).transpose()?;
+    let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+    summary.object = Some(input.resource);
+    summary.accepted = Some(true);
+    summary.state = Some(
+        match progress {
+            None => "accepted",
+            Some(Progress::More { .. }) => "more",
+            Some(Progress::Complete { .. }) => "complete",
+            Some(Progress::Blocked { .. }) => "blocked",
+        }
+        .into(),
+    );
+    p.check_live().map_err(|_| Error::Denied)?;
+    Ok(Some(summary))
 }

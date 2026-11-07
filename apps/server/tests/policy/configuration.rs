@@ -135,6 +135,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     .await
     .map_err(|error| anyhow::anyhow!("configuration application: {error:?}"))?;
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         c.tenant.to_string(),
         "configuration_reconcile",

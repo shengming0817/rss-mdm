@@ -13,13 +13,15 @@ pub async fn audit_recovery(
 ) -> Result<()> {
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             service.profile(),
             tx.tenant_id().to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("enrollment-recovery");
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
             run.id,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -32,6 +34,7 @@ pub async fn audit_recovery(
         use sha2::Digest;
         let fact = Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
             &format!(
                 "enrollment:{}:recover:{:x}",
                 run.id,
@@ -64,12 +67,14 @@ impl Service {
         let profile = self.profile();
 
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             profile,
             self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
             id,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -95,6 +100,7 @@ impl Service {
                     let run = storage::read_run(profile, tx, *id).await?;
                     let fact = Fact::business(
                         audit,
+                        rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
                         &format!("enrollment:{id}:dispatch"),
                         200,
                         "success",

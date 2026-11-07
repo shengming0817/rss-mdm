@@ -28,6 +28,7 @@ pub(crate) async fn accept_for_device(
         service,
         tx,
         RunInput {
+            request: None,
             origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
             invocation: None,
             source: db::Source::Policy { version: policy.id },

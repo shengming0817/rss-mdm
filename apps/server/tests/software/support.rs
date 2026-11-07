@@ -13,6 +13,7 @@ pub fn context() -> w::SoftwareExecutionContext {
 }
 pub fn audit(c: &Context) -> RequestAudit {
     RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         c.tenant.to_string(),
         "software_admission",

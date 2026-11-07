@@ -338,6 +338,7 @@ impl Service {
                     .bind(input.operation_id)
                     .bind(&*digest)
                     .bind(serde_json::to_string(&value).map_err(|_| Error::Corrupt)?)
+                    .bind(device.device())
                     .execute(&mut *c)
                     .await
                     .map_err(db)?;

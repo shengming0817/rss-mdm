@@ -162,6 +162,7 @@ impl CollectionService {
                 audit.target(&run.id.to_string());
                 let fact = Fact::business(
                     audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,
                     &format!("collection:{id}:offer:{attempt}"),
                     200,
                     "success",
@@ -350,6 +351,7 @@ impl CollectionService {
         };
         let fact = Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,
             &format!("collection:{id}:event:{}", input.operation_id()),
             200,
             "success",

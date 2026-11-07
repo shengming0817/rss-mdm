@@ -199,7 +199,8 @@ async fn create(
     Error,
 > {
     let input = input.map_err(Error::from)?.0;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
         input.operation_id,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -233,7 +234,8 @@ async fn cancel(
     input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<rss_mdm_device_service::control::ChangedReceipt>, Error> {
     let change = input.map_err(Error::from)?.0;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceControlRequest,
         change.request_id,
         "command_cancel",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -256,7 +258,8 @@ async fn reauthorize(
         request_id: change.request_id,
         expected_revision: change.expected_revision,
     };
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceControlRequest,
         change.request_id,
         "command_reauthorize",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -323,7 +326,8 @@ async fn create_recovery(
     Error,
 > {
     let input = input.map_err(Error::from)?.0;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::RecoveryCommand,
         input.operation_id,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,

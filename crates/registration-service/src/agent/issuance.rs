@@ -75,7 +75,8 @@ impl Service {
         let csr = STANDARD.decode(&input.csr).map_err(|_| Error::Malformed)?;
         // Authorization and candidate writes are phases; the HTTP result still needs settlement.
         a.require_final_request();
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "device_certificate_authorize",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -160,7 +161,7 @@ impl Service {
                         return Err(Error::Conflict);
                     }
                     let device: String = grant.try_get("device").map_err(db)?;
-                    a.target(&device);
+                    a.target_device(&device);
                     let start = now(c).await?;
                     let end = service.issuer.end(start)?;
                     let identity = rss_mdm_certificate::device_identity::identity(
@@ -262,7 +263,8 @@ impl Service {
     ) -> Result<(), Error> {
         let profile = self.profile();
 
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "device_certificate_unknown",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -298,7 +300,8 @@ impl Service {
     ) -> Result<wire::Candidate, Error> {
         let profile = self.profile();
 
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             operation,
             "device_certificate_result",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -361,7 +364,7 @@ impl Service {
                         )
                         .map_err(|_| Error::Forbidden)?;
                     }
-                    a.target(&g.try_get::<String, _>("device").map_err(db)?);
+                    a.target_device(&g.try_get::<String, _>("device").map_err(db)?);
                     let old = sqlx::query(
                         crate::storage_profile::sql(profile).agent_issuance_save_certificate_1,
                     )

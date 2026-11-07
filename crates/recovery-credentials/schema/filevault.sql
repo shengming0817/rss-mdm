@@ -24,6 +24,7 @@ CREATE TABLE mdm_recovery.filevault_receipts (
  tenant_id uuid NOT NULL, registration uuid NOT NULL, generation bigint NOT NULL,
  operation uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN('configure','upload','link')), digest bytea NOT NULL CHECK(octet_length(digest)=32),
  receipt jsonb NOT NULL CHECK(octet_length(receipt::text)<=8192),
+ devices text[] NOT NULL CHECK(cardinality(devices) BETWEEN 1 AND 2),
  PRIMARY KEY(tenant_id,registration,generation,operation),
  FOREIGN KEY(tenant_id,registration,generation) REFERENCES mdm_access.registrations(tenant_id,id,generation)
 );

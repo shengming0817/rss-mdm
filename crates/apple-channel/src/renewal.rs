@@ -82,6 +82,7 @@ async fn prepare(
     candidate: Candidate,
 ) -> Result<(), Error> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.into(),
         "apple_renewal",
@@ -109,7 +110,7 @@ async fn prepare(
                         return Ok(None);
                     };
 
-                    let fact = rss_mdm_audit_integration::Fact::business(
+                    let fact = rss_mdm_audit_integration::Fact::observation(
                         audit,
                         &format!("apple-renewal:{}:prepare", prepared.attempt),
                         202,
@@ -365,7 +366,7 @@ pub async fn challenge(
             })).await?;
             let Some(replayed) = replayed else { return Ok(false); };
 
-            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-renewal:{}:challenge", csr.attempt()), 200, "success", Some(csr.enrollment())).map_err(Error::from)?;
+            let fact = rss_mdm_audit_integration::Fact::observation(audit, &format!("apple-renewal:{}:challenge", csr.attempt()), 200, "success", Some(csr.enrollment())).map_err(Error::from)?;
             (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;
             if replayed { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             audit.mark_commit_started();
@@ -439,7 +440,7 @@ pub async fn notify(
                         return Ok(false);
                     };
 
-                    let fact = rss_mdm_audit_integration::Fact::business(
+                    let fact = rss_mdm_audit_integration::Fact::observation(
                         audit,
                         &format!("apple-renewal:{}:notify", leaf.attempt()),
                         200,
@@ -492,6 +493,7 @@ pub async fn activate(
     udid: &str,
 ) -> Result<(), Error> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         app.identity.tenant().to_string(),
         "apple_renewal",
@@ -539,7 +541,7 @@ pub async fn activate(
                 })).await?;
             if changed {
 
-                let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-renewal:{}:activate", leaf.attempt()), 200, "success", Some(leaf.enrollment())).map_err(Error::from)?;
+                let fact = rss_mdm_audit_integration::Fact::observation(audit, &format!("apple-renewal:{}:activate", leaf.attempt()), 200, "success", Some(leaf.enrollment())).map_err(Error::from)?;
                 app.audit_store.append(tx, &fact).await.map_err(Error::from)?;
                 audit.mark_commit_started();
             }

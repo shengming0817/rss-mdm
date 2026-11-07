@@ -103,6 +103,7 @@ impl Database {
         key: &[u8],
     ) -> Result<std::sync::Arc<rss_mdm_timeline_service::Timeline>, Error> {
         rss_mdm_timeline_service::Timeline::new(
+            rss_mdm_install_support::StorageProfile::Mdm,
             self.pool.clone(),
             audit,
             tenant,
@@ -157,6 +158,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         crate::administration::tenants::ACCESS_CONTRACT,
         crate::cursor_keys::ACCESS_CONTRACT,
         rss_mdm_mail_service::ACCESS_CONTRACT,
+        rss_mdm_telemetry_service::DIAGNOSTIC_ACCESS_CONTRACT,
         rss_mdm_content_service::connections::ACCESS_CONTRACT,
         rss_mdm_webhook_service::ACCESS_CONTRACT,
         rss_mdm_authorization_service::ACCESS_CONTRACT,

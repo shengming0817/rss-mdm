@@ -1165,3 +1165,93 @@ pub static GROUP_IMPACTS: Resource = Resource {
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
 };
+
+pub static OPERATION_DIAGNOSTICS: Resource = Resource {
+    id: "operation_diagnostics",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "operation_diagnostics.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::OPERATION_DIAGNOSTICS),
+};
+
+pub static STANDARD_SOFTWARE: Resource = Resource {
+    id: "standard_software",
+    category: Category::Mutable,
+    owner: "inventory-service",
+    proof: "inventory.software-assets",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static SOFTWARE_MAPPINGS: Resource = Resource {
+    id: "software_mappings",
+    category: Category::Mutable,
+    owner: "inventory-service",
+    proof: "inventory.software-assets",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static SOFTWARE_ASSET_QUERIES: Resource = Resource {
+    id: "software_asset_queries",
+    category: Category::ReadModel,
+    owner: "inventory-service",
+    proof: "inventory.software-assets",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};
+
+pub static SOFTWARE_ASSET_OPERATIONS: Resource = Resource {
+    id: "software_asset_operations",
+    category: Category::ReadModel,
+    owner: "inventory-service",
+    proof: "inventory.software-assets",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};
+
+pub static SOFTWARE_ASSET_BUCKETS: Resource = Resource {
+    id: "software_asset_buckets",
+    category: Category::Facts,
+    owner: "inventory-service",
+    proof: "inventory.software-assets",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static SOFTWARE_ASSET_BREAKDOWNS: Resource = Resource {
+    id: "software_asset_breakdowns",
+    category: Category::Facts,
+    owner: "inventory-service",
+    proof: "inventory.software-assets",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static SOFTWARE_ASSET_DEVICES: Resource = Resource {
+    id: "software_asset_devices",
+    category: Category::Facts,
+    owner: "inventory-service",
+    proof: "inventory.software-assets",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static SOFTWARE_ASSET_EVIDENCE: Resource = Resource {
+    id: "software_asset_evidence",
+    category: Category::Facts,
+    owner: "inventory-service",
+    proof: "inventory.software-assets",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static SOFTWARE_ASSET_COVERAGE: Resource = Resource {
+    id: "software_asset_coverage",
+    category: Category::Facts,
+    owner: "inventory-service",
+    proof: "inventory.software-assets",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};

@@ -52,6 +52,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .map(|p| p.as_str())
         .unwrap_or("");
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         envelope.tenant.clone(),
         route_action(route),

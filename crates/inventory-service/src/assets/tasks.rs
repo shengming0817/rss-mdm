@@ -10,6 +10,7 @@ pub struct QueryInput {
     pub scope: ReadScope,
     pub asset_cut: AssetCut,
     pub as_of: i64,
+    pub software: Option<Box<super::software::Job>>,
 }
 pub struct QueryTask {
     pub input: QueryInput,
@@ -117,6 +118,14 @@ impl AssetService {
                 .bind(tenant).bind(task).bind(reason).execute(c).await?.rows_affected())
         })).await?;
         self.clear_evaluation(tx, task).await?;
+        if failure.is_some() {
+            let tenant = self.tenant.to_string();
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query("UPDATE mdm_assets.software_progress SET result_state='releasing' WHERE tenant_id=$1::uuid AND run=$2 AND result_state='retained'")
+                    .bind(tenant).bind(task).execute(c).await?;
+                Ok(())
+            })).await?;
+        }
         if changed == 0 {
             self.query_task_in(tx, task).await?;
             return Ok(());
@@ -127,6 +136,7 @@ impl AssetService {
             Some(_) => "automation_failed",
         };
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             self.tenant.to_string(),
             action,
@@ -134,13 +144,15 @@ impl AssetService {
         );
         audit.identify_service("service:asset-query");
         audit.target(&task.to_string());
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::AssetQuery,
             task,
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let fact = rss_mdm_audit_integration::Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::AssetQuery,
             &format!("asset-query:{task}:terminal"),
             200,
             if failure.is_some() {
@@ -164,5 +176,89 @@ impl AssetService {
         );
         result?;
         Ok(())
+    }
+}
+
+impl AssetService {
+    pub async fn query_receipt(
+        &self,
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        id: Uuid,
+    ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
+    {
+        crate::transaction::inspect(
+            &self.runtime,
+            self.tenant,
+            (self, p),
+            |(s, p), tx| {
+                Box::pin(async move {
+                    let grant = crate::transaction::query_authority(tx, p).await?;
+                    let task = s.query_task_in(tx, id).await?;
+                    let current = Self::query_receipt_scope(p, &grant, &task)?;
+                    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+                    value.recorded_at = Some(task.input.as_of);
+                    value.accepted = Some(true);
+                    value.executions.push(id);
+                    value.state = Some(if task.input.software.is_some() {
+                        let status = super::software::QueryStatus::from_progress(
+                            task.completed,
+                            task.started,
+                            task.failure.as_deref(),
+                        );
+                        stored(serde_json::to_value(status))?
+                            .as_str()
+                            .ok_or(Error::Conflict)?
+                            .into()
+                    } else {
+                        let Response::QueryStatus { status, .. } =
+                            s.asset_query_status(tx, id, &current).await?
+                        else {
+                            return Err(Error::Conflict.into());
+                        };
+                        status
+                    });
+                    p.check_live()?;
+                    Ok(Some(value))
+                })
+            },
+            crate::transaction::TransactionOwner::Assets,
+        )
+        .await
+    }
+}
+
+impl AssetService {
+    /// Reuse each query owner's current read boundary without revalidating current configuration.
+    pub(super) fn query_receipt_scope(
+        p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        grant: &rss_mdm_authorization_service::Snapshot,
+        task: &QueryTask,
+    ) -> Result<ReadScope> {
+        let mut current = ReadScope::from_snapshot(p, grant)?;
+        current.collection_scope = task.input.scope.collection_scope.clone();
+        let same_scope = if task.input.software.is_some() {
+            current == task.input.scope
+        } else {
+            current.subject == task.input.scope.subject
+                && current.collection_scope == task.input.scope.collection_scope
+                && current.devices == task.input.scope.devices
+        };
+        if !same_scope {
+            return Err(Error::Forbidden.into());
+        }
+        if task.input.software.is_some() {
+            current.full().map_err(|_| Error::Forbidden)?;
+            grant.require(
+                p,
+                rss_mdm_authorization_service::Permission::InventorySensitiveRead,
+                None,
+            )?;
+            grant.require(
+                p,
+                rss_mdm_authorization_service::Permission::GroupRead,
+                None,
+            )?;
+        }
+        Ok(current)
     }
 }

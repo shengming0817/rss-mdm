@@ -3,6 +3,7 @@ use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 pub(crate) mod authority;
 mod client;
 pub(crate) mod management;
+pub use management::diagnostic_receipt;
 mod protocol;
 pub mod worker;
 use crate::{Error, Failure, HttpState, database::db};

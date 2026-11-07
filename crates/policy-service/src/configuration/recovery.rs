@@ -168,7 +168,8 @@ impl Transactions {
             }
             let context = audit.transaction_copy();
             context.identify_service("configuration-recovery");
-            context.operation(
+            context.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Configuration,
                 id,
                 "command_reconcile",
                 rss_mdm_audit_integration::AuditIntent::Management,
@@ -177,6 +178,7 @@ impl Transactions {
             context.registration(operation.registration);
             let fact = Fact::business(
                 &context,
+                rss_mdm_audit_integration::operation::OperationOwner::Configuration,
                 &format!("command:{id}:recover:{}", command.version()),
                 200,
                 "success",
@@ -270,13 +272,15 @@ impl Transactions {
         budget: rss_transactional_messaging::policy::OperationDeadline,
     ) -> std::result::Result<(), Error> {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             self.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("configuration-dispatch");
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Configuration,
             id,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -293,7 +297,7 @@ impl Transactions {
                 let op=storage::load(tx,&service.protection,*id).await?;
                 let mut dispatched = activity(&op,service.required_command(tx,&op).await?.status(),ActivityPhase::Dispatched);
                 dispatched.delivery=Some(ActivityDelivery::Dispatched);
-                let fact=Fact::business(audit,&format!("command:{}:dispatch",op.id),200,"success",None)?.with_activity(&dispatched)?;
+                let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::Configuration,&format!("command:{}:dispatch",op.id),200,"success",None)?.with_activity(&dispatched)?;
                 service.audit_store.append_in(tx,&fact).await?;
                 // Channel consumers retain their existing durable candidate scans.
                 tx.with_connection(|c|Box::pin(async move{sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'apple'),pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'windows_push')").execute(c).await?;Ok(())})).await?;

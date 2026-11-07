@@ -62,6 +62,7 @@ impl AdmissionTrigger {}
 
 /// Only the authenticated device can cause its own recurring execution to be admitted.
 pub struct RunInput<'a> {
+    pub request: Option<&'a rss_mdm_audit_integration::RequestAudit>,
     pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
     pub invocation: Option<crate::deployment::self_service::Invocation>,
     pub source: db::Source,
@@ -78,6 +79,7 @@ pub(crate) async fn queue_run_in(
     input: RunInput<'_>,
 ) -> Result<()> {
     let RunInput {
+        request,
         origin,
         invocation,
         source,
@@ -158,28 +160,43 @@ pub(crate) async fn queue_run_in(
     })).await?;
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
-    let audit = rss_mdm_audit_integration::RequestAudit::new(
-        rss_mdm_audit_integration::StorageProfile::Mdm,
-        tx.tenant_id().to_string(),
-        "command_accept",
-        rss_mdm_audit_integration::AuditIntent::Management,
-    );
-    audit.operation(
+    let audit = request
+        .map(|a| a.fact_copy("command_accept"))
+        .unwrap_or_else(|| {
+            rss_mdm_audit_integration::RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Background,
+                rss_mdm_audit_integration::StorageProfile::Mdm,
+                tx.tenant_id().to_string(),
+                "command_accept",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            )
+        });
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
         id,
         "command_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.identify_service("execution-admission");
+    if request.is_none() {
+        audit.identify_service("execution-admission");
+    }
     source.audit(&audit);
     audit.target(&id.to_string());
     audit.registration(registration);
     let result: Result<()> = async {
         let run = super::storage::read_run(tx, id).await?;
-        let fact = Fact::business(&audit, &format!("action:{id}:accept"), 202, "success", None)?
-            .with_activity(&super::activity::run(
-                &run,
-                rss_mdm_audit_integration::activity::ActivityPhase::Accepted,
-            ))?;
+        let fact = Fact::business(
+            &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
+            &format!("action:{id}:accept"),
+            202,
+            "success",
+            None,
+        )?
+        .with_activity(&super::activity::run(
+            &run,
+            rss_mdm_audit_integration::activity::ActivityPhase::Accepted,
+        ))?;
         service.audit_store.append_in(tx, &fact).await?;
         crate::deployment::worker_wake::notify_in(
             tx,

@@ -92,7 +92,8 @@ async fn change(
     >,
 ) -> std::result::Result<Json<rss_mdm_policy::View>, Error> {
     let Json(input) = input.map_err(Error::from)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Policy,
         input.operation_id,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -153,7 +154,8 @@ async fn rerun(
     >,
 ) -> std::result::Result<Json<super::rerun::Receipt>, Error> {
     let Json(input) = input.map_err(Error::from)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Policy,
         input.operation_id,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -207,7 +209,8 @@ async fn delete(
     body: Result<Json<Delete>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<rss_mdm_policy::View>, Error> {
     let Json(body) = body.map_err(Error::from)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Policy,
         body.operation_id,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,

@@ -204,6 +204,7 @@ impl Transactions {
         let actor = audit.snapshot().actor.ok_or(Error::Malformed)?;
         let fact = Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Configuration,
             &format!("command:{actor}:{id}:accept"),
             202,
             "success",

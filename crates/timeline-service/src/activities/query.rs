@@ -1,5 +1,5 @@
 use super::{model::*, projection};
-use crate::{Error, FactView, Timeline};
+use crate::{Error, Timeline};
 use rss_mdm_agent_wire::activities::*;
 use rss_mdm_audit_integration::{
     activity::Activity,
@@ -537,7 +537,9 @@ fn decode_row(row: &sqlx::postgres::PgRow) -> Result<ManagementActivity, Error> 
     {
         return Err(Error::Integrity);
     }
-    let view: FactView = serde_json::from_value(document).map_err(|_| Error::Integrity)?;
+    let view = serde_json::from_value::<crate::DiagnosticFact>(document)
+        .map_err(|_| Error::Integrity)?
+        .fact;
     let raw: serde_json::Value = row.try_get("activity")?;
     if Sha256::digest(serde_json::to_vec(&raw).map_err(|_| Error::Integrity)?).as_slice()
         != row.try_get::<Vec<u8>, _>("activity_digest")?

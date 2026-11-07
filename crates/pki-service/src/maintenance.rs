@@ -122,7 +122,8 @@ impl Registry {
         {
             return Err(Error::Forbidden);
         }
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Pki,
             input.operation,
             "device_pki_crl_publish",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -375,13 +376,15 @@ impl Registry {
             );
             let publication_now = clock()?;
             let a = RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Background,
                 self.profile(),
                 trust.tenant.to_string(),
                 "device_pki_crl_publish",
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
             a.identify_service("service:device-pki");
-            a.operation(
+            a.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Pki,
                 operation,
                 "device_pki_crl_publish",
                 rss_mdm_audit_integration::AuditIntent::Management,
@@ -428,6 +431,7 @@ impl Registry {
         let profile = self.profile();
 
         let a = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             self.profile(),
             trust.tenant.to_string(),
             "device_pki_revoke_dispatch",
@@ -462,7 +466,8 @@ impl Registry {
                             serial: row.try_get("serial").map_err(|_| Error::Storage)?,
                             failures: row.try_get("failures").map_err(|_| Error::Storage)?,
                         };
-                        a.operation(
+                        a.owned_operation(
+                            rss_mdm_audit_integration::operation::OperationOwner::PkiRevocation,
                             job.attempt,
                             "device_pki_revoke_dispatch",
                             rss_mdm_audit_integration::AuditIntent::Management,
@@ -504,13 +509,15 @@ impl Registry {
         let profile = self.profile();
 
         let a = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             self.profile(),
             trust.tenant.to_string(),
             "device_pki_revoke_submit",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         a.identify_service("service:device-pki");
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::PkiRevocation,
             job.attempt,
             "device_pki_revoke_submit",
             rss_mdm_audit_integration::AuditIntent::Management,

@@ -103,13 +103,15 @@ pub async fn audit_recovery(
 ) -> Result<()> {
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             tx.tenant_id().to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("command-recovery");
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
             run.id,
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -121,6 +123,7 @@ pub async fn audit_recovery(
         use sha2::Digest;
         let fact = Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
             &format!(
                 "action:{}:recover:{:x}",
                 run.id,
@@ -151,12 +154,14 @@ impl SoftwareService {
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), crate::deployment::Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
             id,
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -167,7 +172,7 @@ impl SoftwareService {
             let (service,id,fingerprint,audit)=ctx;
             crate::deployment::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let run=super::storage::read_run(tx,*id).await?;
-            let fact=Fact::business(audit, &format!("action:{id}:dispatch"), 200, "success", None)?
+            let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction, &format!("action:{id}:dispatch"), 200, "success", None)?
                 .with_activity(&super::activity::run(&run,rss_mdm_audit_integration::activity::ActivityPhase::Dispatched))?;
             let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move{
