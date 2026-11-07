@@ -56,6 +56,10 @@ fn directory_capabilities_come_from_the_real_nested_model_and_execution_owner() 
             .iter()
             .find(|e| e["path"] == path && e["method"] == "GET")
             .unwrap();
+        assert_eq!(
+            endpoint["request"]["query_owner"]["schema"]["id"], endpoint["resource"]["id"],
+            "{path}"
+        );
         let fields = endpoint["request"]["query_owner"]["schema"]["fields"]
             .as_array()
             .unwrap();

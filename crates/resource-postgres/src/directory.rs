@@ -65,7 +65,7 @@ impl ResourceStore {
 }
 /// Append the owner's complete SELECT, reusable for real PostgreSQL execution-plan inspection.
 pub fn select(
-    sql: &mut QueryBuilder<'_, Postgres>,
+    sql: &mut QueryBuilder<Postgres>,
     tenant: rss_request_context::TenantId,
     q: &Query,
     after: Option<&Position>,

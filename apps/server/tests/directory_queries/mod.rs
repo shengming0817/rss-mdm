@@ -268,7 +268,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         let saved = Uuid::from_u128(1002);
         let path = format!("/api/v1/saved-queries/{saved}");
         let write = |revision,filter:&str| json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"put","definition":{"name":"updated directory","query":{"filter":filter,"fields":["device.name"]}}}});
-        let (status,body)=http.put(&path,write(1,"device.name == updated")).await?;
+        let (status,body)=http.put(&path,write(1,"device.name=='updated'")).await?;
         assert_eq!(status,200,"{body}");
         seed::saved_projection(&c,saved,Some("device.name==updated"),2).await?;
         assert_eq!(http.put(&path,write(1,"device.name==stale")).await?.0,409);

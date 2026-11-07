@@ -7092,9 +7092,7 @@
                 "type": "string"
               },
               "presentation": {
-                "additionalProperties": true,
-                "type": "object",
-                "x-rss-extension": "Bounded descriptive presentation metadata; no execution or authorization authority"
+                "$ref": "#/$defs/Presentation"
               }
             },
             "required": [
@@ -9270,6 +9268,43 @@
             "type": "string"
           }
         ]
+      },
+      "Presentation": {
+        "additionalProperties": {
+          "x-rss-extension": "Bounded descriptive extensions; only typed properties are queryable"
+        },
+        "description": "Supported descriptive properties; arbitrary bounded extensions remain data, never query paths.",
+        "properties": {
+          "category": {
+            "description": "Public self-service category, when configured.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "description": "Descriptive text without execution authority.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Human-readable name; no authorization meaning.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "publisher": {
+            "description": "Descriptive publisher label.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "RegistryHive": {
         "description": "Exact local hive; HKCU is intentionally absent.",

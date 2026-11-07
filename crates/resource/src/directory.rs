@@ -8,7 +8,7 @@ pub const DEFAULT_LIMIT: u16 = 64;
 pub const MAX_LIMIT: u16 = 1000;
 /// Field capabilities derived from the actual checked header model.
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<Record>("resources", &["id"], DEFAULT_LIMIT, MAX_LIMIT, &[])
+    Schema::derived::<Record>("resource", &["id"], DEFAULT_LIMIT, MAX_LIMIT, &[])
         .and_then(|s| s.validate_with("id", valid_id))
         .and_then(|s| s.validate_with("activeVersion", valid_id))
         .and_then(|s| s.no_range("id"))

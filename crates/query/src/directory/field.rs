@@ -205,16 +205,16 @@ impl Field {
         {
             return false;
         }
-        if let Some(v) = value.as_f64() {
-            if s.get("minimum")
+        if let Some(v) = value.as_f64()
+            && (s
+                .get("minimum")
                 .and_then(Value::as_f64)
                 .is_some_and(|min| v < min)
                 || s.get("maximum")
                     .and_then(Value::as_f64)
-                    .is_some_and(|max| v > max)
-            {
-                return false;
-            }
+                    .is_some_and(|max| v > max))
+        {
+            return false;
         }
         if let Some(v) = value.as_str() {
             let length = v.chars().count() as u64;

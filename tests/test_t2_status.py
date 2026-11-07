@@ -236,7 +236,7 @@ class T2Status(unittest.TestCase):
     def test_real_shutdown_inputs_select_the_existing_lifecycle_proof(self):
         from ci_registry import ROOT
         for path, expected in (
-            ('apps/server/src/owner_storage.rs', ['foundation.lifecycle']),
+            ('apps/server/src/owner_storage.rs', ['foundation.lifecycle', 'policy.configuration']),
             ('apps/server/src/worker_wake.rs', ['foundation.lifecycle']),
             ('apps/server/src/scheduler.rs', ['foundation.lifecycle']),
             ('apps/server/src/scope_group_changes.rs', ['foundation.lifecycle']),
