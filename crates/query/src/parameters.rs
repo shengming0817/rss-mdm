@@ -101,7 +101,10 @@ fn names(raw: &str) -> Result<Vec<String>> {
         if result.len() == 16 {
             return Err(Error::Budget);
         }
-        if name.is_empty() || name.len() > 128 || result.iter().any(|v| v == name) {
+        if name.is_empty()
+            || name.trim_start_matches('-').len() > crate::MAX_SELECTOR_BYTES
+            || result.iter().any(|v| v == name)
+        {
             return Err(Error::Invalid);
         }
         result.push(name.to_owned());

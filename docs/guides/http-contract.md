@@ -44,6 +44,8 @@ Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如
 
 过滤、排序与返回分别声明。嵌套属性可过滤不代表可以使用 `fields=父对象.属性`；当前目录返回原有顶层容器，可排序标量使用稳定唯一键及 NULLS LAST。普通可空目录元数据的缺失和 JSON null 作为 SQL NULL，使用 `=isnull=true`／`=isnotnull=true`；`!=` 不匹配空值。设备与资产已有 unknown/conflict 语义由原 owner 保持。
 
+目录只对模型可保证游标大小的字段声明排序；无界描述、保存查询文本和未规定长度的名称仍支持过滤与返回。多个排序键的累计游标预算在解析时检查，超限请求在查询前拒绝。
+
 `=containsany=`／`=containsall=` 对标量集合分别表示包含任一／全部候选值。复杂对象数组、递归条件定义、动态参数和无类型扩展键在声明中说明限制；不接受任意 JSONPath。Scope 不新增名称或搜索产品能力，Policy 使用原 Scope 定义及设备组目录呈现目标、限制和排除。
 
 保存查询的 `definition.query.filter` 匹配规范化 RSQL 文本，表示字面内容匹配，不表示逻辑等价或蕴含。规范文本由原 AST formatter 在同一写事务生成查询投影；字段退役检查仍消费权威 AST。

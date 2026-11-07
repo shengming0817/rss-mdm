@@ -5,6 +5,7 @@ REVOKE ALL ON SCHEMA mdm_resource FROM PUBLIC;
 CREATE TABLE mdm_resource.aggregates (
  tenant_id uuid NOT NULL, id text NOT NULL CHECK(octet_length(id) BETWEEN 1 AND 128),
  revision bigint NOT NULL CHECK(revision>=0),
+ directory jsonb NOT NULL CHECK(jsonb_typeof(directory)='object'),
  document bytea NOT NULL CHECK(octet_length(document) BETWEEN 1 AND 67108864), digest bytea NOT NULL CHECK(octet_length(digest)=32),
  PRIMARY KEY(tenant_id,id)
 );
@@ -68,7 +69,9 @@ REVOKE ALL ON mdm_resource.profile_refs FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_resource TO mdm_resource_runtime,mdm_software_runtime,mdm_software_driver;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_resource TO mdm_resource_runtime,mdm_software_runtime,mdm_software_driver;
 GRANT UPDATE(archived) ON mdm_resource.artifact_refs,mdm_resource.field_refs,mdm_resource.profile_refs TO mdm_resource_runtime,mdm_software_runtime,mdm_software_driver;
-GRANT UPDATE(revision,document,digest) ON mdm_resource.aggregates TO mdm_resource_runtime,mdm_software_runtime,mdm_software_driver;
+CREATE INDEX resource_directory_kind ON mdm_resource.aggregates(tenant_id,((directory#>>'{kind}') COLLATE "C"),id COLLATE "C");
+CREATE INDEX resource_directory_active ON mdm_resource.aggregates(tenant_id,((directory#>>'{active}')::boolean),id COLLATE "C");
+GRANT UPDATE(revision,document,digest,directory) ON mdm_resource.aggregates TO mdm_resource_runtime,mdm_software_runtime,mdm_software_driver;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_resource_runtime,mdm_software_runtime;
 GRANT SELECT ON rss_transactional_messaging.policy TO mdm_resource_runtime,mdm_software_runtime;
 GRANT SELECT,INSERT ON rss_transactional_messaging.outbox TO mdm_resource_runtime,mdm_software_runtime;

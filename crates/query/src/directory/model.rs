@@ -61,6 +61,9 @@ impl Schema {
                 return Err(BuildError::Exclusion(exclusion.path.into()));
             }
         }
+        for field in compiler.fields.values_mut() {
+            field.model_sort();
+        }
         let schema = Self {
             id,
             keys,
@@ -104,7 +107,7 @@ struct Compiler<'a> {
 }
 impl Compiler<'_> {
     fn walk(&mut self, schema: &Value, path: &str, nullable: bool, depth: usize) -> Result<()> {
-        if depth > 32 {
+        if depth > 32 || path.len() > crate::MAX_SELECTOR_BYTES {
             return Err(BuildError::Unsupported(path.into()));
         }
         if let Some(exclusion) = self.exclusions.iter().find(|e| e.path == path) {
@@ -322,7 +325,7 @@ fn merge(a: &Kind, b: &Kind) -> Option<Kind> {
     }
 }
 fn scalar_kind(root: &Value, schema: &Value, path: &str, depth: usize) -> Result<(Kind, Value)> {
-    if depth > 32 {
+    if depth > 32 || path.len() > crate::MAX_SELECTOR_BYTES {
         return Err(BuildError::Unsupported(path.into()));
     }
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {

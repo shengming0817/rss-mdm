@@ -51,7 +51,7 @@ pub(super) async fn all(c: &Context, p: &AuthorizedPrincipal) -> Result<Fixtures
             resource_change(&store, &id, revision, Command::Present(serde_json::from_value(json!({
                 "name":if selected {"Zulu Éclair %_ O'Reilly\\工具"} else {"Earlier unrelated item"},
                 "category":if selected {"Tools"} else {"Other"}, "description":"A public description", "publisher":"Acme",
-                "vendor":{"unknown":true}
+                "vendor":{"unknown":true,"metric":1e18}
             }))?)).await?;
             revision += 1;
             if kind == r::Kind::Software && selected {
@@ -89,6 +89,75 @@ pub(super) async fn all(c: &Context, p: &AuthorizedPrincipal) -> Result<Fixtures
         1,
         Command::Present(serde_json::from_value(
             json!({"name":"Zulu Éclair hidden","category":"Tools"}),
+        )?),
+    )
+    .await?;
+    let before = store
+        .get(
+            &r::Id::new("a-directory-script")?,
+            crate::authority_t2_support::deadline(),
+        )
+        .await?
+        .context("Resource before rollback")?
+        .storage_revision;
+    let rollback_request = Request {
+        id: r::Id::new(Uuid::new_v4().to_string())?,
+        resource: r::Id::new("a-directory-script")?,
+        expected_storage_revision: before,
+        as_of: rss_contract::Timepoint::try_from(super::super::software_t2::support::now())?,
+        command: Command::Present(serde_json::from_value(json!({"name":"rollback"}))?),
+    };
+    let rollback = owner
+        .runtime
+        .local_tx_with_context(
+            c.tenant,
+            crate::authority_t2_support::deadline(),
+            (&store, &rollback_request),
+            |(store, request), tx| {
+                Box::pin(async move {
+                    tx.prepare_outbox_partitions(&[store.partition(request.resource.as_str())?])
+                        .await?;
+                    assert!(store.execute_in(tx, request).await?.is_ok());
+                    tx.with_connection(|connection| {
+                        Box::pin(async move {
+                            sqlx::query("SELECT 1/0").execute(connection).await?;
+                            Ok(())
+                        })
+                    })
+                    .await?;
+                    Ok(())
+                })
+            },
+        )
+        .await;
+    assert!(rollback.fold(|_| false, |_| true, |_| true, |_| true, |_| true, |_| true));
+    assert_eq!(
+        store
+            .get(
+                &r::Id::new("a-directory-script")?,
+                crate::authority_t2_support::deadline()
+            )
+            .await?
+            .unwrap()
+            .storage_revision,
+        before
+    );
+    let long_name = (0..256)
+        .map(|i| {
+            ring::digest::digest(&ring::digest::SHA256, format!("directory-{i}").as_bytes())
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        })
+        .collect::<String>();
+    resource_change(&store, "long-name", 0, Command::Create(r::Kind::Script)).await?;
+    resource_change(
+        &store,
+        "long-name",
+        1,
+        Command::Present(serde_json::from_value(
+            json!({"name":long_name,"description":"合法\n多行","category":"Unindexed"}),
         )?),
     )
     .await?;
@@ -139,35 +208,40 @@ pub(super) async fn all(c: &Context, p: &AuthorizedPrincipal) -> Result<Fixtures
         .bind(tenant).bind(organization).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(Vec::<u8>::new()).execute(&mut *tx).await?;
     for index in 0..3 {
         let selected = index == 2;
-        let name = if selected {
+        let name = if index >= 1 {
             "Zulu Éclair directory"
         } else {
             "Earlier unrelated entry"
         };
         let certificate = Uuid::from_u128(1000 + index);
         let metadata = rss_mdm_certificate_archive_service::Metadata(serde_json::from_value(
-            json!({"name":name,"category":"Identity","owner":"IT","notes":"directory proof","labels":["managed","mac"],"usages":["client"]}),
+            json!({"name":name,"category":"Identity","owner":"IT","notes":"directory proof","labels":if index==1 {vec!["managed"]} else {vec!["managed","mac"]},"usages":["client"]}),
         )?);
         metadata.validate()?;
         sqlx::query("INSERT INTO mdm_certificate_archive.entries(tenant_id,id,revision,retired,recommended_version) VALUES($1,$2,1,false,1)").bind(tenant).bind(certificate).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_certificate_archive.versions(tenant_id,entry_id,version,actor,instance,operation_id,created_at,metadata,facts,sealed,source) VALUES($1,$2,1,$3,$4,$5,1,$6,'[]',$7,'metadata')")
             .bind(tenant).bind(certificate).bind(p.principal_id()).bind(instance).bind(Uuid::new_v4()).bind(serde_json::to_value(metadata)?).bind(Vec::<u8>::new()).execute(&mut *tx).await?;
+        let ordinary_name = if selected {
+            "Zulu Éclair directory"
+        } else {
+            "Earlier unrelated entry"
+        };
         let webhook = Uuid::from_u128(1000 + index);
-        let settings = json!({"presentation":{"name":name},"endpoint":"https://receiver.example.test/hook","eventTypes":["device.registered"],"selection":{"kind":"allDevices"},"keyReference":"test-key","networkReference":"test-network"});
+        let settings = json!({"presentation":{"name":ordinary_name},"endpoint":"https://receiver.example.test/hook","eventTypes":["device.registered"],"selection":{"kind":"allDevices"},"keyReference":"test-key","networkReference":"test-network"});
         serde_json::from_value::<rss_mdm_webhook_service::model::Settings>(settings.clone())?
             .validate()?;
         sqlx::query("INSERT INTO mdm_webhook.subscriptions(tenant_id,id,revision,target_version,enabled,settings) VALUES($1,$2,1,1,true,$3)").bind(tenant).bind(webhook).bind(&settings).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_webhook.versions(tenant_id,subscription,version,settings) VALUES($1,$2,1,$3)").bind(tenant).bind(webhook).bind(&settings).execute(&mut *tx).await?;
         let profile = Uuid::from_u128(1000 + index);
         sqlx::query("INSERT INTO mdm_apple.ade_profiles(tenant_id,organization,id,revision,configuration) VALUES($1,$2,$3,1,$4)")
-            .bind(tenant).bind(organization).bind(profile).bind(json!({"name":name,"mandatory":true,"removable":false,"skip":["AppleID","Siri"]})).execute(&mut *tx).await?;
+            .bind(tenant).bind(organization).bind(profile).bind(json!({"name":name,"mandatory":true,"removable":false,"skip":if index==1 {vec!["AppleID"]} else {vec!["AppleID","Siri"]}})).execute(&mut *tx).await?;
         let compliance = Uuid::from_u128(1000 + index);
         let condition: assets::InventoryCondition = serde_json::from_value(
             json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.name","op":"eq","value":{"kind":"string","value":"test"}}}),
         )?;
         condition.validate()?;
         let definition: rss_mdm_compliance_service::Definition = serde_json::from_value(
-            json!({"presentation":{"name":name},"severity":"low","enabled":true,"platform":"all","target":{"kind":"groups","ids":[group]},"criteria":condition}),
+            json!({"presentation":{"name":ordinary_name},"severity":"low","enabled":true,"platform":"all","target":{"kind":"groups","ids":[group]},"criteria":condition}),
         )?;
         definition.validate()?;
         sqlx::query(
@@ -195,13 +269,13 @@ pub(super) async fn all(c: &Context, p: &AuthorizedPrincipal) -> Result<Fixtures
         };
         let canonical = assets::rsql::QueryInput::from_query(query.clone())?;
         sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document,filter_text) VALUES($1,$2,$3,$4,1,$5,$6)")
-            .bind(tenant).bind(instance).bind(principal).bind(saved).bind(json!({"name":name,"query":query})).bind(canonical.filter).execute(&mut *tx).await?;
+            .bind(tenant).bind(instance).bind(principal).bind(saved).bind(json!({"name":ordinary_name,"query":query})).bind(canonical.filter).execute(&mut *tx).await?;
         let user_group = Uuid::from_u128(1000 + index);
         sqlx::query("INSERT INTO mdm_access.user_groups(tenant_id,instance,id,revision,document) VALUES($1,$2,$3,1,$4)")
-            .bind(tenant).bind(instance).bind(user_group).bind(json!({"name":name,"enabled":true,"members":[]})).execute(&mut *tx).await?;
+            .bind(tenant).bind(instance).bind(user_group).bind(json!({"name":ordinary_name,"enabled":true,"members":[]})).execute(&mut *tx).await?;
         let key = Uuid::from_u128(1000 + index);
         let metadata: access::api_key::KeyMetadata = serde_json::from_value(
-            json!({"name":name,"enabled":true,"expiresAt":null,"grants":[{"operation":"resource_read","scope":{"kind":"tenant"}}]}),
+            json!({"name":ordinary_name,"enabled":true,"expiresAt":null,"grants":[{"operation":"resource_read","scope":{"kind":"tenant"}}]}),
         )?;
         metadata.validate()?;
         sqlx::query("INSERT INTO mdm_access.api_keys(tenant_id,instance,id,revision,authority_revision,credential_revision,metadata,secret_digest,created_by,created_at) VALUES($1,$2,$3,1,1,1,$4,$5,$6,1)")
@@ -250,6 +324,22 @@ pub(super) async fn all(c: &Context, p: &AuthorizedPrincipal) -> Result<Fixtures
         received_at: 1,
         actor: Some(p.principal_id().into()),
     };
+    let key = rss_mdm_inventory::FieldKey::parse("device.name")?;
+    let catalog = rss_mdm_inventory_postgres::catalog_in(&mut tx, c.tenant).await?;
+    let mut field = catalog.definition(key).cloned().unwrap_or_else(|_| {
+        let mut field = rss_mdm_inventory::builtin::fields()
+            .into_iter()
+            .find(|f| f.key == rss_mdm_inventory::builtin::ASSET_TAG)
+            .unwrap();
+        field.key = key;
+        field
+    });
+    let expected = catalog.definition(key).map_or(0, |f| f.version);
+    field.version = expected + 1;
+    field.sensitivity = rss_mdm_inventory::Sensitivity::Sensitive;
+    assert!(
+        rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, expected, &field).await?
+    );
     assert_eq!(
         rss_mdm_inventory_postgres::assign_in(
             &mut tx,
@@ -288,48 +378,6 @@ async fn resource_change(
     Ok(())
 }
 
-pub(super) async fn projection_atomicity(c: &Context, p: &AuthorizedPrincipal) -> Result<()> {
-    let mut tx = seed_transaction(c).await?;
-    let id: Uuid = sqlx::query_scalar("SELECT id FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND instance=$2::uuid AND owner=$3::uuid ORDER BY id LIMIT 1")
-        .bind(c.tenant.to_string()).bind(p.instance_id()).bind(p.principal_id()).fetch_one(&mut *tx).await?;
-    let before: Option<String> = sqlx::query_scalar(
-        "SELECT filter_text FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(id)
-    .fetch_one(&mut *tx)
-    .await?;
-    sqlx::query(
-        "UPDATE mdm_assets.saved_queries SET filter_text=NULL WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(id)
-    .execute(&mut *tx)
-    .await?;
-    assets::saved_directory::rebuild_filter_text(&mut tx, Uuid::parse_str(p.tenant_id())?).await?;
-    let rebuilt: Option<String> = sqlx::query_scalar(
-        "SELECT filter_text FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(id)
-    .fetch_one(&mut *tx)
-    .await?;
-    assert_eq!(before, rebuilt);
-    sqlx::query("UPDATE mdm_assets.saved_queries SET document=NULL,filter_text=NULL WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).execute(&mut *tx).await?;
-    tx.rollback().await?;
-    let mut tx = seed_transaction(c).await?;
-    let after: Option<String> = sqlx::query_scalar(
-        "SELECT filter_text FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(id)
-    .fetch_one(&mut *tx)
-    .await?;
-    assert_eq!(before, after);
-    tx.rollback().await?;
-    Ok(())
-}
-
 pub(super) async fn execution_plans(c: &Context) -> Result<()> {
     let mut tx = seed_transaction(c).await?;
     // Bulk legal headers and projections derive from one real Resource in this isolated tenant.
@@ -338,30 +386,27 @@ pub(super) async fn execution_plans(c: &Context) -> Result<()> {
     sqlx::query("ANALYZE mdm_resource.aggregates")
         .execute(&mut *tx)
         .await?;
-    for (label, predicate) in [
-        (
-            "name",
-            "strpos(lower((directory#>>'{presentation,name}') COLLATE pg_catalog.\"pg_c_utf8\"),lower('éclair' COLLATE pg_catalog.\"pg_c_utf8\"))>0",
-        ),
-        (
-            "category",
-            "(directory#>>'{presentation,category}') COLLATE \"C\"='Tools'",
-        ),
-        ("status", "(directory#>>'{active}')::boolean=true"),
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id LIKE 'bench-directory-%'").bind(c.tenant.to_string()).fetch_one(&mut *tx).await?;
+    assert_eq!(count, 10000);
+    for (label, filter, expected) in [
+        ("name", "presentation.name=icontains=éclair", 2),
+        ("category", "presentation.category==Tools", 2),
+        ("status", "active==true", 1),
     ] {
-        let mut sql = sqlx::QueryBuilder::new(
-            "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT id,revision,document,digest,directory FROM mdm_resource.aggregates WHERE tenant_id=",
-        );
-        sql.push_bind(c.tenant.to_string())
-            .push("::uuid AND ")
-            .push(predicate)
-            .push(" ORDER BY id COLLATE \"C\" LIMIT 2");
+        let q = rss_mdm_resource_postgres::directory::schema()
+            .parse(&format!("filter={filter}&limit=1"))?;
+        let mut sql = sqlx::QueryBuilder::new("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ");
+        rss_mdm_resource_postgres::directory::select(&mut sql, c.tenant, &q, None)?;
         let plan: Value = sql.build_query_scalar().fetch_one(&mut *tx).await?;
         eprintln!("Resource directory {label} EXPLAIN: {plan}");
-        assert!(plan[0]["Plan"].is_object());
+        assert_eq!(plan[0]["Plan"]["Actual Rows"], expected);
         assert!(!plan.to_string().contains("convert_from"));
+        if label == "status" {
+            assert!(plan.to_string().contains("resource_directory_active"));
+        }
     }
-    tx.commit().await?;
+
+    tx.rollback().await?;
     Ok(())
 }
 
@@ -382,5 +427,30 @@ pub(super) async fn saved_projection(
         assert!(filter.is_none());
     }
     tx.rollback().await?;
+    Ok(())
+}
+
+pub(super) async fn corrupt_resource(c: &Context, corrupt: bool) -> Result<()> {
+    let mut tx = seed_transaction(c).await?;
+    sqlx::query("UPDATE mdm_resource.aggregates SET directory=jsonb_set(directory,'{presentation,name}',to_jsonb($2::text)) WHERE tenant_id=$1::uuid AND id='b-directory-script'")
+        .bind(c.tenant.to_string()).bind(if corrupt {"corrupt projection"} else {"Earlier unrelated item"}).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+pub(super) async fn corrupt_saved(c: &Context, corrupt: bool) -> Result<()> {
+    let mut tx = seed_transaction(c).await?;
+    sqlx::query(
+        "UPDATE mdm_assets.saved_queries SET filter_text=$2 WHERE tenant_id=$1::uuid AND id=$3",
+    )
+    .bind(c.tenant.to_string())
+    .bind(if corrupt {
+        "device.name==corrupt"
+    } else {
+        "device.name==test"
+    })
+    .bind(Uuid::from_u128(1000))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }

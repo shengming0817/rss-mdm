@@ -5,10 +5,6 @@ mod artifacts;
 mod codec;
 pub mod directory;
 mod directory_projection;
-/// Installer-only rebuild of the derived Resource directory.
-pub use directory_projection::rebuild as rebuild_directory;
-/// Atomic directory projection and indexes, applied by the privileged installer.
-pub const DIRECTORY_SQL: &str = include_str!("../migrations/directory.sql");
 pub use artifacts::{PROFILE_REFERENCE_FACTS_SQL, artifact_referenced_in, profile_references_in};
 
 mod error;

@@ -3,6 +3,7 @@ use rss_mdm_query::{
     Error as QueryError,
     directory::{Field, Kind, Position, Query, Schema},
 };
+use rss_mdm_query_postgres::Source;
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use serde_json::Value;
 use uuid::Uuid;
@@ -16,88 +17,31 @@ pub enum Error {
     #[error(transparent)]
     Storage(#[from] PgError),
 }
-/// Management Policy directory fields.
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    use rss_mdm_query::directory::Exclusion;
-    Schema::derived::<Row>("policies", &["id"], 64, 1000, &[
-        Exclusion { path: "definition.action.parameters", reason: "Dynamic Resource parameter names and fixed values require the Resource's sensitivity/type authority" },
-        Exclusion { path: "definition.action.rollout.stages", reason: "Rollout object arrays require same-stage conditions" },
-        Exclusion { path: "definition.selfService.access.selectors", reason: "Access selector object arrays require same-selector conditions" },
-    ]).and_then(|s| s.no_range("definition.action.resource.version"))
-    .expect("Policy public model is fully described")
-});
-static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
-    std::sync::LazyLock::new(|| {
-        use rss_mdm_query_postgres::{Bindings, Source};
-        Bindings::new(
-            &SCHEMA,
-            &[
-                Source::column("id", "id::text COLLATE \"C\""),
-                Source::column(
-                    "toolName",
-                    "('policy_' || replace(id::text,'-','')) COLLATE \"C\"",
-                ),
-                Source::column("alias", "(definition->>'alias') COLLATE \"C\""),
-                Source::column("customEvent", "(definition->>'customEvent') COLLATE \"C\""),
-                Source::column("revision", "revision"),
-                Source::column("version", "version_number"),
-                Source::column("versionId", "current_version::text COLLATE \"C\""),
-                Source::column("state", "state COLLATE \"C\""),
-                Source::column("action", "(definition->'action'->>'kind') COLLATE \"C\""),
-                Source::column("scope", "(definition->>'scope') COLLATE \"C\""),
-                Source::column(
-                    "resource",
-                    "(definition->'action'->'resource'->>'id') COLLATE \"C\"",
-                ),
-                Source::column(
-                    "category",
-                    "(definition->'selfService'->'presentation'->>'category') COLLATE \"C\"",
-                ),
-                Source::json("definition", "definition"),
-            ],
-        )
-        .expect("Policy storage binds every public field")
-    });
-/// Return the same storage-checked directory used by execution and HTTP descriptions.
-pub fn schema() -> &'static Schema {
-    BINDINGS.schema()
-}
-/// Parse using the complete, storage-checked field model.
-pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
-    schema().parse(raw)
-}
-/// The actual SQL directory row, before caller-selected fields are projected away.
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-/// Public directory row before selection removes unrequested output fields.
-pub struct Row {
-    /// Stable object identity within the tenant.
-    pub id: Uuid,
-    /// Derived canonical policy tool address.
-    pub tool_name: String,
-    /// Optional authored business address.
-    pub alias: Option<rss_mdm_agent_wire::runtime::PolicyAlias>,
-    /// Optional authored event address.
-    pub custom_event: Option<rss_mdm_agent_wire::runtime::PolicyEventName>,
-    /// Current compare-and-swap revision.
-    pub revision: i64,
-    /// Current business version number.
-    pub version: i64,
-    /// Current immutable version identity.
-    pub version_id: Uuid,
-    /// Current policy lifecycle state.
-    pub state: rss_mdm_policy::State,
-    /// Current authored policy definition.
-    pub definition: rss_mdm_policy::Definition,
-    /// Current action discriminator.
-    pub action: rss_mdm_policy::ActionKind,
-    /// Associated Scope identity.
-    pub scope: Uuid,
-    /// Resource selected by the action, when applicable.
-    pub resource: Option<String>,
-    /// Public self-service category, when configured.
-    pub category: Option<String>,
-}
+/// Trusted current Policy storage roots; checked against the service model.
+pub static SOURCES: &[rss_mdm_query_postgres::Source] = &[
+    Source::column("id", "id::text COLLATE \"C\""),
+    Source::column(
+        "toolName",
+        "('policy_' || replace(id::text,'-','')) COLLATE \"C\"",
+    ),
+    Source::column("alias", "(definition->>'alias') COLLATE \"C\""),
+    Source::column("customEvent", "(definition->>'customEvent') COLLATE \"C\""),
+    Source::column("revision", "revision"),
+    Source::column("version", "version_number"),
+    Source::column("versionId", "current_version::text COLLATE \"C\""),
+    Source::column("state", "state COLLATE \"C\""),
+    Source::column("action", "(definition->'action'->>'kind') COLLATE \"C\""),
+    Source::column("scope", "(definition->>'scope') COLLATE \"C\""),
+    Source::column(
+        "resource",
+        "(definition->'action'->'resource'->>'id') COLLATE \"C\"",
+    ),
+    Source::column(
+        "category",
+        "(definition->'selfService'->'presentation'->>'category') COLLATE \"C\"",
+    ),
+    Source::json("definition", "definition"),
+];
 /// Event batch directory fields.
 pub static BATCHES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "policy_event_batches",
@@ -157,15 +101,16 @@ pub async fn policies_in(
     tx: &mut PgTransaction<'_>,
     q: &Query,
     after: Option<&Position>,
+    bindings: &rss_mdm_query_postgres::Bindings,
 ) -> Result<Vec<Value>, Error> {
-    q.require_schema(schema())?;
+    q.require_schema(bindings.schema())?;
     let mut sql =
         sqlx::QueryBuilder::new(crate::storage_profile::sql(profile).directory_policies_in_1);
     sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
     if !q.mentions("state") {
         sql.push(" AND state<>'archived'");
     }
-    rss_mdm_query_postgres::append(&mut sql, q, after, &*BINDINGS)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after, bindings)?;
     Ok(tx
         .with_connection(move |c| {
             Box::pin(async move { sql.build_query_scalar().fetch_all(c).await })

@@ -4,7 +4,9 @@ use schemars::JsonSchema;
 
 #[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
 struct Metadata {
+    #[schemars(length(max = 128))]
     name: String,
+    #[schemars(length(max = 128))]
     added: Option<String>,
     labels: Vec<String>,
 }

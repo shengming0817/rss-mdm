@@ -62,6 +62,7 @@ pub enum Command {
 #[derive(schemars::JsonSchema, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Setup {
+    #[schemars(length(min = 1, max = 128))]
     pub name: String,
     pub mandatory: bool,
     pub removable: bool,

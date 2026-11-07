@@ -19,11 +19,8 @@ impl ResourceStore {
         if q.require_schema(schema()).is_err() {
             return Ok(Err(Rejection::InvalidInput));
         }
-        let mut sql = QueryBuilder::<Postgres>::new(
-            "SELECT id,revision,document,digest,directory FROM mdm_resource.aggregates WHERE tenant_id=",
-        );
-        sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
-        if rss_mdm_query_postgres::append(&mut sql, q, after, &*BINDINGS).is_err() {
+        let mut sql = QueryBuilder::<Postgres>::new("");
+        if select(&mut sql, tx.tenant_id(), q, after).is_err() {
             return Ok(Err(Rejection::InvalidInput));
         }
         let tenant = tx.tenant_id();
@@ -49,7 +46,7 @@ impl ResourceStore {
                         ) {
                             Ok(item) => {
                                 let expected: serde_json::Value = row.try_get("directory")?;
-                                if !serde_json::to_value(&item)
+                                if !crate::directory_projection::from_record(&item)
                                     .is_ok_and(|actual| actual == expected)
                                 {
                                     return Ok(Err(STORAGE.fault("directory projection")));
@@ -65,6 +62,17 @@ impl ResourceStore {
             .await?;
         Ok(Ok(result?))
     }
+}
+/// Append the owner's complete SELECT, reusable for real PostgreSQL execution-plan inspection.
+pub fn select(
+    sql: &mut QueryBuilder<'_, Postgres>,
+    tenant: rss_request_context::TenantId,
+    q: &Query,
+    after: Option<&Position>,
+) -> rss_mdm_query::Result<()> {
+    q.require_schema(schema())?;
+    sql.push("SELECT id,revision,document,digest,directory FROM mdm_resource.aggregates WHERE tenant_id=").push_bind(tenant.to_string()).push("::uuid");
+    rss_mdm_query_postgres::append(sql, q, after, &*BINDINGS)
 }
 static BINDINGS: std::sync::LazyLock<Bindings> = std::sync::LazyLock::new(|| {
     Bindings::new(

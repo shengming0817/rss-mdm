@@ -524,13 +524,5 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "da-shared-owner-grants-v1",
             include_str!("../../schema/da-shared-grants.sql"),
         ),
-        (
-            "inventory-saved-query-directory-v1",
-            rss_mdm_inventory_service::SAVED_QUERY_DIRECTORY_SQL,
-        ),
-        (
-            "resource-directory-v1",
-            rss_mdm_resource_postgres::DIRECTORY_SQL,
-        ),
     ]
 }

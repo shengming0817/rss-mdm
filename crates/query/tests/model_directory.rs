@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(JsonSchema, Serialize, Deserialize)]
 struct Metadata {
+    #[schemars(length(max = 128))]
     name: String,
     category: Option<String>,
     labels: Vec<String>,
@@ -68,6 +69,7 @@ fn model_is_the_field_authority_and_capabilities_are_executable() {
 
 #[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
 struct ExtendedMetadata {
+    #[schemars(length(max = 128))]
     name: String,
     category: Option<String>,
     labels: Vec<String>,
@@ -151,4 +153,36 @@ fn tagged_variants_merge_vocabularies_and_missing_properties_without_cross_eleme
             .is_ok()
     );
     assert!(schema.parse("filter=selection.kind==other").is_err());
+}
+
+#[test]
+fn directory_rejects_paths_outside_the_query_grammar_budget() {
+    let child = "c".repeat(100);
+    let parent = "p".repeat(50);
+    let model = serde_json::json!({"type":"object","required":["id"],"properties":{"id":{"type":"integer"},parent:{"type":"object","properties":{child:{"type":"string"}}}}});
+    assert!(Schema::from_model("long_path", &["id"], 1, 10, &model, &[]).is_err());
+}
+
+#[test]
+fn unbounded_text_filters_but_sort_combinations_must_fit_the_cursor() {
+    assert!(MODEL.field("metadata.category").unwrap().filter);
+    assert!(!MODEL.field("metadata.category").unwrap().sort);
+    assert!(MODEL.parse("sort=metadata.category").is_err());
+    #[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+    struct Bounded {
+        id: i64,
+        #[schemars(length(max = 256))]
+        a: String,
+        #[schemars(length(max = 256))]
+        b: String,
+    }
+    let model = Box::leak(Box::new(
+        Schema::derived::<Bounded>("bounded", &["id"], 1, 2, &[]).unwrap(),
+    ));
+    assert!(model.parse("sort=a,b").is_err());
+    let query = model.parse("sort=a").unwrap();
+    let row = serde_json::json!({"id":1,"a":"合法\n多行","b":""});
+    let position = query.position(&row).unwrap();
+    let codec = rss_mdm_query::cursor::CursorCodec::new(&[1; 32]).unwrap();
+    assert!(codec.encode("bounded", &position).is_ok());
 }

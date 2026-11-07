@@ -105,6 +105,8 @@ ALTER TABLE ONLY mdm_assets.operations FORCE ROW LEVEL SECURITY;
 
 
 CREATE TABLE mdm_assets.saved_queries (
+    filter_text text CHECK(filter_text IS NULL OR octet_length(filter_text)<=8192),
+    CONSTRAINT saved_queries_filter_text_deleted CHECK(document IS NOT NULL OR filter_text IS NULL),
     tenant_id uuid NOT NULL,
     instance uuid NOT NULL,
     owner uuid NOT NULL,
@@ -161,6 +163,8 @@ ALTER TABLE ONLY mdm_assets.saved_queries
 ALTER TABLE ONLY mdm_inventory.collection_operations
     ADD CONSTRAINT collection_operations_pkey PRIMARY KEY (tenant_id, actor, operation_id);
 
+
+CREATE INDEX saved_queries_name_directory ON mdm_assets.saved_queries(tenant_id,instance,owner,((document->>'name') COLLATE "C"),id);
 
 CREATE INDEX asset_query_results_order ON mdm_assets.asset_query_results USING btree (tenant_id, run, sort_key, device);
 

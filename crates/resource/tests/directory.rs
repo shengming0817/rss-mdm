@@ -39,7 +39,7 @@ fn shared_binding_preserves_resource_invariants_and_includes_metadata() {
     }
 }
 #[test]
-fn projection_retains_extensions_and_nested_seek_is_independent_of_output() {
+fn projection_retains_extensions_and_seek_is_independent_of_output() {
     let row = Record {
         id: Id::new("a").unwrap(),
         revision: 3,
@@ -50,12 +50,12 @@ fn projection_retains_extensions_and_nested_seek_is_independent_of_output() {
             .unwrap(),
     };
     let q = SCHEMA
-        .parse("fields=presentation&sort=presentation.name,-revision")
+        .parse("fields=presentation&sort=activeVersion,-revision")
         .unwrap();
     let value = serde_json::to_value(&row).unwrap();
     assert_eq!(
         q.position(&value).unwrap().0,
-        vec![json!("Éclair"), json!(3), json!("a")]
+        vec![json!(null), json!(3), json!("a")]
     );
     assert_eq!(
         serde_json::to_value(q.project_typed(row).unwrap()).unwrap(),

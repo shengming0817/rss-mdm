@@ -6,7 +6,6 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-schemars.workspace = true
 rss-transactional-messaging-postgres.workspace = true
 rss-mdm-query-postgres.workspace = true
 rss-mdm-query.workspace = true

@@ -126,35 +126,6 @@ async fn apply_schema(
         )
         .await?;
     }
-    if matches!(
-        name,
-        "inventory-saved-query-directory-v1" | "resource-directory-v1"
-    ) {
-        let tenants: Vec<uuid::Uuid> =
-            sqlx::query_scalar("SELECT tenant_id FROM public.mdm_tenants ORDER BY tenant_id")
-                .fetch_all(&mut **tx)
-                .await
-                .map_err(|_| MigrationError::at(name, "projection tenants"))?;
-        for tenant in tenants {
-            if name == "resource-directory-v1" {
-                rss_mdm_resource_postgres::rebuild_directory(&mut **tx, tenant)
-                    .await
-                    .map_err(|_| MigrationError::at(name, "Resource directory projection"))?;
-            } else {
-                rss_mdm_inventory_service::assets::saved_directory::rebuild_filter_text(
-                    &mut **tx, tenant,
-                )
-                .await
-                .map_err(|_| MigrationError::at(name, "saved query projection"))?;
-            }
-        }
-    }
-    if name == "resource-directory-v1" {
-        sqlx::query("ALTER TABLE mdm_resource.aggregates ALTER COLUMN directory SET NOT NULL")
-            .execute(&mut **tx)
-            .await
-            .map_err(|_| MigrationError::at(name, "Resource projection required"))?;
-    }
     if name == "scope-group-changes-v1" {
         rss_transactional_messaging_postgres::grant_local_projection(
             tx,

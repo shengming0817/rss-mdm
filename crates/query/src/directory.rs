@@ -145,6 +145,20 @@ impl Query {
                 });
             }
         }
+        // Derived sortable fields carry conservative encoded bounds. Admission occurs before SQL.
+        // Explicit catalogs without model bounds retain their owner-defined sorting policy.
+        let bounds: Option<Vec<usize>> = sort
+            .iter()
+            .map(|s| schema.field(&s.field).ok().and_then(|f| f.sort_bytes))
+            .collect();
+        if bounds.is_some_and(|bounds| {
+            bounds
+                .into_iter()
+                .try_fold(0usize, |sum, n| sum.checked_add(n + 1))
+                .is_none_or(|sum| sum > 2500)
+        }) {
+            return Err(Error::Budget);
+        }
         let mut fields = p.fields.unwrap_or_else(|| {
             schema
                 .fields
@@ -249,7 +263,7 @@ impl Query {
             return Err(Error::CursorInvalidated);
         }
         for (s, v) in self.sort.iter().zip(&position.0) {
-            if !v.is_null() && !self.schema.field(&s.field)?.valid(v) {
+            if !v.is_null() && !self.schema.field(&s.field)?.valid_position(v) {
                 return Err(Error::CursorInvalidated);
             }
         }

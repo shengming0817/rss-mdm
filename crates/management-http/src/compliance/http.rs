@@ -128,7 +128,7 @@ async fn list(
         Json<
             rss_mdm_query::Page<
                 rss_mdm_query::directory::Projection<
-                    rss_mdm_compliance_postgres::directory::DirectoryRow<
+                    rss_mdm_compliance_service::directory::DirectoryRow<
                         rss_mdm_inventory_service::assets::InventoryCondition,
                     >,
                 >,

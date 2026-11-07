@@ -3802,7 +3802,6 @@ dependencies = [
  "rss-mdm-query-postgres",
  "rss-request-context",
  "rss-transactional-messaging-postgres",
- "schemars",
  "serde",
  "serde_json",
  "sqlx",
@@ -3813,6 +3812,7 @@ dependencies = [
 name = "rss-mdm-compliance-service"
 version = "0.1.0"
 dependencies = [
+ "rss-mdm-query-postgres",
  "ring",
  "rss-contract",
  "rss-mdm-audit-integration",
@@ -4208,6 +4208,7 @@ dependencies = [
 name = "rss-mdm-group-service"
 version = "0.1.0"
 dependencies = [
+ "rss-mdm-query-postgres",
  "ring",
  "rss-contract",
  "rss-mdm-agent-wire",
@@ -4420,9 +4421,6 @@ dependencies = [
  "rss-mdm-device-service",
  "rss-mdm-group-service",
  "rss-mdm-http-contract",
- "rss-mdm-group-postgres",
- "rss-mdm-policy-postgres",
- "rss-mdm-compliance-postgres",
  "rss-mdm-install-support",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",

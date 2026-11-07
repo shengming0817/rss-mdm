@@ -322,14 +322,25 @@ impl ResourceStore {
             return Ok(Err(Rejection::IdentityConflict));
         }
         if changed {
-            crate::directory_projection::write_in(
-                tx,
+            let record = crate::codec::directory_header(
+                &document,
+                self.tenant,
                 r.resource.as_str(),
-                if create { None } else { Some(revision) },
-                next,
-                document,
-            )
-            .await?;
+                STORAGE.integer("resource revision", i64::try_from(next))?,
+            )?;
+            let directory = crate::directory_projection::from_record(&record)?;
+            STORAGE
+                .write(
+                    tx,
+                    r.resource.as_str(),
+                    if create { None } else { Some(revision) },
+                    next,
+                    rss_mdm_backend_postgres_support::AggregateDocument::Resource {
+                        document,
+                        directory,
+                    },
+                )
+                .await?;
             if let Command::Insert(v) = &r.command {
                 STORAGE
                     .freeze(

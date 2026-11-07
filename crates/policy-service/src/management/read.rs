@@ -1,8 +1,7 @@
 use super::*;
-use rss_mdm_policy_postgres::directory::Row;
-pub use rss_mdm_policy_postgres::directory::{SCHEMA, parse};
+
 pub fn schema() -> &'static rss_mdm_query::directory::Schema {
-    rss_mdm_policy_postgres::directory::schema()
+    BINDINGS.schema()
 }
 use rss_mdm_query::{cursor::CursorCodec, directory::Query};
 pub async fn read(
@@ -71,9 +70,14 @@ pub async fn list(
                     .map_err(crate::query_error)?;
                 let codec = CursorCodec::from_key(s.cursor_key.clone());
                 let after = q.after(&codec, &binding).map_err(crate::query_error)?;
-                let items =
-                    rss_mdm_policy_postgres::directory::policies_in(profile, tx, q, after.as_ref())
-                        .await?;
+                let items = rss_mdm_policy_postgres::directory::policies_in(
+                    profile,
+                    tx,
+                    q,
+                    after.as_ref(),
+                    &BINDINGS,
+                )
+                .await?;
                 let items: Vec<Row> = stored(serde_json::from_value(json!(items)))?;
                 for item in &items {
                     item.definition.validate()?;
@@ -229,3 +233,57 @@ pub async fn work_receipt(
     )
     .await
 }
+
+pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
+    schema().parse(raw)
+}
+
+use rss_mdm_query::directory::Schema;
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    use rss_mdm_query::directory::Exclusion;
+    Schema::derived::<Row>("policies", &["id"], 64, 1000, &[
+        Exclusion { path: "definition.action.parameters", reason: "Dynamic Resource parameter names and fixed values require the Resource's sensitivity/type authority" },
+        Exclusion { path: "definition.action.rollout.stages", reason: "Rollout object arrays require same-stage conditions" },
+        Exclusion { path: "definition.selfService.access.selectors", reason: "Access selector object arrays require same-selector conditions" },
+    ]).and_then(|s| s.no_range("definition.action.resource.version"))
+    .expect("Policy public model is fully described")
+});
+
+/// The actual SQL directory row, before caller-selected fields are projected away.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Public directory row before selection removes unrequested output fields.
+pub struct Row {
+    /// Stable object identity within the tenant.
+    pub id: Uuid,
+    /// Derived canonical policy tool address.
+    pub tool_name: String,
+    /// Optional authored business address.
+    pub alias: Option<rss_mdm_agent_wire::runtime::PolicyAlias>,
+    /// Optional authored event address.
+    pub custom_event: Option<rss_mdm_agent_wire::runtime::PolicyEventName>,
+    /// Current compare-and-swap revision.
+    pub revision: i64,
+    /// Current business version number.
+    pub version: i64,
+    /// Current immutable version identity.
+    pub version_id: Uuid,
+    /// Current policy lifecycle state.
+    pub state: rss_mdm_policy::State,
+    /// Current authored policy definition.
+    pub definition: rss_mdm_policy::Definition,
+    /// Current action discriminator.
+    pub action: rss_mdm_policy::ActionKind,
+    /// Associated Scope identity.
+    pub scope: Uuid,
+    /// Resource selected by the action, when applicable.
+    pub resource: Option<String>,
+    /// Public self-service category, when configured.
+    pub category: Option<String>,
+}
+
+static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(&SCHEMA, rss_mdm_policy_postgres::directory::SOURCES)
+            .expect("Complete service model binding")
+    });

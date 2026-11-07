@@ -231,8 +231,11 @@ impl Grant {
 )]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct User {
+    #[schemars(with = "Uuid")]
     pub instance_id: String,
+    #[schemars(with = "Uuid")]
     pub tenant_id: String,
+    #[schemars(with = "Uuid")]
     pub principal_id: String,
 }
 impl User {

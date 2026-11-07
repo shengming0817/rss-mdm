@@ -130,7 +130,7 @@ async fn list(
     rss_mdm_http_contract::CollectionResponse<
         Json<
             rss_mdm_query::Page<
-                rss_mdm_query::directory::Projection<rss_mdm_policy_postgres::directory::Row>,
+                rss_mdm_query::directory::Projection<rss_mdm_policy_service::management::read::Row>,
             >,
         >,
     >,

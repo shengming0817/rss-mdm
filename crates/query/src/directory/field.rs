@@ -63,10 +63,22 @@ pub struct Field {
     pub(crate) constraints: Value,
     pub(crate) reason: Option<String>,
     pub(crate) validator: Option<fn(&Value) -> bool>,
+    pub(crate) sort_bytes: Option<usize>,
 }
 impl Field {
     pub fn scalar(name: &str, kind: Kind) -> Self {
         let sort = !kind.collection() && !matches!(kind, Kind::Object | Kind::ObjectSet);
+        let sort_bytes = match &kind {
+            Kind::Uuid => Some(38),
+            Kind::Integer => Some(20),
+            Kind::Number => Some(32),
+            Kind::Boolean => Some(5),
+            Kind::Enum(values) => values
+                .iter()
+                .filter_map(|v| serde_json::to_vec(v).ok().map(|v| v.len()))
+                .max(),
+            _ => None,
+        };
         Self {
             name: name.into(),
             kind,
@@ -78,6 +90,7 @@ impl Field {
             constraints: Value::Null,
             reason: None,
             validator: None,
+            sort_bytes,
         }
     }
     pub fn output(name: &str) -> Self {
@@ -133,6 +146,40 @@ impl Field {
         }
         ops
     }
+    pub(crate) fn model_sort(&mut self) {
+        if let Kind::Enum(values) = &self.kind {
+            self.sort_bytes = values
+                .iter()
+                .filter_map(|v| serde_json::to_vec(v).ok().map(|v| v.len()))
+                .max();
+        }
+        if matches!(self.kind, Kind::Text) {
+            self.sort_bytes = self
+                .constraints
+                .get("maxLength")
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+                .and_then(|n| n.checked_mul(6))
+                .and_then(|n| n.checked_add(2));
+        }
+        if self.sort && self.sort_bytes.is_none_or(|bytes| bytes > 2300) {
+            self.sort = false;
+            self.reason=Some("Filtering and output are supported; the model does not bound this scalar to a transport-safe seek key".into());
+        }
+    }
+    pub(crate) fn valid_position(&self, value: &Value) -> bool {
+        let valid = if matches!(self.kind, Kind::Text) {
+            value.is_string()
+                && self.validator.is_none_or(|validate| validate(value))
+                && self.constrained(value)
+        } else {
+            self.valid(value)
+        };
+        valid
+            && self
+                .sort_bytes
+                .is_none_or(|limit| serde_json::to_vec(value).is_ok_and(|v| v.len() <= limit))
+    }
     pub(crate) fn valid(&self, value: &Value) -> bool {
         let shape = match self.kind.scalar() {
             Kind::Text => value
@@ -186,7 +233,7 @@ impl Field {
 }
 impl Serialize for Field {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut out = serializer.serialize_struct("Field", 9)?;
+        let mut out = serializer.serialize_struct("Field", 10)?;
         out.serialize_field("name", &self.name)?;
         out.serialize_field("kind", &self.kind)?;
         out.serialize_field("filter", &self.filter)?;
@@ -194,6 +241,7 @@ impl Serialize for Field {
         out.serialize_field("output", &self.output)?;
         out.serialize_field("nullable", &self.nullable)?;
         out.serialize_field("operators", &self.operations())?;
+        out.serialize_field("sortKeyMaxBytes", &self.sort_bytes)?;
         out.serialize_field(
             "nullSemantics",
             "missing and JSON null are SQL NULL; comparisons use three-valued logic",

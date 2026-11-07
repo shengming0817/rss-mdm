@@ -37,17 +37,6 @@ pub struct Record {
     #[schemars(with = "crate::Presentation")]
     pub presentation: Map<String, Value>,
 }
-/// Stable public kind spelling, including lexical SQL ordering.
-pub fn kind_name(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Software => "software",
-        Kind::Script => "script",
-        Kind::Configuration => "configuration",
-        Kind::NativeCollection => "native_collection",
-        Kind::AgentCollection => "agent_collection",
-        Kind::TelemetryProfile => "telemetry_profile",
-    }
-}
 /// Nested version metadata has its own query identity; the aggregate remains its sole owner.
 pub static VERSION_SCHEMA: std::sync::LazyLock<rss_mdm_query::directory::Schema> =
     std::sync::LazyLock::new(|| rss_mdm_query::directory::Schema {

@@ -43,19 +43,57 @@ pub static KEYS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
     )
     .expect("API key public model is fully described")
 });
-fn bound(schema: &'static Schema) -> rss_mdm_query_postgres::Bindings {
-    rss_mdm_query_postgres::Bindings::new(
-        schema,
-        &[rss_mdm_query_postgres::Source::json("", "row")],
-    )
-    .expect("Authorization SQL row binds the complete public directory model")
-}
 static GROUP_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
-    std::sync::LazyLock::new(|| bound(&GROUPS));
+    std::sync::LazyLock::new(|| {
+        use rss_mdm_query_postgres::{Bindings, Source};
+        Bindings::new(
+            &GROUPS,
+            &[
+                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("revision", "(row->>'revision')::bigint"),
+                Source::column("deleted", "(row->>'deleted')::boolean"),
+                Source::column("name", "(row->>'name') COLLATE \"C\""),
+                Source::column("enabled", "(row->>'enabled')::boolean"),
+                Source::column("memberCount", "(row->>'memberCount')::bigint"),
+                Source::column("value.name", "(row->'value'->>'name') COLLATE \"C\""),
+                Source::column("value.enabled", "(row->'value'->>'enabled')::boolean"),
+                Source::column(
+                    "value.memberCount",
+                    "(row->'value'->>'memberCount')::bigint",
+                ),
+            ],
+        )
+        .expect("Every synthesized group summary field has a storage expression")
+    });
 static MEMBER_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
-    std::sync::LazyLock::new(|| bound(&MEMBERS));
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &MEMBERS,
+            &[rss_mdm_query_postgres::Source::json("", "row")],
+        )
+        .expect("Stored User member owns the complete JSON root")
+    });
 static KEY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
-    std::sync::LazyLock::new(|| bound(&KEYS));
+    std::sync::LazyLock::new(|| {
+        use rss_mdm_query_postgres::{Bindings, Source};
+        Bindings::new(
+            &KEYS,
+            &[
+                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("revision", "(row->>'revision')::bigint"),
+                Source::column("authorityRevision", "(row->>'authorityRevision')::bigint"),
+                Source::column("credentialRevision", "(row->>'credentialRevision')::bigint"),
+                Source::column("name", "(row->>'name') COLLATE \"C\""),
+                Source::column("enabled", "(row->>'enabled')::boolean"),
+                Source::column("expiresAt", "(row->>'expiresAt')::bigint"),
+                Source::column("createdAt", "(row->>'createdAt')::bigint"),
+                Source::column("revoked", "(row->>'revoked')::boolean"),
+                Source::json("metadata", "row->'metadata'"),
+                Source::json("createdBy", "row->'createdBy'"),
+            ],
+        )
+        .expect("Every synthesized API key field has a storage expression")
+    });
 #[derive(Clone, Copy)]
 pub enum Directory {
     Rules,
