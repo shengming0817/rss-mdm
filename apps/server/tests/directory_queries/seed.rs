@@ -440,6 +440,7 @@ async fn device_row(c: &Context, _p: &AuthorizedPrincipal, cases: &mut Cases) ->
     tx.commit().await?;
     let sensitive = device_observations(
         c,
+        rss_mdm_inventory::Source::MdmApple,
         &[(
             "device.network.apple.host_name",
             "Zulu Éclair directory device",
@@ -448,6 +449,7 @@ async fn device_row(c: &Context, _p: &AuthorizedPrincipal, cases: &mut Cases) ->
     .await?;
     let ordinary = device_observations(
         c,
+        rss_mdm_inventory::Source::MdmWindows,
         &[
             ("device.name", "ordinary-name-target"),
             ("device.serial_number", "serial-number-target"),
@@ -468,13 +470,19 @@ async fn device_row(c: &Context, _p: &AuthorizedPrincipal, cases: &mut Cases) ->
     }
     Ok(())
 }
-async fn device_observations(c: &Context, observations: &[(&str, &str)]) -> Result<String> {
+async fn device_observations(
+    c: &Context,
+    source: rss_mdm_inventory::Source,
+    observations: &[(&str, &str)],
+) -> Result<String> {
     let object = planning::endpoint(c).await?;
     let member = &object.members[0];
     let registration = member.registration_id;
     let mut tx = seed_transaction(c).await?;
-    sqlx::query("UPDATE mdm_access.requests SET source='mdm.apple',windows_profile=NULL WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
-    sqlx::query("UPDATE mdm_access.report_sources SET source='mdm.apple' WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
+    if source == rss_mdm_inventory::Source::MdmApple {
+        sqlx::query("UPDATE mdm_access.requests SET source='mdm.apple',windows_profile=NULL WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_access.report_sources SET source='mdm.apple' WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
+    }
     let collection = Uuid::new_v4().to_string();
     let fields = observations
         .iter()
@@ -488,27 +496,23 @@ async fn device_observations(c: &Context, observations: &[(&str, &str)]) -> Resu
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let definition = rss_mdm_inventory::CollectionDefinition::new(
-        &collection,
-        "1",
-        rss_mdm_inventory::Source::MdmApple,
-        fields,
-    )?;
+    let definition =
+        rss_mdm_inventory::CollectionDefinition::new(&collection, "1", source, fields)?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &definition).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.apple'").bind(c.tenant.to_string()).bind(registration).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3").bind(c.tenant.to_string()).bind(registration).bind(source.as_str()).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
         registration,
-        "mdm.apple",
+        source.as_str(),
         epoch,
         &collection,
     )?
     .encode()?;
     let projection = rss_mdm_inventory_postgres::projection_scope(c.tenant);
     for (field, value) in observations {
-        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,'mdm.apple',$10,1,'{\"kind\":\"device\"}')")
-            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(&scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String((*value).into()))?).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,$11,$10,1,'{\"kind\":\"device\"}')")
+            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(&scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String((*value).into()))?).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(epoch.to_string()).bind(source.as_str()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(member.device.clone())
@@ -564,20 +568,7 @@ pub(super) async fn execution_plans(c: &Context) -> Result<()> {
         rss_mdm_resource_postgres::directory::select(&mut sql, c.tenant, &q, Some(&after))?;
         let plan: Value = sql.build_query_scalar().fetch_one(&mut *tx).await?;
         eprintln!("Resource directory {label} EXPLAIN: {plan}");
-        assert_eq!(plan[0]["Plan"]["Actual Rows"], 65);
-        let mut nodes = vec![&plan[0]["Plan"]];
-        let mut indexed = false;
-        while let Some(node) = nodes.pop() {
-            indexed |= node["Index Cond"]
-                .as_str()
-                .is_some_and(|cond| cond.contains("id") && cond.contains("bench-directory-45000"));
-            assert!(
-                node["Rows Removed by Filter"].as_u64().unwrap_or(0) < 128,
-                "late page scans discarded prefix: {plan}"
-            );
-            nodes.extend(node["Plans"].as_array().into_iter().flatten());
-        }
-        assert!(indexed, "late cursor is not an index range: {plan}");
+        assert_seek_index(&plan);
     }
     tx.rollback().await?;
     Ok(())
@@ -670,7 +661,7 @@ pub(super) async fn collection_semantics(c: &Context) -> Result<()> {
     }
     let tags = (0..251).map(|i| format!("field{i}")).collect::<Vec<_>>();
     let mut terms = tags[..63].to_vec();
-    terms.push("absent".into());
+    terms.push("zz_missing".into());
     let q = COLLECTION_SCHEMA.parse(&format!("filter=tags=containsall=({})", terms.join(",")))?;
     let mut sql = sqlx::QueryBuilder::new(
         "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) WITH candidates AS MATERIALIZED (SELECT jsonb_build_object('id',n,'tags',",
@@ -698,4 +689,21 @@ pub(super) async fn collection_semantics(c: &Context) -> Result<()> {
     );
     tx.rollback().await?;
     Ok(())
+}
+
+fn assert_seek_index(plan: &Value) {
+    assert_eq!(plan[0]["Plan"]["Actual Rows"], 65);
+    let mut nodes = vec![&plan[0]["Plan"]];
+    let mut indexed = false;
+    while let Some(node) = nodes.pop() {
+        indexed |= node["Index Cond"]
+            .as_str()
+            .is_some_and(|cond| cond.contains("id") && cond.contains("bench-directory-45000"));
+        assert!(
+            node["Rows Removed by Filter"].as_u64().unwrap_or(0) < 128,
+            "late page scans discarded prefix: {plan}"
+        );
+        nodes.extend(node["Plans"].as_array().into_iter().flatten());
+    }
+    assert!(indexed, "late cursor is not an index range: {plan}");
 }

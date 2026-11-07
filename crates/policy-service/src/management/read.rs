@@ -278,8 +278,10 @@ pub struct Row {
     /// Associated Scope identity.
     pub scope: Uuid,
     /// Resource selected by the action, when applicable.
+    #[schemars(length(max = rss_mdm_policy::RESOURCE_ID_MAX_BYTES))]
     pub resource: Option<String>,
     /// Public self-service category, when configured.
+    #[schemars(length(max = rss_mdm_policy::CATEGORY_MAX_BYTES))]
     pub category: Option<String>,
 }
 

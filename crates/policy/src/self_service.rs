@@ -173,11 +173,11 @@ impl SelfService {
         let fields: Presentation = serde_json::from_value(Value::Object(self.presentation.clone()))
             .map_err(|_| Error::Malformed)?;
         for (value, bound, required) in [
-            (&fields.display_name, 256, true),
-            (&fields.description, 4096, false),
-            (&fields.prerequisites, 4096, false),
-            (&fields.side_effects, 4096, false),
-            (&fields.category, 128, true),
+            (&fields.display_name, DISPLAY_NAME_MAX_BYTES, true),
+            (&fields.description, DESCRIPTION_MAX_BYTES, false),
+            (&fields.prerequisites, DESCRIPTION_MAX_BYTES, false),
+            (&fields.side_effects, DESCRIPTION_MAX_BYTES, false),
+            (&fields.category, CATEGORY_MAX_BYTES, true),
         ] {
             if value.len() > bound || (required && value.trim().is_empty()) {
                 return Err(Error::Malformed);
@@ -328,6 +328,11 @@ impl SelfServiceAccess {
     }
 }
 
+/// Maximum byte length accepted for a self-service category.
+pub const CATEGORY_MAX_BYTES: usize = 128;
+const DISPLAY_NAME_MAX_BYTES: usize = 256;
+const DESCRIPTION_MAX_BYTES: usize = 4096;
+
 fn nullable_access_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     generator.subschema_for::<Option<SelfServiceAccess>>()
 }
@@ -336,10 +341,15 @@ fn nullable_access_schema(generator: &mut schemars::SchemaGenerator) -> schemars
 #[serde(rename_all = "camelCase")]
 #[schemars(extend("additionalProperties" = {"x-rss-extension":"Bounded descriptive extensions; only typed properties are queryable"}))]
 struct Presentation {
+    #[schemars(length(max = DISPLAY_NAME_MAX_BYTES))]
     display_name: String,
+    #[schemars(length(max = DESCRIPTION_MAX_BYTES))]
     description: String,
+    #[schemars(length(max = DESCRIPTION_MAX_BYTES))]
     prerequisites: String,
+    #[schemars(length(max = DESCRIPTION_MAX_BYTES))]
     side_effects: String,
+    #[schemars(length(max = CATEGORY_MAX_BYTES))]
     category: String,
     keywords: Vec<String>,
     #[serde(flatten)]

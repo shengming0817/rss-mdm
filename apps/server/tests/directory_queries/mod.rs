@@ -168,6 +168,8 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         for filter in ["presentation.name=icontains=σ", "presentation.name=icontains=ς", "presentation.name=icontains='.'", "presentation.name=icontains='[*]'", "id=icontains='/'"] {
             assert_eq!(http.selected("/api/v1/resources",filter).await?["id"],"scripts/install");
         }
+        assert_eq!(http.selected("/api/v1/resources",r#"id==scripts/install;presentation.name=icontains='O\'Reilly'"#).await?["id"],"scripts/install");
+        assert_eq!(http.selected("/api/v1/resources",r#"presentation.name=icontains='\\工具'"#).await?["id"],"z-directory-agent_collection");
         for filter in ["presentation.name=icontains='.*'", "presentation.name=icontains='(?q)'", "presentation.name=icontains='Σx'"] {
             let (status,body)=http.get("/api/v1/resources",&[("filter",filter)]).await?;
             assert_eq!(status,200,"{body}");
@@ -366,7 +368,7 @@ async fn bounded_sort_pages(http: &Http) -> Result<()> {
             );
         }
     }
-    for sort in ["toolName", "alias", "customEvent"] {
+    for sort in ["toolName", "alias", "customEvent", "resource", "category"] {
         let (status, body) = http
             .get("/api/v1/policies", &[("sort", sort), ("limit", "1")])
             .await?;

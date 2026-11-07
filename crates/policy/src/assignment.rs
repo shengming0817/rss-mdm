@@ -6,19 +6,25 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+/// Maximum byte length for opaque Resource and variant coordinates.
+pub const RESOURCE_ID_MAX_BYTES: usize = 128;
+
 /// Exact selection for a script or native configuration.
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExactResourceBinding {
     /// Opaque resource identity.
+    #[schemars(length(min = 1, max = RESOURCE_ID_MAX_BYTES))]
     pub id: String,
     /// Immutable resource version identity.
+    #[schemars(length(min = 1, max = RESOURCE_ID_MAX_BYTES))]
     pub version: String,
     /// Requested resource platform.
     pub platform: Platform,
     /// Requested machine architecture.
     pub architecture: Architecture,
     /// Exact resource variant key.
+    #[schemars(length(min = 1, max = RESOURCE_ID_MAX_BYTES))]
     pub variant: String,
 }
 /// Supported software target coordinates.
@@ -67,6 +73,14 @@ fn target_map_schema<V: schemars::JsonSchema>(
         "additionalProperties":generator.subschema_for::<V>()
     })
 }
+fn resource_variants_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let mut schema = target_map_schema::<String>(generator);
+    schema.insert(
+        "additionalProperties".into(),
+        serde_json::json!({"type":"string","minLength":1,"maxLength":RESOURCE_ID_MAX_BYTES}),
+    );
+    schema
+}
 /// Exact software variants belonging to a single immutable resource version.
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -74,11 +88,13 @@ pub struct SoftwareResourceBinding {
     /// Closed software resource discriminator.
     pub kind: SoftwareResourceKind,
     /// Logical resource identity.
+    #[schemars(length(min = 1, max = RESOURCE_ID_MAX_BYTES))]
     pub id: String,
     /// Immutable resource version.
+    #[schemars(length(min = 1, max = RESOURCE_ID_MAX_BYTES))]
     pub version: String,
     /// Exact variant for each supported platform and architecture.
-    #[schemars(schema_with = "target_map_schema::<String>")]
+    #[schemars(schema_with = "resource_variants_schema")]
     pub variants: BTreeMap<SoftwareTarget, String>,
 }
 /// Closed resource kind for software bindings.
@@ -452,7 +468,7 @@ impl SoftwareResourceBinding {
 fn validate_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> Result<(), Error> {
     for id in ids {
         if id.is_empty()
-            || id.len() > 128
+            || id.len() > RESOURCE_ID_MAX_BYTES
             || !id
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
