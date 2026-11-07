@@ -343,34 +343,72 @@ impl Query {
 }
 /// Select only a schema-validated path. Missing nullable properties retain SQL NULL semantics.
 pub fn path_value<'a>(row: &'a Value, path: &str) -> Option<&'a Value> {
-    path.split('.').try_fold(row, |value, segment| value.get(segment))
+    path.split('.')
+        .try_fold(row, |value, segment| value.get(segment))
 }
 fn scalar(field: &Field, input: String) -> Result<Value> {
     let value = match field.kind.scalar() {
         Kind::Integer => Value::from(input.parse::<i64>().map_err(|_| Error::Invalid)?),
         Kind::Number => serde_json::from_str::<Value>(&input).map_err(|_| Error::Invalid)?,
         Kind::Boolean => match input.as_str() {
-            "true" => Value::Bool(true), "false" => Value::Bool(false), _ => return Err(Error::Invalid),
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => return Err(Error::Invalid),
         },
-        Kind::Uuid => Value::from(uuid::Uuid::parse_str(&input).map_err(|_| Error::Invalid)?.to_string()),
+        Kind::Uuid => Value::from(
+            uuid::Uuid::parse_str(&input)
+                .map_err(|_| Error::Invalid)?
+                .to_string(),
+        ),
         _ => Value::from(input),
     };
-    if field.valid(&value) { Ok(value) } else { Err(Error::Invalid) }
+    if field.valid(&value) {
+        Ok(value)
+    } else {
+        Err(Error::Invalid)
+    }
 }
 fn bind(schema: &Schema, e: Expression<String, String>) -> Result<Expression<String, Value>> {
     Ok(match e {
-        Expression::Compare { field, operator, values } => {
+        Expression::Compare {
+            field,
+            operator,
+            values,
+        } => {
             let spec = schema.field(&field)?;
-            if !spec.operations().contains(&operator) { return Err(Error::Invalid); }
-            let values = if matches!(operator, Operator::IsNull | Operator::IsNotNull) {
-                if values != ["true"] { return Err(Error::Invalid); }
+            if !spec.operations().contains(&operator) {
+                return Err(Error::Invalid);
+            }
+            let mut values = if matches!(operator, Operator::IsNull | Operator::IsNotNull) {
+                if values != ["true"] {
+                    return Err(Error::Invalid);
+                }
                 Vec::new()
             } else {
-                values.into_iter().map(|s| scalar(spec, s)).collect::<Result<_>>()?
+                values
+                    .into_iter()
+                    .map(|s| scalar(spec, s))
+                    .collect::<Result<_>>()?
             };
-            Expression::Compare { field, operator, values }
+            if operator.set() {
+                values.sort_by_key(Value::to_string);
+                values.dedup();
+            }
+            Expression::Compare {
+                field,
+                operator,
+                values,
+            }
         }
-        Expression::And(v) => Expression::And(v.into_iter().map(|e| bind(schema, e)).collect::<Result<_>>()?),
-        Expression::Or(v) => Expression::Or(v.into_iter().map(|e| bind(schema, e)).collect::<Result<_>>()?),
+        Expression::And(v) => Expression::And(
+            v.into_iter()
+                .map(|e| bind(schema, e))
+                .collect::<Result<_>>()?,
+        ),
+        Expression::Or(v) => Expression::Or(
+            v.into_iter()
+                .map(|e| bind(schema, e))
+                .collect::<Result<_>>()?,
+        ),
     })
 }

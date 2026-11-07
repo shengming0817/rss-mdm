@@ -380,6 +380,7 @@ pub(crate) fn read_directory_header(
             id: id(&a[2])?,
             revision,
             kind,
+            active: active.is_some(),
             active_version: active,
             presentation: STORAGE
                 .json("codec::presentation", serde_json::from_value(a[7].clone()))?,
@@ -420,13 +421,14 @@ mod directory_tests {
         .unwrap();
         assert_eq!(
             serde_json::to_value(
-                rss_mdm_resource::directory::Query::parse("")
+                rss_mdm_resource::directory::SCHEMA
+                    .parse("")
                     .unwrap()
-                    .project(directory_header(&header, tenant, "script", 3).unwrap())
+                    .project_typed(directory_header(&header, tenant, "script", 3).unwrap())
                     .unwrap()
             )
             .unwrap(),
-            json!({"id":"script","revision":3,"kind":"script","activeVersion":"current","presentation":{}})
+            json!({"id":"script","revision":3,"kind":"script","active":true,"activeVersion":"current","presentation":{}})
         );
         let states = header_states(&header, tenant, "script", 3).unwrap();
         assert_eq!(states[&Id::new("current").unwrap()], State::Active);

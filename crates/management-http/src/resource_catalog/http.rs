@@ -79,7 +79,9 @@ async fn directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    query: rss_mdm_http_contract::query::OwnedQuery<ResourceDirectory>,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ResourceDirectory>,
+    >,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<
         Json<
@@ -211,20 +213,9 @@ async fn write(
 }
 
 struct ResourceDirectory;
-impl rss_mdm_http_contract::query::QueryOwner for ResourceDirectory {
-    type Parsed = rss_mdm_resource::directory::Query;
-    type Error = rss_mdm_query::Error;
-    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
-        None
-    }
-    fn parameters() -> rss_mdm_http_contract::signature::Schema {
-        rss_mdm_http_contract::query::directory_parameters(
-            rss_mdm_resource::directory::DEFAULT_LIMIT,
-            rss_mdm_resource::directory::MAX_LIMIT,
-        )
-    }
-    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
-        Self::Parsed::parse(raw)
+impl rss_mdm_http_contract::query::DirectoryOwner for ResourceDirectory {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        rss_mdm_resource_service::directory::schema()
     }
 }
 

@@ -17,8 +17,11 @@ fn value(sql: &mut QueryBuilder<Postgres>, v: &Value) -> Result<()> {
             sql.push_bind(*v);
         }
         Value::Number(v) => {
-            if let Some(value) = v.as_i64() { sql.push_bind(value); }
-            else { sql.push_bind(v.as_f64().filter(|v| v.is_finite()).ok_or(Error::Invalid)?); }
+            if let Some(value) = v.as_i64() {
+                sql.push_bind(value);
+            } else {
+                sql.push_bind(v.as_f64().filter(|v| v.is_finite()).ok_or(Error::Invalid)?);
+            }
         }
         _ => return Err(Error::Invalid),
     }
@@ -79,7 +82,8 @@ fn expression(
             field,
             operator,
             values,
-        } if schema.field(field)?.kind.collection() && !matches!(operator, Operator::IsNull | Operator::IsNotNull) =>
+        } if schema.field(field)?.kind.collection()
+            && !matches!(operator, Operator::IsNull | Operator::IsNotNull) =>
         {
             if matches!(operator, Operator::Ne | Operator::Out) {
                 sql.push("NOT (");
@@ -88,18 +92,43 @@ fn expression(
             }
             for (i, v) in values.iter().enumerate() {
                 if i > 0 {
-                    sql.push(if *operator == Operator::ContainsAll { " AND " } else { " OR " });
+                    sql.push(if *operator == Operator::ContainsAll {
+                        " AND "
+                    } else {
+                        " OR "
+                    });
                 }
                 value(sql, v)?;
                 sql.push(" = ANY(").push(columns.column(field)?).push(")");
             }
             sql.push(")");
         }
-        Expression::Compare { field, operator: Operator::IsNull | Operator::IsNotNull, .. } => {
-            sql.push(columns.column(field)?).push(if matches!(e, Expression::Compare { operator: Operator::IsNull, .. }) { " IS NULL" } else { " IS NOT NULL" });
+        Expression::Compare {
+            field,
+            operator: Operator::IsNull | Operator::IsNotNull,
+            ..
+        } => {
+            sql.push(columns.column(field)?).push(
+                if matches!(
+                    e,
+                    Expression::Compare {
+                        operator: Operator::IsNull,
+                        ..
+                    }
+                ) {
+                    " IS NULL"
+                } else {
+                    " IS NOT NULL"
+                },
+            );
         }
-        Expression::Compare { field, operator: Operator::Icontains, values } => {
-            sql.push("strpos(lower((").push(columns.column(field)?)
+        Expression::Compare {
+            field,
+            operator: Operator::Icontains,
+            values,
+        } => {
+            sql.push("strpos(lower((")
+                .push(columns.column(field)?)
                 .push(") COLLATE pg_catalog.\"pg_c_utf8\"),lower((");
             value(sql, &values[0])?;
             sql.push(") COLLATE pg_catalog.\"pg_c_utf8\"))>0");
@@ -204,11 +233,12 @@ pub fn order(sql: &mut QueryBuilder<Postgres>, q: &Query, columns: impl Columns)
         if i > 0 {
             sql.push(",");
         }
-        sql.push(columns.column(&sort.field)?).push(if sort.descending {
-            " DESC NULLS LAST"
-        } else {
-            " ASC NULLS LAST"
-        });
+        sql.push(columns.column(&sort.field)?)
+            .push(if sort.descending {
+                " DESC NULLS LAST"
+            } else {
+                " ASC NULLS LAST"
+            });
     }
     Ok(())
 }

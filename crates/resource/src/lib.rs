@@ -11,6 +11,7 @@ pub mod directory;
 mod native_collection;
 mod presentation;
 pub use agent_collection::*;
+pub use presentation::Presentation;
 mod script;
 pub use native_collection::*;
 mod software;

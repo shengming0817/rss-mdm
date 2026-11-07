@@ -18,6 +18,9 @@ pub(crate) fn valid(value: &Map<String, Value>, limit: usize) -> bool {
             _ => true,
         }
     }
+    if serde_json::from_value::<Presentation>(Value::Object(value.clone())).is_err() {
+        return false;
+    }
     let mut nodes = 0;
     value.iter().all(|(key, child)| {
         !key.is_empty()
@@ -25,4 +28,26 @@ pub(crate) fn valid(value: &Map<String, Value>, limit: usize) -> bool {
             && !key.chars().any(char::is_control)
             && visit(child, 1, &mut nodes)
     }) && serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= limit)
+}
+
+/// Supported descriptive properties; arbitrary bounded extensions remain data, never query paths.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(extend("additionalProperties" = {"x-rss-extension":"Bounded descriptive extensions; only typed properties are queryable"}))]
+pub struct Presentation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Human-readable name; no authorization meaning.
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Descriptive text without execution authority.
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Descriptive publisher label.
+    pub publisher: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Public self-service category, when configured.
+    pub category: Option<String>,
+    #[serde(flatten)]
+    /// Unknown bounded metadata retained without granting query or execution authority.
+    pub extensions: Map<String, Value>,
 }

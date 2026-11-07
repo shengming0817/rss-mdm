@@ -1,7 +1,10 @@
 use super::*;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::Page;
-use rss_mdm_resource::directory::{Position, Query};
+use rss_mdm_query::directory::Query;
+pub fn schema() -> &'static rss_mdm_query::directory::Schema {
+    pg::directory::schema()
+}
 impl ResourceCatalog {
     pub async fn blueprints(
         &self,
@@ -40,43 +43,17 @@ impl ResourceCatalog {
                     let current = crate::transaction::current(tx, p).await?;
                     current.require(p, Permission::ResourceRead, None)?;
                     let binding = q
-                        .binding(p.tenant_id(), p.instance_id(), &current.query_binding(p)?)
+                        .binding(&(p.tenant_id(), p.instance_id(), current.query_binding(p)?))
                         .map_err(query_error)?;
-                    let after: Option<Position> = q
-                        .cursor()
-                        .map(|token| s.directory_cursor.decode(token, &binding))
-                        .transpose()
+                    q.require_schema(schema()).map_err(query_error)?;
+                    let after = q
+                        .after(&s.directory_cursor, &binding)
                         .map_err(query_error)?;
-                    if let Some(position) = &after {
-                        q.validate_position(position).map_err(query_error)?;
-                    }
-                    let mut items =
+                    let items =
                         checked_input(s.resources.directory_in(tx, q, after.as_ref()).await?)?;
-                    let more = items.len() > q.limit();
-                    items.truncate(q.limit());
-                    let next = if more {
-                        items
-                            .last()
-                            .map(|row| {
-                                s.directory_cursor
-                                    .encode(&binding, &q.position(row))
-                                    .map(|token| token.as_str().to_owned())
-                            })
-                            .transpose()
-                            .map_err(query_error)?
-                    } else {
-                        None
-                    };
                     p.check_live()?;
-
-                    Ok(Page {
-                        items: items
-                            .into_iter()
-                            .map(|row| q.project(row))
-                            .collect::<std::result::Result<_, _>>()
-                            .map_err(query_error)?,
-                        next_cursor: next,
-                    })
+                    q.page_typed(items, &s.directory_cursor, &binding)
+                        .map_err(|e| query_error(e).into())
                 })
             },
         )

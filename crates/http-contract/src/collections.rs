@@ -2,7 +2,6 @@
 use serde::Serialize;
 #[derive(Clone, Copy, Debug, Serialize)]
 pub enum Description {
-    ResourceOwner,
     QueryOwner,
     SourceCatalog {
         id: &'static str,
@@ -10,7 +9,7 @@ pub enum Description {
         order: &'static str,
     },
 }
-pub static RESOURCE: Description = Description::ResourceOwner;
+pub static RESOURCE: Description = Description::QueryOwner;
 pub static BLUEPRINTS: Description = Description::SourceCatalog {
     id: "blueprints",
     source: "crates/resource/src/blueprints.rs",
@@ -75,9 +74,6 @@ pub fn valid(resource: &crate::Resource) -> bool {
                 )
         }
         Some(Description::QueryOwner) => resource.query == QueryPolicy::Unified,
-        Some(Description::ResourceOwner) => {
-            resource.id == "resource" && resource.query == QueryPolicy::ResourceV1
-        }
         Some(Description::SourceCatalog { id, source, order }) => {
             resource.id == *id
                 && resource.category == Category::Facts

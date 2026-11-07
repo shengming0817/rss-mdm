@@ -1,0 +1,154 @@
+use rss_mdm_query::{
+    Operator,
+    directory::{Exclusion, Schema},
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(JsonSchema, Serialize, Deserialize)]
+struct Metadata {
+    name: String,
+    category: Option<String>,
+    labels: Vec<String>,
+}
+#[derive(JsonSchema, Serialize, Deserialize)]
+struct Row {
+    id: i64,
+    metadata: Metadata,
+    secret: String,
+}
+static MODEL: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Row>(
+        "model",
+        &["id"],
+        2,
+        10,
+        &[Exclusion {
+            path: "secret",
+            reason: "Credential value; never a filter or sort key",
+        }],
+    )
+    .unwrap()
+});
+
+#[test]
+fn model_is_the_field_authority_and_capabilities_are_executable() {
+    let name = MODEL.field("metadata.name").unwrap();
+    assert!(name.filter && name.sort && !name.output);
+    assert!(name.operations().contains(&Operator::Icontains));
+    assert!(MODEL.field("metadata.category").unwrap().nullable);
+    assert!(!MODEL.field("metadata.labels").unwrap().sort);
+    assert!(MODEL.parse("filter=metadata.name=icontains=É;metadata.labels=containsall=(a,b)&sort=metadata.name").is_ok());
+    assert!(MODEL.parse("filter=metadata.category=isnull=true").is_ok());
+    for query in [
+        "filter=secret==x",
+        "sort=secret",
+        "filter=metadata.arbitrary==x",
+        "fields=metadata.name",
+        "filter=metadata.category=isnull=false",
+        "filter=metadata.labels=gt=x",
+    ] {
+        assert!(MODEL.parse(query).is_err(), "{query}");
+    }
+    let descriptor = serde_json::to_value(&*MODEL).unwrap();
+    let secret = descriptor["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "secret")
+        .unwrap();
+    assert_eq!(secret["operators"], serde_json::json!([]));
+    assert!(
+        secret["limitation"]
+            .as_str()
+            .unwrap()
+            .contains("Credential")
+    );
+}
+
+#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+struct ExtendedMetadata {
+    name: String,
+    category: Option<String>,
+    labels: Vec<String>,
+    publisher: String,
+}
+#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+struct Extended {
+    id: i64,
+    metadata: ExtendedMetadata,
+}
+#[test]
+fn a_new_nested_property_needs_no_parallel_query_field_list() {
+    let schema = Box::leak(Box::new(
+        Schema::derived::<Extended>("extended", &["id"], 2, 10, &[]).unwrap(),
+    ));
+    assert!(
+        schema
+            .parse("filter=metadata.publisher=icontains=Acme")
+            .is_ok()
+    );
+}
+
+#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+struct Complex {
+    id: i64,
+    objects: Vec<Metadata>,
+}
+#[test]
+fn unsupported_collections_and_misspelled_exclusions_fail_at_construction() {
+    assert!(Schema::derived::<Complex>("complex", &["id"], 2, 10, &[]).is_err());
+    assert!(
+        Schema::derived::<Complex>(
+            "complex",
+            &["id"],
+            2,
+            10,
+            &[Exclusion {
+                path: "objects",
+                reason: "Same-element semantics required"
+            }]
+        )
+        .is_ok()
+    );
+    assert!(
+        Schema::derived::<Complex>(
+            "complex",
+            &["id"],
+            2,
+            10,
+            &[Exclusion {
+                path: "typo",
+                reason: "Wrong property"
+            }]
+        )
+        .is_err()
+    );
+}
+
+#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Selection {
+    All,
+    Names { values: Vec<String> },
+    Ids { values: Vec<uuid::Uuid> },
+}
+#[derive(JsonSchema, serde::Serialize, serde::Deserialize)]
+struct Tagged {
+    id: i64,
+    selection: Selection,
+}
+#[test]
+fn tagged_variants_merge_vocabularies_and_missing_properties_without_cross_element_expansion() {
+    let schema = Box::leak(Box::new(
+        Schema::derived::<Tagged>("tagged", &["id"], 2, 10, &[]).unwrap(),
+    ));
+    assert!(!schema.field("selection.kind").unwrap().nullable);
+    assert!(schema.field("selection.values").unwrap().nullable);
+    assert!(
+        schema
+            .parse("filter=selection.kind==names;selection.values=containsany=(a,b)")
+            .is_ok()
+    );
+    assert!(schema.parse("filter=selection.kind==other").is_err());
+}
