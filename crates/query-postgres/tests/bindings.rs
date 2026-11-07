@@ -57,3 +57,45 @@ fn a_trusted_json_root_binds_new_model_fields_but_missing_storage_fails_closed()
         .is_err()
     );
 }
+
+#[test]
+fn storage_proven_non_null_seek_preserves_nullable_tails() {
+    use rss_mdm_query::directory::Position;
+    use serde_json::json;
+    let binding = Bindings::new(
+        &SCHEMA,
+        &[
+            Source::required_column("id", "id"),
+            Source::json("metadata", "document"),
+        ],
+    )
+    .unwrap();
+    let mut sql = sqlx::QueryBuilder::new("SELECT id FROM objects WHERE true");
+    rss_mdm_query_postgres::append(
+        &mut sql,
+        &SCHEMA.parse("").unwrap(),
+        Some(&Position(vec![json!(50)])),
+        &binding,
+    )
+    .unwrap();
+    assert!(!sql.sql().as_str().contains("IS NULL"));
+    let mut sql = sqlx::QueryBuilder::new("SELECT id FROM objects WHERE true");
+    rss_mdm_query_postgres::append(
+        &mut sql,
+        &SCHEMA.parse("sort=metadata.added").unwrap(),
+        Some(&Position(vec![json!(null), json!(50)])),
+        &binding,
+    )
+    .unwrap();
+    assert!(sql.sql().as_str().contains("IS NULL AND"));
+    assert!(!sql.sql().as_str().contains("id IS NULL"));
+    assert!(
+        rss_mdm_query_postgres::page(
+            &mut sql,
+            &SCHEMA.parse("").unwrap(),
+            Some(&Position(vec![json!(null)])),
+            &binding
+        )
+        .is_err()
+    );
+}

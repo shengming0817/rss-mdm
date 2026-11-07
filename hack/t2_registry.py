@@ -64,6 +64,7 @@ MODULES = {
         inputs=('crates/management-http/src/execution/operations.rs', 'crates/management-http/src/execution/http.rs',
                 'crates/timeline-service/*', 'apps/server/src/assembly/timeline_associations.rs',
                 'apps/server/src/assembly/native_ownership.rs', 'apps/server/src/assembly/task_ownership.rs',
+                'apps/server/src/assembly/device_reads.rs', 'crates/device-service/src/control/device_control.rs',
                 'crates/registration-service/schema/tasks/relations.sql', 'crates/recovery-credentials/schema/task-relations.sql',
                 'crates/software-service/schema/deployment/relations.sql', 'apps/server/schema/da-host-grants.sql',
                 'apps/server/src/assembly/operation_reads/*', 'apps/server/tests/execution_owners/directory.rs',

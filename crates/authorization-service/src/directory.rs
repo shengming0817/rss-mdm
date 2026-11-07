@@ -271,6 +271,7 @@ pub struct RuleRow {
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupSummary {
+    #[schemars(length(min = 1, max = crate::EXACT_ID_MAX_BYTES))]
     pub name: String,
     pub enabled: bool,
     pub member_count: u64,
@@ -281,6 +282,7 @@ pub struct GroupRow {
     pub id: Uuid,
     pub revision: u64,
     pub deleted: bool,
+    #[schemars(length(min = 1, max = crate::EXACT_ID_MAX_BYTES))]
     pub name: Option<String>,
     pub enabled: Option<bool>,
     pub member_count: Option<u64>,
@@ -291,6 +293,7 @@ pub struct GroupRow {
 pub struct KeyRow {
     #[serde(flatten)]
     pub record: crate::api_key::KeyRecord,
+    #[schemars(length(min = 1, max = crate::EXACT_ID_MAX_BYTES))]
     pub name: String,
     pub enabled: bool,
     pub expires_at: Option<i64>,

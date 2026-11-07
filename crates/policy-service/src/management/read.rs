@@ -257,6 +257,7 @@ pub struct Row {
     /// Stable object identity within the tenant.
     pub id: Uuid,
     /// Derived canonical policy tool address.
+    #[schemars(schema_with = "rss_mdm_agent_wire::runtime::policy_tool_name_schema")]
     pub tool_name: String,
     /// Optional authored business address.
     pub alias: Option<rss_mdm_agent_wire::runtime::PolicyAlias>,

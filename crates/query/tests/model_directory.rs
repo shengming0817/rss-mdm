@@ -186,3 +186,31 @@ fn unbounded_text_filters_but_sort_combinations_must_fit_the_cursor() {
     let codec = rss_mdm_query::cursor::CursorCodec::new(&[1; 32]).unwrap();
     assert!(codec.encode("bounded", &position).is_ok());
 }
+
+#[test]
+fn documented_closed_map_keys_keep_their_declared_types() {
+    let model = serde_json::json!({"type":"object","required":["id"],"properties":{
+        "id":{"type":"string","format":"uuid"},
+        "packages":{"type":"object","propertyNames":{"oneOf":[
+            {"type":"string","const":"windows","description":"Windows"},
+            {"type":"string","const":"macos","description":"macOS"}
+        ]},"additionalProperties":{"type":"string","format":"uuid"}}
+    }});
+    let schema = Box::leak(Box::new(
+        Schema::from_model("closed_map", &["id"], 1, 10, &model, &[]).unwrap(),
+    ));
+    assert_eq!(
+        schema.field("packages.windows").unwrap().kind,
+        rss_mdm_query::directory::Kind::Uuid
+    );
+    assert!(
+        schema
+            .parse("filter=packages.linux==00000000-0000-0000-0000-000000000001")
+            .is_err()
+    );
+    assert!(
+        schema
+            .parse("filter=id=gt=00000000-0000-0000-0000-000000000001")
+            .is_ok()
+    );
+}

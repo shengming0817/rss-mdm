@@ -159,6 +159,22 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         let (status,body)=ordinary_http.get("/api/v1/device-views",&[("filter","search=icontains=éclair")]).await?;
         assert_eq!(status,200,"{body}");
         assert_eq!(body["items"],json!([]));
+        for (path, filter, expected) in &fixtures.cases {
+            if path == "/api/v1/device-views" && !filter.contains("éclair") {
+                assert_eq!(ordinary_http.selected(path,filter).await?["key"],*expected);
+            }
+        }
+        bounded_sort_pages(&http).await?;
+        for filter in ["presentation.name=icontains=σ", "presentation.name=icontains=ς", "presentation.name=icontains='.'", "presentation.name=icontains='[*]'", "id=icontains='/'"] {
+            assert_eq!(http.selected("/api/v1/resources",filter).await?["id"],"scripts/install");
+        }
+        for filter in ["presentation.name=icontains='.*'", "presentation.name=icontains='(?q)'", "presentation.name=icontains='Σx'"] {
+            let (status,body)=http.get("/api/v1/resources",&[("filter",filter)]).await?;
+            assert_eq!(status,200,"{body}");
+            assert_eq!(body["items"],json!([]));
+        }
+        assert_eq!(http.selected("/api/v1/resources","kind==script;id=gt=z-directory-configuration").await?["id"],"z-directory-script");
+        assert_eq!(http.selected("/api/v1/certificate-archive/entries",&format!("id=gt={}",Uuid::from_u128(1001))).await?["id"],Uuid::from_u128(1002).to_string());
         // The target is outside the original page, yet query filtering is not confined to that page.
         let (status, raw) = http
             .get("/api/v1/resources", &[("sort", "id"), ("limit", "1")])
@@ -244,6 +260,8 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
                 "latest.facts.certificates.subject==x",
             ),
             ("/api/v1/resources", "revision==wrong"),
+            ("/api/v1/resources", "activeVersion=gt=1"),
+            ("/api/v1/policies", "definition.action.packages.linux_x86_64==00000000-0000-0000-0000-000000000001"),
         ] {
             assert_eq!(
                 http.get(path, &[("filter", filter)]).await?.0,
@@ -272,13 +290,17 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         assert_eq!(status,200,"{body}");
         seed::saved_projection(&c,saved,None,3).await?;
         let (_,nulls)=http.get("/api/v1/resources", &[("filter","activeVersion=isnull=true"),("limit","100")]).await?;
-        assert_eq!(nulls["items"].as_array().unwrap().len(),18);
+        assert_eq!(nulls["items"].as_array().unwrap().len(),19);
         assert!(nulls["items"].as_array().unwrap().iter().all(|v|v["activeVersion"].is_null()));
         assert!(nulls["items"].as_array().unwrap().iter().any(|v|v["id"]=="a-directory-script"));
         assert_eq!(http.get("/api/v1/resources",&[("sort","presentation.description")]).await?.0,400);
         assert_eq!(http.get("/api/v1/api-keys",&[("filter","createdBy.principalId==bogus")]).await?.0,400);
         let (_,exact)=http.get("/api/v1/resources", &[("filter","presentation.name=='Zulu éclair %_ O\\'Reilly\\\\工具'")]).await?;
         assert_eq!(exact["items"],json!([]));
+        let (status,body)=http.get("/api/v1/policies",&[("filter","definition.action.packages.windows_x86_64==00000000-0000-0000-0000-000000000001")]).await?;
+        assert_eq!(status,200,"{body}");
+        assert_eq!(body["items"],json!([]));
+        seed::collection_semantics(&c).await?;
         seed::execution_plans(&c).await?;
         assert_eq!(http.selected("/api/v1/resources", "kind==software;presentation.name=icontains=éclair").await?["id"], fixtures.resource);
         let (_, first) = http.get("/api/v1/resources", &[("filter","presentation.category==Tools"),("limit","1")]).await?;
@@ -305,4 +327,61 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     c.close().await;
     exercise?;
     cleanup
+}
+
+async fn bounded_sort_pages(http: &Http) -> Result<()> {
+    for path in [
+        "/api/v1/saved-queries",
+        "/api/v1/compliance-rules",
+        "/api/v1/authorization/user-groups",
+        "/api/v1/api-keys",
+    ] {
+        for (sort, expected) in [("name", [1000, 1001, 1002]), ("-name", [1002, 1000, 1001])] {
+            let mut cursor = None;
+            let mut ids = Vec::new();
+            loop {
+                let mut query = vec![("sort", sort), ("limit", "1")];
+                if let Some(token) = cursor.as_deref() {
+                    query.push(("cursor", token));
+                }
+                let (status, body) = http.get(path, &query).await?;
+                assert_eq!(status, 200, "{path}: {body}");
+                ids.extend(
+                    page(&body)["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v["id"].as_str().unwrap().to_owned()),
+                );
+                cursor = page(&body)["nextCursor"].as_str().map(str::to_owned);
+                if cursor.is_none() {
+                    break;
+                }
+                assert!(ids.len() < 4, "nonterminating {path} sort {sort}");
+            }
+            assert_eq!(
+                ids,
+                expected.map(|id| Uuid::from_u128(id).to_string()),
+                "{path}: {sort}"
+            );
+        }
+    }
+    for sort in ["toolName", "alias", "customEvent"] {
+        let (status, body) = http
+            .get("/api/v1/policies", &[("sort", sort), ("limit", "1")])
+            .await?;
+        assert_eq!(status, 200, "{body}");
+        let token = body["nextCursor"]
+            .as_str()
+            .context("Policy sorting must page")?;
+        let (status, next) = http
+            .get(
+                "/api/v1/policies",
+                &[("sort", sort), ("limit", "1"), ("cursor", token)],
+            )
+            .await?;
+        assert_eq!(status, 200, "{next}");
+        assert_ne!(body["items"][0]["id"], next["items"][0]["id"]);
+    }
+    Ok(())
 }

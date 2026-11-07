@@ -56,6 +56,17 @@ impl SoftwareTarget {
         }
     }
 }
+// Schemars map inference does not preserve documented unit variants (oneOf/const).
+// Keep the actual enum as propertyNames; do not repeat its closed platform vocabulary.
+fn target_map_schema<V: schemars::JsonSchema>(
+    generator: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    schemars::json_schema!({
+        "type":"object",
+        "propertyNames":<SoftwareTarget as schemars::JsonSchema>::json_schema(generator),
+        "additionalProperties":generator.subschema_for::<V>()
+    })
+}
 /// Exact software variants belonging to a single immutable resource version.
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -67,6 +78,7 @@ pub struct SoftwareResourceBinding {
     /// Immutable resource version.
     pub version: String,
     /// Exact variant for each supported platform and architecture.
+    #[schemars(schema_with = "target_map_schema::<String>")]
     pub variants: BTreeMap<SoftwareTarget, String>,
 }
 /// Closed resource kind for software bindings.
@@ -226,6 +238,7 @@ pub enum Action {
     /// Install only the product's approved Agent through the source MDM channel.
     EnsureAgentInstalled {
         /// One explicitly published Agent release per native target; no format fallback.
+        #[schemars(schema_with = "target_map_schema::<uuid::Uuid>")]
         packages: std::collections::BTreeMap<SoftwareTarget, uuid::Uuid>,
         /// Source-channel scheduling and cooldown.
         #[serde(default = "default_schedule")]

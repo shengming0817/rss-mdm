@@ -35,6 +35,7 @@ pub(crate) fn valid(value: &Map<String, Value>, limit: usize) -> bool {
 #[serde(rename_all = "camelCase")]
 #[schemars(extend("additionalProperties" = {"x-rss-extension":"Bounded descriptive extensions; only typed properties are queryable"}))]
 pub struct Presentation {
+    #[schemars(length(min = 1, max = crate::NAME_MAX_CHARS))]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

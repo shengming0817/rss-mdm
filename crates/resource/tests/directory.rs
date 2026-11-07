@@ -84,3 +84,28 @@ fn query_and_authority_changes_invalidate_continuations() {
         binding("fields=id,kind&filter=active==true", "a")
     );
 }
+
+#[test]
+fn identity_ranges_and_literal_fragments_have_distinct_validation() {
+    for input in [
+        "filter=id=gt=abc",
+        "filter=id=icontains=%2F",
+        "filter=activeVersion=icontains=%2F",
+    ] {
+        assert!(SCHEMA.parse(input).is_ok(), "{input}");
+    }
+    for input in [
+        "filter=id==%2F",
+        "filter=activeVersion=gt=1",
+        "filter=id=icontains=%0A",
+    ] {
+        assert!(SCHEMA.parse(input).is_err(), "{input}");
+    }
+    assert!(
+        SCHEMA
+            .parse("")
+            .unwrap()
+            .validate_position(&rss_mdm_query::directory::Position(vec![json!("/")]))
+            .is_err()
+    );
+}

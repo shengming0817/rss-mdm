@@ -360,7 +360,7 @@ pub fn path_value<'a>(row: &'a Value, path: &str) -> Option<&'a Value> {
     path.split('.')
         .try_fold(row, |value, segment| value.get(segment))
 }
-fn scalar(field: &Field, input: String) -> Result<Value> {
+fn scalar(field: &Field, operator: Operator, input: String) -> Result<Value> {
     let value = match field.kind.scalar() {
         Kind::Integer => Value::from(input.parse::<i64>().map_err(|_| Error::Invalid)?),
         Kind::Number => serde_json::from_str::<Value>(&input).map_err(|_| Error::Invalid)?,
@@ -376,7 +376,15 @@ fn scalar(field: &Field, input: String) -> Result<Value> {
         ),
         _ => Value::from(input),
     };
-    if field.valid(&value) {
+    // A literal fragment is not a complete domain value (e.g. "/" inside a Resource ID).
+    let valid = if operator == Operator::Icontains {
+        value
+            .as_str()
+            .is_some_and(|s| s.len() <= 4096 && !s.chars().any(char::is_control))
+    } else {
+        field.valid(&value)
+    };
+    if valid {
         Ok(value)
     } else {
         Err(Error::Invalid)
@@ -401,7 +409,7 @@ fn bind(schema: &Schema, e: Expression<String, String>) -> Result<Expression<Str
             } else {
                 values
                     .into_iter()
-                    .map(|s| scalar(spec, s))
+                    .map(|s| scalar(spec, operator, s))
                     .collect::<Result<_>>()?
             };
             if operator.set() {

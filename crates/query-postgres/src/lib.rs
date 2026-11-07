@@ -90,17 +90,25 @@ fn expression(
             } else {
                 sql.push("(");
             }
+            sql.push(columns.column(field)?).push(
+                if matches!(
+                    operator,
+                    Operator::ContainsAll | Operator::Eq | Operator::Ne
+                ) {
+                    " @> ARRAY["
+                } else {
+                    " && ARRAY["
+                },
+            );
             for (i, v) in values.iter().enumerate() {
                 if i > 0 {
-                    sql.push(if *operator == Operator::ContainsAll {
-                        " AND "
-                    } else {
-                        " OR "
-                    });
+                    sql.push(",");
                 }
                 value(sql, v)?;
-                sql.push(" = ANY(").push(columns.column(field)?).push(")");
             }
+            sql.push("]::")
+                .push(bindings::sql_type(&schema.field(field)?.kind)?)
+                .push("[]");
             sql.push(")");
         }
         Expression::Compare {
@@ -127,11 +135,13 @@ fn expression(
             operator: Operator::Icontains,
             values,
         } => {
-            sql.push("strpos(lower((")
+            // PostgreSQL ARE's quoted mode makes every caller character literal.
+            // Unicode simple case matching is independent of the stable C sort collation.
+            let literal = values[0].as_str().ok_or(Error::Invalid)?;
+            sql.push("(")
                 .push(columns.column(field)?)
-                .push(") COLLATE pg_catalog.\"pg_c_utf8\"),lower((");
-            value(sql, &values[0])?;
-            sql.push(") COLLATE pg_catalog.\"pg_c_utf8\"))>0");
+                .push(") COLLATE pg_catalog.\"pg_c_utf8\" ~* ")
+                .push_bind(format!("(?q){literal}"));
         }
         Expression::Compare {
             field,
@@ -190,6 +200,13 @@ pub fn page_limit(
     }
     if let Some(p) = after {
         q.validate_position(p)?;
+        if q.sort()
+            .iter()
+            .zip(&p.0)
+            .any(|(s, v)| v.is_null() && !columns.nullable(&s.field))
+        {
+            return Err(Error::CursorInvalidated);
+        }
         sql.push(" AND (");
         for (i, sort) in q.sort().iter().enumerate() {
             if i > 0 {
@@ -213,9 +230,12 @@ pub fn page_limit(
                     .push(columns.column(&sort.field)?)
                     .push(if sort.descending { " < " } else { " > " });
                 value(sql, &p.0[i])?;
-                sql.push(" OR ")
-                    .push(columns.column(&sort.field)?)
-                    .push(" IS NULL)");
+                if columns.nullable(&sort.field) {
+                    sql.push(" OR ")
+                        .push(columns.column(&sort.field)?)
+                        .push(" IS NULL");
+                }
+                sql.push(")");
             }
             sql.push(")");
         }

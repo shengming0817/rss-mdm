@@ -171,19 +171,18 @@ impl Compiler<'_> {
             field.output = !path.contains('.');
             field.nullable = null;
             self.insert(field)?;
-            if let Some(names) = schema
+            let names = schema
                 .get("propertyNames")
-                .and_then(|v| v.get("enum"))
-                .and_then(Value::as_array)
-            {
+                .map(|keys| scalar_kind(self.root, keys, path, depth + 1))
+                .transpose()?;
+            if let Some((Kind::Enum(names), _)) = names {
                 let value = schema
                     .get("additionalProperties")
                     .ok_or_else(|| BuildError::Unsupported(path.into()))?;
                 for name in names {
-                    let name = name
-                        .as_str()
-                        .ok_or_else(|| BuildError::Unsupported(path.into()))?;
-                    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                    if name.is_empty()
+                        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    {
                         return Err(BuildError::Unsupported(path.into()));
                     }
                     self.walk(value, &format!("{path}.{name}"), true, depth + 1)?;

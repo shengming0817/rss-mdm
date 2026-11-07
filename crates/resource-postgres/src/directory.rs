@@ -78,8 +78,8 @@ static BINDINGS: std::sync::LazyLock<Bindings> = std::sync::LazyLock::new(|| {
     Bindings::new(
         &SCHEMA,
         &[
-            Source::column("id", "id COLLATE \"C\""),
-            Source::column("revision", "revision"),
+            Source::required_column("id", "id COLLATE \"C\""),
+            Source::required_column("revision", "revision"),
             Source::json("", "directory"),
         ],
     )

@@ -130,6 +130,7 @@ pub enum ManualChange {
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedDefinition {
+    #[schemars(length(min = 1, max = crate::authorization::EXACT_ID_MAX_BYTES))]
     pub name: String,
     pub query: super::rsql::QueryInput,
 }

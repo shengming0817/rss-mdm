@@ -4,7 +4,7 @@ Group 持有成员求值；Scope 按“目标并集与限制并集取交集，�
 
 目录读取使用 `GET /api/v1/groups`、`/scopes`、`/policies` 和 `/resources`，返回 `items/nextCursor`。
 这些目录统一使用 `filter/sort/fields/limit/cursor`，不再接受 `after/descending` 或旧的散列过滤参数。
-例如 `/api/v1/groups?filter=kind==static;name=icontains=office&sort=name&fields=id,presentation&limit=20`，
+例如 `/api/v1/groups?filter=kind==static;name=icontains=office&sort=kind&fields=id,presentation&limit=20`，
 `/api/v1/scopes?filter=ready==true`，以及
 `/api/v1/policies?filter=state==disabled;category==selfservice&sort=-revision`。
 Group、Scope 缺省排除删除记录；需要墓碑时显式使用 `filter=deleted==true`。

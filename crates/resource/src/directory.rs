@@ -11,7 +11,6 @@ pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
     Schema::derived::<Record>("resource", &["id"], DEFAULT_LIMIT, MAX_LIMIT, &[])
         .and_then(|s| s.validate_with("id", valid_id))
         .and_then(|s| s.validate_with("activeVersion", valid_id))
-        .and_then(|s| s.no_range("id"))
         .and_then(|s| s.no_range("activeVersion"))
         .expect("Resource model has complete directory semantics")
 });

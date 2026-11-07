@@ -22,6 +22,13 @@ def listing(cases):
 
 
 class T2Status(unittest.TestCase):
+    def test_disabled_report_source_proof_tracks_both_read_inputs(self):
+        from t2_registry import affected
+        for path in ('apps/server/src/assembly/device_reads.rs',
+                     'crates/device-service/src/control/device_control.rs'):
+            with self.subTest(path=path):
+                self.assertIn('execution.directory', affected([path]))
+
     def test_diagnostics_selects_its_actual_reader_and_wire_inputs(self):
         for path in ('crates/webhook-service/src/management/mod.rs',
                      'crates/resource-service/src/directory.rs',

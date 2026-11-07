@@ -6,6 +6,7 @@ use uuid::Uuid;
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KeyMetadata {
+    #[schemars(length(min = 1, max = crate::EXACT_ID_MAX_BYTES))]
     pub name: String,
     pub enabled: bool,
     pub expires_at: Option<i64>,

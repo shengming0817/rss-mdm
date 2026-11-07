@@ -349,6 +349,7 @@ impl Rule {
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserGroup {
+    #[schemars(length(min = 1, max = crate::EXACT_ID_MAX_BYTES))]
     pub name: String,
     pub enabled: bool,
     pub members: Vec<User>,
@@ -394,9 +395,11 @@ pub struct Receipt {
     pub revision: u64,
     pub deleted: bool,
 }
+/// Maximum UTF-8 byte length accepted by the shared exact-identity validator.
+pub const EXACT_ID_MAX_BYTES: usize = 256;
 pub fn exact_id(value: &str) -> Result<(), AuthorizationError> {
     if value.is_empty()
-        || value.len() > 256
+        || value.len() > EXACT_ID_MAX_BYTES
         || value.trim() != value
         || value.chars().any(char::is_control)
     {

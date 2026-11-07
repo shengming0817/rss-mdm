@@ -78,6 +78,20 @@ async fn resources(c: &Context, cases: &mut Cases) -> Result<r::Version> {
         )?),
     )
     .await?;
+    resource_change(
+        &store,
+        "scripts/install",
+        0,
+        Command::Create(r::Kind::Script),
+    )
+    .await?;
+    resource_change(
+        &store,
+        "scripts/install",
+        1,
+        Command::Present(serde_json::from_value(json!({"name":"Σ.[*] O'Reilly"}))?),
+    )
+    .await?;
     owner.runtime.close().await;
     Ok(software)
 }
@@ -231,8 +245,18 @@ async fn planning_rows(
         vec![super::super::software_t2::support::stage(scope)],
     )
     .await?;
+    let (other_policy, _) = super::super::software_t2::support::policy(
+        c,
+        software,
+        scope,
+        rss_mdm_policy::SoftwareChannel::Agent,
+        vec![super::super::software_t2::support::stage(scope)],
+    )
+    .await?;
     groups.storage.runtime.close().await;
     let mut tx = seed_transaction(c).await?;
+    sqlx::query("UPDATE mdm_policy.policies SET definition=jsonb_set(jsonb_set(definition,'{alias}','\"directory-z\"'),'{customEvent}','\"directory-event\"') WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string()).bind(other_policy).execute(&mut *tx).await?;
     sqlx::query("UPDATE mdm_group.groups SET presentation=$3 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string())
         .bind(group)
@@ -248,6 +272,7 @@ async fn planning_rows(
         group,
     );
     case(cases,"/api/v1/policies","definition.alias==directory-target;definition.action.schedule.trigger.kind==manual;state==disabled".into(),policy);
+    case(cases,"/api/v1/policies","definition.alias==directory-target;definition.action.resource.variants.windows_x86_64==msi".into(),policy);
     tx.commit().await?;
     Ok(group)
 }
@@ -400,33 +425,74 @@ async fn metadata_row(
     Ok(())
 }
 async fn device_row(c: &Context, _p: &AuthorizedPrincipal, cases: &mut Cases) -> Result<()> {
-    let object = planning::endpoint(c).await?;
-    let member = &object.members[0];
-    let endpoint = &member.device;
-    let registration = member.registration_id;
     let mut tx = seed_transaction(c).await?;
-    // A legal Apple endpoint provides a genuinely sensitive built-in host name.
-    sqlx::query("UPDATE mdm_access.requests SET source='mdm.apple',windows_profile=NULL WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
-    sqlx::query("UPDATE mdm_access.report_sources SET source='mdm.apple' WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
-    let mut name = None;
-    for key in ["device.name", "device.network.apple.host_name"] {
+    for key in [
+        "device.name",
+        "device.serial_number",
+        "device.network.apple.host_name",
+    ] {
         let field = rss_mdm_inventory::builtin::fields()
             .into_iter()
             .find(|f| f.key.as_str() == key)
-            .context("built-in name field")?;
+            .context("built-in search field")?;
         assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &field).await?);
-        if key == "device.network.apple.host_name" {
-            name = Some(field);
-        }
     }
+    tx.commit().await?;
+    let sensitive = device_observations(
+        c,
+        &[(
+            "device.network.apple.host_name",
+            "Zulu Éclair directory device",
+        )],
+    )
+    .await?;
+    let ordinary = device_observations(
+        c,
+        &[
+            ("device.name", "ordinary-name-target"),
+            ("device.serial_number", "serial-number-target"),
+        ],
+    )
+    .await?;
+    for (term, endpoint) in [
+        ("éclair", &sensitive),
+        ("ordinary-name-target", &ordinary),
+        ("serial-number-target", &ordinary),
+    ] {
+        case(
+            cases,
+            "/api/v1/device-views",
+            format!("search=icontains={term}"),
+            format!("endpoint:{endpoint}"),
+        );
+    }
+    Ok(())
+}
+async fn device_observations(c: &Context, observations: &[(&str, &str)]) -> Result<String> {
+    let object = planning::endpoint(c).await?;
+    let member = &object.members[0];
+    let registration = member.registration_id;
+    let mut tx = seed_transaction(c).await?;
+    sqlx::query("UPDATE mdm_access.requests SET source='mdm.apple',windows_profile=NULL WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_access.report_sources SET source='mdm.apple' WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
+    let collection = Uuid::new_v4().to_string();
+    let fields = observations
+        .iter()
+        .map(|(key, _)| {
+            Ok(rss_mdm_inventory::CollectionField {
+                definition: rss_mdm_inventory::builtin::fields()
+                    .into_iter()
+                    .find(|f| f.key.as_str() == *key)
+                    .context("built-in field")?,
+                scope: rss_mdm_inventory::CollectionScope::Device,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let definition = rss_mdm_inventory::CollectionDefinition::new(
-        "directory-name",
+        &collection,
         "1",
         rss_mdm_inventory::Source::MdmApple,
-        vec![rss_mdm_inventory::CollectionField {
-            definition: name.unwrap(),
-            scope: rss_mdm_inventory::CollectionScope::Device,
-        }],
+        fields,
     )?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &definition).await?;
     let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.apple'").bind(c.tenant.to_string()).bind(registration).fetch_one(&mut *tx).await?;
@@ -436,20 +502,16 @@ async fn device_row(c: &Context, _p: &AuthorizedPrincipal, cases: &mut Cases) ->
         registration,
         "mdm.apple",
         epoch,
-        "directory-name",
+        &collection,
     )?
     .encode()?;
     let projection = rss_mdm_inventory_postgres::projection_scope(c.tenant);
-    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,'device.network.apple.host_name',$6,$7,1,2,'known',$8,'mdm.apple',$9,1,'{\"kind\":\"device\"}')")
-        .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String("Zulu Éclair directory device".into()))?).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *tx).await?;
+    for (field, value) in observations {
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,'mdm.apple',$10,1,'{\"kind\":\"device\"}')")
+            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(&scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String((*value).into()))?).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
-    case(
-        cases,
-        "/api/v1/device-views",
-        "search=icontains=éclair".into(),
-        format!("endpoint:{endpoint}"),
-    );
-    Ok(())
+    Ok(member.device.clone())
 }
 
 async fn resource_change(
@@ -466,13 +528,13 @@ async fn resource_change(
 pub(super) async fn execution_plans(c: &Context) -> Result<()> {
     let mut tx = seed_transaction(c).await?;
     // Bulk legal headers and projections derive from one real Resource in this isolated tenant.
-    sqlx::query("WITH template AS (SELECT revision,directory,convert_from(document,'UTF8')::jsonb AS header FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id='a-directory-script'), rows AS (SELECT revision,'bench-directory-'||n AS id,jsonb_set(jsonb_set(directory,'{id}',to_jsonb('bench-directory-'||n)),'{presentation,description}',to_jsonb(repeat('d',4096))) AS directory,convert_to(jsonb_set(jsonb_set(header,'{2}',to_jsonb('bench-directory-'||n)),'{7,description}',to_jsonb(repeat('d',4096)))::text,'UTF8') AS document FROM template CROSS JOIN generate_series(1,10000) n) INSERT INTO mdm_resource.aggregates(tenant_id,id,revision,document,digest,directory) SELECT $1::uuid,id,revision,document,sha256(document),directory FROM rows ON CONFLICT DO NOTHING")
+    sqlx::query("WITH template AS (SELECT revision,directory,convert_from(document,'UTF8')::jsonb AS header FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id='a-directory-script'), rows AS (SELECT revision,'bench-directory-'||lpad(n::text,5,'0') AS id,jsonb_set(jsonb_set(directory,'{id}',to_jsonb('bench-directory-'||lpad(n::text,5,'0'))),'{presentation,description}',to_jsonb(repeat('d',4096))) AS directory,convert_to(jsonb_set(jsonb_set(header,'{2}',to_jsonb('bench-directory-'||lpad(n::text,5,'0'))),'{7,description}',to_jsonb(repeat('d',4096)))::text,'UTF8') AS document FROM template CROSS JOIN generate_series(1,50000) n) INSERT INTO mdm_resource.aggregates(tenant_id,id,revision,document,digest,directory) SELECT $1::uuid,id,revision,document,sha256(document),directory FROM rows ON CONFLICT DO NOTHING")
         .bind(c.tenant.to_string()).execute(&mut *tx).await?;
     sqlx::query("ANALYZE mdm_resource.aggregates")
         .execute(&mut *tx)
         .await?;
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id LIKE 'bench-directory-%'").bind(c.tenant.to_string()).fetch_one(&mut *tx).await?;
-    assert_eq!(count, 10000);
+    assert_eq!(count, 50000);
     for (label, filter, expected) in [
         ("name", "presentation.name=icontains=éclair", 2),
         ("category", "presentation.category==Tools", 2),
@@ -491,6 +553,32 @@ pub(super) async fn execution_plans(c: &Context) -> Result<()> {
         }
     }
 
+    for (label, filter) in [
+        ("late-kind", "kind==script"),
+        ("late-status", "active==false"),
+    ] {
+        let q = rss_mdm_resource_postgres::directory::schema()
+            .parse(&format!("filter={filter}&limit=64"))?;
+        let after = rss_mdm_query::directory::Position(vec![json!("bench-directory-45000")]);
+        let mut sql = sqlx::QueryBuilder::new("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ");
+        rss_mdm_resource_postgres::directory::select(&mut sql, c.tenant, &q, Some(&after))?;
+        let plan: Value = sql.build_query_scalar().fetch_one(&mut *tx).await?;
+        eprintln!("Resource directory {label} EXPLAIN: {plan}");
+        assert_eq!(plan[0]["Plan"]["Actual Rows"], 65);
+        let mut nodes = vec![&plan[0]["Plan"]];
+        let mut indexed = false;
+        while let Some(node) = nodes.pop() {
+            indexed |= node["Index Cond"]
+                .as_str()
+                .is_some_and(|cond| cond.contains("id") && cond.contains("bench-directory-45000"));
+            assert!(
+                node["Rows Removed by Filter"].as_u64().unwrap_or(0) < 128,
+                "late page scans discarded prefix: {plan}"
+            );
+            nodes.extend(node["Plans"].as_array().into_iter().flatten());
+        }
+        assert!(indexed, "late cursor is not an index range: {plan}");
+    }
     tx.rollback().await?;
     Ok(())
 }
@@ -537,5 +625,77 @@ pub(super) async fn corrupt_saved(c: &Context, corrupt: bool) -> Result<()> {
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct CollectionRow {
+    id: i64,
+    tags: Option<Vec<String>>,
+}
+static COLLECTION_SCHEMA: std::sync::LazyLock<rss_mdm_query::directory::Schema> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query::directory::Schema::derived::<CollectionRow>(
+            "collection_proof",
+            &["id"],
+            100,
+            100,
+            &[],
+        )
+        .unwrap()
+    });
+pub(super) async fn collection_semantics(c: &Context) -> Result<()> {
+    use rss_mdm_query_postgres::{Bindings, Source};
+    let bindings = Bindings::new(&COLLECTION_SCHEMA, &[Source::json("", "doc")])?;
+    let mut tx = seed_transaction(c).await?;
+    let rows = json!([{"id":1},{"id":2,"tags":null},{"id":3,"tags":[]},{"id":4,"tags":["a"]},{"id":5,"tags":["a","b"]}]);
+    for (filter, expected) in [
+        ("tags==a", vec![4, 5]),
+        ("tags!=a", vec![3]),
+        ("tags=in=(a,b)", vec![4, 5]),
+        ("tags=out=(b,c)", vec![3, 4]),
+        ("tags=containsall=(a,b)", vec![5]),
+        ("tags=containsany=(b,c)", vec![5]),
+        ("tags=isnull=true", vec![1, 2]),
+        ("tags=isnotnull=true", vec![3, 4, 5]),
+    ] {
+        let q = COLLECTION_SCHEMA.parse(&format!("filter={filter}"))?;
+        let mut sql =
+            sqlx::QueryBuilder::new("SELECT (doc->>'id')::bigint FROM jsonb_array_elements(");
+        sql.push_bind(rows.clone())
+            .push("::jsonb) AS candidates(doc) WHERE TRUE");
+        rss_mdm_query_postgres::append(&mut sql, &q, None, &bindings)?;
+        let actual: Vec<i64> = sql.build_query_scalar().fetch_all(&mut *tx).await?;
+        assert_eq!(actual, expected, "{filter}");
+    }
+    let tags = (0..251).map(|i| format!("field{i}")).collect::<Vec<_>>();
+    let mut terms = tags[..63].to_vec();
+    terms.push("absent".into());
+    let q = COLLECTION_SCHEMA.parse(&format!("filter=tags=containsall=({})", terms.join(",")))?;
+    let mut sql = sqlx::QueryBuilder::new(
+        "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) WITH candidates AS MATERIALIZED (SELECT jsonb_build_object('id',n,'tags',",
+    );
+    sql.push_bind(json!(tags)).push(
+        "::jsonb) AS doc FROM generate_series(1,1000) n) SELECT doc FROM candidates WHERE TRUE",
+    );
+    rss_mdm_query_postgres::append(&mut sql, &q, None, &bindings)?;
+    let plan: Value = sql.build_query_scalar().fetch_one(&mut *tx).await?;
+    eprintln!("Collection directory 64 terms EXPLAIN: {plan}");
+    assert_eq!(plan[0]["Plan"]["Actual Rows"], 0);
+    let mut nodes = vec![&plan[0]["Plan"]];
+    let mut expansions = 0;
+    while let Some(node) = nodes.pop() {
+        if node["Function Name"] == "jsonb_array_elements_text" {
+            expansions += node["Actual Loops"]
+                .as_u64()
+                .context("array expansion loops")?;
+        }
+        nodes.extend(node["Plans"].as_array().into_iter().flatten());
+    }
+    assert_eq!(
+        expansions, 1000,
+        "each candidate must expand its collection only once: {plan}"
+    );
+    tx.rollback().await?;
     Ok(())
 }

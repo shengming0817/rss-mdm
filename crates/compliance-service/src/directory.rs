@@ -92,6 +92,7 @@ pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
 pub struct DirectoryRow<C> {
     pub id: Uuid,
     pub revision: i64,
+    #[schemars(length(min = 1, max = rss_mdm_compliance::NAME_MAX_CHARS))]
     pub name: Option<String>,
     pub enabled: bool,
     pub deleted: bool,

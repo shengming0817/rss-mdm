@@ -69,6 +69,8 @@
         },
         "toolName": {
           "description": "Server-owned stable invocation name.",
+          "maxLength": 39,
+          "minLength": 39,
           "type": "string"
         },
         "version": {
@@ -181,6 +183,8 @@
     },
     "PolicyAlias": {
       "description": "Tenant-local canonical Policy alias.",
+      "maxLength": 64,
+      "minLength": 1,
       "type": "string"
     },
     "ScriptParameterSource": {

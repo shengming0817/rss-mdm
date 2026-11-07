@@ -134,7 +134,12 @@ impl Field {
         if self.kind.collection() {
             ops.extend([Operator::ContainsAny, Operator::ContainsAll]);
         } else {
-            if self.range && matches!(self.kind, Kind::Text | Kind::Integer | Kind::Number) {
+            if self.range
+                && matches!(
+                    self.kind,
+                    Kind::Text | Kind::Uuid | Kind::Integer | Kind::Number
+                )
+            {
                 ops.extend([Operator::Lt, Operator::Le, Operator::Gt, Operator::Ge]);
             }
             if matches!(self.kind, Kind::Text) {

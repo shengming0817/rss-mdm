@@ -36,6 +36,8 @@ pub enum Target {
     All,
     Groups { ids: Vec<Uuid> },
 }
+/// Maximum number of Unicode scalar values in a rule name.
+pub const NAME_MAX_CHARS: usize = 128;
 /// One version owns metadata and one foreign-owner predicate, never a second evaluator.
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -61,7 +63,7 @@ impl<C> Definition<C> {
                 .presentation
                 .get("name")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|name| text(name, 128))
+                .is_some_and(|name| text(name, NAME_MAX_CHARS))
         {
             return Err(Invalid::Definition);
         }

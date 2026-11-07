@@ -10,6 +10,7 @@ pub enum Source {
     Column {
         field: &'static str,
         sql: &'static str,
+        nullable: bool,
     },
     Json {
         field: &'static str,
@@ -18,7 +19,19 @@ pub enum Source {
 }
 impl Source {
     pub const fn column(field: &'static str, sql: &'static str) -> Self {
-        Self::Column { field, sql }
+        Self::Column {
+            field,
+            sql,
+            nullable: true,
+        }
+    }
+    /// Only use when the owner guarantees this expression cannot be SQL NULL.
+    pub const fn required_column(field: &'static str, sql: &'static str) -> Self {
+        Self::Column {
+            field,
+            sql,
+            nullable: false,
+        }
     }
     /// Empty field binds a complete JSON row; a named field binds its typed subtree.
     pub const fn json(field: &'static str, sql: &'static str) -> Self {
@@ -33,6 +46,7 @@ impl Source {
 pub struct Bindings {
     schema: &'static Schema,
     columns: BTreeMap<String, String>,
+    non_null: BTreeSet<String>,
 }
 impl Bindings {
     pub fn new(schema: &'static Schema, sources: &[Source]) -> Result<Self> {
@@ -42,6 +56,7 @@ impl Bindings {
         }
         let mut used = BTreeSet::new();
         let mut columns = BTreeMap::new();
+        let mut non_null = BTreeSet::new();
         for field in schema.fields.iter().filter(|f| f.filter || f.sort) {
             let source = sources
                 .iter()
@@ -59,6 +74,15 @@ impl Bindings {
                 .max_by_key(|s| s.name().len())
                 .ok_or(Error::Invalid)?;
             used.insert(source.name());
+            if matches!(
+                source,
+                Source::Column {
+                    nullable: false,
+                    ..
+                }
+            ) {
+                non_null.insert(field.name.clone());
+            }
             let sql = match source {
                 Source::Column { sql, .. } => (*sql).to_owned(),
                 Source::Json { field: root, sql } => {
@@ -81,7 +105,11 @@ impl Bindings {
         if sources.iter().any(|s| !used.contains(s.name())) {
             return Err(Error::Invalid);
         }
-        Ok(Self { schema, columns })
+        Ok(Self {
+            schema,
+            columns,
+            non_null,
+        })
     }
     /// Ingress exports this same checked schema, forcing storage completeness at composition time.
     pub fn schema(&self) -> &'static Schema {
@@ -90,6 +118,10 @@ impl Bindings {
 }
 pub trait Columns: Copy {
     fn column(&self, name: &str) -> Result<&str>;
+    /// Manual catalogs and JSON paths are conservative unless storage proves otherwise.
+    fn nullable(&self, _name: &str) -> bool {
+        true
+    }
     fn require(&self, _schema: &Schema) -> Result<()> {
         Ok(())
     }
@@ -100,6 +132,9 @@ impl<F: Fn(&str) -> &'static str + Copy> Columns for F {
     }
 }
 impl Columns for &Bindings {
+    fn nullable(&self, name: &str) -> bool {
+        !self.non_null.contains(name)
+    }
     fn column(&self, name: &str) -> Result<&str> {
         self.columns
             .get(name)
@@ -134,13 +169,7 @@ fn json_column(root: &str, path: &str, kind: &Kind) -> Result<String> {
             .collect::<Vec<_>>()
             .join(",")
     );
-    let ty = match kind.scalar() {
-        Kind::Integer => "bigint",
-        Kind::Number => "double precision",
-        Kind::Boolean => "boolean",
-        Kind::Text | Kind::Uuid | Kind::Enum(_) => "text",
-        _ => return Err(Error::Invalid),
-    };
+    let ty = sql_type(kind)?;
     if kind.collection() {
         let array = format!("(({root}) #> {path})");
         Ok(format!(
@@ -154,4 +183,14 @@ fn json_column(root: &str, path: &str, kind: &Kind) -> Result<String> {
             value
         })
     }
+}
+
+pub(crate) fn sql_type(kind: &Kind) -> Result<&'static str> {
+    Ok(match kind.scalar() {
+        Kind::Integer => "bigint",
+        Kind::Number => "double precision",
+        Kind::Boolean => "boolean",
+        Kind::Text | Kind::Uuid | Kind::Enum(_) => "text",
+        _ => return Err(Error::Invalid),
+    })
 }

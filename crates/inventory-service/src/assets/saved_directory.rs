@@ -80,6 +80,7 @@ impl AssetService {
 pub struct Row {
     pub id: Uuid,
     pub revision: i64,
+    #[schemars(length(min = 1, max = crate::authorization::EXACT_ID_MAX_BYTES))]
     pub name: Option<String>,
     pub deleted: bool,
     pub definition: Option<SavedDefinition>,
