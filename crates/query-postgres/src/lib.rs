@@ -6,8 +6,8 @@ use rss_mdm_query::{
 };
 use serde_json::Value;
 use sqlx::{Postgres, QueryBuilder};
-/// The domain provides trusted SQL expressions. User strings never become SQL fragments.
-pub type Columns = fn(&str) -> &'static str;
+mod bindings;
+pub use bindings::{Bindings, Columns, Source};
 fn value(sql: &mut QueryBuilder<Postgres>, v: &Value) -> Result<()> {
     match v {
         Value::String(v) => {
@@ -17,13 +17,15 @@ fn value(sql: &mut QueryBuilder<Postgres>, v: &Value) -> Result<()> {
             sql.push_bind(*v);
         }
         Value::Number(v) => {
-            sql.push_bind(v.as_i64().ok_or(Error::Invalid)?);
+            if let Some(value) = v.as_i64() { sql.push_bind(value); }
+            else { sql.push_bind(v.as_f64().filter(|v| v.is_finite()).ok_or(Error::Invalid)?); }
         }
         _ => return Err(Error::Invalid),
     }
     Ok(())
 }
-pub fn filter(sql: &mut QueryBuilder<Postgres>, q: &Query, columns: Columns) -> Result<()> {
+pub fn filter(sql: &mut QueryBuilder<Postgres>, q: &Query, columns: impl Columns) -> Result<()> {
+    columns.require(q.schema())?;
     if let Some(e) = q.filter() {
         sql.push(" AND ");
         expression(sql, e, q.schema(), columns, |_| true)?;
@@ -36,9 +38,10 @@ pub fn filter(sql: &mut QueryBuilder<Postgres>, q: &Query, columns: Columns) -> 
 pub fn prefilter(
     sql: &mut QueryBuilder<Postgres>,
     q: &Query,
-    columns: Columns,
+    columns: impl Columns,
     available: fn(&str) -> bool,
 ) -> Result<()> {
+    columns.require(q.schema())?;
     if let Some(e) = q.filter() {
         sql.push(" AND ");
         expression(sql, e, q.schema(), columns, available)?;
@@ -49,7 +52,7 @@ fn expression(
     sql: &mut QueryBuilder<Postgres>,
     e: &Expression<String, Value>,
     schema: &rss_mdm_query::directory::Schema,
-    columns: Columns,
+    columns: impl Columns,
     available: fn(&str) -> bool,
 ) -> Result<()> {
     if let Expression::Compare { field, .. } = e
@@ -76,10 +79,7 @@ fn expression(
             field,
             operator,
             values,
-        } if matches!(
-            schema.field(field)?.kind,
-            rss_mdm_query::directory::Kind::EnumSet(_) | rss_mdm_query::directory::Kind::UuidSet
-        ) =>
+        } if schema.field(field)?.kind.collection() && !matches!(operator, Operator::IsNull | Operator::IsNotNull) =>
         {
             if matches!(operator, Operator::Ne | Operator::Out) {
                 sql.push("NOT (");
@@ -88,30 +88,28 @@ fn expression(
             }
             for (i, v) in values.iter().enumerate() {
                 if i > 0 {
-                    sql.push(" OR ");
+                    sql.push(if *operator == Operator::ContainsAll { " AND " } else { " OR " });
                 }
                 value(sql, v)?;
-                sql.push(" = ANY(").push(columns(field)).push(")");
+                sql.push(" = ANY(").push(columns.column(field)?).push(")");
             }
             sql.push(")");
         }
-        Expression::Compare {
-            field,
-            operator: Operator::Icontains,
-            values,
-        } => {
-            sql.push("strpos(lower(")
-                .push(columns(field))
-                .push("),lower(");
+        Expression::Compare { field, operator: Operator::IsNull | Operator::IsNotNull, .. } => {
+            sql.push(columns.column(field)?).push(if matches!(e, Expression::Compare { operator: Operator::IsNull, .. }) { " IS NULL" } else { " IS NOT NULL" });
+        }
+        Expression::Compare { field, operator: Operator::Icontains, values } => {
+            sql.push("strpos(lower((").push(columns.column(field)?)
+                .push(") COLLATE pg_catalog.\"pg_c_utf8\"),lower((");
             value(sql, &values[0])?;
-            sql.push("))>0");
+            sql.push(") COLLATE pg_catalog.\"pg_c_utf8\"))>0");
         }
         Expression::Compare {
             field,
             operator,
             values,
         } => {
-            sql.push(columns(field)).push(match operator {
+            sql.push(columns.column(field)?).push(match operator {
                 Operator::Eq => " = ",
                 Operator::Ne => " <> ",
                 Operator::Lt => " < ",
@@ -144,7 +142,7 @@ pub fn page(
     sql: &mut QueryBuilder<Postgres>,
     q: &Query,
     after: Option<&Position>,
-    columns: Columns,
+    columns: impl Columns,
 ) -> Result<()> {
     page_limit(sql, q, after, columns, q.limit() + 1)
 }
@@ -153,9 +151,10 @@ pub fn page_limit(
     sql: &mut QueryBuilder<Postgres>,
     q: &Query,
     after: Option<&Position>,
-    columns: Columns,
+    columns: impl Columns,
     limit: usize,
 ) -> Result<()> {
+    columns.require(q.schema())?;
     let maximum = usize::from(q.schema().max_limit) + 1;
     if !(1..=maximum).contains(&limit) {
         return Err(Error::Budget);
@@ -169,7 +168,7 @@ pub fn page_limit(
             }
             sql.push("(");
             for (j, prefix) in q.sort().iter().take(i).enumerate() {
-                sql.push(columns(&prefix.field));
+                sql.push(columns.column(&prefix.field)?);
                 if p.0[j].is_null() {
                     sql.push(" IS NULL");
                 } else {
@@ -182,40 +181,42 @@ pub fn page_limit(
                 sql.push("FALSE");
             } else {
                 sql.push("(")
-                    .push(columns(&sort.field))
+                    .push(columns.column(&sort.field)?)
                     .push(if sort.descending { " < " } else { " > " });
                 value(sql, &p.0[i])?;
                 sql.push(" OR ")
-                    .push(columns(&sort.field))
+                    .push(columns.column(&sort.field)?)
                     .push(" IS NULL)");
             }
             sql.push(")");
         }
         sql.push(")");
     }
-    order(sql, q, columns);
+    order(sql, q, columns)?;
     sql.push(" LIMIT ").push_bind(limit as i64);
     Ok(())
 }
 /// Preserve the same ordering outside a bounded candidate subquery.
-pub fn order(sql: &mut QueryBuilder<Postgres>, q: &Query, columns: Columns) {
+pub fn order(sql: &mut QueryBuilder<Postgres>, q: &Query, columns: impl Columns) -> Result<()> {
+    columns.require(q.schema())?;
     sql.push(" ORDER BY ");
     for (i, sort) in q.sort().iter().enumerate() {
         if i > 0 {
             sql.push(",");
         }
-        sql.push(columns(&sort.field)).push(if sort.descending {
+        sql.push(columns.column(&sort.field)?).push(if sort.descending {
             " DESC NULLS LAST"
         } else {
             " ASC NULLS LAST"
         });
     }
+    Ok(())
 }
 pub fn append(
     sql: &mut QueryBuilder<Postgres>,
     q: &Query,
     after: Option<&Position>,
-    columns: Columns,
+    columns: impl Columns,
 ) -> Result<()> {
     filter(sql, q, columns)?;
     page(sql, q, after, columns)

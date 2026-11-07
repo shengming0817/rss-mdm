@@ -1,16 +1,16 @@
 use rss_mdm_query::directory::{Field, Kind, Position, Schema};
 use serde_json::json;
 use sqlx::QueryBuilder;
-static SCHEMA: Schema = Schema {
+static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "test",
     keys: &["id"],
     default_limit: 2,
     max_limit: 3,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Integer),
         Field::scalar("name", Kind::Text),
     ],
-};
+});
 fn column(name: &str) -> &'static str {
     match name {
         "id" => "id",
@@ -57,13 +57,13 @@ fn prefilter_preserves_mixed_or_and_binds_only_available_atoms() {
 
 #[test]
 fn sql_page_budget_uses_the_declared_query_owner() {
-    static FIELDS: Schema = Schema {
+    static FIELDS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
         id: "field_metadata",
         keys: &["id"],
         default_limit: 100,
         max_limit: 1024,
-        fields: &[Field::scalar("id", Kind::Integer)],
-    };
+        fields: vec![Field::scalar("id", Kind::Integer)],
+    });
     let query = FIELDS.parse("limit=1024").unwrap();
     let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
     rss_mdm_query_postgres::append(&mut sql, &query, None, column).unwrap();
