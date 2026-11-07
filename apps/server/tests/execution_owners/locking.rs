@@ -147,14 +147,8 @@ async fn policy_change_race(collection: bool) -> Result<()> {
         h.policy("policy-lock-order").await?.0
     };
     super::workers::wake(&h, collection, policy).await?;
-    let runtime = crate::identity::open_runtime(
-        &h.c.inputs.database("shared", "mdm_policy_runtime"),
-        &h.c.inputs.installation.target,
-        &h.c.inputs.installation.lineage,
-        &[(h.c.tenant, 1)],
-        2,
-    )
-    .await?;
+    let policy_owner = crate::planning_t2_support::owner(&h.c, "mdm_policy_runtime").await?;
+    let runtime = policy_owner.runtime.clone();
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);

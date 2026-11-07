@@ -132,12 +132,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
                 if server.is_finished() {
                     anyhow::bail!("App terminated before directory verification");
                 }
-                if http
-                    .client
-                    .get(format!("http://{address}/readyz"))
-                    .send()
-                    .await
-                    .is_ok_and(|r| r.status().is_success())
+                if http.get("/readyz",&[]).await.is_ok_and(|(status,body)|status==200 && body["ready"]==true)
                 {
                     break;
                 }

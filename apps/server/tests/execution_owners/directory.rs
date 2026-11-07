@@ -418,6 +418,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         assert_eq!(response.status(),axum::http::StatusCode::OK);
         let value:Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),1_048_576).await?)?;
         assert_eq!(value["inventoryAvailable"],false,"revoked source must not count archived observations");
+        assert_eq!(value["capabilities"].as_array().unwrap().iter().find(|v|v["action"]=="restart").unwrap()["devicePrerequisite"]["state"],"blocked");
         let registration = h.c.database.registration();
         let mut tx = registration.snapshot(&h.c.tenant.to_string()).await?;
         let raw: bool =

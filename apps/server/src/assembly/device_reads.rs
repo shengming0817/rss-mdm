@@ -241,19 +241,23 @@ impl Devices {
                 device_control::source_on(c, self.tasks.tenant, registration.registration_id)
                     .await
                     .map_err(super::task_reads::history::execution_fault)?;
-            let checks = kinds.map(|action| Check {
-                registration: registration.registration_id,
-                generation: registration.generation,
-                source,
-                action,
-            });
-            let states = self
-                .tasks
-                .execution
-                .control_applicability_on(c, &checks)
-                .await
-                .map_err(super::task_reads::history::execution_fault)?;
-            (Some(source), states)
+            if let Some(source) = source {
+                let checks = kinds.map(|action| Check {
+                    registration: registration.registration_id,
+                    generation: registration.generation,
+                    source,
+                    action,
+                });
+                let states = self
+                    .tasks
+                    .execution
+                    .control_applicability_on(c, &checks)
+                    .await
+                    .map_err(super::task_reads::history::execution_fault)?;
+                (Some(source), states)
+            } else {
+                (None, Vec::new())
+            }
         } else {
             // No current registration is a lifecycle block; no platform facts are queried.
             (None, Vec::new())
@@ -271,6 +275,11 @@ impl Devices {
                 };
                 let prerequisite = if registration.is_none() {
                     support(SupportState::Blocked, Some(CapabilityReason::NotRegistered))
+                } else if source.is_none() {
+                    support(
+                        SupportState::Blocked,
+                        Some(CapabilityReason::CapabilityUnknown),
+                    )
                 } else {
                     match states.get(index).ok_or(Error::Unavailable(
                         rss_mdm_management_http::Failure::CommandInvariant,
