@@ -571,7 +571,7 @@ impl Archive {
         q: &rss_mdm_query::directory::Query,
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<Page, Error> {
-        q.require_schema(&directory::SCHEMA)
+        q.require_schema(directory::schema())
             .map_err(directory::error)?;
         p.manage(P::CertificateArchiveRead)?;
         let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
@@ -599,7 +599,7 @@ impl Archive {
         let settings = store::settings(&mut tx, p.tenant_id()).await?;
         let mut sql = sqlx::QueryBuilder::new(directory::SELECT);
         sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), directory::column)
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*directory::BINDINGS)
             .map_err(directory::error)?;
         let rows = sql.build().fetch_all(&mut *tx).await?;
         let values = rows

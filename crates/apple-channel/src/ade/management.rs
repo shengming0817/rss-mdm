@@ -65,40 +65,41 @@ pub struct Setup {
     pub name: String,
     pub mandatory: bool,
     pub removable: bool,
+    #[schemars(schema_with = "skip_schema")]
     pub skip: Vec<String>,
 }
 impl Setup {
+    const PANES: &[&str] = &[
+        "AppleID",
+        "Appearance",
+        "AppStore",
+        "Biometric",
+        "Diagnostics",
+        "FileVault",
+        "EnableLockdownMode",
+        "iCloudDiagnostics",
+        "iCloudStorage",
+        "Location",
+        "Payment",
+        "Passcode",
+        "Privacy",
+        "Restore",
+        "ScreenTime",
+        "Siri",
+        "TOS",
+        "Welcome",
+        "TermsOfAddress",
+        "UnlockWithWatch",
+        "Accessibility",
+        "Intelligence",
+    ];
     pub(super) fn validate(&self) -> Result<(), Error> {
-        const PANES: &[&str] = &[
-            "AppleID",
-            "Appearance",
-            "AppStore",
-            "Biometric",
-            "Diagnostics",
-            "FileVault",
-            "EnableLockdownMode",
-            "iCloudDiagnostics",
-            "iCloudStorage",
-            "Location",
-            "Payment",
-            "Passcode",
-            "Privacy",
-            "Restore",
-            "ScreenTime",
-            "Siri",
-            "TOS",
-            "Welcome",
-            "TermsOfAddress",
-            "UnlockWithWatch",
-            "Accessibility",
-            "Intelligence",
-        ];
         if self.name.is_empty()
             || self.name.len() > 128
             || self.name.chars().any(char::is_control)
             || (!self.removable && !self.mandatory)
-            || self.skip.len() > PANES.len()
-            || self.skip.iter().any(|p| !PANES.contains(&p.as_str()))
+            || self.skip.len() > Self::PANES.len()
+            || self.skip.iter().any(|p| !Self::PANES.contains(&p.as_str()))
             || self
                 .skip
                 .iter()
@@ -113,6 +114,9 @@ impl Setup {
     pub(super) fn apple(&self, url: String) -> Value {
         json!({"profile_name":self.name,"url":url,"is_mandatory":self.mandatory,"is_mdm_removable":self.removable,"is_supervised":true,"skip_setup_items":self.skip,"await_device_configured":false,"auto_advance_setup":false})
     }
+}
+fn skip_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":"array","items":{"type":"string","enum":Setup::PANES},"uniqueItems":true,"maxItems":Setup::PANES.len()})
 }
 fn proof(auth: &RequestAuth, write: bool) -> Result<&AuthorizedPrincipal, Error> {
     auth.proof.manage(if write {

@@ -73,32 +73,21 @@ impl Metadata {
         if !crate::presentation::valid(&self.0, 16384) {
             return Err(Error::Malformed);
         }
-        for (key, limit, required) in [
-            ("name", 256, true),
-            ("category", 128, true),
-            ("owner", 256, false),
-            ("notes", 4096, false),
+        let fields: MetadataFields =
+            serde_json::from_value(serde_json::Value::Object(self.0.clone()))
+                .map_err(|_| Error::Malformed)?;
+        for (text, limit, required) in [
+            (&fields.name, 256, true),
+            (&fields.category, 128, true),
+            (&fields.owner, 256, false),
+            (&fields.notes, 4096, false),
         ] {
-            let text = self
-                .0
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .ok_or(Error::Malformed)?;
             if text.len() > limit || (required && text.trim().is_empty()) {
                 return Err(Error::Malformed);
             }
         }
-        for (key, limit) in [("labels", 128), ("usages", 512)] {
-            let values = self
-                .0
-                .get(key)
-                .and_then(serde_json::Value::as_array)
-                .ok_or(Error::Malformed)?;
-            if values.len() > 32
-                || values
-                    .iter()
-                    .any(|v| v.as_str().is_none_or(|s| s.is_empty() || s.len() > limit))
-            {
+        for (values, limit) in [(&fields.labels, 128), (&fields.usages, 512)] {
+            if values.len() > 32 || values.iter().any(|s| s.is_empty() || s.len() > limit) {
                 return Err(Error::Malformed);
             }
         }
@@ -348,20 +337,29 @@ pub(crate) struct Bundle {
     pub files: Vec<ExportFile>,
 }
 
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(extend("additionalProperties" = {"x-rss-extension":"Bounded descriptive extensions; only typed properties are queryable"}))]
+struct MetadataFields {
+    #[schemars(length(max = 256))]
+    name: String,
+    #[schemars(length(max = 128))]
+    category: String,
+    #[schemars(length(max = 256))]
+    owner: String,
+    #[schemars(length(max = 4096))]
+    notes: String,
+    #[schemars(length(max = 32), extend("items" = {"type":"string","minLength":1,"maxLength":128}))]
+    labels: Vec<String>,
+    #[schemars(length(max = 32), extend("items" = {"type":"string","minLength":1,"maxLength":512}))]
+    usages: Vec<String>,
+    #[serde(flatten)]
+    extensions: serde_json::Map<String, serde_json::Value>,
+}
 impl schemars::JsonSchema for Metadata {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "CertificateMetadata".into()
     }
-    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type":"object","required":["name","category","owner","notes","labels","usages"],
-            "properties":{
-                "name":{"type":"string","maxLength":256},"category":{"type":"string","maxLength":128},
-                "owner":{"type":"string","maxLength":256},"notes":{"type":"string","maxLength":4096},
-                "labels":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":128}},
-                "usages":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}}
-            },
-            "additionalProperties":{"x-rss-extension":"Ordinary certificate metadata retained by Metadata::validate and its 16384-byte budget"}
-        })
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        MetadataFields::json_schema(generator)
     }
 }
