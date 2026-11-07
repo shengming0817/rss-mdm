@@ -7,12 +7,12 @@ use rss_mdm_query::{
     directory::{Field, Kind, Projection, Query, Schema},
 };
 
-pub static REQUESTS: Schema = Schema {
+pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "agent_requests",
     keys: &["id"],
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("source", Kind::Text),
         Field::scalar("state", Kind::Text),
@@ -36,18 +36,18 @@ pub static REQUESTS: Schema = Schema {
         Field::output("activated"),
         Field::output("requirements"),
     ],
-};
-pub static OPERATIONS: Schema = Schema {
+});
+pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "agent_issuance_recovery_operations",
     keys: &["actor", "operationId"],
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: &[
+    fields: vec![
         Field::scalar("actor", Kind::Text),
         Field::scalar("operationId", Kind::Uuid),
         Field::output("instance"),
     ],
-};
+});
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReceiptIdentity {

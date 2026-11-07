@@ -43,7 +43,7 @@ async fn candidates(
     rss_mdm_query_postgres::prefilter(&mut sql, q, column, metadata).map_err(query_error)?;
     rss_mdm_query_postgres::page_limit(&mut sql, q, after, column, size).map_err(query_error)?;
     sql.push(") SELECT b.rows AS source_rows,CASE WHEN s.id IS NOT NULL THEN ").push(DOCUMENT).push(" END AS document,coalesce(s.input_bytes,0)::bigint AS input_bytes FROM source_budget b LEFT JOIN selected s ON true");
-    rss_mdm_query_postgres::order(&mut sql, q, column);
+    rss_mdm_query_postgres::order(&mut sql, q, column).map_err(query_error)?;
     let rows = {
         let c = &mut *c;
         sql.build().fetch_all(c).await.map_err(super::sql)
@@ -112,7 +112,7 @@ async fn matching(
     );
     sql.push_bind(Value::Array(rows)).push("::jsonb)), classified AS(SELECT document,(document->>'id')::uuid AS id,document->>'kind' AS kind,document->>'device' AS device,(document->>'policy')::uuid AS policy,(document->>'registrationId')::uuid AS registration,(document->>'generation')::bigint AS generation,document->>'origin' AS source_kind,(document->>'deadline')::bigint AS deadline,document->>'status' AS status,document->'authorization' AS authorization_summary,document->'reauthorization' AS reauthorization_summary FROM batch) SELECT document FROM classified WHERE true");
     rss_mdm_query_postgres::filter(&mut sql, q, column).map_err(query_error)?;
-    rss_mdm_query_postgres::order(&mut sql, q, column);
+    rss_mdm_query_postgres::order(&mut sql, q, column).map_err(query_error)?;
     {
         let c = &mut *c;
         sql.build_query_scalar()

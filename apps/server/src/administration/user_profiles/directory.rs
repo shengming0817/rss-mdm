@@ -1,29 +1,35 @@
 use rss_mdm_query::directory::{Field, Kind, Schema};
-pub static DIRECTORY: Schema = Schema {
+pub static DIRECTORY: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "user_attributes",
     keys: &["fieldId"],
     default_limit: 128,
     max_limit: 128,
-    fields: &[
+    fields: vec![
         Field::scalar("fieldId", Kind::Uuid),
         Field::scalar("revision", Kind::Integer),
         Field::scalar("key", Kind::Text),
         Field::scalar("displayName", Kind::Text),
-        Field::scalar("sourceKind", Kind::Enum(&["identity_local", "idp"])),
+        Field::scalar("sourceKind", Kind::enumeration(&["identity_local", "idp"])),
         Field::scalar("provider", Kind::Uuid),
         Field::scalar(
             "valueType",
-            Kind::Enum(&["string", "boolean", "number", "integer", "array", "object"]),
+            Kind::enumeration(&["string", "boolean", "number", "integer", "array", "object"]),
         ),
         Field::scalar("enabled", Kind::Boolean),
         Field::scalar("sensitive", Kind::Boolean),
         Field::scalar("required", Kind::Boolean),
-        Field::scalar("visibility", Kind::Enum(&["self", "profiles_read", "both"])),
-        Field::scalar("displayUse", Kind::Enum(&["profile", "summary", "hidden"])),
+        Field::scalar(
+            "visibility",
+            Kind::enumeration(&["self", "profiles_read", "both"]),
+        ),
+        Field::scalar(
+            "displayUse",
+            Kind::enumeration(&["profile", "summary", "hidden"]),
+        ),
         Field::output("collectedAfterMicros"),
         Field::output("value"),
     ],
-};
+});
 
 use self::DIRECTORY as SCHEMA;
 use super::*;

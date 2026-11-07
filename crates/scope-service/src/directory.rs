@@ -6,12 +6,12 @@ use rss_mdm_query::{
     directory::{Field, Kind, Query, Schema},
 };
 
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "scopes",
     keys: &["id"],
     default_limit: 64,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("revision", Kind::Integer),
         Field::scalar("deleted", Kind::Boolean),
@@ -20,7 +20,7 @@ pub static SCHEMA: Schema = Schema {
         Field::output("resolution"),
         Field::filter_only("ready", Kind::Boolean),
     ],
-};
+});
 pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
     let mut q = SCHEMA.parse(raw)?;
     q.default_filter("deleted", "false")?;

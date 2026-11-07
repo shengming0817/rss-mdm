@@ -15,16 +15,16 @@ use rss_mdm_query::{
 use serde_json::{Value, json};
 use sqlx::PgConnection;
 
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "devices",
     keys: &["id"],
     default_limit: 64,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Text),
         Field::scalar(
             "status",
-            Kind::Enum(&[
+            Kind::enumeration(&[
                 "active",
                 "pending",
                 "revoked",
@@ -34,17 +34,17 @@ pub static SCHEMA: Schema = Schema {
                 "expired",
             ]),
         ),
-        Field::filter_only("channel", Kind::EnumSet(&["mdm", "agent"])),
+        Field::filter_only("channel", Kind::enum_set(&["mdm", "agent"])),
         Field::filter_only(
             "source",
-            Kind::EnumSet(&["mdm.windows", "mdm.apple", "agent.builtin"]),
+            Kind::enum_set(&["mdm.windows", "mdm.apple", "agent.builtin"]),
         ),
         Field::output("primaryMdmRegistration"),
         Field::output("channels"),
         Field::output("enrollments"),
         Field::output("inventoryAvailable"),
     ],
-};
+});
 fn error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
@@ -133,20 +133,21 @@ fn selection(
         after,
         match profile {
             rss_mdm_install_support::StorageProfile::Mdm => {
-                |name| column(rss_mdm_install_support::StorageProfile::Mdm, name)
+                |name: &str| column(rss_mdm_install_support::StorageProfile::Mdm, name)
             }
             rss_mdm_install_support::StorageProfile::Da => {
-                |name| column(rss_mdm_install_support::StorageProfile::Da, name)
+                |name: &str| column(rss_mdm_install_support::StorageProfile::Da, name)
             }
         },
     )
     .map_err(error)?;
     sql.push(crate::storage_profile::sql(profile).device_directory_selection_2);
-    rss_mdm_query_postgres::order(&mut sql, q, |field| match field {
+    rss_mdm_query_postgres::order(&mut sql, q, |field: &str| match field {
         "id" => "s.id COLLATE \"C\"",
         "status" => "s.status COLLATE \"C\"",
         _ => unreachable!("checked identity ordering"),
-    });
+    })
+    .map_err(error)?;
     Ok(sql)
 }
 impl DeviceService {
@@ -275,10 +276,10 @@ impl DeviceService {
             q,
             match profile {
                 rss_mdm_install_support::StorageProfile::Mdm => {
-                    |name| column(rss_mdm_install_support::StorageProfile::Mdm, name)
+                    |name: &str| column(rss_mdm_install_support::StorageProfile::Mdm, name)
                 }
                 rss_mdm_install_support::StorageProfile::Da => {
-                    |name| column(rss_mdm_install_support::StorageProfile::Da, name)
+                    |name: &str| column(rss_mdm_install_support::StorageProfile::Da, name)
                 }
             },
         )

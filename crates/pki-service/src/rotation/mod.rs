@@ -17,12 +17,12 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
 
-pub static BLOCKERS: Schema = Schema {
+pub static BLOCKERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "pki_rotation_blockers",
     keys: &["kind", "id"],
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: &[
+    fields: vec![
         Field::scalar("kind", Kind::Text),
         Field::scalar("id", Kind::Text),
         Field::output("device"),
@@ -32,7 +32,7 @@ pub static BLOCKERS: Schema = Schema {
         Field::output("deadline"),
         Field::output("revocationState"),
     ],
-};
+});
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockerKind {

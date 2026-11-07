@@ -158,8 +158,11 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
     let foreign = [Uuid::new_v4(), Uuid::new_v4()];
     let instance = Uuid::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    let saved_query: a::Query =
+        serde_json::from_value(json!({"fields":[field.key],"criteria":criteria}))?;
+    let saved_filter = a::rsql::QueryInput::from_query(saved_query.clone())?.filter;
     for owner in foreign {
-        sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document) VALUES($1::uuid,$2,$3,$4,1,$5)").bind(c.tenant.to_string()).bind(instance).bind(owner).bind(query).bind(json!({"name":"private saved query","query":{"fields":[field.key],"criteria":criteria}})).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document,filter_text) VALUES($1::uuid,$2,$3,$4,1,$5,$6)").bind(c.tenant.to_string()).bind(instance).bind(owner).bind(query).bind(json!({"name":"private saved query","query":saved_query})).bind(saved_filter.clone()).execute(&mut *tx).await?;
     }
     sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document) VALUES($1::uuid,$2,$3,$4,1,NULL)").bind(c.tenant.to_string()).bind(instance).bind(foreign[0]).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -269,7 +272,7 @@ async fn field_blockers_and_profile_lifecycle() -> Result<()> {
 
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     assert!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &custom).await?);
-    sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document) VALUES($1::uuid,$2,$3,$4,1,$5)").bind(c.tenant.to_string()).bind(instance).bind(foreign[0]).bind(Uuid::new_v4()).bind(json!({"name":"legal nested reference","query":custom_query})).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document,filter_text) VALUES($1::uuid,$2,$3,$4,1,$5,$6)").bind(c.tenant.to_string()).bind(instance).bind(foreign[0]).bind(Uuid::new_v4()).bind(json!({"name":"legal nested reference","query":custom_query})).bind(a::rsql::QueryInput::from_query(custom_query.clone())?.filter).execute(&mut *tx).await?;
     tx.commit().await?;
     let change = a::Command::FieldWrite {
         field: custom.key,

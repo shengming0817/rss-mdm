@@ -266,47 +266,17 @@ async fn describe_in(
         _ => Err(Error::Forbidden),
     }
 }
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "self_service",
     keys: &["id"],
     default_limit: 64,
     max_limit: 64,
-    fields: &[
-        Field {
-            name: "id",
-            kind: Kind::Uuid,
-            filter: true,
-            sort: true,
-            output: false,
-        },
-        Field {
-            name: "toolName",
-            kind: Kind::Text,
-            filter: true,
-            sort: true,
-            output: false,
-        },
-        Field {
-            name: "alias",
-            kind: Kind::Text,
-            filter: true,
-            sort: true,
-            output: false,
-        },
-        Field {
-            name: "displayName",
-            kind: Kind::Text,
-            filter: true,
-            sort: true,
-            output: false,
-        },
-        Field {
-            name: "category",
-            kind: Kind::Text,
-            filter: true,
-            sort: true,
-            output: false,
-        },
+    fields: vec![
+        Field::scalar("id", Kind::Uuid).without_output(),
+        Field::scalar("toolName", Kind::Text).without_output(),
+        Field::scalar("alias", Kind::Text).without_output(),
+        Field::scalar("displayName", Kind::Text).without_output(),
+        Field::scalar("category", Kind::Text).without_output(),
         Field::output("capability"),
         Field::output("policyId"),
         Field::output("policyRevision"),
@@ -315,7 +285,7 @@ pub static SCHEMA: Schema = Schema {
         Field::output("selfService"),
         Field::output("task"),
     ],
-};
+});
 /// Captured input keeps parsing after the service's existing identity binding.
 pub struct Input(String);
 impl Input {

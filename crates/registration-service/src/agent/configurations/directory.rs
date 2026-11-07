@@ -2,26 +2,29 @@
 use super::*;
 use rss_mdm_query::directory::{Field, Kind, Query, Schema};
 use serde_json::Value;
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "agent_configurations",
     keys: &["configurationId"],
     default_limit: 64,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("configurationId", Kind::Uuid),
-        Field::scalar("state", Kind::Enum(&["available", "revoked", "expired"])),
+        Field::scalar(
+            "state",
+            Kind::enumeration(&["available", "revoked", "expired"]),
+        ),
         Field::scalar("createdAt", Kind::Integer),
         Field::scalar("expiresAt", Kind::Integer),
         Field::scalar("createdBy", Kind::Text),
-        Field::filter_only("platform", Kind::EnumSet(&["windows", "macos"])),
-        Field::filter_only("architecture", Kind::EnumSet(&["x86_64", "aarch64"])),
+        Field::filter_only("platform", Kind::enum_set(&["windows", "macos"])),
+        Field::filter_only("architecture", Kind::enum_set(&["x86_64", "aarch64"])),
         Field::output("targets"),
         Field::output("quantity"),
         Field::output("reserved"),
         Field::output("consumed"),
         Field::output("remaining"),
     ],
-};
+});
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Metadata {

@@ -883,3 +883,7 @@ mod operation_diagnostics_t2;
 #[cfg(test)]
 #[path = "../../tests/software_assets/mod.rs"]
 mod software_assets_t2;
+
+#[cfg(test)]
+#[path = "../../tests/directory_queries/mod.rs"]
+mod directory_queries_t2;

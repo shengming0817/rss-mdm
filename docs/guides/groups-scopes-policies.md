@@ -11,7 +11,7 @@ Group、Scope 缺省排除删除记录；需要墓碑时显式使用 `filter=del
 Resource 示例为 `/api/v1/resources?filter=kind==script;active==false&sort=kind,-revision&fields=id,presentation&limit=20`。
 `filter` 是有界 RSQL 子集，分号表示 AND、逗号表示 OR（AND 优先），支持括号、引号、转义及
 `== != =lt= =le= =gt= =ge= =in= =out=`；新增目录的 Text 字段还支持字面、不区分大小写的 `=icontains=`；不支持的字段、类型、操作和重复参数返回 400。
-完整字段与类型、过滤／排序／返回能力由 [Resource 字段定义](../../crates/resource/src/directory.rs) 持有；
+完整字段、类型、操作符和过滤／排序／返回能力由各领域业务模型派生，见[正式 HTTP 契约](http-contract.md#目录查询能力)；
 开发者可用 `python3 hack/build_run.py -- cargo run --locked -p rss-mdm-management-http --example resource_query`
 读取同源契约说明。解析预算见 [query 参数入口](../../crates/query/src/parameters.rs)和[解析器](../../crates/query/src/parser.rs)。
 

@@ -5,12 +5,12 @@ use rss_mdm_query::{
 };
 use sqlx::Row;
 use uuid::Uuid;
-pub static SOURCES: Schema = Schema {
+pub static SOURCES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "software_source_snapshots",
     keys: &["source"],
     default_limit: 20,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("source", Kind::Text),
         Field::scalar("revision", Kind::Integer),
         Field::scalar("entryCount", Kind::Integer),
@@ -18,13 +18,13 @@ pub static SOURCES: Schema = Schema {
         Field::output("documentSha256"),
         Field::output("extraction"),
     ],
-};
-pub static ENTRIES: Schema = Schema {
+});
+pub static ENTRIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "software_source_entries",
     keys: &["entryId"],
     default_limit: 20,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("entryId", Kind::Uuid),
         Field::scalar("source", Kind::Text),
         Field::scalar("revision", Kind::Integer),
@@ -32,7 +32,7 @@ pub static ENTRIES: Schema = Schema {
         Field::scalar("name", Kind::Text),
         Field::scalar("version", Kind::Text),
     ],
-};
+});
 fn source_column(field: &str) -> &'static str {
     match field {
         "source" => "source COLLATE \"C\"",

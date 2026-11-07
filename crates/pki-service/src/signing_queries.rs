@@ -43,17 +43,17 @@ pub struct Operation {
     pub instance: String,
     pub operation_id: Uuid,
 }
-pub static OPERATIONS: Schema = Schema {
+pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "windows_signing_recovery_operations",
     keys: &["actor", "operationId"],
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: &[
+    fields: vec![
         Field::scalar("actor", Kind::Text),
         Field::scalar("operationId", Kind::Uuid),
         Field::output("instance"),
     ],
-};
+});
 fn db(_: sqlx::Error) -> Error {
     Error::Storage
 }

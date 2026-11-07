@@ -6,6 +6,9 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-group-postgres.workspace = true
+rss-mdm-policy-postgres.workspace = true
+rss-mdm-compliance-postgres.workspace = true
 rss-mdm-install-support.workspace = true
 rss-mdm-device-access.workspace = true
 rss-mdm-device-access-postgres.workspace = true

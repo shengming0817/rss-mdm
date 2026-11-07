@@ -10,7 +10,7 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 pub(super) struct Owners {
-    storage: crate::owner_storage::OwnerRuntime,
+    pub(super) storage: crate::owner_storage::OwnerRuntime,
     pub(super) groups: Arc<group::Groups>,
     pub(super) compliance: compliance::Compliance,
 }

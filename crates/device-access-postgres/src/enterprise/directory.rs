@@ -7,20 +7,20 @@ use rss_mdm_query::{
     directory::{Field, Kind, Query, Schema},
 };
 use serde_json::Value;
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "enterprise_configuration",
     keys: &["id"],
     default_limit: 64,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Text),
         Field::scalar(
             "kind",
-            Kind::Enum(&["relying_party", "subject", "windows_key"]),
+            Kind::enumeration(&["relying_party", "subject", "windows_key"]),
         ),
         Field::output("value"),
     ],
-};
+});
 fn column(name: &str) -> &'static str {
     match name {
         "id" => "q.id COLLATE \"C\"",
