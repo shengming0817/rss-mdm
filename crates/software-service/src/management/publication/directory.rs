@@ -4,12 +4,12 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::directory::{Field, Kind, Query, Schema};
 use serde_json::{Value, json};
-pub static PUBLICATIONS: Schema = Schema {
+pub static PUBLICATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "publications",
     keys: &["id"],
     default_limit: 20,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Text),
         Field::scalar("target", Kind::Text),
         Field::scalar("resource", Kind::Text),
@@ -25,18 +25,18 @@ pub static PUBLICATIONS: Schema = Schema {
         Field::output("withdrawn"),
         Field::output("withdrawal"),
     ],
-};
-pub static TARGETS: Schema = Schema {
+});
+pub static TARGETS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "publication_targets",
     keys: &["id"],
     default_limit: 20,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Text),
-        Field::scalar("protocol", Kind::Enum(&["winget", "brew"])),
+        Field::scalar("protocol", Kind::enumeration(&["winget", "brew"])),
         Field::output("digest"),
     ],
-};
+});
 fn column(name: &str) -> &'static str {
     match name {
         "id" => "s.record COLLATE \"C\"",

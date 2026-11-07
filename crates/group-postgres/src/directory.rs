@@ -1,53 +1,25 @@
 //! Domain-owned Group directory mapping; the query adapter owns only SQL syntax.
 use crate::{model::*, storage, store::input};
 use rss_mdm_group::{AssetContext, GroupId};
-use rss_mdm_query::directory::{Field, Kind, Position, Query, Schema};
+use rss_mdm_query::directory::{Position, Query};
+use rss_mdm_query_postgres::Source;
 use rss_transactional_messaging_postgres::PgTransaction;
-use sqlx::Row;
-/// Query fields consumed by Group metadata SQL and route documentation.
-pub static SCHEMA: Schema = Schema {
-    id: "groups",
-    keys: &["id"],
-    default_limit: 64,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("kind", Kind::Enum(&["static", "dynamic", "system"])),
-        Field::scalar(
-            "assetContext",
-            Kind::Enum(&["endpoint", "associated_device"]),
-        ),
-        Field::scalar("deleted", Kind::Boolean),
-        Field {
-            name: "name",
-            kind: Kind::Text,
-            filter: true,
-            sort: true,
-            output: false,
-        },
-        Field::scalar("memberCount", Kind::Integer),
-        Field::scalar("calculationRevision", Kind::Integer),
-        Field::scalar("memberVersion", Kind::Integer),
-        Field::output("presentation"),
-        Field::output("systemSelector"),
-        Field::output("ruleVersion"),
-    ],
-};
-fn column(name: &str) -> &'static str {
-    match name {
-        "id" => "id::text COLLATE \"C\"",
-        "revision" => "revision",
-        "kind" => "kind COLLATE \"C\"",
-        "assetContext" => "asset_context COLLATE \"C\"",
-        "deleted" => "deleted",
-        "name" => "(presentation->>'name') COLLATE \"C\"",
-        "memberCount" => "member_count",
-        "calculationRevision" => "calculation_revision",
-        "memberVersion" => "member_version",
-        _ => unreachable!("checked Group field"),
-    }
-}
+use sqlx::Row as _;
+/// Trusted storage roots; every service model field must bind before execution.
+pub static SOURCES: &[rss_mdm_query_postgres::Source] = &[
+    Source::column("id", "id::text COLLATE \"C\""),
+    Source::column("kind", "kind COLLATE \"C\""),
+    Source::column("systemSelector", "system_selector COLLATE \"C\""),
+    Source::column("assetContext", "asset_context COLLATE \"C\""),
+    Source::column("name", "(presentation->>'name') COLLATE \"C\""),
+    Source::column("revision", "revision"),
+    Source::column("calculationRevision", "calculation_revision"),
+    Source::column("memberVersion", "member_version"),
+    Source::column("memberCount", "member_count"),
+    Source::column("ruleVersion", "rule_version COLLATE \"C\""),
+    Source::column("deleted", "deleted"),
+    Source::json("presentation", "presentation"),
+];
 impl crate::GroupStore {
     /// Query a bounded tenant page, applying an optional reference context before paging.
     pub async fn directory_in(
@@ -56,9 +28,10 @@ impl crate::GroupStore {
         q: &Query,
         after: Option<&Position>,
         context: Option<AssetContext>,
+        bindings: &rss_mdm_query_postgres::Bindings,
     ) -> InTransaction<Vec<Group>> {
         input!(self.check_transaction(tx)?);
-        if q.require_schema(&SCHEMA).is_err() {
+        if q.require_schema(bindings.schema()).is_err() {
             return Ok(Err(Rejection::InvalidInput));
         }
         let mut sql = sqlx::QueryBuilder::new("SELECT * FROM mdm_group.groups WHERE tenant_id=");
@@ -68,7 +41,7 @@ impl crate::GroupStore {
                 .push_bind(context.as_str())
                 .push(" AND NOT deleted");
         }
-        if rss_mdm_query_postgres::append(&mut sql, q, after, column).is_err() {
+        if rss_mdm_query_postgres::append(&mut sql, q, after, bindings).is_err() {
             return Ok(Err(Rejection::InvalidInput));
         }
         let rows = tx

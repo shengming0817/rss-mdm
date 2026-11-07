@@ -2,6 +2,8 @@
   "$defs": {
     "PolicyAlias": {
       "description": "Tenant-local canonical Policy alias.",
+      "maxLength": 64,
+      "minLength": 1,
       "type": "string"
     }
   },
@@ -38,6 +40,8 @@
         },
         "name": {
           "description": "Complete canonical name.",
+          "maxLength": 39,
+          "minLength": 39,
           "type": "string"
         }
       },

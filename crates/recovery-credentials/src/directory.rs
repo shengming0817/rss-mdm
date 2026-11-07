@@ -8,18 +8,18 @@ use rss_mdm_query::{
 };
 use serde_json::Value;
 use sqlx::PgConnection;
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "recovery_credentials",
     keys: &["id", "version"],
     default_limit: 64,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("version", Kind::Integer),
         Field::scalar("current", Kind::Boolean),
         Field::scalar(
             "validity",
-            Kind::Enum(&["unverified", "verified", "revoked", "unknown", "superseded"]),
+            Kind::enumeration(&["unverified", "verified", "revoked", "unknown", "superseded"]),
         ),
         Field::scalar("escrowed", Kind::Boolean),
         Field::scalar("operation", Kind::Uuid),
@@ -27,7 +27,7 @@ pub static SCHEMA: Schema = Schema {
         Field::scalar("invalidatedAt", Kind::Integer),
         Field::output("binding"),
     ],
-};
+});
 fn column(name: &str) -> &'static str {
     match name {
         "id" => "e.id::text COLLATE \"C\"",

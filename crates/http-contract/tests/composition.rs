@@ -1,3 +1,20 @@
+struct ResourceOwner;
+static RESOURCE_SCHEMA: std::sync::LazyLock<rss_mdm_query::directory::Schema> =
+    std::sync::LazyLock::new(|| rss_mdm_query::directory::Schema {
+        id: "resource",
+        keys: &["id"],
+        default_limit: 1,
+        max_limit: 2,
+        fields: vec![rss_mdm_query::directory::Field::scalar(
+            "id",
+            rss_mdm_query::directory::Kind::Text,
+        )],
+    });
+impl rss_mdm_http_contract::query::DirectoryOwner for ResourceOwner {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &RESOURCE_SCHEMA
+    }
+}
 use rss_mdm_http_contract::{Operation, Violation, catalog::RESOURCE, routing::get, validate};
 #[test]
 fn mount_propagates_and_missing_list_or_get_cannot_disappear() {
@@ -7,7 +24,9 @@ fn mount_propagates_and_missing_list_or_get_cannot_disappear() {
             get_resources: rss_mdm_http_contract::module::Route::new(
                 "/resources",
                 get(
-                    || async { rss_mdm_http_contract::CollectionResponse(()) },
+                    |_: rss_mdm_http_contract::query::OwnedQuery<
+                        rss_mdm_http_contract::query::Directory<ResourceOwner>,
+                    >| async { rss_mdm_http_contract::CollectionResponse(()) },
                     &RESOURCE,
                     &[Operation::List],
                 ),
@@ -55,7 +74,9 @@ fn duplicate_and_unexpected_resources_are_rejected() {
             get_resources: rss_mdm_http_contract::module::Route::new(
                 "/resources",
                 get(
-                    || async { rss_mdm_http_contract::CollectionResponse(()) },
+                    |_: rss_mdm_http_contract::query::OwnedQuery<
+                        rss_mdm_http_contract::query::Directory<ResourceOwner>,
+                    >| async { rss_mdm_http_contract::CollectionResponse(()) },
                     &RESOURCE,
                     &[Operation::List],
                 ),
@@ -141,16 +162,17 @@ fn unified_list_requires_an_execution_field_owner() {
         validate(routes.endpoints(), &[&SAVED_QUERIES])
             .contains(&Violation::MissingQuery("saved_queries".into()))
     );
-    static SCHEMA: rss_mdm_query::directory::Schema = rss_mdm_query::directory::Schema {
-        id: "saved_queries",
-        keys: &["id"],
-        default_limit: 1,
-        max_limit: 2,
-        fields: &[rss_mdm_query::directory::Field::scalar(
-            "id",
-            rss_mdm_query::directory::Kind::Integer,
-        )],
-    };
+    static SCHEMA: std::sync::LazyLock<rss_mdm_query::directory::Schema> =
+        std::sync::LazyLock::new(|| rss_mdm_query::directory::Schema {
+            id: "saved_queries",
+            keys: &["id"],
+            default_limit: 1,
+            max_limit: 2,
+            fields: vec![rss_mdm_query::directory::Field::scalar(
+                "id",
+                rss_mdm_query::directory::Kind::Integer,
+            )],
+        });
     struct Owner;
     impl rss_mdm_http_contract::query::DirectoryOwner for Owner {
         fn schema() -> &'static rss_mdm_query::directory::Schema {

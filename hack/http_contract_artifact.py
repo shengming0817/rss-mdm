@@ -80,6 +80,29 @@ def validate_document(data):
             if not isinstance(value, dict) or not isinstance(value.get('content_type'), str):
                 raise ValueError('missing body content type')
             description(value.get('schema'), direction)
+    def directory(value):
+        if value is None or value.get('kind') != 'directory':
+            return
+        owner = value.get('schema', {})
+        fields = owner.get('fields')
+        if not owner.get('id') or not isinstance(fields, list) or not fields:
+            raise ValueError('missing directory field owner')
+        names = set()
+        for field in fields:
+            name, operators = field.get('name'), field.get('operators')
+            if not isinstance(name, str) or not name or name in names:
+                raise ValueError('duplicate or invalid directory field')
+            names.add(name)
+            if any(type(field.get(flag)) is not bool for flag in ('filter', 'sort', 'output', 'nullable')):
+                raise ValueError('invalid directory capability flags')
+            if not isinstance(operators, list) or any(not isinstance(op, str) for op in operators) or len(set(operators)) != len(operators):
+                raise ValueError('invalid directory operator description')
+            if bool(operators) != field['filter']:
+                raise ValueError('directory operators differ from executable capability')
+            if not field['filter'] and not field.get('limitation'):
+                raise ValueError('directory exclusion requires a reason')
+        if not set(owner.get('keys', [])) <= names:
+            raise ValueError('unbound directory ordering key')
     identities, routes = set(), set()
     for endpoint in endpoints:
         if not isinstance(endpoint, dict):
@@ -108,6 +131,7 @@ def validate_document(data):
         for key in ('path', 'query'):
             if request.get(key) is not None:
                 description(request[key], 'request')
+        directory(request.get('query_owner'))
         body(request.get('body'), 'request')
         for header in request.get('headers', {}).values():
             description(header, 'request')

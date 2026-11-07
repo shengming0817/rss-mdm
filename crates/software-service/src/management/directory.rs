@@ -5,24 +5,24 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::directory::{Field, Kind, Query, Schema};
 
-pub static SOURCES: Schema = Schema {
+pub static SOURCES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "software_sources",
     keys: &["id", "revision"],
     default_limit: 20,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Text),
         Field::scalar("revision", Kind::Text),
         Field::scalar(
             "protocol",
-            Kind::Enum(&["private", "winget_rest", "winget_community", "brew_tap"]),
+            Kind::enumeration(&["private", "winget_rest", "winget_community", "brew_tap"]),
         ),
-        Field::scalar("state", Kind::Enum(&["enabled", "disabled"])),
+        Field::scalar("state", Kind::enumeration(&["enabled", "disabled"])),
         Field::output("snapshot"),
         Field::output("source"),
         Field::output("lifecycle"),
     ],
-};
+});
 fn source_column(name: &str) -> &'static str {
     match name {
         "id" => "id COLLATE \"C\"",

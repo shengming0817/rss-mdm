@@ -23,6 +23,7 @@ macro_rules! id {
             Deserialize,
         )]
         #[serde(try_from = "String", into = "String")]
+        #[schemars(extend("format" = "uuid"))]
         pub struct $name(Uuid);
         impl $name {
             /// Parse a UUID, rejecting the nil identity. Display emits its canonical form.

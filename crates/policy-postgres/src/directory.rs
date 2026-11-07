@@ -3,6 +3,7 @@ use rss_mdm_query::{
     Error as QueryError,
     directory::{Field, Kind, Position, Query, Schema},
 };
+use rss_mdm_query_postgres::Source;
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use serde_json::Value;
 use uuid::Uuid;
@@ -16,70 +17,38 @@ pub enum Error {
     #[error(transparent)]
     Storage(#[from] PgError),
 }
-/// Management Policy directory fields.
-pub static SCHEMA: Schema = Schema {
-    id: "policies",
-    keys: &["id"],
-    default_limit: 64,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("toolName", Kind::Text),
-        Field::scalar("alias", Kind::Text),
-        Field::scalar("customEvent", Kind::Text),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("version", Kind::Integer),
-        Field::scalar("state", Kind::Enum(&["enabled", "disabled", "archived"])),
-        Field::scalar(
-            "action",
-            Kind::Enum(&[
-                "device_access",
-                "unmanage_device",
-                "credential",
-                "execution",
-                "native_collection",
-                "agent_collection",
-                "telemetry_profile",
-                "configuration",
-                "software",
-                "ensure_agent_installed",
-                "request_mdm_enrollment",
-            ]),
-        ),
-        Field::scalar("scope", Kind::Uuid),
-        Field::scalar("resource", Kind::Text),
-        Field::scalar("category", Kind::Text),
-        Field::output("versionId"),
-        Field::output("definition"),
-    ],
-};
-/// Parse the management directory query against its canonical fields.
-pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
-    SCHEMA.parse(raw)
-}
-fn column(name: &str) -> &'static str {
-    match name {
-        "id" => "id::text COLLATE \"C\"",
-        "toolName" => "('policy_' || replace(id::text,'-','')) COLLATE \"C\"",
-        "alias" => "(definition->>'alias') COLLATE \"C\"",
-        "customEvent" => "(definition->>'customEvent') COLLATE \"C\"",
-        "revision" => "revision",
-        "version" => "version_number",
-        "state" => "state COLLATE \"C\"",
-        "action" => "(definition->'action'->>'kind') COLLATE \"C\"",
-        "scope" => "(definition->>'scope') COLLATE \"C\"",
-        "resource" => "(definition->'action'->'resource'->>'id') COLLATE \"C\"",
-        "category" => "(definition->'selfService'->'presentation'->>'category') COLLATE \"C\"",
-        _ => unreachable!("checked Policy field"),
-    }
-}
+/// Trusted current Policy storage roots; checked against the service model.
+pub static SOURCES: &[rss_mdm_query_postgres::Source] = &[
+    Source::column("id", "id::text COLLATE \"C\""),
+    Source::column(
+        "toolName",
+        "('policy_' || replace(id::text,'-','')) COLLATE \"C\"",
+    ),
+    Source::column("alias", "(definition->>'alias') COLLATE \"C\""),
+    Source::column("customEvent", "(definition->>'customEvent') COLLATE \"C\""),
+    Source::column("revision", "revision"),
+    Source::column("version", "version_number"),
+    Source::column("versionId", "current_version::text COLLATE \"C\""),
+    Source::column("state", "state COLLATE \"C\""),
+    Source::column("action", "(definition->'action'->>'kind') COLLATE \"C\""),
+    Source::column("scope", "(definition->>'scope') COLLATE \"C\""),
+    Source::column(
+        "resource",
+        "(definition->'action'->'resource'->>'id') COLLATE \"C\"",
+    ),
+    Source::column(
+        "category",
+        "(definition->'selfService'->'presentation'->>'category') COLLATE \"C\"",
+    ),
+    Source::json("definition", "definition"),
+];
 /// Event batch directory fields.
-pub static BATCHES: Schema = Schema {
+pub static BATCHES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "policy_event_batches",
     keys: &["id"],
     default_limit: 64,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("operationId", Kind::Uuid),
         Field::scalar("event", Kind::Text),
@@ -90,14 +59,14 @@ pub static BATCHES: Schema = Schema {
         Field::output("request"),
         Field::output("processingFailure"),
     ],
-};
+});
 /// Event member directory fields.
-pub static MEMBERS: Schema = Schema {
+pub static MEMBERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "policy_event_members",
     keys: &["id"],
     default_limit: 64,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("policyId", Kind::Uuid),
         Field::scalar("versionId", Kind::Uuid),
@@ -106,7 +75,7 @@ pub static MEMBERS: Schema = Schema {
         Field::output("decision"),
         Field::output("operations"),
     ],
-};
+});
 fn batch_column(name: &str) -> &'static str {
     match name {
         "id" => "b.id::text COLLATE \"C\"",
@@ -132,15 +101,16 @@ pub async fn policies_in(
     tx: &mut PgTransaction<'_>,
     q: &Query,
     after: Option<&Position>,
+    bindings: &rss_mdm_query_postgres::Bindings,
 ) -> Result<Vec<Value>, Error> {
-    q.require_schema(&SCHEMA)?;
+    q.require_schema(bindings.schema())?;
     let mut sql =
         sqlx::QueryBuilder::new(crate::storage_profile::sql(profile).directory_policies_in_1);
     sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
     if !q.mentions("state") {
         sql.push(" AND state<>'archived'");
     }
-    rss_mdm_query_postgres::append(&mut sql, q, after, column)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after, bindings)?;
     Ok(tx
         .with_connection(move |c| {
             Box::pin(async move { sql.build_query_scalar().fetch_all(c).await })

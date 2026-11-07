@@ -357,7 +357,8 @@ async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Res
         assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,503);
         windows(&c,&n,"10.0.22631.0").await?;
         change(&c, "UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2", n.registration).await?;
-        assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,409);
+        let body=read(&c,&http,&p,&n).await?;
+        for kind in ["restart","lock","wipe"] { assert_eq!(capability(&body,kind)["devicePrerequisite"],json!({"state":"blocked","reason":"capability_unknown"})); }
         change(&c, "UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2", n.registration).await?;
         let body=read(&c,&http,&p,&n).await?;
         for kind in ["restart","lock","wipe"] { assert_eq!(capability(&body,kind)["devicePrerequisite"],json!({"state":"blocked","reason":"not_registered"})); }

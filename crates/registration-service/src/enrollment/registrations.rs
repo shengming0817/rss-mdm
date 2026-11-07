@@ -8,12 +8,12 @@ use rss_mdm_query::{
 };
 use serde_json::Value;
 
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "device_registrations",
     keys: &["registrationId"],
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: &[
+    fields: vec![
         Field::scalar("registrationId", Kind::Uuid),
         Field::scalar("source", Kind::Text),
         Field::scalar("generation", Kind::Integer),
@@ -22,7 +22,7 @@ pub static SCHEMA: Schema = Schema {
         Field::output("enrollmentId"),
         Field::output("certificateGrantId"),
     ],
-};
+});
 fn column(name: &str) -> &'static str {
     match name {
         "registrationId" => "r.id::text COLLATE \"C\"",

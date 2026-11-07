@@ -87,7 +87,8 @@ impl Service {
                     Ok(crate::control::device_control::source_on(c, tenant, registration).await)
                 })
             })
-            .await??;
+            .await??
+            .ok_or(Error::Conflict)?;
         if let crate::control::device_control::Action::Lock { pin, .. } = &input.action
             && source == rss_mdm_inventory::ReportSource::MdmApple
         {

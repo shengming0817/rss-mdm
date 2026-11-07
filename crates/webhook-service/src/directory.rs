@@ -5,26 +5,32 @@ use rss_mdm_query::directory::{Field, Kind, Position, Query, Schema};
 use serde_json::Value;
 use sqlx::{PgConnection, QueryBuilder};
 use uuid::Uuid;
-pub static SUBSCRIPTIONS: Schema = Schema {
-    id: "webhook_subscriptions",
-    keys: &["id"],
-    default_limit: 32,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("targetVersion", Kind::Integer),
-        Field::scalar("enabled", Kind::Boolean),
-        Field::scalar("deleted", Kind::Boolean),
-        Field::output("settings"),
-    ],
-};
-pub static DELIVERIES: Schema = Schema {
+pub static SUBSCRIPTIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<crate::model::Subscription>("webhook_subscriptions", &["id"], 32, 1000, &[])
+        .expect("Webhook subscription model is fully described")
+});
+static SUBSCRIPTION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        use rss_mdm_query_postgres::{Bindings, Source};
+        Bindings::new(
+            &SUBSCRIPTIONS,
+            &[
+                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("revision", "(row->>'revision')::bigint"),
+                Source::column("targetVersion", "(row->>'targetVersion')::bigint"),
+                Source::column("enabled", "(row->>'enabled')::boolean"),
+                Source::column("deleted", "(row->>'deleted')::boolean"),
+                Source::json("settings", "row->'settings'"),
+            ],
+        )
+        .expect("Webhook storage binds every subscription field")
+    });
+pub static DELIVERIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "webhook_deliveries",
     keys: &["id"],
     default_limit: 32,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("eventId", Kind::Uuid),
         Field::scalar("subscriptionId", Kind::Uuid),
@@ -38,7 +44,7 @@ pub static DELIVERIES: Schema = Schema {
         Field::output("failureStage"),
         Field::output("failureReason"),
     ],
-};
+});
 pub fn query_error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
@@ -66,12 +72,14 @@ pub async fn subscriptions(
     q: &Query,
     after: Option<&Position>,
 ) -> Result<Vec<Value>, Error> {
-    q.require_schema(&SUBSCRIPTIONS).map_err(query_error)?;
+    q.require_schema(SUBSCRIPTION_BINDINGS.schema())
+        .map_err(query_error)?;
     let mut sql = QueryBuilder::new(
         "SELECT row FROM (SELECT jsonb_build_object('id',id,'revision',revision,'targetVersion',target_version,'enabled',enabled,'deleted',deleted,'settings',settings) row FROM mdm_webhook.subscriptions WHERE tenant_id=",
     );
     sql.push_bind(t).push(") records WHERE true");
-    rss_mdm_query_postgres::append(&mut sql, q, after, column).map_err(query_error)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after, &*SUBSCRIPTION_BINDINGS)
+        .map_err(query_error)?;
     Ok(sql.build_query_scalar().fetch_all(c).await?)
 }
 pub async fn deliveries(
@@ -119,7 +127,7 @@ impl SubscriptionInput {
         Self(raw.to_owned())
     }
     pub fn schema() -> &'static Schema {
-        &SUBSCRIPTIONS
+        SUBSCRIPTION_BINDINGS.schema()
     }
     pub fn parse(&self) -> rss_mdm_query::Result<Query> {
         Self::schema().parse(&self.0)

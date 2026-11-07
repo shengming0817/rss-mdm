@@ -66,6 +66,8 @@
     },
     "PolicyEventName": {
       "description": "Tenant-local event name shared by any number of Policies; never an object alias.",
+      "maxLength": 64,
+      "minLength": 1,
       "type": "string"
     },
     "PolicyEventSource": {

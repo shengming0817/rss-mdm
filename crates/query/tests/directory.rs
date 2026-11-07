@@ -4,18 +4,18 @@ use rss_mdm_query::{
     directory::{Field, Kind, Schema},
 };
 use serde_json::{Value, json};
-static SCHEMA: Schema = Schema {
+static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "example",
     keys: &["id"],
     default_limit: 2,
     max_limit: 3,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Integer),
         Field::scalar("name", Kind::Text),
         Field::scalar("enabled", Kind::Boolean),
         Field::output("detail"),
     ],
-};
+});
 #[test]
 fn projection_does_not_change_authenticated_seek_and_context_is_bound() {
     let q = SCHEMA.parse("sort=name&fields=name&limit=1").unwrap();

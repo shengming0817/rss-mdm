@@ -3812,6 +3812,7 @@ dependencies = [
 name = "rss-mdm-compliance-service"
 version = "0.1.0"
 dependencies = [
+ "rss-mdm-query-postgres",
  "ring",
  "rss-contract",
  "rss-mdm-audit-integration",
@@ -4207,6 +4208,7 @@ dependencies = [
 name = "rss-mdm-group-service"
 version = "0.1.0"
 dependencies = [
+ "rss-mdm-query-postgres",
  "ring",
  "rss-contract",
  "rss-mdm-agent-wire",
@@ -4632,6 +4634,8 @@ name = "rss-mdm-query-postgres"
 version = "0.1.0"
 dependencies = [
  "rss-mdm-query",
+ "schemars",
+ "serde",
  "serde_json",
  "sqlx",
  "tracing",

@@ -202,7 +202,13 @@ impl ReleaseStore {
             transition: None,
         };
         STORAGE
-            .write(tx, c.snapshot().id.value(), None, 0, document)
+            .write(
+                tx,
+                c.snapshot().id.value(),
+                None,
+                0,
+                rss_mdm_backend_postgres_support::AggregateDocument::Canonical(document),
+            )
             .await?;
         freeze_material(tx, &c.snapshot().content).await?;
         freeze_attempt(tx, c).await?;
@@ -308,7 +314,9 @@ impl ReleaseStore {
                 id.value(),
                 Some(c.snapshot().revision),
                 next.snapshot().revision,
-                codec::snapshot(next)?,
+                rss_mdm_backend_postgres_support::AggregateDocument::Canonical(codec::snapshot(
+                    next,
+                )?),
             )
             .await?;
         freeze_material(tx, &next.snapshot().content).await?;

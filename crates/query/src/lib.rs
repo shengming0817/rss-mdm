@@ -78,6 +78,8 @@ pub fn parse_filter(input: &str) -> Result<Expression<String, String>> {
 
 /// Raw query byte ceiling, checked before URL decoding.
 pub const MAX_RAW_QUERY_BYTES: usize = 16 * 1024;
+/// Maximum model selector or sort field path length.
+pub const MAX_SELECTOR_BYTES: usize = 128;
 /// Decoded RSQL byte ceiling.
 pub const MAX_FILTER_BYTES: usize = 8 * 1024;
 

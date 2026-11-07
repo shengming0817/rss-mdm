@@ -3,16 +3,26 @@ use crate::runtime::WireError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+const POLICY_ADDRESS_MAX_BYTES: usize = 64;
+const POLICY_TOOL_PREFIX: &str = "policy_";
+
+/// Schema of the server-generated tool address, shared by all public projections.
+pub fn policy_tool_name_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let length = POLICY_TOOL_PREFIX.len() + 32;
+    schemars::json_schema!({"type":"string", "minLength":length, "maxLength":length})
+}
+
 /// Tenant-local canonical Policy alias.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
+#[schemars(extend("minLength" = 1, "maxLength" = POLICY_ADDRESS_MAX_BYTES))]
 pub struct PolicyAlias(String);
 impl PolicyAlias {
     /// Normalize user input to its single ASCII address representation.
     pub fn parse(value: &str) -> Result<Self, WireError> {
         let value = value.trim().to_ascii_lowercase();
         if value.is_empty()
-            || value.len() > 64
+            || value.len() > POLICY_ADDRESS_MAX_BYTES
             || !value
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
@@ -39,7 +49,7 @@ impl From<PolicyAlias> for String {
 }
 /// Immutable tool name, independent of configuration and execution versions.
 pub fn policy_tool_name(id: Uuid) -> String {
-    format!("policy_{}", id.simple())
+    format!("{POLICY_TOOL_PREFIX}{}", id.simple())
 }
 /// Explicit exact address in the authenticated tenant's Policy namespace.
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -53,6 +63,7 @@ pub enum CapabilitySelector {
     /// Server-generated tool name.
     ToolName {
         /// Complete canonical name.
+        #[schemars(schema_with = "policy_tool_name_schema")]
         name: String,
     },
     /// Administrator-controlled unique alias.
@@ -68,7 +79,7 @@ impl CapabilitySelector {
             Self::Id { id } => *id,
             Self::ToolName { name } => {
                 let id = name
-                    .strip_prefix("policy_")
+                    .strip_prefix(POLICY_TOOL_PREFIX)
                     .and_then(|s| Uuid::parse_str(s).ok())
                     .ok_or(WireError::InvalidValue)?;
                 if policy_tool_name(id) != *name {
@@ -93,6 +104,7 @@ pub struct CapabilityDescriptor {
     /// Object namespace.
     pub object_type: CapabilityObject,
     /// Server-owned stable invocation name.
+    #[schemars(schema_with = "policy_tool_name_schema")]
     pub tool_name: String,
     /// Optional administrator address.
     pub alias: Option<PolicyAlias>,
@@ -144,6 +156,7 @@ pub struct SelfServiceResolve {
 /// Tenant-local event name shared by any number of Policies; never an object alias.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
+#[schemars(extend("minLength" = 1, "maxLength" = POLICY_ADDRESS_MAX_BYTES))]
 pub struct PolicyEventName(String);
 impl PolicyEventName {
     /// Use the same canonical spelling as other enterprise names.

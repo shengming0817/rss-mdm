@@ -14,6 +14,7 @@ mod presentation;
 pub use decisions::{
     DecisionOrigin, DecisionRecord, DecisionValue, FieldEvidence, PredicateDecision,
 };
+pub use presentation::Presentation;
 mod model;
 pub use generations::{BuildRequest, DifferenceStep, MemberBuild, MemberPatch};
 pub mod directory;

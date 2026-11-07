@@ -4,12 +4,12 @@ use super::*;
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_query::directory::{Field, Kind, Query, Schema};
 use serde_json::Value;
-pub(super) static TENANTS: Schema = Schema {
+pub(super) static TENANTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "tenants",
     keys: &["tenantId"],
     default_limit: 100,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("tenantId", Kind::Uuid),
         Field::scalar("name", Kind::Text),
         Field::scalar("notes", Kind::Text),
@@ -19,18 +19,19 @@ pub(super) static TENANTS: Schema = Schema {
         Field::scalar("deletable", Kind::Boolean),
         Field::output("currentEpoch"),
     ],
-};
-pub(super) static PROVISIONINGS: Schema = Schema {
-    id: "provisionings",
-    keys: &["operationId"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("operationId", Kind::Uuid),
-        Field::output("action"),
-        Field::output("result"),
-    ],
-};
+});
+pub(super) static PROVISIONINGS: std::sync::LazyLock<Schema> =
+    std::sync::LazyLock::new(|| Schema {
+        id: "provisionings",
+        keys: &["operationId"],
+        default_limit: 100,
+        max_limit: 1000,
+        fields: vec![
+            Field::scalar("operationId", Kind::Uuid),
+            Field::output("action"),
+            Field::output("result"),
+        ],
+    });
 fn error(e: rss_mdm_query::Error) -> Reason {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Reason::Conflict,

@@ -11,6 +11,7 @@ pub mod directory;
 mod native_collection;
 mod presentation;
 pub use agent_collection::*;
+pub use presentation::Presentation;
 mod script;
 pub use native_collection::*;
 mod software;
@@ -62,7 +63,7 @@ impl std::error::Error for Error {}
 /// Opaque bounded identity, deliberately not a URL, secret or executable body.
 #[derive(serde::Serialize, schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(transparent)]
-pub struct Id(String);
+pub struct Id(#[schemars(length(min = 1, max = 128))] String);
 impl Id {
     /// Parse 1–128 ASCII bytes using letters, digits, `.`, `_`, `-` and `/`.
     /// Returns [`Error::InvalidInput`] for empty, `.` or `..` path segments or invalid bytes.

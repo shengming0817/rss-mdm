@@ -34,6 +34,18 @@ impl RequestRecord {
         }
     }
 }
+/// Closed aggregate payloads: Resource must include its same-transaction directory projection.
+pub enum AggregateDocument {
+    /// Canonical document for owners without an additional aggregate projection.
+    Canonical(Vec<u8>),
+    /// Resource's canonical header and the projection validated by the Resource owner.
+    Resource {
+        /// Canonical bytes protected by the shared digest mechanism.
+        document: Vec<u8>,
+        /// Typed current-directory metadata; never another aggregate authority.
+        directory: serde_json::Value,
+    },
+}
 impl BackendStorage {
     /// Acquire the existing tenant/domain transaction advisory lock.
     /// `kind` and `key` are adapter-selected lock coordinates, scoped by backend and
@@ -159,8 +171,21 @@ impl BackendStorage {
         id: &str,
         old: Option<u64>,
         revision: u64,
-        document: Vec<u8>,
+        payload: AggregateDocument,
     ) -> Result<(), PgError> {
+        let (document, projection) = match (self.kind, payload) {
+            (
+                crate::BackendKind::Resource,
+                AggregateDocument::Resource {
+                    document,
+                    directory,
+                },
+            ) => (document, Some(directory)),
+            (crate::BackendKind::Resource, _) | (_, AggregateDocument::Resource { .. }) => {
+                return Err(self.fault("db::write-payload"));
+            }
+            (_, AggregateDocument::Canonical(document)) => (document, None),
+        };
         let (tenant, id, hash) = (tx.tenant_id().to_string(), id.to_owned(), digest(&document));
         let revision = self.integer("db::write", i64::try_from(revision))?;
         let old = self.integer("db::write-old-revision", old.map(i64::try_from).transpose())?;
@@ -172,16 +197,17 @@ impl BackendStorage {
         let rows = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query(query)
+                    let mut query = sqlx::query(query)
                         .bind(tenant)
                         .bind(id)
                         .bind(revision)
                         .bind(document)
                         .bind(hash)
-                        .bind(old)
-                        .execute(c)
-                        .await
-                        .map(|r| r.rows_affected())
+                        .bind(old);
+                    if let Some(projection) = projection {
+                        query = query.bind(projection);
+                    }
+                    query.execute(c).await.map(|r| r.rows_affected())
                 })
             })
             .await?;

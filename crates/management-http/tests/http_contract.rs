@@ -20,6 +20,56 @@ fn offline_management_contract_is_complete_without_runtime_services() {
 }
 
 #[test]
+fn directory_capabilities_come_from_the_real_nested_model_and_execution_owner() {
+    let routes = contract_routes(
+        Mounts {
+            filevault: true,
+            recovery_credentials: true,
+        },
+        application_routes(),
+    );
+    let document =
+        rss_mdm_http_contract::artifact::document([("browser", routes.into_endpoints())]).unwrap();
+    for (path, selector) in [
+        ("/api/v1/resources", "presentation.name"),
+        (
+            "/api/v1/certificate-archive/entries",
+            "latest.metadata.labels",
+        ),
+        (
+            "/api/v1/webhooks/subscriptions",
+            "settings.presentation.name",
+        ),
+        ("/api/v1/groups", "presentation.description"),
+        (
+            "/api/v1/policies",
+            "definition.action.schedule.trigger.kind",
+        ),
+        ("/api/v1/compliance-rules", "definition.target.ids"),
+        ("/api/v1/saved-queries", "definition.query.filter"),
+        ("/api/v1/authorization/user-groups", "value.name"),
+        ("/api/v1/api-keys", "createdBy.principalId"),
+    ] {
+        let endpoint = document["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["path"] == path && e["method"] == "GET")
+            .unwrap();
+        assert_eq!(
+            endpoint["request"]["query_owner"]["schema"]["id"], endpoint["resource"]["id"],
+            "{path}"
+        );
+        let fields = endpoint["request"]["query_owner"]["schema"]["fields"]
+            .as_array()
+            .unwrap();
+        let field = fields.iter().find(|f| f["name"] == selector).unwrap();
+        assert_eq!(field["filter"], true, "{path}: {selector}");
+        assert!(!field["operators"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn disabled_conditions_remove_only_their_actual_mounts() {
     let routes = contract_routes(
         Mounts {

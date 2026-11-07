@@ -136,11 +136,16 @@ impl AssetService {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|_| Error::Malformed)?;
+        let filter_text = definition
+            .as_ref()
+            .map(|v| v.clone().into_view().map(|v| v.query.filter))
+            .transpose()?
+            .flatten();
         let revision=tx.with_connection(move |c|Box::pin(async move {
             if expected==0 && document.is_some(){
-                sqlx::query_scalar("INSERT INTO mdm_assets.saved_queries VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,1,$5::jsonb) ON CONFLICT DO NOTHING RETURNING revision").bind(tenant).bind(owner.instance).bind(owner.principal).bind(id.to_string()).bind(document).fetch_optional(c).await
+                sqlx::query_scalar("INSERT INTO mdm_assets.saved_queries(tenant_id,instance,owner,id,revision,document,filter_text) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,1,$5::jsonb,$6) ON CONFLICT DO NOTHING RETURNING revision").bind(tenant).bind(owner.instance).bind(owner.principal).bind(id.to_string()).bind(document).bind(filter_text).fetch_optional(c).await
             }else{
-                sqlx::query_scalar("UPDATE mdm_assets.saved_queries SET revision=revision+1,document=$6::jsonb WHERE tenant_id=$1::uuid AND instance=$2::uuid AND owner=$3::uuid AND id=$4::uuid AND revision=$5 AND document IS NOT NULL RETURNING revision").bind(tenant).bind(owner.instance).bind(owner.principal).bind(id.to_string()).bind(expected).bind(document).fetch_optional(c).await
+                sqlx::query_scalar("UPDATE mdm_assets.saved_queries SET revision=revision+1,document=$6::jsonb,filter_text=$7 WHERE tenant_id=$1::uuid AND instance=$2::uuid AND owner=$3::uuid AND id=$4::uuid AND revision=$5 AND document IS NOT NULL RETURNING revision").bind(tenant).bind(owner.instance).bind(owner.principal).bind(id.to_string()).bind(expected).bind(document).bind(filter_text).fetch_optional(c).await
             }
         })).await?.ok_or(Error::Conflict)?;
         Ok(Response::Saved {

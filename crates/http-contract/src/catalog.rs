@@ -549,7 +549,7 @@ pub static RESOURCE: Resource = Resource {
     category: Category::Versioned,
     owner: "management-http",
     proof: "planning.http",
-    query: QueryPolicy::ResourceV1,
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::RESOURCE),
 };
 pub static SAVED_QUERIES: Resource = Resource {

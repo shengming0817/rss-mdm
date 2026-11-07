@@ -2,19 +2,19 @@
 use super::*;
 use rss_mdm_query::directory::{Field, Kind, Query, Schema};
 use serde_json::{Value, json};
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "agent_packages",
     keys: &["releaseId"],
     default_limit: 64,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("releaseId", Kind::Uuid),
-        Field::scalar("state", Kind::Enum(&["published", "withdrawn"])),
-        Field::scalar("platform", Kind::Enum(&["windows", "macos"])),
-        Field::scalar("architecture", Kind::Enum(&["x86_64", "aarch64"])),
+        Field::scalar("state", Kind::enumeration(&["published", "withdrawn"])),
+        Field::scalar("platform", Kind::enumeration(&["windows", "macos"])),
+        Field::scalar("architecture", Kind::enumeration(&["x86_64", "aarch64"])),
         Field::scalar(
             "format",
-            Kind::Enum(&["windows_exe", "windows_msi", "windows_msix", "macos_pkg"]),
+            Kind::enumeration(&["windows_exe", "windows_msi", "windows_msix", "macos_pkg"]),
         ),
         Field::scalar("version", Kind::Text),
         Field::output("tenantId"),
@@ -23,7 +23,7 @@ pub static SCHEMA: Schema = Schema {
         Field::output("length"),
         Field::output("installerSha256"),
     ],
-};
+});
 fn column(name: &str) -> &'static str {
     match name {
         "releaseId" => "id::text COLLATE \"C\"",

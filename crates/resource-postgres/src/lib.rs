@@ -4,6 +4,7 @@
 mod artifacts;
 mod codec;
 pub mod directory;
+mod directory_projection;
 pub use artifacts::{PROFILE_REFERENCE_FACTS_SQL, artifact_referenced_in, profile_references_in};
 
 mod error;
@@ -49,6 +50,7 @@ pub(crate) const ADMISSION: Admission = Admission {
         "aggregates.revision",
         "aggregates.document",
         "aggregates.digest",
+        "aggregates.directory",
     ],
 };
 

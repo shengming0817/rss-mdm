@@ -227,7 +227,7 @@ pub enum Selection {
 #[derive(schemars::JsonSchema, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
-    #[schemars(extend("x-rss-extension" = "Bounded descriptive presentation metadata; no execution or authorization authority"))]
+    #[schemars(with = "crate::presentation::Presentation")]
     pub presentation: serde_json::Map<String, serde_json::Value>,
     pub endpoint: String,
     pub event_types: Vec<EventType>,

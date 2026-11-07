@@ -88,7 +88,7 @@ impl Parser<'_> {
         {
             self.offset += 1;
         }
-        if self.offset == start || self.offset - start > 128 {
+        if self.offset == start || self.offset - start > crate::MAX_SELECTOR_BYTES {
             return Err(Error::Invalid);
         }
         let field = self.input[start..self.offset].to_owned();

@@ -5,55 +5,62 @@ use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::directory::{Field, Kind, Schema};
 use serde_json::{Value, json};
 use uuid::Uuid;
-pub(crate) static ORGANIZATIONS: Schema = Schema {
-    id: "apple_organizations",
-    keys: &["id"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("id", Kind::Uuid),
-        Field::output("ade"),
-        Field::output("accountEnrollment"),
-    ],
-};
-pub(crate) static ACCOUNTS: Schema = Schema {
+pub(crate) static ORGANIZATIONS: std::sync::LazyLock<Schema> =
+    std::sync::LazyLock::new(|| Schema {
+        id: "apple_organizations",
+        keys: &["id"],
+        default_limit: 100,
+        max_limit: 1000,
+        fields: vec![
+            Field::scalar("id", Kind::Uuid),
+            Field::output("ade"),
+            Field::output("accountEnrollment"),
+        ],
+    });
+pub(crate) static ACCOUNTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "apple_accounts",
     keys: &["account"],
     default_limit: 100,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("account", Kind::Text),
         Field::scalar("revision", Kind::Integer),
         Field::scalar("enabled", Kind::Boolean),
         Field::scalar("principalId", Kind::Uuid),
         Field::scalar("instanceId", Kind::Uuid),
     ],
-};
-pub(crate) static DEVICES: Schema = Schema {
+});
+pub(crate) static DEVICES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "ade_devices",
     keys: &["serial"],
     default_limit: 100,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("serial", Kind::Text),
         Field::scalar("deleted", Kind::Boolean),
         Field::scalar("profileUuid", Kind::Uuid),
         Field::scalar("observedAt", Kind::Integer),
         Field::output("registration"),
     ],
-};
-pub(crate) static PROFILES: Schema = Schema {
-    id: "ade_profiles",
-    keys: &["id"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("remoteUuid", Kind::Uuid),
-        Field::output("configuration"),
-    ],
-};
+});
+pub(crate) static PROFILES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Profile>("ade_profiles", &["id"], 100, 1000, &[])
+        .expect("ADE profile model is fully described")
+});
+static PROFILE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        use rss_mdm_query_postgres::{Bindings, Source};
+        Bindings::new(
+            &PROFILES,
+            &[
+                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("revision", "(row->>'revision')::bigint"),
+                Source::column("remoteUuid", "(row->>'remoteUuid') COLLATE \"C\""),
+                Source::json("configuration", "row->'configuration'"),
+            ],
+        )
+        .expect("ADE profile storage binds every field")
+    });
 pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
@@ -91,7 +98,7 @@ impl Collection {
             Self::Organizations => &ORGANIZATIONS,
             Self::Accounts(_) => &ACCOUNTS,
             Self::Devices(_) => &DEVICES,
-            Self::Profiles(_) => &PROFILES,
+            Self::Profiles(_) => PROFILE_BINDINGS.schema(),
         }
     }
 }
@@ -165,7 +172,12 @@ pub(crate) async fn page<Q: rss_mdm_http_contract::query::DirectoryOwner>(
         sql.push(" AND organization=").push_bind(id);
     }
     sql.push(") records WHERE true");
-    rss_mdm_query_postgres::append(&mut sql, &q, after.as_ref(), column).map_err(error)?;
+    if matches!(kind, Collection::Profiles(_)) {
+        rss_mdm_query_postgres::append(&mut sql, &q, after.as_ref(), &*PROFILE_BINDINGS)
+            .map_err(error)?;
+    } else {
+        rss_mdm_query_postgres::append(&mut sql, &q, after.as_ref(), column).map_err(error)?;
+    }
     let mut rows: Vec<Value> = sql
         .build_query_scalar()
         .fetch_all(&mut *tx)
@@ -315,7 +327,7 @@ impl rss_mdm_http_contract::query::DirectoryOwner for DevicesQuery {
 pub(crate) struct ProfilesQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ProfilesQuery {
     fn schema() -> &'static Schema {
-        &PROFILES
+        PROFILE_BINDINGS.schema()
     }
 }
 

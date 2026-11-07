@@ -939,7 +939,7 @@ impl rss_mdm_http_contract::signature::Output for HttpResponse {
 struct SavedDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for SavedDirectoryQuery {
     fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_inventory_service::assets::saved_directory::SCHEMA
+        rss_mdm_inventory_service::assets::saved_directory::schema()
     }
 }
 

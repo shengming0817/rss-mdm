@@ -13,17 +13,17 @@ struct Row {
 struct Nested {
     required: bool,
 }
-static DIRECTORY: Schema = Schema {
+static DIRECTORY: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "projection",
     keys: &["id"],
     default_limit: 10,
     max_limit: 10,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Text),
         Field::scalar("customEvent", Kind::Text),
         Field::output("nested"),
     ],
-};
+});
 
 #[test]
 fn selected_null_is_retained_while_unselected_fields_are_absent() {

@@ -4,16 +4,17 @@ use rss_mdm_query::{
     Expression, Operator,
     directory::{Field, Kind, Query, Schema},
 };
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema {
     id: "device_views",
     keys: &["key"],
     default_limit: 64,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("key", Kind::Text),
         Field::filter_only(
             "status",
-            Kind::Enum(&[
+            Kind::enumeration(&[
                 "active",
                 "pending",
                 "revoked",
@@ -23,19 +24,20 @@ pub static SCHEMA: Schema = Schema {
                 "expired",
             ]),
         ),
-        Field::filter_only("assetState", Kind::Enum(&["active", "archived", "deleted"])),
-        Field::filter_only("channel", Kind::EnumSet(&["mdm", "agent"])),
+        Field::filter_only("assetState", Kind::enumeration(&["active", "archived", "deleted"])),
+        Field::filter_only("channel", Kind::enum_set(&["mdm", "agent"])),
         Field::filter_only(
             "source",
-            Kind::EnumSet(&["mdm.windows", "mdm.apple", "agent.builtin"]),
+            Kind::enum_set(&["mdm.windows", "mdm.apple", "agent.builtin"]),
         ),
-        Field::filter_only("platform", Kind::EnumSet(&["windows", "macos"])),
+        Field::filter_only("platform", Kind::enum_set(&["windows", "macos"])),
         Field::filter_only("search", Kind::Text),
-        Field::output("reference"),
-        Field::output("association"),
-        Field::output("endpoints"),
+        Field::output("reference").excluded("Object identity is selected through the canonical key selector"),
+        Field::output("association").excluded("Association evidence includes domain state and hardware maps; use the association directory"),
+        Field::output("endpoints").excluded("Endpoint object arrays use the existing whole-expression per-endpoint selectors; arbitrary child expansion is not supported"),
     ],
-};
+}
+});
 pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
     let mut q = SCHEMA.parse(raw)?;
     q.default_filter("assetState", "active")?;
@@ -90,7 +92,12 @@ pub(super) fn predicate(q: &Query) -> crate::Result<String> {
                         )
                     } else {
                         let op = match operator {
-                            Operator::Eq | Operator::In | Operator::Ne | Operator::Out => "==",
+                            Operator::Eq
+                            | Operator::In
+                            | Operator::Ne
+                            | Operator::Out
+                            | Operator::ContainsAny
+                            | Operator::ContainsAll => "==",
                             Operator::Lt => "<",
                             Operator::Le => "<=",
                             Operator::Gt => ">",
@@ -101,7 +108,14 @@ pub(super) fn predicate(q: &Query) -> crate::Result<String> {
                     };
                     terms.push(format!("({term})"));
                 }
-                let body = format!("({})", terms.join(" || "));
+                let body = format!(
+                    "({})",
+                    terms.join(if *operator == Operator::ContainsAll {
+                        " && "
+                    } else {
+                        " || "
+                    })
+                );
                 if matches!(operator, Operator::Ne | Operator::Out) {
                     format!("!{body}")
                 } else {

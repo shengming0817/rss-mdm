@@ -9,15 +9,18 @@ use rss_mdm_query::{
 };
 use serde_json::Value;
 use sqlx::PgConnection;
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "device_access",
     keys: &["id"],
     default_limit: 64,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("revision", Kind::Integer),
-        Field::scalar("serverState", Kind::Enum(&["pending", "active", "revoked"])),
+        Field::scalar(
+            "serverState",
+            Kind::enumeration(&["pending", "active", "revoked"]),
+        ),
         Field::scalar("principal", Kind::Uuid),
         Field::scalar("policy", Kind::Uuid),
         Field::scalar("bindingGeneration", Kind::Integer),
@@ -37,7 +40,7 @@ pub static SCHEMA: Schema = Schema {
         Field::output("appliedRevision"),
         Field::output("effect"),
     ],
-};
+});
 fn column(name: &str) -> &'static str {
     match name {
         "id" => "b.id::text COLLATE \"C\"",

@@ -25,20 +25,8 @@ impl ScopeBinding {
         let mut sql =
             sqlx::QueryBuilder::new(crate::storage_profile::sql(profile).directory_directory_in_1);
         sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
-        rss_mdm_query_postgres::append(
-            &mut sql,
-            q,
-            after,
-            match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => {
-                    |name| column(rss_mdm_install_support::StorageProfile::Mdm, name)
-                }
-                rss_mdm_install_support::StorageProfile::Da => {
-                    |name| column(rss_mdm_install_support::StorageProfile::Da, name)
-                }
-            },
-        )
-        .map_err(|_| BindingError::Invalid)?;
+        rss_mdm_query_postgres::append(&mut sql, q, after, |name: &str| column(profile, name))
+            .map_err(|_| BindingError::Invalid)?;
         Ok(tx
             .with_connection(move |c| {
                 Box::pin(async move { sql.build_query_scalar().fetch_all(c).await })

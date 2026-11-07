@@ -8,30 +8,30 @@ use rss_mdm_query::{
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "executions",
     keys: &["id", "kind"],
     default_limit: 64,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
-        Field::scalar("kind", Kind::Enum(&["command", "action_run"])),
+        Field::scalar("kind", Kind::enumeration(&["command", "action_run"])),
         Field::scalar("device", Kind::Text),
         Field::scalar("policy", Kind::Uuid),
         Field::scalar("status", Kind::Text),
         Field::scalar("registrationId", Kind::Uuid),
         Field::scalar("generation", Kind::Integer),
-        Field::scalar("origin", Kind::Enum(&["direct", "policy"])),
+        Field::scalar("origin", Kind::enumeration(&["direct", "policy"])),
         Field::scalar("deadline", Kind::Integer),
         Field::output("authorization"),
         Field::output("reauthorization"),
         Field::filter_only(
             "authorization.state",
-            Kind::Enum(&["authorized", "blocked", "not_applicable"]),
+            Kind::enumeration(&["authorized", "blocked", "not_applicable"]),
         ),
         Field::filter_only(
             "authorization.reason",
-            Kind::Enum(&[
+            Kind::enumeration(&[
                 "lifecycle_blocked",
                 "registration_changed",
                 "input_mismatch",
@@ -40,12 +40,12 @@ pub static SCHEMA: Schema = Schema {
         ),
         Field::filter_only(
             "reauthorization.state",
-            Kind::Enum(&["available", "unavailable", "not_applicable"]),
+            Kind::enumeration(&["available", "unavailable", "not_applicable"]),
         ),
         Field::output("evidence"),
         Field::output("detailUrl"),
     ],
-};
+});
 
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]

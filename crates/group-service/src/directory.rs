@@ -15,30 +15,14 @@ pub fn parse(raw: &str) -> rss_mdm_query::Result<DirectoryQuery> {
     if referenceable_for.is_some_and(|id| id.is_nil()) {
         return Err(rss_mdm_query::Error::Invalid);
     }
-    let mut query = Query::new(&rss_mdm_group_postgres::directory::SCHEMA, parameters)?;
+    let mut query = Query::new(schema(), parameters)?;
     query.default_filter("deleted", "false")?;
     Ok(DirectoryQuery {
         query,
         referenceable_for,
     })
 }
-#[derive(schemars::JsonSchema, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Row {
-    pub id: rss_mdm_group::GroupId,
-    pub kind: rss_mdm_group_postgres::GroupKind,
-    pub system_selector: Option<rss_mdm_group_postgres::SystemSelector>,
-    pub asset_context: rss_mdm_group::AssetContext,
-    #[schemars(extend("x-rss-extension"="Group presentation metadata"))]
-    pub presentation: serde_json::Map<String, Value>,
-    pub name: Option<String>,
-    pub revision: rss_mdm_group_postgres::Revision,
-    pub calculation_revision: i64,
-    pub member_version: i64,
-    pub member_count: usize,
-    pub rule_version: Option<String>,
-    pub deleted: bool,
-}
+
 fn row(g: &rss_mdm_group_postgres::Group) -> Row {
     Row {
         id: g.id,
@@ -68,7 +52,7 @@ impl Groups {
     ) -> std::result::Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Row>>, Error>
     {
         q.query
-            .require_schema(&rss_mdm_group_postgres::directory::SCHEMA)
+            .require_schema(schema())
             .map_err(crate::query_error)?;
         proof.manage(Permission::GroupRead)?;
         proof.require_all_devices(Permission::InventoryRead)?;
@@ -110,7 +94,7 @@ impl Groups {
                     loop {
                         let page = group_checked(
                             s.groups
-                                .directory_in(tx, &q.query, after.as_ref(), context)
+                                .directory_in(tx, &q.query, after.as_ref(), context, &BINDINGS)
                                 .await?,
                         )?;
                         let count = page.len();
@@ -169,7 +153,7 @@ impl Groups {
 }
 
 pub fn schema() -> &'static rss_mdm_query::directory::Schema {
-    &rss_mdm_group_postgres::directory::SCHEMA
+    BINDINGS.schema()
 }
 
 impl Groups {
@@ -202,3 +186,47 @@ impl Groups {
         })).await
     }
 }
+
+use rss_mdm_query::directory::Schema;
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Row>("groups", &["id"], 64, 1000, &[])
+        .and_then(|s| s.no_range("ruleVersion"))
+        .expect("Group public model is fully described")
+});
+
+#[derive(schemars::JsonSchema, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+/// Public directory row before selection removes unrequested output fields.
+pub struct Row {
+    /// Stable object identity within the tenant.
+    pub id: rss_mdm_group::GroupId,
+    /// Declared business kind.
+    pub kind: rss_mdm_group_postgres::GroupKind,
+    /// Optional built-in membership selection.
+    pub system_selector: Option<rss_mdm_group_postgres::SystemSelector>,
+    /// Asset universe in which membership is evaluated.
+    pub asset_context: rss_mdm_group::AssetContext,
+    #[schemars(with = "rss_mdm_group_postgres::Presentation")]
+    /// Bounded descriptive metadata, including retained extensions.
+    pub presentation: serde_json::Map<String, serde_json::Value>,
+    /// Human-readable name; no authorization meaning.
+    pub name: Option<String>,
+    /// Current compare-and-swap revision.
+    pub revision: rss_mdm_group_postgres::Revision,
+    /// Last calculation revision.
+    pub calculation_revision: i64,
+    /// Published membership version.
+    pub member_version: i64,
+    /// Published member count.
+    pub member_count: usize,
+    /// Optional opaque rule revision.
+    pub rule_version: Option<String>,
+    /// Whether the object is a retained tombstone.
+    pub deleted: bool,
+}
+
+static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(&SCHEMA, rss_mdm_group_postgres::directory::SOURCES)
+            .expect("Complete service model binding")
+    });

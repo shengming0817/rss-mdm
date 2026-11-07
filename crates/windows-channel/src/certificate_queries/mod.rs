@@ -13,12 +13,12 @@ use rss_mdm_query::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub static REQUESTS: Schema = Schema {
+pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "windows_certificate_requests",
     keys: &["attempt"],
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: &[
+    fields: vec![
         Field::scalar("attempt", Kind::Uuid),
         Field::scalar("kind", Kind::Text),
         Field::scalar("enrollmentId", Kind::Uuid),
@@ -35,7 +35,7 @@ pub static REQUESTS: Schema = Schema {
         Field::output("signing"),
         Field::output("requirements"),
     ],
-};
+});
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestKind {

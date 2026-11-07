@@ -293,17 +293,19 @@ pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
 }
 
 /// Resolve the same unique enabled native source for reads and submissions.
+/// Absence is a read-side capability block; submissions must require an enabled source.
 /// The caller supplies its authorized, tenant-bound connection and current registration.
 pub async fn source_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     registration: Uuid,
-) -> crate::control::Result<ReportSource> {
+) -> crate::control::Result<Option<ReportSource>> {
     let sources = sqlx::query_scalar::<_, String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND enabled AND source IN('mdm.apple','mdm.windows') ORDER BY source")
         .bind(tenant.to_string()).bind(registration).fetch_all(c).await?;
     match sources.as_slice() {
-        [source] if source == "mdm.apple" => Ok(ReportSource::MdmApple),
-        [source] if source == "mdm.windows" => Ok(ReportSource::MdmWindows),
+        [] => Ok(None),
+        [source] if source == "mdm.apple" => Ok(Some(ReportSource::MdmApple)),
+        [source] if source == "mdm.windows" => Ok(Some(ReportSource::MdmWindows)),
         _ => Err(Error::Conflict.into()),
     }
 }

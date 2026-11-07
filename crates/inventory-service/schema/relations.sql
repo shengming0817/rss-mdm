@@ -93,7 +93,7 @@ GRANT SELECT,INSERT ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
 GRANT UPDATE(revision) ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
 
 
-GRANT UPDATE(document) ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
+GRANT UPDATE(document,filter_text) ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
 
 
 GRANT SELECT,INSERT ON TABLE mdm_inventory.collection_operations TO mdm_access;

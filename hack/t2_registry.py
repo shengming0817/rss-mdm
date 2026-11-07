@@ -6,6 +6,17 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'directory.query': dict(prefix='assembly::directory_queries_t2::', profiles=('shared',),
+        inputs=('crates/query/*','crates/query-postgres/*','crates/resource/*','crates/resource-postgres/*','crates/resource-service/*',
+                'crates/certificate-archive-service/*','crates/webhook-service/*','crates/apple-channel/src/management_query.rs',
+                'crates/apple-channel/src/ade/management.rs','crates/group-postgres/*','crates/group-service/*',
+                'crates/policy/*','crates/policy-postgres/*','crates/policy-service/src/management/read.rs',
+                'crates/compliance/*','crates/compliance-postgres/*','crates/compliance-service/src/directory.rs',
+                'crates/authorization-service/src/directory.rs','crates/inventory-service/src/assets/*','crates/inventory-service/schema/*',
+                'crates/device-service/src/directory*','crates/management-http/*','crates/http-contract/*',
+                'apps/server/src/migration*','apps/server/src/migration/*','apps/server/tests/directory_queries/*',
+                'apps/server/tests/support/host.rs','apps/server/tests/owner_boundaries/mod.rs','apps/server/tests/software/support.rs')),
+
     'operation.diagnostics': dict(prefix='assembly::operation_diagnostics_t2::', profiles=('shared',),
         inputs=('apps/server/src/assembly/operation_diagnostics/*','crates/management-http/src/operation_diagnostics.rs',
                 'crates/audit-integration/*','crates/timeline-service/*','crates/authorization-service/*',
@@ -53,6 +64,7 @@ MODULES = {
         inputs=('crates/management-http/src/execution/operations.rs', 'crates/management-http/src/execution/http.rs',
                 'crates/timeline-service/*', 'apps/server/src/assembly/timeline_associations.rs',
                 'apps/server/src/assembly/native_ownership.rs', 'apps/server/src/assembly/task_ownership.rs',
+                'apps/server/src/assembly/device_reads.rs', 'crates/device-service/src/control/device_control.rs',
                 'crates/registration-service/schema/tasks/relations.sql', 'crates/recovery-credentials/schema/task-relations.sql',
                 'crates/software-service/schema/deployment/relations.sql', 'apps/server/schema/da-host-grants.sql',
                 'apps/server/src/assembly/operation_reads/*', 'apps/server/tests/execution_owners/directory.rs',

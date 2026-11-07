@@ -1,19 +1,41 @@
 //! Public metadata only; material disclosure remains a separate audited action.
 use crate::Error;
-use rss_mdm_query::directory::{Field, Kind, Schema};
-pub static SCHEMA: Schema = Schema {
-    id: "certificates",
-    keys: &["id"],
-    default_limit: 50,
-    max_limit: 200,
-    fields: &[
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("retired", Kind::Boolean),
-        Field::scalar("recommendedVersion", Kind::Integer),
-        Field::output("latest"),
-    ],
-};
+use rss_mdm_query::directory::{Exclusion, Schema};
+use rss_mdm_query_postgres::{Bindings, Source};
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<crate::Entry>(
+    "certificates", &["id"], 50, 200,
+    &[Exclusion { path: "latest.facts", reason: "Material/certificate object arrays require same-element conditions; public facts remain available in output" }],
+).expect("Certificate directory model is fully described")
+});
+pub(crate) static BINDINGS: std::sync::LazyLock<Bindings> = std::sync::LazyLock::new(|| {
+    Bindings::new(
+        &SCHEMA,
+        &[
+            Source::column("id", "e.id::text COLLATE \"C\""),
+            Source::column("revision", "e.revision"),
+            Source::column("retired", "e.retired"),
+            Source::column("recommendedVersion", "e.recommended_version"),
+            Source::column("latest.entryId", "v.entry_id::text COLLATE \"C\""),
+            Source::column("latest.version", "v.version"),
+            Source::column("latest.actor", "v.actor::text COLLATE \"C\""),
+            Source::column("latest.instance", "v.instance::text COLLATE \"C\""),
+            Source::column("latest.operationId", "v.operation_id::text COLLATE \"C\""),
+            Source::column("latest.createdAt", "v.created_at"),
+            Source::column("latest.source", "v.source COLLATE \"C\""),
+            Source::column(
+                "latest.requestVersion.entryId",
+                "v.request_entry_id::text COLLATE \"C\"",
+            ),
+            Source::column("latest.requestVersion.version", "v.request_version"),
+            Source::json("latest.metadata", "v.metadata"),
+        ],
+    )
+    .expect("Certificate storage binds every public scalar")
+});
+pub fn schema() -> &'static Schema {
+    BINDINGS.schema()
+}
 pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
     id: "certificate_versions",
     default_limit: 50,
@@ -25,15 +47,6 @@ pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
         _ => Error::Malformed,
-    }
-}
-pub(crate) fn column(n: &str) -> &'static str {
-    match n {
-        "id" => "e.id::text COLLATE \"C\"",
-        "revision" => "e.revision",
-        "retired" => "e.retired",
-        "recommendedVersion" => "e.recommended_version",
-        _ => unreachable!("checked archive field"),
     }
 }
 pub(crate) const SELECT: &str = "SELECT e.id::text,e.revision,e.retired,e.recommended_version,v.entry_id::text,v.version,v.actor::text,v.instance::text,v.operation_id::text,v.created_at,v.metadata::text,v.facts::text,v.request_entry_id::text,v.request_version,v.source FROM mdm_certificate_archive.entries e JOIN LATERAL(SELECT entry_id,version,actor,instance,operation_id,created_at,metadata,facts,request_entry_id,request_version,source FROM mdm_certificate_archive.versions x WHERE x.tenant_id=e.tenant_id AND x.entry_id=e.id ORDER BY x.version DESC LIMIT 1)v ON true WHERE e.tenant_id=";

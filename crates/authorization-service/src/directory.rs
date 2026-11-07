@@ -9,64 +9,91 @@ use rss_mdm_query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-pub static RULES: Schema = Schema {
+pub static RULES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "authorization_rules",
     keys: &["id"],
     default_limit: 100,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("revision", Kind::Integer),
         Field::scalar("deleted", Kind::Boolean),
         Field::scalar("subjectKind", Kind::Text),
         Field::output("value"),
     ],
-};
-pub static GROUPS: Schema = Schema {
-    id: "user_groups",
-    keys: &["id"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("deleted", Kind::Boolean),
-        Field::scalar("name", Kind::Text),
-        Field::scalar("enabled", Kind::Boolean),
-        Field::scalar("memberCount", Kind::Integer),
-        Field::output("value"),
-    ],
-};
-pub static MEMBERS: Schema = Schema {
-    id: "user_group_members",
-    keys: &["principalId"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("principalId", Kind::Uuid),
-        Field::output("tenantId"),
-        Field::output("instanceId"),
-    ],
-};
-pub static KEYS: Schema = Schema {
-    id: "api_keys",
-    keys: &["id"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("name", Kind::Text),
-        Field::scalar("enabled", Kind::Boolean),
-        Field::scalar("revoked", Kind::Boolean),
-        Field::scalar("createdAt", Kind::Integer),
-        Field::scalar("expiresAt", Kind::Integer),
-        Field::output("metadata"),
-        Field::output("createdBy"),
-        Field::output("authorityRevision"),
-        Field::output("credentialRevision"),
-    ],
-};
+});
+pub static GROUPS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<GroupRow>("user_groups", &["id"], 100, 1000, &[])
+        .expect("User group model is fully described")
+});
+pub static MEMBERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<crate::User>("user_group_members", &["principalId"], 100, 1000, &[])
+        .expect("User group member model is fully described")
+});
+pub static KEYS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<KeyRow>(
+        "api_keys",
+        &["id"],
+        100,
+        1000,
+        &[rss_mdm_query::directory::Exclusion {
+            path: "metadata.grants",
+            reason: "Grant object arrays require operation and scope to match the same grant",
+        }],
+    )
+    .expect("API key public model is fully described")
+});
+static GROUP_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        use rss_mdm_query_postgres::{Bindings, Source};
+        Bindings::new(
+            &GROUPS,
+            &[
+                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("revision", "(row->>'revision')::bigint"),
+                Source::column("deleted", "(row->>'deleted')::boolean"),
+                Source::column("name", "(row->>'name') COLLATE \"C\""),
+                Source::column("enabled", "(row->>'enabled')::boolean"),
+                Source::column("memberCount", "(row->>'memberCount')::bigint"),
+                Source::column("value.name", "(row->'value'->>'name') COLLATE \"C\""),
+                Source::column("value.enabled", "(row->'value'->>'enabled')::boolean"),
+                Source::column(
+                    "value.memberCount",
+                    "(row->'value'->>'memberCount')::bigint",
+                ),
+            ],
+        )
+        .expect("Every synthesized group summary field has a storage expression")
+    });
+static MEMBER_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &MEMBERS,
+            &[rss_mdm_query_postgres::Source::json("", "row")],
+        )
+        .expect("Stored User member owns the complete JSON root")
+    });
+static KEY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        use rss_mdm_query_postgres::{Bindings, Source};
+        Bindings::new(
+            &KEYS,
+            &[
+                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("revision", "(row->>'revision')::bigint"),
+                Source::column("authorityRevision", "(row->>'authorityRevision')::bigint"),
+                Source::column("credentialRevision", "(row->>'credentialRevision')::bigint"),
+                Source::column("name", "(row->>'name') COLLATE \"C\""),
+                Source::column("enabled", "(row->>'enabled')::boolean"),
+                Source::column("expiresAt", "(row->>'expiresAt')::bigint"),
+                Source::column("createdAt", "(row->>'createdAt')::bigint"),
+                Source::column("revoked", "(row->>'revoked')::boolean"),
+                Source::json("metadata", "row->'metadata'"),
+                Source::json("createdBy", "row->'createdBy'"),
+            ],
+        )
+        .expect("Every synthesized API key field has a storage expression")
+    });
 #[derive(Clone, Copy)]
 pub enum Directory {
     Rules,
@@ -78,9 +105,9 @@ impl Directory {
     pub fn schema(self) -> &'static Schema {
         match self {
             Self::Rules => &RULES,
-            Self::Groups => &GROUPS,
-            Self::Members(_) => &MEMBERS,
-            Self::Keys => &KEYS,
+            Self::Groups => GROUP_BINDINGS.schema(),
+            Self::Members(_) => MEMBER_BINDINGS.schema(),
+            Self::Keys => KEY_BINDINGS.schema(),
         }
     }
     fn permission(self) -> Permission {
@@ -144,7 +171,12 @@ pub async fn list(
             sql.push_bind(p.tenant_id().to_owned()).push("::uuid AND instance=").push_bind(p.instance_id().to_owned()).push("::uuid");
             if let Directory::Members(id)=kind {sql.push(" AND id=").push_bind(*id);}
             sql.push(") records WHERE true");
-            rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(error)?;
+            match kind {
+                Directory::Rules => rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column),
+                Directory::Groups => rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*GROUP_BINDINGS),
+                Directory::Members(_) => rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*MEMBER_BINDINGS),
+                Directory::Keys => rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*KEY_BINDINGS),
+            }.map_err(error)?;
             let rows:Vec<Value>=sql.build_query_scalar().fetch_all(c).await.map_err(db)?;
             p.check_live()?;
             fn typed<T:serde::de::DeserializeOwned>(rows:Vec<Value>)->Result<Vec<T>,Error> {rows.into_iter().map(serde_json::from_value).collect::<Result<_,_>>().map_err(|_|Error::Corrupt)}
@@ -239,6 +271,7 @@ pub struct RuleRow {
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupSummary {
+    #[schemars(length(min = 1, max = crate::EXACT_ID_MAX_BYTES))]
     pub name: String,
     pub enabled: bool,
     pub member_count: u64,
@@ -249,6 +282,7 @@ pub struct GroupRow {
     pub id: Uuid,
     pub revision: u64,
     pub deleted: bool,
+    #[schemars(length(min = 1, max = crate::EXACT_ID_MAX_BYTES))]
     pub name: Option<String>,
     pub enabled: Option<bool>,
     pub member_count: Option<u64>,
@@ -259,6 +293,7 @@ pub struct GroupRow {
 pub struct KeyRow {
     #[serde(flatten)]
     pub record: crate::api_key::KeyRecord,
+    #[schemars(length(min = 1, max = crate::EXACT_ID_MAX_BYTES))]
     pub name: String,
     pub enabled: bool,
     pub expires_at: Option<i64>,

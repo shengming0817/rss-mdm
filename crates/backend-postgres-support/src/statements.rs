@@ -8,10 +8,10 @@ pub(crate) struct Statements {
     pub statement_6: &'static str,
     pub statement_7: &'static str,
 }
-macro_rules! statements { ($module:ident,$aggregates:literal,$requests:literal,$immutable:literal) => { mod $module { pub(super) const SQL: super::Statements = super::Statements {
+macro_rules! statements { ($module:ident,$aggregates:literal,$requests:literal,$immutable:literal,$columns:literal,$values:literal,$updates:literal) => { mod $module { pub(super) const SQL: super::Statements = super::Statements {
                 statement_0: concat!("SELECT revision,document,digest FROM ", $aggregates, " WHERE tenant_id=$1::uuid AND id=$2"),
-                statement_1: concat!("UPDATE ", $aggregates, " SET revision=$3,document=$4,digest=$5 WHERE tenant_id=$1::uuid AND id=$2 AND revision=$6"),
-                statement_2: concat!("INSERT INTO ", $aggregates, "(tenant_id,id,revision,document,digest) SELECT $1::uuid,$2,$3,$4,$5 WHERE $6::bigint IS NULL"),
+                statement_1: concat!("UPDATE ", $aggregates, " SET revision=$3,document=$4,digest=$5", $updates, " WHERE tenant_id=$1::uuid AND id=$2 AND revision=$6"),
+                statement_2: concat!("INSERT INTO ", $aggregates, "(tenant_id,id,revision,document,digest", $columns, ") SELECT $1::uuid,$2,$3,$4,$5", $values, " WHERE $6::bigint IS NULL"),
                 statement_3: concat!("SELECT owner,fingerprint,request,receipt,digest FROM ", $requests, " WHERE tenant_id=$1::uuid AND id=$2"),
                 statement_4: concat!("INSERT INTO ", $requests, "(tenant_id,id,owner,fingerprint,request,receipt,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)"),
                 statement_5: concat!("SELECT document,digest FROM ", $immutable, " WHERE tenant_id=$1::uuid AND owner=$2 AND kind=$3 AND key=$4"),
@@ -22,25 +22,37 @@ statements!(
     policy,
     "mdm_policy.aggregates",
     "mdm_policy.requests",
-    "mdm_policy.immutable"
+    "mdm_policy.immutable",
+    "",
+    "",
+    ""
 );
 statements!(
     da_policy,
     "rss_da.policy_aggregates",
     "rss_da.policy_requests",
-    "rss_da.policy_immutable"
+    "rss_da.policy_immutable",
+    "",
+    "",
+    ""
 );
 statements!(
     resource,
     "mdm_resource.aggregates",
     "mdm_resource.requests",
-    "mdm_resource.immutable"
+    "mdm_resource.immutable",
+    ",directory",
+    ",$7",
+    ",directory=$7"
 );
 statements!(
     release,
     "mdm_software_release.aggregates",
     "mdm_software_release.requests",
-    "mdm_software_release.immutable"
+    "mdm_software_release.immutable",
+    "",
+    "",
+    ""
 );
 impl crate::BackendKind {
     pub(crate) const fn statements(self) -> &'static Statements {

@@ -9,18 +9,18 @@ use rss_mdm_query::{
 
 use std::time::Duration;
 use uuid::Uuid;
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "device_associations",
     keys: &["id"],
     default_limit: 64,
     max_limit: 100,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("version", Kind::Integer),
         Field::scalar("confirmedAt", Kind::Integer),
         Field::output("association"),
     ],
-};
+});
 fn column(name: &str) -> &'static str {
     match name {
         "id" => "a.id::text COLLATE \"C\"",

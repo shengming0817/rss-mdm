@@ -25,6 +25,21 @@ class HttpArtifactTests(unittest.TestCase):
                  'schema': {'direction': 'response', 'schemaId': 'sha256-' + 'a' * 64}}, 'headers': {}}]}]}
         self.output = self.root / 'consumer' / 'http-v1.json'
 
+    def test_directory_capabilities_require_unique_fields_and_executable_operators(self):
+        field = dict(name='id', kind='Uuid', filter=True, sort=True, output=True,
+                     nullable=False, operators=['Eq', 'In'], limitation=None)
+        owner = {'kind': 'directory', 'schema': {'id': 'rows', 'keys': ['id'], 'fields': [field]}}
+        self.document['endpoints'][0]['request']['query_owner'] = owner
+        artifact.validate_document(json.dumps(self.document))
+        field['operators'] = []
+        with self.assertRaisesRegex(ValueError, 'executable'):
+            artifact.validate_document(json.dumps(self.document))
+        field.update(filter=False, limitation='credential')
+        artifact.validate_document(json.dumps(self.document))
+        owner['schema']['fields'].append(dict(field))
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            artifact.validate_document(json.dumps(self.document))
+
     def test_authentication_schema_references_are_validated(self):
         self.document['endpoints'][0]['authentication'] = {
             'owner': 'middleware', 'alternatives': [{

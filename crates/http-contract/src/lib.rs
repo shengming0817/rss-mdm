@@ -66,7 +66,6 @@ pub struct Resource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum QueryPolicy {
     Unified,
-    ResourceV1,
     SourceCatalog,
     Protocol,
     NotCollection,
