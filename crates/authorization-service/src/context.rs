@@ -6,25 +6,25 @@ pub struct AuthorizedPrincipal {
     profile: rss_mdm_install_support::StorageProfile,
     authority_profile: rss_mdm_install_support::StorageProfile,
     identity: Principal,
+    clock: Arc<dyn rss_request_context::Clock>,
     authorization: Option<crate::Snapshot>,
 }
 impl AuthorizedPrincipal {
-    pub fn from_identity(
-        profile: rss_mdm_install_support::StorageProfile,
-        identity: Principal,
-    ) -> Self {
-        Self {
-            profile,
-            authority_profile: profile,
+    /// Bind a verified identity to the host's product and authority before any purpose check.
+    pub fn from_identity(access: &crate::Store, identity: Principal) -> Result<Self, Error> {
+        if identity
+            .key_proof()
+            .is_some_and(|key| key.authority_profile != access.authority_profile())
+        {
+            return Err(Error::Forbidden);
+        }
+        Ok(Self {
+            profile: access.profile(),
+            authority_profile: access.authority_profile(),
+            clock: access.clock.clone(),
             identity,
             authorization: None,
-        }
-    }
-    pub fn new(
-        profile: rss_mdm_install_support::StorageProfile,
-        session: AuthenticatedSession,
-    ) -> Result<Self, Error> {
-        Ok(Self::from_identity(profile, Principal::new(session)?))
+        })
     }
     /// Bind authenticated identity to the same tenant's audit facts, including denied requests.
     /// Expiry/authorization is checked by the operation; recording the known actor is not a grant.
@@ -48,6 +48,7 @@ impl AuthorizedPrincipal {
         Self {
             profile: authority.profile(),
             authority_profile: authority.profile(),
+            clock: clock.clone(),
             identity: Principal {
                 subject: user.principal_id.clone(),
                 actor: crate::Actor::Account { user },
@@ -136,8 +137,7 @@ impl AuthorizedPrincipal {
     }
     pub async fn load_authorization(mut self, access: &crate::Store) -> Result<Self, Error> {
         if self.profile != access.profile()
-            || (self.authorization.is_some()
-                && self.authority_profile != access.authority_profile())
+            || self.authority_profile != access.authority_profile()
             || self
                 .identity
                 .key_proof()
@@ -148,7 +148,6 @@ impl AuthorizedPrincipal {
         {
             return Err(Error::Forbidden);
         }
-        self.authority_profile = access.authority_profile();
         self.authorization = Some(crate::store::authorization_snapshot(access, &self).await?);
         Ok(self)
     }
@@ -227,6 +226,60 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct RequestAuth {
     pub proof: Arc<AuthorizedPrincipal>,
+    pub sessions: crate::session::SessionAuthority,
+    pub deadline: std::time::Instant,
+}
+impl RequestAuth {
+    pub fn remaining(
+        &self,
+    ) -> Result<rss_transactional_messaging::policy::OperationDeadline, Error> {
+        let remaining = self
+            .deadline
+            .checked_duration_since(self.proof.clock.now())
+            .ok_or(Error::Deadline)?;
+        if remaining.is_zero() {
+            return Err(Error::Deadline);
+        }
+        Ok(rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining))
+    }
+    /// Refresh Identity before acquiring product locks; never renew the request budget.
+    pub async fn revalidate(&self) -> Result<Option<crate::session::RevalidatedSession>, Error> {
+        self.proof.check_live()?;
+        if self.sessions.tenant().to_string() != self.proof.tenant_id() {
+            return Err(Error::Forbidden);
+        }
+        match &self.proof.identity.proof {
+            Authentication::Account(session) => {
+                let reference = session
+                    .reference()
+                    .map_err(crate::session::authority_error)?;
+                Ok(Some(
+                    self.sessions.recheck(&reference, self.remaining()?).await?,
+                ))
+            }
+            Authentication::ApiKey(_) | Authentication::Initialization { .. } => {
+                self.remaining()?;
+                Ok(None)
+            }
+        }
+    }
+    /// Only fresh session facts can produce an account's response authorization binding.
+    pub fn current_binding(
+        &self,
+        snapshot: &crate::Snapshot,
+        fresh: Option<&crate::session::RevalidatedSession>,
+    ) -> Result<String, Error> {
+        self.remaining()?;
+        match (&self.proof.identity.proof, fresh) {
+            (Authentication::Account(_), Some(facts)) => {
+                snapshot.query_binding_revalidated(&self.proof, facts)
+            }
+            (Authentication::ApiKey(_) | Authentication::Initialization { .. }, None) => {
+                snapshot.query_binding(&self.proof)
+            }
+            _ => Err(Error::Unauthorized),
+        }
+    }
 }
 
 /// A single private projection, created only from a request's authoritative component result.
@@ -426,6 +479,7 @@ mod authority_tests {
             profile: product,
             authority_profile: source,
             identity: Principal::from_key(key),
+            clock: Arc::new(Clock(now)),
             authorization: None,
         };
         let snapshot = crate::Snapshot {

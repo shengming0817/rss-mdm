@@ -49,7 +49,7 @@ pub async fn preview(
                 .map_err(crate::telemetry::error);
         }
         s.tasks
-            .preview(&a.proof, &audit, &input, &query, &codec)
+            .preview(&a, &audit, &input, &query, &codec)
             .await
             .map(|v| Json(PreviewResponse::Execution(v)))
     })

@@ -20,15 +20,13 @@ impl SessionAuthority {
         self.tenant
     }
     /// Recheck the trusted operation's locator without retaining credentials or renewing idle.
-    pub async fn recheck(&self, reference: &SessionReference) -> Result<RevalidatedSession, Error> {
+    pub async fn recheck(
+        &self,
+        reference: &SessionReference,
+        deadline: rss_transactional_messaging::policy::OperationDeadline,
+    ) -> Result<RevalidatedSession, Error> {
         self.authority
-            .recheck_session_reference(
-                self.tenant,
-                reference,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    std::time::Duration::from_secs(10),
-                ),
-            )
+            .recheck_session_reference(self.tenant, reference, deadline)
             .await
             .map_err(authority_error)
     }
@@ -59,7 +57,7 @@ impl SessionAuthority {
                     .await?
             }
         };
-        AuthorizedPrincipal::from_identity(store.profile, principal)
+        AuthorizedPrincipal::from_identity(store, principal)?
             .load_authorization(store)
             .await
     }
@@ -68,6 +66,7 @@ impl SessionAuthority {
 pub(crate) fn authority_error(error: AuthorityError) -> Error {
     match error {
         AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => Error::Unauthorized,
+        AuthorityError::DeadlineElapsed => Error::Deadline,
         AuthorityError::CommitUnknown(_) => Error::CommitUnknown,
         AuthorityError::RollbackFailed(_) => Error::RollbackFailed,
         _ => Error::Storage,

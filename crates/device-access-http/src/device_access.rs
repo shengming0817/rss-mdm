@@ -245,7 +245,7 @@ async fn list(
     (async {
         let q = query.parse().map_err(|_| Error::Malformed)?;
         s.registration
-            .device_access_bindings(&auth.proof, &device, &q, &s.cursor)
+            .device_access_bindings(&auth, &device, &q, &s.cursor)
             .await
             .map(Json)
             .map_err(Into::into)
@@ -259,7 +259,7 @@ async fn binding(
     Path((device, id)): Path<(String, Uuid)>,
 ) -> Result<Json<access::directory::BindingView>, Error> {
     s.registration
-        .device_access_binding(&auth.proof, &device, id)
+        .device_access_binding(&auth, &device, id)
         .await
         .map(Json)
         .map_err(Into::into)
@@ -270,7 +270,7 @@ async fn enterprise_detail(
     Path(id): Path<String>,
 ) -> Result<Json<rss_mdm_device_access_postgres::enterprise::directory::RecordView>, Error> {
     s.registration
-        .enterprise_configuration_record(&auth.proof, &id)
+        .enterprise_configuration_record(&auth, &id)
         .await
         .map(Json)
         .map_err(Into::into)
@@ -586,7 +586,7 @@ async fn enterprise_list(
     (async {
         let q = query.parse().map_err(|_| Error::Malformed)?;
         s.registration
-            .enterprise_configuration(&auth.proof, &q, &s.cursor)
+            .enterprise_configuration(&auth, &q, &s.cursor)
             .await
             .map(Json)
             .map_err(Into::into)

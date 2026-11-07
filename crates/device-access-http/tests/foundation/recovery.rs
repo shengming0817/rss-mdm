@@ -1,5 +1,6 @@
 //! Cold restore on the existing isolated DA database; original files intentionally remain.
 use super::*;
+use anyhow::Context as _;
 use rss_da_app::{backup, config};
 use rss_mdm_install_support::maintenance::journal::Journal;
 use sqlx::Connection;
@@ -64,10 +65,14 @@ pub async fn verify(
     let old_vault_epoch = Uuid::new_v4();
     sqlx::query("INSERT INTO rss_da.vault_epochs(tenant_id,incarnation) VALUES($1,$2) ON CONFLICT(tenant_id) DO UPDATE SET incarnation=excluded.incarnation").bind(runtime.installation.tenant).bind(old_vault_epoch).execute(&mut connection).await?;
     connection.close().await?;
-    Box::pin(backup::capture(serde_json::from_value(request.clone())?)).await?;
+    Box::pin(backup::capture(serde_json::from_value(request.clone())?))
+        .await
+        .context("capture cold baseline")?;
     // Reconstruct a crash after Complete, before the final local cleanup.
     Journal::open(&material.directory)?.save("backup-operation.json", &Some(operation))?;
-    Box::pin(backup::capture(serde_json::from_value(request)?)).await?;
+    Box::pin(backup::capture(serde_json::from_value(request)?))
+        .await
+        .context("reenter completed capture")?;
     assert_eq!(
         Journal::open(&material.directory)?.load::<Option<Uuid>>("backup-operation.json")?,
         Some(None)
@@ -149,8 +154,12 @@ pub async fn verify(
             .is_err()
     );
     host::private(&verification_password, &password)?;
-    Box::pin(backup::restore(serde_json::from_value(restore.clone())?)).await?;
-    Box::pin(backup::restore(serde_json::from_value(restore)?)).await?;
+    Box::pin(backup::restore(serde_json::from_value(restore.clone())?))
+        .await
+        .context("resume verified restore")?;
+    Box::pin(backup::restore(serde_json::from_value(restore)?))
+        .await
+        .context("reenter completed restore")?;
     let mut connection = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
     let new_epoch: Uuid =
         sqlx::query_scalar("SELECT incarnation FROM rss_da.vault_epochs WHERE tenant_id=$1")

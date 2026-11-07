@@ -160,18 +160,23 @@ async fn status(
     Extension(auth): Extension<RequestAuth>,
     Path(purpose): Path<Purpose>,
 ) -> Result<Json<Directory>, Error> {
-    directory(&app.access, app.identity.tenant(), &auth, purpose, &[])
-        .await
-        .map(Json)
+    directory(
+        &app.access,
+        app.identity.tenant(),
+        &auth.proof,
+        purpose,
+        &[],
+    )
+    .await
+    .map(Json)
 }
 pub async fn directory(
     store: &crate::Store,
     tenant: rss_request_context::TenantId,
-    auth: &RequestAuth,
+    p: &AuthorizedPrincipal,
     purpose: Purpose,
     loaded: &[i64],
 ) -> Result<Directory, Error> {
-    let p = &auth.proof;
     if p.tenant_id() != tenant.to_string() {
         return Err(Error::Forbidden);
     }

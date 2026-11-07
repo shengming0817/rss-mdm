@@ -51,7 +51,7 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
         timeline: c.database.timeline(c.audit.clone(), c.tenant, &[41; 32])?,
         tenant: c.tenant,
     };
-    let auth = rss_mdm_authorization_service::context::RequestAuth { proof };
+    let auth = c.read_auth(proof);
     let query = LocatorQuery {
         include_audit: true,
         ..Default::default()

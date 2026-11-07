@@ -153,7 +153,7 @@ impl Diagnostics {
             } else if da_owner && l.owner == O::CredentialTask {
                 self.da_task(p, operation).await?
             } else if execution_owner || l.owner.invocation() {
-                self.execution(p, l, operation).await?
+                self.execution(l, operation).await?
             } else {
                 self.receipt(p, l, da_owner).await?
             },
@@ -168,7 +168,7 @@ impl Diagnostics {
         let receipt = if da_owner {
             self.da_receipt(l, p).await
         } else {
-            self.original(&l.auth.proof, l.audit, l.owner, l.operation, l.query)
+            self.original(l.auth, l.audit, l.owner, l.operation, l.query)
                 .await
         };
         let original = section(receipt)?;
@@ -250,7 +250,6 @@ impl Diagnostics {
     }
     async fn execution(
         &self,
-        p: &AuthorizedPrincipal,
         l: &Lookup<'_>,
         operation: &OperationLocator,
     ) -> Result<OperationSections, Error> {
@@ -260,12 +259,12 @@ impl Diagnostics {
             }
             self.state
                 .operation_reads
-                .invocation(p, operation, l.query)
+                .invocation(l.auth, operation, l.query)
                 .await
         } else {
             self.state
                 .operation_reads
-                .diagnostic(p, l.owner, l.operation, l.query)
+                .diagnostic(l.auth, l.owner, l.operation, l.query)
                 .await
         };
         let result = result?;
@@ -354,12 +353,13 @@ impl Diagnostics {
     )]
     async fn original(
         &self,
-        p: &Arc<AuthorizedPrincipal>,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         a: &RequestAudit,
         owner: O,
         id: Uuid,
         q: &rss_mdm_management_http::operation_diagnostics::LocatorQuery,
     ) -> Result<Option<ReceiptSummary>, Error> {
+        let p = &request.proof;
         let s = &self.state;
         match owner {
             O::DeviceManagement => s
@@ -409,7 +409,7 @@ impl Diagnostics {
                 let value =
                     rss_mdm_registration_service::agent::queries::registration_recovery_operation(
                         &s.access.registration(),
-                        p,
+                        request,
                         q.registration.ok_or(Error::Malformed)?,
                         id,
                         &identity,

@@ -62,4 +62,6 @@ GRANT UPDATE(request) ON mdm_registration_tasks.operations TO mdm_policy_runtime
 GRANT UPDATE(request) ON mdm_registration_tasks.operations TO mdm_command_runtime;
 
 GRANT SELECT ON mdm_registration_tasks.operations TO mdm_access;
+-- Immutable request coordinates used by the tenant-scoped activity projection.
+GRANT SELECT(tenant_id,actor,id,operation) ON mdm_registration_tasks.requests TO mdm_access;
 COMMIT;

@@ -47,13 +47,19 @@ impl Databases {
         Ok(())
     }
 }
+/// Match the capability exercised by this business owner, at connection admission.
+#[derive(Clone, Copy)]
+pub(crate) enum Messaging<'a> {
+    Producer(&'a crate::config::Database),
+    Runtime(&'a crate::config::Database),
+}
 pub(crate) struct OwnerRuntime {
     pub runtime: Arc<PgRuntime>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 impl OwnerRuntime {
     pub(crate) async fn open(
-        database: &crate::config::Database,
+        messaging: Messaging<'_>,
         binding: &StorageBinding,
         tenant: TenantId,
         connections: u32,
@@ -61,6 +67,9 @@ impl OwnerRuntime {
         name: &'static str,
         mut acquire: impl FnMut(Resource),
     ) -> Result<Self, Error> {
+        let database = match messaging {
+            Messaging::Producer(database) | Messaging::Runtime(database) => database,
+        };
         let invalid = || Error::Configuration(ConfigIssue::BusinessDatabase);
         let binding = ExecutionBinding::new(
             StorageIdentity::new(binding.target, binding.lineage).map_err(|_| invalid())?,
@@ -80,9 +89,15 @@ impl OwnerRuntime {
         )
         .with_pool_limits(0, connections);
         let runtime = Arc::new(
-            PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding)
-                .await
-                .map_err(|_| Error::Unavailable(Failure::Database))?,
+            match messaging {
+                Messaging::Producer(_) => {
+                    PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding).await
+                }
+                Messaging::Runtime(_) => {
+                    PgRuntime::connect(pg, crate::lifecycle::RuntimeTimer, binding).await
+                }
+            }
+            .map_err(|_| Error::Unavailable(Failure::Database))?,
         );
         acquire(Resource::new(runtime.clone(), name));
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));

@@ -11,6 +11,40 @@ fn object(fields: &[(&str, Value)], required: &[&str]) -> Value {
 fn vocabulary<T: Serialize>(values: impl IntoIterator<Item = T>) -> Value {
     json!({"type":"string","enum":values.into_iter().map(|v|serde_json::to_value(v).expect("external enum serialization")).collect::<Vec<_>>()})
 }
+/// Fixed Cookie/Bearer authentication boundary of the pinned Identity SDK.
+/// ref: rss-identity 1d3ebac9 identity-http-axum/src/{lib,bearer,boundary}.rs
+pub(crate) fn authentication_rejections() -> Vec<rss_mdm_http_contract::signature::Response> {
+    use rss_mdm_http_contract::signature::{Direction, Representation, Response, Schema};
+    [
+        (400, "malformed_request"),
+        (401, "invalid_credential"),
+        (403, "csrf_rejected"),
+        (429, "rate_limited"),
+        (503, "identity_unavailable"),
+    ]
+    .into_iter()
+    .map(|(status, code)| {
+        let mut response = Response::empty(status);
+        response.body = Some(Representation::json(Schema {
+            direction: Direction::Response,
+            value: object(
+                &[("code", json!({"type":"string","const":code}))],
+                &["code"],
+            ),
+        }));
+        if status == 429 {
+            response.headers.insert(
+                "retry-after".into(),
+                Schema {
+                    direction: Direction::Response,
+                    value: json!({"type":"string","pattern":"^[1-9][0-9]{0,9}$"}),
+                },
+            );
+        }
+        response
+    })
+    .collect()
+}
 fn snapshot(_: &mut SchemaGenerator) -> Schema {
     let text = json!({"type":"string","minLength":1,"maxLength":256,"pattern":"^[^\\u0000-\\u001f\\u007f-\\u009f]*$","description":"Identity additionally validates the 256 UTF-8 byte budget, trimming and department tree relationships"});
     let node = object(

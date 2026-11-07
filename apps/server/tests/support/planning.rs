@@ -8,6 +8,22 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use uuid::Uuid;
 pub async fn owner(c: &Context, role: &str) -> Result<crate::owner_storage::OwnerRuntime> {
+    if role == "mdm_policy_runtime" {
+        return Ok(crate::owner_storage::OwnerRuntime::open(
+            crate::owner_storage::Messaging::Runtime(&c.inputs.database("shared", role)),
+            &crate::owner_storage::StorageBinding {
+                target: c.inputs.installation.target,
+                lineage: c.inputs.installation.lineage,
+                epoch: 1,
+            },
+            c.tenant,
+            4,
+            c.audit.clone(),
+            "policy-runtime-t2",
+            |_| {},
+        )
+        .await?);
+    }
     let runtime = crate::identity::open_runtime(
         &c.inputs.database("shared", role),
         &c.inputs.installation.target,

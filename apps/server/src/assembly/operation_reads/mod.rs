@@ -450,7 +450,7 @@ fn registration_authorization(
 impl rss_mdm_management_http::execution::operations::Reads for Operations {
     fn declarations<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         device: &'a str,
         query: &'a rss_mdm_query::window::Query,
         audit: &'a RequestAudit,
@@ -459,19 +459,20 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
         'a,
         rss_mdm_management_http::execution::declarations::Page,
     > {
-        Box::pin(self.declarations_read(proof, device, query, audit, codec))
+        Box::pin(self.declarations_read(request, device, query, audit, codec))
     }
 
     fn directory<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         q: &'a Query,
         codec: &'a CursorCodec,
         audit: &'a RequestAudit,
     ) -> rss_mdm_management_http::execution::task_reads::Pending<'a, Page> {
+        let proof = request.proof.as_ref();
         Box::pin(async move {
             q.require_schema(&SCHEMA).map_err(query_error)?;
-            self.tasks.snapshot(proof,(self,proof,q,codec),|ctx,c,grant,now|Box::pin(async move{
+            self.tasks.snapshot(request,(self,proof,q,codec),|ctx,c,grant,now|Box::pin(async move{
                 let(s,p,q,codec)=*ctx;let authority=grant.query_binding(p)?;
                 let binding=q.binding(&(p.tenant_id(),p.instance_id(),p.principal_id(),"live-operations",&authority)).map_err(query_error)?;
                 let page=selection::page(s,c,(p,grant),q,codec,&binding,now).await?;
@@ -518,17 +519,18 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
     }
     fn statistics<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         q: &'a Query,
         audit: &'a RequestAudit,
     ) -> rss_mdm_management_http::execution::task_reads::Pending<
         'a,
         rss_mdm_query::Statistics<Statistics>,
     > {
+        let proof = request.proof.as_ref();
         Box::pin(async move {
             q.require_schema(&SCHEMA).map_err(query_error)?;
             self.tasks
-                .snapshot(proof, (self, proof, q), |ctx, c, grant, now| {
+                .snapshot(request, (self, proof, q), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, q) = *ctx;
                         let allowed = grant
@@ -545,14 +547,15 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
     }
     fn detail<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         device: &'a str,
         id: Uuid,
         audit: &'a RequestAudit,
     ) -> rss_mdm_management_http::execution::task_reads::Pending<'a, Detail> {
+        let proof = request.proof.as_ref();
         Box::pin(async move {
             self.tasks
-                .snapshot(proof, (self, proof, device, id), |ctx, c, grant, now| {
+                .snapshot(request, (self, proof, device, id), |ctx, c, grant, now| {
                     Box::pin(async move {
                         let (s, p, d, id) = *ctx;
                         s.detail_on(c, p, grant, now, d, id, false).await
@@ -564,7 +567,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
     }
     fn change<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         device: &'a str,
         id: Uuid,
         change: &'a rss_mdm_device_service::control::Change,
@@ -576,10 +579,11 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
         'a,
         rss_mdm_device_service::control::ChangedReceipt,
     > {
+        let proof = request.proof.as_ref();
         Box::pin(async move {
             let owner = self
                 .tasks
-                .snapshot(proof, (self, proof, device, id), |ctx, c, grant, _| {
+                .snapshot(request, (self, proof, device, id), |ctx, c, grant, _| {
                     Box::pin(async move {
                         let (s, p, d, id) = *ctx;
                         grant.require(p, Permission::OperationRead, Some(d))?;

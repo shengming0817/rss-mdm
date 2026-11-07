@@ -198,10 +198,10 @@ async fn native_detail_does_not_require_raw_evidence_permission() -> anyhow::Res
             Permission::InventoryRead,
         ])
         .await?;
-    let proof = h.c.authenticate(&account).await?;
+    let proof = std::sync::Arc::new(h.c.authenticate(&account).await?);
     let detail = Reads::run(
         h.a.task_reads.as_ref(),
-        &proof,
+        &h.c.read_auth(proof.clone()),
         &h.c.request(&proof)?,
         policy,
         task,
@@ -218,7 +218,7 @@ async fn native_detail_does_not_require_raw_evidence_permission() -> anyhow::Res
     assert!(matches!(
         Reads::run(
             h.a.task_reads.as_ref(),
-            &proof,
+            &h.c.read_auth(proof.clone()),
             &h.c.request(&proof)?,
             policy,
             task
@@ -246,10 +246,10 @@ async fn periodic_assignment_uses_actual_start_and_exact_current_version() -> an
         let policy=Uuid::new_v4();
         let version=super::mixed::publish(&h,policy,1,definition.clone(),frozen.clone()).await?;
         let account=h.c.account(&[Permission::PolicyRead,Permission::InventoryRead,Permission::OperationRead]).await?;
-        let proof=h.c.authenticate(&account).await?;
+        let proof=std::sync::Arc::new(h.c.authenticate(&account).await?);
         let query=rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA.page(Some(10),None,4096)?;
         let codec=rss_mdm_query::cursor::CursorCodec::new(&[9;32])?;
-        let read=||async {Ok::<Value,anyhow::Error>(serde_json::to_value(Reads::assignments(h.a.task_reads.as_ref(),&proof,&h.c.request(&proof)?,policy,&query,&codec).await?)?)};
+        let read=||async {Ok::<Value,anyhow::Error>(serde_json::to_value(Reads::assignments(h.a.task_reads.as_ref(),&h.c.read_auth(proof.clone()),&h.c.request(&proof)?,policy,&query,&codec).await?)?)};
         let first=read().await?;
         assert_eq!(first["items"][0]["taskAdmission"]["state"],"waiting_check_in");
         assert!(first["items"][0]["execution"]["latestRun"].is_null());

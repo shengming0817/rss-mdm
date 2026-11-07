@@ -145,15 +145,21 @@ async fn access_directory(
         rss_mdm_http_contract::query::Window<AccessDirectory>,
     >,
 ) -> Result<NoStore<Json<wire::AccessDirectory>>, AgentError> {
+    let deadline = app.authorization.now() + std::time::Duration::from_secs(8);
     bounded(async {
         let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
         let p = principal(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
         let employee = employee(&app, &headers, &audit)
             .await?
             .ok_or(Error::Unauthorized)?;
+        let request = rss_mdm_authorization_service::context::RequestAuth {
+            proof: Arc::new(employee),
+            sessions: app.identity.as_ref().clone(),
+            deadline,
+        };
         let value = app
             .business
-            .device_access_directory(&p, &employee, &page, app.admission.as_ref(), &app.identity)
+            .device_access_directory(&p, &request, &page, app.admission.as_ref())
             .await
             .map_err(domain)?;
         Ok(NoStore(Json(value)))

@@ -6,12 +6,13 @@ use rss_mdm_query::window::Query;
 impl Operations {
     pub(super) async fn declarations_read(
         &self,
-        proof: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &str,
         query: &Query,
         audit: &RequestAudit,
         codec: &CursorCodec,
     ) -> std::result::Result<Page, Error> {
+        let proof = request.proof.as_ref();
         query
             .require_schema(&SCHEMA)
             .map_err(|_| Error::Malformed)?;
@@ -22,7 +23,7 @@ impl Operations {
         );
         self.tasks
             .snapshot_registered(
-                proof,
+                request,
                 (self, proof, device, query, audit, codec),
                 |ctx, c, authorization, _, fence| {
                     Box::pin(async move {

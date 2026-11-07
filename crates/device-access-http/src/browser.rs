@@ -97,9 +97,10 @@ async fn authenticate(
         Err(r) => return r,
     };
     let audit = request.extensions().get::<RequestAudit>().cloned();
-    let result = async {
+    let deadline = s.authorization.now() + Duration::from_secs(8);
+    let result = tokio::time::timeout_at(deadline.into(), async {
         let principal = Principal::new(session)?;
-        let proof = AuthorizedPrincipal::from_identity(s.authorization.profile(), principal);
+        let proof = AuthorizedPrincipal::from_identity(&s.authorization, principal)?;
         let audit = audit
             .as_ref()
             .ok_or(rss_mdm_authorization_service::Error::Storage)?;
@@ -108,14 +109,24 @@ async fn authenticate(
             .require_tenant_purpose(&proof, false)
             .await?;
         proof.load_authorization(&s.authorization).await
-    }
-    .await;
+    })
+    .await
+    .unwrap_or(Err(rss_mdm_authorization_service::Error::Deadline));
     match result {
         Ok(proof) => {
             request.extensions_mut().insert(RequestAuth {
                 proof: Arc::new(proof),
+                sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                    s.identity.authority.clone(),
+                    s.identity.tenant,
+                ),
+                deadline,
             });
-            next.run(request).await
+            tokio::time::timeout_at(deadline.into(), next.run(request))
+                .await
+                .unwrap_or_else(|_| {
+                    Error::from(rss_mdm_authorization_service::Error::Deadline).into_response()
+                })
         }
         Err(e) => Error::from(e).into_response(),
     }

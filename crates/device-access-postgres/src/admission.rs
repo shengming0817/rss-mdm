@@ -4,15 +4,6 @@ pub const ACCESS_CONTRACT: &str = include_str!("../schema/access.json");
 pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
     for (signature, source, roles, language, definer, returns_set, result) in [
         (
-            "rss_da.capture_business_change()",
-            include_str!("../schema/directory.sql"),
-            &[] as &[&str],
-            "plpgsql",
-            true,
-            false,
-            "trigger",
-        ),
-        (
             "rss_da.binding_application_current(jsonb,bigint)",
             include_str!("../schema/platform-qualifications.sql"),
             &[
@@ -27,7 +18,7 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
                 "mdm_identity_runtime",
                 "mdm_command_runtime",
                 "mdm_policy_runtime",
-            ],
+            ] as &[&str],
             "sql",
             true,
             false,

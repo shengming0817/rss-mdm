@@ -11,12 +11,13 @@ use serde_json::json;
 use uuid::Uuid;
 pub(super) async fn assignments(
     service: &Reads,
-    auth: &AuthorizedPrincipal,
+    request: &rss_mdm_authorization_service::context::RequestAuth,
     audit: &RequestAudit,
     id: Uuid,
     query: &rss_mdm_query::window::Query,
     codec: &rss_mdm_query::cursor::CursorCodec,
 ) -> std::result::Result<rss_mdm_management_http::execution::task_reads::AssignmentPage, Error> {
+    let auth = request.proof.as_ref();
     query
         .require_schema(&rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA)
         .map_err(|_| Error::Malformed)?;
@@ -30,7 +31,7 @@ pub(super) async fn assignments(
     );
     auth.manage(Permission::PolicyRead)?;
     auth.require_all_devices(Permission::InventoryRead)?;
-    service.snapshot(auth,(service,auth,audit,query,codec),|ctx,c,current,now|Box::pin(async move {
+    service.snapshot(request,(service,auth,audit,query,codec),|ctx,c,current,now|Box::pin(async move {
         let (s,a,_audit,query,codec)=*ctx;let limit=query.limit();current.require(a,Permission::PolicyRead,None)?;current.require_all_devices(a,Permission::InventoryRead)?;
         let p=s.policy_reader.read_on(c,id).await.map_err(|_|Error::Unavailable(Failure::PlanningStorage))?.map_err(|_|Error::Conflict)?.ok_or(Error::PolicyMissing)?;
         let authority=current.query_binding(a)?;let scope=p.definition.scope;let input=json!([id,p.revision,p.version]);

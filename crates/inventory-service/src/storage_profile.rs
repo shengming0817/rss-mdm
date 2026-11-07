@@ -594,7 +594,7 @@ define_storage!(
     r###""schema":"mdm_access","table":"collection_items""###,
     r###",{"schema":"mdm_inventory","table":"collection_operations","read_write":true,"updates":[],"delete_policy":null},{"schema":"mdm_inventory","table":"collection_tasks","read_write":false,"updates":[],"delete_policy":null,"read_only":true},{"schema":"mdm_inventory","table":"collection_admission","read_write":false,"updates":[],"delete_policy":null},{"schema":"mdm_inventory","table":"collection_output_chunks","read_write":false,"updates":[],"delete_policy":null},{"schema":"mdm_inventory","table":"collection_policy_recovery","read_write":false,"updates":[],"delete_policy":null},{"schema":"mdm_inventory","table":"collection_native_checkins","read_write":false,"updates":[],"delete_policy":null}"###,
     r###",{"name":"mdm_inventory.save_retired_collection_agent","search_path":"search_path=pg_catalog"},{"name":"mdm_inventory.cancel_retired_collection","search_path":"search_path=pg_catalog"}"###,
-    r###","mdm_assets.directory_fields","mdm_assets.directory_sources","mdm_assets.hardware_keys","mdm_assets.directory_inputs""###,
+    r###","mdm_assets.directory_fields","mdm_assets.directory_sources","mdm_assets.hardware_keys","mdm_assets.directory_inputs","mdm.inventory_presence""###,
     "mdm_assets.read_snapshot",
     "mdm_access.asset_sources_at",
     "SCHEMA mdm_assets",

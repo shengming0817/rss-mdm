@@ -30,7 +30,14 @@ impl Http {
     async fn open(router: axum::Router, c: &Context, p: Arc<AuthorizedPrincipal>) -> Result<Self> {
         let router = router
             .layer(axum::Extension(c.request(&p)?))
-            .layer(axum::Extension(RequestAuth { proof: p }));
+            .layer(axum::Extension(RequestAuth {
+                proof: p,
+                sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                    c.authority.clone(),
+                    c.tenant,
+                ),
+                deadline: c.access().now() + std::time::Duration::from_secs(8),
+            }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let base = format!("http://{}", listener.local_addr()?);
         let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

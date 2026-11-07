@@ -5,33 +5,35 @@ use std::sync::Arc;
 pub(crate) struct Devices {
     pub tasks: Arc<super::task_reads::Reads>,
     pub devices: Arc<rss_mdm_registration_service::DeviceService>,
-    pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub windows: bool,
     pub apple: bool,
 }
 impl DeviceReads for Devices {
     fn detail<'a>(
         &'a self,
-        proof: &'a AuthorizedPrincipal,
+        request: &'a rss_mdm_authorization_service::context::RequestAuth,
         device: &'a str,
     ) -> rss_mdm_management_http::execution::task_reads::Pending<'a, DeviceDetail> {
+        let proof = request.proof.as_ref();
         Box::pin(async move {
             self.tasks
                 .snapshot_registered(
-                    proof,
+                    request,
                     (self, proof, device),
                     |ctx, c, grant, _, registration| {
                         Box::pin(async move {
                             let (s, p, device) = *ctx;
                             grant.require(p, Required::InventoryRead, Some(device))?;
                             let mut item = s.devices.directory_device_on(c, device).await?;
-                            let present = s
-                                .assets
-                                .directory_presence_on(c, &[device.to_owned()])
-                                .await
-                                .map_err(|_| {
-                                    Error::Unavailable(rss_mdm_management_http::Failure::Database)
-                                })?;
+                            let present = rss_mdm_inventory_service::assets::directory_presence_on(
+                                c,
+                                s.tasks.tenant,
+                                &[device.to_owned()],
+                            )
+                            .await
+                            .map_err(|_| {
+                                Error::Unavailable(rss_mdm_management_http::Failure::Database)
+                            })?;
                             item.inventory_available = Some(present.contains(device));
                             let mdm = rss_mdm_registration_service::device::endpoints::current_in(
                                 rss_mdm_install_support::StorageProfile::Mdm,

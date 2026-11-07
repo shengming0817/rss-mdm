@@ -103,11 +103,19 @@ pub fn document(
         // Rejections are already included in responses; keep one consumer-facing response set.
         request.as_object_mut().expect("request object").remove("rejections");
         let mut responses = serde_json::to_value(&signature.responses).expect("closed response description");
+        let mut authentication = endpoint.authentication.map(|describe| serde_json::to_value(describe(endpoint.method, &endpoint.path)).expect("authentication description"));
+        if let Some(authentication) = &mut authentication {
+            let rejections = authentication.as_object_mut().expect("authentication object").remove("rejections").expect("authentication rejections");
+            for rejection in rejections.as_array().expect("rejection responses") {
+                if !responses.as_array().expect("responses array").contains(rejection) {
+                    responses.as_array_mut().expect("responses array").push(rejection.clone());
+                }
+            }
+        }
         for response in responses.as_array_mut().expect("responses array") {
             if response["body"].is_object() { intern(&mut response["body"]["schema"], &mut schemas); }
             for schema in response["headers"].as_object_mut().expect("response headers").values_mut() { intern(schema, &mut schemas); }
         }
-        let mut authentication = endpoint.authentication.map(|describe| serde_json::to_value(describe(endpoint.method, &endpoint.path)).expect("authentication description"));
         if let Some(authentication) = &mut authentication {
             for credential in authentication["alternatives"].as_array_mut().expect("credentials") {
                 for schema in credential["headers"].as_object_mut().expect("credential headers").values_mut() { intern(schema, &mut schemas); }

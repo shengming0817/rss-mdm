@@ -150,6 +150,11 @@ impl Http {
         proof: Arc<rss_mdm_authorization_service::context::AuthorizedPrincipal>,
     ) -> Result<Self> {
         let tenant = c.tenant.to_string();
+        let access = c.access();
+        let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
+            c.authority.clone(),
+            c.tenant,
+        );
         let router = rss_mdm_management_http::assets::routes()
             .into_axum()
             .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
@@ -159,6 +164,11 @@ impl Http {
                 move |mut request: axum::extract::Request, next: axum::middleware::Next| {
                     let proof = proof.clone();
                     let tenant = tenant.clone();
+                    let auth = rss_mdm_authorization_service::context::RequestAuth {
+                        proof: proof.clone(),
+                        sessions: sessions.clone(),
+                        deadline: access.now() + std::time::Duration::from_secs(8),
+                    };
                     async move {
                         let audit = rss_mdm_audit_integration::RequestAudit::new(
                             rss_mdm_audit_integration::Origin::Request,
@@ -169,9 +179,7 @@ impl Http {
                         );
                         proof.bind_audit(&audit).unwrap();
                         request.extensions_mut().insert(audit);
-                        request
-                            .extensions_mut()
-                            .insert(rss_mdm_authorization_service::context::RequestAuth { proof });
+                        request.extensions_mut().insert(auth);
                         next.run(request).await
                     }
                 },

@@ -1,7 +1,6 @@
 BEGIN;
 GRANT USAGE ON SCHEMA rss_da TO da_identity_runtime;
 GRANT SELECT(instance_id,target,lineage) ON rss_da.installation_binding TO da_identity_runtime;
-GRANT SELECT ON rss_da.business_revision TO da_identity_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.deployment_valid_until(uuid,bigint,jsonb,uuid,bigint) TO da_identity_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.platform_session_qualifications(uuid,jsonb,bigint) TO da_identity_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.access_policy(uuid,text,bigint) TO da_identity_runtime;

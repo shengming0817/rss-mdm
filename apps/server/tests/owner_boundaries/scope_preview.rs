@@ -162,7 +162,14 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
                 groups: owners.groups.clone(),
             },
         ))
-        .layer(axum::Extension(RequestAuth { proof: p.clone() }))
+        .layer(axum::Extension(RequestAuth {
+            proof: p.clone(),
+            sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                c.authority.clone(),
+                c.tenant,
+            ),
+            deadline: c.access().now() + std::time::Duration::from_secs(8),
+        }))
         .layer(axum::middleware::from_fn({
             let proof = p.clone();
             let tenant = c.tenant;

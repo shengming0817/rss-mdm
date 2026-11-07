@@ -29,12 +29,9 @@ impl Diagnostics {
                     Error::Unauthorized
                 }
             })?;
-        let p = AuthorizedPrincipal::from_identity(
-            rss_mdm_install_support::StorageProfile::Da,
-            principal,
-        )
-        .load_authorization(&da.authorization)
-        .await?;
+        let p = AuthorizedPrincipal::from_identity(&da.authorization, principal)?
+            .load_authorization(&da.authorization)
+            .await?;
         if p.tenant_id() != l.auth.proof.tenant_id()
             || p.instance_id() != l.auth.proof.instance_id()
             || p.principal_id() != l.auth.proof.principal_id()

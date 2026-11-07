@@ -10,11 +10,12 @@ pub(crate) struct Diagnostic {
 impl Operations {
     pub(crate) async fn invocation(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         locator: &rss_mdm_audit_integration::operation::OperationLocator,
         q: &LocatorQuery,
     ) -> Result<Diagnostic, Error> {
-        let original = self.tasks.snapshot(p, (p, locator), |(p, l), c, grant, _| Box::pin(async move {
+        let p = request.proof.as_ref();
+        let original = self.tasks.snapshot(request, (p, locator), |(p, l), c, grant, _| Box::pin(async move {
             match l.owner {
                 O::ScriptInvocation => rss_mdm_script_service::self_service::diagnostic_on(c, p, grant, l).await.map_err(super::super::task_reads::script_fault),
                 O::SoftwareInvocation => rss_mdm_software_service::deployment::self_service::diagnostic_on(c, p, grant, l).await.map_err(software_fault),
@@ -35,7 +36,7 @@ impl Operations {
             _ => return Err(Error::Malformed),
         };
         let run = *original.executions.first().ok_or(Error::Conflict)?;
-        let execution = match self.diagnostic(p, owner, run, q).await {
+        let execution = match self.diagnostic(request, owner, run, q).await {
             Ok(value) => value.execution,
             Err(e) => Err(e),
         };
@@ -46,16 +47,17 @@ impl Operations {
     }
     pub(crate) async fn diagnostic(
         &self,
-        p: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         owner: O,
         id: Uuid,
         q: &LocatorQuery,
     ) -> Result<Diagnostic, Error> {
+        let p = request.proof.as_ref();
         let device = q.device.as_deref().ok_or(Error::Malformed)?;
         if owner == O::DeviceControlRequest {
             return self
                 .tasks
-                .snapshot(p, (self, p), |(s, p), c, grant, now| {
+                .snapshot(request, (self, p), |(s, p), c, grant, now| {
                     Box::pin(async move {
                         grant.require(p, Permission::OperationRead, Some(device))?;
                         let Some(receipt) = rss_mdm_device_service::control::storage::read_on(
@@ -116,7 +118,7 @@ impl Operations {
                 })
                 .await;
         }
-        self.tasks.snapshot(p,(self,p,q),|ctx,c,grant,now|Box::pin(async move{
+        self.tasks.snapshot(request,(self,p,q),|ctx,c,grant,now|Box::pin(async move{
             let(s,p,q)=*ctx;
             grant.require(p,Permission::OperationRead,Some(device))?;
             let native=match owner {

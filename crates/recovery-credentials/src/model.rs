@@ -24,6 +24,8 @@ pub enum Error {
     CursorInvalidated,
     #[error("recovery credential integrity failure")]
     Integrity,
+    #[error("recovery credential request deadline elapsed")]
+    Deadline,
     #[error("recovery credential dependency unavailable")]
     Storage,
     #[error("recovery credential audit failed")]
@@ -47,6 +49,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
+            E::Deadline => Self::Deadline,
             E::NotFound => Self::NotFound,
             E::Conflict => Self::Conflict,
             E::CommitUnknown => Self::CommitUnknown,
@@ -71,6 +74,7 @@ impl From<rss_mdm_authorization_service::Error> for Error {
         match value {
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
+            E::Deadline => Self::Deadline,
             _ => Self::Storage,
         }
     }

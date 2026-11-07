@@ -71,7 +71,7 @@ async fn registrations(
         let page = query.parse().map_err(|_| Error::Malformed)?;
         audit.target_device(&device);
         app.service
-            .registrations(&auth.proof, &device, &page, &codec)
+            .registrations(&auth, &device, &page, &codec)
             .await
             .map(Json)
             .map_err(Error::from)

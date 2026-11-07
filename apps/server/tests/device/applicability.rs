@@ -1,128 +1,33 @@
 //! Real device-detail consumption and control admission; reads never manufacture commands.
 use super::*;
-use rss_mdm_authorization_service::{
-    Permission,
-    context::{AuthorizedPrincipal, RequestAuth},
-};
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_device_service::control::{
     Error as ControlError,
     device_control::{Action, Input},
 };
-use rss_mdm_inventory_service::inventory_runtime as rt;
 use rss_mdm_management_http::enrollment::directory;
-use rss_runtime::ManagedResource;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tower::ServiceExt;
 
 struct Http {
     state: Arc<directory::HttpState>,
-    observation: rt::ObservationResource,
-    projection: rt::ProjectionResource,
-    inventory_owner: crate::owner_storage::OwnerRuntime,
 }
 impl Http {
-    async fn open(c: &Context, a: &Fixture) -> Result<Self> {
-        let clock = rt::Clock::new(crate::clock::monotonic());
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let control = rss_projection::Control::new(&clock, clock.cutoff(), &cancel);
-        let observation = rt::ObservationResource::open(
-            c.inputs.database("shared", "mdm_runtime").options()?,
-            clock.clone(),
-        )
-        .await?;
-        let projection = match rt::ProjectionResource::open(
-            c.inputs.database("shared", "mdm_runtime").options()?,
-            clock.clone(),
-            &control,
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                observation.shutdown().await?;
-                return Err(e.into());
-            }
-        };
-        let inventory_owner =
-            match crate::planning_t2_support::owner(c, "mdm_inventory_runtime").await {
-                Ok(owner) => owner,
-                Err(e) => {
-                    let a = projection.shutdown().await;
-                    let b = observation.shutdown().await;
-                    a?;
-                    b?;
-                    return Err(e);
-                }
-            };
-        let result = async {
-            let inventory = Arc::new(rt::InventoryRuntime::new(
-                observation.store.clone(),
-                projection.store.clone(),
-                c.database.inventory(),
-                c.audit.clone(),
-                c.tenant,
-                clock,
-                Arc::new(rt::Readiness::default()),
-            ));
-            let messaging = rss_reconcile_postgres::PgMessagingStore::new(
-                inventory_owner.runtime.clone(),
-                c.tenant,
-                rss_mdm_inventory_service::transaction::deadline(),
-            )
-            .await?;
-            let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
-                rss_mdm_inventory_service::assets::AssetDependencies {
-                    inventory,
-                    audit_store: inventory_owner.audit.clone(),
-                    runtime: inventory_owner.runtime.clone(),
-                    tenant: c.tenant,
-                    clock: Arc::new(crate::clock::SystemClock),
-                    cursor_key: vec![7; 32],
-                    reconcile_messaging: messaging,
-                    software_sources: rss_mdm_inventory_service::assets::software::Sources {
-                        objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-                        groups: rss_mdm_group_postgres::GroupStore::new(
-                            inventory_owner.runtime.clone(),
-                            c.tenant,
-                            rss_mdm_inventory_service::transaction::deadline(),
-                        )
-                        .await?
-                        .source_reader(),
-                    },
-                },
-            ));
-            let reads = Arc::new(crate::assembly::device_reads::Devices {
-                tasks: a.task_reads.clone(),
-                devices: a.devices.clone(),
-                assets: assets.clone(),
-                windows: true,
-                apple: true,
-            });
-            Ok::<_, anyhow::Error>(Arc::new(directory::HttpState {
+    fn open(a: &Fixture) -> Result<Self> {
+        let reads = Arc::new(crate::assembly::device_reads::Devices {
+            tasks: a.task_reads.clone(),
+            devices: a.devices.clone(),
+            windows: true,
+            apple: true,
+        });
+        Ok(Self {
+            state: Arc::new(directory::HttpState {
                 cursor: rss_mdm_query::cursor::CursorCodec::new(&[7; 32])?,
                 devices: a.devices.clone(),
-                assets,
                 reads,
-            }))
-        }
-        .await;
-        match result {
-            Ok(state) => Ok(Self {
-                state,
-                observation,
-                projection,
-                inventory_owner,
             }),
-            Err(e) => {
-                inventory_owner.runtime.close().await;
-                let a = projection.shutdown().await;
-                let b = observation.shutdown().await;
-                a?;
-                b?;
-                Err(e)
-            }
-        }
+        })
     }
     async fn get(
         &self,
@@ -133,7 +38,7 @@ impl Http {
         let router = directory::routes()
             .with_state::<()>(self.state.clone())
             .layer(axum::Extension(c.request(&proof)?))
-            .layer(axum::Extension(RequestAuth { proof }))
+            .layer(axum::Extension(c.read_auth(proof)))
             .into_axum();
         let response = tokio::time::timeout(
             Duration::from_secs(10),
@@ -148,15 +53,6 @@ impl Http {
         let bytes = axum::body::to_bytes(response.into_body(), 262144).await?;
         Ok((status, serde_json::from_slice(&bytes)?))
     }
-    async fn close(self) -> Result<()> {
-        drop(self.state);
-        self.inventory_owner.runtime.close().await;
-        let a = self.projection.shutdown().await;
-        let b = self.observation.shutdown().await;
-        a?;
-        b?;
-        Ok(())
-    }
 }
 async fn open() -> Result<(Context, Fixture, Http)> {
     let c = Context::open("shared", &[]).await?;
@@ -167,7 +63,7 @@ async fn open() -> Result<(Context, Fixture, Http)> {
             return Err(e);
         }
     };
-    match Http::open(&c, &a).await {
+    match Http::open(&a) {
         Ok(http) => Ok((c, a, http)),
         Err(e) => {
             let closed = Fixture::close(a).await;
@@ -284,10 +180,9 @@ async fn detail_capabilities_are_authorized_read_only_facts() -> Result<()> {
         assert_eq!(http.get(&c,p,&n.device).await?.0,403);
         Ok(())
     }.await;
-    let closed = http.close().await;
+    drop(http);
     let drained = Fixture::close(a).await;
     c.close().await;
-    closed?;
     drained?;
     result
 }
@@ -320,10 +215,9 @@ async fn supported_snapshot_never_authorizes_a_later_write() -> Result<()> {
         assert_eq!(effects(&c).await?,before);
         Ok(())
     }.await;
-    let closed = http.close().await;
+    drop(http);
     let drained = Fixture::close(a).await;
     c.close().await;
-    closed?;
     drained?;
     result
 }
@@ -436,10 +330,9 @@ async fn apple_reads_distinguish_platform_evidence_and_product_configuration() -
         assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,503);
         Ok(())
     }.await;
-    let closed = http.close().await;
+    drop(http);
     let drained = Fixture::close(a).await;
     c.close().await;
-    closed?;
     drained?;
     result
 }
@@ -471,10 +364,9 @@ async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Res
         Ok(())
     }.await;
     foreign.close().await;
-    let closed = http.close().await;
+    drop(http);
     let drained = Fixture::close(a).await;
     c.close().await;
-    closed?;
     drained?;
     result
 }
@@ -488,9 +380,10 @@ async fn snapshot_revalidates_authority_and_registration_before_return() -> Resu
     let result=async {
         let n=native::seed(&c,"windows").await?;
         let account=c.account(&[Permission::InventoryRead]).await?;
-        let p=c.authenticate(&account).await?;
+        let p=Arc::new(c.authenticate(&account).await?);
         for change_registration in [true,false] {
-            let result=a.task_reads.snapshot_registered(&p,(&c,&n,&account),move |args,connection,_,_,registration| Box::pin(async move {
+            let request=c.read_auth(p.clone());
+            let result=a.task_reads.snapshot_registered(&request,(&c,&n,&account),move |args,connection,_,_,registration| Box::pin(async move {
                 let (c,n,account)=*args;
                 *registration=Some((n.device.clone(),endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm,connection,&c.tenant.to_string(),&n.device,rss_mdm_inventory::Channel::Mdm).await?));
                 // A second real connection commits while the first retains its RR snapshot.

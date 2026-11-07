@@ -385,7 +385,7 @@ async fn issuance_recovery_operation(
     app.as_ref()
         .as_deref()
         .ok_or(Error::Unsupported)?
-        .issuance_recovery_operation(&auth.proof, id, operation, &identity)
+        .issuance_recovery_operation(&auth, id, operation, &identity)
         .await
         .map(Json)
         .map_err(Into::into)
@@ -631,7 +631,7 @@ async fn request_directory(
     let service = app.as_ref().as_deref().ok_or(Error::Unsupported)?;
     let query = query.parse().map_err(|_| Error::Malformed)?;
     service
-        .request_directory(&auth.proof, &device, &query)
+        .request_directory(&auth, &device, &query)
         .await
         .map(Json)
         .map(rss_mdm_http_contract::CollectionResponse)
@@ -645,7 +645,7 @@ async fn request_details(
     app.as_ref()
         .as_deref()
         .ok_or(Error::Unsupported)?
-        .request_details(&auth.proof, id)
+        .request_details(&auth, id)
         .await
         .map(Json)
         .map_err(Into::into)
@@ -663,7 +663,7 @@ async fn registration_recovery_operation(
     app.as_ref()
         .as_deref()
         .ok_or(Error::Unsupported)?
-        .registration_recovery_operation(&auth.proof, id, operation, &identity)
+        .registration_recovery_operation(&auth, id, operation, &identity)
         .await
         .map(Json)
         .map_err(Into::into)
@@ -690,7 +690,7 @@ async fn issuance_recovery_operations(
     let service = app.as_ref().as_deref().ok_or(Error::Unsupported)?;
     let query = query.parse().map_err(|_| Error::Malformed)?;
     service
-        .issuance_recovery_operations(&auth.proof, id, &query)
+        .issuance_recovery_operations(&auth, id, &query)
         .await
         .map(Json)
         .map(rss_mdm_http_contract::CollectionResponse)

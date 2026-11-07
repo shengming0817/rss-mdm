@@ -2039,7 +2039,7 @@ define_storage!(
     r###""schema":"mdm_registration_tasks","table":"receipts""###,
     r###""schema":"mdm_registration_tasks","table":"agent_admission""###,
     r###""schema":"mdm_registration_tasks","table":"policy_recovery""###,
-    r###",{"schema":"mdm_registration_tasks","table":"operations","read_write":false,"updates":[],"delete_policy":null,"read_only":true},{"schema":"mdm_registration_tasks","table":"requests","read_write":false,"updates":[],"delete_policy":null},{"schema":"mdm_registration_tasks","table":"device_recovery","read_write":false,"updates":[],"delete_policy":null}"###,
+    r###",{"schema":"mdm_registration_tasks","table":"operations","read_write":false,"updates":[],"delete_policy":null,"read_only":true},{"schema":"mdm_registration_tasks","table":"device_recovery","read_write":false,"updates":[],"delete_policy":null}"###,
     r###",{"name":"mdm_registration_tasks.retirement_commands","search_path":"search_path=pg_catalog"},{"name":"mdm_registration_tasks.save_retired_command","search_path":"search_path=pg_catalog"},{"name":"mdm_registration_tasks.installation_status","search_path":"search_path=pg_catalog"},{"name":"mdm_registration_tasks.windows_wake_candidates","search_path":"search_path=pg_catalog"},{"name":"mdm_registration_tasks.windows_pending_operations","search_path":"search_path=pg_catalog"},{"name":"mdm_registration_tasks.recovery_key","search_path":"search_path=pg_catalog","security_definer":false}"###,
     r###"{"grantSeconds":86400,"configurationDefaultSeconds":86400,"platforms":["windows","macos"]}"###,
     "mdm_pki.current_certificates",

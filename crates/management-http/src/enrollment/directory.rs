@@ -12,7 +12,6 @@ use std::sync::Arc;
 pub struct HttpState {
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub devices: Arc<rss_mdm_registration_service::DeviceService>,
-    pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub reads: Arc<dyn DeviceReads>,
 }
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
@@ -60,13 +59,13 @@ async fn list(
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         let query = query.parse().map_err(|_| Error::Malformed)?;
-        let assets = s.assets.clone();
+        let tenant = rss_request_context::TenantId::parse(auth.proof.tenant_id())
+            .map_err(|_| Error::Unauthorized)?;
         let page = s
             .devices
-            .directory(&auth.proof, &query, &s.cursor, move |c, ids| {
+            .directory(&auth, &query, &s.cursor, move |c, ids| {
                 Box::pin(async move {
-                    assets
-                        .directory_presence_on(c, ids)
+                    rss_mdm_inventory_service::assets::directory_presence_on(c, tenant, ids)
                         .await
                         .map_err(|_| rss_mdm_registration_service::Error::Storage)
                 })
@@ -97,7 +96,7 @@ async fn statistics(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     let q = query.parse().map_err(|_| Error::Malformed)?;
-    Ok(Json(s.devices.directory_statistics(&auth.proof, &q).await?))
+    Ok(Json(s.devices.directory_statistics(&auth, &q).await?))
 }
 
 async fn detail(
@@ -111,7 +110,7 @@ async fn detail(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     audit.target_device(&device);
-    Ok(Json(s.reads.detail(&auth.proof, &device).await?))
+    Ok(Json(s.reads.detail(&auth, &device).await?))
 }
 
 struct ListQuery;
@@ -138,7 +137,7 @@ pub struct DeviceDetail {
 pub trait DeviceReads: Send + Sync {
     fn detail<'a>(
         &'a self,
-        proof: &'a rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        proof: &'a rss_mdm_authorization_service::context::RequestAuth,
         device: &'a str,
     ) -> crate::execution::task_reads::Pending<'a, DeviceDetail>;
 }

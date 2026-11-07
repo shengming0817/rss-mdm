@@ -21,16 +21,17 @@ pub(crate) fn execution_fault(error: rss_mdm_device_service::control::transactio
 impl Reads {
     pub(super) async fn runs(
         &self,
-        proof: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         audit: &RequestAudit,
         policy: Uuid,
         page: &Query,
         codec: &CursorCodec,
     ) -> Result<RunPage, Error> {
+        let proof = request.proof.as_ref();
         page.require_schema(&RUNS_SCHEMA)
             .map_err(|_| Error::Malformed)?;
         self.snapshot(
-            proof,
+            request,
             (self, proof, policy, page, codec),
             |ctx, c, grant, now| {
                 Box::pin(async move {
@@ -185,12 +186,13 @@ impl Reads {
     }
     pub(super) async fn run(
         &self,
-        proof: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         audit: &RequestAudit,
         policy: Uuid,
         id: Uuid,
     ) -> Result<RunDetail, Error> {
-        self.snapshot(proof, (self, proof, policy, id), |ctx, c, grant, now| {
+        let proof = request.proof.as_ref();
+        self.snapshot(request, (self, proof, policy, id), |ctx, c, grant, now| {
             Box::pin(async move {
                 let (s, proof, policy, id) = *ctx;
                 grant.require(proof, Permission::PolicyRead, None)?;

@@ -44,12 +44,13 @@ impl Credentials {
 
     pub async fn list(
         &self,
-        principal: &AuthorizedPrincipal,
+        request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &str,
         query: &rss_mdm_query::directory::Query,
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<crate::Material>>, Error>
     {
+        let principal = request.proof.as_ref();
         let profile = self.profile();
         if principal.profile() != profile {
             return Err(Error::Forbidden);
@@ -75,6 +76,7 @@ impl Credentials {
             crate::directory::read(profile, &mut tx, principal, device, &grant, query, codec)
                 .await?;
         tx.rollback().await?;
+        let fresh = request.revalidate().await?;
         let mut current = self.pool.begin().await?;
         configure(profile, &mut current, principal.tenant_id()).await?;
         authorize(
@@ -92,7 +94,7 @@ impl Credentials {
             principal.instance_id(),
         )
         .await?;
-        if snapshot.query_binding(principal)? != grant {
+        if request.current_binding(&snapshot, fresh.as_ref())? != grant {
             return Err(Error::ReadConflict);
         }
         current.rollback().await?;

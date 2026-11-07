@@ -36,7 +36,10 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
         Some(Error::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
         Some(Error::Unauthorized) => Some(ResponseFailure::Denied),
         Some(Error::Forbidden) => Some(ResponseFailure::Forbidden),
-        Some(Error::Unavailable(Failure::RequestDeadline)) => Some(ResponseFailure::Deadline),
+        Some(Error::Unavailable(Failure::RequestDeadline))
+        | Some(Error::RecoveryCredentials(rss_mdm_recovery_credentials::Error::Deadline)) => {
+            Some(ResponseFailure::Deadline)
+        }
         Some(Error::Unavailable(Failure::AuditIntegrity)) => Some(ResponseFailure::AuditIntegrity),
         Some(Error::Unavailable(
             Failure::AuditContract | Failure::AuditIsolation | Failure::AuditAdmission,
@@ -347,6 +350,22 @@ fn route_action(route: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recovery_identity_deadline_keeps_its_diagnostic() {
+        let error = crate::Error::from(rss_mdm_recovery_credentials::Error::from(
+            rss_mdm_authorization_service::Error::Deadline,
+        ));
+        assert!(matches!(
+            super::classify(Some(&error)),
+            Some(super::ResponseFailure::Deadline)
+        ));
+        use axum::response::IntoResponse;
+        assert_eq!(
+            error.into_response().status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
     #[test]
     fn secure_preserves_the_private_content_cache_contract() {
         let response = axum::response::IntoResponse::into_response((

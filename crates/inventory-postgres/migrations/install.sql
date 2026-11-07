@@ -32,6 +32,12 @@ REVOKE ALL ON SCHEMA mdm FROM PUBLIC;
 REVOKE ALL ON mdm.inventory FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm,rss_observation,rss_projection TO mdm_runtime;
 GRANT SELECT,INSERT,UPDATE,DELETE ON mdm.inventory TO mdm_runtime;
+CREATE VIEW mdm.inventory_presence WITH (security_barrier=true) AS
+SELECT DISTINCT tenant_id,journal,generation,scope FROM mdm.inventory
+WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+ AND field_scope='{"kind":"device"}';
+REVOKE ALL ON mdm.inventory_presence FROM PUBLIC;
+
 GRANT SELECT ON rss_observation.objects,rss_observation.streams,rss_observation.batches,rss_observation.journals,
  rss_projection.sources,rss_projection.events,rss_projection.checkpoints,rss_projection.receipts TO mdm_runtime;
 GRANT EXECUTE ON FUNCTION

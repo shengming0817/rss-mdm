@@ -156,6 +156,7 @@ impl From<rss_mdm_recovery_credentials::Error> for Error {
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Audit => Self::Classified(Failure::AuditUnavailable),
+            E::Deadline => Self::Classified(Failure::Deadline),
             E::CursorInvalidated => Self::CursorInvalidated,
             E::ReadConflict => Self::ReadConflict,
             _ => Self::Unavailable,
@@ -179,5 +180,19 @@ impl From<rss_mdm_query::Error> for Error {
             rss_mdm_query::Error::Budget => Self::RequestTooLarge,
             rss_mdm_query::Error::CursorInvalidated => Self::CursorInvalidated,
         }
+    }
+}
+
+#[cfg(test)]
+mod query_tests {
+    #[test]
+    fn recovery_identity_deadline_is_not_generic_unavailability() {
+        let error = super::Error::from(rss_mdm_recovery_credentials::Error::from(
+            rss_mdm_authorization_service::Error::Deadline,
+        ));
+        assert!(matches!(
+            error,
+            super::Error::Classified(super::Failure::Deadline)
+        ));
     }
 }
