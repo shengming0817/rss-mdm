@@ -545,14 +545,14 @@ impl rss_mdm_http_contract::query::DirectoryOwner for RulesQuery {
 struct GroupsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for GroupsQuery {
     fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &directory::GROUPS
+        directory::Directory::Groups.schema()
     }
 }
 
 struct MembersQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for MembersQuery {
     fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &directory::MEMBERS
+        directory::Directory::Members(uuid::Uuid::nil()).schema()
     }
 }
 

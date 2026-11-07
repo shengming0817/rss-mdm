@@ -5,12 +5,12 @@ use rss_mdm_query::{
     cursor::CursorCodec,
     directory::{Field, Kind, Query, Schema},
 };
-pub static SCHEMA: Schema = Schema {
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "asset_fields",
     keys: &["key"],
     default_limit: 100,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: &[
+    fields: vec![
         Field::scalar("key", Kind::Text),
         Field::scalar("version", Kind::Integer),
         Field::scalar("nullable", Kind::Boolean),
@@ -18,7 +18,7 @@ pub static SCHEMA: Schema = Schema {
         Field::scalar("searchable", Kind::Boolean),
         Field::scalar(
             "sensitivity",
-            Kind::Enum(&["standard", "sensitive", "secret"]),
+            Kind::enumeration(&["standard", "sensitive", "secret"]),
         ),
         Field::output("valueType"),
         Field::output("sources"),
@@ -28,7 +28,7 @@ pub static SCHEMA: Schema = Schema {
         Field::output("timeSeries"),
         Field::output("operations"),
     ],
-};
+});
 fn column(name: &str) -> &'static str {
     match name {
         "key" => "(document->>'key') COLLATE \"C\"",

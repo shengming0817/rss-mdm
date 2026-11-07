@@ -119,3 +119,6 @@ pub const fn ingestion_grants_sql(
 ) -> &'static str {
     storage_profile::sql(profile).ingestion_grants
 }
+
+/// Current saved-query directory projection, installed and rebuilt in the original installer transaction.
+pub const SAVED_QUERY_DIRECTORY_SQL: &str = include_str!("../schema/saved-query-directory.sql");

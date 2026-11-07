@@ -128,7 +128,11 @@ async fn list(
     >,
 ) -> std::result::Result<
     rss_mdm_http_contract::CollectionResponse<
-        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<super::read::Row>>>,
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<rss_mdm_policy_postgres::directory::Row>,
+            >,
+        >,
     >,
     Error,
 > {
@@ -269,6 +273,6 @@ impl rss_mdm_http_contract::query::WindowOwner for AssignmentsQuery {
 struct PolicyDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for PolicyDirectoryQuery {
     fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_policy_service::management::read::SCHEMA
+        rss_mdm_policy_service::management::read::schema()
     }
 }

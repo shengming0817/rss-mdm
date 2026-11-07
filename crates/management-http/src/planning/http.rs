@@ -216,7 +216,7 @@ async fn group_directory(
     rss_mdm_http_contract::CollectionResponse<
         Json<
             rss_mdm_query::Page<
-                rss_mdm_query::directory::Projection<rss_mdm_group_service::directory::Row>,
+                rss_mdm_query::directory::Projection<rss_mdm_group_postgres::directory::Row>,
             >,
         >,
     >,

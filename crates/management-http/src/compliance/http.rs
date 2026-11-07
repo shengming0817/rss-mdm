@@ -125,7 +125,15 @@ async fn list(
     >,
 ) -> std::result::Result<
     rss_mdm_http_contract::CollectionResponse<
-        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<directory::DirectoryRow>>>,
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_compliance_postgres::directory::DirectoryRow<
+                        rss_mdm_inventory_service::assets::InventoryCondition,
+                    >,
+                >,
+            >,
+        >,
     >,
     Error,
 > {

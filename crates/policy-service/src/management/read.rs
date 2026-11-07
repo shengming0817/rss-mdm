@@ -1,5 +1,9 @@
 use super::*;
+use rss_mdm_policy_postgres::directory::Row;
 pub use rss_mdm_policy_postgres::directory::{SCHEMA, parse};
+pub fn schema() -> &'static rss_mdm_query::directory::Schema {
+    rss_mdm_policy_postgres::directory::schema()
+}
 use rss_mdm_query::{cursor::CursorCodec, directory::Query};
 pub async fn read(
     service: &Policies,
@@ -120,24 +124,6 @@ pub async fn resolve(
     }),).await
 }
 
-/// The actual SQL directory row, before caller-selected fields are projected away.
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Row {
-    pub id: Uuid,
-    pub tool_name: String,
-    pub alias: Option<rss_mdm_agent_wire::runtime::PolicyAlias>,
-    pub custom_event: Option<rss_mdm_agent_wire::runtime::PolicyEventName>,
-    pub revision: i64,
-    pub version: i64,
-    pub version_id: Uuid,
-    pub state: rss_mdm_policy::State,
-    pub definition: rss_mdm_policy::Definition,
-    pub action: rss_mdm_policy::ActionKind,
-    pub scope: Uuid,
-    pub resource: Option<String>,
-    pub category: Option<String>,
-}
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct Resolved {
     pub capability: rss_mdm_agent_wire::runtime::CapabilityDescriptor,

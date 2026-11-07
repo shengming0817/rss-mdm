@@ -17,69 +17,94 @@ pub enum Error {
     Storage(#[from] PgError),
 }
 /// Management Policy directory fields.
-pub static SCHEMA: Schema = Schema {
-    id: "policies",
-    keys: &["id"],
-    default_limit: 64,
-    max_limit: 1000,
-    fields: &[
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("toolName", Kind::Text),
-        Field::scalar("alias", Kind::Text),
-        Field::scalar("customEvent", Kind::Text),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("version", Kind::Integer),
-        Field::scalar("state", Kind::Enum(&["enabled", "disabled", "archived"])),
-        Field::scalar(
-            "action",
-            Kind::Enum(&[
-                "device_access",
-                "unmanage_device",
-                "credential",
-                "execution",
-                "native_collection",
-                "agent_collection",
-                "telemetry_profile",
-                "configuration",
-                "software",
-                "ensure_agent_installed",
-                "request_mdm_enrollment",
-            ]),
-        ),
-        Field::scalar("scope", Kind::Uuid),
-        Field::scalar("resource", Kind::Text),
-        Field::scalar("category", Kind::Text),
-        Field::output("versionId"),
-        Field::output("definition"),
-    ],
-};
-/// Parse the management directory query against its canonical fields.
-pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
-    SCHEMA.parse(raw)
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    use rss_mdm_query::directory::Exclusion;
+    Schema::derived::<Row>("policies", &["id"], 64, 1000, &[
+        Exclusion { path: "definition.action.parameters", reason: "Dynamic Resource parameter names and fixed values require the Resource's sensitivity/type authority" },
+        Exclusion { path: "definition.action.rollout.stages", reason: "Rollout object arrays require same-stage conditions" },
+        Exclusion { path: "definition.selfService.access.selectors", reason: "Access selector object arrays require same-selector conditions" },
+    ]).and_then(|s| s.no_range("definition.action.resource.version"))
+    .expect("Policy public model is fully described")
+});
+static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        use rss_mdm_query_postgres::{Bindings, Source};
+        Bindings::new(
+            &SCHEMA,
+            &[
+                Source::column("id", "id::text COLLATE \"C\""),
+                Source::column(
+                    "toolName",
+                    "('policy_' || replace(id::text,'-','')) COLLATE \"C\"",
+                ),
+                Source::column("alias", "(definition->>'alias') COLLATE \"C\""),
+                Source::column("customEvent", "(definition->>'customEvent') COLLATE \"C\""),
+                Source::column("revision", "revision"),
+                Source::column("version", "version_number"),
+                Source::column("versionId", "current_version::text COLLATE \"C\""),
+                Source::column("state", "state COLLATE \"C\""),
+                Source::column("action", "(definition->'action'->>'kind') COLLATE \"C\""),
+                Source::column("scope", "(definition->>'scope') COLLATE \"C\""),
+                Source::column(
+                    "resource",
+                    "(definition->'action'->'resource'->>'id') COLLATE \"C\"",
+                ),
+                Source::column(
+                    "category",
+                    "(definition->'selfService'->'presentation'->>'category') COLLATE \"C\"",
+                ),
+                Source::json("definition", "definition"),
+            ],
+        )
+        .expect("Policy storage binds every public field")
+    });
+/// Return the same storage-checked directory used by execution and HTTP descriptions.
+pub fn schema() -> &'static Schema {
+    BINDINGS.schema()
 }
-fn column(name: &str) -> &'static str {
-    match name {
-        "id" => "id::text COLLATE \"C\"",
-        "toolName" => "('policy_' || replace(id::text,'-','')) COLLATE \"C\"",
-        "alias" => "(definition->>'alias') COLLATE \"C\"",
-        "customEvent" => "(definition->>'customEvent') COLLATE \"C\"",
-        "revision" => "revision",
-        "version" => "version_number",
-        "state" => "state COLLATE \"C\"",
-        "action" => "(definition->'action'->>'kind') COLLATE \"C\"",
-        "scope" => "(definition->>'scope') COLLATE \"C\"",
-        "resource" => "(definition->'action'->'resource'->>'id') COLLATE \"C\"",
-        "category" => "(definition->'selfService'->'presentation'->>'category') COLLATE \"C\"",
-        _ => unreachable!("checked Policy field"),
-    }
+/// Parse using the complete, storage-checked field model.
+pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
+    schema().parse(raw)
+}
+/// The actual SQL directory row, before caller-selected fields are projected away.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Public directory row before selection removes unrequested output fields.
+pub struct Row {
+    /// Stable object identity within the tenant.
+    pub id: Uuid,
+    /// Derived canonical policy tool address.
+    pub tool_name: String,
+    /// Optional authored business address.
+    pub alias: Option<rss_mdm_agent_wire::runtime::PolicyAlias>,
+    /// Optional authored event address.
+    pub custom_event: Option<rss_mdm_agent_wire::runtime::PolicyEventName>,
+    /// Current compare-and-swap revision.
+    pub revision: i64,
+    /// Current business version number.
+    pub version: i64,
+    /// Current immutable version identity.
+    pub version_id: Uuid,
+    /// Current policy lifecycle state.
+    pub state: rss_mdm_policy::State,
+    /// Current authored policy definition.
+    pub definition: rss_mdm_policy::Definition,
+    /// Current action discriminator.
+    pub action: rss_mdm_policy::ActionKind,
+    /// Associated Scope identity.
+    pub scope: Uuid,
+    /// Resource selected by the action, when applicable.
+    pub resource: Option<String>,
+    /// Public self-service category, when configured.
+    pub category: Option<String>,
 }
 /// Event batch directory fields.
-pub static BATCHES: Schema = Schema {
+pub static BATCHES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "policy_event_batches",
     keys: &["id"],
     default_limit: 64,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("operationId", Kind::Uuid),
         Field::scalar("event", Kind::Text),
@@ -90,14 +115,14 @@ pub static BATCHES: Schema = Schema {
         Field::output("request"),
         Field::output("processingFailure"),
     ],
-};
+});
 /// Event member directory fields.
-pub static MEMBERS: Schema = Schema {
+pub static MEMBERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
     id: "policy_event_members",
     keys: &["id"],
     default_limit: 64,
     max_limit: 1000,
-    fields: &[
+    fields: vec![
         Field::scalar("id", Kind::Uuid),
         Field::scalar("policyId", Kind::Uuid),
         Field::scalar("versionId", Kind::Uuid),
@@ -106,7 +131,7 @@ pub static MEMBERS: Schema = Schema {
         Field::output("decision"),
         Field::output("operations"),
     ],
-};
+});
 fn batch_column(name: &str) -> &'static str {
     match name {
         "id" => "b.id::text COLLATE \"C\"",
@@ -133,14 +158,14 @@ pub async fn policies_in(
     q: &Query,
     after: Option<&Position>,
 ) -> Result<Vec<Value>, Error> {
-    q.require_schema(&SCHEMA)?;
+    q.require_schema(schema())?;
     let mut sql =
         sqlx::QueryBuilder::new(crate::storage_profile::sql(profile).directory_policies_in_1);
     sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
     if !q.mentions("state") {
         sql.push(" AND state<>'archived'");
     }
-    rss_mdm_query_postgres::append(&mut sql, q, after, column)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after, &*BINDINGS)?;
     Ok(tx
         .with_connection(move |c| {
             Box::pin(async move { sql.build_query_scalar().fetch_all(c).await })

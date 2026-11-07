@@ -15,30 +15,14 @@ pub fn parse(raw: &str) -> rss_mdm_query::Result<DirectoryQuery> {
     if referenceable_for.is_some_and(|id| id.is_nil()) {
         return Err(rss_mdm_query::Error::Invalid);
     }
-    let mut query = Query::new(&rss_mdm_group_postgres::directory::SCHEMA, parameters)?;
+    let mut query = Query::new(rss_mdm_group_postgres::directory::schema(), parameters)?;
     query.default_filter("deleted", "false")?;
     Ok(DirectoryQuery {
         query,
         referenceable_for,
     })
 }
-#[derive(schemars::JsonSchema, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Row {
-    pub id: rss_mdm_group::GroupId,
-    pub kind: rss_mdm_group_postgres::GroupKind,
-    pub system_selector: Option<rss_mdm_group_postgres::SystemSelector>,
-    pub asset_context: rss_mdm_group::AssetContext,
-    #[schemars(extend("x-rss-extension"="Group presentation metadata"))]
-    pub presentation: serde_json::Map<String, Value>,
-    pub name: Option<String>,
-    pub revision: rss_mdm_group_postgres::Revision,
-    pub calculation_revision: i64,
-    pub member_version: i64,
-    pub member_count: usize,
-    pub rule_version: Option<String>,
-    pub deleted: bool,
-}
+use rss_mdm_group_postgres::directory::Row;
 fn row(g: &rss_mdm_group_postgres::Group) -> Row {
     Row {
         id: g.id,
@@ -68,7 +52,7 @@ impl Groups {
     ) -> std::result::Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Row>>, Error>
     {
         q.query
-            .require_schema(&rss_mdm_group_postgres::directory::SCHEMA)
+            .require_schema(rss_mdm_group_postgres::directory::schema())
             .map_err(crate::query_error)?;
         proof.manage(Permission::GroupRead)?;
         proof.require_all_devices(Permission::InventoryRead)?;
@@ -169,7 +153,7 @@ impl Groups {
 }
 
 pub fn schema() -> &'static rss_mdm_query::directory::Schema {
-    &rss_mdm_group_postgres::directory::SCHEMA
+    rss_mdm_group_postgres::directory::schema()
 }
 
 impl Groups {

@@ -136,7 +136,7 @@ pub struct SelfService {
     /// Whether new self-service calls are accepted.
     pub published: bool,
     /// Open, bounded directory text. Unknown properties are retained without authority.
-    #[schemars(extend("x-rss-extension" = "Bounded descriptive presentation metadata; no execution or authorization authority"))]
+    #[schemars(with = "Presentation")]
     pub presentation: Map<String, Value>,
     /// Defaults only at first configuration; normalized stored values are always present.
     #[serde(default)]
@@ -170,35 +170,24 @@ impl SelfService {
         if !crate::presentation::valid(&self.presentation, 65536) {
             return Err(Error::Malformed);
         }
-        let text = |key| {
-            self.presentation
-                .get(key)
-                .and_then(Value::as_str)
-                .ok_or(Error::Malformed)
-        };
-        for (key, bound, required) in [
-            ("displayName", 256, true),
-            ("description", 4096, false),
-            ("prerequisites", 4096, false),
-            ("sideEffects", 4096, false),
-            ("category", 128, true),
+        let fields: Presentation = serde_json::from_value(Value::Object(self.presentation.clone()))
+            .map_err(|_| Error::Malformed)?;
+        for (value, bound, required) in [
+            (&fields.display_name, 256, true),
+            (&fields.description, 4096, false),
+            (&fields.prerequisites, 4096, false),
+            (&fields.side_effects, 4096, false),
+            (&fields.category, 128, true),
         ] {
-            let value = text(key)?;
             if value.len() > bound || (required && value.trim().is_empty()) {
                 return Err(Error::Malformed);
             }
         }
-        let keywords = self
-            .presentation
-            .get("keywords")
-            .and_then(Value::as_array)
-            .ok_or(Error::Malformed)?;
-        if keywords.len() > 32
-            || keywords.iter().any(|v| {
-                v.as_str().is_none_or(|s| {
-                    s.trim().is_empty() || s.len() > 128 || s.chars().any(char::is_control)
-                })
-            })
+        if fields.keywords.len() > 32
+            || fields
+                .keywords
+                .iter()
+                .any(|s| s.trim().is_empty() || s.len() > 128 || s.chars().any(char::is_control))
         {
             return Err(Error::Malformed);
         }
@@ -341,4 +330,18 @@ impl SelfServiceAccess {
 
 fn nullable_access_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     generator.subschema_for::<Option<SelfServiceAccess>>()
+}
+
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(extend("additionalProperties" = {"x-rss-extension":"Bounded descriptive extensions; only typed properties are queryable"}))]
+struct Presentation {
+    display_name: String,
+    description: String,
+    prerequisites: String,
+    side_effects: String,
+    category: String,
+    keywords: Vec<String>,
+    #[serde(flatten)]
+    extensions: Map<String, Value>,
 }

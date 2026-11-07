@@ -40,7 +40,7 @@ pub enum Target {
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Definition<C> {
-    #[schemars(extend("x-rss-extension" = "Bounded descriptive presentation metadata; no execution or authorization authority"))]
+    #[schemars(with = "crate::presentation::Presentation")]
     pub presentation: serde_json::Map<String, serde_json::Value>,
     pub severity: Severity,
     pub enabled: bool,
