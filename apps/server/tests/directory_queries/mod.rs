@@ -127,12 +127,14 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         Arc::new(crate::Monotonic(std::time::Instant::now)),
     ));
     let exercise = async {
+        let mut readiness = None;
         tokio::time::timeout(Duration::from_secs(90), async {
             loop {
                 if server.is_finished() {
                     anyhow::bail!("App terminated before directory verification");
                 }
-                if http.get("/readyz",&[]).await.is_ok_and(|(status,body)|status==200 && body["ready"]==true)
+                readiness=http.get("/readyz",&[]).await.ok();
+                if readiness.as_ref().is_some_and(|(status,body)|*status==200 && body["ready"]==true)
                 {
                     break;
                 }
@@ -140,7 +142,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             }
             Ok::<_, anyhow::Error>(())
         })
-        .await??;
+        .await.with_context(|| format!("directory App readiness: {readiness:?}"))??;
         let mut failures = Vec::new();
         for (path, filter, expected) in &fixtures.cases {
             match http.selected(path, filter).await {

@@ -255,7 +255,7 @@ async fn planning_rows(
     .await?;
     groups.storage.runtime.close().await;
     let mut tx = seed_transaction(c).await?;
-    sqlx::query("UPDATE mdm_policy.policies SET definition=jsonb_set(jsonb_set(definition,'{alias}','\"directory-z\"'),'{customEvent}','\"directory-event\"') WHERE tenant_id=$1::uuid AND id=$2")
+    sqlx::query("UPDATE mdm_policy.policies SET state='disabled',definition=jsonb_set(jsonb_set(definition,'{alias}','\"directory-z\"'),'{customEvent}','\"directory-event\"') WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string()).bind(other_policy).execute(&mut *tx).await?;
     sqlx::query("UPDATE mdm_group.groups SET presentation=$3 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string())
