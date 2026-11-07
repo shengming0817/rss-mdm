@@ -43,7 +43,8 @@ pub async fn mutate(
     if operation.is_nil() {
         return Err(Error::Malformed);
     }
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceAccess,
         operation,
         "apple_platform_sso",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -68,6 +69,7 @@ pub async fn mutate(
                         .await?;
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
+                        rss_mdm_audit_integration::operation::OperationOwner::DeviceAccess,
                         &format!("apple-platform-sso:{operation}"),
                         200,
                         "success",

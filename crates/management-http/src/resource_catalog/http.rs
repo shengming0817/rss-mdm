@@ -122,7 +122,8 @@ async fn run(
         },
     );
     if let Some(op) = &change {
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Resource,
             op.operation_id,
             "management_write",
             rss_mdm_audit_integration::AuditIntent::Management,

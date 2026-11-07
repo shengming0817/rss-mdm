@@ -70,17 +70,7 @@ pub enum Error {
 }
 impl Error {
     pub fn is_not_found(&self) -> bool {
-        matches!(
-            self,
-            Self::NotFound
-                | Self::ScopeNotFound
-                | Self::FirstUseOperationMissing
-                | Self::Group(_)
-                | Self::PolicyMissing
-                | Self::Resource(resource_catalog::error::ResourceError::Missing)
-                | Self::Execution(_)
-                | Self::Publication(_)
-        )
+        self.status() == axum::http::StatusCode::NOT_FOUND
     }
 }
 

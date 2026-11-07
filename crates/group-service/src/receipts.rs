@@ -25,6 +25,7 @@ pub async fn audit(
     let result = if let Some(id) = operation {
         let fact = rss_mdm_audit_integration::Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Group,
             &format!(
                 "groups:{}:{id}",
                 audit.snapshot().actor.as_deref().unwrap_or("")
@@ -53,6 +54,7 @@ pub async fn audit(
 pub async fn replay(
     tx: &mut PgTransaction<'_>,
     actor: &str,
+    instance: &str,
     id: Uuid,
     fingerprint: &[u8],
 ) -> Result<Option<Value>> {
@@ -64,11 +66,13 @@ pub async fn replay(
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text,$3::text,$4::text)::text,2889))")
             .bind(&tenant).bind("groups").bind(&actor).bind(id.to_string())
             .execute(&mut *c).await?;
-        sqlx::query("SELECT fingerprint,response::text FROM mdm_assets.group_operations WHERE tenant_id=$1::uuid AND actor=$3 AND id=$2::uuid")
+        sqlx::query("SELECT fingerprint,response::text,instance::text FROM mdm_assets.group_operations WHERE tenant_id=$1::uuid AND actor=$3 AND id=$2::uuid")
             .bind(tenant).bind(id.to_string()).bind(actor).fetch_optional(c).await
     })).await?;
     if let Some(row) = row {
-        if row.try_get::<Vec<u8>, _>("fingerprint")? != fingerprint {
+        if row.try_get::<Vec<u8>, _>("fingerprint")? != fingerprint
+            || row.try_get::<String, _>("instance")? != instance
+        {
             return Err(Error::Conflict.into());
         }
         return Ok(Some(stored(serde_json::from_str(
@@ -80,21 +84,23 @@ pub async fn replay(
 pub async fn receipt(
     tx: &mut PgTransaction<'_>,
     actor: &str,
+    instance: &str,
     id: Uuid,
     fingerprint: &[u8],
     value: &Value,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let actor = actor.to_owned();
+    let instance = instance.to_owned();
     let digest = fingerprint.to_vec();
     let response = value.to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_assets.group_operations(tenant_id,id,fingerprint,response,actor) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5)")
+            sqlx::query("INSERT INTO mdm_assets.group_operations(tenant_id,id,fingerprint,response,actor,instance) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5,$6::uuid)")
                 .bind(tenant)
                 .bind(id.to_string())
                 .bind(digest)
-                .bind(response).bind(actor)
+                .bind(response).bind(actor).bind(instance)
                 .execute(c)
                 .await?;
             Ok(())

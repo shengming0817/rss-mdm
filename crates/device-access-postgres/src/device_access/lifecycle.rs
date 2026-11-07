@@ -476,7 +476,7 @@ pub(super) async fn require_settled_on(
     Ok(())
 }
 
-async fn load_on(
+pub(super) async fn load_on(
     c: &mut PgConnection,
     actor: &AuthorizedPrincipal,
     device: &str,
@@ -571,6 +571,14 @@ pub struct Progress {
     pub devices: Vec<TargetProgress>,
     pub complete: bool,
 }
+/// Safe execution evidence for diagnostics, after every frozen target has been authorized.
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticProgress {
+    pub identity: ExternalPhase,
+    pub devices: Vec<TargetProgress>,
+    pub complete: bool,
+}
 impl crate::service::Service {
     pub async fn offboarding_progress(
         &self,
@@ -594,6 +602,22 @@ impl crate::service::Service {
             .collect::<Result<Vec<_>, Error>>()?;
         let mut tx = self.store.begin(actor.tenant_id()).await?;
         super::service::authorize(&mut tx, actor, device, Permission::AccountWrite).await?;
+        let current = rss_mdm_authorization_service::snapshot_on(
+            actor.authority_profile(),
+            &mut tx,
+            actor.tenant_id(),
+            actor.instance_id(),
+        )
+        .await?;
+        current
+            .require(actor, Permission::IdentityAccountsManage, None)
+            .map_err(|_| Error::Forbidden)?;
+        for target in &operation.targets {
+            current
+                .require(actor, Permission::AccountWrite, Some(&target.device))
+                .map_err(|_| Error::Forbidden)?;
+        }
+
         let rows=sqlx::query("SELECT (t->>'id')::uuid AS id,coalesce(bool_or(r.document#>'{effect,disposition}'=t->'disposition' AND CASE WHEN t->>'hello'='true' THEN r.document#>>'{effect,state}'='whfb_retired' AND r.document#>>'{effect,facts,policy}'='absent' AND r.document#>>'{effect,facts,registration}'='absent' AND r.document#>'{effect,facts,factorGeneration}'=t->'factorGeneration' ELSE r.document#>>'{effect,state}'='unbound' END),false) AS confirmed,coalesce(bool_or(r.document#>>'{effect,state}'='unknown'),false) AS unknown,coalesce(bool_or(r.document#>>'{effect,state}'='failed'),false) AS failed FROM jsonb_array_elements($2) t LEFT JOIN rss_da.results r ON r.tenant_id=$1::uuid AND r.binding=(t->>'id')::uuid AND r.document->'bindingGeneration'=t->'generation' AND r.document->'revision'=t->'revision' AND r.document->'definitionDigest'=t->'digest' GROUP BY t")
             .bind(actor.tenant_id()).bind(serde_json::Value::Array(targets)).fetch_all(&mut *tx).await.map_err(crate::database::db)?;
         let mut phases = std::collections::BTreeMap::new();

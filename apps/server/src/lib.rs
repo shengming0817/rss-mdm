@@ -173,6 +173,9 @@ mod foundation_t2;
 #[path = "../tests/support/authority.rs"]
 mod authority_t2_support;
 #[cfg(test)]
+#[path = "../tests/support/host.rs"]
+mod host_t2_support;
+#[cfg(test)]
 #[path = "../tests/task_trust/mod.rs"]
 mod task_trust_t2;
 

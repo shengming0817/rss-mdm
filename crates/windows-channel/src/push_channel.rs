@@ -273,7 +273,7 @@ pub(crate) async fn receive(
             if !same_uri || !same_binding {
                 let revision: i64 = sqlx::query_scalar("INSERT INTO mdm_windows.push_channels(tenant_id,registration,generation,revision,configuration,uri,digest,attempt_until) VALUES($1::uuid,$2,$3,1,$4,$5,$6,clock_timestamp()+interval '30 days') ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,revision=push_channels.revision+1,configuration=excluded.configuration,uri=excluded.uri,digest=excluded.digest,attempt_until=CASE WHEN $7 THEN push_channels.attempt_until ELSE excluded.attempt_until END,next_push=CASE WHEN $7 THEN push_channels.next_push ELSE clock_timestamp() END,lease_id=CASE WHEN $7 THEN push_channels.lease_id END,lease_until=CASE WHEN $7 THEN push_channels.lease_until END,settled_id=NULL,failures=CASE WHEN $7 THEN push_channels.failures ELSE 0 END,status=CASE WHEN $7 AND NOT(push_channels.configuration<>excluded.configuration AND push_channels.status=403) THEN push_channels.status END,outcome=CASE WHEN $7 AND NOT(push_channels.configuration<>excluded.configuration AND coalesce(push_channels.status=403,false)) THEN push_channels.outcome END RETURNING revision")
                     .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(push.configuration.as_slice()).bind(sealed).bind(digest.as_slice()).bind(same_uri).fetch_one(&mut *c).await.map_err(db)?;
-                let fact = rss_mdm_audit_integration::Fact::business(
+                let fact = rss_mdm_audit_integration::Fact::observation(
                     audit,
                     &format!("windows-push:{}:{revision}:route", p.registration()),
                     200,

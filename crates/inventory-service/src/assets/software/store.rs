@@ -210,7 +210,7 @@ impl AssetService {
                 let instance = instance.clone();
                 let operation = *id;
                 let response: Option<serde_json::Value> = tx.with_connection(move |c| Box::pin(async move {
-                    sqlx::query_scalar("SELECT CASE WHEN response->'asset'->>'kind'='accepted' THEN response->'asset' ELSE response->'asset'->'response'->'receipt' END FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND instance=$4 AND ((response->'asset'->>'kind'='software' AND response->'asset'->'response'->>'kind'='mutation') OR (response->'asset'->>'kind'='accepted' AND response->'asset'->>'statusUrl' LIKE '/api/v1/software-asset-queries/%'))")
+                    sqlx::query_scalar("SELECT CASE WHEN response->'asset'->>'kind'='accepted' THEN response->'asset' ELSE response->'asset'->'response'->'receipt' END FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND instance=$4::uuid AND ((response->'asset'->>'kind'='software' AND response->'asset'->'response'->>'kind'='mutation') OR (response->'asset'->>'kind'='accepted' AND response->'asset'->>'statusUrl' LIKE '/api/v1/software-asset-queries/%'))")
                         .bind(tenant).bind(actor).bind(operation).bind(instance).fetch_optional(c).await
                 })).await?;
                 Ok(Response::Receipt {

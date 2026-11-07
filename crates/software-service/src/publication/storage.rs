@@ -126,6 +126,7 @@ pub(super) fn fact(
         return Err(fault());
     }
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         action,
@@ -158,8 +159,15 @@ pub(super) fn fact(
     };
     let key = format!("software:{}:{}", software.operation, software.stage);
     audit.software(software);
-    let result = rss_mdm_audit_integration::Fact::business(&audit, &key, status, result, None)
-        .map_err(|_| fault());
+    let result = rss_mdm_audit_integration::Fact::business(
+        &audit,
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwarePublication,
+        &key,
+        status,
+        result,
+        None,
+    )
+    .map_err(|_| fault());
     audit.finalize(None);
     result
 }

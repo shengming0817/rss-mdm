@@ -188,6 +188,15 @@ impl Service {
             .await?
             .ok_or(Error::Forbidden)?;
         let actor = actor(p, &subject);
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::EnrollmentInvocation,
+            input.operation_id,
+            "self_service_invoke",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.receipt_actor(&actor);
+        audit.target_device(p.device());
+        audit.registration_at(p.registration(), p.generation());
         let event_key = format!("{actor}:{}", input.operation_id);
         let plan =
             crate::enrollment::tasks::policy::read_in(&service.transactions, tx, policy.version)
@@ -270,6 +279,7 @@ impl Service {
             tx,
             &plan,
             production::RunInput {
+                request: Some(audit),
                 origin: match input.source {
                     wire::SelfServiceCaller::Human => {
                         rss_mdm_audit_integration::activity::ActivityOrigin::Human
@@ -302,12 +312,20 @@ impl Service {
             input.operation_id,
             hash.clone(),
             &response,
+            &target,
         )
         .await?;
         if let Some(proof) = proof {
             proof.check_live()?;
         }
-        let fact = Fact::business(audit, &event_key, 202, "success", None)?;
+        let fact = Fact::business(
+            audit,
+            rss_mdm_audit_integration::operation::OperationOwner::EnrollmentInvocation,
+            &event_key,
+            202,
+            "success",
+            None,
+        )?;
         service
             .transactions
             .audit_store
@@ -590,4 +608,46 @@ pub(crate) async fn advance_waiting_in(
     })
     .await?;
     Ok(true)
+}
+
+/// Read the immutable self-service response under current device authority without replaying it.
+pub async fn diagnostic_on(
+    c: &mut sqlx::PgConnection,
+    p: &AuthorizedPrincipal,
+    grant: &rss_mdm_authorization_service::Snapshot,
+    locator: &rss_mdm_audit_integration::operation::OperationLocator,
+) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>> {
+    if locator.owner != rss_mdm_audit_integration::operation::OperationOwner::EnrollmentInvocation
+        || locator.product != p.profile()
+    {
+        return Err(Error::Malformed.into());
+    }
+    let actor = locator.actor.as_deref().ok_or(Error::Malformed)?;
+    let device = locator.device.as_deref().ok_or(Error::Malformed)?;
+    let registration = locator.registration.ok_or(Error::Malformed)?;
+    let generation = locator.generation.ok_or(Error::Malformed)?;
+    grant.require(p, Permission::OperationRead, Some(device))?;
+    let raw: Option<Value> = sqlx::query_scalar(
+        crate::storage_profile::sql(p.profile()).enrollment_tasks_diagnostic_receipt,
+    )
+    .bind(p.tenant_id())
+    .bind(actor)
+    .bind(locator.operation_id)
+    .bind(device)
+    .bind(registration)
+    .bind(generation)
+    .fetch_optional(c)
+    .await?;
+    let Some(raw) = raw else { return Ok(None) };
+    let response: wire::SelfServiceAccepted = stored(serde_json::from_value(raw))?;
+    if response.request_id != locator.operation_id {
+        return Err(Error::Malformed.into());
+    }
+    let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(locator.operation_id);
+    value.object = Some(device.into());
+    value.accepted = Some(true);
+    value.revision = Some(i64::try_from(response.policy_revision).map_err(|_| Error::Malformed)?);
+    value.executions.push(response.run_id);
+    p.check_live()?;
+    Ok(Some(value))
 }

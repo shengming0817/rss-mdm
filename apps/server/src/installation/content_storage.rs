@@ -90,14 +90,14 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
             )
             .await
             .map_err(|_| Error::Storage)?;
-            let audit = RequestAudit::new(
+            let audit = RequestAudit::new(rss_mdm_audit_integration::Origin::Background,
                 rss_mdm_audit_integration::StorageProfile::Mdm,
                 tenant.to_string(),
                 "storage_migration_commit",
                 AuditIntent::Management,
             );
             audit.identify_service("content-storage-maintenance");
-            audit.operation(
+            audit.owned_operation(rss_mdm_audit_integration::operation::OperationOwner::StorageConnection,
                 input.operation_id,
                 "storage_migration_commit",
                 AuditIntent::Management,
@@ -121,7 +121,7 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
                                 .await?;
                             if !replayed {
                                 let fact = Fact::business(
-                                    audit,
+                                    audit, rss_mdm_audit_integration::operation::OperationOwner::StorageConnection,
                                     &format!("storage-migration-commit:{operation}"),
                                     200,
                                     "success",

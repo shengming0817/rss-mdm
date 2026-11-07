@@ -135,7 +135,8 @@ pub async fn save<C: ManagementContentPort>(
     if input.operation_id.is_nil() || input.package_id.is_nil() {
         return Err(Error::Malformed);
     }
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwareCatalog,
         input.operation_id,
         "software_installer_save",
         rss_mdm_audit_integration::AuditIntent::Management,

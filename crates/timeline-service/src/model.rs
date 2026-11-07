@@ -45,6 +45,10 @@ pub struct Query {
     pub target_type: Option<String>,
     pub device: Option<String>,
     pub operation_id: Option<Uuid>,
+    pub request_id: Option<Uuid>,
+    pub registration_id: Option<Uuid>,
+    pub generation: Option<i64>,
+    pub owner: Option<rss_mdm_audit_integration::operation::OperationOwner>,
     pub actor: Option<String>,
     pub action: Option<String>,
     pub outcome: Option<String>,
@@ -63,6 +67,10 @@ pub static AUDIT: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema 
         "targetType",
         "device",
         "operationId",
+        "requestId",
+        "registrationId",
+        "generation",
+        "owner",
         "actor",
         "action",
         "outcome",
@@ -79,12 +87,24 @@ pub static DEVICE_TIMELINE: rss_mdm_query::window::Schema = rss_mdm_query::windo
         "targetId",
         "targetType",
         "operationId",
+        "requestId",
+        "registrationId",
+        "generation",
+        "owner",
         "actor",
         "action",
         "outcome",
         "from",
         "until",
     ],
+};
+/// Diagnostics shares the exact Audit window algorithm and filters, with its own HTTP owner.
+pub static OPERATION_DIAGNOSTICS: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "operation_diagnostics",
+    default_limit: AUDIT.default_limit,
+    max_limit: AUDIT.max_limit,
+    order: AUDIT.order,
+    context: AUDIT.context,
 };
 impl Query {
     pub fn parse(raw: &str, device: bool) -> Result<Self, Error> {
@@ -93,7 +113,7 @@ impl Query {
             .map_err(|_| Error::Malformed)?;
         let mut value = serde_json::Map::new();
         for (key, v) in context {
-            let v = if matches!(key.as_str(), "from" | "until") {
+            let v = if matches!(key.as_str(), "from" | "until" | "generation") {
                 serde_json::Value::from(v.parse::<i64>().map_err(|_| Error::Malformed)?)
             } else {
                 serde_json::Value::String(v)
@@ -111,6 +131,9 @@ impl Query {
     pub fn validate(&self) -> Result<(), Error> {
         if !(1..=200).contains(&self.limit.unwrap_or(50))
             || self.operation_id.is_some_and(|v| v.is_nil())
+            || self.request_id.is_some_and(|v| v.is_nil())
+            || self.registration_id.is_some_and(|v| v.is_nil())
+            || self.generation.is_some_and(|v| v < 1)
             || self.from.is_some_and(|v| v < 0)
             || self.until.is_some_and(|v| v < 0)
             || self.from.zip(self.until).is_some_and(|(a, b)| a >= b)
@@ -148,6 +171,8 @@ pub(crate) fn identifier(v: &str) -> bool {
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactView {
+    /// Null means the historical source does not prove whether this was an HTTP request.
+    pub origin: Option<rss_mdm_audit_integration::Origin>,
     pub source: String,
     pub event_id: String,
     pub position: u64,
@@ -169,6 +194,7 @@ pub struct FactView {
     pub execution_state: Option<String>,
     pub effect: String,
     pub request_write_outcome: Option<String>,
+    pub request_replayed: bool,
     pub supported: bool,
 }
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize)]
@@ -181,6 +207,23 @@ pub struct Coverage {
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     pub items: Vec<FactView>,
+    pub next_cursor: Option<String>,
+    pub coverage: Coverage,
+}
+
+/// The product index stores explicit producer coordinates with the safe audit view.
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiagnosticFact {
+    pub fact: FactView,
+    pub operation: Option<rss_mdm_audit_integration::operation::OperationLocator>,
+    /// A declaration on an attempted HTTP write alone does not confirm a stored operation.
+    pub operation_confirmed: bool,
+}
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticPage {
+    pub items: Vec<DiagnosticFact>,
     pub next_cursor: Option<String>,
     pub coverage: Coverage,
 }

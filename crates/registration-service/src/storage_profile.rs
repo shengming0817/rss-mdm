@@ -270,6 +270,7 @@ pub(crate) struct Statements {
     pub enrollment_tasks_storage_active_count_on_1: &'static str,
     pub enrollment_tasks_storage_owned_ids_on_1: &'static str,
     pub enrollment_tasks_storage_replay_1: &'static str,
+    pub enrollment_tasks_diagnostic_receipt: &'static str,
     pub enrollment_tasks_storage_receipt_1: &'static str,
     pub enrollment_tasks_storage_association_on_1: &'static str,
     pub enrollment_tasks_self_service_self_service_status_in_1: &'static str,
@@ -365,6 +366,9 @@ CREATE TABLE "###, $access_schema, r###"registration_operations (
     operation_id uuid NOT NULL,
     digest text NOT NULL,
     result text NOT NULL,
+    action text NOT NULL CHECK(length(action) BETWEEN 1 AND 128),
+    device text,
+    self_enrollment boolean NOT NULL,
     CONSTRAINT operations_digest_check CHECK ((length(digest) = 64)),
     CONSTRAINT operations_result_check CHECK ((octet_length(result) <= 65536))
 );
@@ -866,8 +870,8 @@ COMMIT;
                 lifecycle_authorize_reenrollment_in_3: concat!("UPDATE ", $access_schema, "requests r SET state='cancelled' FROM ", $access_schema, "grants g WHERE(r.tenant_id,r.grant_id)=(g.tenant_id,g.id) AND g.tenant_id=$1::uuid AND g.device=$2 AND r.state='pending'"),
                 lifecycle_authorize_reenrollment_in_4: concat!("UPDATE ", $access_schema, "certificate_grants SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2 AND state<>'revoked'"),
                 lifecycle_authorize_reenrollment_in_5: concat!("UPDATE ", $access_schema, "devices SET retirement=NULL WHERE tenant_id=$1::uuid AND id=$2"),
-                operations_read_1: concat!("SELECT digest,result,instance FROM ", $access_schema, "registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid"),
-                operations_save_result_1: concat!("INSERT INTO ", $access_schema, "registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6,$7)"),
+                operations_read_1: concat!("SELECT digest,result,instance,action,device,self_enrollment FROM ", $access_schema, "registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid"),
+                operations_save_result_1: concat!("INSERT INTO ", $access_schema, "registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery,action,device,self_enrollment) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6,$7,$8,$9,$10)"),
                 enrollment_agent_policy_create_in_1: concat!("SELECT l.*,g.device,r.state,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.source FROM ", $access_schema, "agent_native_enrollments l JOIN ", $access_schema, "requests r ON(r.tenant_id,r.id)=(l.tenant_id,l.request) JOIN ", $access_schema, "grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE l.tenant_id=$1::uuid AND l.task=$2"),
                 enrollment_agent_policy_create_in_2: concat!("INSERT INTO ", $access_schema, "grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) VALUES($1::uuid,$2,$3,$4,$5,'enrollment','consumed',clock_timestamp(),to_timestamp($6))"),
                 enrollment_agent_policy_create_in_3: concat!("INSERT INTO ", $access_schema, "requests(tenant_id,id,grant_id,state,source,expected_generation,password_digest,password_version,expires_at,issuance_operation,windows_profile,self_service,authority_kind) VALUES($1::uuid,$2,$3,'pending',$4,0,$5,1,to_timestamp($6),$7,$8,false,'agent_policy')"),
@@ -1127,7 +1131,7 @@ SELECT * FROM "###, $access_schema, r###"certificate_issuances WHERE tenant_id=$
                 agent_current_user_bindings_on_1: concat!("SELECT u.device,u.revision,u.session_reference,u.confirmed_at,(SELECT decode(k.locator,'hex') FROM ", $access_schema, "registrations r JOIN ", $access_schema, "credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN ", $access_schema, "certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE r.tenant_id=u.tenant_id AND r.id=u.registration AND r.device=u.device AND r.generation=u.generation AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND k.state='active' AND i.not_before<=extract(epoch FROM statement_timestamp()) AND i.not_after>extract(epoch FROM statement_timestamp())) AS fingerprint FROM ", $access_schema, "current_users u WHERE u.tenant_id=$1::uuid AND u.device=ANY($2)"),
                 agent_current_user_change_current_user_1: concat!("SELECT digest,result,instance FROM ", $access_schema, "registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3"),
                 agent_current_user_change_current_user_2: concat!("INSERT INTO ", $access_schema, "current_users(tenant_id,device,revision,registration,generation,session_reference,confirmed_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=EXCLUDED.revision,registration=EXCLUDED.registration,generation=EXCLUDED.generation,session_reference=EXCLUDED.session_reference,confirmed_at=EXCLUDED.confirmed_at"),
-                agent_current_user_change_current_user_3: concat!("INSERT INTO ", $access_schema, "registration_operations(tenant_id,actor,instance,operation_id,digest,result) VALUES($1::uuid,$2,$3,$4,$5,$6)"),
+                agent_current_user_change_current_user_3: concat!("INSERT INTO ", $access_schema, "registration_operations(tenant_id,actor,instance,operation_id,digest,result,action,device,self_enrollment) VALUES($1::uuid,$2,$3,$4,$5,$6,'agent_current_user_change',$7,true)"),
                 agent_queries_issuance_device_1: concat!("SELECT g.device FROM ", $access_schema, "certificate_issuances i JOIN ", $access_schema, "certificate_grants g ON(g.tenant_id,g.id)=(i.tenant_id,i.grant_id) WHERE i.tenant_id=$1::uuid AND i.id=$2"),
                 agent_queries_request_details_1: concat!("SELECT device FROM ", $access_schema, "certificate_grants WHERE tenant_id=$1::uuid AND id=$2"),
                 agent_queries_registration_recovery_operation_1: concat!("SELECT device FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=$2 AND channel='agent'"),
@@ -1357,7 +1361,8 @@ credential IS NOT NULL
                 enrollment_tasks_storage_active_count_on_1: concat!("SELECT count(*) FROM ", $mdm_registration_tasks_runs, " WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$3"),
                 enrollment_tasks_storage_owned_ids_on_1: concat!("SELECT id FROM ", $mdm_registration_tasks_runs, " WHERE tenant_id=$1::uuid AND id=ANY($2)"),
                 enrollment_tasks_storage_replay_1: concat!("SELECT fingerprint,response FROM ", $mdm_registration_tasks_receipts, " WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3"),
-                enrollment_tasks_storage_receipt_1: concat!("INSERT INTO ", $mdm_registration_tasks_receipts, "(tenant_id,actor,id,fingerprint,response) VALUES($1::uuid,$2,$3,$4,$5)"),
+                enrollment_tasks_diagnostic_receipt: concat!("SELECT response FROM ", $mdm_registration_tasks_receipts, " WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND device=$4 AND registration=$5 AND generation=$6"),
+                enrollment_tasks_storage_receipt_1: concat!("INSERT INTO ", $mdm_registration_tasks_receipts, "(tenant_id,actor,id,fingerprint,response,device,registration,generation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)"),
                 enrollment_tasks_storage_association_on_1: concat!("SELECT device,NULL::uuid FROM ", $mdm_registration_tasks_runs, " WHERE tenant_id=$1::uuid AND id=$2"),
                 enrollment_tasks_self_service_self_service_status_in_1: concat!("SELECT response FROM ", $mdm_registration_tasks_receipts, " WHERE tenant_id=$1::uuid AND actor=ANY($2) AND id=$3 ORDER BY array_position($2,actor) LIMIT 1"),
                 enrollment_tasks_self_service_advance_waiting_in_1: concat!("UPDATE ", $mdm_registration_tasks_runs, " SET invocation=$3,source_objects=$4 WHERE tenant_id=$1::uuid AND id=$2"),
@@ -1697,6 +1702,9 @@ CREATE POLICY tenant ON "###, $mdm_registration_tasks_runs, r###"
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE "###, $mdm_registration_tasks_receipts, r###" (
+    device text NOT NULL,
+    registration uuid NOT NULL,
+    generation bigint NOT NULL CHECK(generation > 0),
     tenant_id uuid NOT NULL,
     actor text NOT NULL,
     id uuid NOT NULL,

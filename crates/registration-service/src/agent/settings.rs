@@ -156,7 +156,8 @@ impl Service {
         p.manage(Permission::AgentEnrollmentWrite)?;
         version(wire::API_VERSION, input.operation_id)?;
         input.values.validate()?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "agent_settings_update",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -207,6 +208,7 @@ impl Service {
                     &op,
                     &serde_json::to_string(&out).map_err(|_| Error::Corrupt)?,
                     a,
+                    false,
                 )
                 .await?;
                 Ok(Change {

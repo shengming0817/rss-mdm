@@ -88,6 +88,7 @@ pub(crate) async fn native_fact_in(
     );
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
+        rss_mdm_audit_integration::operation::OperationOwner::Installation,
         &format!("registration-native:{}:receipt:{version}", op.id),
         200,
         "success",

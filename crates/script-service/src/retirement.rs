@@ -10,6 +10,7 @@ pub async fn retire_in(
     registration: Uuid,
 ) -> Result<()> {
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_owned(),
         "credential_revoke",
@@ -45,6 +46,7 @@ pub async fn retire_in(
             audit.target(&id.to_string());
             facts.push(Fact::business(
                 &audit,
+                rss_mdm_audit_integration::operation::OperationOwner::Script,
                 &format!("registration-retirement:{registration}:task:{id}"),
                 200,
                 "success",

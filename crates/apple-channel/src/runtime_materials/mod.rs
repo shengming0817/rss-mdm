@@ -226,14 +226,44 @@ async fn operation(
     Extension(auth): Extension<RequestAuth>,
     Path(operation): Path<Uuid>,
 ) -> Result<Json<Receipt>, Error> {
-    let p = proof(&app, &auth, false)?;
+    operation_receipt(&app, &auth.proof, operation)
+        .await
+        .map(Json)
+}
+/// Original public material receipt under current configuration authority.
+pub async fn operation_receipt(
+    app: &HttpState,
+    p: &AuthorizedPrincipal,
+    operation: Uuid,
+) -> Result<Receipt, Error> {
+    if p.tenant_id() != app.identity.tenant().to_string() {
+        return Err(Error::Forbidden);
+    }
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
+    rss_mdm_authorization_service::lock_shared_on(
+        p.authority_profile(),
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Forbidden)?;
+    rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Forbidden)?
+    .require(p, Permission::RegistrationConfigurationRead, None)
+    .map_err(|_| Error::Forbidden)?;
     let value = storage::receipt(&mut tx, p.tenant_id(), operation)
         .await?
         .ok_or(Error::NotFound)?;
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
-    Ok(Json(value))
+    Ok(value)
 }
 async fn key(
     State(app): State<Arc<HttpState>>,
@@ -380,7 +410,8 @@ async fn write(
         return Err(Error::Malformed);
     }
     p.bind_audit(audit)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::AppleRuntimeMaterial,
         id,
         "apple_runtime_material",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -448,7 +479,7 @@ async fn write(
             storage::save(c,p.tenant_id(),*id,app.protection.fingerprint_id(),fingerprint,&value).await?;
             p.check_live()?;Ok::<_,Error>((value,false))
         })).await?;
-        let fact=Fact::business(audit, &format!("apple-runtime:{id}"), 200, "success", None).map_err(|_|Error::Malformed)?;
+        let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::AppleRuntimeMaterial, &format!("apple-runtime:{id}"), 200, "success", None).map_err(|_|Error::Malformed)?;
         (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await })?;
         if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
         audit.mark_commit_started();Ok(value)

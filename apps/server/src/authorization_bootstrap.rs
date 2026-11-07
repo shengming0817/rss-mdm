@@ -60,6 +60,7 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
     let deadline =
         Deadline::from_timeout(&clock, Duration::from_secs(30)).expect("bounded command budget");
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         config.profile,
         config.user.tenant_id.clone(),
         "authorization_initialize",
@@ -283,6 +284,7 @@ mod tests {
     #[tokio::test]
     async fn pending_initialization_projects_request_deadline() {
         let audit = super::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             rss_mdm_audit_integration::StorageProfile::Mdm,
             uuid::Uuid::new_v4().to_string(),
             "authorization_initialize",

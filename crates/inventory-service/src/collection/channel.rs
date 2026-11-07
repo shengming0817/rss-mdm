@@ -150,6 +150,7 @@ pub async fn finish_in(
         .map_err(db)?;
     crate::wake::notify(c).await.map_err(db)?;
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         profile,
         p.tenant().to_string(),
         "collection_finish",
@@ -157,7 +158,8 @@ pub async fn finish_in(
     );
     audit.identify_device(p.registration());
     audit.registration(p.registration());
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Collection,
         id,
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -165,6 +167,7 @@ pub async fn finish_in(
     audit.target_device(p.device());
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
+        rss_mdm_audit_integration::operation::OperationOwner::Collection,
         &format!("channel-collection:{id}"),
         200,
         "success",
@@ -210,12 +213,14 @@ pub async fn abandon_in(
         return Ok(None);
     };
     let audit = rss_mdm_audit_integration::RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         profile,
         tenant.into(),
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Collection,
         id,
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -226,6 +231,7 @@ pub async fn abandon_in(
 
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
+        rss_mdm_audit_integration::operation::OperationOwner::Collection,
         &format!("channel-collection:{id}"),
         200,
         "failed",

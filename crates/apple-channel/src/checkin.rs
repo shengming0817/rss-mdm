@@ -368,7 +368,7 @@ async fn checkin_on(
             )
         }
     };
-    let fact = rss_mdm_audit_integration::Fact::business(audit, &key, 200, "success", None)
+    let fact = rss_mdm_audit_integration::Fact::observation(audit, &key, 200, "success", None)
         .and_then(|fact| fact.with_details(details))
         .map_err(Error::from)?;
     facts.push(fact);

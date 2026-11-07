@@ -13,43 +13,50 @@ type Runtime<'a> = (
 pub fn router<
     D0: rss_mdm_http_contract::module::Declaration,
     D1: rss_mdm_http_contract::module::Declaration,
+    D2: rss_mdm_http_contract::module::Declaration,
 >(
     authentication: Arc<AuthenticationState>,
     registry: Router<(), D0>,
     platform_settings: Router<(), D1>,
+    diagnostics: Router<(), D2>,
     policy: Arc<Policy>,
     envelope: crate::boundary::Envelope,
     cursor: rss_mdm_query::cursor::CursorCodec,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1>> {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1, D2>> {
     let routes = assemble(
         Some((&authentication, &policy, &envelope, &cursor)),
         registry,
         platform_settings,
+        diagnostics,
     );
     crate::boundary::wrap(routes, envelope)
 }
 pub fn contract_routes<
     D0: rss_mdm_http_contract::module::Declaration,
     D1: rss_mdm_http_contract::module::Declaration,
+    D2: rss_mdm_http_contract::module::Declaration,
 >(
     registry: Router<(), D0>,
     platform_settings: Router<(), D1>,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1>> {
-    assemble(None, registry, platform_settings)
+    diagnostics: Router<(), D2>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1, D2>> {
+    assemble(None, registry, platform_settings, diagnostics)
 }
 fn assemble<
     D0: rss_mdm_http_contract::module::Declaration,
     D1: rss_mdm_http_contract::module::Declaration,
+    D2: rss_mdm_http_contract::module::Declaration,
 >(
     runtime: Option<Runtime<'_>>,
     registry: Router<(), D0>,
     platform_settings: Router<(), D1>,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1>> {
+    diagnostics: Router<(), D2>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1, D2>> {
     let context = runtime.as_ref();
     let routes = {
         rss_mdm_http_contract::route_module! { struct AssembleModule2 for [Browser] { api_v1_tenant_administration at "/api/v1/tenant-administration" } }
         AssembleModule2 { api_v1_tenant_administration: {
- rss_mdm_http_contract::route_module! { struct AssembleModule101 for [Browser] { base, api_access_register_network, registry [optional], platform_settings } }
+ rss_mdm_http_contract::route_module! { struct AssembleModule101 for [Browser] { base, api_access_register_network, registry [optional], platform_settings, diagnostics } }
  AssembleModule101 { base: http::rule_routes()
             .bind_with(context, |(_, _, envelope, cursor)| {
                 Arc::new(HttpState {
@@ -68,7 +75,7 @@ api_access_register_network: crate::api_access::register_network().bind_with(
                 },
             ),
 registry,
-platform_settings }.assemble()
+platform_settings, diagnostics }.assemble()
 } }.assemble()
     };
     let routes = http::mount_protection(

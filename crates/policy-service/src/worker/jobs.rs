@@ -124,6 +124,7 @@ pub async fn finish_job_in(
     }
     if let Some((target, kind)) = target {
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             profile,
             tx.tenant_id().to_string(),
             action,
@@ -139,7 +140,8 @@ pub async fn finish_job_in(
             }
             _ => audit.target(&target),
         }
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::PolicyWork,
             id,
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -147,6 +149,7 @@ pub async fn finish_job_in(
 
         let fact = rss_mdm_audit_integration::Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::PolicyWork,
             &format!("automation:{id}:terminal"),
             200,
             outcome,

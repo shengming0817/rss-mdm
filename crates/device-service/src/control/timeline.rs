@@ -90,7 +90,8 @@ pub(crate) async fn native_fact_in(
         } => ActivityEffect::Unknown,
     });
     let context = audit.transaction_copy();
-    context.operation(
+    context.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
         op.id,
         "command_reconcile",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -99,6 +100,7 @@ pub(crate) async fn native_fact_in(
     context.registration(op.registration);
     let fact = Fact::business(
         &context,
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
         &format!("command:{}:receipt:{version}", op.id),
         200,
         "success",

@@ -129,7 +129,7 @@ pub(super) async fn enroll(
                     )
                     .await?;
                     let fact = rss_mdm_audit_integration::Fact::business(
-                        audit,
+                        audit, rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,
                         &format!("apple-account-flow:{flow}"),
                         401,
                         "success",
@@ -206,7 +206,7 @@ async fn profile(
                         )
                         .await?;
                     let fact = rss_mdm_audit_integration::Fact::business(
-                        audit,
+                        audit, rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,
                         &format!(
                             "apple-account-profile:{}:{}",
                             admission.coordinates().id,

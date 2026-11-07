@@ -459,6 +459,7 @@ pub(crate) async fn reconcile_in(
         if binding.revision != previous_revision {
             let fact = rss_mdm_audit_integration::Fact::business(
                 audit,
+                rss_mdm_audit_integration::operation::OperationOwner::DeviceAccessTask,
                 &format!("device-access:{id}:revision:{}", binding.revision),
                 200,
                 "success",

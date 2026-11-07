@@ -480,14 +480,29 @@ impl AgentTasks {
                             .replay_self_service_in(tx, p, actor, input)
                             .await
                             .map_err(registration_fault)?;
-                        let mut receipts = [script, software, enrollment].into_iter().flatten();
-                        if let Some(receipt) = receipts.next() {
+                        use rss_mdm_audit_integration::operation::OperationOwner as O;
+                        let mut receipts = [
+                            (O::ScriptInvocation, script),
+                            (O::SoftwareInvocation, software),
+                            (O::EnrollmentInvocation, enrollment),
+                        ]
+                        .into_iter()
+                        .filter_map(|(owner, value)| value.map(|value| (owner, value)));
+                        if let Some((owner, receipt)) = receipts.next() {
                             if receipts.next().is_some() {
                                 return Err(Error::Unavailable(Failure::Business));
                             }
                             if let Some(proof) = proof {
                                 proof.check_live()?;
                             }
+                            audit.owned_operation(
+                                owner,
+                                input.operation_id,
+                                "self_service_invoke",
+                                rss_mdm_audit_integration::AuditIntent::Management,
+                            );
+                            audit.receipt_actor(actor);
+                            audit.registration_at(p.registration(), p.generation());
                             audit.management_result(
                                 rss_mdm_audit_integration::ManagementResult::Replayed,
                             );

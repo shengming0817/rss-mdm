@@ -198,7 +198,8 @@ async fn change(
     proof.manage(Permission::RegistrationConfigurationWrite)?;
     proof.bind_audit(audit)?;
     let operation = operation(headers)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,
         operation,
         "apple_account_configuration",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -222,7 +223,7 @@ async fn change(
                         )
                         .await?;
                     let fact = rss_mdm_audit_integration::Fact::business(
-                        audit,
+                        audit, rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,
                         &format!("apple-account-configuration:{id}:{operation}"),
                         200,
                         "success",

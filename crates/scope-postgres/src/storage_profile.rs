@@ -290,6 +290,7 @@ CREATE TABLE "###, $operations, r###" (
     fingerprint bytea NOT NULL,
     response jsonb NOT NULL,
     actor text NOT NULL,
+    instance uuid NOT NULL,
     CONSTRAINT operations_actor_check CHECK ((length(actor) > 0)),
     CONSTRAINT operations_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
     CONSTRAINT operations_response_check CHECK ((octet_length((response)::text) <= 8388608))
@@ -783,8 +784,8 @@ SELECT EXISTS(SELECT FROM pg_class c WHERE c.oid='"###, $group_changes, r###"'::
                 object_manifest: concat!(r###"{"tables":[""###, $asset_dispatch, r###"",""###, $group_changes, r###"",""###, $schema, r###"scope_channel_results",""###, $schema, r###"scope_projection_runs",""###, $schema, r###"scope_results",""###, $schema, r###"scope_runs",""###, $schema, r###"scope_source_members",""###, $schema, r###"scope_sources",""###, $schema, r###"scope_versions",""###, $schema, r###"scopes",""###, $tasks, r###"",""###, $operations, r###""],"functions":[""###, $schema, r###"channel_admission",""###, $schema, r###"guard_scope_channel_result",""###, $schema, r###"lock_reference_target",""###, $schema, r###"scope_admission",""###, $schema, r###"scope_state"],"views":[]}"###),
                 access_contract: concat!(r###"{"tables":[],"functions":[{"name":""###, $schema, r###"scope_admission","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"scope_state","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"channel_admission","search_path":"search_path=pg_catalog"}],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
                 operation_lock: concat!("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,'", $operations, "',$2::text,$3::text)::text,2889))"),
-                operation_replay: concat!("SELECT fingerprint,response FROM ", $operations, " WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3"),
-                operation_receipt: concat!("INSERT INTO ", $operations, "(tenant_id,actor,id,fingerprint,response) VALUES($1::uuid,$2,$3,$4,$5)"),
+                operation_replay: concat!("SELECT fingerprint,response,instance::text FROM ", $operations, " WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3"),
+                operation_receipt: concat!("INSERT INTO ", $operations, "(tenant_id,actor,id,fingerprint,response,instance) VALUES($1::uuid,$2,$3,$4,$5,$6::uuid)"),
                 queue_counts: concat!(r###"SELECT
             (SELECT count(*) FROM (SELECT 1 FROM "###, $tasks, " t WHERE t.tenant_id=$1::uuid AND NOT completed AND NOT EXISTS(SELECT 1 FROM ", $schema, r###"scope_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.id)) LIMIT 1001) q),
             (SELECT count(*) FROM (SELECT 1 FROM "###, $tasks, " t WHERE t.tenant_id=$1::uuid AND NOT completed AND EXISTS(SELECT 1 FROM ", $schema, r###"scope_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.id)) LIMIT 1001) q),

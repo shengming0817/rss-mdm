@@ -508,6 +508,22 @@ impl Archive {
     pub async fn operation(&self, p: &AuthorizedPrincipal, id: Uuid) -> Result<Receipt, Error> {
         p.manage(P::CertificateArchiveRead)?;
         let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
+        rss_mdm_authorization_service::lock_shared_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?;
+        rss_mdm_authorization_service::snapshot_on(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await?
+        .require(p, P::CertificateArchiveRead, None)
+        .map_err(rss_mdm_authorization_service::Error::from)?;
         let result = store::operation(&mut tx, p, id)
             .await?
             .ok_or(Error::NotFound)?

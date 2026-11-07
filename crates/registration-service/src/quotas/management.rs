@@ -22,7 +22,8 @@ impl Quotas {
             return Err(Error::Malformed);
         }
         p.bind_audit(audit)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             key,
             "registration_quota_change",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -97,6 +98,7 @@ impl Quotas {
                                             &serde_json::to_string(&value)
                                                 .map_err(|_| Error::Corrupt)?,
                                             audit,
+                                            false,
                                         )
                                         .await?;
                                         Ok((value, false))
@@ -106,6 +108,7 @@ impl Quotas {
                             .await?;
                         let fact = Fact::business(
                             audit,
+                            rss_mdm_audit_integration::operation::OperationOwner::Registration,
                             &format!("registration-quota:{}:{}", p.principal_id(), op.key),
                             200,
                             "success",

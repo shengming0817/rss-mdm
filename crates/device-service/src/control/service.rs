@@ -200,7 +200,7 @@ impl Service {
             let command=service.transactions.required_command(tx,&current).await?;
             let mut activity=crate::control::timeline::native_activity(&current,command.status(),rss_mdm_audit_integration::activity::ActivityPhase::Changed);
             activity.links.request=Some(change.request_id);
-            let fact = Fact::business(audit, &event_key, 200, "success", None)?.with_activity(&activity)?;
+            let fact = Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::DeviceControlRequest, &event_key, 200, "success", None)?.with_activity(&activity)?;
             service.transactions.audit_store.append_in(tx, &fact).await?;receipt(tx,change.request_id,id,fingerprint,&result,audit).await?;proof.check_live()?;Ok(result)
         })).await
     }
@@ -219,7 +219,12 @@ pub(crate) async fn replay(
         })
         .await?;
     match old {
-        Some((digest, value)) if digest == fingerprint => Ok(Some(value)),
+        Some(value)
+            if value.fingerprint == fingerprint
+                && value.instance.map(|v| v.to_string()) == audit.snapshot().instance =>
+        {
+            Ok(Some(value.response))
+        }
         Some(_) => Err(Error::Conflict.into()),
         None => Ok(None),
     }
@@ -235,16 +240,17 @@ async fn receipt<T: serde::Serialize + ?Sized>(
     let tenant = tx.tenant_id().to_string();
     let response = stored(serde_json::to_string(value))?;
     let actor = audit.snapshot().actor.ok_or(Error::Malformed)?;
+    let instance = audit.snapshot().instance;
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query(
-                "INSERT INTO mdm_devices.control_requests(tenant_id,id,operation,fingerprint,response,actor) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb,$6)",
+                "INSERT INTO mdm_devices.control_requests(tenant_id,id,operation,fingerprint,response,actor,instance) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::jsonb,$6,$7::uuid)",
             )
             .bind(tenant)
             .bind(id.to_string())
             .bind(operation.to_string())
             .bind(fingerprint)
-            .bind(response).bind(actor)
+            .bind(response).bind(actor).bind(instance)
             .execute(c)
             .await?;
             Ok(())
@@ -344,6 +350,7 @@ async fn created(
     };
     let fact = Fact::business(
         audit,
+        rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
         &format!(
             "command:{}:{id}:accept",
             audit.snapshot().actor.ok_or(Error::Malformed)?

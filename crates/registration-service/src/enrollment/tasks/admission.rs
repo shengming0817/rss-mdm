@@ -159,6 +159,7 @@ pub async fn accept_for_device(
         tx,
         policy,
         RunInput {
+            request: None,
             origin: match trigger {
                 TriggerInput::Custom { origin, .. } => origin,
                 _ => ActivityOrigin::Policy,
@@ -175,6 +176,7 @@ pub async fn accept_for_device(
     .await
 }
 pub struct RunInput<'a> {
+    pub request: Option<&'a rss_mdm_audit_integration::RequestAudit>,
     pub origin: ActivityOrigin,
     pub invocation: Option<Invocation>,
     pub target: &'a Target,
@@ -288,18 +290,27 @@ pub async fn queue_run_in(
     .await?;
     crate::enrollment::tasks::wake::run_in(profile, &service.reconcile_messaging, tx, id).await?;
     tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'command_relay')").execute(c).await?;Ok(())})).await?;
-    let audit = RequestAudit::new(
-        profile,
-        tx.tenant_id().to_string(),
-        "enrollment_accept",
-        rss_mdm_audit_integration::AuditIntent::Management,
-    );
-    audit.operation(
+    let audit = input
+        .request
+        .map(|a| a.fact_copy("enrollment_accept"))
+        .unwrap_or_else(|| {
+            RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Background,
+                profile,
+                tx.tenant_id().to_string(),
+                "enrollment_accept",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            )
+        });
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
         id,
         "enrollment_accept",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.identify_service("enrollment-admission");
+    if input.request.is_none() {
+        audit.identify_service("enrollment-admission");
+    }
     audit.plan(version);
     audit.target(&id.to_string());
     audit.registration(input.target.registration);
@@ -307,6 +318,7 @@ pub async fn queue_run_in(
         let run = storage::read_run(profile, tx, id).await?;
         let fact = Fact::business(
             &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
             &format!("enrollment:{id}:accept"),
             202,
             "success",

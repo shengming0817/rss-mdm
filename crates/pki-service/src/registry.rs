@@ -263,13 +263,15 @@ impl Registry {
                     .to_vec();
             let id = Uuid::from_bytes(hash[..16].try_into().map_err(|_| Error::Storage)?);
             let a = RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Background,
                 self.profile(),
                 tenant.to_string(),
                 "device_pki_admit",
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
             a.identify_service("service:device-pki");
-            a.operation(
+            a.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Pki,
                 id,
                 "device_pki_admit",
                 rss_mdm_audit_integration::AuditIntent::Management,
@@ -647,7 +649,8 @@ impl Registry {
         if !found {
             return Ok(None);
         }
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Pki,
             id,
             "device_pki_rotation",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -701,7 +704,8 @@ impl Registry {
         let (id, expected) = request;
         let (trust, state, added) = change;
         p.bind_audit(a).map_err(|_| Error::Forbidden)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Pki,
             id,
             "device_pki_rotation",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -1125,5 +1129,156 @@ mod tests {
             );
             assert!(matches!(RotationState::parse(state), Err(Error::Storage)));
         }
+    }
+}
+
+impl Registry {
+    /// All original stages in the caller's exact operation namespace, without signing or recovery.
+    pub async fn operation_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+        author: &str,
+        instance: Option<Uuid>,
+    ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
+        if p.profile() != self.profile() {
+            return Err(Error::Forbidden);
+        }
+        // A service receipt has no Identity instance; interactive receipts require its exact UUID.
+        // These coordinates select evidence and never impersonate its author.
+        let instance = match (author, instance) {
+            ("service:device-pki", None) => String::new(),
+            (actor, Some(instance))
+                if !actor.is_empty() && !actor.starts_with("service:") && !instance.is_nil() =>
+            {
+                instance.to_string()
+            }
+            _ => return Err(Error::Request),
+        };
+        let mut tx = self.diagnostic_transaction(p).await?;
+        let rows = sqlx::query(crate::storage_profile::sql(self.profile()).operation_diagnostics)
+            .bind(p.tenant_id())
+            .bind(author)
+            .bind(instance)
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+        if rows.len() > 16 {
+            return Err(Error::Storage);
+        }
+        let mut summary = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
+        for row in rows {
+            let phase: String = row.try_get("phase").map_err(|_| Error::Storage)?;
+            if !matches!(
+                phase.as_str(),
+                "distributing"
+                    | "activated"
+                    | "retired"
+                    | "signing_recover"
+                    | "crl_publish"
+                    | "admit"
+            ) {
+                return Err(Error::Storage);
+            }
+            let bytes: Vec<u8> = row.try_get("receipt").map_err(|_| Error::Storage)?;
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| Error::Storage)?;
+            summary
+                .stages
+                .push(rss_mdm_audit_integration::operation::ReceiptStage {
+                    phase,
+                    revision: value["revision"].as_i64(),
+                    state: value["state"].as_str().map(str::to_owned),
+                });
+        }
+        p.check_live().map_err(|_| Error::Forbidden)?;
+        tx.rollback().await.map_err(|_| Error::Storage)?;
+        Ok((!summary.stages.is_empty()).then_some(summary))
+    }
+}
+
+/// Safe execution state of a retained signing or revocation attempt.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationProgress {
+    pub state: String,
+}
+impl Registry {
+    async fn diagnostic_transaction(
+        &self,
+        p: &AuthorizedPrincipal,
+    ) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, Error> {
+        if p.profile() != self.profile() {
+            return Err(Error::Forbidden);
+        }
+        p.require_all_devices(Permission::Credentials)
+            .map_err(|_| Error::Forbidden)?;
+        let mut tx = self.begin(p.tenant_id()).await?;
+        rss_mdm_authorization_service::lock_shared_on(
+            p.authority_profile(),
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await
+        .map_err(|_| Error::Storage)?;
+        rss_mdm_authorization_service::snapshot_on(
+            p.authority_profile(),
+            &mut tx,
+            p.tenant_id(),
+            p.instance_id(),
+        )
+        .await
+        .map_err(|_| Error::Storage)?
+        .require_all_devices(p, Permission::Credentials)
+        .map_err(|_| Error::Forbidden)?;
+
+        Ok(tx)
+    }
+    pub async fn task_receipt(
+        &self,
+        p: &AuthorizedPrincipal,
+        owner: rss_mdm_audit_integration::operation::OperationOwner,
+        id: Uuid,
+    ) -> Result<
+        Option<(
+            rss_mdm_audit_integration::operation::ReceiptSummary,
+            OperationProgress,
+        )>,
+        Error,
+    > {
+        use rss_mdm_audit_integration::operation::{OperationOwner as O, ReceiptSummary};
+        let mut tx = self.diagnostic_transaction(p).await?;
+        let sql = crate::storage_profile::sql(self.profile());
+        let query = match owner {
+            O::PkiSigning => sql.signing_diagnostics,
+            O::PkiRevocation => sql.revocation_diagnostics,
+            _ => return Err(Error::Request),
+        };
+        let row = sqlx::query(query)
+            .bind(p.tenant_id())
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+        let value = row
+            .map(|row| {
+                let mut result = ReceiptSummary::new(id);
+                result.accepted = Some(true);
+                if owner == O::PkiSigning {
+                    result.recorded_at = Some(row.try_get("created").map_err(|_| Error::Storage)?);
+                }
+                Ok((
+                    result,
+                    OperationProgress {
+                        state: row.try_get("state").map_err(|_| Error::Storage)?,
+                    },
+                ))
+            })
+            .transpose();
+        p.check_live().map_err(|_| Error::Forbidden)?;
+        tx.rollback().await.map_err(|_| Error::Storage)?;
+        value
     }
 }

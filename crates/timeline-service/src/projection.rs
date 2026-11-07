@@ -2,17 +2,20 @@
 use crate::{Error, FactView};
 use rss_audit_core::{AuditEventV1, Outcome};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
     let source = event.identity().source();
     let contract = source.contract();
     let digest = rss_mdm_audit_integration::Fact::schema_digest().map_err(|_| Error::Integrity)?;
-    let supported = matches!(source.source_id().as_str(), "mdm.business" | "mdm.request")
-        && contract.id().as_str() == "mdm.audit.fact"
-        && contract.version().major() == 1
-        && contract.schema_digest().as_str() == digest.as_str();
-    let payload: Value = if supported {
+    let product_envelope = matches!(
+        source.source_id().as_str(),
+        "mdm.business" | "mdm.request" | "da.business" | "da.request"
+    ) && contract.id().as_str() == "mdm.audit.fact"
+        && contract.version().major() == 1;
+    let supported = product_envelope && contract.schema_digest().as_str() == digest.as_str();
+    // Stable V1 envelope coordinates remain evidence even when a historical payload has no
+    // current operation locator. No event hash or current resource reconstructs missing links.
+    let payload: Value = if product_envelope {
         serde_json::from_slice(event.context().payload().as_bytes())
             .map_err(|_| Error::Integrity)?
     } else {
@@ -26,9 +29,21 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
         }
     };
     let action = event.facts().action().as_str();
-    let request = source.source_id().as_str() == "mdm.request";
+    let request = matches!(source.source_id().as_str(), "mdm.request" | "da.request");
+    let origin = if supported {
+        Some(
+            serde_json::from_value::<rss_mdm_audit_integration::Origin>(
+                payload.get("origin").cloned().ok_or(Error::Integrity)?,
+            )
+            .map_err(|_| Error::Integrity)?,
+        )
+    } else {
+        None
+    };
     let phase = if !supported {
         "unknown"
+    } else if request && origin == Some(rss_mdm_audit_integration::Origin::Background) {
+        "background_attempt"
     } else if request {
         "request"
     } else {
@@ -79,6 +94,7 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
         None
     };
     Ok(FactView {
+        origin,
         source: source.source_id().as_str().into(),
         event_id: event.identity().event_id().as_str().into(),
         position: 0,
@@ -133,6 +149,10 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
             .map(str::to_owned),
         effect: "unknown".into(),
         request_write_outcome: write,
+        request_replayed: supported
+            && request
+            && origin == Some(rss_mdm_audit_integration::Origin::Request)
+            && payload.get("result").and_then(Value::as_str) == Some("replay"),
         supported,
     })
 }
@@ -158,198 +178,40 @@ fn phase(action: &str) -> &'static str {
     }
 }
 
-/// Match the source owner's stable fact keys before interpreting an operation UUID.
-/// Unrecognized identities retain their source coordinates without a guessed association.
-pub(crate) fn execution_identity(
+/// Read only the current source-owned locator; event-key spelling is not a protocol.
+pub(crate) fn operation_locator(
     event: &AuditEventV1,
     view: &FactView,
-) -> Result<Option<crate::associations::Identity>, Error> {
-    use crate::associations::Identity;
+) -> Result<Option<rss_mdm_audit_integration::operation::OperationLocator>, Error> {
     if !view.supported {
         return Ok(None);
     }
-    let Some(id) = view.operation_id else {
-        return Ok(None);
-    };
-    if matches!(
-        view.action.as_str(),
-        "command_cancel" | "command_reauthorize"
-    ) {
-        return Ok(Some(Identity::ChangeRequest(id)));
+    let payload: Value = serde_json::from_slice(event.context().payload().as_bytes())
+        .map_err(|_| Error::Integrity)?;
+    let locator: Option<rss_mdm_audit_integration::operation::OperationLocator> =
+        serde_json::from_value(
+            payload
+                .get("operationLocator")
+                .cloned()
+                .unwrap_or(Value::Null),
+        )
+        .map_err(|_| Error::Integrity)?;
+    if let Some(locator) = &locator
+        && (event
+            .identity()
+            .source()
+            .source_id()
+            .as_str()
+            .starts_with("da.")
+            != (locator.product == rss_mdm_audit_integration::StorageProfile::Da)
+            || Some(locator.operation_id) != view.operation_id
+            || locator.operation_id.is_nil()
+            || !locator.owner.invocation()
+                && locator.actor.as_deref() != Some(view.actor.as_str())
+                && locator.actor.is_some()
+            || locator.instance.is_some() && locator.instance != view.instance_id)
+    {
+        return Err(Error::Integrity);
     }
-    if view.source != "mdm.business" {
-        return Ok(None);
-    }
-    let matches = |key: &str| view.event_id == format!("e-{:x}", Sha256::digest(key.as_bytes()));
-    let identity = match view.action.as_str() {
-        "command_accept" if matches(&format!("action:{id}:accept")) => {
-            Some(Identity::ActionRun(id))
-        }
-        "command_accept" if matches(&format!("command:{}:{id}:accept", view.actor)) => {
-            Some(Identity::Operation(id))
-        }
-        "command_dispatch" if matches(&format!("action:{id}:dispatch")) => {
-            Some(Identity::ActionRun(id))
-        }
-        "command_dispatch" if matches(&format!("command:{id}:dispatch")) => {
-            Some(Identity::Operation(id))
-        }
-        "command_reconcile" => {
-            let payload: Value = serde_json::from_slice(event.context().payload().as_bytes())
-                .map_err(|_| Error::Integrity)?;
-            if let Some(version) = payload.pointer("/details/version").and_then(Value::as_u64)
-                && matches(&format!("command:{id}:recover:{version}"))
-            {
-                Some(Identity::Operation(id))
-            } else {
-                use rss_mdm_task_state::RunState;
-                let states = payload.get("details").and_then(|d| {
-                    Some((
-                        serde_json::from_value::<RunState>(d.get("before")?.clone()).ok()?,
-                        serde_json::from_value::<RunState>(d.get("after")?.clone()).ok()?,
-                    ))
-                });
-                match states {
-                    Some(states)
-                        if matches(&format!(
-                            "action:{id}:recover:{:x}",
-                            Sha256::digest(
-                                serde_json::to_vec(&states).map_err(|_| Error::Integrity)?
-                            )
-                        )) =>
-                    {
-                        Some(Identity::ActionRun(id))
-                    }
-                    _ => None,
-                }
-            }
-        }
-        _ => None,
-    };
-    Ok(identity)
-}
-
-#[cfg(test)]
-mod identity_tests {
-    use super::*;
-    use crate::associations::Identity;
-    use rss_mdm_audit_integration::{Fact, RequestAudit};
-    const TENANT: &str = "11111111-1111-4111-8111-111111111111";
-    fn resolve(action: &'static str, key: &str, id: Uuid, details: Value) -> Option<Identity> {
-        let audit = RequestAudit::new(
-            rss_mdm_audit_integration::StorageProfile::Mdm,
-            TENANT.into(),
-            action,
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        audit.identify_service("fixture");
-        audit.operation(
-            id,
-            action,
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        let event = Fact::business(&audit, key, 200, "success", None)
-            .unwrap()
-            .with_details(details)
-            .unwrap()
-            .event(rss_contract::Timepoint::try_from(5i64).unwrap())
-            .unwrap();
-        let view = project(&event).unwrap();
-        let identity = execution_identity(&event, &view).unwrap();
-        audit.finalize(None);
-        identity
-    }
-    #[test]
-    fn same_uuid_resolves_only_in_its_producer_namespace() {
-        let id = Uuid::new_v4();
-        assert_eq!(phase("command_reauthorize"), "reauthorized");
-        for (action, key, expected) in [
-            (
-                "command_accept",
-                format!("command:fixture:{id}:accept"),
-                Identity::Operation(id),
-            ),
-            (
-                "command_accept",
-                format!("action:{id}:accept"),
-                Identity::ActionRun(id),
-            ),
-            (
-                "command_dispatch",
-                format!("command:{id}:dispatch"),
-                Identity::Operation(id),
-            ),
-            (
-                "command_dispatch",
-                format!("action:{id}:dispatch"),
-                Identity::ActionRun(id),
-            ),
-            (
-                "command_cancel",
-                "change".into(),
-                Identity::ChangeRequest(id),
-            ),
-            (
-                "command_reauthorize",
-                "change".into(),
-                Identity::ChangeRequest(id),
-            ),
-        ] {
-            assert_eq!(resolve(action, &key, id, Value::Null), Some(expected));
-        }
-        assert_eq!(
-            resolve("command_accept", "unrecognized", id, Value::Null),
-            None
-        );
-        assert_eq!(
-            resolve(
-                "command_reconcile",
-                &format!("command:{id}:recover:3"),
-                id,
-                serde_json::json!({"version":3})
-            ),
-            Some(Identity::Operation(id))
-        );
-    }
-    #[test]
-    fn action_recovery_retains_its_namespace_and_request_accept_does_not_guess() {
-        use rss_mdm_task_state::{Execution, RunState};
-        let id = Uuid::new_v4();
-        let before = RunState::new(100, 1).unwrap();
-        let mut after = before.clone();
-        after.execution = Execution::Running;
-        let key = format!(
-            "action:{id}:recover:{:x}",
-            Sha256::digest(serde_json::to_vec(&(&before, &after)).unwrap())
-        );
-        assert_eq!(
-            resolve(
-                "command_reconcile",
-                &key,
-                id,
-                serde_json::json!({"before":before,"after":after})
-            ),
-            Some(Identity::ActionRun(id))
-        );
-        let audit = RequestAudit::new(
-            rss_mdm_audit_integration::StorageProfile::Mdm,
-            TENANT.into(),
-            "command_accept",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        audit.operation(
-            id,
-            "command_accept",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        let event = Fact::request(&audit, 202, "success")
-            .unwrap()
-            .event(rss_contract::Timepoint::try_from(5i64).unwrap())
-            .unwrap();
-        assert_eq!(
-            execution_identity(&event, &project(&event).unwrap()).unwrap(),
-            None
-        );
-        audit.finalize(None);
-    }
+    Ok(locator)
 }

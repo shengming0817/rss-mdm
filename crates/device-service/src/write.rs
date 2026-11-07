@@ -65,7 +65,8 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         proof.bind_audit(audit)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceManagement,
             change.operation(),
             change.action(),
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -139,6 +140,7 @@ impl Associations {
         audit.target(&result.id.to_string());
         let fact = Fact::business(
             audit,
+            rss_mdm_audit_integration::operation::OperationOwner::DeviceManagement,
             &format!("device_association:{}", change.operation()),
             200,
             "success",

@@ -118,17 +118,11 @@ impl AssetService {
         if matches!(command, Command::Status { .. }) {
             return Ok(Response::Status {
                 task: id,
-                status: if state.failure.as_deref() == Some("cancelled") {
-                    QueryStatus::Cancelled
-                } else if state.failure.is_some() {
-                    QueryStatus::Failed
-                } else if state.completed {
-                    QueryStatus::Completed
-                } else if state.started {
-                    QueryStatus::Running
-                } else {
-                    QueryStatus::Pending
-                },
+                status: QueryStatus::from_progress(
+                    state.completed,
+                    state.started,
+                    state.failure.as_deref(),
+                ),
                 result_state,
                 failure: state.failure,
                 coordinates,

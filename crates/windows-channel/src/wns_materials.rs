@@ -335,8 +335,42 @@ async fn operation(
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<axum::Json<Operation>, Error> {
-    let p = proof(&app, &auth, false)?;
+    operation_receipt(&app, &auth.proof, id)
+        .await
+        .map(axum::Json)
+}
+/// Read the original WNS material or revocation receipt; no qualification is retried.
+pub async fn operation_receipt(
+    app: &crate::HttpState,
+    p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    id: Uuid,
+) -> Result<Operation, Error> {
+    if p.tenant_id() != app.identity.tenant().to_string() {
+        return Err(Error::Forbidden);
+    }
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
+    rss_mdm_authorization_service::lock_shared_on(
+        p.authority_profile(),
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Forbidden)?;
+    rss_mdm_authorization_service::snapshot_on(
+        p.authority_profile(),
+        &mut tx,
+        p.tenant_id(),
+        p.instance_id(),
+    )
+    .await
+    .map_err(|_| Error::Forbidden)?
+    .require(
+        p,
+        rss_mdm_authorization_service::Permission::RegistrationConfigurationRead,
+        None,
+    )
+    .map_err(|_| Error::Forbidden)?;
     let value = if let Some(row) =
         sqlx::query("SELECT * FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND operation_id=$2")
             .bind(p.tenant_id())
@@ -356,7 +390,7 @@ async fn operation(
     };
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
-    Ok(axum::Json(value))
+    Ok(value)
 }
 async fn create(
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
@@ -395,7 +429,8 @@ async fn mutate(
         return Err(Error::Malformed);
     }
     p.bind_audit(&audit)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::WindowsWns,
         id,
         "windows_wns_material",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -416,7 +451,7 @@ async fn mutate(
             p.check_live()?;Ok::<_,Error>((value,replayed))
         })).await?;
 
-        let fact=rss_mdm_audit_integration::Fact::business(audit, &format!("wns-material:{id}"), 202, "success", None).map_err(corrupt)?;
+        let fact=rss_mdm_audit_integration::Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::WindowsWns, &format!("wns-material:{id}"), 202, "success", None).map_err(corrupt)?;
         (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await })?;
         if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
         audit.mark_commit_started();Ok(value)

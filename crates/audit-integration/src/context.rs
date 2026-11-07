@@ -6,6 +6,16 @@ use uuid::Uuid;
 /// Shared request facts and diagnostic projection. It never proves transaction settlement.
 #[derive(Clone)]
 pub struct RequestAudit(Arc<Context>);
+/// The initiating producer, explicitly selected at the ingress or background boundary.
+/// A background diagnostic identifier is never an HTTP request coordinate.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    Request,
+    Background,
+}
 /// Credential presentation supplied by the authentication owner, never a proof itself.
 pub enum AuthenticationKind {
     Cookie,
@@ -14,6 +24,7 @@ pub enum AuthenticationKind {
 }
 struct Context {
     profile: crate::StorageProfile,
+    origin: Origin,
     request_id: Uuid,
     tenant: String,
     state: Mutex<State>,
@@ -33,7 +44,10 @@ pub struct Snapshot {
     pub target: Option<String>,
     pub device_target: Option<String>,
     pub operation_id: Option<Uuid>,
+    pub operation_owner: Option<crate::operation::OperationOwner>,
+    pub receipt_actor: Option<String>,
     pub registration_id: Option<Uuid>,
+    pub registration_generation: Option<i64>,
     pub write_outcome: WriteOutcome,
     pub final_request: bool,
     pub intent: crate::AuditIntent,
@@ -91,8 +105,20 @@ pub enum FailureReason {
     Cancelled,
 }
 impl RequestAudit {
+    /// Declare the real receipt namespace before replay or mutation admission.
+    pub fn owned_operation(
+        &self,
+        owner: crate::operation::OperationOwner,
+        id: Uuid,
+        action: &'static str,
+        intent: crate::AuditIntent,
+    ) {
+        self.operation(id, action, intent);
+        self.operation_owner(owner);
+    }
     /// Create a request identity for one product and tenant; persisted facts validate its canonical tenant ID.
     pub fn new(
+        origin: Origin,
         profile: crate::StorageProfile,
         tenant: String,
         action: &'static str,
@@ -100,6 +126,7 @@ impl RequestAudit {
     ) -> Self {
         Self(Arc::new(Context {
             profile,
+            origin,
             request_id: Uuid::new_v4(),
             tenant,
             state: Mutex::new(State {
@@ -112,7 +139,10 @@ impl RequestAudit {
                     target: None,
                     device_target: None,
                     operation_id: None,
+                    operation_owner: None,
+                    receipt_actor: None,
                     registration_id: None,
+                    registration_generation: None,
                     write_outcome: WriteOutcome::CommitNotStarted,
                     final_request: false,
                     intent,
@@ -139,6 +169,7 @@ impl RequestAudit {
     pub fn transaction_copy(&self) -> Self {
         Self(Arc::new(Context {
             profile: self.0.profile,
+            origin: self.0.origin,
             request_id: self.0.request_id,
             tenant: self.0.tenant.clone(),
             state: Mutex::new(State {
@@ -154,6 +185,7 @@ impl RequestAudit {
         snapshot.action = action;
         Self(Arc::new(Context {
             profile: self.0.profile,
+            origin: self.0.origin,
             request_id: self.0.request_id,
             tenant: self.0.tenant.clone(),
             state: Mutex::new(State {
@@ -169,8 +201,25 @@ impl RequestAudit {
         snapshot.target_type = profile.name();
         Self(Arc::new(Context {
             profile,
+            origin: self.0.origin,
             request_id: self.0.request_id,
             tenant: self.0.tenant.clone(),
+            state: Mutex::new(State {
+                snapshot,
+                finalized: true,
+            }),
+        }))
+    }
+    /// Installation provisioning records a target-tenant fact during the same request.
+    /// The destination transaction still verifies its own tenant binding and authority.
+    pub fn tenant_fact_copy(&self, tenant: String, action: &'static str) -> Self {
+        let mut snapshot = self.snapshot();
+        snapshot.action = action;
+        Self(Arc::new(Context {
+            profile: self.0.profile,
+            origin: self.0.origin,
+            request_id: self.0.request_id,
+            tenant,
             state: Mutex::new(State {
                 snapshot,
                 finalized: true,
@@ -184,6 +233,13 @@ impl RequestAudit {
     /// Return the unique request event coordinate, distinct from a business operation identity.
     pub fn request_id(&self) -> Uuid {
         self.0.request_id
+    }
+    /// Actual request causality; background runs have diagnostic IDs but no request.
+    pub fn request_coordinate(&self) -> Option<Uuid> {
+        (self.0.origin == Origin::Request).then_some(self.0.request_id)
+    }
+    pub fn origin(&self) -> Origin {
+        self.0.origin
     }
     /// Return the source-owned tenant text; a transaction still validates its typed tenant binding.
     pub fn tenant(&self) -> &str {
@@ -264,10 +320,30 @@ impl RequestAudit {
         state.snapshot.target = value.clone();
         state.snapshot.device_target = value;
     }
+    /// Select the namespace at the actual business boundary, not from a client hint.
+    pub fn operation_owner(&self, owner: crate::operation::OperationOwner) {
+        self.0
+            .state
+            .lock()
+            .expect("audit lock")
+            .snapshot
+            .operation_owner = Some(owner);
+    }
+    /// The owner's durable receipt namespace; separate from the authenticated audit actor.
+    pub fn receipt_actor(&self, actor: &str) {
+        self.0
+            .state
+            .lock()
+            .expect("audit lock")
+            .snapshot
+            .receipt_actor = Some(actor.to_owned());
+    }
     /// Attach an operation coordinate; its presence does not imply successful execution or replay.
     pub fn operation(&self, id: Uuid, action: &'static str, intent: crate::AuditIntent) {
         self.intent(intent);
         let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.operation_owner = None;
+        state.snapshot.receipt_actor = None;
         state.snapshot.operation_id = Some(id);
         state.snapshot.action = action;
     }
@@ -280,12 +356,17 @@ impl RequestAudit {
     }
     /// Attach the registration coordinate for correlation, independently of the acting principal.
     pub fn registration(&self, id: Uuid) {
-        self.0
-            .state
-            .lock()
-            .expect("audit lock")
-            .snapshot
-            .registration_id = Some(id);
+        let mut state = self.0.state.lock().expect("audit lock");
+        if state.snapshot.registration_id != Some(id) {
+            state.snapshot.registration_generation = None;
+        }
+        state.snapshot.registration_id = Some(id);
+    }
+    /// Frozen generation supplied by the registration or receipt owner.
+    pub fn registration_at(&self, id: Uuid, generation: i64) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        state.snapshot.registration_id = Some(id);
+        state.snapshot.registration_generation = Some(generation);
     }
     /// Attach the product plan coordinate for execution and recovery correlation.
     pub fn plan(&self, plan: Uuid) {
@@ -388,6 +469,7 @@ mod tests {
     #[test]
     fn target_rejects_values_that_cannot_be_persisted() {
         let audit = RequestAudit::new(
+            crate::Origin::Request,
             crate::StorageProfile::Mdm,
             "tenant".into(),
             "collection_read",
@@ -404,6 +486,7 @@ mod tests {
     #[test]
     fn cancellation_preserves_operation_and_distinguishes_commit_phase() {
         let a = RequestAudit::new(
+            crate::Origin::Request,
             crate::StorageProfile::Mdm,
             "tenant".into(),
             "enrollment_create",

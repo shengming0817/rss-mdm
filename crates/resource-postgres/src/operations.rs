@@ -2,10 +2,27 @@
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use serde_json::Value;
 use sqlx::Row;
+/// Read the original actor-bound response without taking a replay lock or writing.
+pub async fn read_operation_in(
+    tx: &mut PgTransaction<'_>,
+    actor: &str,
+    instance: &str,
+    id: &str,
+) -> Result<Option<Value>, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    let actor = actor.to_owned();
+    let instance = instance.to_owned();
+    let id = id.to_owned();
+    tx.with_connection(move |c|Box::pin(async move {
+        sqlx::query_scalar("SELECT response FROM mdm_resource_catalog.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3::uuid AND instance=$4::uuid")
+            .bind(tenant).bind(actor).bind(id).bind(instance).fetch_optional(c).await
+    })).await
+}
 /// Lock and read a complete application receipt in the caller transaction.
 pub async fn replay_operation_in(
     tx: &mut PgTransaction<'_>,
     actor: &str,
+    instance: &str,
     id: &str,
     fingerprint: &[u8],
 ) -> crate::InTransaction<Option<Value>> {
@@ -18,11 +35,13 @@ pub async fn replay_operation_in(
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text,$3::text,$4::text)::text,2889))")
             .bind(&tenant).bind("resource_catalog").bind(&actor).bind(id.to_string())
             .execute(&mut *c).await?;
-        sqlx::query("SELECT fingerprint,response::text FROM mdm_resource_catalog.operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND actor=$3")
+        sqlx::query("SELECT fingerprint,response::text,instance::text FROM mdm_resource_catalog.operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND actor=$3")
             .bind(tenant).bind(id.to_string()).bind(actor).fetch_optional(c).await
     })).await?;
     if let Some(row) = row {
-        if row.try_get::<Vec<u8>, _>("fingerprint")? != fingerprint {
+        if row.try_get::<Vec<u8>, _>("fingerprint")? != fingerprint
+            || row.try_get::<String, _>("instance")? != instance
+        {
             return Ok(Err(crate::Rejection::IdentityConflict));
         }
         return Ok(Ok(Some(
@@ -35,22 +54,24 @@ pub async fn replay_operation_in(
 pub async fn record_operation_in(
     tx: &mut PgTransaction<'_>,
     actor: &str,
+    instance: &str,
     id: &str,
     fingerprint: &[u8],
     value: &Value,
 ) -> Result<(), PgError> {
     let tenant = tx.tenant_id().to_string();
     let actor = actor.to_owned();
+    let instance = instance.to_owned();
     let id = id.to_owned();
     let digest = fingerprint.to_vec();
     let response = value.to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_resource_catalog.operations(tenant_id,id,fingerprint,response,actor) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5)")
+            sqlx::query("INSERT INTO mdm_resource_catalog.operations(tenant_id,id,fingerprint,response,actor,instance) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5,$6::uuid)")
                 .bind(tenant)
                 .bind(id.to_string())
                 .bind(digest)
-                .bind(response).bind(actor)
+                .bind(response).bind(actor).bind(instance)
                 .execute(c)
                 .await?;
             Ok(())

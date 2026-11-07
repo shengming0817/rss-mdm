@@ -22,6 +22,35 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             recovery: None,
             execution: h.a.service.clone(),
         };
+        let locator = rss_mdm_management_http::operation_diagnostics::LocatorQuery {
+            device: Some(native.device.clone()),
+            ..Default::default()
+        };
+        let result = operations
+            .diagnostic(
+                &proof,
+                rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
+                Uuid::from_u128(1),
+                &locator,
+            )
+            .await?;
+        assert_eq!(result.original.unwrap().executions, [Uuid::from_u128(1)]);
+        assert!(matches!(
+            result.execution?,
+            Some(rss_mdm_management_http::execution::operations::Evidence::Native { .. })
+        ));
+        let other = operations
+            .diagnostic(
+                &proof,
+                rss_mdm_audit_integration::operation::OperationOwner::SoftwareDeployment,
+                Uuid::from_u128(1),
+                &locator,
+            )
+            .await?;
+        assert!(
+            other.original.is_none() && other.execution?.is_none(),
+            "another owner cannot claim the same UUID"
+        );
         let codec = CursorCodec::new(&[7; 32])?;
         let document = crate::http_contract_document().map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let endpoint = document["endpoints"]
@@ -96,16 +125,37 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
         let collection_policy=Uuid::new_v4();
         let collection_version=super::mixed::publish(&h,collection_policy,1,definition,frozen).await?;
         let collection=super::mixed::run(&h,collection_version,now()).await?;
-        let (native_policy,native,_)=super::retirement::native(&h,Some("timeout")).await?;
+        let (native_policy,native,native_object)=super::retirement::native(&h,Some("timeout")).await?;
         let mut tx=command::seed_transaction(&h.c).await?;
         sqlx::query("UPDATE mdm_script.runs SET state=jsonb_set(jsonb_set(state,'{execution}','\"unknown\"'),'{startedAt}',to_jsonb($3::bigint)) WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(script).bind(now()).execute(&mut *tx).await?;
         tx.commit().await?;
         let account=h.c.account(&[Permission::OperationRead,Permission::PolicyRead,Permission::InventoryRead]).await?;
         let proof=Arc::new(h.c.authenticate(&account).await?);
-        let operations:Arc<dyn Reads>=Arc::new(crate::assembly::operation_reads::Operations {
+        let operations=Arc::new(crate::assembly::operation_reads::Operations {
             apple:Arc::new(rss_mdm_apple_channel::flow_store::Store{protection:h.a.resources.protection.clone()}),
             tasks:h.a.task_reads.clone(),registration:h.a.registration.native.clone(),recovery:None,execution:h.a.service.clone(),
         });
+        for (owner,id,device) in [(rss_mdm_audit_integration::operation::OperationOwner::Script,script,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,collection,h.p.device()),(rss_mdm_audit_integration::operation::OperationOwner::CollectionExecution,native,native_object.members[0].device.as_str())] {
+            let locator=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(device.into()),..Default::default()};
+            let result=operations.diagnostic(&proof,owner,id,&locator).await?;
+            assert_eq!(result.original.unwrap().accepted,Some(true));
+            let evidence=serde_json::to_value(result.execution?.unwrap())?;
+            assert_eq!(evidence["owner"],if owner==rss_mdm_audit_integration::operation::OperationOwner::Script{"script"}else{"collection"});
+            assert!(!evidence.to_string().contains("stdout"));
+            let wrong=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(device.into()),registration:Some(Uuid::new_v4()),..Default::default()};
+            assert!(operations.diagnostic(&proof,owner,id,&wrong).await.is_err());
+        }
+        // A damaged execution projection must not discard independently confirmed admission.
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_script.runs SET result=$3 WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(h.c.tenant.to_string()).bind(script).bind(json!({"private":"must-not-escape"})).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let result=operations.diagnostic(&proof,rss_mdm_audit_integration::operation::OperationOwner::Script,script,&rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(h.p.device().into()),..Default::default()}).await?;
+        assert_eq!(result.original.unwrap().accepted,Some(true));
+        assert!(matches!(result.execution,Err(rss_mdm_management_http::Error::Unavailable(_))));
+        let mut tx=command::seed_transaction(&h.c).await?;
+        sqlx::query("UPDATE mdm_script.runs SET result=NULL WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(script).execute(&mut *tx).await?;
+        tx.commit().await?;
         let router=rss_mdm_management_http::execution::http::read_routes().with_state::<()>(operations.clone())
             .layer(axum::Extension(CursorCodec::new(&[8;32])?))
             .layer(axum::Extension(RequestAuth{proof:proof.clone()}))

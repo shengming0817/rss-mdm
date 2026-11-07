@@ -32,6 +32,9 @@ CREATE POLICY tenant ON mdm_script.runs
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE mdm_script.receipts (
+    device text NOT NULL,
+    registration uuid NOT NULL,
+    generation bigint NOT NULL CHECK(generation > 0),
     tenant_id uuid NOT NULL,
     actor text NOT NULL,
     id uuid NOT NULL,

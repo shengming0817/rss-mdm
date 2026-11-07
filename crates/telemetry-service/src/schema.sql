@@ -59,7 +59,7 @@ GRANT SELECT,INSERT ON mdm_telemetry.resources TO mdm_telemetry_runtime;
 -- Idempotent management intent and the last confirmed bounded step, never sampled data.
 CREATE TABLE mdm_telemetry.maintenance (
  tenant_id uuid NOT NULL, id uuid NOT NULL, binding bytea NOT NULL CHECK(octet_length(binding)=32),
- result jsonb, PRIMARY KEY(tenant_id,id)
+ request jsonb NOT NULL, result jsonb, PRIMARY KEY(tenant_id,id)
 );
 ALTER TABLE mdm_telemetry.maintenance ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.maintenance FORCE ROW LEVEL SECURITY;
@@ -123,3 +123,7 @@ ALTER TABLE mdm_telemetry.gap_reports FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.gap_reports USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.gap_reports FROM PUBLIC;
 GRANT SELECT,INSERT,DELETE ON mdm_telemetry.gap_reports TO mdm_telemetry_runtime;
+
+-- Retained maintenance evidence is readable without enabling a telemetry backend.
+GRANT USAGE ON SCHEMA mdm_telemetry TO mdm_access;
+GRANT SELECT ON mdm_telemetry.maintenance TO mdm_access;

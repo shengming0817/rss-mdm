@@ -129,28 +129,24 @@ impl Service {
             .map_err(crate::identity::failure)?;
         let actor = proof.shared_session()?;
         let operator = serde_json::json!({"kind":"session","tenantId":proof.tenant_id(),"instanceId":proof.instance_id(),"principalId":proof.principal_id()});
-        audit.operation(
+        audit.owned_operation(rss_mdm_audit_integration::operation::OperationOwner::TenantAdministration,
             operation,
             "tenant_administrator_create",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.target(tenant);
         audit.require_final_request();
-        let target_audit = RequestAudit::new(rss_mdm_audit_integration::StorageProfile::Mdm,
-            tenant.into(),
-            "tenant_administrator_create",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
+        let target_audit = audit.tenant_fact_copy(tenant.into(),"tenant_administrator_create");
         // This context only supplies target fact coordinates; the source request owns settlement.
         target_audit.finalize(None);
         target_audit.set_principal(proof.principal_id(), proof.instance_id());
-        target_audit.operation(
+        target_audit.owned_operation(rss_mdm_audit_integration::operation::OperationOwner::TenantAdministration,
             operation,
             "tenant_administrator_create",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let fact = Fact::business(
-            &target_audit,
+            &target_audit, rss_mdm_audit_integration::operation::OperationOwner::TenantAdministration,
             &format!("tenant-administrator:{operation}"),
             200,
             "success",

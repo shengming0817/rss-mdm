@@ -10,6 +10,7 @@ ALTER TABLE ONLY mdm_assets.group_fields FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_assets.group_operations (
     tenant_id uuid NOT NULL,
     actor text NOT NULL,
+    instance uuid NOT NULL,
     id uuid NOT NULL,
     fingerprint bytea NOT NULL,
     response jsonb NOT NULL,

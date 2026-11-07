@@ -42,6 +42,20 @@ Remote 与旧通用直接命令无部署升级义务，已完整退出。当前�
 
 命令连接 command_database 使用 mdm_command_runtime。完整运行配置见 fixtures/mdm-config.example.json；恢复和安装要求见[运维](../deployment/operations.md)。
 
+## 统一操作排障
+
+`GET /api/v1/operation-diagnostics` 按 `device`、`targetId`、`actor`、`from/until`、`operationId`、`requestId`、`owner` 发现已有事实；`limit/cursor` 沿用审计目录的签名游标。发现与 `GET /operation-diagnostics/requests/{requestId}` 要求当前 `AuditRead`。`coverage.complete=false` 表示索引覆盖尚不完整；空页或缺少请求记录均不证明写入没有发生。发现项的 `operationConfirmed` 区分已提交／已重放的关联与仅在请求中声明的尝试；`origin` 为 null 的历史事实不证明 HTTP 来源。
+
+已知操作时直接请求 `GET /api/v1/operation-diagnostics/operations/{owner}/{operationId}`。`owner` 是原持久记录的命名空间，不能从 UUID 推测。设备执行需要 `device`，内容与来源快照需要 `target`，注册恢复需要 `registration`，FileVault 回执需要原 `registration/generation`；可用的 `actor/instance/registration/generation` 必须与原命名空间和当前权限吻合。返回 owner 选择的历史安全摘要，并分别报告 `originalResult`、`requestEvidence`、`auditEvidence` 与 `executionEvidence`。后续修改当前对象不会替换原摘要；`currentResourceUrl` 明确指向当前对象，`originalResultUrl` 仅指向已有授权的原结果读取入口。
+
+详情中的请求和审计证据来自同一有界分页窗口；将任一 section 的 `nextCursor` 作为 `cursor` 传回相同详情 URL，保留 `includeAudit=true` 和全部定位字段，继续读取两类证据。修改定位或撤权会使游标失效。PKI 管理回执可显式提供原 `actor/instance`；后台 `service:device-pki` 没有 Identity 实例，使用该 actor 且不传 instance。显式选择其它实例的原 PKI 回执时，审计 section 保持 `restricted`，不附加当前实例的同编号请求。签名与吊销尝试分别使用 `pki_signing/pki_revocation`。自助调用的 `script_invocation/software_invocation/enrollment_invocation` 使用原 owner 输出的 receipt actor 与 `device/registration/generation`，原请求回执包含已确认的 run 编号；run 的执行状态独立读取。
+
+设备自动关联回执使用发现入口返回的 `actor=device-associations`，不传 Identity `instance`；详情会检查原关联全部设备的当前读取权限。退管的 `originalResult` 只保留不可变受理摘要，`executionEvidence` 提供原 owner 的通道阶段、效果、阻塞原因与执行编号；执行推进不会改写原摘要。
+
+原回执和执行证据沿用领域权限，不额外要求 `AuditRead`；只有显式 `includeAudit=true` 才读取请求和审计证据。审计不可用时保留原结果；成功披露审计内容仍须可靠完成敏感访问审计。`not_found`、`no_durable_evidence`、`unavailable`、`restricted` 的含义不同，均不能推断回滚或过期。明确过期仅能由对应 owner 的事实证明。Apple Account Enrollment 当前配置、安装初始化等没有按操作编号保存原结果的流程明确报告无持久证据；不会返回当前配置充当原回执，也不会重放写入、调用 CA、消费一次性证明或恢复任务。
+
+安装管理上下文在 `/api/v1/tenant-administration/operation-diagnostics` 使用同样的三个入口，并复用安装管理认证；DA 上下文使用 `/api/v1/device-access/operation-diagnostics`。DA 回执通过原 DA 认证 owner 读取；多设备离职操作重新检查全部冻结目标，MDM 设备证明不转换成 DA 证明。后台工作只带真实操作定位，不把后台诊断 UUID 伪装成原 HTTP 请求。历史事实没有新 locator 时仍保留能够证明的原审计坐标，不按事件哈希补猜关联。
+
 ## Windows 原生操作
 
 Windows 使用固定 DDF/CSP/ADMX 来源和 Node/Atomic/Sequence 类型化操作树，通过现有 Resource/Policy/Scope 和受保护执行路径管理对象。动态身份、设备/用户 scope、build/edition 和实际操作权限分别校验；客户端不提供可信平台或权限事实。

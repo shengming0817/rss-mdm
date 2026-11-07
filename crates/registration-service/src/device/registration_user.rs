@@ -60,7 +60,8 @@ impl DeviceService {
                 .map_err(|_| Error::Malformed)?;
         }
         p.bind_audit(audit)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             key,
             "registration_user_change",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -97,10 +98,12 @@ impl DeviceService {
                     .bind(p.tenant_id()).bind(device).bind(revision as i64).bind(change.user.as_ref().map(|u| &u.instance_id)).bind(change.user.as_ref().map(|u| &u.principal_id)).execute(&mut *c).await.map_err(db)?;
                 p.enrollment(device)?;
                 let value = RegistrationUser { revision, user: change.user.clone() };
-                crate::operations::save(profile, c,op,&serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,audit).await?;
+                crate::operations::save(profile, c,op,&serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,audit,
+        false,
+    ).await?;
                 Ok((value,false))
             })).await?;
-            let fact = Fact::business(audit, &format!("registration-user:{}:{}",p.principal_id(),op.key), 200, "success", None)?;
+            let fact = Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::Registration, &format!("registration-user:{}:{}",p.principal_id(),op.key), 200, "success", None)?;
             (if replayed { Ok(()) } else { store.append(tx, &fact).await }).map_err(Error::from)?;
             if replayed { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             audit.mark_commit_started();

@@ -103,3 +103,5 @@ pub static DA_CONFIGURATIONS: Description = Description::QueryOwner;
 pub static DA_CONFIGURATION_HISTORY: Description = Description::QueryOwner;
 
 pub static DA_REPORT_HISTORY: Description = Description::QueryOwner;
+
+pub static OPERATION_DIAGNOSTICS: Description = Description::QueryOwner;

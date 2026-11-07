@@ -41,7 +41,7 @@ SELECT
 
  -- Required cursor and fact representations used by the planning SQL readers.
  AND NOT EXISTS(SELECT 1 FROM (VALUES
- ('mdm_assets.operations','instance','text',true),
+ ('mdm_assets.operations','instance','uuid',true),
  ('mdm_assets.query_evaluations','binding','text',true),
  ('mdm_assets.query_evaluation_arrays','state','jsonb',true),
  ('mdm.manual_assignments','fact','jsonb',true)

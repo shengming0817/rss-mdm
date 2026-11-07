@@ -240,7 +240,7 @@ impl RegistrationService {
                 } else {
                     predecessor
                 };
-                a.target(&device);
+                a.target_device(&device);
                 if let Some(old) = old {
                     if old.try_get::<String, _>("request_digest").map_err(db)? != *d
                         || old.try_get::<String, _>("actor").map_err(db)? != actor
@@ -434,7 +434,7 @@ impl RegistrationService {
                     RegistrationKind::DaDevice,
                 )
                 .await?;
-                a.target(&device);
+                a.target_device(&device);
                 a.registration(*registration);
                 rss_mdm_pki_service::certificates::revoke_registration_in(
                     profile,
@@ -463,6 +463,7 @@ impl RegistrationService {
                     &op,
                     &serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,
                     a,
+                    false,
                 )
                 .await?;
                 Ok(Change {

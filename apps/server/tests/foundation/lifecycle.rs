@@ -2,7 +2,7 @@
 use crate::authority_t2_support::*;
 use anyhow::{Result, bail};
 use rss_request_context::TenantId;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
@@ -48,45 +48,9 @@ async fn host_reports_its_binding_then_releases_listener_and_database_resources(
     .await?;
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
-    let mut configuration: Value =
-        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
-    configuration["listen"] = json!(address.to_string());
-    configuration["identity"]["tenant_id"] = json!(tenant.to_string());
-    configuration["identity"]["database"] =
-        serde_json::to_value(inputs.database("lifecycle", "mdm_identity_runtime"))?;
-    configuration["access_database"] =
-        serde_json::to_value(inputs.database("lifecycle", "mdm_access"))?;
-    configuration["device_access"]["database"] =
-        serde_json::to_value(inputs.database("lifecycle", "da_access"))?;
-    configuration["runtime_database"] =
-        serde_json::to_value(inputs.database("lifecycle", "mdm_runtime"))?;
-    configuration["command_database"] =
-        serde_json::to_value(inputs.database("lifecycle", "mdm_command_runtime"))?;
-    configuration["scope_group_database"] =
-        serde_json::to_value(inputs.database("lifecycle", "mdm_scope_group_consumer"))?;
-    configuration["webhooks"]["recovery_database"] =
-        serde_json::to_value(inputs.database("lifecycle", "mdm_webhook_operator"))?;
-    configuration["publication"]["database"] =
-        serde_json::to_value(inputs.database("lifecycle", "mdm_software_driver"))?;
-    for (owner, role) in [
-        ("inventory", "mdm_inventory_runtime"),
-        ("scope", "mdm_scope_runtime"),
-        ("policy", "mdm_policy_runtime"),
-        ("resource", "mdm_resource_runtime"),
-        ("software", "mdm_software_runtime"),
-        ("content", "mdm_content_runtime"),
-        ("telemetry", "mdm_telemetry_runtime"),
-        ("scheduler", "mdm_scheduler_runtime"),
-    ] {
-        configuration["business_databases"][owner] =
-            serde_json::to_value(inputs.database("lifecycle", role))?;
-    }
-    configuration["native_protocols"] = json!({});
-    configuration["device_pki"] = json!([]);
-    configuration["native_protection"] = json!({"active_file":inputs.directory.join("native.key"),
-        "historical_files":[], "fingerprint_file":inputs.directory.join("fingerprint.key")});
     let host = Uuid::new_v4();
-    configuration["runtime_binding"]["host_id"] = json!(host);
+    let configuration =
+        crate::host_t2_support::configuration(&inputs, "lifecycle", tenant, address, host)?;
     let config = serde_json::from_value(configuration)?;
     let client = reqwest::Client::builder()
         .no_proxy()

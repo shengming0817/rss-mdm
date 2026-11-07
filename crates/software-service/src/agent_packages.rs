@@ -358,7 +358,8 @@ pub async fn publish<C: ManagementContentPort>(
     if p.tenant_id() != app.tenant.to_string() || i.operation_id.is_nil() || i.package_id.is_nil() {
         return Err(invalid());
     }
-    a.operation(
+    a.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwareCatalog,
         i.operation_id,
         "agent_package_publish",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -497,6 +498,7 @@ pub async fn publish<C: ManagementContentPort>(
                 };
                 let fact = Fact::business(
                     a,
+                    rss_mdm_audit_integration::operation::OperationOwner::SoftwareCatalog,
                     &format!("agent-package:{}", i.operation_id),
                     200,
                     "success",
@@ -697,7 +699,8 @@ pub async fn withdraw<C: ManagementContentPort>(
     if p.tenant_id() != app.tenant.to_string() || operation.is_nil() {
         return Err(invalid());
     }
-    a.operation(
+    a.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::SoftwareCatalog,
         operation,
         "agent_package_withdraw",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -723,7 +726,7 @@ pub async fn withdraw<C: ManagementContentPort>(
    Ok(None)
   })).await?;
   if old.as_ref().is_some_and(|v|v!=hash){return Err(Error::Conflict.into());}
-  let fact=Fact::business(a, &format!("agent-package-withdraw:{operation}"), 200, "success", None)?;
+  let fact=Fact::business(a, rss_mdm_audit_integration::operation::OperationOwner::SoftwareCatalog, &format!("agent-package-withdraw:{operation}"), 200, "success", None)?;
   (if old.is_some() { Ok(()) } else { app.audit.append_in(tx, &fact).await })?;p.check_live()?;Ok(())
  }),TransactionOwner::SoftwareCatalog).await
 }

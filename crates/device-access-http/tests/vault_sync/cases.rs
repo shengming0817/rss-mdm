@@ -15,7 +15,13 @@ fn device(k: &Ed25519KeyPair) -> Device {
     }
 }
 fn audit(c: &Context) -> RequestAudit {
-    RequestAudit::new(DA, c.tenant.to_string(), "vault_test", AuditIntent::Routine)
+    RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Request,
+        DA,
+        c.tenant.to_string(),
+        "vault_test",
+        AuditIntent::Routine,
+    )
 }
 async fn user(c: &Context) -> Result<(AuthorizedPrincipal, String)> {
     use rss_identity_core::account::{LoginKey, Password, PasswordKdf};

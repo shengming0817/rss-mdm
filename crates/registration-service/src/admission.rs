@@ -161,7 +161,8 @@ impl Admission {
             return Err(Error::Malformed);
         }
         p.bind_audit(audit)?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             key,
             "registration_admission_change",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -228,6 +229,7 @@ impl Admission {
                                             op,
                                             &revision.to_string(),
                                             audit,
+                                            false,
                                         )
                                         .await?;
                                         Ok((revision, false))
@@ -237,6 +239,7 @@ impl Admission {
                             .await?;
                         let fact = Fact::business(
                             audit,
+                            rss_mdm_audit_integration::operation::OperationOwner::Registration,
                             &format!("registration-admission:{}:{}", p.principal_id(), op.key),
                             200,
                             "success",

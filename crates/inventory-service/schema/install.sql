@@ -94,7 +94,7 @@ CREATE TABLE mdm_assets.operations (
     fingerprint bytea NOT NULL,
     response jsonb NOT NULL,
     actor text NOT NULL,
-    instance text NOT NULL CHECK(length(instance)>0),
+    instance uuid NOT NULL,
     CONSTRAINT operations_actor_check CHECK ((length(actor) > 0)),
     CONSTRAINT operations_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
     CONSTRAINT operations_response_check CHECK ((octet_length((response)::text) <= 8388608))

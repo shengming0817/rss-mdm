@@ -175,7 +175,9 @@ impl Service {
                         .await?;
                     if !replay && ctx.5.snapshot().intent == AuditIntent::Management {
                         let snapshot = ctx.5.snapshot();
-                        let fact = Fact::business(
+                        // This is the user's key-proof protocol, not an administrator receipt namespace.
+                        // Preserve its atomic audit fact without manufacturing an MDM locator.
+                        let fact = Fact::observation(
                             ctx.5,
                             &format!(
                                 "vault:{}:{}",

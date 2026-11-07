@@ -47,6 +47,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         .await?;
     let audit = || {
         rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Request,
             DA,
             c.tenant.to_string(),
             "da_test",

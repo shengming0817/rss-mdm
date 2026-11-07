@@ -99,7 +99,7 @@ pub(super) async fn start(
                         .await?;
 
                     let fact = rss_mdm_audit_integration::Fact::business(
-                        audit,
+                        audit, rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,
                         &format!("apple-account-browser:{id}"),
                         200,
                         "success",
@@ -204,7 +204,8 @@ pub(super) async fn finish(
     headers.insert("x-identity-request", HeaderValue::from_static("1"));
     let proof = authenticate(&app, &headers, true).await?;
     proof.bind_audit(&audit)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,
         id,
         "apple_account_authorize",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -240,7 +241,7 @@ pub(super) async fn finish(
                         .await?;
 
                     let fact = rss_mdm_audit_integration::Fact::business(
-                        audit,
+                        audit, rss_mdm_audit_integration::operation::OperationOwner::AppleAccountEnrollment,
                         &format!("apple-account-authorize:{id}"),
                         308,
                         "success",

@@ -101,6 +101,27 @@ async fn missing_mapping_source_is_unknown_until_its_complete_empty_list() -> Re
         "standard":standard,"enabled":true,"source":"device.software.windows.store","platform":"windows","filter":"nativeId==editor"
     }})).await?;
     let task = query(&c, &fixture, &http, json!({"context":"endpoint"})).await?;
+    let proof = c.authenticate(&account).await?;
+    assert_eq!(
+        fixture
+            .assets
+            .query_receipt(&proof, task)
+            .await?
+            .unwrap()
+            .state
+            .as_deref(),
+        Some("completed")
+    );
+    assert_eq!(
+        fixture
+            .assets
+            .operation_receipt(&proof, task)
+            .await?
+            .unwrap()
+            .accepted,
+        Some(true)
+    );
+
     let rows = http
         .get(&format!("/software-asset-queries/{task}/software"))
         .await?;

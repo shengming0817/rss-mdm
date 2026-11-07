@@ -354,7 +354,8 @@ pub async fn record(
     source_catalog: Option<&rss_mdm_software_service::catalog::Reader>,
     budget: UploadBudget,
 ) -> Result<(), Error> {
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Content,
         upload.id,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -448,6 +449,7 @@ pub async fn record(
 
                 let fact = rss_mdm_audit_integration::Fact::business(
                     audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::Content,
                     &format!("content:{}:{}", upload.binding.actor, upload.id),
                     201,
                     "success",
@@ -541,7 +543,8 @@ pub async fn mirror(
     let proof = session.proof;
     let budget = store(app)?.upload_budget()?;
     let operation = input.operation.ok_or(Error::Malformed)?;
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Content,
         operation,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -669,13 +672,15 @@ pub async fn begin_upload(
     input: &Selection,
     budget: UploadBudget,
 ) -> Result<Upload, Error> {
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Content,
         upload,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.require_final_request();
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Content,
         upload,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -703,7 +708,8 @@ pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
     offset: u64,
     reader: R,
 ) -> Result<Append, Error> {
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Content,
         upload,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
@@ -736,7 +742,8 @@ pub async fn complete_upload(
     id: &str,
     upload: Uuid,
 ) -> Result<(), Error> {
-    audit.operation(
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Content,
         upload,
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,

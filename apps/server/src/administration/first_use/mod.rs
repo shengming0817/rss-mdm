@@ -295,7 +295,8 @@ impl FirstUse {
         } else {
             None
         };
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::FirstUse,
             id,
             "first_use_update",
             rss_mdm_audit_integration::AuditIntent::Management,

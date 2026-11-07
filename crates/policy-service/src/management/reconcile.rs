@@ -244,6 +244,7 @@ impl crate::application::Application {
     ) -> Result<()> {
         use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit, activity::*};
         let audit = RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             self.profile(),
             tx.tenant_id().to_string(),
             "policy_assignment",
@@ -277,7 +278,15 @@ impl crate::application::Application {
             audit.registration(t.registration_id);
         }
         self.audit_store.prepare_in(tx, &audit, &[]).await?;
-        let fact = Fact::business(&audit, key, 200, "success", None)?.with_activity(&activity)?;
+        let fact = Fact::business(
+            &audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Policy,
+            key,
+            200,
+            "success",
+            None,
+        )?
+        .with_activity(&activity)?;
         let result = self.audit_store.append_in(tx, &fact).await;
         audit.finalize(None);
         result?;

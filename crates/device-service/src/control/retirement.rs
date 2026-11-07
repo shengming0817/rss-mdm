@@ -13,6 +13,7 @@ pub async fn retire_in(
 ) -> Result<(), Error> {
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_owned(),
         "credential_revoke",
@@ -95,6 +96,7 @@ pub async fn retire_in(
             facts.push(
                 Fact::business(
                     &audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
                     &format!("registration-retirement:{registration}:command:{id}"),
                     200,
                     "success",
@@ -137,6 +139,7 @@ pub async fn retire_in(
             facts.push(
                 Fact::business(
                     &audit,
+                    rss_mdm_audit_integration::operation::OperationOwner::DeviceAction,
                     &format!("registration-retirement:{registration}:action:{id}"),
                     200,
                     "success",

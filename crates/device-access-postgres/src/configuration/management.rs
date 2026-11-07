@@ -105,7 +105,8 @@ impl Service {
         self.proof(p, a)?;
         p.session()?;
         let hash = digest(input)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::DaPublication,
             input.operation_id,
             "da_configuration_publish",
             AuditIntent::Management,
@@ -166,7 +167,8 @@ impl Service {
     ) -> Result<da::SignedConfiguration, Error> {
         self.proof(p, a)?;
         p.session()?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::DaConfigurationExport,
             input.operation_id,
             "da_configuration_export",
             AuditIntent::Management,

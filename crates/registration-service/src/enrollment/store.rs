@@ -120,6 +120,7 @@ pub async fn create_enrollment(
                         .await?;
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
+                        rss_mdm_audit_integration::operation::OperationOwner::Registration,
                         &format!(
                             "enrollment_create:{}:{}",
                             inputs.permission.proof.principal_id(),
@@ -264,12 +265,14 @@ async fn create_enrollment_on(
         source,
     };
     permission.check()?;
+    audit.target_device(device);
     crate::operations::save(
         profile,
         tx,
         op,
         &serde_json::to_string(&receipt).expect("closed receipt"),
         audit,
+        permission.self_service(),
     )
     .await?;
     Ok((receipt, false))
@@ -345,6 +348,7 @@ pub async fn change_enrollment(
                         .await?;
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
+                        rss_mdm_audit_integration::operation::OperationOwner::Registration,
                         &format!(
                             "enrollment_change:{}:{}",
                             inputs.permission.proof.principal_id(),
@@ -395,6 +399,7 @@ async fn change_enrollment_on(
     audit: &RequestAudit,
 ) -> Result<(Receipt, bool), Error> {
     let proof = permission.proof();
+    let device = permission.device();
     let id = *id;
     let key = *key;
     crate::admission::lock_in(profile, tx, proof.tenant_id()).await?;
@@ -499,12 +504,14 @@ async fn change_enrollment_on(
             .map_err(|_| Error::Storage)?,
     };
     permission.check()?;
+    audit.target_device(device);
     crate::operations::save(
         profile,
         tx,
         op,
         &serde_json::to_string(&receipt).expect("closed receipt"),
         audit,
+        permission.self_service(),
     )
     .await?;
     Ok((receipt, false))

@@ -141,7 +141,8 @@ impl Authority {
     ) -> Result<Receipt, Error> {
         self.proof(p, audit, true)?;
         p.session()?;
-        audit.operation(
+        audit.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Smtp,
             id,
             "smtp_qualification",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -163,7 +164,7 @@ impl Authority {
                 p.check_live()?;Ok::<_,Error>((value,replayed))
             })).await?;
 
-            let fact=Fact::business(audit, &format!("smtp-qualification:{id}"), 202, "success", None)?;
+            let fact=Fact::business(audit, rss_mdm_audit_integration::operation::OperationOwner::Smtp, &format!("smtp-qualification:{id}"), 202, "success", None)?;
             (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
             if replayed{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)

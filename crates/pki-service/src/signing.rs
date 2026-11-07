@@ -215,13 +215,15 @@ impl SigningStore {
         let binding = binding(purpose, issuer, provider, intent)?;
         let hash = Sha256::digest(&binding).to_vec();
         let a = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             self.profile(),
             tenant.to_string(),
             "device_pki_signing_claim",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         a.identify_service("service:device-pki-signing");
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::PkiSigning,
             intent.attempt,
             "device_pki_signing_claim",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -353,13 +355,15 @@ impl SigningStore {
             .transpose()
             .map_err(|_| Error::Storage)?;
         let a = rss_mdm_audit_integration::RequestAudit::new(
+            rss_mdm_audit_integration::Origin::Background,
             self.profile(),
             tenant.to_string(),
             "device_pki_signing_result",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         a.identify_service("service:device-pki-signing");
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::PkiSigning,
             attempt,
             "device_pki_signing_result",
             rss_mdm_audit_integration::AuditIntent::Management,

@@ -277,6 +277,7 @@ pub(crate) async fn identity_platform(
 }
 
 pub(crate) fn browser(
+    diagnostics: Option<Arc<rss_mdm_management_http::operation_diagnostics::Services>>,
     runtime: Option<(
         &Arc<super::Assembly>,
         &rss_mdm_management_http::boundary::Envelope,
@@ -337,10 +338,12 @@ pub(crate) fn browser(
             },
         )
     });
-    rss_mdm_http_contract::route_module! {struct DaManagement for [Browser]{access [optional],administration}}
+    rss_mdm_http_contract::route_module! {struct DaManagement for [Browser]{access [optional],administration,diagnostics at "/device-access"}}
     let access = DaManagement {
         access,
         administration,
+        diagnostics: rss_mdm_management_http::operation_diagnostics::routes()
+            .bind_with(diagnostics.as_ref(), Arc::clone),
     }
     .assemble();
     rss_mdm_http_contract::route_module! {struct DaProtected for [Browser]{access at "/api/v1",platform}}

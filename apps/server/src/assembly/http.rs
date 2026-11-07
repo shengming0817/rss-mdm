@@ -266,6 +266,17 @@ pub(crate) fn from_state(
         ),
         crate::administration::tenants::http::routes(state.identity.tenant_administration.clone()),
         crate::administration::settings::http::platform_routes(Some(&settings)),
+        rss_mdm_management_http::operation_diagnostics::routes().with_state(Arc::new(
+            rss_mdm_management_http::operation_diagnostics::Services {
+                timeline: Arc::new(state.timeline.for_tenant(state.identity.management_tenant)),
+                reads: Arc::new(super::operation_diagnostics::Installation {
+                    tenants: state.identity.tenant_administration.clone(),
+                    audit: state.audit_store.clone(),
+                    timeline: Arc::new(state.timeline.for_tenant(state.identity.management_tenant)),
+                    tenant: state.identity.management_tenant,
+                }),
+            },
+        )),
         state.identity_management.clone(),
         rss_mdm_management_http::boundary::Envelope {
             tenant: state.identity.management_tenant.to_string(),
@@ -300,10 +311,28 @@ pub(crate) fn from_state(
         ),
         management_boundary.clone(),
     );
+    let mail = Arc::new(rss_mdm_mail_service::authority::Authority {
+        tenant: state.identity.tenant,
+        protection: state.protection.clone(),
+        audit: state.audit_store.clone(),
+    });
+    let operation_diagnostics =
+        Arc::new(rss_mdm_management_http::operation_diagnostics::Services {
+            timeline: state.timeline.clone(),
+            reads: Arc::new(super::operation_diagnostics::Diagnostics {
+                state: state.clone(),
+                first_use: first_use.clone(),
+                profiles: directory.user_profiles.clone(),
+                mail: mail.clone(),
+                apple: apple_state.clone(),
+                windows: windows_state.clone(),
+            }),
+        });
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
             access_execution: state.access_execution.service.clone(),
             operation_reads: state.operation_reads.clone(),
+            operation_diagnostics: operation_diagnostics.clone(),
             device_reads: Arc::new(super::device_reads::Devices {
                 tasks: state.task_reads.clone(),
                 devices: state.devices.clone(),
@@ -319,11 +348,7 @@ pub(crate) fn from_state(
             configuration_preview: state.configuration_preview.clone(),
             query_cursor: rss_mdm_query::cursor::CursorCodec::new(&state.cursor_key)
                 .expect("validated query key"),
-            mail: Arc::new(rss_mdm_mail_service::authority::Authority {
-                tenant: state.identity.tenant,
-                protection: state.protection.clone(),
-                audit: state.audit_store.clone(),
-            }),
+            mail,
             webhooks: state.webhooks.clone(),
             telemetry: state.telemetry.clone(),
             registration_channels: channels,
@@ -516,6 +541,15 @@ pub(crate) fn from_state(
     let apple = state.apple.clone();
     let browser = BrowserRoutes {
         device_access: super::device_access::browser(
+            state.da.as_ref().map(|da| {
+                Arc::new(rss_mdm_management_http::operation_diagnostics::Services {
+                    timeline: Arc::new(state.timeline.for_source(
+                        rss_mdm_install_support::StorageProfile::Da,
+                        da.audit.clone(),
+                    )),
+                    reads: operation_diagnostics.reads.clone(),
+                })
+            }),
             Some((&state, &management_boundary)),
             state.da.is_some(),
         ),
@@ -756,10 +790,14 @@ rss_mdm_http_contract::route_module! {
 /// Third-party Identity routers retain their external owner; product adapters remain included.
 pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<String>> {
     let browser = BrowserRoutes {
-        device_access: super::device_access::browser(None, true),
+        device_access: super::device_access::browser(None, None, true),
         tenants: rss_mdm_management_http::tenant_administration::contract_routes(
             crate::administration::tenants::http::mount_registry(None, true),
             crate::administration::settings::http::platform_routes(None),
+            rss_mdm_management_http::operation_diagnostics::routes().bind_with(
+                None::<&Arc<rss_mdm_management_http::operation_diagnostics::Services>>,
+                Clone::clone,
+            ),
         ),
         management: rss_mdm_management_http::contract_routes(
             rss_mdm_management_http::Mounts {

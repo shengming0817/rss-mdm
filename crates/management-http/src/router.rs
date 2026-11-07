@@ -43,6 +43,7 @@ pub struct Services {
     pub compliance: Arc<rss_mdm_compliance_service::Compliance>,
     pub execution: Arc<rss_mdm_device_service::control::Service>,
     pub device_reads: Arc<dyn crate::enrollment::directory::DeviceReads>,
+    pub operation_diagnostics: Arc<crate::operation_diagnostics::Services>,
     pub operation_reads: Arc<dyn crate::execution::operations::Reads>,
     pub software_queries: Arc<rss_mdm_software_service::deployment::queries::Queries>,
     pub software_downloads: Arc<dyn crate::software_content::Packages>,
@@ -188,8 +189,10 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
         .assemble()
     };
     let planning = {
-        rss_mdm_http_contract::route_module! { struct AssembleModule2 for [Browser] { runtime_diagnostics_routes, planning_routes, http_register, assets_routes, http_routes } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule2 for [Browser] { operation_diagnostics_routes, runtime_diagnostics_routes, planning_routes, http_register, assets_routes, http_routes } }
         AssembleModule2 {
+            operation_diagnostics_routes: crate::operation_diagnostics::routes()
+                .bind_with(context, |(s, _)| s.operation_diagnostics.clone()),
             runtime_diagnostics_routes: crate::runtime_diagnostics::routes()
                 .bind_with(context, |(s, _)| s.diagnostics.clone()),
             planning_routes: crate::planning::routes().bind_with(context, |(s, _)| {

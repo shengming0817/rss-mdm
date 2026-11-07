@@ -173,13 +173,11 @@ impl Service {
                         let snapshot = a.snapshot();
                         if snapshot.intent != rss_mdm_audit_integration::AuditIntent::Routine {
                             let op = snapshot.operation_id.ok_or(Error::Malformed)?;
-                            let fact = Fact::business(
-                                a,
-                                &format!("device-access:{}:{op}", snapshot.action),
-                                200,
-                                "success",
-                                None,
-                            )?;
+                            let key = format!("device-access:{}:{op}", snapshot.action);
+                            let fact = match snapshot.operation_owner {
+                                Some(owner) => Fact::business(a, owner, &key, 200, "success", None),
+                                None => Fact::observation(a, &key, 200, "success", None),
+                            }?;
                             (if change.replay {
                                 Ok(())
                             } else {

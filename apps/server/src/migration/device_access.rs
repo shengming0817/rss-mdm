@@ -85,13 +85,22 @@ pub async fn verify_access(
         "mdm_access.user_groups",
         "mdm_access.api_keys",
         "mdm_access.api_network_policy",
+        "mdm_timeline.facts",
     ] {
         let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_class WHERE oid=to_regclass($1) AND relkind='r' AND relrowsecurity AND relforcerowsecurity AND has_table_privilege(current_user,oid,'SELECT') AND NOT has_table_privilege(current_user,oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') AND NOT has_any_column_privilege(current_user,oid,'INSERT,UPDATE,REFERENCES'))").bind(table).fetch_one(&mut *c).await?;
         if !valid {
             return Err(sqlx::Error::Protocol(format!(
-                "DA Agent read contract: {table}"
+                "DA host read contract: {table}"
             )));
         }
+    }
+    if !sqlx::query_scalar::<_, bool>(include_str!("../../schema/da-policy-read-admission.sql"))
+        .fetch_one(&mut *c)
+        .await?
+    {
+        return Err(sqlx::Error::Protocol(
+            "DA policy coordinate read contract".into(),
+        ));
     }
     Ok(())
 }

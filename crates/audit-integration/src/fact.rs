@@ -5,7 +5,7 @@ use rss_request_context::{RequestId, TenantId};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-pub(crate) const SOURCE_SCHEMA: &[u8] = b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details,sensitiveAction";
+pub(crate) const SOURCE_SCHEMA: &[u8] = b"mdm.audit.fact.v1:origin,status,result,instance,operation,operationLocator,registrationRequest,registration,software,plan,writeOutcome,details,sensitiveAction";
 
 /// Source-owned fact. A stable key identifies the operation and phase, never its outcome.
 pub struct Fact {
@@ -48,12 +48,14 @@ impl Fact {
 
     pub fn business(
         context: &RequestAudit,
+        owner: crate::operation::OperationOwner,
         key: &str,
         status: u16,
         result: &str,
         registration: Option<Uuid>,
     ) -> Result<Self, InvalidFact> {
-        Self::new(
+        context.operation_owner(owner);
+        let mut fact = Self::new(
             context,
             match context.profile() {
                 crate::StorageProfile::Mdm => "mdm.business",
@@ -61,12 +63,19 @@ impl Fact {
             },
             key,
             None,
+            Some(owner),
             status,
             result,
             registration,
-        )
+        )?;
+        fact.request = context.request_coordinate();
+        Ok(fact)
     }
     pub fn request(context: &RequestAudit, status: u16, result: &str) -> Result<Self, InvalidFact> {
+        let declared = context.snapshot();
+        let owner = declared
+            .operation_owner
+            .filter(|_| declared.operation_id.is_some_and(|id| !id.is_nil()));
         let fact = Self::new(
             context,
             match context.profile() {
@@ -74,7 +83,8 @@ impl Fact {
                 crate::StorageProfile::Da => "da.request",
             },
             &context.request_id().to_string(),
-            Some(context.request_id()),
+            context.request_coordinate(),
+            owner,
             status,
             result,
             None,
@@ -84,11 +94,41 @@ impl Fact {
             None => Ok(fact),
         }
     }
+    /// Protocol/background observation with no management receipt namespace.
+    /// An operation-like protocol identifier is not promoted into a management locator.
+    pub fn observation(
+        context: &RequestAudit,
+        key: &str,
+        status: u16,
+        result: &str,
+        registration: Option<Uuid>,
+    ) -> Result<Self, InvalidFact> {
+        let mut fact = Self::new(
+            context,
+            match context.profile() {
+                crate::StorageProfile::Mdm => "mdm.business",
+                crate::StorageProfile::Da => "da.business",
+            },
+            key,
+            None,
+            None,
+            status,
+            result,
+            registration,
+        )?;
+        fact.request = context.request_coordinate();
+        Ok(fact)
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "source identity, actual request provenance and independent outcome coordinates stay explicit at the single fact constructor"
+    )]
     fn new(
         context: &RequestAudit,
         source: &str,
         key: &str,
         request: Option<Uuid>,
+        owner: Option<crate::operation::OperationOwner>,
         status: u16,
         result: &str,
         registration: Option<Uuid>,
@@ -101,8 +141,11 @@ impl Fact {
         }
         let snapshot = context.snapshot();
         let payload = serde_json::to_vec(&serde_json::json!({
+            "origin":context.origin(),
             "status": status, "result": result, "instance": snapshot.instance,
-            "operation": snapshot.operation_id, "registrationRequest": registration,
+            "operation": snapshot.operation_id,
+            "operationLocator": owner.map(|owner|crate::operation::OperationLocator::from_snapshot(context.profile(),owner,&snapshot)).transpose()?.flatten(),
+            "registrationRequest": registration,
             "registration": snapshot.registration_id, "software": snapshot.software,
             "plan": snapshot.plan,
             "writeOutcome": request.map(|_| snapshot.write_outcome),
@@ -159,6 +202,18 @@ impl Fact {
             serde_json::from_slice(&self.payload).map_err(|_| InvalidFact::Payload)?;
         if payload["details"].is_null() {
             payload["details"] = serde_json::json!({});
+        }
+        if let Some(target) = &activity.target
+            && let Some(locator) = payload
+                .get_mut("operationLocator")
+                .and_then(serde_json::Value::as_object_mut)
+        {
+            locator.insert("device".into(), serde_json::json!(target.device));
+            locator.insert(
+                "registration".into(),
+                serde_json::json!(target.registration),
+            );
+            locator.insert("generation".into(), serde_json::json!(target.generation));
         }
         let details = payload["details"]
             .as_object_mut()

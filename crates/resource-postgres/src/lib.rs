@@ -58,7 +58,7 @@ pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
 pub use artifacts::{FieldMappingReference, FieldReferences};
 
 mod operations;
-pub use operations::{record_operation_in, replay_operation_in};
+pub use operations::{read_operation_in, record_operation_in, replay_operation_in};
 
 /// Resource application schema; no Flow installation is required.
 pub const APPLICATION_MIGRATION_SQL: &str = include_str!("../migrations/application.sql");

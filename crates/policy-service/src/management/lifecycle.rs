@@ -287,6 +287,7 @@ impl crate::application::Application {
         self.changes.retirement_accepted_in(tx, accepted.0).await?;
         if !accepted.1 {
             let audit = RequestAudit::new(
+                rss_mdm_audit_integration::Origin::Background,
                 self.profile(),
                 tenant.to_string(),
                 "device_retirement_accepted",
@@ -294,13 +295,15 @@ impl crate::application::Application {
             );
             audit.identify_service("device-lifecycle");
             audit.target(&key);
-            audit.operation(
+            audit.owned_operation(
+                rss_mdm_audit_integration::operation::OperationOwner::Policy,
                 accepted.0,
                 "device_retirement_accepted",
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
             let fact = Fact::business(
                 &audit,
+                rss_mdm_audit_integration::operation::OperationOwner::Policy,
                 &format!(
                     "retirement:{}:policy:{policy_id}:{version}:accepted",
                     accepted.0

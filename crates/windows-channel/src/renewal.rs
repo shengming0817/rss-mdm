@@ -98,7 +98,7 @@ pub(crate) async fn issue(
                         )
                         .await?;
                     if !replayed {
-                        let fact = rss_mdm_audit_integration::Fact::business(
+                        let fact = rss_mdm_audit_integration::Fact::observation(
                             audit,
                             &format!("windows-renewal:{id}:issued"),
                             200,
@@ -390,6 +390,7 @@ pub(crate) async fn activate(
         return Ok(());
     }
     let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
         tenant.to_string(),
         "windows_renewal",
@@ -413,7 +414,7 @@ pub(crate) async fn activate(
                         )
                         .await?;
                     if let Some(id) = id {
-                        let fact = rss_mdm_audit_integration::Fact::business(
+                        let fact = rss_mdm_audit_integration::Fact::observation(
                             audit,
                             &format!("windows-renewal:{id}:activated"),
                             200,

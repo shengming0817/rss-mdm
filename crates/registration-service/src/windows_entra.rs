@@ -147,7 +147,8 @@ impl Management {
         }
         input.policy.validate()?;
         p.bind_audit(a)?;
-        a.operation(
+        a.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::Registration,
             input.operation_id,
             "windows_entra_policy",
             rss_mdm_audit_integration::AuditIntent::Management,
@@ -171,7 +172,7 @@ impl Management {
                 crate::windows_receipts::save(c,&op,&serde_json::to_string(&value).map_err(|_|Error::Malformed)?,a).await?;
                 Ok::<_,Error>((value,false))
             })).await?;
-            let fact=Fact::business(a, &format!("windows-entra-policy:{}",input.operation_id), 200, "success", None).map_err(Error::from)?;
+            let fact=Fact::business(a, rss_mdm_audit_integration::operation::OperationOwner::Registration, &format!("windows-entra-policy:{}",input.operation_id), 200, "success", None).map_err(Error::from)?;
             (if replayed { Ok(()) } else { this.audit.append(tx, &fact).await }).map_err(Error::from)?;
             a.mark_commit_started();
             Ok(value)

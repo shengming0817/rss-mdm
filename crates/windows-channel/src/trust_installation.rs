@@ -238,7 +238,7 @@ pub(crate) async fn send(
     a.identify_device(p.registration());
     a.registration(p.registration());
     a.target(p.device());
-    facts.push(rss_mdm_audit_integration::Fact::business(
+    facts.push(rss_mdm_audit_integration::Fact::observation(
         &a,
         &format!("windows-pki:{id}:dispatch"),
         200,
@@ -414,7 +414,7 @@ pub(crate) async fn receive(
                 )
                 .await
                 .map_err(|_| Error::Conflict)?;
-                facts.push(rss_mdm_audit_integration::Fact::business(
+                facts.push(rss_mdm_audit_integration::Fact::observation(
                     a,
                     &format!("windows-pki:{id}:confirmed"),
                     200,

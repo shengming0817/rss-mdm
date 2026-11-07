@@ -58,7 +58,7 @@ async fn original_self_service_receipt_replays_after_policy_kind_changes() -> Re
         policy_version: version,
     };
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("INSERT INTO mdm_script.receipts(tenant_id,actor,id,fingerprint,response) VALUES($1::uuid,$2,$3,$4,$5)").bind(h.c.tenant.to_string()).bind(format!("self-service:device:{}:{}",h.p.registration(),h.p.generation())).bind(input.operation_id).bind(script::transaction::fingerprint(&input)?).bind(serde_json::to_value(&accepted)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_script.receipts(tenant_id,actor,id,fingerprint,response,device,registration,generation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)").bind(h.c.tenant.to_string()).bind(format!("self-service:device:{}:{}",h.p.registration(),h.p.generation())).bind(input.operation_id).bind(script::transaction::fingerprint(&input)?).bind(serde_json::to_value(&accepted)?).bind(h.p.device()).bind(h.p.registration()).bind(h.p.generation()).execute(&mut *tx).await?;
     // A currently forbidden action makes a classify-first implementation observably fail.
     let changed: rss_mdm_policy::Definition = serde_json::from_value(
         json!({"scope":h.scope,"action":{"kind":"unmanage_device","runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"manual"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}}}),
