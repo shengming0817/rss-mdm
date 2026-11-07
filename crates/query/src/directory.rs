@@ -73,58 +73,15 @@ impl<T: schemars::JsonSchema> schemars::JsonSchema for Projection<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
-pub enum Kind {
-    Text,
-    Uuid,
-    Integer,
-    Boolean,
-    Enum(&'static [&'static str]),
-    EnumSet(&'static [&'static str]),
-    UuidSet,
-    Object,
-}
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct Field {
-    pub name: &'static str,
-    pub kind: Kind,
-    pub filter: bool,
-    pub sort: bool,
-    pub output: bool,
-}
-impl Field {
-    pub const fn scalar(name: &'static str, kind: Kind) -> Self {
-        Self {
-            name,
-            kind,
-            filter: true,
-            sort: true,
-            output: true,
-        }
-    }
-    pub const fn output(name: &'static str) -> Self {
-        Self {
-            name,
-            kind: Kind::Object,
-            filter: false,
-            sort: false,
-            output: true,
-        }
-    }
-    pub const fn filter_only(name: &'static str, kind: Kind) -> Self {
-        Self {
-            name,
-            kind,
-            filter: true,
-            sort: false,
-            output: false,
-        }
-    }
-}
+mod field;
+mod model;
+pub use field::{Field, Kind};
+pub use model::{BuildError, Exclusion};
+
 #[derive(Debug, Serialize)]
 pub struct Schema {
     pub id: &'static str,
-    pub fields: &'static [Field],
+    pub fields: Vec<Field>,
     /// Unique identity, appended when absent from the caller's ordering.
     pub keys: &'static [&'static str],
     pub default_limit: u16,
@@ -270,6 +227,7 @@ impl Query {
     pub fn binding<T: Serialize>(&self, authority: &T) -> Result<String> {
         crate::cursor::fingerprint(&(
             self.schema.id,
+            &self.schema.fields,
             authority,
             &self.filter,
             &self.sort,
@@ -291,7 +249,7 @@ impl Query {
             return Err(Error::CursorInvalidated);
         }
         for (s, v) in self.sort.iter().zip(&position.0) {
-            if !v.is_null() && !valid(self.schema.field(&s.field)?.kind, v) {
+            if !v.is_null() && !self.schema.field(&s.field)?.valid(v) {
                 return Err(Error::CursorInvalidated);
             }
         }
@@ -301,7 +259,7 @@ impl Query {
         let position = Position(
             self.sort
                 .iter()
-                .map(|s| row.get(&s.field).cloned().ok_or(Error::Invalid))
+                .map(|s| Ok(path_value(row, &s.field).cloned().unwrap_or(Value::Null)))
                 .collect::<Result<_>>()?,
         );
         self.validate_position(&position)?;
@@ -383,91 +341,36 @@ impl Query {
         })
     }
 }
-fn valid(kind: Kind, value: &Value) -> bool {
-    match kind {
-        Kind::Text => value
-            .as_str()
-            .is_some_and(|s| s.len() <= 4096 && !s.chars().any(char::is_control)),
-        Kind::Uuid | Kind::UuidSet => value.as_str().is_some_and(|s| {
-            uuid::Uuid::parse_str(s).is_ok_and(|v| !v.is_nil() && v.to_string() == s)
-        }),
-        Kind::Integer => value.as_i64().is_some(),
-        Kind::Boolean => value.is_boolean(),
-        Kind::Enum(values) | Kind::EnumSet(values) => {
-            value.as_str().is_some_and(|s| values.contains(&s))
-        }
-        Kind::Object => false,
-    }
+/// Select only a schema-validated path. Missing nullable properties retain SQL NULL semantics.
+pub fn path_value<'a>(row: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.').try_fold(row, |value, segment| value.get(segment))
 }
-fn scalar(kind: Kind, input: String) -> Result<Value> {
-    let value = match kind {
+fn scalar(field: &Field, input: String) -> Result<Value> {
+    let value = match field.kind.scalar() {
         Kind::Integer => Value::from(input.parse::<i64>().map_err(|_| Error::Invalid)?),
+        Kind::Number => serde_json::from_str::<Value>(&input).map_err(|_| Error::Invalid)?,
         Kind::Boolean => match input.as_str() {
-            "true" => Value::Bool(true),
-            "false" => Value::Bool(false),
-            _ => return Err(Error::Invalid),
+            "true" => Value::Bool(true), "false" => Value::Bool(false), _ => return Err(Error::Invalid),
         },
-        Kind::Uuid | Kind::UuidSet => Value::from(
-            uuid::Uuid::parse_str(&input)
-                .map_err(|_| Error::Invalid)?
-                .to_string(),
-        ),
+        Kind::Uuid => Value::from(uuid::Uuid::parse_str(&input).map_err(|_| Error::Invalid)?.to_string()),
         _ => Value::from(input),
     };
-    if valid(kind, &value) {
-        Ok(value)
-    } else {
-        Err(Error::Invalid)
-    }
+    if field.valid(&value) { Ok(value) } else { Err(Error::Invalid) }
 }
 fn bind(schema: &Schema, e: Expression<String, String>) -> Result<Expression<String, Value>> {
     Ok(match e {
-        Expression::Compare {
-            field,
-            operator,
-            values,
-        } => {
+        Expression::Compare { field, operator, values } => {
             let spec = schema.field(&field)?;
-            if !matches!(
-                operator,
-                Operator::Eq
-                    | Operator::Ne
-                    | Operator::Lt
-                    | Operator::Le
-                    | Operator::Gt
-                    | Operator::Ge
-                    | Operator::In
-                    | Operator::Out
-                    | Operator::Icontains
-            ) || !spec.filter
-                || matches!(spec.kind, Kind::Object)
-                || (operator.range()
-                    && matches!(
-                        spec.kind,
-                        Kind::Boolean | Kind::Enum(_) | Kind::EnumSet(_) | Kind::UuidSet
-                    ))
-                || (operator == Operator::Icontains && !matches!(spec.kind, Kind::Text))
-            {
-                return Err(Error::Invalid);
-            }
-            Expression::Compare {
-                field,
-                operator,
-                values: values
-                    .into_iter()
-                    .map(|s| scalar(spec.kind, s))
-                    .collect::<Result<_>>()?,
-            }
+            if !spec.operations().contains(&operator) { return Err(Error::Invalid); }
+            let values = if matches!(operator, Operator::IsNull | Operator::IsNotNull) {
+                if values != ["true"] { return Err(Error::Invalid); }
+                Vec::new()
+            } else {
+                values.into_iter().map(|s| scalar(spec, s)).collect::<Result<_>>()?
+            };
+            Expression::Compare { field, operator, values }
         }
-        Expression::And(v) => Expression::And(
-            v.into_iter()
-                .map(|e| bind(schema, e))
-                .collect::<Result<_>>()?,
-        ),
-        Expression::Or(v) => Expression::Or(
-            v.into_iter()
-                .map(|e| bind(schema, e))
-                .collect::<Result<_>>()?,
-        ),
+        Expression::And(v) => Expression::And(v.into_iter().map(|e| bind(schema, e)).collect::<Result<_>>()?),
+        Expression::Or(v) => Expression::Or(v.into_iter().map(|e| bind(schema, e)).collect::<Result<_>>()?),
     })
 }
