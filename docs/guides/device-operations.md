@@ -10,12 +10,18 @@
 | lock | kind、confirmed:true、expectedRegistrationId、expectedGeneration、六位 ASCII 数字 pin | device_control |
 | wipe | kind、confirmed:true、expectedRegistrationId、expectedGeneration | device_wipe |
 
+`GET /api/v1/devices/{device}` 的 `capabilities` 包含 `restart`、`lock`、`wipe`（`channel: mdm`）。读取沿用该设备的 `inventory_read` 权限，`permission` 分别说明当前 `device_control`／`device_wipe` 授权；读取权限不授予动作权限。
+
+三栏分别解释产品通道及 PIN 托管配置、设备原生前提和当前管理权限。设备前提 `supported` 只表示当前同注册代次的可信证据满足条件；`unsupported/capability_not_supported` 为已知不满足，`unknown/capability_unknown` 为证据不足，`blocked/not_registered` 为没有有效主 MDM 注册。产品配置缺失使用 `productSupport` 的 `unsupported/product_not_configured`；管理权限拒绝只在 `permission` 中表达。离线不等于不支持，平台原生权利也不等于管理员授权。
+
+能力与注册来自同一有界只读快照，返回前复验授权和注册；读取不探测设备、不创建命令、不接收 PIN，也不代表设备在线或实际效果。来源歧义、损坏事实和依赖故障返回错误。提交仍以事务内的当前权限、注册、危险确认及动态能力为准；前端动作确认流程需单独接入这些事实。
+
 危险动作的确认绑定当前主 MDM 注册世代，错代次返回冲突。`GET /api/v1/devices/{device}` 的 nullable `primaryMdmRegistration` 返回 registrationId、generation、source；不能从 channels 中的声明式或用户注册推断主注册。
 
 | 平台前提 | restart | lock | wipe |
 |---|---|---|---|
 | Windows 当前主 MDM；已核实 build/edition | 固定 RebootNow | Unsupported | 固定 RemoteWipe/doWipe |
-| macOS Device enrollment；已核实 OS 与硬件 | >=10.13 | Intel >=10.8；Apple silicon >=11.5；必须已知硬件 | Apple silicon >=12.0.1；DoNotObliterate；不允许 obliteration 回退 |
+| macOS Device enrollment；当前原生 schema 要求 macOS >=15 | >=15 | Intel 或 Apple silicon；必须已知硬件 | Apple silicon；DoNotObliterate；不允许 obliteration 回退 |
 
 Intel/T2 状态未知或不满足条件时不开放 Mac 擦除。平台事实必须来自同一注册世代的已认证原生交换，不能由管理请求提供；未知前提拒绝创建。该矩阵仍受固定平台 schema 与 enrollment access rights 约束，协议测试不替代真机验收。
 

@@ -61,12 +61,12 @@ pub trait AppleResults: Send + Sync {
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, AppleEvidence>>;
 
     /// Check current-registration platform evidence without issuing a command.
-    fn device_controls_supported<'a>(
+    fn control_applicability<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
         requests: &'a [AppleControlCheck],
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, bool>>;
+    ) -> Pending<'a, std::collections::BTreeMap<usize, crate::control::device_control::Applicability>>;
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -89,7 +89,7 @@ pub struct AppleCommand {
 /// Capability facts are read once for the requested current registration generations.
 #[derive(Clone)]
 pub struct AppleControlCheck {
-    pub id: Uuid,
+    pub id: usize,
     pub registration: Uuid,
     pub generation: i64,
     pub action: crate::control::device_control::Kind,

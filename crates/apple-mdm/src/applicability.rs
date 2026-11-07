@@ -154,6 +154,7 @@ impl Support {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Condition {
     Version,
+    AppleSilicon,
     Beta,
     Channel,
     Enrollment,

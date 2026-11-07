@@ -13,6 +13,59 @@ pub enum Kind {
     Wipe,
 }
 impl Kind {
+    /// Fixed native shape used by applicability reads and by the real submission.
+    /// The lock PIN is added only by `Action::task` after input validation.
+    pub fn native_shape(self, source: ReportSource) -> Result<Task, Error> {
+        use rss_mdm_apple_mdm::native::{
+            input::{CommandInput, FieldValue, Fields},
+            request::Request,
+        };
+        use rss_mdm_windows_mdm::native::{Execution, Request as Windows, Value, Verb};
+        match source {
+            ReportSource::MdmApple => {
+                let (request_type, fields) = match self {
+                    Self::Restart => ("RestartDevice", Fields::default()),
+                    Self::Lock => ("DeviceLock", Fields::default()),
+                    Self::Wipe => (
+                        "EraseDevice",
+                        Fields(std::collections::BTreeMap::from([(
+                            "ObliterationBehavior".into(),
+                            FieldValue::String("DoNotObliterate".into()),
+                        )])),
+                    ),
+                };
+                Ok(Task::Macos {
+                    request: Request::Command {
+                        command: CommandInput {
+                            request_type: request_type.into(),
+                            fields,
+                        },
+                    },
+                })
+            }
+            ReportSource::MdmWindows => {
+                let (node, value) = match self {
+                    Self::Restart => ("./Device/Vendor/MSFT/Reboot/RebootNow", None),
+                    Self::Wipe => (
+                        "./Device/Vendor/MSFT/RemoteWipe/doWipe",
+                        Some(Value::Text(String::new())),
+                    ),
+                    Self::Lock => return Err(Error::Unsupported),
+                };
+                Ok(Task::Windows {
+                    request: Execution::SyncMl {
+                        request: Windows::Node {
+                            node: node.into(),
+                            instance: Vec::new(),
+                            operation: Verb::Exec,
+                            value,
+                        },
+                    },
+                })
+            }
+            ReportSource::AgentBuiltin => Err(Error::Unsupported),
+        }
+    }
     pub fn permission(self) -> Permission {
         match self {
             Self::Restart | Self::Lock => Permission::DeviceControl,
@@ -22,6 +75,23 @@ impl Kind {
     pub fn dangerous(self) -> bool {
         self != Self::Restart
     }
+}
+
+/// Current platform prerequisites, never a grant or proof of device execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Applicability {
+    Supported,
+    Unsupported,
+    Unknown,
+}
+
+/// A capability read has no operation identity, deadline, confirmation or secret.
+#[derive(Clone, Copy)]
+pub struct Check {
+    pub registration: Uuid,
+    pub generation: i64,
+    pub source: ReportSource,
+    pub action: Kind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -105,61 +175,20 @@ impl Action {
         }))
     }
     pub(crate) fn task(&self, source: ReportSource) -> Result<Task, Error> {
-        use rss_mdm_apple_mdm::native::{
-            input::{CommandInput, FieldValue, Fields},
-            request::Request as A,
-        };
-        use rss_mdm_windows_mdm::native::{Execution, Request, Value, Verb};
-        Ok(match source {
-            ReportSource::MdmApple => {
-                let (request_type, fields) = match self {
-                    Self::Restart {} => ("RestartDevice", Fields::default()),
-                    Self::Lock { pin, .. } => (
-                        "DeviceLock",
-                        Fields(std::collections::BTreeMap::from([(
-                            "PIN".into(),
-                            FieldValue::String(pin.clone()),
-                        )])),
-                    ),
-                    Self::Wipe { .. } => (
-                        "EraseDevice",
-                        Fields(std::collections::BTreeMap::from([(
-                            "ObliterationBehavior".into(),
-                            FieldValue::String("DoNotObliterate".into()),
-                        )])),
-                    ),
-                };
-                Task::Macos {
-                    request: A::Command {
-                        command: CommandInput {
-                            request_type: request_type.into(),
-                            fields,
-                        },
-                    },
-                }
-            }
-            ReportSource::MdmWindows => {
-                let (node, value) = match self {
-                    Self::Restart {} => ("./Device/Vendor/MSFT/Reboot/RebootNow", None),
-                    Self::Wipe { .. } => (
-                        "./Device/Vendor/MSFT/RemoteWipe/doWipe",
-                        Some(Value::Text(String::new())),
-                    ),
-                    Self::Lock { .. } => return Err(Error::Unsupported),
-                };
-                Task::Windows {
-                    request: Execution::SyncMl {
-                        request: Request::Node {
-                            node: node.into(),
-                            instance: Vec::new(),
-                            operation: Verb::Exec,
-                            value,
-                        },
-                    },
-                }
-            }
-            _ => return Err(Error::Unsupported),
-        })
+        let mut task = self.kind().native_shape(source)?;
+        if let (
+            Self::Lock { pin, .. },
+            Task::Macos {
+                request: rss_mdm_apple_mdm::native::request::Request::Command { command },
+            },
+        ) = (self, &mut task)
+        {
+            command.fields.0.insert(
+                "PIN".into(),
+                rss_mdm_apple_mdm::native::input::FieldValue::String(pin.clone()),
+            );
+        }
+        Ok(task)
     }
 }
 
@@ -263,67 +292,87 @@ pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
                 .map_err(|_| Error::Malformed)?)
 }
 
-pub(crate) async fn supported_in(
-    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    apple: std::sync::Arc<dyn crate::control::apple_facts::AppleResults>,
-    windows: std::sync::Arc<dyn crate::control::windows_results::Store>,
-    requests: &[(Uuid, Uuid, i64, Create, Kind)],
-) -> crate::control::Result<std::collections::BTreeMap<Uuid, bool>> {
-    let tenant = tx.tenant_id();
-    tx.with_connection_context(&mut (apple, windows, requests), move |args, c| {
-        Box::pin(async move {
-            Ok(supported_on(c, tenant, args.0.clone(), args.1.clone(), args.2).await)
-        })
-    })
-    .await?
+/// Resolve the same unique enabled native source for reads and submissions.
+/// The caller supplies its authorized, tenant-bound connection and current registration.
+pub async fn source_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    registration: Uuid,
+) -> crate::control::Result<ReportSource> {
+    let sources = sqlx::query_scalar::<_, String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND enabled AND source IN('mdm.apple','mdm.windows') ORDER BY source")
+        .bind(tenant.to_string()).bind(registration).fetch_all(c).await?;
+    match sources.as_slice() {
+        [source] if source == "mdm.apple" => Ok(ReportSource::MdmApple),
+        [source] if source == "mdm.windows" => Ok(ReportSource::MdmWindows),
+        _ => Err(Error::Conflict.into()),
+    }
 }
 
-pub(crate) async fn supported_on(
+pub(crate) async fn applicability_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     apple: std::sync::Arc<dyn crate::control::apple_facts::AppleResults>,
     windows: std::sync::Arc<dyn crate::control::windows_results::Store>,
-    requests: &[(Uuid, Uuid, i64, Create, Kind)],
-) -> crate::control::Result<std::collections::BTreeMap<Uuid, bool>> {
+    checks: &[Check],
+) -> crate::control::Result<Vec<Applicability>> {
     use std::collections::BTreeMap;
+    if checks.len() > 1000 {
+        return Err(Error::Malformed.into());
+    }
     let mut output = BTreeMap::new();
     let mut apples = Vec::new();
-    let mut window_checks = Vec::new();
-    for (id, registration, generation, input, action) in requests {
-        if !matches(*action, input)? {
-            output.insert(*id, false);
-            continue;
-        }
-        match &input.task {
-            Task::Windows {
+    let mut windows_checks = Vec::new();
+    for (id, check) in checks.iter().enumerate() {
+        match check.action.native_shape(check.source) {
+            Ok(Task::Windows {
                 request: rss_mdm_windows_mdm::native::Execution::SyncMl { request },
-            } => {
-                window_checks.push((*id, *registration, *generation, request.clone()));
+            }) => {
+                windows_checks.push((id, check.registration, check.generation, request));
             }
-            Task::Macos {
+            Ok(Task::Macos {
                 request: rss_mdm_apple_mdm::native::request::Request::Command { command },
-            } => apples.push(crate::control::apple_facts::AppleControlCheck {
-                id: *id,
-                registration: *registration,
-                generation: *generation,
-                action: *action,
-                command: command.clone(),
-            }),
-            _ => {
-                output.insert(*id, false);
+            }) => {
+                apples.push(crate::control::apple_facts::AppleControlCheck {
+                    id,
+                    registration: check.registration,
+                    generation: check.generation,
+                    action: check.action,
+                    command,
+                });
+            }
+            Err(Error::Unsupported) => {
+                output.insert(id, Applicability::Unsupported);
+            }
+            Err(e) => return Err(e.into()),
+            Ok(_) => {
+                return Err(Error::Unavailable(crate::control::Failure::CommandInvariant).into());
             }
         }
     }
     if !apples.is_empty() {
-        let results = apple
-            .device_controls_supported(c, &tenant.to_string(), &apples)
-            .await?;
-        output.extend(results);
+        output.extend(
+            apple
+                .control_applicability(c, &tenant.to_string(), &apples)
+                .await?,
+        );
     }
-    if !window_checks.is_empty() {
-        output.extend(windows.control_support(c, tenant, window_checks).await?);
+    if !windows_checks.is_empty() {
+        output.extend(
+            windows
+                .control_applicability(c, tenant, windows_checks)
+                .await?,
+        );
     }
-    Ok(output)
+    if output.len() != checks.len() {
+        return Err(Error::Unavailable(crate::control::Failure::CommandInvariant).into());
+    }
+    (0..checks.len())
+        .map(|id| {
+            output
+                .remove(&id)
+                .ok_or_else(|| Error::Unavailable(crate::control::Failure::CommandInvariant).into())
+        })
+        .collect()
 }
 impl crate::control::Service {
     pub(crate) async fn validate_control_in(
@@ -335,23 +384,52 @@ impl crate::control::Service {
         input: &Create,
         action: Kind,
     ) -> crate::control::Result<()> {
-        let result = supported_in(
-            tx,
-            self.transactions.apple_results.clone(),
-            self.transactions.windows_results.clone(),
-            &[(
-                input.operation_id,
-                registration,
-                generation,
-                input.clone(),
-                action,
-            )],
-        )
-        .await?;
-        if result.get(&input.operation_id) == Some(&true) {
+        if !matches(action, input)? {
+            return Err(Error::Unsupported.into());
+        }
+        let tenant = tx.tenant_id();
+        let checks = [Check {
+            registration,
+            generation,
+            source: input.task.source(),
+            action,
+        }];
+        let result = tx
+            .with_connection_context(&mut (self, &checks), move |(service, checks), c| {
+                Box::pin(async move {
+                    Ok(applicability_on(
+                        c,
+                        tenant,
+                        service.transactions.apple_results.clone(),
+                        service.transactions.windows_results.clone(),
+                        *checks,
+                    )
+                    .await)
+                })
+            })
+            .await??;
+        if result.as_slice() == [Applicability::Supported] {
             Ok(())
         } else {
             Err(Error::Unsupported.into())
         }
+    }
+}
+
+impl crate::control::queries::Queries {
+    /// Borrow the caller's authorized, tenant-bound read-only snapshot.
+    pub async fn control_applicability_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        checks: &[Check],
+    ) -> crate::control::Result<Vec<Applicability>> {
+        applicability_on(
+            c,
+            self.tenant,
+            self.apple_results.clone(),
+            self.windows_results.clone(),
+            checks,
+        )
+        .await
     }
 }

@@ -5,6 +5,8 @@ use std::sync::Arc;
 pub(super) struct Fixture {
     pub(super) resources: Prepared,
     pub(super) service: Arc<rss_mdm_device_service::control::Service>,
+    pub(super) task_reads: Arc<assembly::task_reads::Reads>,
+    pub(super) devices: Arc<rss_mdm_registration_service::DeviceService>,
 }
 impl Fixture {
     pub(super) async fn open(c: &Context, signing: bool) -> Result<Self> {
@@ -72,7 +74,7 @@ impl Fixture {
                 None,
             )
             .await?;
-            let (service, _) = assembly::device_control::assemble(
+            let (service, queries) = assembly::device_control::assemble(
                 config,
                 storage,
                 protection.clone(),
@@ -82,11 +84,34 @@ impl Fixture {
                 rss_device_command_postgres::CommandClock::Postgres,
             )
             .await?;
-            Ok((service,))
+            let task_reads = assembly::task_reads::assemble(
+                config,
+                storage,
+                protection.clone(),
+                None,
+                false,
+                false,
+                source.clone(),
+                configuration,
+                software.queries.clone(),
+                registration.materials,
+                queries,
+            );
+            let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(
+                c.database.registration(),
+                c.tenant.to_string(),
+                c.audit.clone(),
+            ));
+            Ok((service, task_reads, devices))
         }
         .await;
-        let (resources, (service,)) = resources.finish(result).await?;
-        Ok(Self { resources, service })
+        let (resources, (service, task_reads, devices)) = resources.finish(result).await?;
+        Ok(Self {
+            resources,
+            service,
+            task_reads,
+            devices,
+        })
     }
     pub(super) async fn close(self) -> Result<()> {
         self.resources.close().await

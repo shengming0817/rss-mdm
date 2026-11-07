@@ -168,12 +168,12 @@ pub trait AppleResults: Send + Sync {
     ) -> Pending<'a, Vec<(Uuid, String)>>;
 
     /// Check current-registration platform evidence without issuing a command.
-    fn device_controls_supported<'a>(
+    fn control_applicability<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
         requests: &'a [AppleControlCheck],
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, bool>>;
+    ) -> Pending<'a, std::collections::BTreeMap<usize, Result<(), rss_mdm_apple_mdm::native::Error>>>;
     /// Server publication withdrawal is distinct from native object absence.
     fn withdrawal_published<'a>(
         &'a self,
@@ -365,7 +365,7 @@ pub trait AppleAssetRead: Send + Sync {
 /// Capability facts are read once for the requested current registration generations.
 #[derive(Clone)]
 pub struct AppleControlCheck {
-    pub id: Uuid,
+    pub id: usize,
     pub registration: Uuid,
     pub generation: i64,
     pub action: ControlKind,
@@ -383,25 +383,55 @@ pub struct Synchronized {
 }
 
 impl ControlKind {
-    pub fn supports_apple(self, context: &rss_mdm_apple_mdm::applicability::Context) -> bool {
-        use rss_mdm_apple_mdm::applicability::{Channel, Enrollment, Version};
-        let Some(version) = context.version else {
-            return false;
+    /// Same platform and native-schema decision for a read and the actual dispatch.
+    pub fn applicability(
+        self,
+        context: &rss_mdm_apple_mdm::applicability::Context,
+        command: &rss_mdm_apple_mdm::native::input::CommandInput,
+        access_rights: &[&str],
+    ) -> Result<(), rss_mdm_apple_mdm::native::Error> {
+        use rss_mdm_apple_mdm::{
+            applicability::{Channel, Condition, Enrollment, Rejection, Version},
+            native::{Error, Target},
         };
         if context.channel != Channel::Device || context.enrollment != Enrollment::Device {
-            return false;
+            return Err(Error::Unsupported);
         }
         let minimum = match self {
             Self::Restart => "10.13",
             Self::Lock => match context.apple_silicon {
                 Some(true) => "11.5",
                 Some(false) => "10.8",
-                None => return false,
+                None => {
+                    return Err(Error::Applicability(Rejection::MissingEvidence(
+                        Condition::AppleSilicon,
+                    )));
+                }
             },
-            Self::Wipe if context.apple_silicon == Some(true) => "12.0.1",
-            Self::Wipe => return false,
+            Self::Wipe => match context.apple_silicon {
+                Some(true) => "12.0.1",
+                Some(false) => return Err(Error::Unsupported),
+                None => {
+                    return Err(Error::Applicability(Rejection::MissingEvidence(
+                        Condition::AppleSilicon,
+                    )));
+                }
+            },
         };
-        version >= Version::parse(minimum).expect("fixed minimum version")
+        let version = context
+            .version
+            .ok_or(Error::Applicability(Rejection::MissingEvidence(
+                Condition::Version,
+            )))?;
+        if version < Version::parse(minimum).expect("fixed minimum version") {
+            return Err(Error::Unsupported);
+        }
+        command
+            .compile(&Target {
+                context,
+                access_rights,
+            })
+            .map(|_| ())
     }
 }
 
@@ -411,8 +441,29 @@ mod tests {
     #[test]
     fn apple_matrix_requires_known_safe_hardware_and_version() {
         use rss_mdm_apple_mdm::applicability::{Channel, Context, Enrollment, Version};
+        use rss_mdm_device_service::control::{Task, device_control::Kind};
+        let check = |kind: ControlKind, context: &Context| {
+            let action = match kind {
+                ControlKind::Restart => Kind::Restart,
+                ControlKind::Lock => Kind::Lock,
+                ControlKind::Wipe => Kind::Wipe,
+            };
+            let Task::Macos {
+                request: rss_mdm_apple_mdm::native::request::Request::Command { command },
+            } = action
+                .native_shape(rss_mdm_inventory::ReportSource::MdmApple)
+                .unwrap()
+            else {
+                panic!("Apple shape")
+            };
+            kind.applicability(
+                context,
+                &command,
+                &["AllowPasscodeRemovalAndLock", "AllowDeviceErase"],
+            )
+        };
         let mut context = Context {
-            version: Some(Version::parse("12.0.1").unwrap()),
+            version: Some(Version::parse("15.0.1").unwrap()),
             channel: Channel::Device,
             enrollment: Enrollment::Device,
             supervised: None,
@@ -420,17 +471,34 @@ mod tests {
             user_approved: None,
             apple_silicon: Some(true),
         };
-        assert!(ControlKind::Wipe.supports_apple(&context));
+        assert_eq!(check(ControlKind::Wipe, &context), Ok(()));
+        context.version = Some(Version::parse("12.0.1").unwrap());
+        assert_eq!(
+            check(ControlKind::Wipe, &context),
+            Err(rss_mdm_apple_mdm::native::Error::Unsupported)
+        );
+        context.version = Some(Version::parse("15.0.1").unwrap());
         context.apple_silicon = Some(false);
-        assert!(!ControlKind::Wipe.supports_apple(&context));
-        assert!(ControlKind::Lock.supports_apple(&context));
+        assert!(check(ControlKind::Wipe, &context).is_err());
+        assert_eq!(check(ControlKind::Lock, &context), Ok(()));
         context.apple_silicon = None;
-        assert!(!ControlKind::Lock.supports_apple(&context));
+        assert!(matches!(
+            check(ControlKind::Lock, &context),
+            Err(rss_mdm_apple_mdm::native::Error::Applicability(
+                rss_mdm_apple_mdm::applicability::Rejection::MissingEvidence(_)
+            ))
+        ));
+        assert!(matches!(
+            check(ControlKind::Wipe, &context),
+            Err(rss_mdm_apple_mdm::native::Error::Applicability(
+                rss_mdm_apple_mdm::applicability::Rejection::MissingEvidence(_)
+            ))
+        ));
         context.apple_silicon = Some(true);
         context.version = Some(Version::parse("11.4").unwrap());
-        assert!(!ControlKind::Lock.supports_apple(&context));
-        assert!(!ControlKind::Wipe.supports_apple(&context));
+        assert!(check(ControlKind::Lock, &context).is_err());
+        assert!(check(ControlKind::Wipe, &context).is_err());
         context.enrollment = Enrollment::User;
-        assert!(!ControlKind::Restart.supports_apple(&context));
+        assert!(check(ControlKind::Restart, &context).is_err());
     }
 }

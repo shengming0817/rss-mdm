@@ -20,17 +20,35 @@ pub(super) fn error(e: rss_mdm_windows_channel::Error) -> rss_mdm_device_service
     }
 }
 impl Store for WindowsResults {
-    fn control_support<'a>(
+    fn control_applicability<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        checks: Vec<(Uuid, Uuid, i64, rss_mdm_windows_mdm::native::Request)>,
-    ) -> Pending<'a, BTreeMap<Uuid, bool>> {
+        checks: Vec<(usize, Uuid, i64, rss_mdm_windows_mdm::native::Request)>,
+    ) -> Pending<'a, BTreeMap<usize, rss_mdm_device_service::control::device_control::Applicability>>
+    {
         Box::pin(async move {
             self.0
-                .control_support_on(c, tenant, checks)
+                .control_applicability_on(c, tenant, checks)
                 .await
-                .map_err(error)
+                .map_err(error)?
+                .into_iter()
+                .map(|(id, result)| {
+                    use rss_mdm_device_service::control::device_control::Applicability as A;
+                    use rss_mdm_windows_mdm::native::Error as E;
+                    let state = match result {
+                        Ok(()) => A::Supported,
+                        Err(E::MissingEvidence) => A::Unknown,
+                        Err(E::Unsupported | E::Scope | E::OperationNotAllowed) => A::Unsupported,
+                        Err(_) => {
+                            return Err(rss_mdm_device_service::control::Error::Unavailable(
+                                rss_mdm_device_service::control::Failure::CommandInvariant,
+                            ));
+                        }
+                    };
+                    Ok((id, state))
+                })
+                .collect()
         })
     }
 

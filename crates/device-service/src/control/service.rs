@@ -80,16 +80,14 @@ impl Service {
         if let Some(confirmation) = confirmation {
             confirmation.check(registration, generation)?;
         }
-        let tenant = self.transactions.tenant.to_string();
-        let sources = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar::<_, String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND enabled AND source IN('mdm.apple','mdm.windows') ORDER BY source")
-                .bind(tenant).bind(registration).fetch_all(c).await
-        })).await?;
-        let source = match sources.as_slice() {
-            [source] if source == "mdm.apple" => rss_mdm_inventory::ReportSource::MdmApple,
-            [source] if source == "mdm.windows" => rss_mdm_inventory::ReportSource::MdmWindows,
-            _ => return Err(Error::Unsupported.into()),
-        };
+        let tenant = self.transactions.tenant;
+        let source = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(crate::control::device_control::source_on(c, tenant, registration).await)
+                })
+            })
+            .await??;
         if let crate::control::device_control::Action::Lock { pin, .. } = &input.action
             && source == rss_mdm_inventory::ReportSource::MdmApple
         {

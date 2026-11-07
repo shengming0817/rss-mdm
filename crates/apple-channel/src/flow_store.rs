@@ -367,14 +367,15 @@ impl channels::AppleResults for Store {
         })
     }
 
-    fn device_controls_supported<'a>(
+    fn control_applicability<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
         requests: &'a [channels::AppleControlCheck],
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, bool>> {
+    ) -> Pending<'a, std::collections::BTreeMap<usize, Result<(), rss_mdm_apple_mdm::native::Error>>>
+    {
         Box::pin(async move {
-            crate::native::controls_supported(c, &self.protection, tenant, requests).await
+            crate::native::control_applicability(c, &self.protection, tenant, requests).await
         })
     }
     fn withdrawal_published<'a>(
@@ -537,6 +538,8 @@ async fn send_command(
         }
         return super::native::resolve(c, &apple.protection, p, command).await;
     };
+    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state<>'retired'").bind(p.tenant().to_string()).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
+    let rights = super::native::rights(rights);
     if command.input_version == "device-control-v1" {
         let A::Command { command } = &command.request else {
             return Err(Error::Malformed);
@@ -547,12 +550,10 @@ async fn send_command(
             "EraseDevice" => crate::protocol_types::ControlKind::Wipe,
             _ => return Err(Error::Malformed),
         };
-        if !action.supports_apple(&context) {
-            return Ok(AppleDispatch::Rejected(native::Error::Unsupported));
+        if let Err(error) = action.applicability(&context, command, &rights) {
+            return Ok(AppleDispatch::Rejected(error));
         }
     }
-    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state<>'retired'").bind(p.tenant().to_string()).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
-    let rights = super::native::rights(rights);
     let target = native::Target {
         context: &context,
         access_rights: &rights,
