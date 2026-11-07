@@ -500,21 +500,48 @@ async fn device_observations(
         rss_mdm_inventory::CollectionDefinition::new(&collection, "1", source, fields)?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &definition).await?;
     let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3").bind(c.tenant.to_string()).bind(registration).bind(source.as_str()).fetch_one(&mut *tx).await?;
-    let scope = rss_mdm_registration_service::device::scope_dataset(
+    let stream = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
         registration,
         source.as_str(),
         epoch,
         &collection,
-    )?
-    .encode()?;
+    )?;
+    let scope = stream.encode()?;
+    let batch = Uuid::new_v4().to_string();
     let projection = rss_mdm_inventory_postgres::projection_scope(c.tenant);
     for (field, value) in observations {
+        let key = rss_mdm_inventory::FieldKey::parse(field)?;
+        let value = definition
+            .field(key)?
+            .canonical_value(rss_mdm_inventory::Scalar::String((*value).into()))?;
         sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,$11,$10,1,'{\"kind\":\"device\"}')")
-            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(&scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String((*value).into()))?).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(epoch.to_string()).bind(source.as_str()).execute(&mut *tx).await?;
+            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(&scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field).bind(serde_json::to_string(&value)?).bind(&batch).bind(registration.to_string()).bind(epoch.to_string()).bind(source.as_str()).execute(&mut *tx).await?;
     }
+    let fields = observations
+        .iter()
+        .map(|(key, _)| rss_mdm_inventory::FieldKey::parse(key))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let facts = rss_mdm_inventory_postgres::read_in(&mut tx, c.tenant, &[stream], &fields)
+        .await
+        .context("typed directory observations")?;
+    assert_eq!(facts.scalars.len(), observations.len());
     tx.commit().await?;
+    let cut = rss_mdm_inventory_postgres::capture_asset_cut(&c.operator, c.tenant).await?;
+    let mut tx = seed_transaction(c).await?;
+    let catalog = rss_mdm_inventory_postgres::catalog_at_in(&mut tx, c.tenant, &cut).await?;
+    assets::raw_snapshot::scalar_devices_on(
+        rss_mdm_install_support::StorageProfile::Mdm,
+        &mut tx,
+        c.tenant,
+        &cut,
+        std::slice::from_ref(&member.device),
+        &catalog,
+    )
+    .await
+    .context("committed device snapshot")?;
+    tx.rollback().await?;
     Ok(member.device.clone())
 }
 
