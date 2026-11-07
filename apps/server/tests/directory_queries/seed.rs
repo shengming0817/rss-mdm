@@ -528,6 +528,11 @@ async fn device_observations(
         .context("typed directory observations")?;
     assert_eq!(facts.scalars.len(), observations.len());
     tx.commit().await?;
+    check_device_snapshot(c, &member.device).await?;
+    Ok(member.device.clone())
+}
+
+async fn check_device_snapshot(c: &Context, device: &str) -> Result<()> {
     let cut = rss_mdm_inventory_postgres::capture_asset_cut(&c.operator, c.tenant).await?;
     let mut tx = seed_transaction(c).await?;
     let catalog = rss_mdm_inventory_postgres::catalog_at_in(&mut tx, c.tenant, &cut).await?;
@@ -536,13 +541,13 @@ async fn device_observations(
         &mut tx,
         c.tenant,
         &cut,
-        std::slice::from_ref(&member.device),
+        &[device.to_owned()],
         &catalog,
     )
     .await
     .context("committed device snapshot")?;
     tx.rollback().await?;
-    Ok(member.device.clone())
+    Ok(())
 }
 
 async fn resource_change(
