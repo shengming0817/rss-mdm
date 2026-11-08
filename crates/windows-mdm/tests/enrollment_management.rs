@@ -76,6 +76,7 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
     assert!(full.contains("name=\"ROLE\" value=\"32\""));
     assert!(full.contains("name=\"EntDMID\" value=\"enterprise-device-id\""));
     assert!(full.contains("type=\"My\"><characteristic type=\"User\""));
+    assert!(full.contains("name=\"ROBOSupport\" value=\"true\" datatype=\"boolean\""));
     assert!(full.contains("name=\"RenewPeriod\" value=\"60\" datatype=\"integer\""));
     assert!(full.contains("name=\"RetryInterval\" value=\"4\" datatype=\"integer\""));
     for (renew, retry) in [(0, 4), (1001, 4), (60, 0), (60, 61)] {

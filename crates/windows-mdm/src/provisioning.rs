@@ -176,6 +176,15 @@ pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
             characteristic(&mut w, "WSTEP")?;
             characteristic(&mut w, "Renew")?;
             parm(&mut w, "ServerURL", p.renewal_discovery_url)?;
+            w.start(
+                "parm",
+                &[
+                    ("name", "ROBOSupport"),
+                    ("value", "true"),
+                    ("datatype", "boolean"),
+                ],
+            )?;
+            w.end("parm")?;
             for (name, days) in [
                 ("RenewPeriod", p.renew_days),
                 ("RetryInterval", p.retry_days),

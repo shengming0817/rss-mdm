@@ -430,6 +430,60 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
 }
 
 #[tokio::test]
+#[ignore = "T2: revoke a Windows registration through the real MDM runtime role and replay the original receipt"]
+async fn windows_revocation_preserves_device_access_role_isolation() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let n = identity::seed(&c, "windows").await?;
+    let account = c
+        .account(&[rss_mdm_authorization_service::Permission::Credentials])
+        .await?;
+    let proof = c.authenticate(&account).await?;
+    let devices = crate::device::DeviceService::new(
+        c.database.registration(),
+        c.tenant.to_string(),
+        c.audit.clone(),
+    );
+    let da_binding_access: bool = sqlx::query_scalar(
+        "SELECT has_any_column_privilege('mdm_access','rss_da.bindings','SELECT,UPDATE')",
+    )
+    .fetch_one(&c.operator)
+    .await?;
+    assert!(!da_binding_access);
+    let operation = uuid::Uuid::new_v4();
+    let audit = || -> Result<_> {
+        let audit = c.request(&proof)?;
+        audit.operation(
+            operation,
+            "credential_revoke",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        Ok(audit)
+    };
+    let receipt = devices
+        .revoke_inner(&proof, &n.device, n.registration, operation, &audit()?)
+        .await?;
+    let replay = devices
+        .revoke_inner(&proof, &n.device, n.registration, operation, &audit()?)
+        .await?;
+    assert_eq!(receipt, replay);
+    let state: (String, String, bool) = sqlx::query_as(
+        "SELECT r.state,k.state,s.enabled FROM mdm_access.registrations r \
+         JOIN mdm_access.credentials k ON (r.tenant_id,r.id)=(k.tenant_id,k.registration) \
+         JOIN mdm_access.report_sources s ON (r.tenant_id,r.id)=(s.tenant_id,s.registration) \
+         WHERE r.tenant_id=$1::uuid AND r.id=$2 AND k.id=$3 AND s.source='mdm.windows'",
+    )
+    .bind(c.tenant.to_string())
+    .bind(n.registration)
+    .bind(n.credential)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(state, ("revoked".into(), "revoked".into(), false));
+    drop(devices);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "T2: installation facts use the channel adapter and original SQL transaction"]
 async fn installation_facts_correlate_receipts_and_post_dispatch_collection() -> Result<()> {
     use rss_mdm_windows_channel::results::{InstallationDelivery as Delivery, InstallationRead};
