@@ -49,7 +49,7 @@ Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled �
 组引用按对象身份求值，Unknown/Conflict 或来源全集外的对象不能因否定而成为成员。
 每次计算固定不可变输入；来源尚未完成时等待。普通资产更新不废弃完整计算，发布后自动追赶；无语义变化不重复传播。
 详情返回 freshness，结果页返回 sources 来源坐标；过期结果的 current 为 false，历史证据仍可读取。
-实际注册世代和来源撤销仍由身份 owner 验证，不依赖全租户计算追平。
+实际注册身份和来源撤销仍由身份 owner 验证，不依赖全租户计算追平。
 
 引用选择复用 `GET /api/v1/groups?filter=assetContext==endpoint`；编辑时传
 `referenceableFor=<group-id>`，会排除本组和上下文不匹配的候选。完整禁环校验由异步保存任务完成。
@@ -173,13 +173,13 @@ AgentCollection Policy 可在任务签名配置前保存并冻结已验证的内
 
 已发布策略归组织持有，浏览器会话退出或过期不删除分配。新写入、新自助调用和读取检查当前请求者权限；已受理任务不重新取得原发布人的授权，保留原参数、材料和结果归属。明确 Policy 停用、取消和注册撤销继续有效。停用或修改分配需要当前管理员授权。命令失败、命令到期与持续分配状态分别保存；缺少注册或能力不会删除配置分配。脚本 Unknown 不自动重试，退出不虚构副作用撤销。
 
-通道接入使用 `ensure_agent_installed` 与 `request_mdm_enrollment` 两个独立 Action。当前来源注册世代的明确安装/注册观察经动态 Group 和 Scope 触发；Unknown、来源失败和其它组织冲突都不视为缺失，也不用最后连接时间或任意 TTL 推断缺失。发布时检查 SoftwareDeploy/Enrollment 权限；后续组织任务不依赖发布人会话或角色，保留真实注册、通道状态和材料边界。两端拥有独立 DeviceId、注册、数据与策略，详见[企业任务](enterprise-tasks.md)。
+通道接入使用 `ensure_agent_installed` 与 `request_mdm_enrollment` 两个独立 Action。当前来源注册身份的明确安装/注册观察经动态 Group 和 Scope 触发；Unknown、来源失败和其它组织冲突都不视为缺失，也不用最后连接时间或任意 TTL 推断缺失。发布时检查 SoftwareDeploy/Enrollment 权限；后续组织任务不依赖发布人会话或角色，保留真实注册、通道状态和材料边界。两端拥有独立 DeviceId、注册、数据与策略，详见[企业任务](enterprise-tasks.md)。
 
-策略分配使用 `GET /api/v1/policies/{id}/assignments`，返回 typed object、channel、availability、reason、可选原始 target、来源证据和执行记录身份。缺失通道只形成 unavailable 分配，不创建操作、尝试或 outbox；数据、通道和关联变更通过既有自动任务重算，通道可用后恢复。Agent 动作仅使用 Agent，配置、原生采集及安装 Agent 仅使用 MDM。派发前重新验证冻结来源，派发后的结果仍属于原任务的终端和注册世代。Compliance 只接受 endpoint 组。
+策略分配使用 `GET /api/v1/policies/{id}/assignments`，返回 typed object、channel、availability、reason、可选原始 target、来源证据和执行记录身份。缺失通道只形成 unavailable 分配，不创建操作、尝试或 outbox；数据、通道和关联变更通过既有自动任务重算，通道可用后恢复。Agent 动作仅使用 Agent，配置、原生采集及安装 Agent 仅使用 MDM。派发前重新验证冻结来源，派发后的结果仍属于原任务的终端和注册身份。Compliance 只接受 endpoint 组。
 
 本次契约为新装切换，没有旧 DTO、缺省 assetContext 或 `/policies/{id}/devices` 路由。rss-web 需独立完成 Group/Scope/assignment 契约切换后才能联合发布。
 
-Scope 在发布固定结果前按目标通道完成集合运算，并持久化原始 DeviceId、注册世代与进入坐标。连续成员保留进入坐标；任何已发布的退出后重入都产生新坐标，即使 assignment 后台尚未处理退出。软件灰度统计由现有恢复 worker 按固定结果分批计算并保存游标，结果与能力更新按设备增量刷新，通道集合不变时保留分母。查询返回阶段 `ready` 与 `asOf`；输入过期或计算未完成时统计不可用于打开成功率门禁。
+Scope 在发布固定结果前按目标通道完成集合运算，并持久化原始 deviceId 与进入坐标。连续成员保留进入坐标；任何已发布的退出后重入都产生新坐标，即使 assignment 后台尚未处理退出。软件灰度统计由现有恢复 worker 按固定结果分批计算并保存游标，结果与能力更新按设备增量刷新，通道集合不变时保留分母。查询返回阶段 `ready` 与 `asOf`；输入过期或计算未完成时统计不可用于打开成功率门禁。
 
 ## Windows 恢复凭据策略
 

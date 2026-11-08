@@ -180,13 +180,13 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 
 设备分别向 `POST /api/v1/agent/runtime/task-trust/observations` 与
 `POST /api/v1/agent/enroll/trust/observations` 上报任务信任、Agent PKI 的安装观察。
-两者使用各自正式 DTO；保持原注册世代和单调观察序号，响应丢失重放原 operation 与正文。
+两者使用各自正式 DTO；保持原注册身份和单调观察序号，响应丢失重放原 operation 与正文。
 目标获取失败可不填目标版本和摘要；无法读回时不声称已应用。失败原因仅使用闭合枚举，不发送证书、秘密或原始错误。
 
 管理侧使用设备的 `InventoryRead` 权限查询
 `GET /api/v1/task-signing/trust/devices/{device}/observation` 或
 `GET /api/v1/pki/agent/trust/devices/{device}/observation`。
-结果只代表当前注册世代最后序号的设备观察，另带服务端接收时间；无记录返回 null，表示未知。
+结果只代表当前注册身份最后序号的设备观察，另带服务端接收时间；无记录返回 null，表示未知。
 迟到的旧报告不会覆盖新结果。同一操作或序号的异内容报告被拒绝。
 失联时只能展示最后观察及时间，不能据此宣称当前在线或仍然已应用。
 这些接口不创建成功 ACK，也不满足密钥激活门槛；PKI 安装摘要不包含 CRL 刷新内容，不能作为 CRL 新鲜度证明。
@@ -355,7 +355,7 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 先消费列表全部 `nextCursor` 页面，再以 `syncCursor` 调用 `/changes`。历史页面冻结各设备的发布水位；
 增量按事务提交后的发布修订读取，客户端按活动 `id` 去重。来源审计序号不作为增量提交水位，晚提交的低序号记录仍可发现。
 增量存在 `nextCursor` 时先读完该轮；末页以新的 `syncCursor` 继续。游标必须原样使用，保持过滤与视图；允许改变合法页大小。
-签名、读取范围、注册世代或投影世代不匹配返回 409 `activity_cursor_invalidated`，客户端清除该范围游标并重新读取首页。
+签名、读取范围或投影世代不匹配返回 409 `activity_cursor_invalidated`，客户端清除该范围游标并重新读取首页。
 活动不存在或不在可见范围返回 404 `activity_not_found`。
 
 响应 `asOf` 为服务端观察时间（详情为各部分观察的最晚时刻，并合并各部分缺失原因），`coverage` 表示该观察时刻的投影覆盖；请求每次最多补齐 64 条、8 MiB 来源事实。

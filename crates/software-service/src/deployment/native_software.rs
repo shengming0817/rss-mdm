@@ -53,7 +53,7 @@ pub async fn target_admission_on(
     } else {
         (rss_mdm_inventory::ReportSource::MdmApple, Platform::Macos)
     };
-    if platform==Platform::Macos && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4096 = 4096 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant.to_string()).bind(&registration).fetch_optional(&mut *c).await?.unwrap_or(false) { return Ok(TargetAdmission::Rejected(State::MissingNativeRights)); }
+    if platform==Platform::Macos && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4096 = 4096 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant.to_string()).bind(registration).fetch_optional(&mut *c).await?.unwrap_or(false) { return Ok(TargetAdmission::Rejected(State::MissingNativeRights)); }
     let fact = facts
         .detail_on(c, tenant, registration.clone(), report)
         .await?;

@@ -234,7 +234,6 @@ pub(crate) async fn task(
             };
             if !matching
                 || original.target.device != target.device
-                || original.target.device != target.device
                 || original.state.attempt() != Some(attempt_id)
                 || !matches!(
                     original.state.execution,
@@ -798,9 +797,7 @@ pub(crate) async fn finish(
         .map_err(Error::from)?;
     for (id, attempt, effect) in recovered {
         let mut original = actions::storage::load_run(profile, tx, id).await?;
-        if original.target.device != run.target.device
-            || original.target.device != run.target.device
-        {
+        if original.target.device != run.target.device {
             return Err(Error::Conflict.into());
         }
         if matches!(

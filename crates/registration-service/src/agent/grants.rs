@@ -487,7 +487,7 @@ impl Service {
         let principal = self.authenticate(peer).await?;
         let bound = hex(csr(&input.csr)?.spki());
         let d = digest(&(principal.device(), principal.credential(), input))?;
-        a.identify_device(&(principal.device()).to_string());
+        a.identify_device(principal.device());
         a.target(principal.device());
         a.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,

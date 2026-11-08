@@ -76,7 +76,7 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 查询分别返回原生 receipts、执行进度、effect 和 effectReason。ACK 不证明效果；效果为 verified、diverged、waiting 或 unverifiable。DomainProfile/EnableFirewall 仍只有原生 Replace，DeviceStatus 的设备整体状态不能证明该叶效果。Policy Delete 可能恢复默认值；缺少固定检测条件时保留 unverifiable 和 guards，超时/取消不重发已派发未知变更。
 
-机器来源、逐文件摘要和归档摘要分别固定；生成/更新命令见[本地开发](local-development.md)。原始请求、回执和关联绑定租户、设备、注册世代及操作身份并加密保存。用户/linked 身份维护、持续配置与会话增强由对应生命周期 owner 提供；必要前提缺失只拒绝相关操作。受控协议验证不代表真机效果或合规。
+机器来源、逐文件摘要和归档摘要分别固定；生成/更新命令见[本地开发](local-development.md)。原始请求、回执和关联绑定租户、deviceId、协议上下文及操作身份并加密保存。用户/linked 身份维护、持续配置与会话增强由对应生命周期 owner 提供；必要前提缺失只拒绝相关操作。受控协议验证不代表真机效果或合规。
 
 安装、升级和后台诊断见[运维](../deployment/operations.md)。ActionRun 与状态型任务分离，脚本退出码不转成变更效果；见[企业任务](enterprise-tasks.md)。
 
@@ -97,7 +97,7 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 每页按当前权限读取，游标绑定主体、租户、查询和稳定排序；后台上报、执行回执与其他设备变化不会作废续页。
 可变排序或筛选字段更新时，对象可能跨页移动；普通目录不承诺跨页固定快照。统计具有自己的 `asOf`，可与独立列表略有时差。
 
-单次响应使用同一数据库读取时点；交付前复验当前授权，DDM 额外核对当前注册世代。查询展示的执行资格不能代替随后写操作的授权。
+单次响应使用同一数据库读取时点；交付前复验当前授权，DDM 额外核对当前注册身份。查询展示的执行资格不能代替随后写操作的授权。
 设备清单续页读取游标选中的原始不可变版本，新上报不会拼接到旧清单；关联成员、来源身份及当前权限仍须有效。
 固定报表和导出继续使用既有不可变结果入口。
 
@@ -123,7 +123,7 @@ registrationUser 沿用 enrollment 读取权限，currentUser 要求现有租户
 
 ## 恢复凭据
 
-恢复凭据按租户、设备、注册世代和材料对象独立托管。BitLocker 使用稳定卷 ID 与 protector ID，本地管理员密码使用 SID；FileVault PRK、Recovery Lock 和锁定 PIN 保留各自语义。普通资产和操作结果不包含秘密，Bootstrap Token 继续由 Apple check-in 唯一持有，不提供人工明文查询。
+恢复凭据按租户、deviceId 和材料对象独立托管。BitLocker 使用稳定卷 ID 与 protector ID，本地管理员密码使用 SID；FileVault PRK、Recovery Lock 和锁定 PIN 保留各自语义。普通资产和操作结果不包含秘密，Bootstrap Token 继续由 Apple check-in 唯一持有，不提供人工明文查询。
 
 `GET /api/v1/devices/{device}/recovery-credentials` 返回版本元数据，使用现有设备读取权限；最多返回 100 项，通过末项的 `id/version` 作为 `afterId/afterVersion` 继续。`escrowed`、`validity`、`current` 分别表示材料是否存在、核实情况和是否为当前已核实版本。轮换后未核实的材料不会覆盖当前版本；Unknown 不表示旧密码仍然有效。
 

@@ -121,7 +121,7 @@ pub(crate) async fn prepare(
                 &bytes,
             )?;
             sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, collection, phase, request, state, collection_sequence, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'pending', $7, CAST(CAST($8 AS text) AS timestamptz))")
-                .bind(tenant).bind(id).bind(&device).bind(collection).bind(phase).bind(request).bind(sequence).bind(deadline).execute(&mut *c).await.map_err(db)?;
+                .bind(tenant).bind(id).bind(device).bind(collection).bind(phase).bind(request).bind(sequence).bind(deadline).execute(&mut *c).await.map_err(db)?;
             crate::notify(c, "apple").await.map_err(db)?;
             return Ok(None);
         }

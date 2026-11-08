@@ -97,12 +97,12 @@ async fn delivery_lifecycle(
     };
     let mut tx = seed(c).await?;
     sqlx::query("INSERT INTO rss_da.certificate_grants(certificate_purpose,tenant_id,id,operation_id,source,actor,instance,device,secret_digest,request_digest,state,expires_at) VALUES('da_device',$1,$2,$2,'administrator','seed',$3,$4,repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')")
-        .bind(tenant).bind(grant).bind(&c.inputs.installation.instance_id).bind(&device).execute(&mut *tx).await?;
+        .bind(tenant).bind(grant).bind(&c.inputs.installation.instance_id).bind(device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.devices (tenant_id, id, channel, certificate_grant_id, state, purpose, epoch) VALUES ($1, $2, NULL, $3, 'active', 'da_device', $4)")
-        .bind(tenant).bind(&device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        .bind(tenant).bind(device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     let fingerprint = format!("{:x}", Sha256::digest(&certificate));
     sqlx::query("INSERT INTO rss_da.credentials (tenant_id, id, device, channel, locator, state, purpose) VALUES ($1, $2, $3, NULL, $4, 'active', 'da_device')")
-        .bind(tenant).bind(credential).bind(&device).bind(&fingerprint).execute(&mut *tx).await?;
+        .bind(tenant).bind(credential).bind(device).bind(&fingerprint).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.certificate_issuances(tenant_id,id,grant_id,operation_id,request_digest,authority_digest,csr,spki,identity,profile,not_before,not_after,state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) VALUES($1,$2,$3,$4,repeat('1',64),repeat('2',64),$5,$6,$7,'{}',$8,$9,'issued',$10,$11,$12,$4,repeat('3',64),$13,$14)")
         .bind(tenant).bind(issuance).bind(grant).bind(operation).bind(csr)
         .bind(meta.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).bind(&meta.identity)
@@ -157,15 +157,15 @@ async fn delivery_lifecycle(
             .device,
         agent.device()
     );
-    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=false,revision=2 WHERE tenant_id=$1 AND da_device=$2").bind(tenant).bind(&device).execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=false,revision=2 WHERE tenant_id=$1 AND da_device=$2").bind(tenant).bind(device).execute(&mut *tx).await?;
     assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
-    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=true,revision=3,agent_device=$3 WHERE tenant_id=$1 AND da_device=$2").bind(tenant).bind(&device).bind("unknown-agent").execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_da.agent_delivery SET enabled=true,revision=3,agent_device=$3 WHERE tenant_id=$1 AND da_device=$2").bind(tenant).bind(device).bind("unknown-agent").execute(&mut *tx).await?;
     assert!(delivery::resolve_on(&mut tx, agent).await.is_err());
     sqlx::query(
         "UPDATE rss_da.agent_delivery SET agent_device=$3 WHERE tenant_id=$1 AND da_device=$2",
     )
     .bind(tenant)
-    .bind(&device)
+    .bind(device)
     .bind(agent.device())
     .execute(&mut *tx)
     .await?;

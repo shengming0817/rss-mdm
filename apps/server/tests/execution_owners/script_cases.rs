@@ -218,7 +218,7 @@ async fn periodic_assignment_keeps_history_separate_from_current_admission() -> 
         sqlx::query("UPDATE mdm_script.runs SET state=jsonb_set(state,'{execution}','\"unknown\"') WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(task).execute(&mut *tx).await?;
         tx.commit().await?;
         assert_eq!(read().await?["items"][0]["taskAdmission"]["state"],"effect_unknown");
-        let target=rss_mdm_registration_service::device::endpoints::PrimaryRegistration{device:h.p.device().into(),channel:rss_mdm_inventory::Channel::Agent,};
+        let target=rss_mdm_registration_service::device::endpoints::PrimaryRegistration{device:Uuid::new_v4().to_string(),channel:rss_mdm_inventory::Channel::Agent,};
         let mut tx=command::seed_transaction(&h.c).await?;
         assert!(script::queries::latest_assignment_on(&mut tx,h.c.tenant,policy,&target).await?.is_none());
         tx.rollback().await?;

@@ -173,7 +173,7 @@ async fn authenticate_for(
     if !binding.is_some_and(|b| b.inventory() && (!task_required || b.task())) {
         return Err(task_error(Error::Forbidden));
     }
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     Ok(principal)
 }

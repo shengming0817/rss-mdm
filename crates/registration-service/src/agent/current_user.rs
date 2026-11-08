@@ -253,7 +253,7 @@ impl Service {
                     if let Some(old) = old {
                         if old.try_get::<String, _>("digest").map_err(db)? != *digest
                             || old.try_get::<String, _>("instance").map_err(db)?
-                                != device.device().to_string()
+                                != device.device()
                         {
                             return Err(Error::Conflict);
                         }

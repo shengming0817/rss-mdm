@@ -119,7 +119,7 @@ pub async fn active_count_on(
     device: &str,
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT count(*) FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running','unknown','waiting_reboot') AND (deadline>$3 OR state->>'startedAt' IS NOT NULL) AND state->>'cancellation'<>'confirmed'").bind(tenant.to_string()).bind(&device).bind(now).fetch_one(c).await
+    sqlx::query_scalar("SELECT count(*) FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running','unknown','waiting_reboot') AND (deadline>$3 OR state->>'startedAt' IS NOT NULL) AND state->>'cancellation'<>'confirmed'").bind(tenant.to_string()).bind(device).bind(now).fetch_one(c).await
 }
 
 pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {

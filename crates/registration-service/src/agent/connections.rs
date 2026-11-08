@@ -769,7 +769,7 @@ impl Service {
             return Err(Error::Forbidden.into());
         }
         let p = self.authenticate(peer).await?;
-        audit.identify_device(&(p.device()).to_string());
+        audit.identify_device(p.device());
         audit.target(p.device());
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,
@@ -869,7 +869,7 @@ impl Service {
             return Err(Error::Malformed.into());
         }
         let principal = self.authenticate(peer).await?;
-        audit.identify_device(&(principal.device()).to_string());
+        audit.identify_device(principal.device());
         audit.target(principal.device());
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,

@@ -201,7 +201,7 @@ async fn prepare_on(
                 deadline: pending.try_get("deadline").map_err(db)?,
                 renewal_of: old_id,
             };
-            audit.target_device(&device);
+            audit.target_device(device);
             audit.target_device(&prepared.device);
             return Ok(Some((prepared, true)));
         }

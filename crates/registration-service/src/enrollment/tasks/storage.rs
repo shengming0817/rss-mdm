@@ -204,7 +204,7 @@ pub async fn active_count_on(
         crate::storage_profile::sql(profile).enrollment_tasks_storage_active_count_on_1,
     )
     .bind(tenant.to_string())
-    .bind(&device)
+    .bind(device)
     .bind(now)
     .fetch_one(c)
     .await

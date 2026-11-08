@@ -2,7 +2,7 @@
 
 原生采集在设备请求中持久记录签入，由后台逐项准备和恢复；新触发的采集可在后续签入下发。
 积压期间保留进行中的策略扫描，并合并为一个最新待处理签入，不补跑全部历史签入。
-重启从已提交进度继续；当前回执和实际投递仍即时校验授权与注册世代。
+重启从已提交进度继续；当前回执和实际投递仍即时校验授权与注册身份。
 
 部署网关终止注册 HTTPS 与管理 mTLS，后端只接受受信网关覆盖的 TLS 证据并独立验证设备身份。先按 [注册指南](device-enrollment.md) 创建 mdm.windows 授权并分发口令。Discovery、Policy、Enrollment.svc 与 MDM.svc 使用配置的精确 origin，Host/To 必须一致；设备须预先信任服务 TLS 根。首注 enrollment origin 不请求客户端证书；management、Agent 和 Apple 的证书入口必须使用其它 origin，可共用主机名并分离端口。配置拒绝这两类入口重叠。
 

@@ -72,7 +72,7 @@ pub async fn accept_in(
             .await
             .map_err(db)?
     {
-        if row.try_get::<String, _>("device").map_err(db)? != principal.device().to_string()
+        if row.try_get::<String, _>("device").map_err(db)? != principal.device()
             || row.try_get::<String, _>("source").map_err(db)?
                 != InventorySource::AgentBuiltin.as_str()
             || row.try_get::<String, _>("epoch").map_err(db)? != scope.epoch().as_str()

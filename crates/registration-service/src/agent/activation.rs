@@ -235,7 +235,8 @@ impl Service {
                             .await
                             .map_err(db)?;
                         }
-                        let runtime = if let (Some(binding), Some(runtime_profile)) =
+
+                        if let (Some(binding), Some(runtime_profile)) =
                             (&service.binding, &runtime_profile)
                         {
                             Some(
@@ -259,8 +260,7 @@ impl Service {
                             None
                         } else {
                             return Err(Error::Forbidden);
-                        };
-                        runtime
+                        }
                     };
                     sqlx::query(crate::storage_profile::sql(profile).agent_activation_activate_12)
                         .bind(&tenant)

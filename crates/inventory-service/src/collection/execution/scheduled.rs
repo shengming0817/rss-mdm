@@ -100,7 +100,7 @@ pub(crate) async fn wake_in(
     if verified.version != work.version {
         return Err((crate::Error::Unavailable(crate::Failure::PlanningStorage)).into());
     }
-    if device_in(verified.reader, tx, &work).await?.is_none() {
+    if device_in(verified.reader, tx, work).await?.is_none() {
         return Ok(());
     }
     let target = rss_reconcile::Target::new(super::wake::scope(tx.tenant_id()), work.entity())
@@ -145,7 +145,7 @@ pub(crate) async fn advance_in(
     work: &Work,
     run: Uuid,
 ) -> Result<()> {
-    let Some(device) = device_in(&service.transactions.policy_reader, tx, &work).await? else {
+    let Some(device) = device_in(&service.transactions.policy_reader, tx, work).await? else {
         return Ok(());
     };
     let plan = policy::read_in(&service.transactions, tx, work.version).await?;
@@ -169,7 +169,7 @@ pub(crate) async fn delay_in(
     tx: &mut PgTransaction<'_>,
     work: &Work,
 ) -> Result<Option<std::time::Duration>> {
-    let Some(device) = device_in(&service.transactions.policy_reader, tx, &work).await? else {
+    let Some(device) = device_in(&service.transactions.policy_reader, tx, work).await? else {
         return Ok(None);
     };
     let plan = policy::read_in(&service.transactions, tx, work.version).await?;

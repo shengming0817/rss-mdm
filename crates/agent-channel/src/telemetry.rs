@@ -107,7 +107,7 @@ async fn upload(
         "agent_telemetry_upload",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let bytes = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     let decoded = bytes.decode(&headers, service.request_bytes())?;
@@ -138,7 +138,7 @@ async fn gap_upload(
         "agent_telemetry_gap_upload",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let bytes = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     let decoded = bytes.decode(
@@ -167,7 +167,7 @@ async fn gap_receipt(
         "agent_telemetry_gap_status",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     bounded(async {
         service(&app)?
@@ -191,7 +191,7 @@ async fn receipt(
         "agent_telemetry_status",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     bounded(async {
         service(&app)?
@@ -215,7 +215,7 @@ async fn configuration(
         "agent_telemetry_configuration",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     bounded(async {
         service(&app)?
@@ -239,7 +239,7 @@ async fn current(
         "agent_telemetry_current_status",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     bounded(async {
         use rss_mdm_telemetry_service::CurrentObservation as C;
@@ -309,7 +309,7 @@ async fn material(
         "agent_telemetry_material",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     bounded(async {
         let store = app.content.as_ref().ok_or(Error::Unsupported)?.clone();
@@ -335,7 +335,7 @@ async fn directory(
         "agent_telemetry_directory",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     bounded(async {
         service(&app)?

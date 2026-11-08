@@ -316,11 +316,11 @@ pub(super) async fn facts_for(
         definition.bindings().to_vec(),
     )?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3").bind(c.tenant.to_string()).bind(&registration).bind(source.as_str()).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3").bind(c.tenant.to_string()).bind(registration).bind(source.as_str()).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
-        &registration,
+        registration,
         source.as_str(),
         epoch,
         "software-assets",

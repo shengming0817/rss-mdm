@@ -294,7 +294,7 @@ async fn report_inner(
         "agent_report",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let scope = crate::device::scope_dataset(
         principal.profile(),
@@ -368,7 +368,7 @@ async fn status_inner(
         "agent_report_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
     let live_scope = crate::device::store::revalidate_source(

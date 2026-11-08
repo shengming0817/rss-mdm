@@ -43,13 +43,13 @@ fn audit(tenant: &str, id: Uuid, device: &str) -> RequestAudit {
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.identify_service("windows-push");
-    audit.target_device(&device);
+    audit.target_device(device);
     audit.operation(
         id,
         "windows_push",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.target(&device.to_string());
+    audit.target(device);
     audit
 }
 pub async fn cycle(

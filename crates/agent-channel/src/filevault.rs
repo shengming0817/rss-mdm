@@ -66,7 +66,7 @@ async fn principal(
     audit: &RequestAudit,
 ) -> Result<rss_mdm_registration_service::DevicePrincipal, AgentError> {
     let p = crate::authenticate(&s.enrollment, headers, peer).await?;
-    audit.identify_device(&(p.device()).to_string());
+    audit.identify_device(p.device());
     audit.target_device(p.device());
     Ok(p)
 }

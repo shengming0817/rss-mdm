@@ -8,7 +8,7 @@ source_input AS MATERIALIZED (
 ), source_budget AS MATERIALIZED (
  SELECT count(*) AS rows,count(*)<=$9*256 AS ok FROM source_input
 ), candidate_input AS MATERIALIZED (
- SELECT tenant_id,id,status FROM mdm_access.directory_metadata WHERE (SELECT ok FROM source_budget) AND tenant_id=$1::uuid AND ($2::text[] IS NULL OR id=ANY($2)) LIMIT ($9::bigint+1)
+ SELECT tenant_id,id,status,channel,source,platform FROM mdm_access.directory_metadata WHERE (SELECT ok FROM source_budget) AND tenant_id=$1::uuid AND ($2::text[] IS NULL OR id=ANY($2)) LIMIT ($9::bigint+1)
 ), candidate_budget AS MATERIALIZED (
  SELECT count(*) AS rows,coalesce(sum(octet_length(id)+octet_length(status)+16),0)::bigint AS bytes,
  count(*)<=$9 AND coalesce(sum(octet_length(id)+octet_length(status)+16),0)<=$9*512 AS ok FROM candidate_input
@@ -31,9 +31,9 @@ source_input AS MATERIALIZED (
 ), matched AS (
  SELECT m.object_key,m.id,
  jsonb_path_match(jsonb_build_object('key',m.object_key,'status',m.status,'assetState',m.asset_state,
- 'channel',coalesce((SELECT jsonb_agg(channel) FROM mdm_access.directory_channels c WHERE c.tenant_id=$1::uuid AND c.device=m.id),'[]'::jsonb)||coalesce((SELECT jsonb_agg(split_part(source,'.',1)) FROM mdm_access.directory_enrollments e WHERE e.tenant_id=$1::uuid AND e.device=m.id),'[]'::jsonb),
- 'source',coalesce((SELECT jsonb_agg(source) FROM mdm_access.directory_channels c WHERE c.tenant_id=$1::uuid AND c.device=m.id),'[]'::jsonb)||coalesce((SELECT jsonb_agg(source) FROM mdm_access.directory_enrollments e WHERE e.tenant_id=$1::uuid AND e.device=m.id),'[]'::jsonb),
- 'platform',coalesce((SELECT jsonb_agg(platform) FROM mdm_access.directory_channels c WHERE c.tenant_id=$1::uuid AND c.device=m.id),'[]'::jsonb)||coalesce((SELECT jsonb_agg(platform) FROM mdm_access.directory_enrollments e WHERE e.tenant_id=$1::uuid AND e.device=m.id AND e.state='pending' AND e.expires_at>statement_timestamp()),'[]'::jsonb),
+ 'channel',jsonb_build_array(m.channel),
+ 'source',jsonb_build_array(m.source),
+ 'platform',jsonb_build_array(m.platform),
  'search',CASE WHEN $8::boolean THEN coalesce((SELECT jsonb_agg(term) FROM (
   SELECT unnest(search_values) AS term FROM (
    (SELECT search_values FROM mdm_assets.directory_fields f WHERE f.tenant_id=$1::uuid AND f.device=m.id AND (m.sensitive OR f.sensitivity='standard') AND f.field<>'device.serial_number' AND (f.state='conflict' OR f.state='known' AND btrim(f.value)<>'') ORDER BY CASE f.field WHEN 'device.name' THEN 0 WHEN 'device.network.apple.host_name' THEN 1 ELSE 2 END LIMIT 1)

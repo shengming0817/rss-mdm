@@ -437,7 +437,7 @@ pub(crate) async fn settle_retirement_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &t,
-        &[registration.clone()],
+        std::slice::from_ref(&registration),
     )
     .await?
     {

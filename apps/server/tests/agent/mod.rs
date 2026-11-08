@@ -42,15 +42,15 @@ async fn accepted(c: &Context, device: &str) -> Result<Uuid> {
     sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(&actor)?).bind(now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'unmanage_device',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(frozen).bind(fingerprint).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES($1::uuid,$2,$3,$4,$5,'once',$6,$7,300,$8,'\"policy\"')").bind(c.tenant.to_string()).bind(retirement).bind(policy).bind(version).bind(object).bind(target).bind(serde_json::to_value(actor)?).bind(now).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirement_channels (tenant_id, operation, device, channel, stage, effect, execution) VALUES (CAST($1 AS uuid), $2, $3, 'agent', 'unenroll', 'pending', $4)").bind(c.tenant.to_string()).bind(retirement).bind(&device).bind(run).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirement_work (tenant_id, operation, device, execution) VALUES (CAST($1 AS uuid), $2, $3, $4)").bind(c.tenant.to_string()).bind(retirement).bind(&device).bind(run).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.retirement_channels (tenant_id, operation, device, channel, stage, effect, execution) VALUES (CAST($1 AS uuid), $2, $3, 'agent', 'unenroll', 'pending', $4)").bind(c.tenant.to_string()).bind(retirement).bind(device).bind(run).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.retirement_work (tenant_id, operation, device, execution) VALUES (CAST($1 AS uuid), $2, $3, $4)").bind(c.tenant.to_string()).bind(retirement).bind(device).bind(run).execute(&mut *tx).await?;
     sqlx::query("UPDATE mdm_access.devices SET retirement=$3 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string())
-        .bind(&device)
+        .bind(device)
         .bind(retirement)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, origin, source_objects, policy_version, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint, gateway_accepted) VALUES (CAST($1 AS uuid), $2, '\"policy\"', '[]', $3, $4, 'once', $5, $5, $6, $7, $8, TRUE)").bind(c.tenant.to_string()).bind(run).bind(version).bind(&device).bind(now).bind(now+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(now+300,now)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, origin, source_objects, policy_version, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint, gateway_accepted) VALUES (CAST($1 AS uuid), $2, '\"policy\"', '[]', $3, $4, 'once', $5, $5, $6, $7, $8, TRUE)").bind(c.tenant.to_string()).bind(run).bind(version).bind(device).bind(now).bind(now+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(now+300,now)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(run)
 }

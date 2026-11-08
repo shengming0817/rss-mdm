@@ -588,7 +588,7 @@ pub async fn diagnostic_on(
     grant.require(p, Permission::OperationRead, Some(device))?;
     let raw: Option<Value> = sqlx::query_scalar("SELECT response FROM mdm_script.receipts WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND device=$4")
         .bind(p.tenant_id()).bind(actor).bind(locator.operation_id)
-        .bind(&device).fetch_optional(c).await?;
+        .bind(device).fetch_optional(c).await?;
     let Some(raw) = raw else { return Ok(None) };
     let response: wire::SelfServiceAccepted = stored(serde_json::from_value(raw))?;
     if response.request_id != locator.operation_id {

@@ -272,7 +272,7 @@ APFS container 原始证据与卷关联保留在受限运行详情中，共享�
 
 字段 scope 支持 `device`、`apple_user`、`macos_applications`、`macos_brew`。应用 scope 包含 root（local/system/user）和 uid（仅 user 非空）；Brew 包含 uid、prefix、package（formula/cask）、taps。dataset 绑定 Resource/variant/实际用户及稳定 GeneratedUID（适用时），不包含版本、会话或预算；变更某字段 root/prefix/taps 只创建该字段的新范围，不自动删除旧范围。
 
-设备已有的非 Device 范围通过 `GET /api/v1/devices/{id}/inventory-scopes?limit&cursor` 发现，响应为资产 envelope 的 `inventory_scopes {device,assetCut,items:[{scope}],nextCursor}`。目录仅列当前有效来源的冻结采集尝试或保留事实，先按当前敏感字段权限过滤，再按固定切面和不透明游标分页；运行清理不隐藏仍保留的可信事实。权限、来源或注册世代变化使旧游标冲突，应从第一页重取。空目录不证明设备没有其它真实用户；Device 范围独立读取。
+设备已有的非 Device 范围通过 `GET /api/v1/devices/{id}/inventory-scopes?limit&cursor` 发现，响应为资产 envelope 的 `inventory_scopes {device,assetCut,items:[{scope}],nextCursor}`。目录仅列当前有效来源的冻结采集尝试或保留事实，先按当前敏感字段权限过滤，再按固定切面和不透明游标分页；运行清理不隐藏仍保留的可信事实。权限、来源或注册身份变化使旧游标冲突，应从第一页重取。空目录不证明设备没有其它真实用户；Device 范围独立读取。
 
 详情、清单和运行详情通过 `scope=<URL 编码的 scope JSON>` 显式选择范围，省略则 Device。运行详情提供 frozen fingerprint/coverage、逐字段 scope/reason、完整性，以及实时 Observation receipt/projection 状态。固定切面质量记录不会被实时状态改写；quality.runId 是最近尝试，sources.evidence.snapshotId 是当前可信事实的原始 run，lastKnown 继续保留原始证据。失败和部分尝试不清空此前 Known；显式 Unknown 不通过规则。
 

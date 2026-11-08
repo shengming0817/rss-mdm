@@ -97,7 +97,7 @@ pub async fn seed_ack(c: &Context, trust: &Trust, device: &str) -> Result<()> {
     )
     .bind(c.tenant.to_string())
     .bind(Uuid::new_v4())
-    .bind(&device)
+    .bind(device)
     .bind(trust.revision as i64)
     .bind(trust.installation_digest()?)
     .execute(&c.operator)
@@ -211,7 +211,7 @@ pub async fn authenticated_agent(
     let epoch: Uuid =
         sqlx::query_scalar("SELECT epoch FROM rss_da.devices WHERE tenant_id = $1 AND id = $2")
             .bind(tenant)
-            .bind(&device)
+            .bind(device)
             .fetch_one(&c.operator)
             .await?;
     use rss_mdm_agent_wire::{enroll, runtime as w};
@@ -262,9 +262,9 @@ pub async fn authenticated_agent(
         .execute(&mut *tx)
         .await?;
     sqlx::query("INSERT INTO rss_da.credentials (tenant_id, id, device, channel, locator, state, purpose) VALUES ($1, $2, $3, 'agent', $4, 'active', 'primary')")
-        .bind(tenant).bind(credential).bind(&device).bind(&fingerprint).execute(&mut *tx).await?;
+        .bind(tenant).bind(credential).bind(device).bind(&fingerprint).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.report_sources (tenant_id, device, source, epoch, next_sequence, enabled) VALUES ($1, $2, 'agent.builtin', $3, 0, TRUE)")
-        .bind(tenant).bind(&device).bind(epoch).execute(&mut *tx).await?;
+        .bind(tenant).bind(device).bind(epoch).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.certificate_issuances(tenant_id,id,grant_id,operation_id,request_digest,authority_digest,csr,spki,identity,profile,not_before,not_after,state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) VALUES($1,$2,$3,$4,repeat('1',64),repeat('2',64),$5,$6,$7,$8,$9,$10,'issued',$11,$12,$13,$4,repeat('3',64),$14,$15)")
         .bind(tenant).bind(issuance).bind(grant).bind(operation).bind(csr)
         .bind(meta.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).bind(&meta.identity)

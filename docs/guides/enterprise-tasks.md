@@ -55,7 +55,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 默认签入触发、每执行版本一次、没有结束时间。显式设备也通过 Scope 的直接设备来源表达。Scope 引用持续跟随当前结果；发布不复制永久目标名单，也不生成全体 Run。空目标分配有效，未来 Scope 成员自动获得资格。
 
-脚本分配需要 PolicyWrite、ResourceRead、全设备 InventoryRead 与设备范围 ScriptExecute；范围引用 Group 时还需 GroupRead；软件分配使用独立的设备范围 SoftwareDeploy，并要求当前企业软件生命周期有效。发布受理后归组织持有，不再依赖发布者的登录会话。Agent 注册须声明对应的 `task.execute.v1` 或 对应软件格式/作用域 profile；领取、下载和启动均重新核对凭据、注册世代和当前分配。
+脚本分配需要 PolicyWrite、ResourceRead、全设备 InventoryRead 与设备范围 ScriptExecute；范围引用 Group 时还需 GroupRead；软件分配使用独立的设备范围 SoftwareDeploy，并要求当前企业软件生命周期有效。发布受理后归组织持有，不再依赖发布者的登录会话。Agent 注册须声明对应的 `task.execute.v1` 或 对应软件格式/作用域 profile；领取、下载和启动均重新核对凭据、注册身份和当前分配。
 
 `frequency` 为 `once_per_version`、`once_per_entry` 或 `every_trigger`。可选 `schedule` 包含 trigger、notBefore、until、jitterSeconds、window 和 misfire。trigger 支持 manual、once(at)、interval(anchor,seconds)、weekly(zone,weekday,minute)、registration、check_in(minimumSeconds)。`until` 可省略。misfire 为 `{"kind":"coalesce_one"}`（默认）或 `{"kind":"skip","maxLatenessSeconds":30}`；窗口可跨午夜，星期按开始日计算，DST gap 跳过、fold 取较早时刻。
 
@@ -97,7 +97,7 @@ Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 
 
 ## 通道接入策略
 
-MDM 与 Agent 各自持有 DeviceId、注册世代、凭据、采集和策略。MDM 来源字段 `channel.agent.installation` 的 `absent` 才能触发安装；Agent 来源 `channel.mdm.enrollment` 的 `unenrolled` 才能触发标准入口。可以将这些字段用于动态 Group，再通过 Scope 分配策略。当前有效来源的最新完整观察是依据，没有 TTL 或最后连接时间门槛；未知、失败、第三方 MDM 和旧注册观察不会变成缺失。
+MDM 与 Agent 各自持有独立 deviceId、凭据、采集和策略。MDM 来源字段 `channel.agent.installation` 的 `absent` 才能触发安装；Agent 来源 `channel.mdm.enrollment` 的 `unenrolled` 才能触发标准入口。可以将这些字段用于动态 Group，再通过 Scope 分配策略。当前有效来源的最新完整观察是依据，没有 TTL 或最后连接时间门槛；未知、失败、第三方 MDM 和旧注册观察不会变成缺失。
 
 `ensure_agent_installed` 沿用 Software Resource / Content → Agent 包发布 → Group / Scope → Policy → Software / Registration owner。Action 使用 `packages` 按平台和架构显式选择一个发布 releaseId；没有 latest、格式回退、自动升级或格式迁移。发布需要全设备 SoftwareDeploy 与 Enrollment 授权，执行和下载复核当前授权、发布状态及冻结摘要。普通软件没有 Agent 发布记录时不能获得引导权限。
 
@@ -144,7 +144,7 @@ Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。�
 
 以下入口位于 `/api/v1/agent/runtime`，始终使用 Agent 系统服务的设备凭据。用户访问模式还使用 `X-RSS-User-Session`；设备模式不需要企业登录。无效或重复用户会话头不会降级为设备访问。系统服务根据真实 IPC 入口设置 source，模型参数不得控制 source，也不得接触设备私钥或企业凭据。confirmed 绑定当前请求身份、Policy 身份和确切调用输入。首次受理读取当前配置，回执中的配置/执行版本用于溯源，不是调用方的版本前置条件。
 
-- `GET /self-service?source=human|ai`（支持 filter/sort/fields/limit/cursor） 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software/enrollment 接口。目录复用 Scope、注册世代、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
+- `GET /self-service?source=human|ai`（支持 filter/sort/fields/limit/cursor） 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software/enrollment 接口。目录复用 Scope、注册身份、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
 - `POST /self-service/invocations` 针对当前设备接受 operationId、policyId、source、confirmed、parameters；不接受客户端配置/执行版本前置条件，返回 202 的 requestId/runId。精确重试返回原 Run；变化正文返回冲突。AvailableInstall 在显式请求前不创建 Run/Offer，不能自行 Start；安装按确切资源版本、检测意图及稳定 Device/SID/UID 效果目标在用户和 Policy 之间排除重复，Unknown 不允许盲重试。
 - `POST /self-service/resolve` 接受 source 与 selector：`{"kind":"id","id":"…"}`、`{"kind":"tool_name","name":"policy_…"}` 或 `{"kind":"alias","alias":"repair"}`，直接定位后检查当前资格。管理端 `POST /api/v1/policies/resolve` 接受同一 selector，仅授予当前管理读取能力。
 - 稳定工具名为 `policy_<无连字符 Policy UUID>`；`definition.alias` 经去首尾空白和 ASCII 小写规范化后在租户内唯一，使用 Policy 原 CAS/审计更新。停用或取消发布保留名称，清空、改名或归档释放；显示名可重复。目录默认/最大检查 64 个候选，空 items 仍可能有 nextCursor，精确解析不扫描目录页。
@@ -167,6 +167,6 @@ Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发
 
 MDM v1 仅支持系统 MSI、签名单包 MSIX 的 device provisioning、签名 PKG。每个安装包的 `signatures[].evidence` 指向不可变报告 artifact；报告 JSON 持有 `sha256`、`mechanism`、`publisher`、`verified:true`，由平台打包/验证流程产生，经现有 Catalog 启用审批校验和固定。服务端验证报告与材料匹配，不执行平台签名工具。自定义环境/参数、依赖包、EXE、DMG、Bundle、用户安装、MDM 自助和卸载均不准入。MDM 仅接受 `reboot:report`、`downgrade:deny` 和标准退出码（success 为 `[0]`、reboot 为空）；MSI timeout 必须为整分钟且不超过 255 分钟。Agent 原有能力独立保留。
 
-安装命令和下载都绑定原 action run、Policy/Resource 版本、注册世代及当前权限。切换通道产生新执行版本；未解决的安装效果按关联设备及所有包身份阻止重复写入，失败或离线不回退到另一通道。Windows MSI 通过原生 Status/Version，MSIX 通过精确 PackageFullName 的 IsProvisioned/Version 证明效果；缺失状态节点不算成功。PKG ACK 只证明协议受理，保持 Unknown，不推动成功率门禁。普通 PKG manifest 的 receipt 标识不被当作 InstalledApplicationList 的应用 bundle 标识。
+安装命令和下载都绑定原 action run、Policy/Resource 版本、注册身份及当前权限。切换通道产生新执行版本；未解决的安装效果按关联设备及所有包身份阻止重复写入，失败或离线不回退到另一通道。Windows MSI 通过原生 Status/Version，MSIX 通过精确 PackageFullName 的 IsProvisioned/Version 证明效果；缺失状态节点不算成功。PKG ACK 只证明协议受理，保持 Unknown，不推动成功率门禁。普通 PKG manifest 的 receipt 标识不被当作 InstalledApplicationList 的应用 bundle 标识。
 
 当前 schema 与冻结输入不读取旧通道格式。已有数据库只使用与其安装清单匹配的原 artifact 恢复；部署新版本使用当前安装流程，不重写历史 ledger 或删除 Unknown 运行。设备上的安装真实性由独立产品 T3 验收提供。

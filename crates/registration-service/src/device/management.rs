@@ -120,17 +120,23 @@ pub(super) async fn validate(
             ));
         }
     }
-    let live: bool =
-        sqlx::query_scalar(crate::storage_profile::sql(profile).device_management_validate_3)
-            .bind(tenant)
-            .bind(p.device())
-            .bind(p.purpose().as_str())
-            .bind(p.epoch())
-            .bind(p.credential())
-            .bind(p.protocol_request())
-            .fetch_one(&mut *c)
-            .await
-            .map_err(db)?;
+    // Only the linked native protocol needs its request owner. Agent and DA consumers
+    // revalidate the exact primary credential without access to native enrollment secrets.
+    let sql = crate::storage_profile::sql(profile);
+    let mut query = sqlx::query_scalar(if p.protocol_request().is_some() {
+        sql.device_management_validate_3
+    } else {
+        sql.device_management_validate_primary
+    })
+    .bind(tenant)
+    .bind(p.device())
+    .bind(p.purpose().as_str())
+    .bind(p.epoch())
+    .bind(p.credential());
+    if p.protocol_request().is_some() {
+        query = query.bind(p.protocol_request());
+    }
+    let live: bool = query.fetch_one(&mut *c).await.map_err(db)?;
     if !live {
         return Err(Error::Unauthorized);
     }

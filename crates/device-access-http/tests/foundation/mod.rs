@@ -786,13 +786,15 @@ async fn unknown_recovery(
             .await?,
     )
     .await?;
-    // This newly enrolled device has never acknowledged the old key as Prepared/Active.
-    let _: da::SignedConfiguration = material::success(
+    // The business proof replaced the tenant default. A new identity cannot fetch an
+    // earlier export as though it retained the old device's selected publication.
+    assert_eq!(
         peer.get(format!("{base}/configurations/{old_export}"))
             .send()
-            .await?,
-    )
-    .await?;
+            .await?
+            .status(),
+        409
+    );
     let mut tx = c.access.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(Uuid::new_v4().to_string())

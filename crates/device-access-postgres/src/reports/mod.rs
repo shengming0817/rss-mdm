@@ -111,7 +111,7 @@ impl Service {
         a: &RequestAudit,
     ) -> Result<Receipt, Error> {
         input.validate().map_err(|_| Error::Malformed)?;
-        a.identify_device(&(p.device()).to_string());
+        a.identify_device(p.device());
         let document = serde_json::to_value(input).map_err(|_| Error::Malformed)?;
         self.write(a, (self, p, input, document), |ctx, c| {
             Box::pin(async move {
@@ -130,7 +130,7 @@ impl Service {
         a: &RequestAudit,
     ) -> Result<Receipt, Error> {
         input.validate().map_err(|_| Error::Malformed)?;
-        a.identify_device(&(p.device()).to_string());
+        a.identify_device(p.device());
         let document = serde_json::to_value(input).map_err(|_| Error::Malformed)?;
         self.write(a, (self, signing, p, input, document), |ctx, c| {
             Box::pin(async move {

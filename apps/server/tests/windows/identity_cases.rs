@@ -111,12 +111,6 @@ pub(super) async fn prepare(
     old: &identity::Native,
     a: &Fixture,
 ) -> Result<()> {
-    use rss_mdm_install_support::StorageProfile::Mdm;
-    use rss_mdm_inventory::ReportSource::MdmWindows;
-    use rss_mdm_registration_service::{
-        Purpose,
-        device::{self, store},
-    };
     let key = &a.resources.protection;
     seed_group(
         c,
@@ -136,37 +130,54 @@ pub(super) async fn prepare(
     .await?;
     seed_group(c, n, key, &request(false, true)?, &[Uuid::from_u128(131)]).await?;
     let mut tx = command::seed_transaction(c).await?;
+    verify_routes(&mut tx, c, n, child, a).await?;
+    history(&mut tx, c, old, key).await?;
+    // Keep one real operation per context for the actual wire proof; the batch boundary was proved above.
+    sqlx::query("UPDATE rss_device_command.commands SET status='cancelled',version=version+1,terminal_at=queued_at+1 WHERE tenant_id=$1::uuid AND command_id<>$2 AND command_id<>$3").bind(c.tenant.to_string()).bind(Uuid::from_u128(1).to_string()).bind(Uuid::from_u128(66).to_string()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+async fn verify_routes(
+    tx: &mut sqlx::PgConnection,
+    c: &Context,
+    n: &identity::Native,
+    child: &identity::Native,
+    a: &Fixture,
+) -> Result<()> {
+    use rss_mdm_install_support::StorageProfile::Mdm;
+    use rss_mdm_inventory::ReportSource::MdmWindows;
+    use rss_mdm_registration_service::{
+        Purpose,
+        device::{self, store},
+    };
     for (peer, purpose, first) in [
         (n, Purpose::Primary, 66u128),
         (child, Purpose::WindowsDeclared, 1),
     ] {
         let evidence = device::ChannelMount::new(Mdm, c.tenant, MdmWindows, purpose)
             .credential(Sha256::digest(&peer.certificate).into())?;
-        let principal = store::management_in(Mdm, &mut tx, &evidence).await?;
+        let principal = store::management_in(Mdm, &mut *tx, &evidence).await?;
         let candidates = a
             .configuration
-            .windows_candidates_on(&mut tx, &principal)
+            .windows_candidates_on(&mut *tx, &principal)
             .await?;
         assert_eq!(
             candidates.iter().map(|op| op.id).collect::<Vec<_>>(),
             (first..first + 64).map(Uuid::from_u128).collect::<Vec<_>>()
         );
-        if purpose == Purpose::Primary {
-            let user = a
-                .configuration
-                .windows_operation_on(&mut tx, &principal, Uuid::from_u128(131))
-                .await?;
-            assert!(
-                user.user && user.dispatch,
-                "Full user target must reach the session user gate"
-            );
-        }
         sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,device,protocol_epoch,os_version,edition,session,observed_at) VALUES($1::uuid,$2,$3,'10.0.22631.0',48,17,1)").bind(c.tenant.to_string()).bind(&n.device).bind(peer.epoch).execute(&mut *tx).await?;
     }
-    history(&mut tx, c, old, key).await?;
-    // Keep one real operation per context for the actual wire proof; the batch boundary was proved above.
-    sqlx::query("UPDATE rss_device_command.commands SET status='cancelled' WHERE tenant_id=$1::uuid AND command_id<>$2 AND command_id<>$3").bind(c.tenant.to_string()).bind(Uuid::from_u128(1).to_string()).bind(Uuid::from_u128(66).to_string()).execute(&mut *tx).await?;
-    tx.commit().await?;
+    let evidence = device::ChannelMount::new(Mdm, c.tenant, MdmWindows, Purpose::Primary)
+        .credential(Sha256::digest(&n.certificate).into())?;
+    let parent = store::management_in(Mdm, &mut *tx, &evidence).await?;
+    let user = a
+        .configuration
+        .windows_operation_on(&mut *tx, &parent, Uuid::from_u128(131))
+        .await?;
+    assert!(
+        user.user && user.dispatch,
+        "Full user target must reach the session user gate"
+    );
     Ok(())
 }
 pub(super) async fn routed(
@@ -237,14 +248,15 @@ async fn history(
         )
         .replace("className=", "status=\"200\" state=\"20\" className=");
     assert_eq!(
-        plan.assess(&[EffectFact {
-            uri: uri.clone(),
-            status: Some(200),
-            value: Some(value.clone()),
-            receipt_accepted: true,
-            result_accepted: true
-        }])
-        .state,
+        effect
+            .assess(&[EffectFact {
+                uri: uri.clone(),
+                status: Some(200),
+                value: Some(value.clone()),
+                receipt_accepted: true,
+                result_accepted: true
+            }])
+            .state,
         EffectState::Waiting
     );
     let attempt = Uuid::new_v4();

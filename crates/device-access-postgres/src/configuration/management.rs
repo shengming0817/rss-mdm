@@ -317,7 +317,7 @@ impl Service {
         id: Option<Uuid>,
         a: &RequestAudit,
     ) -> Result<CurrentConfiguration, Error> {
-        a.identify_device(&(p.device()).to_string());
+        a.identify_device(p.device());
         self.write(a, (self, signing, p, id), |ctx, c| {
             Box::pin(async move {
                 let (service, signing, p, id) = *ctx;

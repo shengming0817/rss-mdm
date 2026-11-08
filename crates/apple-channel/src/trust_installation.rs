@@ -132,7 +132,7 @@ pub(crate) async fn send(
         sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, trust, phase, ordinal, request, state, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, 'pending', clock_timestamp() + CAST('15 minutes' AS interval))")
             .bind(&tenant).bind(id).bind(p.device()).bind(delivery).bind(phase).bind(ordinal).bind(sealed).execute(&mut *c).await.map_err(db)?;
         let a = audit.fact_copy("apple_pki_install");
-        a.identify_device(&(p.device()).to_string());
+        a.identify_device(p.device());
         a.target_device(p.device());
         facts.push(Fact::observation(
             &a,
@@ -216,7 +216,7 @@ pub(crate) async fn receive(
     .await
     .map_err(|_| Error::Conflict)?;
     let a = audit.fact_copy("apple_pki_confirm");
-    a.identify_device(&(p.device()).to_string());
+    a.identify_device(p.device());
     a.target_device(p.device());
     Ok(Some(AppleReception::Collection {
         facts: vec![Fact::observation(

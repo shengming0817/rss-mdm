@@ -55,7 +55,7 @@ pub async fn active_count_on(
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*) FROM mdm_inventory.collection_tasks t WHERE tenant_id=$1::uuid AND device=$2 AND deadline>$3 AND ((channel='agent' AND agent_state->>'execution' IN('not_started','running') AND agent_state->>'cancellation'<>'confirmed') OR (channel='mdm' AND native_delivery<>'cancelled' AND NOT EXISTS(SELECT 1 FROM mdm_access.collection_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.collection_run) AND r.sealed_at IS NOT NULL)))")
-        .bind(tenant.to_string()).bind(&device).bind(now).fetch_one(c).await
+        .bind(tenant.to_string()).bind(device).bind(now).fetch_one(c).await
 }
 pub async fn owned_ids_on(
     c: &mut sqlx::PgConnection,

@@ -126,7 +126,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
                 tx,
                 facts,
                 tenant,
-                &registration.to_string(),
+                registration,
                 state,
             )
             .await

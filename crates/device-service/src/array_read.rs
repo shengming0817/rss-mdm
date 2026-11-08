@@ -171,7 +171,7 @@ async fn validate(
                     member.channel,
                 )
                 .await?;
-                if !current.is_some_and(|r| r.device == member.device) {
+                if current.is_none_or(|r| r.device != member.device) {
                     return Err(Error::CursorInvalidated);
                 }
             }

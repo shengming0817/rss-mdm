@@ -624,8 +624,8 @@ pub async fn diagnostic_on(
     .bind(p.tenant_id())
     .bind(actor)
     .bind(locator.operation_id)
-    .bind(&device)
-    .bind(&device)
+    .bind(device)
+    .bind(device)
     .fetch_optional(c)
     .await?;
     let Some(raw) = raw else { return Ok(None) };

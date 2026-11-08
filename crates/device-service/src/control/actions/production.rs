@@ -127,7 +127,7 @@ pub(crate) async fn queue_run_in(
     audit.identify_service("execution-admission");
     source.audit(&audit);
     audit.target(&id.to_string());
-    audit.target_device(&registration);
+    audit.target_device(registration);
     let result: Result<()> = async {
         let run = super::storage::read_run(tx, id).await?;
         let fact = Fact::business(

@@ -174,7 +174,7 @@ pub async fn active_count_on(
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*) FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$3")
-        .bind(tenant.to_string()).bind(&device).bind(now).fetch_one(c).await
+        .bind(tenant.to_string()).bind(device).bind(now).fetch_one(c).await
 }
 pub async fn owned_ids_on(
     c: &mut sqlx::PgConnection,

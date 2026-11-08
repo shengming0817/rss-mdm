@@ -14,8 +14,8 @@ async fn seed(c: &Context, tenant: TenantId, device: &str) -> Result<Uuid> {
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_access.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1::uuid,$2,$2,'download','directory-fixture',$3,$4,'windows',repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')").bind(tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(&device).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id,channel,certificate_grant_id,state,purpose,epoch) VALUES($1::uuid,$2,'agent',$3,'active','primary',$4)").bind(tenant.to_string()).bind(&device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1::uuid,$2,$2,'download','directory-fixture',$3,$4,'windows',repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')").bind(tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id,channel,certificate_grant_id,state,purpose,epoch) VALUES($1::uuid,$2,'agent',$3,'active','primary',$4)").bind(tenant.to_string()).bind(device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(grant)
 }

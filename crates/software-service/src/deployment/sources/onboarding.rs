@@ -45,7 +45,7 @@ pub async fn state_on(
         .await?;
     if source == ReportSource::MdmApple {
         let rights={
-            sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant.to_string()).bind(&registration).fetch_optional(&mut *c).await
+            sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant.to_string()).bind(registration).fetch_optional(&mut *c).await
         }?.unwrap_or(false);
         if !rights {
             return status(State::MissingNativeRights);

@@ -161,7 +161,7 @@ pub(crate) async fn prepare_request(
     if principal.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
         crate::linked::current_parent(app, principal.device()).await?;
     }
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let digest = app
         .protection

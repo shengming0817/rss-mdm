@@ -159,7 +159,7 @@ async fn discovery(
     };
     let result = async {
         let principal = principal(app, peer, purpose).await?;
-        audit.identify_device(&(principal.device()).to_string());
+        audit.identify_device(principal.device());
         audit.target_device(principal.device());
         let prefix = if linked { "Linked" } else { "" };
         response(
@@ -214,7 +214,7 @@ pub(super) async fn policy_message(
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
     let principal = principal(app, peer, purpose).await?;
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let linked = purpose == Purpose::WindowsDeclared;
     response(

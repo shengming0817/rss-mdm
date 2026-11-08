@@ -86,7 +86,7 @@ pub async fn detail_on(
     ))
 }
 
-/// Correlate only original device/generation coordinates, including declared Windows children.
+/// Correlate only the original device identity.
 pub async fn assignment_ids_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
@@ -100,7 +100,7 @@ pub async fn assignment_ids_on(
     )
     .bind(tenant.to_string())
     .bind(policy)
-    .bind(&target.device.clone())
+    .bind(&target.device)
     .bind(&target.device)
     .bind(channel.as_str())
     .fetch_all(c)

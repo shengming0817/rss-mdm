@@ -10,7 +10,7 @@
 | Cargo owner | 职责 |
 |---|---|
 | `authorization-service` | 当前管理主体、授权规则、授权证明及初始化 |
-| `registration-service` | 注册世代、来源授权、凭据和设备生命周期；Entra 注册策略与 Windows 注册操作回执 |
+| `registration-service` | 注册身份、来源授权、凭据和设备生命周期；Entra 注册策略与 Windows 注册操作回执 |
 | `inventory-service` | Agent/native 采集任务、逐 attempt 报告与采集质量、资产、分组及合规 |
 | `scope-service` | 目标定义、冻结成员计算、当前 Scope 结果与发布 |
 | `policy-service` | Policy 管理、发布、重跑、分配核对、事件接受与成员决定、业务审计、事务结算及所属 worker |

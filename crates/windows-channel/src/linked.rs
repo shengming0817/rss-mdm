@@ -274,7 +274,7 @@ pub(crate) async fn prepare_request(
     {
         return Err(Error::Forbidden);
     }
-    audit.identify_device(&(parent.device()).to_string());
+    audit.identify_device(parent.device());
     audit.target_device(parent.device());
     audit.operation(
         operation,

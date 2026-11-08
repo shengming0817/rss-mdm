@@ -2,7 +2,7 @@
 
 原生采集在设备请求中持久记录签入，由后台逐项准备和恢复；新触发的采集可在后续签入下发。
 积压期间保留进行中的策略扫描，并合并为一个最新待处理签入，不补跑全部历史签入。
-重启从已提交进度继续；当前回执和实际投递仍即时校验授权与注册世代。
+重启从已提交进度继续；当前回执和实际投递仍即时校验授权与注册身份。
 
 Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用Device、Software、Policy 配置、Registration 及 Inventory 采集 owner。DDM 的声明发布与状态证据由 Apple 原生 owner 持有；账户驱动注册和 ADE 使用独立组织授权，ADE 同步与分配状态不代表设备已经完成注册。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
 
@@ -82,7 +82,7 @@ Apple 的签名 CMS 请求只证明载荷完整性，不作为设备认证或组
 
 原生用户 GUID 绑定当前租户、设备注册及世代，共用设备身份凭据。UserAuthenticate 不授予资源权限；用户 TokenUpdate 分别保存加密 token/PushMagic、revision、租约与失效状态。operation 的 `target` 为 `{"kind":"user","userId":"规范小写非零 UUID"}`。设备前提只从设备通道查询，实际用户命令、回执和 ProfileList 只在该用户通道关联。每个通道的 410 只停用该通道；设备 token 失效后，已取得设备前提的用户命令仍可收发。设备 CheckOut/撤销/换代统一退役所有通道、Profile history 和 Bootstrap 材料。
 
-GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有同世代已接受的原生证据明确确认监督、ADE 及 device enrollment 后可使用；缺失证据返回 Unsupported。没有 token 时 GET 成功但省略 BootstrapToken，SET 缺失或零长度 token 清除 escrow。材料按租户、注册世代、用途及 revision 加密，响应禁止缓存。此接口不把 token、UserID 或 AuthToken 变成浏览器业务授权。
+GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有同一 deviceId 下已接受的原生证据明确确认监督、ADE 及 device enrollment 后可使用；缺失证据返回 Unsupported。没有 token 时 GET 成功但省略 BootstrapToken，SET 缺失或零长度 token 清除 escrow。材料按租户、注册身份、用途及 revision 加密，响应禁止缓存。此接口不把 token、UserID 或 AuthToken 变成浏览器业务授权。
 
 ## 采集
 
@@ -102,7 +102,7 @@ Apple 采集通过普通 Resource 的 `native_collection` 模板发布、由 Pol
 
 Resource 的 NativeConfiguration `apply` 使用 `request.kind:"install_profile"` 和 `profile`，其中根及每个 payload 分别指定原生 identifier/UUID、metadata、schema 路径与 fields；Policy 的移除内容由同一 Resource 的 `remove` 提供，使用 `request.kind:"remove_profile"`、identifier 和拥有的 UUID。完整输入见 [Profile 类型](../../crates/apple-mdm/src/native/profiles.rs)。`PayloadVersion=1` 属于 Apple 格式；Policy 冻结 Resource 版本，设备控制不接受内容版本参数。编译器决定 System/User scope，拒绝重复身份、单实例冲突和无效同 Profile 证书引用；客户端不能覆盖这些编译器字段。
 
-同一注册世代及通道内的 identifier 串行。已发出的未知副作用继续占有 guards；取消、超时或错误回执本身不释放它们。Profile owner 加密保存完整派发 manifest；替换或移除必须经当前、关联、接受的 ProfileList 证据确认。安装观测同时比较根和全部 payload 的 type/identifier/UUID/version；缺失、加密或不完整清单不证明替换完成。同一操作的接受 Error 后，完整清单证明安装目标确实缺席，或精确证明待移除的旧安装及全部 payload 仍在，才终结为 rejected 并退休该次失败预留；旧安装所有权继续保留。旧世代、旧尝试、晚到或越权回执不能覆盖新所有权。
+同一注册身份及通道内的 identifier 串行。已发出的未知副作用继续占有 guards；取消、超时或错误回执本身不释放它们。Profile owner 加密保存完整派发 manifest；替换或移除必须经当前、关联、接受的 ProfileList 证据确认。安装观测同时比较根和全部 payload 的 type/identifier/UUID/version；缺失、加密或不完整清单不证明替换完成。同一操作的接受 Error 后，完整清单证明安装目标确实缺席，或精确证明待移除的旧安装及全部 payload 仍在，才终结为 rejected 并退休该次失败预留；旧安装所有权继续保留。旧设备身份、旧尝试、晚到或越权回执不能覆盖新所有权。
 
 | 证据 | 含义 |
 | --- | --- |
@@ -196,7 +196,7 @@ Mac 的 Legacy 接管以关联的 `ProfileList(ManagedOnly=true)` 证明 MDM 所
 
 顶层 `device_pki` 的 Apple 项配置该代次的 `issuer`、`origin`、`tls_root_file`、JWK 撤销 provisioner/kid/密钥，以及 `scep_url`。SCEP URL 必须位于对应固定 HTTPS CA origin；公开 trust 中的 provisioner 是 SCEP 名称，撤销凭据使用独立 JWK provisioner。旧代次的 provider 保留到未知签发已处理、旧证书已迁移/过期或撤销发布确认。每次 SCEP attempt 冻结原 issuer、URL/provisioner；重试不自动改用当前代次。challenge/notify 沿原 HMAC 接口校验，未知结果不能重新授权 challenge。
 
-CA 公共证书由单独的受管理 `com.rss-mdm.pki.<registration>` Profile 持有，不放进 SCEP 身份 Profile，避免两份独立 CA 安装 owner。根载荷是 `com.apple.security.root` DER，中间载荷是 `com.apple.security.pem` PEM。InstallProfile 后发出原通道的 `ProfileList(ManagedOnly=true)`，逐项核对 Profile 与所有证书载荷的 identifier、UUID、类型和有序结构，再记录安装回执；InstallProfile ACK 不代替该证明。退役后的完整信任集合通过替换这个 Profile 移除旧 CA。
+CA 公共证书由单独的受管理 `com.rss-mdm.pki.<device>` Profile 持有，不放进 SCEP 身份 Profile，避免两份独立 CA 安装 owner。根载荷是 `com.apple.security.root` DER，中间载荷是 `com.apple.security.pem` PEM。InstallProfile 后发出原通道的 `ProfileList(ManagedOnly=true)`，逐项核对 Profile 与所有证书载荷的 identifier、UUID、类型和有序结构，再记录安装回执；InstallProfile ACK 不代替该证明。退役后的完整信任集合通过替换这个 Profile 移除旧 CA。
 
 服务 HTTPS/SCEP HTTPS 的证书信任独立于设备 CA，设备须预先信任这些服务证书；生产可使用受信任的服务 TLS 入口。当前协议验证不等于真实 macOS 安装/移除行为已验证，真机 T3 仍独立。轮换、撤销和 CRL 发布操作见[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)。
 
@@ -204,8 +204,8 @@ CA 公共证书由单独的受管理 `com.rss-mdm.pki.<registration>` Profile �
 
 ## 设备声明状态汇总
 
-`GET /api/v1/devices/{device}/ddm?limit&cursor` 分页读取当前 MDM 注册世代的声明，包括 device/user 通道及已撤回 publication。
-每项保留 operation、注册世代、通道、inputVersion、声明 ServerToken 和既有 nativeStatus；历史世代通过原操作详情读取。
+`GET /api/v1/devices/{device}/ddm?limit&cursor` 分页读取当前 MDM 注册身份的声明，包括 device/user 通道及已撤回 publication。
+每项保留 operation、deviceId、通道、inputVersion、声明 ServerToken 和既有 nativeStatus；历史执行通过原设备的操作详情读取。
 查询使用 OperationRead 和原生值权限，`nativeValuesRedacted` 明确标识脱敏。缺失、Unknown、原生错误与乱序冲突不会转成成功；
 publication 或 synchronized 不证明设置生效、合规或卸载。未注册设备返回 no_current_registration，不能解释为设备已清空配置。
 

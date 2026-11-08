@@ -25,7 +25,7 @@ impl Service {
 
         input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
-        a.identify_device(&(p.device()).to_string());
+        a.identify_device(p.device());
         a.target(p.device());
         a.operation(
             input.operation,
@@ -110,7 +110,7 @@ impl Service {
         if input.device_id != p.device() {
             return Err(Error::Forbidden.into());
         }
-        a.identify_device(&(p.device()).to_string());
+        a.identify_device(p.device());
         a.target(p.device());
         a.operation(
             input.operation,

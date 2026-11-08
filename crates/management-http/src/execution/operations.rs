@@ -19,7 +19,6 @@ pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Sch
         Field::scalar("device", Kind::Text),
         Field::scalar("policy", Kind::Uuid),
         Field::scalar("status", Kind::Text),
-        Field::scalar("generation", Kind::Integer),
         Field::scalar("origin", Kind::enumeration(&["direct", "policy"])),
         Field::scalar("deadline", Kind::Integer),
         Field::output("authorization"),

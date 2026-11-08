@@ -56,7 +56,7 @@ async fn observed_on(
         Some("aarch64") => Architecture::Aarch64,
         _ => return Ok(None),
     };
-    if source==ReportSource::MdmApple && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant).bind(&registration).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false){return Ok(None);}
+    if source==ReportSource::MdmApple && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant).bind(registration).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false){return Ok(None);}
     Ok(Some((
         SoftwareTarget::new(platform, architecture),
         fact,

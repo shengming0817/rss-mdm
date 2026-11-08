@@ -179,7 +179,7 @@ pub(crate) async fn explicit_on(
     allowed: bool,
 ) -> Result<Option<(Uuid, i64, i64)>> {
     Ok(sqlx::query_as("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND $5 AND NOT EXISTS(SELECT 1 FROM mdm_script.runs r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1")
-        .bind(tenant.to_string()).bind(version).bind(&device).bind(now).bind(allowed).fetch_optional(c).await?)
+        .bind(tenant.to_string()).bind(version).bind(device).bind(now).bind(allowed).fetch_optional(c).await?)
 }
 /// Exact production deduplication identity; absence is never inferred from version history.
 pub(crate) async fn occurrence_on(
@@ -190,7 +190,7 @@ pub(crate) async fn occurrence_on(
     occurrence: &str,
 ) -> Result<Option<Uuid>> {
     Ok(sqlx::query_scalar("SELECT id FROM mdm_script.runs WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND occurrence=$4")
-        .bind(tenant.to_string()).bind(version).bind(&device).bind(occurrence).fetch_optional(c).await?)
+        .bind(tenant.to_string()).bind(version).bind(device).bind(occurrence).fetch_optional(c).await?)
 }
 pub struct RunInput<'a> {
     pub request: Option<&'a rss_mdm_audit_integration::RequestAudit>,

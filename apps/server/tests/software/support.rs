@@ -125,7 +125,7 @@ pub async fn endpoints(
     sqlx::query("INSERT INTO mdm_agent.bindings (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), $2, 1, $3, 'windows', 'x86_64', $4)").bind(c.tenant.to_string()).bind(&device).bind(serde_json::to_string(&caps)?).bind(serde_json::to_value(context())?).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1::uuid,$2,1,'confirmed','operator-verified',$3,'fixture',$4)").bind(c.tenant.to_string()).bind(association).bind(json!({})).bind(now()).execute(&mut *tx).await?;
     for target in [&agent, &native] {
-        sqlx::query("INSERT INTO mdm_devices.members (tenant_id, association_id, device, channel, device_id) VALUES (CAST($1 AS uuid), $2, $3, $4, $5)").bind(c.tenant.to_string()).bind(association).bind(&target.device).bind(target.channel.as_str()).bind(target.device.clone()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_devices.members (tenant_id, association_id, device, channel) VALUES (CAST($1 AS uuid), $2, $3, $4)").bind(c.tenant.to_string()).bind(association).bind(&target.device).bind(target.channel.as_str()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     native_observation(c, native.device.clone()).await?;

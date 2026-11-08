@@ -557,7 +557,7 @@ pub async fn revalidate_source(
     super::management::revalidate(profile, tx, principal).await?;
     let live = sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_1)
         .bind(&tenant)
-        .bind(&device)
+        .bind(device)
         .bind(principal.require_channel()?.as_str())
         .fetch_optional(&mut *tx)
         .await
@@ -568,7 +568,7 @@ pub async fn revalidate_source(
     }
     sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_2)
         .bind(&tenant)
-        .bind(&device)
+        .bind(device)
         .bind(principal.credential().to_string())
         .fetch_optional(&mut *tx)
         .await
@@ -578,7 +578,7 @@ pub async fn revalidate_source(
     // Revalidation only observes the epoch; sequence allocation takes its own row write lock.
     let row = sqlx::query(crate::storage_profile::sql(profile).device_store_revalidate_source_3)
         .bind(&tenant)
-        .bind(&device)
+        .bind(device)
         .bind(source.as_str())
         .fetch_optional(&mut *tx)
         .await

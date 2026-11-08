@@ -164,7 +164,7 @@ impl Configuration {
             } => {
                 for object in request.objects().map_err(|_| Error::Malformed)? {
                     if (object.scope() == Scope::User)
-                        != matches!(self.target, NativeTarget::User { .. })
+                        != matches!(self.target, NativeTarget::EnrolledUser)
                     {
                         return Err(Error::Malformed);
                     }

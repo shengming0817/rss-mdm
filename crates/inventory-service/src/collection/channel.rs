@@ -22,7 +22,7 @@ pub async fn start_in(
         profile,
         c,
         &p.tenant().to_string(),
-        &p.device().to_string(),
+        p.device(),
         source,
         live.epoch().as_str(),
         1,
@@ -156,7 +156,7 @@ pub async fn finish_in(
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.identify_device(&(p.device()).to_string());
+    audit.identify_device(p.device());
     audit.target_device(p.device());
     audit.owned_operation(
         rss_mdm_audit_integration::operation::OperationOwner::Collection,

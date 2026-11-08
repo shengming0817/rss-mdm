@@ -355,7 +355,7 @@ async fn windows(
     )?
     .derive();
     let secrets=protection.seal_bytes(&serde_json::to_vec(&serde_json::json!({"client_password":"client-secret","server_password":"server-secret","server_nonce":vec![7u8;32]}))?,&aad)?;
-    let mut tx = command::seed_transaction(&c).await?;
+    let mut tx = command::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_access.enrollment_intents (tenant_id, request_id, csr, profile, issuer, configuration, device, credential, epoch, secrets, signing_attempt, protocol_device) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)").bind(c.tenant.to_string()).bind(n.request).bind(&n.csr).bind(profile).bind(&n.root).bind(configuration).bind(n.device.clone()).bind(n.credential).bind(n.epoch).bind(secrets).bind(n.attempt).bind(&n.device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.enrollment_certificates(tenant_id,request_id,certificate,server_nonce) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(n.request).bind(&n.certificate).bind(vec![7u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -716,6 +716,9 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     // The primary enrollment query must select its credential while WinDC is also active.
     sqlx::query("INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,'windows',1,$2)")
         .bind(c.tenant.to_string()).bind(serde_json::to_vec(&n.trust)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'windows',$2,1,'active',$3,'step_ca',$4)")
+        .bind(c.tenant.to_string()).bind(&n.trust.issuers[0].digest).bind(&n.root)
+        .bind(time::OffsetDateTime::now_utc().unix_timestamp() + 86400).execute(&mut *tx).await?;
     for peer in [&n, &child] {
         rss_mdm_pki_service::certificates::record_in(
             Mdm,
@@ -795,6 +798,19 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     )
     .await?;
     assert_ne!(parent_reply, child_reply);
+    // Finish each authenticated package before expecting native work to dispatch.
+    let parent_work = s::encode(&next(&n, 2, 212, true), &CodecLimits::default())?;
+    let mut child_work = next(&child, 2, 212, true);
+    child_work.header.target = "https://localhost/ManagementServer/Declared.svc".into();
+    let child_work = s::encode(&child_work, &CodecLimits::default())?;
+    let parent_work_reply = send(&parent_http, &h, &parent_work).await?;
+    let child_work_reply = send_at(
+        &child_http,
+        &h,
+        "/ManagementServer/Declared.svc",
+        &child_work,
+    )
+    .await?;
     identity_cases::routed(&c, &n, &child, &old_child).await?;
     let rows: Vec<(Uuid, Uuid, i64)> = sqlx::query_as(
         "SELECT protocol_epoch,credential,last_message FROM mdm_access.management_sessions
@@ -805,8 +821,8 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     .fetch_all(&c.operator)
     .await?;
     assert_eq!(rows.len(), 2);
-    assert!(rows.contains(&(n.epoch, n.credential, 1)));
-    assert!(rows.contains(&(child.epoch, child.credential, 1)));
+    assert!(rows.contains(&(n.epoch, n.credential, 2)));
+    assert!(rows.contains(&(child.epoch, child.credential, 2)));
     // Reload both contexts and replay each immutable transcript under its own epoch.
     h.close().await?;
     let h = host(&c, &n, w).await?;
@@ -824,7 +840,21 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     let messages: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND device=$2 AND session_id='17'")
         .bind(c.tenant.to_string()).bind(&n.device).fetch_one(&c.operator).await?;
-    assert_eq!(messages, 2);
+    assert_eq!(messages, 4);
+    assert_eq!(
+        send(&parent_http, &h, &parent_work).await?,
+        parent_work_reply
+    );
+    assert_eq!(
+        send_at(
+            &child_http,
+            &h,
+            "/ManagementServer/Declared.svc",
+            &child_work
+        )
+        .await?,
+        child_work_reply
+    );
     let renewed = protocol_peer(&c, &n, "declared-renewed").await?;
     let fingerprint = format!("{:x}", Sha256::digest(&renewed.certificate));
     let mut tx = command::seed_transaction(&c).await?;

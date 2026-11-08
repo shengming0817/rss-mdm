@@ -103,7 +103,7 @@ pub(crate) async fn manage(
     if principal.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
         linked::current_parent(&app, principal.device()).await?;
     }
-    audit.identify_device(&(principal.device()).to_string());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let protocol_device = crate::protocol_device::read(&app.access, &principal).await?;
     if message.header.source != protocol_device

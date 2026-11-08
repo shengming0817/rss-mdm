@@ -235,7 +235,7 @@ pub(crate) async fn send(
         .bind(&tenant).bind(id).bind(p.device()).bind(p.credential()).bind(trust.revision as i64).bind(&digest).bind(session)
         .bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(sealed).bind(results).bind(&authority_digest).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
     let a = audit.fact_copy("windows_pki_install");
-    a.identify_device(&(p.device()).to_string());
+    a.identify_device(p.device());
     a.target_device(p.device());
     facts.push(rss_mdm_audit_integration::Fact::observation(
         &a,
