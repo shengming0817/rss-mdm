@@ -73,6 +73,7 @@ pub async fn endpoint(c: &Context) -> Result<DeviceObject> {
     })
 }
 pub struct Published {
+    pub policy: Uuid,
     pub scope: Uuid,
     pub run: Uuid,
     pub cut: rss_mdm_inventory::AssetCut,
@@ -80,6 +81,7 @@ pub struct Published {
 }
 pub async fn published(c: &Context, object: &DeviceObject) -> Result<Published> {
     let scope = Uuid::new_v4();
+    let policy = Uuid::new_v4();
     let run = Uuid::new_v4();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
@@ -112,7 +114,7 @@ pub async fn published(c: &Context, object: &DeviceObject) -> Result<Published> 
         }],
         as_of: time::OffsetDateTime::now_utc().unix_timestamp(),
     };
-    sqlx::query("INSERT INTO mdm_scope.scopes(tenant_id,id,revision,calculation_revision,resolution_revision) VALUES($1::uuid,$2,1,1,1)").bind(c.tenant.to_string()).bind(scope).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_scope.scopes(tenant_id,id,policy_id,revision,calculation_revision,resolution_revision) VALUES($1::uuid,$2,$3,1,1,1)").bind(c.tenant.to_string()).bind(scope).bind(policy).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_scope.scope_versions(tenant_id,id,revision,definition) VALUES($1::uuid,$2,1,$3)").bind(c.tenant.to_string()).bind(scope).bind(serde_json::to_value(&input.definition)?).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_scope.scope_sources(tenant_id,scope,kind,target) VALUES($1::uuid,$2,'device',$3)").bind(c.tenant.to_string()).bind(scope).bind(device).execute(&mut *tx).await?;
     seed_run(
@@ -137,6 +139,7 @@ pub async fn published(c: &Context, object: &DeviceObject) -> Result<Published> 
         .await?;
     tx.commit().await?;
     Ok(Published {
+        policy,
         scope,
         run,
         cut,

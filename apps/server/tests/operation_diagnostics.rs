@@ -31,7 +31,6 @@ async fn product_http_uses_original_owner_namespaces_and_consumable_cursors() ->
             Permission::EnterpriseApplicationsRead,
             Permission::AccountWrite,
             Permission::ResourceRead,
-            Permission::ScopeRead,
             Permission::GroupRead,
             Permission::InventorySensitiveRead,
             Permission::InventoryRead,

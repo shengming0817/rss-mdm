@@ -90,7 +90,6 @@ pub async fn enqueue_job_in(
 }
 pub fn accepted(id: Uuid, input: &Work) -> Value {
     let status_url = match input {
-        Work::PolicyScope { scope, .. } => format!("/api/v1/scopes/{scope}"),
         Work::PolicyEvent { batch } => format!("/api/v1/policy-event-batches/{batch}"),
         Work::Lifecycle { policy, .. } => format!("/api/v1/policies/{policy}"),
         Work::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
@@ -132,9 +131,6 @@ pub async fn finish_job_in(
         );
         audit.identify_service("service:asset-automation");
         match kind.as_str() {
-            "policy_scope" => {
-                audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, &target)
-            }
             "policy_reconcile" => {
                 audit.resource_target(rss_mdm_audit_integration::TargetKind::Policy, &target)
             }

@@ -146,7 +146,7 @@ pub enum SoftwareDelivery {
     deny_unknown_fields
 )]
 /// Each action owns its inputs; registration never requires a fictitious resource.
-pub enum Action {
+pub enum Action<S = Uuid> {
     /// Device Access admission and desired local-account role, without a script schedule.
     DeviceAccess {
         /// Shared current wire settings for device-wide Mac login configuration.
@@ -241,7 +241,7 @@ pub enum Action {
         /// Maximum lifetime of one task.
         run_lifetime_seconds: u32,
         /// Administrator-authored rollout stages.
-        rollout: SoftwareRollout,
+        rollout: SoftwareRollout<S>,
     },
     /// Retire the whole managed device through a server-owned execution.
     UnmanageDevice {
@@ -296,22 +296,24 @@ pub enum SoftwareIntent {
 /// Time-driven rollout; success rate is an optional additional gate.
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SoftwareRollout {
+pub struct SoftwareRollout<S = Uuid> {
     /// Ordered stage scopes and opening times.
-    pub stages: Vec<SoftwareRolloutStage>,
+    pub stages: Vec<SoftwareRolloutStage<S>>,
 }
 /// One administrator-selected stage.
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SoftwareRolloutStage {
+pub struct SoftwareRolloutStage<S = Uuid> {
+    /// Stable authored identity; order is not identity.
+    pub id: Uuid,
     /// Scope that becomes eligible at the opening time.
-    pub scope: Uuid,
+    pub scope: S,
     /// UTC Unix timestamp for automatic opening.
     pub opens_at: i64,
     /// Optional verified-success threshold for the preceding stage.
     pub minimum_verified_percent: Option<u8>,
 }
-impl SoftwareRolloutStage {
+impl<S> SoftwareRolloutStage<S> {
     /// A stage opens at its configured time unless an optional previous-stage rate is unmet.
     pub fn open(&self, now: i64, previous_total: u64, previous_verified: u64) -> bool {
         if now < self.opens_at || previous_verified > previous_total {
@@ -351,15 +353,15 @@ fn default_schedule() -> Schedule {
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Complete authored Policy definition, without execution progress.
-pub struct Definition {
+pub struct Definition<S = Uuid> {
     /// Explicit named trigger, independent of the regular schedule and unique alias.
     pub custom_event: Option<rss_mdm_agent_wire::runtime::PolicyEventName>,
     /// Optional unique tenant-local address, distinct from presentation text.
     pub alias: Option<rss_mdm_agent_wire::runtime::PolicyAlias>,
     /// Opaque Scope identity; Scope alone owns membership and entry coordinates.
-    pub scope: Uuid,
+    pub scope: S,
     /// Closed action or configuration semantics.
-    pub action: Action,
+    pub action: Action<S>,
     /// Optional task self-service publication and presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_service: Option<crate::SelfService>,
@@ -634,13 +636,22 @@ impl Action {
                 {
                     return Err(Error::Malformed);
                 }
-                if !(60..=604800).contains(run_lifetime_seconds)
-                    || rollout.stages.is_empty()
-                    || rollout.stages.len() > 32
+                if !(60..=604800).contains(run_lifetime_seconds) || rollout.stages.len() > 32 {
+                    return Err(Error::Malformed);
+                }
+                let mut stage_ids = std::collections::BTreeSet::new();
+                if rollout
+                    .stages
+                    .iter()
+                    .any(|s| s.id.is_nil() || !stage_ids.insert(s.id))
                 {
                     return Err(Error::Malformed);
                 }
-                if rollout.stages[0].minimum_verified_percent.is_some() {
+                if rollout
+                    .stages
+                    .first()
+                    .is_some_and(|s| s.minimum_verified_percent.is_some())
+                {
                     return Err(Error::Malformed);
                 }
                 let mut previous = None;
@@ -792,7 +803,7 @@ mod tests {
                 "intent": "required_install",
                 "delivery": {"kind":"direct"},
                 "runLifetimeSeconds": 3600,
-                "rollout": {"stages": [{"scope": "11111111-1111-1111-1111-111111111111", "opensAt": 0}]}
+                "rollout": {"stages": [{"id":Uuid::from_u128(3151),"scope": "11111111-1111-1111-1111-111111111111", "opensAt": 0}]}
             }
         });
         let policy: Definition = serde_json::from_value(value).unwrap();
@@ -831,6 +842,7 @@ mod tests {
     #[test]
     fn rollout_uses_time_and_only_an_explicit_success_gate() {
         let stage = SoftwareRolloutStage {
+            id: Uuid::new_v4(),
             scope: Uuid::new_v4(),
             opens_at: 100,
             minimum_verified_percent: None,
@@ -838,6 +850,7 @@ mod tests {
         assert!(!stage.open(99, 10, 0));
         assert!(stage.open(100, 10, 0));
         let gated = SoftwareRolloutStage {
+            id: Uuid::new_v4(),
             minimum_verified_percent: Some(80),
             ..stage
         };
@@ -934,5 +947,147 @@ impl CredentialOperation {
             }
         };
         if valid { Ok(()) } else { Err(Error::Malformed) }
+    }
+}
+
+impl<S> Definition<S> {
+    /// Resolve only Scope representations; action fields have a single typed owner.
+    pub fn try_map_scopes<T, E>(
+        self,
+        mut map: impl FnMut(Option<Uuid>, S) -> Result<T, E>,
+    ) -> Result<Definition<T>, E> {
+        Ok(Definition {
+            custom_event: self.custom_event,
+            alias: self.alias,
+            scope: map(None, self.scope)?,
+            action: self.action.try_map_scopes(&mut map)?,
+            self_service: self.self_service,
+        })
+    }
+}
+impl<S> Action<S> {
+    /// Preserve action semantics while binding the owned stage scopes.
+    pub fn try_map_scopes<T, E>(
+        self,
+        map: &mut impl FnMut(Option<Uuid>, S) -> Result<T, E>,
+    ) -> Result<Action<T>, E> {
+        Ok(match self {
+            Self::DeviceAccess {
+                mac,
+                windows,
+                self_enrollment,
+                role,
+            } => Action::DeviceAccess {
+                mac,
+                windows,
+                self_enrollment,
+                role,
+            },
+            Self::TelemetryProfile { resource } => Action::TelemetryProfile { resource },
+            Self::Credential {
+                operation,
+                architecture,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            } => Action::Credential {
+                operation,
+                architecture,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            },
+            Self::Execution {
+                resource,
+                parameters,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            } => Action::Execution {
+                resource,
+                parameters,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            },
+            Self::AgentCollection {
+                resource,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            } => Action::AgentCollection {
+                resource,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            },
+            Self::NativeCollection {
+                resource,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            } => Action::NativeCollection {
+                resource,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            },
+            Self::Configuration { resource, exit } => Action::Configuration { resource, exit },
+            Self::UnmanageDevice {
+                schedule,
+                run_lifetime_seconds,
+            } => Action::UnmanageDevice {
+                schedule,
+                run_lifetime_seconds,
+            },
+            Self::EnsureAgentInstalled {
+                packages,
+                schedule,
+                run_lifetime_seconds,
+            } => Action::EnsureAgentInstalled {
+                packages,
+                schedule,
+                run_lifetime_seconds,
+            },
+            Self::RequestMdmEnrollment {
+                organization,
+                schedule,
+                run_lifetime_seconds,
+            } => Action::RequestMdmEnrollment {
+                organization,
+                schedule,
+                run_lifetime_seconds,
+            },
+            Self::Software {
+                channel,
+                delivery,
+                resource,
+                intent,
+                schedule,
+                run_lifetime_seconds,
+                rollout,
+            } => Action::Software {
+                channel,
+                delivery,
+                resource,
+                intent,
+                schedule,
+                run_lifetime_seconds,
+                rollout: SoftwareRollout {
+                    stages: rollout
+                        .stages
+                        .into_iter()
+                        .map(|s| {
+                            Ok(SoftwareRolloutStage {
+                                id: s.id,
+                                scope: map(Some(s.id), s.scope)?,
+                                opens_at: s.opens_at,
+                                minimum_verified_percent: s.minimum_verified_percent,
+                            })
+                        })
+                        .collect::<Result<_, E>>()?,
+                },
+            },
+        })
     }
 }

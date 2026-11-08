@@ -35,6 +35,7 @@ pub enum Role {
 #[serde(rename_all = "snake_case")]
 pub enum Release {
     EditOrDeleteReferencingObject,
+    EditPolicyScopeOrRetireOwner,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -42,6 +43,8 @@ pub struct Entry {
     pub kind: Kind,
     pub id: Uuid,
     pub revision: i64,
+    pub policy: Option<Uuid>,
+    pub stage: Option<Uuid>,
     pub roles: Vec<Role>,
     pub release: Release,
 }
@@ -60,11 +63,11 @@ impl Entry {
 }
 fn facts_sql() -> String {
     format!(
-        r#"SELECT 0 AS kind,g.id,g.revision,ARRAY['group_condition']::text[] AS roles
+        r#"SELECT 0 AS kind,g.id,g.revision,ARRAY['group_condition']::text[] AS roles,NULL::uuid AS policy_id,NULL::uuid AS stage_id
       FROM mdm_group.groups g JOIN mdm_group.rules r ON(r.tenant_id,r.group_id,r.version)=(g.tenant_id,g.id,g.rule_version)
       WHERE g.tenant_id=$1::uuid AND NOT g.deleted AND r.group_ids @> ARRAY[$2::uuid]
-      UNION ALL SELECT 1,s.id,s.revision,s.roles FROM ({}) s
-      UNION ALL SELECT 2,c.id,c.revision,ARRAY['compliance_target']::text[] FROM ({}) c"#,
+      UNION ALL SELECT 1,s.id,s.revision,s.roles,s.policy_id,s.stage_id FROM ({}) s
+      UNION ALL SELECT 2,c.id,c.revision,ARRAY['compliance_target']::text[],NULL::uuid,NULL::uuid FROM ({}) c"#,
         rss_mdm_scope_postgres::group_blocker_facts_sql(
             rss_mdm_install_support::StorageProfile::Mdm
         ),
@@ -125,7 +128,7 @@ impl Groups {
             for row in rows {
                 let kind=match row.try_get::<i32,_>("kind")? {0=>Kind::Group,1=>Kind::Scope,2=>Kind::ComplianceRule,_=>return Err(Error::Unavailable(Failure::GroupStorage).into())};
                 let roles:Vec<String>=row.try_get("roles")?;
-                items.push(Entry {kind,id:row.try_get("id")?,revision:row.try_get("revision")?,roles:stored(serde_json::from_value(serde_json::json!(roles)))?,release:Release::EditOrDeleteReferencingObject});
+                items.push(Entry {kind,id:row.try_get("id")?,revision:row.try_get("revision")?,policy:row.try_get("policy_id")?,stage:row.try_get("stage_id")?,roles:stored(serde_json::from_value(serde_json::json!(roles)))?,release:match kind {Kind::Scope=>Release::EditPolicyScopeOrRetireOwner,_=>Release::EditOrDeleteReferencingObject}});
             }
             let more=items.len()>q.limit(); items.truncate(q.limit());
             let next_cursor=if more {Some(checked_input(codec.encode(&binding,&items.last().ok_or(Error::Conflict)?.position()))?.as_str().to_owned())}else{None};

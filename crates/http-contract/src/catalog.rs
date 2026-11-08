@@ -560,13 +560,13 @@ pub static SAVED_QUERIES: Resource = Resource {
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::SAVED_QUERIES),
 };
-pub static SCOPES: Resource = Resource {
-    id: "scopes",
-    category: Category::Mutable,
-    owner: "management-http",
-    proof: "planning.http",
-    query: QueryPolicy::Unified,
-    collection: Some(&super::collections::SCOPES),
+pub static POLICY_SCOPES: Resource = Resource {
+    id: "policy_scopes",
+    category: Category::ReadModel,
+    owner: "policy-service",
+    proof: "scope.service",
+    query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static SELF_ENROLLMENTS: Resource = Resource {
     id: "self_enrollments",
@@ -1143,15 +1143,6 @@ pub static RESOURCE_REFERENCES: Resource = Resource {
     id: "resource_references",
     category: Category::Facts,
     owner: "resource-service",
-    proof: "references.lifecycle",
-    query: QueryPolicy::Unified,
-    collection: Some(&super::collections::Description::QueryOwner),
-};
-
-pub static SCOPE_REFERENCES: Resource = Resource {
-    id: "scope_references",
-    category: Category::Facts,
-    owner: "scope-service",
     proof: "references.lifecycle",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),

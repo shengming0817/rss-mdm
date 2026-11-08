@@ -7,7 +7,7 @@ async fn seed_transaction(c: &Context) -> Result<sqlx::Transaction<'_, sqlx::Pos
 pub struct Published {
     pub scope: Uuid,
 }
-pub async fn published(c: &Context, object: &DeviceObject) -> Result<Published> {
+pub async fn published(c: &Context, policy: Uuid, object: &DeviceObject) -> Result<Published> {
     let scope = Uuid::new_v4();
     let run = Uuid::new_v4();
     let budget =
@@ -37,7 +37,7 @@ pub async fn published(c: &Context, object: &DeviceObject) -> Result<Published> 
         }],
         as_of: time::OffsetDateTime::now_utc().unix_timestamp(),
     };
-    sqlx::query("INSERT INTO rss_da.scopes(tenant_id,id,revision,calculation_revision,resolution_revision) VALUES($1::uuid,$2,1,1,1)").bind(c.tenant.to_string()).bind(scope).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.scopes(tenant_id,id,policy_id,revision,calculation_revision,resolution_revision) VALUES($1::uuid,$2,$3,1,1,1)").bind(c.tenant.to_string()).bind(scope).bind(policy).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.scope_versions(tenant_id,id,revision,definition) VALUES($1::uuid,$2,1,$3)").bind(c.tenant.to_string()).bind(scope).bind(serde_json::to_value(&input.definition)?).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.scope_sources(tenant_id,scope,kind,target) VALUES($1::uuid,$2,'device',$3)").bind(c.tenant.to_string()).bind(scope).bind(device).execute(&mut *tx).await?;
     seed_run(

@@ -50,7 +50,6 @@ pub static PUBLICATIONS: Description = Description::QueryOwner;
 pub static PUBLICATION_TARGETS: Description = Description::QueryOwner;
 pub static RECOVERY_CREDENTIALS: Description = Description::QueryOwner;
 pub static SAVED_QUERIES: Description = Description::QueryOwner;
-pub static SCOPES: Description = Description::QueryOwner;
 pub static SMTP_VERSIONS: Description = Description::QueryOwner;
 pub static SOFTWARE_SOURCES: Description = Description::QueryOwner;
 pub static SOFTWARE_VERSIONS: Description = Description::QueryOwner;

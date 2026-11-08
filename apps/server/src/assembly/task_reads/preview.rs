@@ -85,7 +85,7 @@ impl Port for Reads {
             proof.manage(Permission::PolicyRead)?;
             proof.manage(Permission::ResourceRead)?;
             let grant = proof.authorization()?;
-            grant.require(proof, Permission::ScopeRead, None)?;
+            grant.require(proof, Permission::PolicyRead, None)?;
             grant.require_all_devices(proof, Permission::InventoryRead)?;
             audit.set_action(
                 "management_read",
@@ -135,7 +135,7 @@ impl Port for Reads {
                 let (proof,input,query,codec,verified,s)=*ctx;
                 grant.require(proof,Permission::PolicyRead,None)?;
                 grant.require(proof,Permission::ResourceRead,None)?;
-                grant.require(proof,Permission::ScopeRead,None)?;
+                grant.require(proof,Permission::PolicyRead,None)?;
                 grant.require_all_devices(proof,Permission::InventoryRead)?;
                 let script_preview=if let Action::Execution{resource,parameters,..}=&input.definition.action {Some(s.scripts.preview_on(c,resource,rss_mdm_script_service::Parameters::Sources(parameters),verified,proof,grant).await.map_err(script_fault)?)}else{None};
                 let collection_preview=match &input.definition.action {Action::AgentCollection{resource,..}|Action::NativeCollection{resource,..}=>Some(s.collections.preview_on(c,resource,channel,verified,proof,grant).await?),_=>None};
@@ -200,7 +200,7 @@ async fn enrollment(
             Box::pin(async move {
                 let (s, proof, input, query, codec) = *ctx;
                 grant.require(proof, Permission::PolicyRead, None)?;
-                grant.require(proof, Permission::ScopeRead, None)?;
+                grant.require(proof, Permission::PolicyRead, None)?;
                 grant.require_all_devices(proof, Permission::InventoryRead)?;
                 let Action::RequestMdmEnrollment {
                     organization,
@@ -331,7 +331,7 @@ async fn access_credentials(
             Box::pin(async move {
                 let (s, proof, input, query, codec) = *ctx;
                 grant.require(proof, Permission::PolicyRead, None)?;
-                grant.require(proof, Permission::ScopeRead, None)?;
+                grant.require(proof, Permission::PolicyRead, None)?;
                 grant.require_all_devices(proof, Permission::InventoryRead)?;
                 if !s.signing_enabled{return Err(Error::Unsupported)}
                 let permission=match &input.definition.action {Action::DeviceAccess{..}=>Permission::AccountWrite,Action::Credential{operation,..}=>{if !s.recovery_enabled{return Err(Error::Unsupported)}rss_mdm_recovery_credentials::tasks::credential_tasks::permission(operation)},_=>return Err(Error::Malformed)};
@@ -441,7 +441,7 @@ async fn retirement(
             Box::pin(async move {
                 let (s, proof, input, query, codec) = *ctx;
                 grant.require(proof, Permission::PolicyRead, None)?;
-                grant.require(proof, Permission::ScopeRead, None)?;
+                grant.require(proof, Permission::PolicyRead, None)?;
                 grant.require_all_devices(proof, Permission::InventoryRead)?;
                 rss_mdm_device_service::control::authorize_action(
                     grant,

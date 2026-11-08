@@ -1,8 +1,9 @@
 use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{Extension, Json, extract::State};
-use rss_mdm_policy::pages::Preview;
+use rss_mdm_policy_service::management::scopes::Qualification;
 pub struct StateServices {
+    pub policies: Arc<Policies>,
     pub configuration: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     pub tasks: Arc<dyn crate::execution::task_reads::Reads>,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
@@ -11,27 +12,27 @@ pub async fn preview(
     State(s): State<Arc<StateServices>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
+    axum::extract::Path(policy): axum::extract::Path<Uuid>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<PreviewQuery>,
     >,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
-    body: std::result::Result<Json<Preview>, axum::extract::rejection::JsonRejection>,
+    body: std::result::Result<Json<Qualification>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<PreviewResponse>>, Error> {
     (async {
-        let Json(input) = body.map_err(Error::from)?;
+        let Json(draft) = body.map_err(Error::from)?;
+        let input = s.policies.qualify(&a.proof, policy, &draft).await?;
         let (query, _) = query.parse().map_err(|_| Error::Malformed)?;
-        if matches!(
+        let response = if matches!(
             input.definition.action,
             rss_mdm_policy::Action::Configuration { .. }
         ) {
-            return s
-                .configuration
-                .preview(&a.proof, &audit, &input, &query, &codec)
-                .await
-                .map(|v| Json(PreviewResponse::Configuration(v)))
-                .map_err(Into::into);
-        }
-        if matches!(
+            PreviewResponse::Configuration(
+                s.configuration
+                    .preview(&a.proof, &audit, &input, &query, &codec)
+                    .await?,
+            )
+        } else if matches!(
             input.definition.action,
             rss_mdm_policy::Action::TelemetryProfile { .. }
         ) {
@@ -39,19 +40,20 @@ pub async fn preview(
                 "telemetry_profile_preview",
                 rss_mdm_audit_integration::AuditIntent::Routine,
             );
-            return s
-                .telemetry
-                .as_ref()
-                .ok_or(Error::Unsupported)?
-                .preview(&a.proof, input, &audit, query, codec)
-                .await
-                .map(|v| Json(PreviewResponse::Telemetry(v)))
-                .map_err(crate::telemetry::error);
-        }
-        s.tasks
-            .preview(&a, &audit, &input, &query, &codec)
-            .await
-            .map(|v| Json(PreviewResponse::Execution(v)))
+            PreviewResponse::Telemetry(
+                s.telemetry
+                    .as_ref()
+                    .ok_or(Error::Unsupported)?
+                    .preview(&a.proof, input, &audit, query, codec)
+                    .await
+                    .map_err(crate::telemetry::error)?,
+            )
+        } else {
+            PreviewResponse::Execution(s.tasks.preview(&a, &audit, &input, &query, &codec).await?)
+        };
+        // The owner may finish in another read transaction; fence intervening Policy edits.
+        s.policies.qualify(&a.proof, policy, &draft).await?;
+        Ok(Json(response))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)

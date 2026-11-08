@@ -14,9 +14,6 @@ pub enum Action {
         selector: rss_mdm_group_postgres::SystemSelector,
         name: String,
     },
-    Scope {
-        group: Uuid,
-    },
     Resource {
         expected: u64,
         input: Value,
@@ -35,7 +32,7 @@ pub enum Action {
         policy: d::RetentionPolicy,
     },
     Policy {
-        definition: rss_mdm_policy::Definition,
+        definition: rss_mdm_policy::Definition<rss_mdm_scope::ScopeDefinition>,
     },
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -147,14 +144,6 @@ pub fn build(tenant: Uuid) -> Result<Manifest, Error> {
                 name: name.into(),
             },
         );
-        if selector != S::AllActive {
-            step(
-                &mut steps,
-                format!("scope:{}", selector.as_str()),
-                id(tenant, &format!("scope:{}", selector.as_str())),
-                Action::Scope { group },
-            );
-        }
     }
     for b in r::blueprints::catalog().into_iter().filter(|b| {
         matches!(
@@ -210,7 +199,7 @@ pub fn build(tenant: Uuid) -> Result<Manifest, Error> {
         };
         for architecture in ["x86_64", "aarch64"] {
             let key = format!("{}:policy:{architecture}", b.id);
-            let definition=serde_json::from_value(json!({"scope":id(tenant,&format!("scope:{platform}")),"action":{"kind":kind,"resource":{"id":target,"version":b.label(),"platform":platform,"architecture":architecture,"variant":architecture},"runLifetimeSeconds":3600}})).map_err(|_|Error::Malformed)?;
+            let definition=serde_json::from_value(json!({"scope":{"targets":[{"kind":"group","id":id(tenant,&format!("group:{platform}"))}],"limitations":null,"exclusions":[]},"action":{"kind":kind,"resource":{"id":target,"version":b.label(),"platform":platform,"architecture":architecture,"variant":architecture},"runLifetimeSeconds":3600}})).map_err(|_|Error::Malformed)?;
             step(
                 &mut steps,
                 &key,
@@ -341,7 +330,7 @@ pub fn build(tenant: Uuid) -> Result<Manifest, Error> {
                         input: json!({"action":"activate","version":"v1"}),
                     },
                 );
-                let definition=serde_json::from_value(json!({"scope":id(tenant,&format!("scope:{label}")),"action":{"kind":"telemetry_profile","resource":{"id":target,"version":"v1","platform":platform,"architecture":architecture,"variant":arch}}})).map_err(|_|Error::Malformed)?;
+                let definition=serde_json::from_value(json!({"scope":{"targets":[{"kind":"group","id":id(tenant,&format!("group:{label}"))}],"limitations":null,"exclusions":[]},"action":{"kind":"telemetry_profile","resource":{"id":target,"version":"v1","platform":platform,"architecture":architecture,"variant":arch}}})).map_err(|_|Error::Malformed)?;
                 let policy_key = format!("{key}:policy");
                 step(
                     &mut steps,
@@ -635,7 +624,9 @@ mod tests {
         );
         assert_current_resources(&a);
     }
-    fn assert_collection_cadence(definition: &rss_mdm_policy::Definition) {
+    fn assert_collection_cadence(
+        definition: &rss_mdm_policy::Definition<rss_mdm_scope::ScopeDefinition>,
+    ) {
         match &definition.action {
             rss_mdm_policy::Action::AgentCollection {
                 schedule,

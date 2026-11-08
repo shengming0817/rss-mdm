@@ -208,5 +208,8 @@ mod planning_t2_support;
 #[path = "../tests/policy/configuration.rs"]
 mod policy_configuration_t2;
 #[cfg(test)]
+#[path = "../tests/support/policies.rs"]
+mod policy_management_t2_support;
+#[cfg(test)]
 #[path = "../tests/scope/publication.rs"]
 mod scope_t2;

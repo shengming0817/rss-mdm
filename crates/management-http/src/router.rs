@@ -197,7 +197,6 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                 .bind_with(context, |(s, _)| s.diagnostics.clone()),
             planning_routes: crate::planning::routes().bind_with(context, |(s, _)| {
                 Arc::new(crate::planning::http::HttpState {
-                    scopes: s.scopes.clone(),
                     groups: s.groups.clone(),
                 })
             }),
@@ -257,6 +256,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
             http_register_previews: crate::planning::policies::http::register_previews(cursor())
                 .bind_with(context, |(s, _)| {
                     Arc::new(crate::planning::policies::http_preview::StateServices {
+                        policies: s.policies.clone(),
                         tasks: s.task_reads.clone(),
                         configuration: s.configuration_preview.clone(),
                         telemetry: s.telemetry.clone(),
@@ -378,7 +378,7 @@ async fn workspace(Extension(auth): Extension<RequestAuth>) -> Result<Json<Works
             WorkspaceId::Policies,
             manage(P::PolicyRead)
                 || manage(P::GroupRead)
-                || manage(P::ScopeRead)
+                || manage(P::PolicyRead)
                 || manage(P::ResourceRead),
         ),
         (

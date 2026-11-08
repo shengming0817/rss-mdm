@@ -7,36 +7,19 @@ pub async fn read_in(
 ) -> Result<Option<Policy>> {
     checked(reader.locked_in(tx, id).await?)
 }
-pub fn view(policy: &Policy) -> rss_mdm_policy::View {
-    rss_mdm_policy::View::from(policy)
-}
 pub(super) async fn write_in(
     service: &Policies,
     tx: &mut PgTransaction<'_>,
     p: &Policy,
-    change: &Change,
+    change: &rss_mdm_policy::Change,
     frozen: Option<&Value>,
     proof: &AuthorizedPrincipal,
     now: i64,
 ) -> Result<()> {
-    if !matches!(change, Change::Archive) {
-        let mut targets = vec![p.definition.scope];
-        if let Action::Software { rollout, .. } = &p.definition.action {
-            targets.extend(rollout.stages.iter().map(|s| s.scope));
-        }
-        service
-            .scopes
-            .lock_references_in(tx, &targets)
-            .await
-            .map_err(|e| match e {
-                rss_mdm_scope_postgres::BindingError::Storage(e) => Fault::Storage(e),
-                rss_mdm_scope_postgres::BindingError::Missing => Error::NotFound.into(),
-                rss_mdm_scope_postgres::BindingError::TenantMismatch => Error::Forbidden.into(),
-                _ => Error::Conflict.into(),
-            })?;
-        if let Some(config) = &p.definition.self_service {
-            super::authorization::validate_access(config, proof.tenant_id(), proof.instance_id())?;
-        }
+    if !matches!(change, rss_mdm_policy::Change::Archive)
+        && let Some(config) = &p.definition.self_service
+    {
+        super::authorization::validate_access(config, proof.tenant_id(), proof.instance_id())?;
     }
     let publication = rss_mdm_policy_postgres::Publication {
         change: change.clone(),

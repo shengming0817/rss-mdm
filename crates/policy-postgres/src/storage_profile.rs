@@ -35,8 +35,6 @@ pub(crate) struct Statements {
     pub store_resolve_in_1: &'static str,
     pub store_locked_in_1: &'static str,
     pub store_action_kinds_in_1: &'static str,
-    pub scope_reference_facts: &'static str,
-    pub scope_dependents_in_1: &'static str,
     pub schedules_triggers_in_1: &'static str,
     pub schedules_retirement_in_1: &'static str,
     pub schedules_scan_due_in_1: &'static str,
@@ -157,7 +155,7 @@ CREATE TABLE "###, $work, r###" (
     CONSTRAINT policy_work_authority_revision_check CHECK ((authority_revision >= 0)),
     CONSTRAINT policy_work_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text, 'permission_denied'::text]))),
     CONSTRAINT policy_work_input_check CHECK ((octet_length((input)::text) <= 1048576)),
-    CONSTRAINT policy_work_kind_check CHECK ((kind = ANY (ARRAY['policy_scope'::text, 'policy_reconcile'::text, 'policy_event'::text, 'policy_lifecycle'::text]))),
+    CONSTRAINT policy_work_kind_check CHECK ((kind = ANY (ARRAY['policy_reconcile'::text, 'policy_event'::text, 'policy_lifecycle'::text]))),
     CONSTRAINT policy_work_target_check CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))
 );
 
@@ -339,8 +337,6 @@ FROM "###, $policies, r###" WHERE tenant_id=$1::uuid
                 store_resolve_in_1: concat!("SELECT id FROM ", $policies, " WHERE tenant_id=$1::uuid AND definition->>'alias'=$2 AND state<>'archived'"),
                 store_locked_in_1: concat!("SELECT ", $policy_schema, "lock_policy($1)"),
                 store_action_kinds_in_1: concat!("SELECT DISTINCT action_kind FROM ", $versions, " WHERE tenant_id=$1::uuid AND policy=$2 ORDER BY action_kind"),
-                scope_reference_facts: concat!("SELECT id,current_version AS version,revision,state,ARRAY(SELECT role FROM (SELECT 'policy_scope'::text AS role WHERE (definition->>'scope')::uuid=$2 UNION ALL SELECT 'rollout_stage' WHERE EXISTS(SELECT FROM jsonb_array_elements(coalesce(definition#>'{action,rollout,stages}','[]'::jsonb)) stage WHERE (stage->>'scope')::uuid=$2)) role_rows) AS roles FROM ", $policies, " WHERE tenant_id=$1::uuid AND ((definition->>'scope')::uuid=$2 OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(definition->'action'->'rollout'->'stages','[]'::jsonb)) stage WHERE (stage->>'scope')::uuid=$2))"),
-                scope_dependents_in_1: concat!("SELECT id FROM ", $policies, " WHERE tenant_id=$1::uuid AND (definition->>'scope'=$2 OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(definition->'action'->'rollout'->'stages','[]'::jsonb)) stage WHERE stage->>'scope'=$2)) AND id>coalesce($3::uuid,'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY id LIMIT 65"),
                 schedules_triggers_in_1: concat!("SELECT id,created_at FROM ", $triggers, " WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at DESC,id DESC LIMIT 64"),
                 schedules_retirement_in_1: concat!("SELECT p.id,v.id,v.frozen FROM ", $policies, " p JOIN ", $versions, " v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND v.action_kind='unmanage_device' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT 64"),
                 schedules_scan_due_in_1: concat!("SELECT coalesce((SELECT next_scan_at FROM ", $schedule_scan, " WHERE tenant_id=$1::uuid),0)<=$2"),

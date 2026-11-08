@@ -9,7 +9,7 @@ pub async fn read(
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     id: Uuid,
-) -> std::result::Result<rss_mdm_policy::View, Error> {
+) -> std::result::Result<super::View, Error> {
     audit.set_action(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -34,7 +34,7 @@ pub async fn read(
                 let policy = storage::read_in(s.policy_store.reader(), tx, id)
                     .await?
                     .ok_or(Error::PolicyMissing)?;
-                let value = storage::view(&policy);
+                let value = s.view_in(tx, a, &policy).await?;
 
                 Ok(value)
             })
@@ -121,17 +121,17 @@ pub async fn resolve(
             revision:policy.revision as u64,version:policy.version,
             operations:vec![rss_mdm_agent_wire::runtime::CapabilityOperation::Read],
             input_schema:json!({"type":"object","properties":{},"additionalProperties":false}),
-            output_schema:schemars::generate::SchemaSettings::draft2020_12().for_serialize().into_generator().into_root_schema_for::<rss_mdm_policy::View>().to_value(),
+            output_schema:schemars::generate::SchemaSettings::draft2020_12().for_serialize().into_generator().into_root_schema_for::<super::View>().to_value(),
         };
         a.check_live()?;
-        Ok(Resolved {capability:descriptor,policy:storage::view(&policy)})
+        Ok(Resolved {capability:descriptor,policy:s.view_in(tx,a,&policy).await?})
     }),).await
 }
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct Resolved {
     pub capability: rss_mdm_agent_wire::runtime::CapabilityDescriptor,
-    pub policy: rss_mdm_policy::View,
+    pub policy: super::View,
 }
 
 /// Safe original Policy result; current configuration is never used as a substitute.
@@ -159,13 +159,15 @@ pub async fn operation_receipt(
                         #[derive(serde::Deserialize)]
                         #[serde(untagged)]
                         enum Original {
-                            Changed(Box<rss_mdm_policy::View>),
+                            Changed(Box<super::View>),
                             Rerun(crate::management::rerun::Receipt),
                         }
                         match serde_json::from_value::<Original>(v).map_err(|_| Error::Conflict)? {
                             Original::Changed(v) => {
                                 s.object = Some(v.id.to_string());
                                 s.revision = Some(v.revision);
+                                s.executions
+                                    .extend(v.scopes.iter().filter_map(|scope| scope.task));
                             }
                             Original::Rerun(v) => {
                                 if v.operation_id != id {
@@ -198,18 +200,7 @@ pub async fn work_receipt(
                 let grant = crate::action_admission::current(tx, p).await?;
                 let (work, complete, failure, _, forwarded) =
                     crate::worker::jobs::read_in(s.profile(), tx, id).await?;
-                grant.require(
-                    p,
-                    if matches!(
-                        work,
-                        rss_mdm_policy_postgres::work::Work::PolicyScope { .. }
-                    ) {
-                        Permission::ScopeRead
-                    } else {
-                        Permission::PolicyRead
-                    },
-                    None,
-                )?;
+                grant.require(p, Permission::PolicyRead, None)?;
                 let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
                 value.object = Some(work.target());
                 value.accepted = Some(true);

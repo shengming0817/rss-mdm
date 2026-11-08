@@ -521,7 +521,6 @@ pub(super) fn domains(proof: &AuthorizedPrincipal, platform: bool) -> Vec<Domain
     } else {
         vec![
             ("groups", "/api/v1/groups", Permission::GroupRead),
-            ("scopes", "/api/v1/scopes", Permission::ScopeRead),
             ("policies", "/api/v1/policies", Permission::PolicyRead),
             ("software", "/api/v1/resources", Permission::ResourceRead),
             (

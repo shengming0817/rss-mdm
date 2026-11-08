@@ -380,22 +380,19 @@ async fn save(
 
 impl SoftwareAssignment {
     /// A stage transition wakes discovery once; closed stages need no per-device polling.
-    pub(crate) async fn release_gates_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
+    pub(crate) async fn release_gates_in(
+        &self,
+        source: &std::sync::Arc<dyn crate::deployment::scope::Sources>,
+        tx: &mut PgTransaction<'_>,
+    ) -> Result<bool> {
         let Some(version) = self.version else {
             return Ok(false);
         };
         let now = crate::deployment::storage::now(tx).await?;
-        let tenant = tx.tenant_id().to_string();
-        let rows:Vec<(i32,serde_json::Value)>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as("SELECT stage,counts FROM mdm_software_deployment.software_stage_stats WHERE tenant_id=$1::uuid AND version=$2 ORDER BY stage").bind(tenant).bind(version).fetch_all(c).await})).await?;
-        let counts = rows
-            .into_iter()
-            .map(|(stage, value)| {
-                Ok((
-                    stage as usize,
-                    crate::deployment::stored(serde_json::from_value::<StageCounts>(value))?,
-                ))
-            })
-            .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+        let mut counts = std::collections::BTreeMap::new();
+        for index in 0..self.stages().len() {
+            counts.insert(index, self.counts_in(source, tx, index).await?);
+        }
         let mut released = false;
         for (index, stage) in self.stages().iter().enumerate() {
             let previous = index.checked_sub(1).and_then(|i| counts.get(&i));

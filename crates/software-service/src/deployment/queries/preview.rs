@@ -104,7 +104,7 @@ fn authorize_preview(
     proof: &AuthorizedPrincipal,
     definition: &Definition,
 ) -> Result<(), crate::deployment::Error> {
-    snapshot.require(proof, Permission::ScopeRead, None)?;
+    snapshot.require(proof, Permission::PolicyRead, None)?;
     snapshot.require_all_devices(proof, Permission::InventoryRead)?;
     authorize_action(snapshot, proof, &definition.action)
 }

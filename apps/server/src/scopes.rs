@@ -8,6 +8,27 @@ pub(crate) async fn open(
     cursor_key: Vec<u8>,
     read_pool: sqlx::PgPool,
 ) -> Result<Arc<rss_mdm_scope_service::Scopes>, crate::Error> {
+    bind(runtime, tenant, clock, audit, cursor_key, read_pool, false).await
+}
+pub(crate) async fn editor(
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    tenant: rss_request_context::TenantId,
+    clock: Arc<dyn crate::clock::Clock>,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    cursor_key: Vec<u8>,
+    read_pool: sqlx::PgPool,
+) -> Result<Arc<rss_mdm_scope_service::Scopes>, crate::Error> {
+    bind(runtime, tenant, clock, audit, cursor_key, read_pool, true).await
+}
+async fn bind(
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    tenant: rss_request_context::TenantId,
+    clock: Arc<dyn crate::clock::Clock>,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    cursor_key: Vec<u8>,
+    read_pool: sqlx::PgPool,
+    editing: bool,
+) -> Result<Arc<rss_mdm_scope_service::Scopes>, crate::Error> {
     let deadline = rss_mdm_scope_service::transaction::deadline();
     let groups = rss_mdm_group_postgres::GroupSources::bind(runtime.clone(), tenant, deadline)
         .await
@@ -39,14 +60,26 @@ pub(crate) async fn open(
         cursor_key,
         read_pool,
     };
-    Ok(Arc::new(
+    let clock: Arc<dyn rss_mdm_scope_service::clock::Clock> =
+        Arc::new(crate::clock::ScopeClock(clock));
+    let scopes = if editing {
+        rss_mdm_scope_service::Scopes::bind_policy(
+            rss_mdm_install_support::StorageProfile::Mdm,
+            runtime,
+            tenant,
+            clock,
+            dependencies,
+        )
+        .await?
+    } else {
         rss_mdm_scope_service::Scopes::new(
             rss_mdm_install_support::StorageProfile::Mdm,
             runtime,
             tenant,
-            Arc::new(crate::clock::ScopeClock(clock)),
+            clock,
             dependencies,
         )
-        .await?,
-    ))
+        .await?
+    };
+    Ok(Arc::new(scopes))
 }

@@ -116,6 +116,8 @@ SELECT meta.generation,(EXISTS(SELECT FROM group_status WHERE NOT valid)
   OR convert_from(r.document,'UTF8')::jsonb->>'tenant'<>$1::text
   OR convert_from(r.document,'UTF8')::jsonb->>'version'<>r.version))) AS invalid,coalesce((SELECT jsonb_agg(jsonb_build_object(
  'source',jsonb_build_object('kind',(ARRAY['group','scope','policy','compliance_rule'])[d.kind+1],'id',d.id),
+ 'policy',(SELECT s.policy_id FROM scope_facts s WHERE d.kind=1 AND s.id=d.id),
+ 'stage',(SELECT s.stage_id FROM scope_facts s WHERE d.kind=1 AND s.id=d.id),
  'revision',d.revision,'relation',CASE WHEN d.relation=0 THEN 'direct' ELSE 'indirect' END,
  'roles',d.roles,'via',(SELECT jsonb_agg(jsonb_build_object('kind',CASE WHEN ordinal=cardinality(d.path) THEN (ARRAY['group','scope','policy','compliance_rule'])[d.kind+1] WHEN d.kind=2 AND ordinal=cardinality(d.path)-1 THEN 'scope' ELSE 'group' END,'id',id) ORDER BY ordinal) FROM unnest(d.path) WITH ORDINALITY x(id,ordinal)),
  'lifecycleState',d.state,'freshness',CASE WHEN d.current THEN 'current' ELSE 'pending' END,

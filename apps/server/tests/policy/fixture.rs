@@ -2,14 +2,14 @@
 use crate::{assembly, authority_t2_support::Context, command_runtime_t2_support::Prepared};
 use anyhow::Result;
 use std::sync::Arc;
-pub(super) struct Fixture {
-    pub(super) resources: Prepared,
-    pub(super) software: crate::assembly::software::Assembly,
-    pub(super) registration: crate::assembly::registration::Assembly,
-    pub(super) materials: Arc<crate::assembly::policy::EventInputs>,
+pub(crate) struct Fixture {
+    pub(crate) resources: Prepared,
+    pub(crate) software: crate::assembly::software::Assembly,
+    pub(crate) registration: crate::assembly::registration::Assembly,
+    pub(crate) materials: Arc<crate::assembly::policy::EventInputs>,
 }
 impl Fixture {
-    pub(super) async fn open(c: &Context, signing: bool) -> Result<Self> {
+    pub(crate) async fn open(c: &Context, signing: bool) -> Result<Self> {
         let resources = Prepared::open(c, signing, |_| {}).await?;
         let result: Result<_> = async {
             let config = &resources.config;
@@ -82,7 +82,7 @@ impl Fixture {
             materials,
         })
     }
-    pub(super) async fn close(self) -> Result<()> {
+    pub(crate) async fn close(self) -> Result<()> {
         self.resources.close().await
     }
 }

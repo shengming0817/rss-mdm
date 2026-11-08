@@ -149,11 +149,14 @@ pub(super) async fn scope(c: &Context, groups: &[Uuid]) -> Result<Uuid> {
         exclusions: Default::default(),
     };
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_scope.scopes(tenant_id,id,revision) VALUES($1::uuid,$2,1)")
-        .bind(c.tenant.to_string())
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO mdm_scope.scopes(tenant_id,id,policy_id,revision) VALUES($1::uuid,$2,$3,1)",
+    )
+    .bind(c.tenant.to_string())
+    .bind(id)
+    .bind(Uuid::new_v4())
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("INSERT INTO mdm_scope.scope_versions(tenant_id,id,revision,definition) VALUES($1::uuid,$2,1,$3)").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(definition)?).execute(&mut *tx).await?;
     for group in groups {
         sqlx::query("INSERT INTO mdm_scope.scope_sources(tenant_id,scope,kind,target) VALUES($1::uuid,$2,'group',$3)").bind(c.tenant.to_string()).bind(id).bind(group.to_string()).execute(&mut *tx).await?;
@@ -170,7 +173,6 @@ async fn mixed_references_are_owned_authorized_and_stable_across_pages() -> Resu
             P::InventoryRead,
             P::GroupRead,
             P::GroupWrite,
-            P::ScopeRead,
             P::PolicyRead,
             P::ComplianceWrite,
             P::ComplianceRuleRead,

@@ -50,26 +50,12 @@ pub struct ResultDetail {
     pub entry: i64,
     pub explanation: Option<rss_mdm_scope::MemberExplanation>,
 }
-/// The downstream owner checks references and accepts one durable publication notification.
-/// It owns fan-out, retries and completion; Scope never receives its pagination cursor.
+/// Record the owning Policy's reconciliation in the publication transaction.
 pub trait ScopeDependents: Send + Sync {
-    fn used_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        scope: uuid::Uuid,
-    ) -> Pending<'a, bool, crate::transaction::Fault>;
-    /// Minimal blockers projected by the Policy owner, with the original delete predicate.
-    fn references_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        scope: uuid::Uuid,
-        after: Option<uuid::Uuid>,
-        limit: usize,
-    ) -> Pending<'a, Vec<crate::references::Entry>, crate::transaction::Fault>;
     fn publication_recorded_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        scope: uuid::Uuid,
+        owner: rss_mdm_scope_postgres::ScopeOwner,
         run: uuid::Uuid,
     ) -> Pending<'a, (), crate::transaction::Fault>;
 }

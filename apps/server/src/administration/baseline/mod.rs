@@ -16,7 +16,6 @@ pub(crate) struct Service {
     pub pool: sqlx::PgPool,
     pub authorization: std::sync::Arc<rss_mdm_authorization_service::Store>,
     pub groups: std::sync::Arc<rss_mdm_group_service::Groups>,
-    pub scopes: std::sync::Arc<rss_mdm_scope_service::Scopes>,
     pub resources: std::sync::Arc<rss_mdm_resource_service::ResourceCatalog>,
     pub content_access: Option<std::sync::Arc<rss_mdm_content_service::service::Access>>,
     pub assets: std::sync::Arc<rss_mdm_inventory_service::assets::AssetService>,
@@ -254,28 +253,6 @@ async fn execute_owned(
                 .await
                 .map_err(Error::from)
         }
-        Action::Scope { group } => {
-            let command = rss_mdm_scope_service::Command::Scope {
-                id: target()?,
-                change: rss_mdm_scope_service::operation::Operation {
-                    operation_id: operation,
-                    expected_revision: 0,
-                    input: rss_mdm_scope_service::ScopeChange::Put {
-                        definition: rss_mdm_scope::ScopeDefinition {
-                            targets: [rss_mdm_scope::Reference::Group(*group)].into(),
-                            limitations: None,
-                            exclusions: Default::default(),
-                        },
-                    },
-                },
-            };
-            state
-                .scopes
-                .execute_initialization(&command, audit, proof)
-                .await
-                .map(|value| serde_json::to_value(value).expect("asset envelope serializes"))
-                .map_err(Error::from)
-        }
         Action::Resource { expected, input } => {
             let command = rss_mdm_resource_service::Command::Resource {
                 id: step.target.clone(),
@@ -366,7 +343,7 @@ async fn execute_owned(
                     &Operation {
                         operation_id: operation,
                         expected_revision: 0,
-                        input: rss_mdm_policy::Change::Put {
+                        input: rss_mdm_policy_service::management::Change::Put {
                             enabled: true,
                             definition: Box::new(definition.clone()),
                         },

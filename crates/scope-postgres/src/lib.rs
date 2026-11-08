@@ -6,14 +6,6 @@ use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Authored definition and its CAS revision, independent of observation progress.
-pub struct DefinitionSnapshot {
-    /// Current authored revision; deletion is checked by the owner read.
-    pub revision: u64,
-    /// Authored selection, not a materialized member set.
-    pub definition: ScopeDefinition,
-}
-
 /// Expected coordinates for one atomic Scope object and channel publication.
 /// This is an input, not proof that either owner has completed its work.
 pub struct Publication {
@@ -230,12 +222,10 @@ pub const fn relations_sql(profile: rss_mdm_install_support::StorageProfile) -> 
 }
 
 mod store;
-pub use store::{Head, Run, SourceMember, Task};
+pub use store::{Head, OwnedScope, Run, SourceMember, Task};
 
 mod authority;
 pub use authority::verify_authority;
-
-mod directory;
 
 /// Minimal frozen Scope facts consumed by the access role.
 pub const ACCESS_CONTRACT: &str =
@@ -338,3 +328,5 @@ pub const fn group_blocker_facts_sql(
 ) -> &'static str {
     storage_profile::sql(profile).group_blocker_facts
 }
+
+pub use rss_mdm_scope::ScopeOwner;

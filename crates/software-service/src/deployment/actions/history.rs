@@ -30,7 +30,7 @@ impl Queries {
             let mut prior_ready=true;
             for (index,stage) in software.assignment.stages().iter().enumerate() {
                 let counts=software.assignment.counts_on(service.source.as_ref(),c,service.tenant,index).await?;
-                stages.push(json!({"scope":stage.scope,"opensAt":stage.opens_at,
+                stages.push(json!({"id":stage.id,"scope":stage.scope,"opensAt":stage.opens_at,
                     "minimumVerifiedPercent":stage.minimum_verified_percent,
                     "open":policy.state.is_enabled() && (stage.minimum_verified_percent.is_none() || prior_ready) && stage.open(now,prior.0,prior.1),
                     "ready":counts.ready,"asOf":counts.as_of,

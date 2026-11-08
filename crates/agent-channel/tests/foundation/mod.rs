@@ -80,8 +80,8 @@ async fn accepted(c: &Context, p: &registration::DevicePrincipal) -> Result<Uuid
             generation: p.generation(),
         }],
     };
-    let scope = scope_seed::published(c, &object).await?;
     let policy = Uuid::new_v4();
+    let scope = scope_seed::published(c, policy, &object).await?;
     let version = Uuid::new_v4();
     let run = Uuid::new_v4();
     let at = now();

@@ -587,7 +587,6 @@ pub(crate) fn from_state(
                 pool: state.access.archive_pool(),
                 authorization: state.access.authorization_store(),
                 groups: state.groups.clone(),
-                scopes: state.scopes.clone(),
                 resources: state.resources.clone(),
                 content_access: state.content_access.clone(),
                 assets: state.assets.clone(),

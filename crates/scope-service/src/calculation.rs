@@ -181,8 +181,9 @@ impl Scopes {
                 };
                 let changed = self.projection.publish_in(tx, &publication).await?;
                 self.store.publish_in(tx, &publication, changed).await?;
+                let owner = self.store.owner_in(tx, run.scope).await?;
                 self.dependents
-                    .publication_recorded_in(tx, run.scope, id)
+                    .publication_recorded_in(tx, owner, id)
                     .await?;
                 self.finish_in(tx, id, None).await?;
                 let mut successor = false;

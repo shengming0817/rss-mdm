@@ -142,18 +142,28 @@ async fn publication_is_atomic_replayable_and_rejects_stale_definition() -> Resu
 #[ignore = "T2: explicit recalculation fences every unfinished phase, preserves authored CAS and replays one task"]
 async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Result<()> {
     use rss_mdm_authorization_service::Permission;
-    use rss_mdm_scope_service::{Command, ScopeChange, operation::Operation};
+
     let c = Context::open("shared", &[]).await?;
     let account = c
         .account(&[
-            Permission::ScopeRead,
-            Permission::ScopeWrite,
+            Permission::PolicyRead,
+            Permission::PolicyWrite,
             Permission::InventoryRead,
         ])
         .await?;
     let p = c.authenticate(&account).await?;
     let object = fixture::endpoint(&c).await?;
     let s = open(&c).await?;
+    let editor_owner = fixture::owner(&c, "mdm_policy_runtime").await?;
+    let editor = crate::scopes::editor(
+        editor_owner.runtime.clone(),
+        c.tenant,
+        Arc::new(crate::clock::SystemClock),
+        editor_owner.audit.clone(),
+        vec![7; 32],
+        c.inputs.pool("shared", "mdm_access").await?,
+    )
+    .await?;
     for phase in ["sources", "project", "ready"] {
         let old = fixture::published(&c, &object).await?;
         let unfinished = fixture::staged(&c, &old, &object).await?;
@@ -163,15 +173,8 @@ async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Resu
             .bind(phase)
             .execute(&c.operator)
             .await?;
-        let command = Command::Scope {
-            id: old.scope,
-            change: Operation {
-                operation_id: Uuid::new_v4(),
-                expected_revision: 1,
-                input: ScopeChange::Recompute,
-            },
-        };
-        let receipt = s.execute(&command, &c.request(&p)?, &p).await?;
+        let command = Uuid::new_v4();
+        let receipt = recompute(&editor, &c, &p, &old, command, 1).await?;
         assert_eq!(receipt["revision"], 1);
         let task = Uuid::parse_str(receipt["task"].as_str().unwrap())?;
         assert_ne!(task, unfinished);
@@ -179,7 +182,7 @@ async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Resu
             .bind(c.tenant.to_string()).bind(unfinished).fetch_one(&c.operator).await?;
         assert_eq!(replaced, (true, Some("superseded".into()), Some(task)));
         assert_eq!(
-            s.execute(&command, &c.request(&p)?, &p).await?,
+            recompute(&editor, &c, &p, &old, command, 1).await?,
             receipt,
             "lost response recovery must not create another task"
         );
@@ -187,16 +190,8 @@ async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Resu
         let before:(i64,Uuid,i64)=sqlx::query_as("SELECT revision,resolution,calculation_revision FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2")
             .bind(c.tenant.to_string()).bind(old.scope).fetch_one(&c.operator).await?;
         assert_eq!(before, (1, old.run, 1));
-        let mut wrong = Command::Scope {
-            id: old.scope,
-            change: Operation {
-                operation_id: Uuid::new_v4(),
-                expected_revision: 2,
-                input: ScopeChange::Recompute,
-            },
-        };
         assert!(matches!(
-            s.execute(&wrong, &c.request(&p)?, &p).await,
+            recompute(&editor, &c, &p, &old, Uuid::new_v4(), 2).await,
             Err(rss_mdm_scope_service::Error::Conflict)
         ));
         for _ in 0..20 {
@@ -209,15 +204,7 @@ async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Resu
             (1, task, 2, true)
         );
         // A new operation performs a fresh calculation; an unchanged result keeps its semantic revision.
-        wrong = Command::Scope {
-            id: old.scope,
-            change: Operation {
-                operation_id: Uuid::new_v4(),
-                expected_revision: 1,
-                input: ScopeChange::Recompute,
-            },
-        };
-        let next = s.execute(&wrong, &c.request(&p)?, &p).await?;
+        let next = recompute(&editor, &c, &p, &old, Uuid::new_v4(), 1).await?;
         let next = Uuid::parse_str(next["task"].as_str().unwrap())?;
         for _ in 0..20 {
             advance(&s, next, &old.cut, false).await?;
@@ -229,4 +216,53 @@ async fn recompute_replaces_inflight_tasks_without_changing_definition() -> Resu
     drop(s);
     c.close().await;
     Ok(())
+}
+
+async fn recompute(
+    s: &Scopes,
+    c: &Context,
+    p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    old: &fixture::Published,
+    operation: Uuid,
+    expected: u64,
+) -> Result<serde_json::Value, rss_mdm_scope_service::Error> {
+    let audit = c.request(p).unwrap();
+    audit.owned_operation(
+        rss_mdm_audit_integration::operation::OperationOwner::Scope,
+        operation,
+        "scope_recompute",
+        AuditIntent::Management,
+    );
+    audit.resource_target(
+        rss_mdm_audit_integration::TargetKind::Policy,
+        &old.policy.to_string(),
+    );
+    transaction::run(
+        &s.audit_store,
+        &s.runtime,
+        s.tenant,
+        &audit,
+        (s, p, &audit, old),
+        |(s, p, a, old), tx| {
+            Box::pin(async move {
+                s.audit_store.prepare_in(tx, a, &[]).await?;
+                let result = s
+                    .recompute_owned_in(
+                        tx,
+                        p,
+                        a,
+                        rss_mdm_scope::ScopeOwner {
+                            policy: old.policy,
+                            stage: None,
+                        },
+                        operation,
+                        expected,
+                        1,
+                    )
+                    .await?;
+                Ok(serde_json::to_value(result).unwrap())
+            })
+        },
+    )
+    .await
 }

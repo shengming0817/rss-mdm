@@ -98,14 +98,22 @@ pub async fn software_with_export(
     tx.commit().await?;
     Ok(version)
 }
-pub async fn endpoints(c: &Context) -> Result<(owner::Target, owner::Target, Uuid, Uuid)> {
+pub async fn endpoints(
+    c: &Context,
+) -> Result<(
+    owner::Target,
+    owner::Target,
+    Uuid,
+    Uuid,
+    rss_mdm_registration_service::DevicePrincipal,
+)> {
     let (registration, grant, device) = material::seed_registration(c).await?;
     let caps = vec![
         w::Capability::InventoryCollectionV1,
         w::Capability::TaskExecuteV1,
         w::Capability::SoftwareMsiSystemV1,
     ];
-    let _principal =
+    let principal =
         material::authenticated_agent(c, registration, grant, &device, caps.clone()).await?;
     let agent = rss_mdm_registration_service::device::endpoints::PrimaryRegistration {
         device: device.clone(),
@@ -138,7 +146,13 @@ pub async fn endpoints(c: &Context) -> Result<(owner::Target, owner::Target, Uui
             registration: v.registration_id,
             generation: v.generation,
         };
-    Ok((target(agent), target(native), agent_scope, native_scope))
+    Ok((
+        target(agent),
+        target(native),
+        agent_scope,
+        native_scope,
+        principal,
+    ))
 }
 pub async fn policy(
     c: &Context,
@@ -194,6 +208,7 @@ pub async fn policy(
 }
 pub fn stage(scope: Uuid) -> rss_mdm_policy::SoftwareRolloutStage {
     rss_mdm_policy::SoftwareRolloutStage {
+        id: Uuid::new_v4(),
         scope,
         opens_at: 0,
         minimum_verified_percent: None,

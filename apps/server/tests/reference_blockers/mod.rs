@@ -302,7 +302,7 @@ async fn resource_http_retention_permissions_and_continuations() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "T2: Group direct identities and Scope current Policy roles remain visible without downstream detail permissions; impacts keep their own gate"]
+#[ignore = "T2: Group direct identities carry Scope owner coordinates; impacts keep their own gate"]
 async fn group_and_scope_target_authority_and_delete_gates() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let writer = c
@@ -341,35 +341,7 @@ async fn group_and_scope_target_authority_and_delete_gates() -> Result<()> {
         }
     }
     let scoped = scope(&c, &[root]).await?;
-    let resource = support::software(&c, "scope-blocker").await?;
-    let (policy, _) = support::policy(
-        &c,
-        &resource,
-        scoped,
-        rss_mdm_policy::SoftwareChannel::Agent,
-        vec![support::stage(scoped)],
-    )
-    .await?;
-    let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
-    sqlx::query(
-        "UPDATE mdm_policy.policies SET state='archived' WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(policy)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    let owner = planning::owner(&c, "mdm_scope_runtime").await?;
-    let scopes = crate::scopes::open(
-        owner.runtime.clone(),
-        c.tenant,
-        Arc::new(crate::clock::SystemClock),
-        owner.audit.clone(),
-        vec![7; 32],
-        c.inputs.pool("shared", "mdm_access").await?,
-    )
-    .await?;
-    let account = c.account(&[P::GroupRead, P::ScopeRead]).await?;
+    let account = c.account(&[P::GroupRead, P::PolicyRead]).await?;
     let reader = Arc::new(c.authenticate(&account).await?);
     let http = Http::open(
         rss_mdm_management_http::planning::routes()
@@ -377,7 +349,6 @@ async fn group_and_scope_target_authority_and_delete_gates() -> Result<()> {
             .with_state(Arc::new(
                 rss_mdm_management_http::planning::http::HttpState {
                     groups: owners.groups.clone(),
-                    scopes: scopes.clone(),
                 },
             )),
         &c,
@@ -389,60 +360,11 @@ async fn group_and_scope_target_authority_and_delete_gates() -> Result<()> {
     assert!(rows.iter().any(|r| r["id"] == child.to_string()));
     assert!(rows.iter().any(|r| r["id"] == scoped.to_string()));
     assert_eq!(http.get(&format!("/groups/{root}/impacts")).await?.0, 403);
-    let rows = http.pages(&format!("/scopes/{scoped}/references")).await?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["id"], policy.to_string());
-    assert_eq!(rows[0]["roles"], json!(["policy_scope", "rollout_stage"]));
-    assert_eq!(rows[0]["release"], "retained_archived_policy");
-    let sw = c.account(&[P::ScopeRead, P::ScopeWrite]).await?;
-    let sw = c.authenticate(&sw).await?;
-    let result = scopes
-        .execute(
-            &rss_mdm_scope_service::Command::Scope {
-                id: scoped,
-                change: rss_mdm_scope_service::operation::Operation {
-                    operation_id: Uuid::new_v4(),
-                    expected_revision: 1,
-                    input: rss_mdm_scope_service::ScopeChange::Delete,
-                },
-            },
-            &c.request(&sw)?,
-            &sw,
-        )
-        .await;
-    assert!(matches!(
-        result,
-        Err(rss_mdm_scope_service::Error::Referenced)
-    ));
-    let unused = scope(&c, &[]).await?;
-    assert!(
-        http.pages(&format!("/scopes/{unused}/references"))
-            .await?
-            .is_empty()
-    );
-    scopes
-        .execute(
-            &rss_mdm_scope_service::Command::Scope {
-                id: unused,
-                change: rss_mdm_scope_service::operation::Operation {
-                    operation_id: Uuid::new_v4(),
-                    expected_revision: 1,
-                    input: rss_mdm_scope_service::ScopeChange::Delete,
-                },
-            },
-            &c.request(&sw)?,
-            &sw,
-        )
-        .await?;
-    assert_eq!(
-        http.get(&format!("/scopes/{}/references", Uuid::new_v4()))
-            .await?
-            .0,
-        404
-    );
+    let row = rows.iter().find(|r| r["id"] == scoped.to_string()).unwrap();
+    assert_eq!(row["release"], "edit_policy_scope_or_retire_owner");
+    assert!(row["policy"].is_string());
+    assert!(row["stage"].is_null());
     drop(http);
-    drop(scopes);
-    owner.runtime.close().await;
     drop(owners);
     c.close().await;
     Ok(())

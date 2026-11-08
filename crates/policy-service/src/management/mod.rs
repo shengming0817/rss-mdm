@@ -19,9 +19,12 @@ pub mod storage;
 pub mod telemetry;
 
 pub mod authorization;
-pub use rss_mdm_policy::{Change, Policy};
+pub use rss_mdm_policy::Policy;
+mod draft;
+pub mod scopes;
+pub use draft::{Change, View};
 pub struct Policies {
-    scopes: rss_mdm_scope_postgres::ScopeBinding,
+    scopes: std::sync::Arc<rss_mdm_scope_service::Scopes>,
     profile_validator: std::sync::Arc<dyn crate::inputs::ProfileValidator>,
     cursor_key: ring::hmac::Key,
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -39,6 +42,7 @@ pub struct Policies {
 }
 /// Dependencies for this Policy application, supplied by the host.
 pub struct Dependencies {
+    pub scopes: std::sync::Arc<rss_mdm_scope_service::Scopes>,
     pub profile_validator: std::sync::Arc<dyn crate::inputs::ProfileValidator>,
     pub cursor_key: Vec<u8>,
     pub runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -60,8 +64,8 @@ impl Policies {
         self.policy_store.profile()
     }
     pub fn new(deps: Dependencies) -> Self {
-        let profile = deps.policy_store.profile();
         let Dependencies {
+            scopes,
             profile_validator,
             cursor_key,
             runtime,
@@ -77,7 +81,7 @@ impl Policies {
             mdm_software_enabled,
         } = deps;
         Self {
-            scopes: rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime.clone(), tenant),
+            scopes,
             profile_validator,
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
             runtime,
@@ -100,7 +104,7 @@ impl Policies {
         id: Uuid,
         op: &crate::operation::Operation<Change>,
         audit: &RequestAudit,
-    ) -> std::result::Result<rss_mdm_policy::View, Error> {
+    ) -> std::result::Result<View, Error> {
         let profile = self.profile();
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Policy,
@@ -119,7 +123,8 @@ impl Policies {
         }
         proof.manage(Permission::PolicyWrite)?;
         // Verify content outside the database transaction, then bind that proof again at publication.
-        let verified = if let Change::Put { definition, .. } = &op.input {
+        let shape = op.input.checked_shape()?;
+        let verified = if let rss_mdm_policy::Change::Put { definition, .. } = &shape {
             if definition.action.resource().is_some() {
                 proof.manage(Permission::ResourceRead)?;
             }
@@ -173,17 +178,17 @@ impl Policies {
             &self.runtime,
             self.tenant,
             audit,
-            (self, proof, id, op, audit, verified.as_ref()),
+            (self, proof, id, op, audit, verified.as_ref(), &shape),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, id, op, audit, verified) = *ctx;
+                    let (s, p, id, op, audit, verified, shape) = *ctx;
                     if p.initialization_authority().is_some() {
                         crate::authorization::baseline::check_in(tx,p,Permission::PolicyWrite,&id.to_string()).await?;
                     }
                     crate::application::admit_in(profile, tx).await?;
                     let authorization = crate::action_admission::current(tx, p).await?;
                     authorization.require(p, Permission::PolicyWrite, None)?;
-                    if matches!(&op.input, Change::Put { definition, .. } if definition.action.resource().is_some()) {
+                    if matches!(shape, rss_mdm_policy::Change::Put { definition, .. } if definition.action.resource().is_some()) {
                         authorization.require(p, Permission::ResourceRead, None)?;
                     }
 
@@ -192,8 +197,14 @@ impl Policies {
                     if let Some(previous) = &old {
                         authorize_policy_snapshot(&authorization, p, &previous.definition)?;
                     }
-                    if let Change::Put { definition, .. } = &op.input {
+                    if let rss_mdm_policy::Change::Put { definition, .. } = shape {
                         authorize_policy_snapshot(&authorization, p, definition)?;
+                    }
+                    if let Some(previous) = &old { s.view_in(tx, p, previous).await?; }
+                    if let Change::Put { definition, .. } = &op.input {
+                        let mut drafts = Vec::new();
+                        definition.as_ref().clone().try_map_scopes(|_, scope| { drafts.push(scope); Ok::<_, Error>(Uuid::from_u128(1)) })?;
+                        for draft in drafts { s.scopes.authorize_definition_in(tx, p, &draft).await?; }
                     }
                     let hash = fingerprint(&(id, &op.input, op.expected_revision, p.actor()))?;
                     if let Some(value) = checked(
@@ -201,15 +212,24 @@ impl Policies {
                             .replay_in(tx, op.operation_id, &hash)
                             .await?,
                     )? {
-                        return stored(serde_json::from_value(value));
+                        let value: View = stored(serde_json::from_value(value))?;
+                        let mut definitions = value.scopes.iter().map(|s|s.definition.clone()).collect::<Vec<_>>();
+                        let definition = value.definition.clone().try_map_scopes(|_, scope| {definitions.push(scope);Ok::<_,Error>(Uuid::from_u128(1))})?;
+                        authorize_policy_snapshot(&authorization,p,&definition)?;
+                        if definition.action.resource().is_some() {authorization.require(p,Permission::ResourceRead,None)?;}
+                        for scope in definitions {s.scopes.authorize_definition_in(tx,p,&scope).await?;}
+                        p.check_live()?;
+                        return Ok(value);
                     }
+                    if old.as_ref().map_or(0, |p| p.revision as u64) != op.expected_revision || old.as_ref().is_some_and(|p| p.state == rss_mdm_policy::State::Archived) { return Err(Error::Conflict.into()); }
+                    let core_change = s.bind_change_in(tx, p, id, old.as_ref(), &op.input).await?;
                     let now = crate::action_admission::now(tx).await?;
-                    let execution_binding=match &op.input { Change::Put {definition,..} if matches!(definition.action, Action::EnsureAgentInstalled { .. })=>s.inputs.software_binding_in(tx,&definition.action).await?,Change::Put {..}=>None,_=>old.as_ref().and_then(|p|p.execution_binding) };
+                    let execution_binding=match &core_change { rss_mdm_policy::Change::Put {definition,..} if matches!(definition.action, Action::EnsureAgentInstalled { .. })=>s.inputs.software_binding_in(tx,&definition.action).await?,rss_mdm_policy::Change::Put {..}=>None,_=>old.as_ref().and_then(|p|p.execution_binding) };
                     let changed_policy = Policy::apply(
                         id,
                         old.as_ref(),
                         op.expected_revision,
-                        &op.input,
+                        &core_change,
                         Uuid::new_v4(),
                         execution_binding,
                     )?;
@@ -249,19 +269,20 @@ impl Policies {
                             s,
                             tx,
                             &policy,
-                            &op.input,
+                            &core_change,
                             Some(&frozen),
                             p,
                             now,
                         )
                         .await?;
                     } else {
-                        storage::write_in(s, tx, &policy, &op.input, None, p, now)
+                        storage::write_in(s, tx, &policy, &core_change, None, p, now)
                             .await?;
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
                     storage::enqueue_change_in(profile, s.changes.as_ref(), tx, &policy, old.as_ref()).await?;
-                    let value = storage::view(&policy);
+                    s.retire_children_in(tx, old.as_ref(), &policy).await?;
+                    let value = s.view_in(tx, p, &policy).await?;
                     checked(
                         s.policy_store
                             .receipt_in(tx, op.operation_id, &hash, &checked_input(serde_json::to_value(&value))?)
@@ -338,7 +359,6 @@ pub fn authorize_policy_snapshot(
     proof: &AuthorizedPrincipal,
     definition: &rss_mdm_policy::Definition,
 ) -> std::result::Result<(), Error> {
-    snapshot.require(proof, Permission::ScopeRead, None)?;
     snapshot.require_all_devices(proof, Permission::InventoryRead)?;
     authorization::authorize_action(snapshot, proof, &definition.action)?;
     Ok(())
