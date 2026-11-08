@@ -207,7 +207,10 @@ pub(crate) async fn slot_in(
     let device = devices;
 
     let version = policy.id;
-    let stage_scope = policy.assignment.stages()[stage].scope;
+    let stage_scope = policy
+        .assignment
+        .stage_scope(stage)
+        .ok_or(Error::Malformed)?;
     let prefix = format!("software:stage:{stage_scope}:%");
     let key = effect.clone();
     let (pending, last, satisfied, failures, attempts): (bool, Option<i64>, bool, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
