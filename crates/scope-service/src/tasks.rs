@@ -120,7 +120,7 @@ impl Scopes {
             Box::pin(async move {
                 crate::action_admission::current(tx, p).await?.require(
                     p,
-                    rss_mdm_authorization_service::Permission::ScopeRead,
+                    rss_mdm_authorization_service::Permission::PolicyRead,
                     None,
                 )?;
                 let task = s.store.task_in(tx, id).await?;
