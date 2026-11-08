@@ -77,8 +77,6 @@ pub enum Permission {
     GroupRead,
     GroupWrite,
     GroupRecompute,
-    ScopeRead,
-    ScopeWrite,
     PolicyRead,
     PolicyWrite,
     ResourceRead,
@@ -178,8 +176,6 @@ impl Permission {
             | Self::GroupRead
             | Self::GroupWrite
             | Self::GroupRecompute
-            | Self::ScopeRead
-            | Self::ScopeWrite
             | Self::PolicyRead
             | Self::PolicyWrite
             | Self::ResourceRead
@@ -476,8 +472,6 @@ pub fn tenant_administrator_rule(user: User) -> Rule {
         Permission::GroupRead,
         Permission::GroupWrite,
         Permission::GroupRecompute,
-        Permission::ScopeRead,
-        Permission::ScopeWrite,
         Permission::PolicyRead,
         Permission::PolicyWrite,
         Permission::ResourceRead,

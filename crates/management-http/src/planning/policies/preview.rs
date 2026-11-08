@@ -1,8 +1,9 @@
 use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{Extension, Json, extract::State};
-use rss_mdm_policy::pages::Preview;
+use rss_mdm_policy_service::management::scopes::Qualification;
 pub struct StateServices {
+    pub policies: Arc<Policies>,
     pub configuration: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     pub tasks: Arc<dyn crate::execution::task_reads::Reads>,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
@@ -11,14 +12,16 @@ pub async fn preview(
     State(s): State<Arc<StateServices>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
+    axum::extract::Path(policy): axum::extract::Path<Uuid>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Window<PreviewQuery>,
     >,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
-    body: std::result::Result<Json<Preview>, axum::extract::rejection::JsonRejection>,
+    body: std::result::Result<Json<Qualification>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<PreviewResponse>>, Error> {
     (async {
         let Json(input) = body.map_err(Error::from)?;
+        let input = s.policies.qualify(&a.proof, policy, &input).await?;
         let (query, _) = query.parse().map_err(|_| Error::Malformed)?;
         if matches!(
             input.definition.action,

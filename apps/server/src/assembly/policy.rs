@@ -137,6 +137,7 @@ pub(crate) async fn events(
     reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
 )]
 pub(crate) async fn management(
+    scopes: Arc<rss_mdm_scope_service::Scopes>,
     application: &Arc<Application>,
     software_inputs: Arc<rss_mdm_software_service::deployment::Inputs>,
     enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
@@ -159,6 +160,7 @@ pub(crate) async fn management(
     );
     Ok(Arc::new(rss_mdm_policy_service::management::Policies::new(
         rss_mdm_policy_service::management::Dependencies {
+            scopes,
             profile_validator: Arc::new(
                 rss_mdm_telemetry_service::profile_validation::ProfileValidator,
             ),
@@ -231,61 +233,16 @@ fn scope_error(
     }
 }
 impl rss_mdm_scope_service::sources::ScopeDependents for ScopeDependents {
-    fn used_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        scope: uuid::Uuid,
-    ) -> rss_mdm_scope_service::sources::Pending<'a, bool, rss_mdm_scope_service::transaction::Fault>
-    {
-        Box::pin(async move { self.0.used_in(tx, scope).await.map_err(scope_error) })
-    }
-    fn references_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        scope: uuid::Uuid,
-        after: Option<uuid::Uuid>,
-        limit: usize,
-    ) -> rss_mdm_scope_service::sources::Pending<
-        'a,
-        Vec<rss_mdm_scope_service::references::Entry>,
-        rss_mdm_scope_service::transaction::Fault,
-    > {
-        Box::pin(async move {
-            use rss_mdm_scope_service::references::{Entry, Kind, Release};
-            self.0
-                .references_in(tx, scope, after, limit)
-                .await
-                .map_err(scope_error)?
-                .into_iter()
-                .map(|r| {
-                    Ok(Entry {
-                        kind: Kind::Policy,
-                        id: r.id,
-                        version: r.version,
-                        revision: r.revision,
-                        roles: rss_mdm_scope_service::transaction::stored(serde_json::from_value(
-                            serde_json::json!(r.roles),
-                        ))?,
-                        release: if r.archived {
-                            Release::RetainedArchivedPolicy
-                        } else {
-                            Release::EditReferencingPolicy
-                        },
-                    })
-                })
-                .collect()
-        })
-    }
     fn publication_recorded_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        scope: uuid::Uuid,
+        owner: rss_mdm_scope_postgres::ScopeOwner,
         run: uuid::Uuid,
     ) -> rss_mdm_scope_service::sources::Pending<'a, (), rss_mdm_scope_service::transaction::Fault>
     {
         Box::pin(async move {
             self.0
-                .publication_recorded_in(tx, scope, run)
+                .publication_recorded_in(tx, owner, run)
                 .await
                 .map_err(scope_error)
         })

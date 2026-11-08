@@ -887,3 +887,6 @@ mod software_assets_t2;
 #[cfg(test)]
 #[path = "../../tests/directory_queries/mod.rs"]
 mod directory_queries_t2;
+
+#[cfg(test)]
+pub(crate) use software_t2::support::software as seed_software;

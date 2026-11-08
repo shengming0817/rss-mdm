@@ -492,7 +492,9 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             registration_owner.materials.clone(),
                             queries.clone(),
                         );
+                        let scope_editor = crate::scopes::editor(policy_owner.runtime.clone(), inventory_tenant, application_clock.clone(), policy_owner.audit.clone(), cursor_key.clone(), access.archive_pool()).await.map_err(assembly_error)?;
                         let policies = crate::assembly::policy::management(
+                            scope_editor,
                             &policy_application,
                             Arc::new(rss_mdm_software_service::deployment::Inputs::bind(
                                 policy_owner.runtime.clone(),
