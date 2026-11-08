@@ -37,7 +37,11 @@ pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {
         | ("PATCH", "/api/v1/resources/{id}/uploads/{upload}") => Streaming,
         (
             "POST",
-            "/api/v1/policies/{id}" | "/api/v1/policies/previews" | "/api/v1/resources/{id}",
+            "/api/v1/policies/{policy}"
+            | "/api/v1/policies/{policy}/previews"
+            | "/api/v1/policies/{policy}/scope/previews"
+            | "/api/v1/policies/{policy}/stages/{stage}/scope/previews"
+            | "/api/v1/resources/{id}",
         ) => Buffered(8 * 1024 * 1024),
         ("POST", "/api/v1/devices/{device}/operations") => Buffered(16 * 1024 * 1024),
         ("POST", "/api/v1/pki/rotations" | "/api/v1/pki/crls") => Buffered(64 * 1024 * 1024),
@@ -160,6 +164,47 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn mounted_policy_inputs_accept_complete_scope_definitions() {
+        use crate::planning::policies::http;
+        use rss_mdm_http_contract::Operation;
+        let routes = http::register(None, None)
+            .into_endpoints()
+            .into_iter()
+            .chain(http::register_previews(None).into_endpoints());
+        let definition = serde_json::json!({"targets":(1..=300).map(|i|serde_json::json!({"kind":"group","id":uuid::Uuid::from_u128(i)})).collect::<Vec<_>>(),"limitations":null,"exclusions":[]});
+        let raw = serde_json::to_vec(&definition).unwrap();
+        assert!(raw.len() > 16 * 1024);
+        let mut tested = 0;
+        for endpoint in routes.filter(|e| {
+            e.method == "POST"
+                && (e.operations.contains(&Operation::Update) || e.path.ends_with("/previews"))
+        }) {
+            let path = format!("/api/v1{}", endpoint.path);
+            let BodyPolicy::Buffered(limit) = for_route(&path, &Method::POST) else {
+                panic!("buffered Policy input")
+            };
+            let mut request = buffer(Request::new(Body::from(raw.clone())), limit)
+                .await
+                .unwrap();
+            request
+                .headers_mut()
+                .insert("content-type", "application/json".parse().unwrap());
+            assert_eq!(
+                Json::<serde_json::Value>::from_request(request, &())
+                    .await
+                    .unwrap()
+                    .0,
+                definition
+            );
+            tested += 1;
+        }
+        assert_eq!(
+            tested, 4,
+            "Policy write, Action preview and both Scope previews"
+        );
+    }
+
     #[test]
     fn budgets_match_methods_and_matched_paths() {
         assert!(content_owned("/api/v1/agent-packages", &Method::POST));
@@ -177,11 +222,11 @@ mod tests {
             BodyPolicy::Buffered(1024 * 1024)
         );
         assert_eq!(
-            for_route("/api/v1/policies/{id}", &Method::POST),
+            for_route("/api/v1/policies/{policy}", &Method::POST),
             BodyPolicy::Buffered(8 * 1024 * 1024)
         );
         assert_eq!(
-            for_route("/api/v1/policies/{id}", &Method::PUT),
+            for_route("/api/v1/policies/{policy}", &Method::PUT),
             BodyPolicy::Buffered(16 * 1024)
         );
         assert_eq!(

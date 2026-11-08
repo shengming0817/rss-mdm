@@ -85,11 +85,7 @@ pub(crate) async fn slot_in(
         .await?
     {
         Some((stage, _)) => stage,
-        None if matches!(request, Some(Invocation::SelfService(_)))
-            && !policy.assignment.stages().is_empty() =>
-        {
-            0
-        }
+        None if matches!(request, Some(Invocation::SelfService(_))) => 0,
         None => return Ok(Preparation::NotEligible),
     };
     let mut prepared = Vec::new();

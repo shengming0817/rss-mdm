@@ -100,7 +100,7 @@ async fn input_suspension_has_a_distinct_software_audit_identity() -> Result<()>
 #[ignore = "T2: concurrent Agent/MDM aliases on associated endpoints share one Software effect fence"]
 async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let (agent, native, agent_scope, native_scope) = endpoints(&c).await?;
+    let (agent, native, agent_scope, native_scope, _) = endpoints(&c).await?;
     let original = software(&c, "editor-agent").await?;
     let alias = software(&c, "editor-native").await?;
     let (ap, _) = policy(
@@ -176,7 +176,7 @@ async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result
 #[ignore = "T2: original durable Unknown blocks new Software identity/channel/revision after service reconstruction"]
 async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let (agent, native, agent_scope, native_scope) = endpoints(&c).await?;
+    let (agent, native, agent_scope, native_scope, _) = endpoints(&c).await?;
     let original = software(&c, "editor").await?;
     let alias = software(&c, "editor-alias").await?;
     let (ap, _) = policy(
@@ -313,7 +313,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
 #[ignore = "T2: rollout denominator and verified effects use the same published generation; stale revisions close the next gate"]
 async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let (agent, _, scope, second) = endpoints(&c).await?;
+    let (agent, _, scope, second, _) = endpoints(&c).await?;
     let resource = software(&c, "rollout").await?;
     let (p, v) = policy(
         &c,
@@ -468,7 +468,7 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
 #[ignore = "T2: unbatched Software uses its main Scope and admits one ordinary effect without a stage Scope"]
 async fn unbatched_software_uses_main_scope() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let (agent, _, scope, _) = endpoints(&c).await?;
+    let (agent, _, scope, _, _) = endpoints(&c).await?;
     let resource = software(&c, "unbatched").await?;
     let (policy, _) = policy(
         &c,
@@ -483,6 +483,145 @@ async fn unbatched_software_uses_main_scope() -> Result<()> {
         &accept(&c, &a, policy, &agent, Uuid::new_v4()).await?
     ));
     assert_eq!(count(&c).await?, 1);
+    Fixture::close(a).await?;
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: unbatched self-service persists Pending and waits for the main Scope before offering"]
+async fn unbatched_self_service_waits_for_main_scope() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let (_, _, scope, _, principal) = endpoints(&c).await?;
+    let resource = software(&c, "unbatched-self-service").await?;
+    let (policy, version) = policy(
+        &c,
+        &resource,
+        scope,
+        rss_mdm_policy::SoftwareChannel::Agent,
+        vec![],
+    )
+    .await?;
+    let mut tx = command::seed_transaction(&c).await?;
+    let mut definition: Value = sqlx::query_scalar(
+        "SELECT definition FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(policy)
+    .fetch_one(&mut *tx)
+    .await?;
+    definition["action"]["intent"] = json!("available_install");
+    definition["selfService"] = json!({"access":{"kind":"device"},"published":true,"allowAi":false,"riskLevel":2,"presentation":{"displayName":"Install","description":"","prerequisites":"","sideEffects":"","category":"Software","keywords":[]}});
+    serde_json::from_value::<rss_mdm_policy::Definition>(definition.clone())?.validate()?;
+    sqlx::query("UPDATE mdm_policy.policies SET definition=$3 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string())
+        .bind(policy)
+        .bind(definition)
+        .execute(&mut *tx)
+        .await?;
+    let mut frozen: Value = sqlx::query_scalar(
+        "SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(version)
+    .fetch_one(&mut *tx)
+    .await?;
+    frozen["action"]["intent"] = json!("available_install");
+    sqlx::query("UPDATE mdm_policy.versions SET frozen=$3,fingerprint=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(version).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
+    let resolution: Uuid = sqlx::query_scalar(
+        "SELECT resolution FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(scope)
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE mdm_scope.scopes SET resolution=NULL WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string())
+        .bind(scope)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    let a = open(&c).await?;
+    let input = w::SelfServiceInvoke {
+        operation_id: Uuid::new_v4(),
+        policy_id: policy,
+        source: w::SelfServiceCaller::Human,
+        confirmed: true,
+        parameters: Default::default(),
+    };
+    let request = audit(&c);
+    let accepted = owner::transaction::run(
+        &a.resources.storage.audit,
+        &a.resources.storage.runtime,
+        c.tenant,
+        &request,
+        (&a.software.service, &principal, &input, &request),
+        |(service, p, input, audit), tx| {
+            Box::pin(async move {
+                service
+                    .invoke_self_service_in(tx, p, None, input, audit)
+                    .await
+            })
+        },
+    )
+    .await?;
+    request.finalize(None);
+    let accepted: w::SelfServiceAccepted = serde_json::from_value(accepted)?;
+    assert_eq!(count(&c).await?, 1);
+    let invocation: Value = sqlx::query_scalar("SELECT invocation FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(accepted.run_id).fetch_one(&c.operator).await?;
+    assert_eq!(invocation["pending_scope"], json!(scope));
+    for ready in [false, true] {
+        if ready {
+            sqlx::query(
+                "UPDATE mdm_scope.scopes SET resolution=$3 WHERE tenant_id=$1::uuid AND id=$2",
+            )
+            .bind(c.tenant.to_string())
+            .bind(scope)
+            .bind(resolution)
+            .execute(&c.operator)
+            .await?;
+        }
+        let claim = w::TaskClaimRequest::new(Uuid::new_v4(), vec![], context())?;
+        let request = audit(&c);
+        request.owned_operation(
+            rss_mdm_audit_integration::operation::OperationOwner::SoftwareAction,
+            accepted.run_id,
+            "agent_claim",
+            AuditIntent::Management,
+        );
+        let offered = owner::transaction::run(
+            &a.resources.storage.audit,
+            &a.resources.storage.runtime,
+            c.tenant,
+            &request,
+            (
+                &a.software.service,
+                &a.resources.storage.audit,
+                &principal,
+                &claim,
+                &request,
+            ),
+            |(service, store, p, claim, audit), tx| {
+                Box::pin(async move {
+                    if let Some((_, fact, _)) = service
+                        .agent_offer_one_in(tx, p, claim, accepted.run_id, Uuid::new_v4(), audit)
+                        .await?
+                    {
+                        store.append_in(tx, &fact).await?;
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                })
+            },
+        )
+        .await?;
+        request.finalize(None);
+        assert_eq!(
+            offered, ready,
+            "only the current published main Scope may admit the offer"
+        );
+    }
     Fixture::close(a).await?;
     c.close().await;
     Ok(())
