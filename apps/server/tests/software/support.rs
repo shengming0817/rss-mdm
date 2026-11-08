@@ -194,6 +194,7 @@ pub async fn policy(
 }
 pub fn stage(scope: Uuid) -> rss_mdm_policy::SoftwareRolloutStage {
     rss_mdm_policy::SoftwareRolloutStage {
+        id: Uuid::new_v4(),
         scope,
         opens_at: 0,
         minimum_verified_percent: None,

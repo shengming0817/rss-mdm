@@ -1,5 +1,5 @@
 #[path = "fixture.rs"]
-mod fixture;
+pub(crate) mod fixture;
 use crate::{authority_t2_support::Context, planning_t2_support as planning};
 use anyhow::Result;
 use fixture::Fixture;
@@ -305,3 +305,5 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     c.close().await;
     Ok(())
 }
+
+mod owned_scopes;

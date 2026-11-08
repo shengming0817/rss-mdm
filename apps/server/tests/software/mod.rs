@@ -255,7 +255,7 @@ async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Resu
     )?;
     let mut changed = command::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,2,'unmanage_device',$4,$5)").bind(c.tenant.to_string()).bind(next).bind(ap).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *changed).await?;
-    let action = serde_json::to_value(rss_mdm_policy::Action::UnmanageDevice {
+    let action = serde_json::to_value(rss_mdm_policy::Action::<Uuid>::UnmanageDevice {
         schedule: schedule(),
         run_lifetime_seconds: 300,
     })?;
@@ -323,6 +323,7 @@ async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Resu
         vec![
             stage(scope),
             rss_mdm_policy::SoftwareRolloutStage {
+                id: Uuid::new_v4(),
                 scope: second,
                 opens_at: 1,
                 minimum_verified_percent: Some(100),
@@ -460,5 +461,29 @@ async fn reduce(c: &Context, a: &Fixture, policy_id: Uuid, version: Uuid) -> Res
     );
     observed??;
     assert_eq!(report?.execution_failed, 0);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: unbatched Software uses its main Scope and admits one ordinary effect without a stage Scope"]
+async fn unbatched_software_uses_main_scope() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let (agent, _, scope, _) = endpoints(&c).await?;
+    let resource = software(&c, "unbatched").await?;
+    let (policy, _) = policy(
+        &c,
+        &resource,
+        scope,
+        rss_mdm_policy::SoftwareChannel::Agent,
+        Vec::new(),
+    )
+    .await?;
+    let a = open(&c).await?;
+    assert!(accepted(
+        &accept(&c, &a, policy, &agent, Uuid::new_v4()).await?
+    ));
+    assert_eq!(count(&c).await?, 1);
+    Fixture::close(a).await?;
+    c.close().await;
     Ok(())
 }

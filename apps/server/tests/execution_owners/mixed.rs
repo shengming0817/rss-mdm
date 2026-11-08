@@ -177,7 +177,7 @@ async fn agent_collection_preview_requires_host_signing() -> Result<()> {
         h.c.account(&[
             Permission::PolicyRead,
             Permission::ResourceRead,
-            Permission::ScopeRead,
+            Permission::PolicyRead,
             Permission::InventoryRead,
             Permission::InventoryCollect,
             Permission::InventorySensitiveRead,

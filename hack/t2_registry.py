@@ -102,7 +102,7 @@ MODULES = {
         inputs=('crates/software-service/*','crates/device-service/src/control/*','crates/registration-service/src/installation/*','crates/recovery-credentials/src/native/*','apps/server/tests/execution_owners/*','apps/server/tests/credential_owners/*')),
 
     'planning.owners': dict(prefix='assembly::owner_boundaries_t2::', profiles=('shared',),
-        inputs=('crates/management-http/src/planning/http.rs','crates/scope-service/*','crates/device-service/src/planning*','crates/group-service/*','crates/compliance-service/*','crates/group-postgres/*','crates/compliance-postgres/*','crates/inventory-service/*','crates/resource-postgres/*','crates/scope-postgres/*','crates/policy-postgres/*','apps/server/src/assembly/inventory.rs','apps/server/tests/owner_boundaries/*')),
+        inputs=('crates/management-http/src/planning/http.rs','crates/scope-service/*','crates/device-service/src/planning*','crates/group-service/*','crates/compliance-service/*','crates/group-postgres/*','crates/compliance-postgres/*','crates/inventory-service/*','crates/resource-postgres/*','crates/scope-postgres/*','crates/policy-postgres/*','apps/server/src/assembly/inventory.rs','apps/server/tests/owner_boundaries/*','apps/server/tests/support/policies.rs','crates/management-http/src/planning/policies/*')),
 
     'task.scheduled_owners': dict(prefix='assembly::execution_owners_t2::scheduled::', profiles=('shared',),
         inputs=('crates/policy-postgres/*','crates/policy-service/*','crates/software-service/*','crates/inventory-service/src/collection/*','apps/server/src/assembly/policy*','apps/server/tests/execution_owners/*')),
@@ -195,7 +195,7 @@ MODULES = {
                 'hack/task_trust_materials.py')),
     'device.control': dict(prefix='assembly::device_t2::', profiles=('shared', 'query_reads'), inputs=('crates/device-service/*','crates/management-http/src/enrollment/directory.rs','crates/apple-channel/src/native.rs','crates/apple-channel/src/protocol_types.rs','crates/apple-channel/src/flow_store.rs','crates/apple-mdm/src/applicability.rs','crates/windows-channel/src/results.rs','apps/server/tests/device/*','apps/server/src/assembly/*','apps/server/tests/support/command_runtime.rs','apps/server/tests/support/native_identity.rs','hack/native_protocol_materials.py')),
     'scope.publication': dict(prefix='scope_t2::', profiles=('shared',),
-        inputs=('crates/scope-service/*', 'crates/scope-postgres/*', 'crates/device-service/src/planning*',
+        inputs=('crates/scope-service/*', 'crates/scope-postgres/*', 'crates/group-postgres/*', 'crates/device-service/src/planning*',
                 'apps/server/src/scopes.rs', 'apps/server/tests/scope/*', 'apps/server/tests/support/planning.rs')),
     'policy.configuration': dict(prefix='policy_configuration_t2::', profiles=('shared',),
         inputs=('crates/policy-service/*', 'crates/policy-postgres/*', 'crates/native-protection/*',
@@ -203,7 +203,7 @@ MODULES = {
                 'apps/server/src/assembly/configuration_*', 'apps/server/src/assembly/native_ownership.rs',
                 'apps/server/src/assembly/policy*', 'crates/device-service/src/control/recovery.rs',
                 'crates/device-service/schema/control-*', 'apps/server/src/assembly/command-admission.sql',
-                'apps/server/schema/messaging-runtime.sql', 'apps/server/src/owner_storage.rs', 'apps/server/src/lifecycle.rs', 'apps/server/tests/policy/*', 'apps/server/tests/support/planning.rs')),
+                'apps/server/schema/messaging-runtime.sql', 'apps/server/src/owner_storage.rs', 'apps/server/src/lifecycle.rs', 'apps/server/tests/policy/*', 'apps/server/tests/support/planning.rs', 'apps/server/tests/support/policies.rs', 'crates/scope-postgres/*', 'crates/scope-service/*', 'crates/group-postgres/*')),
     'agent.delivery': dict(prefix='agent_t2::', profiles=('shared',),
         inputs=('crates/agent-channel/*', 'crates/device-service/schema/control-*', 'crates/device-service/src/control/actions/agent.rs',
                 'crates/device-service/src/control/actions/poll.rs', 'crates/device-service/src/control/agent_facts.rs',
