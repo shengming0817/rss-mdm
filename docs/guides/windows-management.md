@@ -44,7 +44,7 @@ WNS 可选。配置 `push.package_family_name`、`sid` 和受保护的 `client_s
 
 ## 续期与原生注销
 
-首次 provisioning 的 CertificateStore/My/WSTEP/Renew/ServerURL 指向 management origin 的 Discovery.svc；它要求当前证书并返回 Certificate 策略。续期在该 origin 的 Policy.svc / Enrollment.svc 上使用原 TLS 叶证书、签名 CMS PKCS#7 与新 CSR。首注入口拒绝续期，证书入口拒绝主登记的初始 PKCS#10。首次注册显式设置提前 60 天续期、失败每 4 天重试，各入口 XCEP 使用同一策略。服务端允许提前 60 天加 5 分钟受理，5 分钟余量不延长证书有效期；过期证书仍拒绝。只接受当前证书对应的当前注册及允许的续期窗口；响应可沿原材料精确恢复。签发新证书后旧凭据仍有效，直到新证书首次通过管理 mTLS 证明持有，才在事务内激活新凭据、替代旧凭据。续期不创建新设备、注册或协议账户。
+首次 provisioning 启用 ROBO，CertificateStore/My/WSTEP/Renew/ServerURL 指向 enrollment origin 的 RenewalDiscovery.svc；WinDC 使用 LinkedRenewalDiscovery.svc。Windows 先匿名获取 Certificate 策略及证书入口的地址，再向 management origin 发出 XCEP 和 WSTEP 请求。签发验证原 TLS 叶证书、签名 CMS PKCS#7 与新 CSR。首注签发入口拒绝续期，证书入口拒绝主登记的初始 PKCS#10。首次注册显式设置提前 60 天续期、失败每 4 天重试，各入口 XCEP 使用同一策略。服务端允许提前 60 天加 5 分钟受理，5 分钟余量不延长证书有效期；过期证书仍拒绝。只接受当前证书对应的当前注册及允许的续期窗口；响应可沿原材料精确恢复。签发新证书后旧凭据仍有效，直到新证书首次通过管理 mTLS 证明持有，才在事务内激活新凭据、替代旧凭据。续期不创建新设备、注册或协议账户。
 
 原生 `com.microsoft:mdm.unenrollment.userrequest` 在原事务内退休注册、凭据、执行参与方、采集、push 与活动会话，并保存独立加密回执。并发或丢失响应重试得到相同字节；回执不依赖临时会话保留。退休证书只能恢复这份精确历史请求的回执，不能构造 active principal 或继续接收新工作。服务器退休不能证明终端已清理管理账户，审计中的设备清理状态保持 unverified。
 

@@ -186,7 +186,7 @@ Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及�
 |---|---|
 | `mdm.example.test/` | Nginx → web:8080 静态页面 |
 | `mdm.example.test/api/` | Nginx → 唯一内部 HTTP 入口；管理会话、CSRF 与权限由后端验证 |
-| `enroll.example.test/EnrollmentServer/...` | 无客户端证书请求的 Windows 首注路由；后端验证原生凭据 |
+| `enroll.example.test/EnrollmentServer/...` | Windows 首注和匿名续期发现；后端验证首注凭据，续期发现只返回证书入口地址 |
 | `mdm.example.test/EnrollmentServer/...` | 证书认证的 Windows 续期及 WinDC 路由 |
 | `mdm.example.test/ManagementServer/...` | 同一入口的 Windows 管理路由；后端验证设备证书 |
 | `mdm.example.test/checkin`、`/mdm`、`/native/apple/ddm/...` | 同一入口的 Apple 路由；材料未就绪时拒绝业务请求 |
