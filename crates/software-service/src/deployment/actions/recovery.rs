@@ -21,7 +21,7 @@ pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
 pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, policy: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND (input_revision>input_consumed OR dispatch_revision>dispatch_consumed)) OR EXISTS(SELECT FROM mdm_software_deployment.software_stage_stats s JOIN mdm_policy.policies p ON(p.tenant_id,p.current_version)=(s.tenant_id,s.version) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.state='enabled' AND s.stage < jsonb_array_length(coalesce(p.definition#>'{action,rollout,stages}','[]'::jsonb)) AND (NOT s.membership_complete OR NOT s.ready))").bind(tenant).bind(policy).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND (input_revision>input_consumed OR dispatch_revision>dispatch_consumed)) OR EXISTS(SELECT FROM mdm_policy.policies p CROSS JOIN LATERAL generate_series(0,jsonb_array_length(coalesce(p.definition#>'{action,rollout,stages}','[]'::jsonb))-1) stage(index) LEFT JOIN mdm_software_deployment.software_stage_stats s ON(s.tenant_id,s.version,s.stage)=(p.tenant_id,p.current_version,stage.index) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.state='enabled' AND (s.version IS NULL OR NOT s.membership_complete OR NOT s.ready))").bind(tenant).bind(policy).fetch_one(c).await
     })).await?)
 }
 

@@ -236,12 +236,12 @@ async fn stage_identity_is_owned_and_reorder_does_not_republish() -> Result<()> 
         .await?;
     assert_eq!(first.scopes.len(), 3);
     let mut request = put(&first);
-    if let Change::Put { definition, .. } = &mut request.input {
-        if let rss_mdm_policy::Action::Software { rollout, .. } = &mut definition.action {
-            rollout.stages.swap(0, 1);
-            for (index, stage) in rollout.stages.iter_mut().enumerate() {
-                stage.opens_at = index as i64;
-            }
+    if let Change::Put { definition, .. } = &mut request.input
+        && let rss_mdm_policy::Action::Software { rollout, .. } = &mut definition.action
+    {
+        rollout.stages.swap(0, 1);
+        for (index, stage) in rollout.stages.iter_mut().enumerate() {
+            stage.opens_at = index as i64;
         }
     }
     let second = f.policies.change(&p, id, &request, &c.request(&p)?).await?;
@@ -295,10 +295,10 @@ async fn stage_identity_is_owned_and_reorder_does_not_republish() -> Result<()> 
         "a later child failure rolls back earlier child writes"
     );
     let mut request = put(&second);
-    if let Change::Put { definition, .. } = &mut request.input {
-        if let rss_mdm_policy::Action::Software { rollout, .. } = &mut definition.action {
-            rollout.stages.retain(|s| s.id == b);
-        }
+    if let Change::Put { definition, .. } = &mut request.input
+        && let rss_mdm_policy::Action::Software { rollout, .. } = &mut definition.action
+    {
+        rollout.stages.retain(|s| s.id == b);
     }
     let third = f.policies.change(&p, id, &request, &c.request(&p)?).await?;
     assert_eq!(third.version_id, first.version_id);
@@ -316,10 +316,10 @@ async fn stage_identity_is_owned_and_reorder_does_not_republish() -> Result<()> 
     assert!(retired.retired);
     assert_eq!(retired.revision, 1);
     let mut request = put(&third);
-    if let Change::Put { definition, .. } = &mut request.input {
-        if let rss_mdm_policy::Action::Software { rollout, .. } = &mut definition.action {
-            rollout.stages.clear();
-        }
+    if let Change::Put { definition, .. } = &mut request.input
+        && let rss_mdm_policy::Action::Software { rollout, .. } = &mut definition.action
+    {
+        rollout.stages.clear();
     }
     let unbatched = f.policies.change(&p, id, &request, &c.request(&p)?).await?;
     assert_eq!(unbatched.scopes.len(), 1);

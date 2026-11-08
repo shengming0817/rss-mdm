@@ -155,7 +155,7 @@ CREATE TABLE "###, $work, r###" (
     CONSTRAINT policy_work_authority_revision_check CHECK ((authority_revision >= 0)),
     CONSTRAINT policy_work_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text, 'permission_denied'::text]))),
     CONSTRAINT policy_work_input_check CHECK ((octet_length((input)::text) <= 1048576)),
-    CONSTRAINT policy_work_kind_check CHECK ((kind = ANY (ARRAY['policy_scope'::text, 'policy_reconcile'::text, 'policy_event'::text, 'policy_lifecycle'::text]))),
+    CONSTRAINT policy_work_kind_check CHECK ((kind = ANY (ARRAY['policy_reconcile'::text, 'policy_event'::text, 'policy_lifecycle'::text]))),
     CONSTRAINT policy_work_target_check CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))
 );
 

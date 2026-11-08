@@ -361,6 +361,7 @@ async fn group_and_scope_target_authority_and_delete_gates() -> Result<()> {
     assert!(rows.iter().any(|r| r["id"] == scoped.to_string()));
     assert_eq!(http.get(&format!("/groups/{root}/impacts")).await?.0, 403);
     let row = rows.iter().find(|r| r["id"] == scoped.to_string()).unwrap();
+    assert_eq!(row["release"], "edit_policy_scope_or_retire_owner");
     assert!(row["policy"].is_string());
     assert!(row["stage"].is_null());
     drop(http);

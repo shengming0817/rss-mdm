@@ -131,9 +131,6 @@ pub async fn finish_job_in(
         );
         audit.identify_service("service:asset-automation");
         match kind.as_str() {
-            "policy_scope" => {
-                audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, &target)
-            }
             "policy_reconcile" => {
                 audit.resource_target(rss_mdm_audit_integration::TargetKind::Policy, &target)
             }

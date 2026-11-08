@@ -127,7 +127,11 @@ impl Scopes {
             .owned_in(tx, owner)
             .await?
             .ok_or(Error::NotFound)?;
-        let task = self.store.pending_task_in(tx, child.id).await?;
+        let task = if child.retired {
+            None
+        } else {
+            self.store.pending_task_in(tx, child.id).await?
+        };
         Ok(child_view(owner, child, task))
     }
     pub async fn retire_owned_in(
@@ -146,6 +150,10 @@ impl Scopes {
         Ok(())
     }
     /// Explicit recomputation keeps its original actor-bound Scope receipt.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "borrowed Policy transaction keeps authority, audit and both CAS revisions explicit"
+    )]
     pub async fn recompute_owned_in(
         &self,
         tx: &mut PgTransaction<'_>,

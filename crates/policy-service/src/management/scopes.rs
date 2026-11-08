@@ -77,12 +77,11 @@ impl Policies {
             },
         )
         .await
-        .map(|v| {
+        .inspect(|_| {
             audit.resource_target(
                 rss_mdm_audit_integration::TargetKind::Policy,
                 &owner.policy.to_string(),
             );
-            v
         })
     }
     pub async fn scope_preview(

@@ -1702,7 +1702,8 @@
       },
       "Release": {
         "enum": [
-          "edit_or_delete_referencing_object"
+          "edit_or_delete_referencing_object",
+          "edit_policy_scope_or_retire_owner"
         ],
         "type": "string"
       },

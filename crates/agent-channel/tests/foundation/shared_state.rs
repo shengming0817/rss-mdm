@@ -39,8 +39,8 @@ pub async fn verify(c: &Context, trust: rss_mdm_agent_wire::pki::Trust) -> Resul
         .await?;
     let operation = Uuid::new_v4();
     for (profile, role) in [
-        (StorageProfile::Mdm, "mdm_scope_runtime"),
-        (DA, "da_scope_runtime"),
+        (StorageProfile::Mdm, "mdm_policy_runtime"),
+        (DA, "da_policy_runtime"),
     ] {
         let runtime = c.inputs.runtime(role, c.tenant).await?;
         let result = receipt(c, profile, &runtime, operation).await;

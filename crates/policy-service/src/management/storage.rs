@@ -16,10 +16,10 @@ pub(super) async fn write_in(
     proof: &AuthorizedPrincipal,
     now: i64,
 ) -> Result<()> {
-    if !matches!(change, rss_mdm_policy::Change::Archive) {
-        if let Some(config) = &p.definition.self_service {
-            super::authorization::validate_access(config, proof.tenant_id(), proof.instance_id())?;
-        }
+    if !matches!(change, rss_mdm_policy::Change::Archive)
+        && let Some(config) = &p.definition.self_service
+    {
+        super::authorization::validate_access(config, proof.tenant_id(), proof.instance_id())?;
     }
     let publication = rss_mdm_policy_postgres::Publication {
         change: change.clone(),

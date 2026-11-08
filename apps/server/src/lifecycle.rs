@@ -492,7 +492,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             registration_owner.materials.clone(),
                             queries.clone(),
                         );
-                        let scope_editor = crate::scopes::editor(policy_owner.runtime.clone(), inventory_tenant, application_clock.clone(), policy_owner.audit.clone(), cursor_key.clone(), access.archive_pool()).await.map_err(assembly_error)?;
+                        let scope_editor = Box::pin(crate::scopes::editor(policy_owner.runtime.clone(), inventory_tenant, application_clock.clone(), policy_owner.audit.clone(), cursor_key.clone(), access.archive_pool())).await.map_err(assembly_error)?;
                         let policies = crate::assembly::policy::management(
                             scope_editor,
                             &policy_application,
@@ -511,13 +511,13 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                         )
                         .await
                         .map_err(assembly_error)?;
-                        let events = crate::assembly::policy::events(
+                        let events = Box::pin(crate::assembly::policy::events(
                             policy_application.clone(),
                             materials.clone(),
                             software_owner.materials.clone(),
                             registration_owner.materials.clone(),
                             credential_execution.as_ref().map(|v| v.materials.clone()).unwrap_or_default(),
-                        )
+                        ))
                         .await
                         .map_err(assembly_error)?;
                         let telemetry = match &compiled.config.telemetry {
