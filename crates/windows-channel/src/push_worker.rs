@@ -30,12 +30,11 @@ impl WakeScan {
 }
 struct Wake {
     id: Uuid,
-    registration: Uuid,
-    generation: i64,
+    device: String,
     revision: i64,
     uri: zeroize::Zeroizing<String>,
 }
-fn audit(tenant: &str, id: Uuid, registration: Uuid) -> RequestAudit {
+fn audit(tenant: &str, id: Uuid, device: &str) -> RequestAudit {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
         rss_mdm_audit_integration::StorageProfile::Mdm,
@@ -44,13 +43,13 @@ fn audit(tenant: &str, id: Uuid, registration: Uuid) -> RequestAudit {
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.identify_service("windows-push");
-    audit.registration(registration);
+    audit.target_device(&device);
     audit.operation(
         id,
         "windows_push",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.target(&registration.to_string());
+    audit.target(&device.to_string());
     audit
 }
 pub async fn cycle(
@@ -63,13 +62,13 @@ pub async fn cycle(
 ) -> Result<WakeScan, Error> {
     let mut scan = WakeScan::default();
     let Some(push) = &w.push else { return Ok(scan) };
-    let mut after = Uuid::nil();
+    let mut after = String::new();
     loop {
         let mut read = dbase.begin_read(tenant).await?;
-        let candidates = eligibility.candidates(&mut read, after).await?;
+        let candidates = eligibility.candidates(&mut read, &after).await?;
         let count = candidates.len();
         scan.candidates += count;
-        let Some(last) = candidates.last().copied() else {
+        let Some(last) = candidates.last().cloned() else {
             read.rollback().await.map_err(db)?;
             return Ok(scan);
         };
@@ -80,7 +79,7 @@ pub async fn cycle(
         {
             return Err(Error::Conflict);
         }
-        let rows = sqlx::query("SELECT p.registration,p.generation,p.revision,r.device,extract(epoch FROM (greatest(p.next_push,coalesce(p.lease_until,p.next_push))-clock_timestamp()))::double precision AS wait_seconds FROM mdm_windows.push_channels p JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(p.tenant_id,p.registration,p.generation) WHERE p.tenant_id=$1::uuid AND p.registration=ANY($2) AND p.configuration=$3 AND p.attempt_until>clock_timestamp() AND (p.outcome IS NULL OR p.outcome IN ('accepted','retryable','unknown')) AND r.state='active' ORDER BY p.registration")
+        let rows = sqlx::query("SELECT p.device, p.revision, CAST(EXTRACT(EPOCH FROM GREATEST(p.next_push, COALESCE(p.lease_until, p.next_push)) - clock_timestamp()) AS double precision) AS wait_seconds FROM mdm_windows.push_channels AS p INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (p.tenant_id, p.device) WHERE p.tenant_id = CAST($1 AS uuid) AND p.device = ANY($2) AND p.configuration = $3 AND p.attempt_until > clock_timestamp() AND (p.outcome IS NULL OR p.outcome IN ('accepted', 'retryable', 'unknown')) AND r.state = 'active' ORDER BY p.device")
             .bind(tenant).bind(&candidates).bind(push.configuration.as_slice()).fetch_all(&mut *read).await.map_err(db)?;
         read.rollback().await.map_err(db)?;
         for row in rows {
@@ -124,20 +123,18 @@ async fn attempt(
     row: sqlx::postgres::PgRow,
 ) -> Result<Option<Duration>, Error> {
     let Some(push) = &w.push else { return Ok(None) };
-    let registration: Uuid = row.try_get("registration").map_err(db)?;
-    let generation: i64 = row.try_get("generation").map_err(db)?;
     let revision: i64 = row.try_get("revision").map_err(db)?;
     let device: String = row.try_get("device").map_err(db)?;
     let id = Uuid::new_v4();
-    let audit = audit(tenant, id, registration);
+    let audit = audit(tenant, id, &device);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
     let outcome=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-            &budget.source_control(),(store,&audit,eligibility,tenant,device.as_str(),registration,generation,revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
-                let (store,audit,eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision)=*inputs;
-                let sealed=tx.with_connection_context(&mut (eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision),|(eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision),c|Box::pin(async move {
-                    if !eligibility.pending(c, device, *registration, *generation).await? { return Ok::<_,Error>(None) }
-                    sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id=$6,lease_until=clock_timestamp()+interval '30 seconds',settled_id=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 AND configuration=$5 AND attempt_until>clock_timestamp() AND next_push<=clock_timestamp() AND (lease_until IS NULL OR lease_until<=clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted','retryable','unknown')) AND ($7::bigint IS NULL OR EXISTS(SELECT 1 FROM mdm_wns.versions w WHERE w.tenant_id=$1::uuid AND w.revision=$7 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL)) RETURNING uri")
-                        .bind(*tenant).bind(*registration).bind(*generation).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
+            &budget.source_control(),(store,&audit,eligibility,tenant,device.as_str(),revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
+                let (store,audit,eligibility,tenant,device,revision,id,configuration,material_revision)=*inputs;
+                let sealed=tx.with_connection_context(&mut (eligibility,tenant,device,revision,id,configuration,material_revision),|(eligibility,tenant,device,revision,id,configuration,material_revision),c|Box::pin(async move {
+                    if !eligibility.pending(c, device).await? { return Ok::<_,Error>(None) }
+                    sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id = $5, lease_until = clock_timestamp() + CAST('30 seconds' AS interval), settled_id = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND configuration = $4 AND attempt_until > clock_timestamp() AND next_push <= clock_timestamp() AND (lease_until IS NULL OR lease_until <= clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted', 'retryable', 'unknown')) AND (CAST($6 AS bigint) IS NULL OR EXISTS (SELECT 1 FROM mdm_wns.versions AS w WHERE w.tenant_id = CAST($1 AS uuid) AND w.revision = $6 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL)) RETURNING uri")
+                        .bind(*tenant).bind(*device).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
                 })).await?;
                 if sealed.is_some() {
 
@@ -159,7 +156,7 @@ async fn attempt(
     let aad = crate::protection::native_aad(
         TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
         "windows.push.channel",
-        &(registration, generation, push.configuration),
+        &(&device, push.configuration),
     )?;
     let uri = key
         .open_bytes(&sealed, &aad)
@@ -170,8 +167,8 @@ async fn attempt(
     );
     let wake = Wake {
         id,
-        registration,
-        generation,
+        device: device.to_string(),
+
         revision,
         uri,
     };
@@ -192,33 +189,33 @@ async fn settle(
     let status = receipt.status;
     let outcome = receipt.outcome;
     let retry_after = receipt.retry_after;
-    let audit = audit(tenant, wake.id, wake.registration);
+    let audit = audit(tenant, wake.id, &wake.device);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
     let result=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
             &budget.source_control(),(store,&audit,key,tenant,wake,status,outcome,retry_after),|inputs,tx|Box::pin(async move {
         let (store,audit,key,tenant,wake,status,outcome,retry_after)=*inputs;
         let changed=tx.with_connection_context(&mut (key,tenant,wake,status,outcome,retry_after),|(key,tenant,wake,status,outcome,retry_after),c|Box::pin(async move {
-            let row=sqlx::query("SELECT generation,revision,configuration,digest,lease_id,settled_id,failures,status,outcome FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE")
-                .bind(*tenant).bind(wake.registration).fetch_optional(&mut *c).await.map_err(db)?;
+            let row=sqlx::query("SELECT revision, configuration, digest, lease_id, settled_id, failures, status, outcome FROM mdm_windows.push_channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE")
+                .bind(*tenant).bind(&wake.device).fetch_optional(&mut *c).await.map_err(db)?;
             let Some(row)=row else {return Ok::<_,Error>(None)};
-            let generation: i64 = row.try_get("generation").map_err(db)?;
+
             let revision: i64 = row.try_get("revision").map_err(db)?;
-            if generation != wake.generation || revision != wake.revision {
+            if revision != wake.revision {
                 // Only definitive endpoint invalidation crosses binding revisions.
                 // A receipt for the previous URI cannot poison its replacement.
                 if *outcome != PushOutcome::Unregistered || !matches!(*status, 404 | 410) {
                     return Ok(None);
                 }
                 let configuration: [u8; 32] = row.try_get::<Vec<u8>, _>("configuration").map_err(db)?.try_into().map_err(|_| Error::Malformed)?;
-                let aad = crate::protection::native_aad(TenantId::parse(tenant).map_err(|_| Error::Malformed)?, "windows.push.channel", &(wake.registration, generation, configuration))?;
+                let aad = crate::protection::native_aad(TenantId::parse(tenant).map_err(|_| Error::Malformed)?, "windows.push.channel", &(&wake.device, configuration))?;
                 if key.verify_mac(wake.uri.as_bytes(), &aad, &row.try_get::<Vec<u8>, _>("digest").map_err(db)?).is_err() {
                     return Ok(None);
                 }
                 if row.try_get::<Option<String>, _>("outcome").map_err(db)?.as_deref() == Some("unregistered") {
                     return Ok(Some((false, RECONCILE)));
                 }
-                sqlx::query("UPDATE mdm_windows.push_channels SET lease_id=NULL,lease_until=NULL,settled_id=$3,status=$4,outcome='unregistered',failures=0 WHERE tenant_id=$1::uuid AND registration=$2")
-                    .bind(*tenant).bind(wake.registration).bind(wake.id).bind(i32::from(*status)).execute(c).await.map_err(db)?;
+                sqlx::query("UPDATE mdm_windows.push_channels SET lease_id = NULL, lease_until = NULL, settled_id = $3, status = $4, outcome = 'unregistered', failures = 0 WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
+                    .bind(*tenant).bind(&wake.device).bind(wake.id).bind(i32::from(*status)).execute(c).await.map_err(db)?;
                 return Ok(Some((true, RECONCILE)));
             }
 
@@ -234,8 +231,8 @@ async fn settle(
                 None=>(0,None),
             };
             let delay=if matches!(*outcome, PushOutcome::Retryable | PushOutcome::Unknown) {(15i64*(1<<failures)).max(retry_seconds)} else {120};
-            let wait: f64 = sqlx::query_scalar("UPDATE mdm_windows.push_channels SET lease_id=NULL,lease_until=NULL,settled_id=$5,status=$6,outcome=$7,failures=$8,next_push=greatest(clock_timestamp()+make_interval(secs=>$9::double precision),to_timestamp($10::double precision)) WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 RETURNING greatest(0,extract(epoch FROM (next_push-clock_timestamp())))::double precision")
-                .bind(*tenant).bind(wake.registration).bind(wake.generation).bind(wake.revision).bind(wake.id).bind(i32::from(*status)).bind(outcome.as_str()).bind(failures).bind(delay as f64).bind(retry_at.map(|at|at as f64)).fetch_one(c).await.map_err(db)?;
+            let wait: f64 = sqlx::query_scalar("UPDATE mdm_windows.push_channels SET lease_id = NULL, lease_until = NULL, settled_id = $4, status = $5, outcome = $6, failures = $7, next_push = GREATEST(clock_timestamp() + make_interval(secs => CAST($8 AS double precision)), to_timestamp(CAST($9 AS double precision))) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 RETURNING CAST(GREATEST(0, EXTRACT(EPOCH FROM next_push - clock_timestamp())) AS double precision)")
+                .bind(*tenant).bind(&wake.device).bind(wake.revision).bind(wake.id).bind(i32::from(*status)).bind(outcome.as_str()).bind(failures).bind(delay as f64).bind(retry_at.map(|at|at as f64)).fetch_one(c).await.map_err(db)?;
             Ok(Some((true, Duration::from_secs_f64(wait.min(RECONCILE.as_secs_f64())))))
         })).await?;
         if let Some((changed,_))=changed {

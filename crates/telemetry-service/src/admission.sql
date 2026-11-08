@@ -5,12 +5,12 @@ trust_tables AS (
  SELECT c.*,expected.columns FROM (VALUES
   ('mdm_task_signing.heads',ARRAY['tenant_id','usage','revision']),
   ('mdm_task_signing.versions',ARRAY['tenant_id','usage','revision','body','digest']),
-  ('mdm_task_signing.acknowledgements',ARRAY['tenant_id','usage','registration','generation','revision','digest']),
+  ('mdm_task_signing.acknowledgements',ARRAY['tenant_id','usage','device','revision','digest']),
   ('mdm_task_signing.keys',ARRAY['tenant_id','usage','key_id','max_verify_until'])
  ) expected(name,columns) JOIN pg_class c ON c.oid=expected.name::regclass
 ), collection_columns AS (SELECT
- ARRAY['tenant_id','registration','source','epoch','id','scope','sequence','started_at','sealed_at','attempts','result','reason','batch','digest','input_digest'] AS reads,
- ARRAY['tenant_id','registration','source','epoch','id','scope','sequence','started_at','sealed_at','attempts','result','reason','batch','digest','input_digest','delivery_pending'] AS inserts
+ ARRAY['tenant_id','device','source','epoch','id','scope','sequence','started_at','sealed_at','attempts','result','reason','batch','digest','input_digest'] AS reads,
+ ARRAY['tenant_id','device','source','epoch','id','scope','sequence','started_at','sealed_at','attempts','result','reason','batch','digest','input_digest','delivery_pending'] AS inserts
 ), isolated AS (SELECT oid FROM tables UNION SELECT oid FROM trust_tables UNION SELECT 'mdm_access.collection_runs'::regclass)
 SELECT
  (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['batches','definition_progress','gap_reports','maintenance','observation_receipts','rate_windows','resources','retention_targets','storage_binding'] FROM tables)

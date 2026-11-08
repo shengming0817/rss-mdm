@@ -22,7 +22,7 @@ fn dispatch(
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
     let payload = checked_input(serde_json::to_vec(
-        &json!({"version":1,"policyVersion":version,"taskId":id,"device":target.device,"registrationId":target.registration,"generation":target.generation}),
+        &json!({"version":1,"policyVersion":version,"taskId":id,"device":target.device}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         checked_input(MessageId::parse(&format!("access.{id}")))?,
@@ -37,7 +37,7 @@ fn dispatch(
                     ContractVersion::from_static_major(1),
                     checked_input(SchemaDigest::parse(&format!(
                         "sha256:{:x}",
-                        Sha256::digest(b"mdm.access-dispatch/v1:policyVersion,taskId,device,registrationId,generation")
+                        Sha256::digest(b"mdm.access-dispatch/v1:policyVersion,taskId,device")
                     )))?,
                 ),
             ),
@@ -91,8 +91,6 @@ pub(crate) async fn queue_run_in(
         .ok_or(Error::Forbidden)?;
     let target = Target {
         device: agent.device,
-        registration: agent.registration,
-        generation: agent.generation,
     };
     let message = dispatch(tx.tenant_id(), binding.policy_version, id, &target, now)?;
     let fingerprint = message.fingerprint().as_bytes().to_vec();
@@ -114,8 +112,8 @@ pub(crate) async fn queue_run_in(
     let state = stored(serde_json::to_value(RunState::new(deadline, now)?))?;
     let origin = stored(serde_json::to_value(origin))?;
     tx.with_connection(move|c|Box::pin(async move{
-        sqlx::query("INSERT INTO rss_da.access_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,origin,access_binding) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$8,$12,$13)")
-            .bind(tenant).bind(id).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(now).bind(deadline).bind(state).bind(fingerprint).bind(origin).bind(document).execute(c).await?;Ok(())
+        sqlx::query("INSERT INTO rss_da.access_runs (tenant_id, id, policy_version, device, occurrence, available_at, deadline, state, dispatch_fingerprint, created_at, origin, access_binding) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $6, $10, $11)")
+            .bind(tenant).bind(id).bind(version).bind(target.device).bind(occurrence).bind(now).bind(deadline).bind(state).bind(fingerprint).bind(origin).bind(document).execute(c).await?;Ok(())
     })).await?;
     super::wake::run_in(&service.reconcile_messaging, tx, id).await?;
     let audit = rss_mdm_audit_integration::RequestAudit::new(
@@ -134,7 +132,7 @@ pub(crate) async fn queue_run_in(
     audit.identify_service("access-admission");
     audit.plan(version);
     audit.target(&id.to_string());
-    audit.registration(binding.registration);
+    audit.target_device(&binding.device);
     let run = db::read_run(tx, id).await?;
     let fact = Fact::business(
         &audit,

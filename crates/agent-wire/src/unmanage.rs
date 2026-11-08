@@ -19,12 +19,7 @@ pub struct UnmanageTaskSpec {
     pub tenant_id: Uuid,
     /// Original Agent endpoint.
     pub device_id: String,
-    /// Registration which the local installation must still hold.
-    #[serde(with = "strict_uuid")]
-    #[schemars(schema_with = "crate::runtime::uuid_schema")]
-    pub registration_id: Uuid,
-    /// Original registration revision; never adopt a replacement identity.
-    pub generation: u64,
+
     /// Product retirement operation.
     #[serde(with = "strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
@@ -56,12 +51,9 @@ impl UnmanageTaskSpec {
         self.authorization.validate(self.tenant_id)?;
         if self.wire_version != WIRE_VERSION
             || self.tenant_id.is_nil()
-            || self.registration_id.is_nil()
             || self.retirement_id.is_nil()
             || self.task_id.is_nil()
             || self.attempt_id.is_nil()
-            || self.generation == 0
-            || self.generation > i64::MAX as u64
             || self.expires_at <= 0
             || self.deadline < self.expires_at
             || self.device_id.is_empty()

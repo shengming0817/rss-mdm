@@ -224,7 +224,7 @@ impl Associations {
         Change::Asset{input,..}=>{
           for device in &devices {
             if input.state!=AssetState::Active {
-              let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active')")
+              let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')")
                 .bind(p.tenant_id()).bind(device).fetch_one(&mut *c).await?;
               if active {
                 let exiting:bool=sqlx::query_scalar("SELECT retirement IS NOT NULL FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2")

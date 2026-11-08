@@ -262,10 +262,8 @@ impl SoftwareAssignment {
         };
         let tenant = tx.tenant_id().to_string();
         let device = target.device.clone();
-        let registration = target.registration_id;
-        let epoch = target.generation;
         let prefix = format!("software:stage:{}:%", self.stages()[index].scope);
-        let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>("SELECT state,result FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND registration=$4 AND generation=$5 AND occurrence LIKE $6 ORDER BY created_at DESC,id DESC LIMIT 1").bind(tenant).bind(version).bind(device).bind(registration).bind(epoch).bind(prefix).fetch_optional(c).await})).await?;
+        let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>("SELECT state, result FROM mdm_software_deployment.action_runs WHERE tenant_id = CAST($1 AS uuid) AND policy_version = $2 AND device = $3 AND occurrence LIKE $4 ORDER BY created_at DESC, id DESC LIMIT 1").bind(tenant).bind(version).bind(device).bind(prefix).fetch_optional(c).await})).await?;
         let mut waiting_until = None;
         if let Some((state, result)) = result {
             count.reported = u64::from(result.is_some());
@@ -302,8 +300,7 @@ impl SoftwareAssignment {
                 &target.device,
             )
             .await?
-                && current.registration == target.registration_id
-                && current.generation == target.generation
+                && current.device == target.device
                 && self.variant(platform, architecture).is_some()
                 && self
                     .admitted_in(service, tx, platform, architecture)
@@ -320,8 +317,7 @@ impl SoftwareAssignment {
             )
             .await?
             {
-                if binding.registration == target.registration_id
-                    && binding.generation == target.generation
+                if binding.device == target.device
                     && self.supported_in(service, tx, &binding.binding).await?
                 {
                     count.unsupported_capability = 0;

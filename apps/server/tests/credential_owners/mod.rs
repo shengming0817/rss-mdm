@@ -99,11 +99,10 @@ impl Owners {
     }
 }
 async fn candidate(c: &Context, keys: &recovery::KeyRing) -> Result<(recovery::Coordinates, Uuid)> {
-    let (registration, _, device) = material::seed_registration(c).await?;
+    let (device, _) = material::seed_registration(c).await?;
     let binding = recovery::Binding {
         device,
-        registration,
-        generation: 2,
+
         subject: recovery::Subject::LocalAdministrator {
             sid: "S-1-5-21-1-2-3-500".into(),
         },
@@ -145,8 +144,7 @@ async fn native_candidate(
     let n = crate::native_identity_t2_support::seed(c, "apple").await?;
     let binding = recovery::Binding {
         device: n.device,
-        registration: n.registration,
-        generation: 1,
+
         subject: recovery::Subject::RecoveryLock,
     };
     let operation = Uuid::new_v4();
@@ -196,8 +194,6 @@ async fn input_copy(
         proof.authorization()?,
         &proof,
         &binding.device,
-        binding.registration,
-        binding.generation,
         operation,
         vec![rss_mdm_authorization_service::Permission::SecurityOperate],
     )?;
@@ -208,8 +204,6 @@ async fn input_copy(
     struct Identity<'a> {
         operation: Uuid,
         device: &'a str,
-        registration: Uuid,
-        generation: i64,
     }
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -228,8 +222,6 @@ async fn input_copy(
     let owner = serde_json::to_string(&Identity {
         operation,
         device: &binding.device,
-        registration: binding.registration,
-        generation: binding.generation,
     })?;
     let field = serde_json::to_string(&("native.operation.input/v1", &meta))?;
     let sealed = key.seal_bytes(
@@ -239,11 +231,18 @@ async fn input_copy(
     let command_device = Uuid::new_v4();
     let attempt = Uuid::new_v4();
     let mut tx = seed(c).await?;
-    sqlx::query("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch,registration,registration_generation) VALUES($1,$2,$3,1,1,$4,1)").bind(coordinate.tenant).bind(&binding.device).bind(command_device).bind(binding.registration).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES ($1, $2, $3, 1, 1)").bind(coordinate.tenant).bind(&binding.device).bind(command_device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1,$2,1,1)").bind(coordinate.tenant).bind(command_device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1,$2,$3,1,1,$4,$5,$6,'mdm.recovery.native.v1',$2,$4,'published',$6,2)").bind(coordinate.tenant).bind(operation.to_string()).bind(command_device).bind(vec![1u8;32]).bind(input.deadline*1_000_000).bind(now()*1_000_000).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_recovery_tasks.operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted) VALUES($1,$2,$3,$4,$5,$6,$7,1,1,1,$8,$6,true)").bind(coordinate.tenant).bind(operation).bind(&binding.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(binding.registration).bind(serde_json::to_value(authority)?).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_apple.native_commands(tenant_id,id,registration,registration_generation) VALUES($1,$2,$3,1)").bind(coordinate.tenant).bind(operation).bind(binding.registration).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_recovery_tasks.operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted) VALUES ($1, $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE)").bind(coordinate.tenant).bind(operation).bind(&binding.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(serde_json::to_value(authority)?).execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT INTO mdm_apple.native_commands (tenant_id, id, device) VALUES ($1, $2, $3)",
+    )
+    .bind(coordinate.tenant)
+    .bind(operation)
+    .bind(binding.device.clone())
+    .execute(&mut *tx)
+    .await?;
     let mut command = plist::Dictionary::new();
     command.insert("RequestType".into(), "SetRecoveryLock".into());
     command.insert("NewPassword".into(), "Owner-test-Password!42".into());
@@ -254,12 +253,12 @@ async fn input_copy(
     plist::to_writer_xml(&mut bytes, &plist)?;
     let aad = ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(binding.registration, 1i64, attempt))?,
+        &serde_json::to_string(&(binding.device.clone(), 1i64, attempt))?,
         "apple.attempt.request",
         1,
     )?
     .derive();
-    sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,ordinal,request,state,deadline) VALUES($1,$2,$3,1,$4,'execute',0,$5,'sent',clock_timestamp()+interval '5 minutes')").bind(coordinate.tenant).bind(attempt).bind(binding.registration).bind(operation).bind(key.seal_bytes(&bytes,&aad)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, operation, phase, ordinal, request, state, deadline) VALUES ($1, $2, $3, $4, 'execute', 0, $5, 'sent', clock_timestamp() + CAST('5 minutes' AS interval))").bind(coordinate.tenant).bind(attempt).bind(binding.device.clone()).bind(operation).bind(key.seal_bytes(&bytes,&aad)?).execute(&mut *tx).await?;
     recovery::storage::link_native_in(
         rss_mdm_recovery_credentials::Custody::new(
             rss_mdm_install_support::StorageProfile::Mdm,

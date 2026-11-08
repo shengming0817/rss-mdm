@@ -27,8 +27,8 @@ pub trait Store: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registrations: Vec<Uuid>,
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, Binding>>;
+        devices: Vec<String>,
+    ) -> Pending<'a, std::collections::BTreeMap<String, Binding>>;
     /// Original task bytes visible to this transaction, independent of current execution eligibility.
     fn payload<'a>(
         &'a self,
@@ -41,13 +41,13 @@ pub trait Store: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
     ) -> Pending<'a, Option<Binding>> {
         Box::pin(async move {
             Ok(self
-                .bindings(c, tenant, vec![registration])
+                .bindings(c, tenant, vec![device.clone()])
                 .await?
-                .remove(&registration))
+                .remove(&device))
         })
     }
 }
@@ -55,11 +55,9 @@ pub trait Store: Send + Sync {
 pub async fn agent_binding_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     store: std::sync::Arc<dyn Store>,
-    registration: Uuid,
+    device: String,
 ) -> Result<Option<Binding>, super::Error> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move { Ok(store.binding(c, tenant, registration).await) })
-    })
-    .await?
+    tx.with_connection(move |c| Box::pin(async move { Ok(store.binding(c, tenant, device).await) }))
+        .await?
 }

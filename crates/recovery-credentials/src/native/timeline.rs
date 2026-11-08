@@ -41,8 +41,6 @@ pub(crate) fn native_activity(
     let mut activity = Activity::new(kind, phase);
     activity.target = Some(ActivityTarget {
         device: op.device.clone(),
-        registration: op.registration,
-        generation: op.registration_generation,
     });
     activity.links.operation = Some(op.id);
     activity.origin = ActivityOrigin::Human;

@@ -28,12 +28,11 @@ pub fn permissions(
 pub async fn eligible_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    registration: uuid::Uuid,
-    generation: i64,
+    device: &str,
     template: &resource::NativeCollectionDefinition,
 ) -> Result<bool, Error> {
-    let facts:Option<(String,i32,String)>=sqlx::query_as("SELECT c.os_version,c.edition,r.purpose FROM mdm_windows.capabilities c JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(c.tenant_id,c.registration,c.generation) WHERE c.tenant_id=$1::uuid AND c.registration=$2 AND c.generation=$3 AND r.state='active'")
-        .bind(tenant.to_string()).bind(registration).bind(generation).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
+    let facts:Option<(String,i32,String)>=sqlx::query_as("SELECT c.os_version, c.edition, r.purpose FROM mdm_windows.capabilities AS c INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.device = $2 AND r.state = 'active' AND c.protocol_epoch = r.epoch")
+        .bind(tenant.to_string()).bind(device).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
     let Some((version, edition, purpose)) = facts else {
         return Ok(false);
     };

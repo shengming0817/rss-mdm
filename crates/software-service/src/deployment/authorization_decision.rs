@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum BlockReason {
     LifecycleBlocked,
-    RegistrationChanged,
+    DeviceInactive,
     InputMismatch,
     SourceInvalid,
 }
@@ -28,7 +28,7 @@ pub enum ReauthorizationReason {
     Terminal,
     AlreadyReceived,
     Expired,
-    RegistrationChanged,
+    DeviceInactive,
     InputMismatch,
     Unsupported,
 }
@@ -51,13 +51,13 @@ use std::collections::BTreeMap;
 pub(crate) fn decide(
     operation: &Operation,
     lifecycle: bool,
-    registration: Option<(Uuid, i64)>,
+    registration: Option<String>,
     source: bool,
 ) -> Result<Authorization> {
     let reason = if !lifecycle {
         Some(BlockReason::LifecycleBlocked)
-    } else if registration != Some((operation.registration, operation.registration_generation)) {
-        Some(BlockReason::RegistrationChanged)
+    } else if registration != Some(operation.device.clone()) {
+        Some(BlockReason::DeviceInactive)
     } else if !source {
         Some(BlockReason::SourceInvalid)
     } else {
@@ -137,15 +137,8 @@ pub(crate) async fn batch(
             )
             .await
         }?;
-        let mut current = BTreeMap::<String, Option<(Uuid, i64)>>::new();
-        for (device, id, generation) in rows {
-            current
-                .entry(device)
-                .and_modify(|v| *v = None)
-                .or_insert(Some((id, generation)));
-        }
-        for (device, value) in current {
-            registrations.insert((device, purpose.as_str()), value);
+        for device in rows {
+            registrations.insert((device.clone(), purpose.as_str()), Some(device));
         }
     }
     let mut decisions = BTreeMap::new();
@@ -157,7 +150,7 @@ pub(crate) async fn batch(
                 operation.device.clone(),
                 operation.request.task.purpose()?.as_str(),
             ))
-            .copied()
+            .cloned()
             .flatten();
         let decision = decide(
             operation,

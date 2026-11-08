@@ -9,17 +9,17 @@ WITH catalog AS (
   ORDER BY field,version DESC
  ) latest WHERE definition IS NOT NULL
 ), facts AS (
- SELECT r.tenant_id,r.device,r.purpose='primary' AS primary_registration,i.field,c.definition->>'sensitivity' AS sensitivity,
+ SELECT r.tenant_id,r.id AS device,r.purpose='primary' AS primary_registration,i.field,c.definition->>'sensitivity' AS sensitivity,
   (c.definition->'sources'->>i.source)::integer AS priority,i.state,
   i.value::jsonb->>'value' AS text_value
  FROM mdm.inventory i
- JOIN mdm_access.registrations r ON r.tenant_id=i.tenant_id AND r.id::text=i.registration AND r.state='active'
- JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration,s.source)=(r.tenant_id,r.id,i.source) AND s.epoch::text=i.epoch AND s.enabled
+ JOIN mdm_access.devices r ON r.tenant_id=i.tenant_id AND r.id=i.registration AND r.state='active'
+ JOIN mdm_access.report_sources s ON (s.tenant_id,s.device,s.source)=(r.tenant_id,r.id,i.source) AND s.epoch::text=i.epoch AND s.enabled
  JOIN mdm.collection_definitions d ON (d.tenant_id,d.coverage,d.source)=(i.tenant_id,i.coverage,i.source)
  JOIN catalog c ON c.field=i.field AND c.definition->'sources' ? i.source
  WHERE i.tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid
   AND i.journal='mdm.observation.v1' AND i.generation='inventory-projection-v1'
-  AND EXISTS(SELECT FROM mdm_access.credentials k WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active')
+  AND EXISTS(SELECT FROM mdm_access.credentials k WHERE (k.tenant_id,k.device)=(r.tenant_id,r.id) AND k.state='active' AND k.purpose='primary')
   AND i.field_scope::jsonb='{"kind":"device"}'::jsonb
   AND i.scope::jsonb->>'tenant'=i.tenant_id::text
   AND i.scope::jsonb->>'registration'=i.registration

@@ -19,7 +19,6 @@ pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Sch
         Field::scalar("device", Kind::Text),
         Field::scalar("policy", Kind::Uuid),
         Field::scalar("status", Kind::Text),
-        Field::scalar("registrationId", Kind::Uuid),
         Field::scalar("generation", Kind::Integer),
         Field::scalar("origin", Kind::enumeration(&["direct", "policy"])),
         Field::scalar("deadline", Kind::Integer),
@@ -33,7 +32,7 @@ pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Sch
             "authorization.reason",
             Kind::enumeration(&[
                 "lifecycle_blocked",
-                "registration_changed",
+                "device_inactive",
                 "input_mismatch",
                 "source_invalid",
             ]),
@@ -67,8 +66,6 @@ pub struct Metadata {
     pub id: Uuid,
     pub kind: KindOfOperation,
     pub device: String,
-    pub registration_id: Uuid,
-    pub generation: i64,
     pub origin: String,
     pub policy: Option<Uuid>,
     pub deadline: i64,
@@ -137,7 +134,7 @@ pub enum Evidence {
 #[serde(rename_all = "snake_case")]
 pub enum BlockReason {
     LifecycleBlocked,
-    RegistrationChanged,
+    DeviceInactive,
     InputMismatch,
     SourceInvalid,
 }
@@ -160,7 +157,7 @@ pub enum ReauthorizationReason {
     Terminal,
     AlreadyReceived,
     Expired,
-    RegistrationChanged,
+    DeviceInactive,
     InputMismatch,
     Unsupported,
 }

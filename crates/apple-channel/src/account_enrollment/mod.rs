@@ -230,7 +230,7 @@ pub(crate) fn aad(
     flow: Uuid,
     part: &str,
 ) -> Result<rss_mdm_native_protection::DerivedAad, Error> {
-    crate::material::aad(tenant, flow, 1, "", 1, part)
+    crate::material::aad(tenant, &flow.to_string(), "", 1, part)
 }
 fn token_hash(tenant: &str, token: &str) -> String {
     rss_mdm_registration_service::enrollment::digest(&("apple.account.access/v1", tenant, token))
@@ -412,7 +412,7 @@ pub(crate) async fn maid(
     )
     .await?;
     let row = store::binding(&mut tx, &tenant, enrollment).await?;
-    let expected:String=sqlx::query_scalar("SELECT udid FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state<>'retired'").bind(&tenant).bind(principal.registration()).fetch_one(&mut *tx).await.map_err(crate::database::db)?;
+    let expected:String=sqlx::query_scalar("SELECT udid FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state <> 'retired'").bind(&tenant).bind(principal.device()).fetch_one(&mut *tx).await.map_err(crate::database::db)?;
     if expected != udid {
         return Err(Error::Unauthorized);
     }

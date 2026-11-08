@@ -26,8 +26,8 @@ pub trait Business: Send + Sync {
     fn wake_commands<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        registration: Uuid,
-        generation: i64,
+        device: String,
+
         after: Uuid,
     ) -> Pending<'a, WakePage>;
     fn software_enabled(&self) -> bool;
@@ -138,7 +138,7 @@ pub trait Departure: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        registration: Uuid,
+        device: String,
     ) -> Pending<'a, ()>;
 }
 

@@ -150,8 +150,6 @@ pub(super) async fn authorize(
         agent: delivery::Agent {
             installation: agent.installation(),
             device: agent.device().into(),
-            registration: agent.registration(),
-            generation: agent.generation(),
         },
         expected_revision: 0,
         enabled: true,
@@ -159,7 +157,7 @@ pub(super) async fn authorize(
     let grant = Box::pin(proof(c, &account, authorization.step_up_context(&actor)?)).await?;
     let before = counts(c).await?;
     let mut substituted = authorization.clone();
-    substituted.agent.generation += 1;
+    substituted.agent.device = Uuid::new_v4().to_string();
     assert!(
         matches!(
             service
@@ -241,14 +239,7 @@ pub(super) async fn authorize(
         .execute(&mut *tx)
         .await?;
     let resolved = delivery::resolve_on(&mut tx, agent).await?;
-    assert_eq!(
-        (
-            resolved.device(),
-            resolved.registration(),
-            resolved.generation()
-        ),
-        (da.device.as_str(), da.registration_id, da.generation)
-    );
+    assert_eq!(resolved.device(), da.device);
     tx.rollback().await?;
     drop(service);
     identity_runtime.close().await;

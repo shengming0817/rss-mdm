@@ -46,9 +46,7 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
             &mut tx,
             first.tenant,
             verification,
-            &first.binding.device,
-            first.binding.registration,
-            first.binding.generation + 1,
+            &Uuid::new_v4().to_string(),
             &report,
             recovery::native_receipts::ReceiptStatus::Acknowledged,
         )
@@ -67,8 +65,6 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
             first.tenant,
             verification,
             &first.binding.device,
-            first.binding.registration,
-            first.binding.generation,
             &report,
             recovery::native_receipts::ReceiptStatus::Acknowledged,
         )
@@ -105,8 +101,6 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
                 first.tenant,
                 verification,
                 &first.binding.device,
-                first.binding.registration,
-                first.binding.generation,
                 &report,
                 recovery::native_receipts::ReceiptStatus::Acknowledged
             )
@@ -396,7 +390,7 @@ async fn input_secrets(
             .await?;
     let aad = rss_mdm_native_protection::ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(coordinate.binding.registration, 1i64, attempt))?,
+        &serde_json::to_string(&(coordinate.binding.device.clone(), 1i64, attempt))?,
         "apple.attempt.request",
         1,
     )?
@@ -496,8 +490,6 @@ async fn filevault_receipt(
             tenant,
             reconcile,
             &binding.device,
-            binding.registration,
-            binding.generation,
             &report,
             recovery::native_receipts::ReceiptStatus::Acknowledged,
         )
@@ -566,8 +558,6 @@ async fn assert_native_coordinates(
         tenant,
         operation,
         &binding.device,
-        binding.registration,
-        binding.generation,
     )
     .await?
     .unwrap();
@@ -588,9 +578,15 @@ async fn filevault_binding(
         subject: recovery::Subject::Filevault { custody, epoch: 1 },
         ..source.clone()
     };
-    sqlx::query("INSERT INTO mdm_recovery.filevault_custodies(tenant_id,id,origin_device,origin_registration,origin_generation) VALUES($1,$2,$3,$4,$5)")
-        .bind(tenant).bind(custody).bind(&binding.device).bind(binding.registration).bind(binding.generation).execute(&mut *c).await?;
-    sqlx::query("INSERT INTO mdm_recovery.filevault_sources(tenant_id,registration,generation,custody,epoch) VALUES($1,$2,$3,$4,1)")
-        .bind(tenant).bind(binding.registration).bind(binding.generation).bind(custody).execute(&mut *c).await?;
+    sqlx::query(
+        "INSERT INTO mdm_recovery.filevault_custodies(tenant_id,id,origin_device) VALUES($1,$2,$3)",
+    )
+    .bind(tenant)
+    .bind(custody)
+    .bind(&binding.device)
+    .execute(&mut *c)
+    .await?;
+    sqlx::query("INSERT INTO mdm_recovery.filevault_sources (tenant_id, device, custody, epoch) VALUES ($1, $2, $3, 1)")
+        .bind(tenant).bind(binding.device.clone()).bind(custody).execute(&mut *c).await?;
     Ok(binding)
 }

@@ -10,8 +10,6 @@ pub struct Metadata {
     pub policy_id: Uuid,
     pub version_id: Uuid,
     pub device: String,
-    pub registration_id: Uuid,
-    pub generation: i64,
     pub occurrence: String,
     pub available_at: i64,
     pub deadline: i64,
@@ -69,11 +67,11 @@ impl<R> Record<R> {
         }
     }
 }
-const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'registrationId',r.registration,'generation',r.generation,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline";
+const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline";
 const REPORT: &str = "CASE WHEN report.id IS NULL THEN NULL ELSE jsonb_build_object('id',report.id,'result',report.result,'reason',report.reason,'sealedAt',report.sealed_at,'projectionPending',report.delivery_pending) END";
 fn select(summary: bool) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut query = sqlx::QueryBuilder::new("SELECT jsonb_build_object(");
-    query.push(METADATA).push(",'channel',r.channel,'report',").push(REPORT).push(") || CASE WHEN r.channel='agent' THEN jsonb_build_object('state',r.agent_state,'attemptId',r.agent_state->'delivery'->>'attempt','result',").push(if summary {"r.agent_result-'native'"}else{"r.agent_result"}).push(") ELSE jsonb_build_object('delivery',r.native_delivery) END AS document FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_access.collection_runs report ON report.tenant_id=r.tenant_id AND report.registration=r.registration AND report.id=CASE WHEN r.channel='agent' THEN (r.agent_state->'delivery'->>'attempt')::uuid ELSE r.collection_run END WHERE r.tenant_id=$1::uuid");
+    query.push(METADATA).push(",'channel',r.channel,'report',").push(REPORT).push(") || CASE WHEN r.channel='agent' THEN jsonb_build_object('state',r.agent_state,'attemptId',r.agent_state->'delivery'->>'attempt','result',").push(if summary {"r.agent_result-'native'"}else{"r.agent_result"}).push(") ELSE jsonb_build_object('delivery',r.native_delivery) END AS document FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_access.collection_runs report ON report.tenant_id=r.tenant_id AND report.device=r.device AND report.id=CASE WHEN r.channel='agent' THEN (r.agent_state->'delivery'->>'attempt')::uuid ELSE r.collection_run END WHERE r.tenant_id=$1::uuid");
     query
 }
 pub async fn page_on(
@@ -127,7 +125,7 @@ pub async fn detail_on(
     Ok(record)
 }
 
-/// Latest historical run for the exact registration or its declared Windows children.
+/// Latest historical run for the original device and channel.
 pub async fn latest_assignment_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
@@ -135,16 +133,16 @@ pub async fn latest_assignment_on(
     target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
     channel: rss_mdm_inventory::Channel,
 ) -> Result<Option<Summary>> {
-    select(true).push(" AND v.policy=$2 AND r.device=$3 AND r.channel=$6 AND ((r.registration=$4 AND r.generation=$5) OR ($6='mdm' AND EXISTS(SELECT 1 FROM mdm_access.registrations child WHERE child.tenant_id=r.tenant_id AND child.id=r.registration AND child.generation=r.generation AND child.device=r.device AND child.channel='mdm' AND child.purpose='windows_declared' AND child.parent_id=$4 AND child.parent_generation=$5))) ORDER BY r.available_at DESC,r.id DESC LIMIT 1")
+    select(true).push(" AND v.policy=$2 AND r.device=$3 AND r.channel=$4 ORDER BY r.available_at DESC,r.id DESC LIMIT 1")
         .build_query_scalar::<serde_json::Value>().bind(tenant.to_string()).bind(policy).bind(&target.device)
-        .bind(target.registration_id).bind(target.generation).bind(channel.as_str()).fetch_optional(c).await?
+        .bind(channel.as_str()).fetch_optional(c).await?
         .map(|v|crate::transaction::stored(serde_json::from_value(v))).transpose()
 }
 /// SQL counterpart of model::native_terminal_status; T2 compares their complete truth table.
 pub const NATIVE_STATUS_SQL: &str = "CASE WHEN report.sealed_at IS NULL THEN r.native_delivery WHEN report.reason='complete' THEN CASE WHEN report.result='failed' THEN 'failed' ELSE 'succeeded' END WHEN report.reason='timeout' THEN 'expired' ELSE 'cancelled' END";
 pub fn relation_sql() -> String {
     format!(
-        "SELECT r.id,r.device,'action_run'::text AS kind,r.registration,r.generation,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,CASE WHEN r.channel='agent' THEN r.agent_state->>'execution' ELSE {NATIVE_STATUS_SQL} END AS status,0::bigint AS input_bytes FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_access.collection_runs report ON report.tenant_id=r.tenant_id AND report.registration=r.registration AND report.id=r.collection_run WHERE r.tenant_id=$1::uuid"
+        "SELECT r.id,r.device,'action_run'::text AS kind,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,CASE WHEN r.channel='agent' THEN r.agent_state->>'execution' ELSE {NATIVE_STATUS_SQL} END AS status,0::bigint AS input_bytes FROM mdm_inventory.collection_tasks r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_access.collection_runs report ON report.tenant_id=r.tenant_id AND report.device=r.device AND report.id=r.collection_run WHERE r.tenant_id=$1::uuid"
     )
 }
 
@@ -209,7 +207,7 @@ mod tests {
             .is_err()
         );
         let id = Uuid::new_v4();
-        let common = json!({"taskId":id,"policyId":id,"versionId":id,"device":"device","registrationId":id,"generation":1,"occurrence":"once","availableAt":1,"deadline":100,"report":null});
+        let common = json!({"taskId":id,"policyId":id,"versionId":id,"device":"device","occurrence":"once","availableAt":1,"deadline":100,"report":null});
         let mut agent = common.clone();
         agent["channel"] = json!("agent");
         agent["state"] =

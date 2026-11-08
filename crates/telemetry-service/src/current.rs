@@ -84,7 +84,6 @@ pub(crate) async fn deliver_on(
             c,
             tenant,
             &input.device,
-            input.registration,
             input.source,
             input.epoch,
         )
@@ -97,7 +96,7 @@ pub(crate) async fn deliver_on(
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         tenant,
-        input.registration,
+        &input.device,
         input.source.as_str(),
         input.epoch,
         definition.dataset(),

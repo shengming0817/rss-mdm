@@ -92,8 +92,8 @@ async fn principal(
             .credential(checked.fingerprint())?,
         )
         .await?;
-    if let Some((parent, _)) = principal.parent() {
-        linked::current_parent(app, parent).await?;
+    if principal.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
+        linked::current_parent(app, principal.device()).await?;
     }
     Ok(principal)
 }
@@ -159,8 +159,7 @@ async fn discovery(
     };
     let result = async {
         let principal = principal(app, peer, purpose).await?;
-        audit.identify_device(principal.registration());
-        audit.registration(principal.registration());
+        audit.identify_device(&(principal.device()).to_string());
         audit.target_device(principal.device());
         let prefix = if linked { "Linked" } else { "" };
         response(
@@ -215,8 +214,7 @@ pub(super) async fn policy_message(
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
     let principal = principal(app, peer, purpose).await?;
-    audit.identify_device(principal.registration());
-    audit.registration(principal.registration());
+    audit.identify_device(&(principal.device()).to_string());
     audit.target_device(principal.device());
     let linked = purpose == Purpose::WindowsDeclared;
     response(

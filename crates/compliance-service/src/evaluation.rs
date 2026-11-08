@@ -314,8 +314,7 @@ impl Compliance {
                 .or_default()
                 .push(SourceReference {
                     source: row.try_get("source")?,
-                    registration: row.try_get("registration")?,
-                    generation: row.try_get("generation")?,
+                    device_id: row.try_get("device")?,
                     epoch: row.try_get("epoch")?,
                 });
         }
@@ -393,8 +392,7 @@ fn assessment(
                     .map(|e| FactReference {
                         source: e.source.as_str().into(),
                         dataset: e.dataset.clone(),
-                        registration: e.registration.clone(),
-                        registration_generation: e.registration_generation,
+                        device_id: e.device_id.clone(),
                         epoch: e.epoch.clone(),
                         snapshot_id: e.snapshot_id.clone(),
                         observed_at: e.observed_at,

@@ -194,8 +194,7 @@ async fn principal(
         .authenticate(peer.ok_or(Error::Unauthorized)?)
         .await
         .map_err(|e| AgentError::Enrollment(e.code))?;
-    audit.identify_device(p.registration());
-    audit.registration(p.registration());
+    audit.identify_device(&(p.device()).to_string());
     audit.target_device(p.device());
     Ok(p)
 }

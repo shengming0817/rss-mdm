@@ -15,8 +15,8 @@ async fn rolling_activation_preserves_per_device_issuance_gate() -> Result<()> {
     let service = support::service(&c, protection.clone())?;
     let trust =
         support::seed_trust(&c, &protection, &[KeyState::Active, KeyState::Prepared]).await?;
-    let (registration, _, device) = support::seed_registration(&c).await?;
-    support::seed_ack(&c, &trust, registration, 1).await?;
+    let (device, _) = support::seed_registration(&c).await?;
+    support::seed_ack(&c, &trust, &device).await?;
     let account = c
         .account(&[
             Permission::RegistrationConfigurationWrite,
@@ -174,10 +174,9 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     let c = Context::open("shared", &[]).await?;
     let protection = support::protection(&c)?;
     let trust = support::seed_trust(&c, &protection, &[KeyState::Active]).await?;
-    let (registration, grant, device) = support::seed_registration(&c).await?;
+    let (device, grant) = support::seed_registration(&c).await?;
     let principal = support::authenticated_agent(
         &c,
-        registration,
         grant,
         &device,
         vec![rss_mdm_agent_wire::runtime::Capability::InventoryCollectionV1],
@@ -208,9 +207,8 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     let payload = w::TaskPayload::Unmanage(Box::new(w::UnmanageTaskSpec {
         wire_version: 1,
         tenant_id: Uuid::parse_str(&c.tenant.to_string())?,
-        device_id: device,
-        registration_id: registration,
-        generation: 2,
+        device_id: device.clone(),
+
         retirement_id: Uuid::new_v4(),
         task_id: Uuid::new_v4(),
         attempt_id: Uuid::new_v4(),
@@ -240,8 +238,8 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     let service = support::service(&c, protection)?;
     let ack = rss_mdm_agent_wire::task_trust::Acknowledgement {
         operation: Uuid::new_v4(),
-        registration,
-        generation: 2,
+        device_id: device.clone(),
+
         revision: 1,
         digest: trust.installation_digest()?,
         version: 1,
@@ -253,7 +251,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         "task-trust",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.identify_device(registration);
+    audit.identify_device(&device);
     service
         .acknowledge_task_trust(&principal, &audit, &ack)
         .await?;
@@ -264,7 +262,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         .await?;
     let mut wrong = payload.clone();
     if let w::TaskPayload::Unmanage(v) = &mut wrong {
-        v.generation += 1;
+        v.device_id = Uuid::new_v4().to_string();
     }
     assert!(matches!(
         signing.sign_task_on(&mut tx, &principal, wrong).await,
@@ -291,8 +289,8 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         serde_json::from_value(vector["signed"].clone())?;
     telemetry.configuration.tenant_id = Uuid::parse_str(&c.tenant.to_string())?;
     telemetry.configuration.device_id = principal.device().into();
-    telemetry.configuration.registration_id = registration;
-    telemetry.configuration.generation = 2;
+    telemetry.configuration.device_id = device.clone();
+    telemetry.configuration.device_id = Uuid::new_v4().to_string();
     telemetry.configuration.issued_at = now;
     telemetry.configuration.expires_at = now + 300;
     telemetry.configuration.backfill_seconds = 3600;
@@ -325,13 +323,11 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         .bind(c.tenant.to_string())
         .execute(&mut *update)
         .await?;
-    sqlx::query(
-        "UPDATE mdm_access.registrations SET generation=3 WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(registration)
-    .execute(&mut *update)
-    .await?;
+    sqlx::query("UPDATE mdm_access.devices SET WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
+        .bind(c.tenant.to_string())
+        .bind(&device)
+        .execute(&mut *update)
+        .await?;
     update.commit().await?;
     let mut tx = c.database.archive_pool().begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -370,8 +366,8 @@ async fn retirement_retains_key_until_original_signature_expires() -> Result<()>
         .await?;
     let proof = c.authenticate(&account).await?;
     let run = Uuid::new_v4();
-    let (registration, _, device) = support::seed_registration(&c).await?;
-    support::seed_ack(&c, &trust, registration, 2).await?;
+    let (device, _) = support::seed_registration(&c).await?;
+    support::seed_ack(&c, &trust, &device).await?;
     let policy = Uuid::new_v4();
     let version = Uuid::new_v4();
     let attempt = Uuid::new_v4();
@@ -399,8 +395,7 @@ async fn retirement_retains_key_until_original_signature_expires() -> Result<()>
         wire_version: 1,
         tenant_id: Uuid::parse_str(&c.tenant.to_string())?,
         device_id: device.clone(),
-        registration_id: registration,
-        generation: 2,
+
         retirement_id: Uuid::new_v4(),
         task_id: run,
         attempt_id: attempt,
@@ -421,8 +416,8 @@ async fn retirement_retains_key_until_original_signature_expires() -> Result<()>
         signature,
     };
     let mut tx = c.operator.begin().await?;
-    sqlx::query("INSERT INTO mdm_agent.task_attempts(tenant_id,id,run,registration,claimed_at,deadline,offer) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
-        .bind(c.tenant.to_string()).bind(attempt).bind(run).bind(registration).bind(now).bind(now+5).bind(serde_json::to_value(&offer)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_agent.task_attempts (tenant_id, id, run, device, claimed_at, deadline, offer) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7)")
+        .bind(c.tenant.to_string()).bind(attempt).bind(run).bind(&device).bind(now).bind(now+5).bind(serde_json::to_value(&offer)?).execute(&mut *tx).await?;
     tx.commit().await?;
     let operation = Uuid::new_v4();
     let change = Change::Retire {

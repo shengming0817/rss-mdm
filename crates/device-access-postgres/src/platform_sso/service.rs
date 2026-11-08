@@ -15,8 +15,7 @@ use uuid::Uuid;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Ceremony {
-    principal_registration: Uuid,
-    principal_generation: i64,
+    principal_device: String,
     source: store::Source,
     previous_version: i64,
 }
@@ -250,11 +249,9 @@ async fn bootstrap(
     store::fence(c, &tenant).await?;
     let object = rss_mdm_registration_service::device::endpoints::DaRegistration {
         device: resolved.device().into(),
-        registration_id: resolved.registration(),
-        generation: resolved.generation(),
     };
     super::deployment::ready(app, c, &object, now).await?;
-    let registration = object.registration_id;
+    let device = &object.device;
     let binding = if let Some(b) = candidate {
         let current = app
             .registration_binding_on(
@@ -275,7 +272,7 @@ async fn bootstrap(
         None
     };
     let (id, version, old) = if input.kind == Kind::Device {
-        let old:Option<Value>=sqlx::query_scalar("SELECT document FROM rss_da.psso_sources WHERE tenant_id=$1::uuid AND registration=$2 AND kind='device'").bind(&tenant).bind(registration).fetch_optional(&mut *c).await.map_err(db)?;
+        let old:Option<Value>=sqlx::query_scalar("SELECT document FROM rss_da.psso_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = 'device'").bind(&tenant).bind(device).fetch_optional(&mut *c).await.map_err(db)?;
         let old: Option<store::Source> = old
             .map(serde_json::from_value)
             .transpose()
@@ -292,7 +289,7 @@ async fn bootstrap(
         (id, version, version - 1)
     };
     let parent: Option<(Uuid, i64)> = if input.kind == Kind::User {
-        Some(sqlx::query_as("SELECT id,version FROM rss_da.psso_sources WHERE tenant_id=$1::uuid AND registration=$2 AND kind='device' AND NOT revoked").bind(&tenant).bind(registration).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?)
+        Some(sqlx::query_as("SELECT id, version FROM rss_da.psso_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = 'device' AND NOT revoked").bind(&tenant).bind(device).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?)
     } else {
         None
     };
@@ -334,7 +331,6 @@ async fn bootstrap(
         password_provider_fingerprint,
         id,
         kind: input.kind,
-        registration,
         object,
         binding: binding.as_ref().map(|b| b.id),
         binding_generation: binding.as_ref().map_or(0, |b| b.generation),
@@ -348,10 +344,9 @@ async fn bootstrap(
         subject,
         subject_version: epochs,
     };
-    store::current_object(app, c, &source.object, registration).await?;
+    store::current_object(app, c, &source.object).await?;
     let context = serde_json::to_value(Ceremony {
-        principal_registration: p.registration(),
-        principal_generation: p.generation(),
+        principal_device: p.device().to_owned(),
         source,
         previous_version: old,
     })
@@ -384,8 +379,7 @@ async fn register(
         .bind(&tenant).bind(input.challenge_id).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     let mut ceremony: Ceremony =
         serde_json::from_value(row.try_get("context").map_err(db)?).map_err(|_| Error::Storage)?;
-    if ceremony.principal_registration != p.registration()
-        || ceremony.principal_generation != p.generation()
+    if ceremony.principal_device != p.device()
         || row.try_get::<bool, _>("consumed").map_err(db)?
         || row.try_get::<i64, _>("expires_at").map_err(db)? <= now
     {
@@ -396,13 +390,11 @@ async fn register(
         admit(app, c, s).await?;
     }
     let resolved = crate::delivery::resolve_on(c, p).await?;
-    if s.object.registration_id != resolved.registration()
-        || s.object.generation != resolved.generation()
-    {
+    if s.object.device != resolved.device() {
         return Err(Error::Unauthorized);
     }
     store::fence(c, &tenant).await?;
-    store::current_object(app, c, &s.object, s.registration).await?;
+    store::current_object(app, c, &s.object).await?;
     super::deployment::ready(app, c, &s.object, now).await?;
     let current_login =
         super::deployment::configuration_for_object(c, app.tenant, &s.object).await?;
@@ -469,7 +461,7 @@ async fn register(
     let proof: RegistrationClaims =
         serde_json::from_value(proof).map_err(|_| Error::Unauthorized)?;
     if proof.aud != format!("{}/register", app.runtime()?.endpoints.base)
-        || proof.iss != p.registration()
+        || proof.iss != p.device()
         || proof.challenge_id != input.challenge_id
         || proof.source_id != s.id
         || proof.source_version != s.version
@@ -576,13 +568,10 @@ async fn revoke(
     let resolved = crate::delivery::resolve_on(c, p).await?;
     store::fence(c, &tenant).await?;
     let mut source = store::source(c, &tenant, id).await?;
-    if source.object.registration_id != resolved.registration()
-        || source.object.generation != resolved.generation()
-        || source.object.device != resolved.device()
-    {
+    if source.object.device != resolved.device() {
         return Err(Error::Unauthorized);
     }
-    store::current_object(app, c, &source.object, source.registration).await?;
+    store::current_object(app, c, &source.object).await?;
     // The source row is locked by store::source in the same transaction as replacement.
     // Replaying the exact already-completed revocation is allowed; a replacement is not.
     if source.version != expected_version

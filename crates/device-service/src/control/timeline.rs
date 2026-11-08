@@ -97,7 +97,6 @@ pub(crate) async fn native_fact_in(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     context.target_device(&op.device);
-    context.registration(op.registration);
     let fact = Fact::business(
         &context,
         rss_mdm_audit_integration::operation::OperationOwner::DeviceControl,
@@ -127,8 +126,6 @@ pub(crate) fn native_activity(
     let mut activity = Activity::new(kind, phase);
     activity.target = Some(ActivityTarget {
         device: op.device.clone(),
-        registration: op.registration,
-        generation: op.registration_generation,
     });
     activity.links.operation = Some(op.id);
     match &op.authority {

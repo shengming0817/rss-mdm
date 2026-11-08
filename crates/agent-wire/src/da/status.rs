@@ -12,10 +12,13 @@ pub struct ReportIdentity {
     pub service_id: Uuid,
     /// Owning tenant.
     pub tenant: Uuid,
-    /// Current DA registration.
-    pub registration: Uuid,
-    /// Current positive registration generation.
-    pub generation: i64,
+    /// Original device identity, checked against the authenticated transport.
+    #[serde(
+        rename = "deviceId",
+        deserialize_with = "crate::runtime::profile_device"
+    )]
+    #[schemars(schema_with = "crate::runtime::device_schema")]
+    pub device_id: String,
 }
 /// A reported diagnostic, never proof that login is permitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -53,7 +56,7 @@ pub enum Diagnostic {
 pub struct StatusReport {
     /// Authenticated identity coordinates.
     pub identity: ReportIdentity,
-    /// Positive, monotonically increasing per registration generation.
+    /// Positive, monotonically increasing per device identity.
     pub sequence: i64,
     /// Device time is descriptive only.
     pub observed_at: Option<i64>,
@@ -77,8 +80,7 @@ impl StatusReport {
     pub fn validate(&self) -> Result<(), WireError> {
         if self.identity.service_id.is_nil()
             || self.identity.tenant.is_nil()
-            || self.identity.registration.is_nil()
-            || self.identity.generation < 1
+            || !crate::runtime::valid_device_id(&self.identity.device_id)
             || self.sequence < 1
             || self.observed_at.is_some_and(|v| v < 0)
             || self.contract_version != 1
@@ -157,8 +159,7 @@ impl ReportIdentity {
     pub fn validate(&self) -> Result<(), WireError> {
         if self.service_id.is_nil()
             || self.tenant.is_nil()
-            || self.registration.is_nil()
-            || self.generation < 1
+            || !crate::runtime::valid_device_id(&self.device_id)
         {
             return Err(WireError::InvalidValue);
         }

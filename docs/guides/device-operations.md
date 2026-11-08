@@ -7,27 +7,27 @@
 | 动作 | action 参数 | 权限 |
 |---|---|---|
 | restart | `{"kind":"restart"}` | device_control |
-| lock | kind、confirmed:true、expectedRegistrationId、expectedGeneration、六位 ASCII 数字 pin | device_control |
-| wipe | kind、confirmed:true、expectedRegistrationId、expectedGeneration | device_wipe |
+| lock | kind、confirmed:true、六位 ASCII 数字 pin | device_control |
+| wipe | kind、confirmed:true | device_wipe |
 
 `GET /api/v1/devices/{device}` 的 `capabilities` 包含 `restart`、`lock`、`wipe`（`channel: mdm`）。读取沿用该设备的 `inventory_read` 权限，`permission` 分别说明当前 `device_control`／`device_wipe` 授权；读取权限不授予动作权限。
 
-三栏分别解释产品通道及 PIN 托管配置、设备原生前提和当前管理权限。设备前提 `supported` 只表示当前同注册代次的可信证据满足条件；`unsupported/capability_not_supported` 为已知不满足，`unknown/capability_unknown` 为证据不足，`blocked/not_registered` 为没有有效主 MDM 注册。产品配置缺失使用 `productSupport` 的 `unsupported/product_not_configured`；管理权限拒绝只在 `permission` 中表达。离线不等于不支持，平台原生权利也不等于管理员授权。
+三栏分别解释产品通道及 PIN 托管配置、设备原生前提和当前管理权限。设备前提 `supported` 只表示当前同一 deviceId的可信证据满足条件；`unsupported/capability_not_supported` 为已知不满足，`unknown/capability_unknown` 为证据不足，`blocked/not_registered` 为没有有效主 MDM 注册。产品配置缺失使用 `productSupport` 的 `unsupported/product_not_configured`；管理权限拒绝只在 `permission` 中表达。离线不等于不支持，平台原生权利也不等于管理员授权。
 
 能力与注册来自同一有界只读快照，返回前复验授权和注册；读取不探测设备、不创建命令、不接收 PIN，也不代表设备在线或实际效果。来源歧义、损坏事实和依赖故障返回错误。提交仍以事务内的当前权限、注册、危险确认及动态能力为准；前端动作确认流程需单独接入这些事实。
 
-危险动作的确认绑定当前主 MDM 注册世代，错代次返回冲突。`GET /api/v1/devices/{device}` 的 nullable `primaryMdmRegistration` 返回 registrationId、generation、source；不能从 channels 中的声明式或用户注册推断主注册。
+危险动作由路由 deviceId、显式 confirmed 和持久操作输入共同确定目标。全新注册的 deviceId 不同，旧操作不会转移到新设备；`GET /api/v1/devices/{device}` 返回当前主 MDM 身份及来源。
 
 | 平台前提 | restart | lock | wipe |
 |---|---|---|---|
 | Windows 当前主 MDM；已核实 build/edition | 固定 RebootNow | Unsupported | 固定 RemoteWipe/doWipe |
 | macOS Device enrollment；当前原生 schema 要求 macOS >=15 | >=15 | Intel 或 Apple silicon；必须已知硬件 | Apple silicon；DoNotObliterate；不允许 obliteration 回退 |
 
-Intel/T2 状态未知或不满足条件时不开放 Mac 擦除。平台事实必须来自同一注册世代的已认证原生交换，不能由管理请求提供；未知前提拒绝创建。该矩阵仍受固定平台 schema 与 enrollment access rights 约束，协议测试不替代真机验收。
+Intel/T2 状态未知或不满足条件时不开放 Mac 擦除。平台事实必须来自同一 deviceId的已认证原生交换，不能由管理请求提供；未知前提拒绝创建。该矩阵仍受固定平台 schema 与 enrollment access rights 约束，协议测试不替代真机验收。
 
 创建返回 202 和稳定 operation/command 身份；同请求 UUID、主体与内容重放原回执，异内容返回 409。PIN 进入现有加密原生输入，不出现在授权 JSON、查询、审计或 Debug 中。
 
-读取使用 `GET /operations/{id}`（operation_read）。取消使用 `POST /operations/{id}/cancel`，正文 requestId、expectedRevision（operation_cancel）。重新授权使用 `POST /operations/{id}/reauthorize`，正文 requestId、expectedRevision；lock/wipe 另须 `confirmation:{confirmed:true,expectedRegistrationId,expectedGeneration}`。重新授权只刷新原动作权限，不修改动作、PIN、注册或 deadline。Policy 子命令由其 owner 取消，不接受此设备取消入口。
+读取使用 `GET /operations/{id}`（operation_read）。取消使用 `POST /operations/{id}/cancel`，正文 requestId、expectedRevision（operation_cancel）。重新授权使用 `POST /operations/{id}/reauthorize`，正文 requestId、expectedRevision；lock/wipe 另须 `confirmation:{confirmed:true}`。重新授权只刷新原动作权限，不修改动作、PIN、注册或 deadline。Policy 子命令由其 owner 取消，不接受此设备取消入口。
 
 ## 结果与恢复
 
@@ -39,7 +39,7 @@ Remote 与旧通用直接命令无部署升级义务，已完整退出。当前�
 
 `GET /api/v1/operations` 使用 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；设备、Policy、状态条件写入 filter，排序以 `(id,kind)` 保证复合身份唯一，cursor 为签名的不透明值。精确统计单独请求 `/api/v1/operations/statistics`，使用相同 filter 并返回观察时刻。摘要移除原始输出与诊断流，完整证据沿 detailUrl 检查当前设备范围权限。仅选择 id/kind 等元数据时不读取大型执行证据；证据按选中页批量补齐。每页实时读取执行事实和证据，后台变化不作废普通目录游标；写操作的回滚与恢复仍由业务事务保证。脚本、原生采集、配置和软件继续走各自 Policy owner，见[企业任务](enterprise-tasks.md)。
 
-授权受阻筛选使用 `filter=authorization.state==blocked`；可同时过滤 `authorization.reason` 和 `reauthorization.state`。这些派生字段不参与排序。`authorization.state` 为 `authorized/blocked/not_applicable`，业务阻断原因是 `lifecycle_blocked/registration_changed/input_mismatch/source_invalid`；依赖故障或材料损坏直接返回错误。`reauthorization.state` 为 `available/unavailable/not_applicable`；available 返回 `confirmationRequired`，unavailable 的原因包括 `permission_denied/terminal/already_received/expired/registration_changed/input_mismatch/unsupported`。Policy action_run 对这两个设备命令合同返回 not_applicable。
+授权受阻筛选使用 `filter=authorization.state==blocked`；可同时过滤 `authorization.reason` 和 `reauthorization.state`。这些派生字段不参与排序。`authorization.state` 为 `authorized/blocked/not_applicable`，业务阻断原因是 `lifecycle_blocked/device_inactive/input_mismatch/source_invalid`；依赖故障或材料损坏直接返回错误。`reauthorization.state` 为 `available/unavailable/not_applicable`；available 返回 `confirmationRequired`，unavailable 的原因包括 `permission_denied/terminal/already_received/expired/device_inactive/input_mismatch/unsupported`。Policy action_run 对这两个设备命令合同返回 not_applicable。
 
 受阻不等于可重新授权。允许重新授权表示当前管理员符合原写接口资格，不承诺能清除生命周期或来源阻断；实际提交仍重新检查权限、CAS、原注册与危险确认。只有读取权限的管理员仍可查看记录，但不能据此获得操作权限。
 
@@ -52,9 +52,9 @@ Remote 与旧通用直接命令无部署升级义务，已完整退出。当前�
 
 `GET /api/v1/operation-diagnostics` 按 `device`、`targetId`、`actor`、`from/until`、`operationId`、`requestId`、`owner` 发现已有事实；`limit/cursor` 沿用审计目录的签名游标。发现与 `GET /operation-diagnostics/requests/{requestId}` 要求当前 `AuditRead`。`coverage.complete=false` 表示索引覆盖尚不完整；空页或缺少请求记录均不证明写入没有发生。发现项的 `operationConfirmed` 区分已提交／已重放的关联与仅在请求中声明的尝试；`origin` 为 null 的历史事实不证明 HTTP 来源。
 
-已知操作时直接请求 `GET /api/v1/operation-diagnostics/operations/{owner}/{operationId}`。`owner` 是原持久记录的命名空间，不能从 UUID 推测。设备执行需要 `device`，内容与来源快照需要 `target`，注册恢复需要 `registration`，FileVault 回执需要原 `registration/generation`；可用的 `actor/instance/registration/generation` 必须与原命名空间和当前权限吻合。返回 owner 选择的历史安全摘要，并分别报告 `originalResult`、`requestEvidence`、`auditEvidence` 与 `executionEvidence`。后续修改当前对象不会替换原摘要；`currentResourceUrl` 明确指向当前对象，`originalResultUrl` 仅指向已有授权的原结果读取入口。
+已知操作时直接请求 `GET /api/v1/operation-diagnostics/operations/{owner}/{operationId}`。`owner` 是原持久记录的命名空间，不能从 UUID 推测。设备执行需要 `device`，内容与来源快照需要 `target`，注册恢复和 FileVault 回执需要原 `device`；可用的 `actor/instance/device` 必须与原命名空间和当前权限吻合。返回 owner 选择的历史安全摘要，并分别报告 `originalResult`、`requestEvidence`、`auditEvidence` 与 `executionEvidence`。后续修改当前对象不会替换原摘要；`currentResourceUrl` 明确指向当前对象，`originalResultUrl` 仅指向已有授权的原结果读取入口。
 
-详情中的请求和审计证据来自同一有界分页窗口；将任一 section 的 `nextCursor` 作为 `cursor` 传回相同详情 URL，保留 `includeAudit=true` 和全部定位字段，继续读取两类证据。修改定位或撤权会使游标失效。PKI 管理回执可显式提供原 `actor/instance`；后台 `service:device-pki` 没有 Identity 实例，使用该 actor 且不传 instance。显式选择其它实例的原 PKI 回执时，审计 section 保持 `restricted`，不附加当前实例的同编号请求。签名与吊销尝试分别使用 `pki_signing/pki_revocation`。自助调用的 `script_invocation/software_invocation/enrollment_invocation` 使用原 owner 输出的 receipt actor 与 `device/registration/generation`，原请求回执包含已确认的 run 编号；run 的执行状态独立读取。
+详情中的请求和审计证据来自同一有界分页窗口；将任一 section 的 `nextCursor` 作为 `cursor` 传回相同详情 URL，保留 `includeAudit=true` 和全部定位字段，继续读取两类证据。修改定位或撤权会使游标失效。PKI 管理回执可显式提供原 `actor/instance`；后台 `service:device-pki` 没有 Identity 实例，使用该 actor 且不传 instance。显式选择其它实例的原 PKI 回执时，审计 section 保持 `restricted`，不附加当前实例的同编号请求。签名与吊销尝试分别使用 `pki_signing/pki_revocation`。自助调用的 `script_invocation/software_invocation/enrollment_invocation` 使用原 owner 输出的 receipt actor 与 `device`，原请求回执包含已确认的 run 编号；run 的执行状态独立读取。
 
 设备自动关联回执使用发现入口返回的 `actor=device-associations`，不传 Identity `instance`；详情会检查原关联全部设备的当前读取权限。退管的 `originalResult` 只保留不可变受理摘要，`executionEvidence` 提供原 owner 的通道阶段、效果、阻塞原因与执行编号；执行推进不会改写原摘要。
 
@@ -111,7 +111,7 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 后台按当前已认证采集来源的序列号或硬件 UUID 自动关联同租户的 MDM、Agent 主注册。值须有效、匹配、无其他有效字段矛盾且在当前实例中唯一；大小写与外围空白归一，序列号前导零和标点保留。占位值、主机名、MAC、登录用户和 Manual 赋值不参与自动确认。已关联的两个端点算一个实例。新注册代际有相同证据时自动延续；暂未上报时保留成员和历史，后续上报重新判断。重复、冲突或失效的注册显示 needs_verification。
 
-异常通过 `GET /devices/{device}/association-candidates?channel=mdm|agent` 选定当前主通道，使用 `POST /device-associations` 明确确认。请求携带 operationId、associationId（新建为 null）、expectedVersion、mdm/agent 的 device、channel、registrationId、generation，以及核实记录 evidence。两个端点均须有当前 inventory_read 和 device_association_write。撤销用 `POST /device-associations/{id}/revoke`，携带 operationId、expectedVersion 和 reason；成员立即释放，同一对端点不会自动合回，显式确认可恢复。重试保持相同 operationId 和请求内容。变化历史从 `GET /device-associations/changes` 读取原审计事实。`nextCursor` 仅用于普通分页导航，绑定租户、用户与实时权限；权限变化后须重新查询。接口不返回 checkpoint，不保证跨请求快照或提交顺序。刷新从首页开始，以看到导航期间迟提交的记录；旧游标直接拒绝。position 仅是记录导航坐标。
+异常通过 `GET /devices/{device}/association-candidates?channel=mdm|agent` 选定当前主通道，使用 `POST /device-associations` 明确确认。请求携带 operationId、associationId（新建为 null）、expectedVersion、mdm/agent 的 device、channel，以及核实记录 evidence。两个端点均须有当前 inventory_read 和 device_association_write。撤销用 `POST /device-associations/{id}/revoke`，携带 operationId、expectedVersion 和 reason；成员立即释放，同一对端点不会自动合回，显式确认可恢复。重试保持相同 operationId 和请求内容。变化历史从 `GET /device-associations/changes` 读取原审计事实。`nextCursor` 仅用于普通分页导航，绑定租户、用户与实时权限；权限变化后须重新查询。接口不返回 checkpoint，不保证跨请求快照或提交顺序。刷新从首页开始，以看到导航期间迟提交的记录；旧游标直接拒绝。position 仅是记录导航坐标。
 
 目录和详情的 endpoints 共用 displayName、serialNumber、platform、registrationUser 和 currentUser 投影。名称按 Windows device.name、Apple HostName/LocalHostName 的现有字段来源选择，序列号复用 Inventory 解析；未采集和来源冲突保留实际状态。platform 使用注册来源及 Agent 注册平台，未知或冲突不猜测。search 对可读取的名称、序列号及两类后端人员 principalId 执行去首尾空白、忽略大小写的字面子串匹配，最多 256 UTF-8 字节，空白查询和控制字符拒绝；姓名搜索匹配所有可展示且有效的 Identity 来源，本地 login 独立匹配；资料 username 单独标注，不冒充 login。多个过滤条件在同一可见端点命中，关联设备只计一次视图，端点数量单独计数。
 
@@ -119,7 +119,7 @@ registrationUser 沿用 enrollment 读取权限，currentUser 要求现有租户
 
 字段沿用原有字段优先级策略，各端点的 Manual 值独立保留，同优先级不同值为 Conflict。列表显示每个端点来源的状态、证据及 cursor；以详情返回的来源 cursor 调用 `GET /device-views/{kind}/{id}/inventory-lists/{field}?cursor=...&limit=...`。分页不对不同来源的列表做集合拼接，采集完整性和失败信息保留在 inventorySources。固定清单游标签名绑定当前用户、权限、关联成员、来源与原始版本；新上报不改变已选版本。响应 `query_cursor_invalidated` 或 `query_result_unavailable` 时重新读取详情获取新的来源游标。
 
-重新授权由当前具备原动作权限的操作者执行，不需要第二位审批人。lock/wipe 的危险动作确认不产生额外权限。当前详情与目录统一返回结构化 `authorization` 和 `reauthorization`。例如 `authorization:{state:"blocked",reason:"registration_changed"}` 与 `reauthorization:{state:"unavailable",reason:"registration_changed"}`。旧授权字符串不再支持，消费者须同步适配。已受理命令不会仅因原发起人撤权而自动失效。
+重新授权由当前具备原动作权限的操作者执行，不需要第二位审批人。lock/wipe 的危险动作确认不产生额外权限。当前详情与目录统一返回结构化 `authorization` 和 `reauthorization`。例如 `authorization:{state:"blocked",reason:"device_inactive"}` 与 `reauthorization:{state:"unavailable",reason:"device_inactive"}`。旧授权字符串不再支持，消费者须同步适配。已受理命令不会仅因原发起人撤权而自动失效。
 
 ## 恢复凭据
 
@@ -129,11 +129,11 @@ registrationUser 沿用 enrollment 读取权限，currentUser 要求现有租户
 
 `GET /api/v1/devices/{device}/recovery-credentials/{id}/versions/{version}/secret` 直接返回对应材料，只要求有效登录和该设备的 `credentials` 权限。没有额外 MFA、近期认证时限、原因填写、解锁票据或审批。响应禁止缓存，审计结算失败不返回秘密。撤销使用同一路径前缀下的 `POST .../revoke`，账户材料使用 `account_write`，锁定 PIN 使用 `device_control`，其余材料使用 `security_operate`。撤销托管访问不等于删除端上的密码或 protector。
 
-Apple 操作入口为 `POST /api/v1/devices/{device}/recovery-credentials/operations`，携带 `operationId`、`registration`、`generation`、Unix 秒 `deadline` 和类型化 `action`。FileVault 原生命令只针对启动卷，不接受调用方指定任意卷。可配置 FileVault escrow、采集或轮换 PRK、重新核对已有 PRK 候选、设置/清除及验证 Recovery Lock。轮换 PRK 的 `unlockPassword` 只用于官方原生命令；缺少平台前提不自动改走脚本。`reconcile_filevault` 和 `verify_recovery_lock` 引用已有 `material: {id,version}`，核实 Unknown，不重新生成秘密。Recovery Lock 候选未生效时，在原设置操作结束后使用 `reconcile_recovery_lock`，提供原 `operation` 与待核实的 `material`；只有平台确认密码有效才结束未决候选，单次验证 false 不解除保护。FileVault 采集可指定已配置的历史 `recipient` 指纹。
+Apple 操作入口为 `POST /api/v1/devices/{device}/recovery-credentials/operations`，携带 `operationId`、Unix 秒 `deadline` 和类型化 `action`。FileVault 原生命令只针对启动卷，不接受调用方指定任意卷。可配置 FileVault escrow、采集或轮换 PRK、重新核对已有 PRK 候选、设置/清除及验证 Recovery Lock。轮换 PRK 的 `unlockPassword` 只用于官方原生命令；缺少平台前提不自动改走脚本。`reconcile_filevault` 和 `verify_recovery_lock` 引用已有 `material: {id,version}`，核实 Unknown，不重新生成秘密。Recovery Lock 候选未生效时，在原设置操作结束后使用 `reconcile_recovery_lock`，提供原 `operation` 与待核实的 `material`；只有平台确认密码有效才结束未决候选，单次验证 false 不解除保护。FileVault 采集可指定已配置的历史 `recipient` 指纹。
 
 macOS 锁定继续使用原 `lock` 动作，其 PIN 同事务进入托管。部署需先配置恢复凭据密钥和接收证书。原生 ACK、已托管、平台核实与实际恢复效果分别记录；真实 Windows/macOS 恢复效果由独立产品 T3 提供证据。
 
-Agent 核实策略会绑定同一注册世代中匹配的 Unknown 轮换 task/attempt。Agent 必须先停止原操作的本地执行，再从受保护 journal 核实“原状态未变”或“新材料已生效”，将密文与核实结果持久回传；没有收到任何材料的原操作也可恢复。若受保护日志证明原操作尚未发起 OS 变更且已停止，返回 `not_attempted`，原操作按未执行成功结算；不会要求读取未知旧密码，也不宣称密码已核实或 OS 已回滚。核实完成前不会解除轮换保护，取消不表示 OS 变更已回滚。
+Agent 核实策略会绑定同一 deviceId中匹配的 Unknown 轮换 task/attempt。Agent 必须先停止原操作的本地执行，再从受保护 journal 核实“原状态未变”或“新材料已生效”，将密文与核实结果持久回传；没有收到任何材料的原操作也可恢复。若受保护日志证明原操作尚未发起 OS 变更且已停止，返回 `not_attempted`，原操作按未执行成功结算；不会要求读取未知旧密码，也不宣称密码已核实或 OS 已回滚。核实完成前不会解除轮换保护，取消不表示 OS 变更已回滚。
 
 
 ## Webhook 对外事件
@@ -194,7 +194,7 @@ serverState、receivedRevision、appliedRevision、effect 各自表达不同事�
 撤销立即停止服务端授权；离线本机保持原效果直到实际执行清理，不将接口成功视为即时端侧撤销。
 
 DA 状态上报为 `POST /api/v1/da/status-reports`；注册进度查询为 `POST /api/v1/da/registrations/status`。
-状态绑定 mTLS 当前注册和 generation，sequence 在该代次内严格递增；设备时间仅作描述。精确重试返回原 receivedAt，冲突和历史已清理的旧序号均拒绝。管理员通过 `GET /api/v1/da/admin/devices/{device}/status` 和 `/reports?kind=status|application&limit=64&cursor=...` 读取最新与历史；新页面不会把旧报告重新算作在线。读取要求 OperationRead，游标绑定主体、权限、设备、注册代次和查询。
+状态绑定 mTLS 当前设备身份，sequence 在该设备内严格递增；设备时间仅作描述。精确重试返回原 receivedAt，冲突和历史已清理的旧序号均拒绝。管理员通过 `GET /api/v1/da/admin/devices/{device}/status` 和 `/reports?kind=status|application&limit=64&cursor=...` 读取最新与历史；新页面不会把旧报告重新算作在线。读取要求 OperationRead，游标绑定主体、权限、设备和查询。
 
 `GET /api/v1/da/admin/configurations`（可用 `device` 精确筛选）、`/{id}`、`/{id}/versions` 读取配置与不可变历史；`/api/v1/da/admin/configuration-operations/{operationId}` 为原操作者恢复发布回执。
 租户配置要求 RegistrationConfigurationRead/Write；设备配置写入要求 ConfigurationWrite。修改服务端账号角色、自助开通或启用规则同时要求 AccountWrite。

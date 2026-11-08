@@ -4,7 +4,7 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub enum BlockReason {
     LifecycleBlocked,
-    RegistrationChanged,
+    DeviceInactive,
     InputMismatch,
     SourceInvalid,
 }
@@ -27,7 +27,7 @@ pub enum ReauthorizationReason {
     Terminal,
     AlreadyReceived,
     Expired,
-    RegistrationChanged,
+    DeviceInactive,
     InputMismatch,
     Unsupported,
 }
@@ -129,8 +129,7 @@ pub struct Evidence {
     pub dispatch_failure: Option<super::super::model::DispatchFailure>,
 }
 pub struct Declaration {
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub redacted: bool,
     pub observation: NativeObservation,
 }

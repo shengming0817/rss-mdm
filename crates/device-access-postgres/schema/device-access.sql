@@ -1,54 +1,63 @@
 -- Device Access association authority. Fresh installation only; never stores OS passwords.
 BEGIN;
 CREATE TABLE rss_da.bindings (
- tenant_id uuid NOT NULL,
- id uuid NOT NULL,
- device text NOT NULL,
- registration uuid NOT NULL,
- registration_generation bigint NOT NULL CHECK(registration_generation>0),
- instance uuid NOT NULL,
- principal uuid NOT NULL,
- generation bigint NOT NULL CHECK(generation>0),
- revision bigint NOT NULL CHECK(revision>0),
- state text NOT NULL CHECK(state IN('pending','active','revoked')),
- account jsonb,
- document jsonb NOT NULL CHECK(octet_length(document::text)<=16384),
- PRIMARY KEY(tenant_id,id),
- FOREIGN KEY(tenant_id,registration) REFERENCES rss_da.registrations(tenant_id,id),
- FOREIGN KEY(tenant_id,device) REFERENCES rss_da.devices(tenant_id,id)
+    tenant_id uuid NOT NULL
+  , id uuid NOT NULL
+  , device text NOT NULL
+  , instance uuid NOT NULL
+  , principal uuid NOT NULL
+  , generation bigint NOT NULL CHECK (generation > 0)
+  , revision bigint NOT NULL CHECK (revision > 0)
+  , state text NOT NULL CHECK (state IN ('pending', 'active', 'revoked'))
+  , account jsonb
+  , document jsonb NOT NULL CHECK (octet_length(CAST(document AS text)) <= 16384)
+  , PRIMARY KEY (tenant_id, id)
+  , FOREIGN KEY (tenant_id, device) REFERENCES rss_da.devices (tenant_id, id)
 );
 -- Authority metadata must not permit two live bindings for the same native account.
-CREATE UNIQUE INDEX device_access_live_account ON rss_da.bindings(tenant_id,device,registration,(account->>'platform'),(coalesce(account->>'sid',account->>'generatedUid'))) WHERE state<>'revoked' AND account IS NOT NULL;
-CREATE UNIQUE INDEX device_access_live_person ON rss_da.bindings(tenant_id,device,registration,instance,principal) WHERE state<>'revoked';
-CREATE INDEX device_access_history ON rss_da.bindings(tenant_id,device,registration);
+CREATE UNIQUE INDEX device_access_live_account
+  ON rss_da.bindings (tenant_id
+                    , device
+                    , (account ->> 'platform')
+                    , (COALESCE(account ->> 'sid'
+                              , account ->> 'generatedUid')))
+  WHERE state <> 'revoked'
+    AND account IS NOT NULL;
+CREATE UNIQUE INDEX device_access_live_person
+  ON rss_da.bindings (tenant_id
+                    , device
+                    , instance
+                    , principal)
+  WHERE state <> 'revoked';
+CREATE INDEX device_access_history
+  ON rss_da.bindings (tenant_id
+                    , device);
 CREATE TABLE rss_da.ceremonies (
- tenant_id uuid NOT NULL,
- id uuid NOT NULL,
- device text NOT NULL,
- registration uuid NOT NULL,
- generation bigint NOT NULL CHECK(generation>0),
- instance uuid NOT NULL,
- principal uuid NOT NULL,
- nonce_digest bytea NOT NULL CHECK(octet_length(nonce_digest)=32),
- session jsonb NOT NULL CHECK(octet_length(session::text)<=1024),
- policy uuid NOT NULL,
- policy_version uuid NOT NULL,
- expires_at timestamptz NOT NULL,
- consumed uuid,
- PRIMARY KEY(tenant_id,id),
- FOREIGN KEY(tenant_id,registration) REFERENCES rss_da.registrations(tenant_id,id)
+    tenant_id uuid NOT NULL
+  , id uuid NOT NULL
+  , device text NOT NULL
+  , instance uuid NOT NULL
+  , principal uuid NOT NULL
+  , nonce_digest bytea NOT NULL CHECK (octet_length(nonce_digest) = 32)
+  , session jsonb NOT NULL CHECK (octet_length(CAST(session AS text)) <= 1024)
+  , policy uuid NOT NULL
+  , policy_version uuid NOT NULL
+  , expires_at timestamptz NOT NULL
+  , consumed uuid
+  , PRIMARY KEY (tenant_id, id)
+  , FOREIGN KEY (tenant_id, device) REFERENCES rss_da.devices (tenant_id, id)
 );
 CREATE INDEX device_access_ceremonies_expiry ON rss_da.ceremonies(tenant_id,expires_at);
 CREATE TABLE rss_da.results (
- tenant_id uuid NOT NULL,
- task uuid NOT NULL,
- attempt uuid NOT NULL,
- event uuid NOT NULL,
- binding uuid NOT NULL,
- digest bytea NOT NULL CHECK(octet_length(digest)=32),
- document jsonb NOT NULL CHECK(octet_length(document::text)<=8192),
- PRIMARY KEY(tenant_id,task,attempt,event),
- FOREIGN KEY(tenant_id,binding) REFERENCES rss_da.bindings(tenant_id,id)
+    tenant_id uuid NOT NULL
+  , task uuid NOT NULL
+  , attempt uuid NOT NULL
+  , event uuid NOT NULL
+  , binding uuid NOT NULL
+  , digest bytea NOT NULL CHECK (octet_length(digest) = 32)
+  , document jsonb NOT NULL CHECK (octet_length(CAST(document AS text)) <= 8192)
+  , PRIMARY KEY (tenant_id, task, attempt, event)
+  , FOREIGN KEY (tenant_id, binding) REFERENCES rss_da.bindings (tenant_id, id)
 );
 CREATE INDEX device_access_results_binding ON rss_da.results(tenant_id,binding);
 ALTER TABLE rss_da.bindings ENABLE ROW LEVEL SECURITY;

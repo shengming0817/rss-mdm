@@ -680,13 +680,7 @@ pub struct TaskSpec {
     pub platform: TaskPlatform,
     /// Selected artifact architecture.
     pub architecture: TaskArchitecture,
-    /// Current registration at approval/claim.
-    #[serde(with = "strict_uuid")]
-    #[schemars(schema_with = "crate::runtime::uuid_schema")]
-    pub registration_id: Uuid,
-    /// Registration generation.
-    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
-    pub generation: u64,
+
     /// Immutable run identity.
     #[serde(with = "strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
@@ -786,11 +780,8 @@ impl TaskSpec {
         }
         if self.wire_version != WIRE_VERSION
             || self.tenant_id.is_nil()
-            || self.registration_id.is_nil()
             || self.task_id.is_nil()
             || self.attempt_id.is_nil()
-            || self.generation == 0
-            || self.generation > i64::MAX as u64
             || matches!(
                 (self.profile, self.platform),
                 (ExecutorProfile::PowerShell7, TaskPlatform::Macos)
@@ -893,13 +884,7 @@ pub struct CollectionTaskSpec {
     pub platform: TaskPlatform,
     /// Selected artifact architecture.
     pub architecture: TaskArchitecture,
-    /// Current registration at approval/claim.
-    #[serde(with = "strict_uuid")]
-    #[schemars(schema_with = "crate::runtime::uuid_schema")]
-    pub registration_id: Uuid,
-    /// Registration generation.
-    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
-    pub generation: u64,
+
     /// Immutable run identity.
     #[serde(with = "strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
@@ -936,16 +921,9 @@ impl CollectionTaskSpec {
         self.execution.validate(&self.plan)?;
         if self.wire_version != COLLECTION_TASK_VERSION
             || self.platform != self.plan.platform()
-            || [
-                self.tenant_id,
-                self.registration_id,
-                self.task_id,
-                self.attempt_id,
-            ]
-            .iter()
-            .any(Uuid::is_nil)
-            || self.generation == 0
-            || self.generation > i64::MAX as u64
+            || [self.tenant_id, self.task_id, self.attempt_id]
+                .iter()
+                .any(Uuid::is_nil)
             || self.device_id.is_empty()
             || self.device_id.len() > 1024
             || self.device_id.chars().any(char::is_control)
@@ -1215,13 +1193,7 @@ pub struct SoftwareTaskSpec {
     pub platform: TaskPlatform,
     /// Target architecture.
     pub architecture: TaskArchitecture,
-    /// Current registration.
-    #[serde(with = "strict_uuid")]
-    #[schemars(schema_with = "crate::runtime::uuid_schema")]
-    pub registration_id: Uuid,
-    /// Registration generation.
-    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
-    pub generation: u64,
+
     /// Immutable run.
     #[serde(with = "strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
@@ -1260,11 +1232,8 @@ impl SoftwareTaskSpec {
         };
         if self.wire_version != WIRE_VERSION
             || self.tenant_id.is_nil()
-            || self.registration_id.is_nil()
             || self.task_id.is_nil()
             || self.attempt_id.is_nil()
-            || self.generation == 0
-            || self.generation > i64::MAX as u64
             || self.expires_at < 0
             || self.device_id.is_empty()
             || self.device_id.len() > 1024

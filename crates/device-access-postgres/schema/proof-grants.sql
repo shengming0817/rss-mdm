@@ -28,7 +28,7 @@ GRANT UPDATE(consumed) ON rss_da.ceremonies TO da_identity_runtime;
 GRANT DELETE ON rss_da.ceremonies TO da_identity_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.access_binding_ready(jsonb) TO da_identity_runtime;
 GRANT SELECT,INSERT ON rss_da.operations,rss_da.agent_delivery TO da_identity_runtime;
-GRANT UPDATE(da_generation,agent_installation,agent_device,agent_registration,agent_generation,enabled,revision) ON rss_da.agent_delivery TO da_identity_runtime;
+GRANT UPDATE(agent_installation,agent_device,enabled,revision) ON rss_da.agent_delivery TO da_identity_runtime;
 GRANT SELECT ON rss_da.authorization_installation TO da_identity_runtime;
 GRANT SELECT,INSERT ON rss_da.policies,rss_da.policy_versions TO da_identity_runtime;
 GRANT UPDATE(revision,current_version,version_number,state,definition,author,updated_at) ON rss_da.policies TO da_identity_runtime;

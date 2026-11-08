@@ -122,7 +122,6 @@ pub async fn audit_recovery(
         );
         run.source.audit(&audit);
         audit.target_device(&run.target.device);
-        audit.registration(run.target.registration);
         let bytes = crate::deployment::checked_input(serde_json::to_vec(&(&previous, &run.state)))?;
         use sha2::Digest;
         let fact = Fact::business(
@@ -205,13 +204,11 @@ pub(super) async fn stale_registration(
     let target = target.clone();
     Ok(tx
         .with_connection(move |c| {
-            Box::pin(crate::deployment::device::read::stale_registration_in(
+            Box::pin(crate::deployment::device::read::inactive_in(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
-                target.registration,
                 target.device,
-                target.generation,
             ))
         })
         .await?)

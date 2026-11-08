@@ -6,8 +6,6 @@ use crate::transaction::Fault;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Target {
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 pub trait ExecutionEvents: Send + Sync {
     fn verify_event_device_in<'a>(
@@ -108,7 +106,6 @@ pub struct InstallationObservation {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRegistration {
     pub device_id: String,
-    pub registration_id: Uuid,
     pub state: String,
     pub capabilities: Option<Vec<String>>,
 }

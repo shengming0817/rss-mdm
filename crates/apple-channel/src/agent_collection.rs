@@ -14,15 +14,15 @@ pub(super) async fn due(
     source: &dyn Business,
     c: &mut PgConnection,
     tenant: &str,
-    registration: Uuid,
+    device: String,
 ) -> Result<bool, Error> {
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
     let catalog = source.detection(c, tenant_id).await?;
     if catalog.bundles.is_empty() {
         return Ok(false);
     }
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active' AND access_rights & 272 = 272) AND coalesce((SELECT CASE WHEN r.sealed_at IS NOT NULL THEN r.sealed_at <= floor(extract(epoch FROM clock_timestamp()))::bigint-300 ELSE a.deadline<=clock_timestamp() END FROM mdm_apple.attempts a JOIN mdm_access.collection_runs r ON(r.tenant_id,r.id)=(a.tenant_id,a.collection) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.phase='collect_agent_platform' ORDER BY a.collection_sequence DESC LIMIT 1),true)")
-        .bind(tenant).bind(registration).fetch_one(c).await.map_err(db)
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active' AND access_rights & 272 = 272) AND COALESCE((SELECT CASE WHEN r.sealed_at IS NOT NULL THEN r.sealed_at <= CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint) - 300 ELSE a.deadline <= clock_timestamp() END FROM mdm_apple.attempts AS a INNER JOIN mdm_access.collection_runs AS r ON (r.tenant_id, r.id) = (a.tenant_id, a.collection) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.phase = 'collect_agent_platform' ORDER BY a.collection_sequence DESC LIMIT 1), TRUE)")
+        .bind(tenant).bind(&device).fetch_one(c).await.map_err(db)
 }
 #[allow(
     clippy::too_many_arguments,
@@ -38,8 +38,8 @@ pub async fn receive(
     d: &plist::Dictionary,
     bytes: &[u8],
 ) -> Result<Option<AppleReception>, Error> {
-    let row=sqlx::query("SELECT collection,phase,request,deadline<=clock_timestamp() AS expired FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND generation=$4 AND phase IN('collect_agent_platform','collect_agent')")
-        .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT collection, phase, request, deadline <= clock_timestamp() AS expired FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3 AND phase IN ('collect_agent_platform', 'collect_agent')")
+        .bind(p.tenant().to_string()).bind(id).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -120,8 +120,7 @@ pub async fn receive(
     let plain = crate::protection::open(
         protection,
         &p.tenant().to_string(),
-        p.registration(),
-        p.generation(),
+        p.device(),
         id,
         crate::protection::Part::Request,
         &sealed,
@@ -147,8 +146,7 @@ pub async fn receive(
             crate::protection::open(
                 protection,
                 &p.tenant().to_string(),
-                p.registration(),
-                p.generation(),
+                p.device(),
                 platform.try_get("id").map_err(db)?,
                 crate::protection::Part::Response,
                 &sealed,
@@ -220,12 +218,12 @@ pub async fn send(
         return Ok((vec![], vec![]));
     }
     let tenant = p.tenant().to_string();
-    let allowed:bool=sqlx::query_scalar("SELECT access_rights & $3 = $3 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(&tenant).bind(p.registration()).bind(if bundles.is_empty(){16_i64}else{272_i64}).fetch_one(&mut *c).await.map_err(db)?;
+    let allowed:bool=sqlx::query_scalar("SELECT access_rights & $3 = $3 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(&tenant).bind(p.device()).bind(if bundles.is_empty(){16_i64}else{272_i64}).fetch_one(&mut *c).await.map_err(db)?;
     if !allowed {
         return Ok((vec![], vec![]));
     }
-    let previous=sqlx::query("SELECT a.collection,a.deadline<=clock_timestamp() AS expired,r.sealed_at FROM mdm_apple.attempts a JOIN mdm_access.collection_runs r ON(r.tenant_id,r.id)=(a.tenant_id,a.collection) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.phase='collect_agent_platform' ORDER BY a.collection_sequence DESC LIMIT 1 FOR UPDATE OF a")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+    let previous=sqlx::query("SELECT a.collection, a.deadline <= clock_timestamp() AS expired, r.sealed_at FROM mdm_apple.attempts AS a INNER JOIN mdm_access.collection_runs AS r ON (r.tenant_id, r.id) = (a.tenant_id, a.collection) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.phase = 'collect_agent_platform' ORDER BY a.collection_sequence DESC LIMIT 1 FOR UPDATE OF a")
+        .bind(&tenant).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *c)
@@ -284,14 +282,13 @@ pub async fn send(
             let request = crate::protection::seal(
                 protection,
                 &tenant,
-                p.registration(),
-                p.generation(),
+                p.device(),
                 attempt,
                 crate::protection::Part::Request,
                 &request,
             )?;
-            sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,collection,phase,request,state,collection_sequence,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'pending',$8,clock_timestamp()+interval '5 minutes')")
-                .bind(&tenant).bind(attempt).bind(p.registration()).bind(p.generation()).bind(id).bind(phase).bind(request).bind(sequence).execute(&mut *c).await.map_err(db)?;
+            sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, collection, phase, request, state, collection_sequence, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'pending', $7, clock_timestamp() + CAST('5 minutes' AS interval))")
+                .bind(&tenant).bind(attempt).bind(p.device()).bind(id).bind(phase).bind(request).bind(sequence).execute(&mut *c).await.map_err(db)?;
         }
         id
     };
@@ -309,8 +306,7 @@ pub async fn send(
     let plain = crate::protection::open(
         protection,
         &tenant,
-        p.registration(),
-        p.generation(),
+        p.device(),
         row.try_get("id").map_err(db)?,
         crate::protection::Part::Request,
         &sealed,

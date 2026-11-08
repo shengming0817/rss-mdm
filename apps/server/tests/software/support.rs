@@ -107,31 +107,28 @@ pub async fn endpoints(
     Uuid,
     rss_mdm_registration_service::DevicePrincipal,
 )> {
-    let (registration, grant, device) = material::seed_registration(c).await?;
+    let (device, grant) = material::seed_registration(c).await?;
     let caps = vec![
         w::Capability::InventoryCollectionV1,
         w::Capability::TaskExecuteV1,
         w::Capability::SoftwareMsiSystemV1,
     ];
-    let principal =
-        material::authenticated_agent(c, registration, grant, &device, caps.clone()).await?;
+    let principal = material::authenticated_agent(c, grant, &device, caps.clone()).await?;
     let agent = rss_mdm_registration_service::device::endpoints::PrimaryRegistration {
         device: device.clone(),
         channel: rss_mdm_inventory::Channel::Agent,
-        registration_id: registration,
-        generation: 2,
     };
     let mdm = planning::endpoint(c).await?;
     let native = mdm.members[0].clone();
     let association = Uuid::new_v4();
     let mut tx = command::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2,1,$3,'windows','x86_64',$4)").bind(c.tenant.to_string()).bind(registration).bind(serde_json::to_string(&caps)?).bind(serde_json::to_value(context())?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_agent.bindings (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), $2, 1, $3, 'windows', 'x86_64', $4)").bind(c.tenant.to_string()).bind(&device).bind(serde_json::to_string(&caps)?).bind(serde_json::to_value(context())?).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1::uuid,$2,1,'confirmed','operator-verified',$3,'fixture',$4)").bind(c.tenant.to_string()).bind(association).bind(json!({})).bind(now()).execute(&mut *tx).await?;
     for target in [&agent, &native] {
-        sqlx::query("INSERT INTO mdm_devices.members(tenant_id,association_id,device,channel,registration_id,generation) VALUES($1::uuid,$2,$3,$4,$5,$6)").bind(c.tenant.to_string()).bind(association).bind(&target.device).bind(target.channel.as_str()).bind(target.registration_id).bind(target.generation).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_devices.members (tenant_id, association_id, device, channel, device_id) VALUES (CAST($1 AS uuid), $2, $3, $4, $5)").bind(c.tenant.to_string()).bind(association).bind(&target.device).bind(target.channel.as_str()).bind(target.device.clone()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    native_observation(c, native.registration_id).await?;
+    native_observation(c, native.device.clone()).await?;
     let object = rss_mdm_inventory_service::objects::DeviceObject {
         object: rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device),
         association_version: None,
@@ -140,12 +137,9 @@ pub async fn endpoints(
     };
     let agent_scope = planning::published(c, &object).await?.scope;
     let native_scope = planning::published(c, &mdm).await?.scope;
-    let target =
-        |v: rss_mdm_registration_service::device::endpoints::PrimaryRegistration| owner::Target {
-            device: v.device,
-            registration: v.registration_id,
-            generation: v.generation,
-        };
+    let target = |v: rss_mdm_registration_service::device::endpoints::PrimaryRegistration| {
+        owner::Target { device: v.device }
+    };
     Ok((
         target(agent),
         target(native),
@@ -413,13 +407,13 @@ fn audit_request(c: &Context) -> RequestAudit {
     audit(c)
 }
 
-async fn native_observation(c: &Context, registration: Uuid) -> Result<()> {
+async fn native_observation(c: &Context, registration: String) -> Result<()> {
     use rss_mdm_inventory::*;
     let tenant = c.tenant;
     let at = now();
     let report = Uuid::new_v4();
     let mut tx = command::seed_transaction(c).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(tenant.to_string()).bind(registration).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(tenant.to_string()).bind(&registration).fetch_one(&mut *tx).await?;
     let field = builtin::fields()
         .into_iter()
         .find(|f| f.key == builtin::AGENT_INSTALLATION)
@@ -442,7 +436,7 @@ async fn native_observation(c: &Context, registration: Uuid) -> Result<()> {
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         tenant,
-        registration,
+        &registration,
         "mdm.windows",
         epoch,
         key.as_str(),
@@ -489,7 +483,7 @@ async fn native_observation(c: &Context, registration: Uuid) -> Result<()> {
         version: None,
         architecture: Some("x86_64".into()),
     };
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending,evidence) VALUES($1::uuid,$2,$3,'mdm.windows',$4,$5,$6,$7,$8,'snapshot','complete',$9,$10,$7,false,$11)").bind(tenant.to_string()).bind(report).bind(registration).bind(epoch).bind(scope.encode()?).bind(sequence).bind(at).bind(serde_json::to_string(&progress)?).bind(batch.encode()).bind(batch.fingerprint(&scope)?.iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(serde_json::to_value(evidence)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, reason, batch, digest, sealed_at, delivery_pending, evidence) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.windows', $4, $5, $6, $7, $8, 'snapshot', 'complete', $9, $10, $7, FALSE, $11)").bind(tenant.to_string()).bind(report).bind(&registration).bind(epoch).bind(scope.encode()?).bind(sequence).bind(at).bind(serde_json::to_string(&progress)?).bind(batch.encode()).bind(batch.fingerprint(&scope)?.iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(serde_json::to_value(evidence)?).execute(&mut *tx).await?;
     let projection = rss_mdm_inventory_postgres::projection_scope(tenant);
     sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$9,'known',$10,'mdm.windows',$11,$12,$13)").bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(&value)?).bind(report.to_string()).bind(at).bind(registration.to_string()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).execute(&mut *tx).await?;
     tx.commit().await?;

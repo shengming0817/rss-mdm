@@ -17,25 +17,25 @@ pub(crate) async fn send(
     let tenant = p.tenant().to_string();
     let trust = apple.device_trust().public().map_err(|_| Error::Conflict)?;
     let digest = trust.installation_digest();
-    let done:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.installations WHERE tenant_id=$1::uuid AND purpose='apple' AND registration=$2 AND revision=$3 AND digest=$4)")
-        .bind(&tenant).bind(p.registration()).bind(trust.revision as i64).bind(&digest).fetch_one(&mut *c).await.map_err(db)?;
+    let done:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_pki.installations WHERE tenant_id = CAST($1 AS uuid) AND purpose = 'apple' AND device = $2 AND revision = $3 AND digest = $4)")
+        .bind(&tenant).bind(p.device()).bind(trust.revision as i64).bind(&digest).fetch_one(&mut *c).await.map_err(db)?;
     if done {
         return Ok((vec![], vec![]));
     }
-    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'")
-        .bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
+    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'")
+        .bind(&tenant).bind(p.device()).fetch_one(&mut *c).await.map_err(db)?;
     if rights & 3 != 3 {
         return Err(Error::Forbidden);
     }
     // Immutable deliveries require no UPDATE privilege. Serialize creators with
     // a transaction lock rather than granting write access solely for FOR UPDATE.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
-        .bind(format!("apple-trust:{tenant}:{}", p.registration()))
+        .bind(format!("apple-trust:{tenant}:{}", p.device()))
         .execute(&mut *c)
         .await
         .map_err(db)?;
-    let delivery=sqlx::query("SELECT id,body,profile FROM mdm_apple.trust_deliveries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 AND digest=$5")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(trust.revision as i64).bind(&digest).fetch_optional(&mut *c).await.map_err(db)?;
+    let delivery=sqlx::query("SELECT id, body, profile FROM mdm_apple.trust_deliveries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND digest = $4")
+        .bind(&tenant).bind(p.device()).bind(trust.revision as i64).bind(&digest).fetch_optional(&mut *c).await.map_err(db)?;
     let (delivery, profile, frozen) = if let Some(row) = delivery {
         let frozen: Trust = serde_json::from_slice(&row.try_get::<Vec<u8>, _>("body").map_err(db)?)
             .map_err(|_| unavailable())?;
@@ -47,8 +47,8 @@ pub(crate) async fn send(
     } else {
         let id = Uuid::new_v4();
         let profile = Uuid::new_v4();
-        sqlx::query("INSERT INTO mdm_apple.trust_deliveries(tenant_id,id,registration,generation,revision,digest,body,profile) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
-            .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(trust.revision as i64).bind(&digest).bind(serde_json::to_vec(&trust).map_err(|_|unavailable())?).bind(profile).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_apple.trust_deliveries (tenant_id, id, device, revision, digest, body, profile) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7)")
+            .bind(&tenant).bind(id).bind(p.device()).bind(trust.revision as i64).bind(&digest).bind(serde_json::to_vec(&trust).map_err(|_|unavailable())?).bind(profile).execute(&mut *c).await.map_err(db)?;
         (id, profile, trust.clone())
     };
     if frozen.installation_digest() != digest {
@@ -69,8 +69,7 @@ pub(crate) async fn send(
         let bytes = crate::protection::open(
             &apple.protection,
             &tenant,
-            p.registration(),
-            p.generation(),
+            p.device(),
             id,
             crate::protection::Part::Request,
             &row.try_get::<Vec<u8>, _>("request").map_err(db)?,
@@ -102,7 +101,7 @@ pub(crate) async fn send(
         let command = if phase == "trust_install" {
             let authorities = apple.trust_certificates()?;
             let (profile, _) =
-                rss_mdm_apple_mdm::profile::trust(&authorities, p.registration(), profile)?;
+                rss_mdm_apple_mdm::profile::trust(&authorities, p.device(), profile)?;
             let now: i64 =
                 sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
                     .fetch_one(&mut *c)
@@ -125,18 +124,16 @@ pub(crate) async fn send(
         let sealed = crate::protection::seal(
             &apple.protection,
             &tenant,
-            p.registration(),
-            p.generation(),
+            p.device(),
             id,
             crate::protection::Part::Request,
             &bytes,
         )?;
-        sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,trust,phase,ordinal,request,state,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,'pending',clock_timestamp()+interval '15 minutes')")
-            .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(delivery).bind(phase).bind(ordinal).bind(sealed).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, trust, phase, ordinal, request, state, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, 'pending', clock_timestamp() + CAST('15 minutes' AS interval))")
+            .bind(&tenant).bind(id).bind(p.device()).bind(delivery).bind(phase).bind(ordinal).bind(sealed).execute(&mut *c).await.map_err(db)?;
         let a = audit.fact_copy("apple_pki_install");
-        a.identify_device(p.registration());
-        a.registration(p.registration());
-        a.target(p.device());
+        a.identify_device(&(p.device()).to_string());
+        a.target_device(p.device());
         facts.push(Fact::observation(
             &a,
             &format!("apple-pki:{id}:dispatch"),
@@ -161,8 +158,8 @@ pub(crate) async fn receive(
     input: (&[u8], &RequestAudit),
 ) -> Result<Option<AppleReception>, Error> {
     let (bytes, audit) = input;
-    let row=sqlx::query("SELECT a.phase,a.deadline>clock_timestamp() AS live,d.body,d.profile FROM mdm_apple.attempts a JOIN mdm_apple.trust_deliveries d ON (d.tenant_id,d.id)=(a.tenant_id,a.trust) WHERE a.tenant_id=$1::uuid AND a.id=$2 AND a.registration=$3 AND a.generation=$4")
-        .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT a.phase, a.deadline > clock_timestamp() AS live, d.body, d.profile FROM mdm_apple.attempts AS a INNER JOIN mdm_apple.trust_deliveries AS d ON (d.tenant_id, d.id) = (a.tenant_id, a.trust) WHERE a.tenant_id = CAST($1 AS uuid) AND a.id = $2 AND a.device = $3")
+        .bind(p.tenant().to_string()).bind(id).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -194,7 +191,7 @@ pub(crate) async fn receive(
     }
     let (_, objects) = rss_mdm_apple_mdm::profile::trust(
         &apple.trust_certificates()?,
-        p.registration(),
+        p.device(),
         row.try_get("profile").map_err(db)?,
     )?;
     if !rss_mdm_apple_mdm::native::profiles::observed_structure(report, &objects)? {
@@ -207,7 +204,7 @@ pub(crate) async fn receive(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &p.tenant().to_string(),
-        p.registration(),
+        p.device(),
         &current,
         &Acknowledgement {
             operation: id,
@@ -219,9 +216,8 @@ pub(crate) async fn receive(
     .await
     .map_err(|_| Error::Conflict)?;
     let a = audit.fact_copy("apple_pki_confirm");
-    a.identify_device(p.registration());
-    a.registration(p.registration());
-    a.target(p.device());
+    a.identify_device(&(p.device()).to_string());
+    a.target_device(p.device());
     Ok(Some(AppleReception::Collection {
         facts: vec![Fact::observation(
             &a,

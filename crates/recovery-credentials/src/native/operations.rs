@@ -58,8 +58,6 @@ pub struct Version {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Input {
     pub operation_id: Uuid,
-    pub registration: Uuid,
-    pub generation: i64,
     pub deadline: i64,
     pub action: Action,
 }
@@ -100,7 +98,7 @@ impl Service {
         );
         audit.target_device(device);
         let protection = &self.transactions.materials.credentials;
-        if input.registration.is_nil() || input.generation < 1 || input.operation_id.is_nil() {
+        if input.operation_id.is_nil() {
             return Err(Error::Malformed);
         }
         transaction::run(
@@ -158,17 +156,11 @@ impl Service {
                         return super::transaction::stored(serde_json::from_value(value));
                     }
                     super::service::reject_existing_operation(tx, input.operation_id).await?;
-                    let (registration, generation) =
-                        storage::current_registration(tx, device).await?;
-                    if (registration, generation) != (input.registration, input.generation) {
-                        return Err(Error::Conflict.into());
-                    }
+                    storage::current_registration(tx, device).await?;
                     if let Action::ReconcileRecoveryLock { operation, .. } = &input.action {
                         let original =
                             storage::load(tx, &service.transactions.protection, *operation).await?;
                         if original.device != device
-                            || original.registration != registration
-                            || original.registration_generation != generation
                             || !service
                                 .transactions
                                 .required_command(tx, &original)
@@ -218,8 +210,6 @@ impl Service {
                         &snapshot,
                         proof,
                         device,
-                        registration,
-                        generation,
                         input.operation_id,
                         permissions,
                     )?;
@@ -229,8 +219,7 @@ impl Service {
                         .await?;
                     let binding = Binding {
                         device: device.into(),
-                        registration,
-                        generation,
+
                         subject: Subject::RecoveryLock,
                     };
                     {
@@ -305,8 +294,6 @@ async fn prepare(
             &credentials::filevault::Source {
                 tenant,
                 device: device.into(),
-                registration: input.registration,
-                generation: input.generation,
             },
             true,
         )
@@ -316,8 +303,7 @@ async fn prepare(
     };
     let binding = |subject| Binding {
         device: device.into(),
-        registration: input.registration,
-        generation: input.generation,
+
         subject,
     };
     let reserve = async |c: &mut sqlx::PgConnection, subject: Subject, expected: i64| {
@@ -538,8 +524,6 @@ async fn prepare(
                     tenant,
                     *operation,
                     device,
-                    input.registration,
-                    input.generation,
                 )
                 .await?
                 .ok_or(E::Conflict)?;

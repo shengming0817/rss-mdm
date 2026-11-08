@@ -98,17 +98,12 @@ async fn task_binding(
         .await
         .map_err(custody_error)?
         .ok_or(Error::Forbidden)?;
-    if agent.device != task.device_id
-        || agent.registration != task.registration_id
-        || u64::try_from(agent.generation).ok() != Some(task.generation)
-        || b.generation != task.binding_generation
-    {
+    if agent.device != task.device_id || b.generation != task.binding_generation {
         return Err(Error::Conflict);
     }
     Ok(Binding {
         device: b.device,
-        registration: b.registration,
-        generation: b.registration_generation,
+
         subject: subject(value)?,
     })
 }
@@ -137,8 +132,7 @@ impl AccessRecovery for AccessMaterials {
                 {
                     let binding = Binding {
                         device: b.device.clone(),
-                        registration: b.registration,
-                        generation: b.registration_generation,
+
                         subject: subject(&facts.recovery.subject)?,
                     };
                     let current = storage::current_in(self.custody(), c, b.tenant, &binding)
@@ -160,19 +154,12 @@ impl AccessRecovery for AccessMaterials {
                 };
                 let expected_revision = if let Some(subject) = expected {
                     let subject = self::subject(&subject)?;
-                    storage::revisions_in(
-                        self.custody(),
-                        c,
-                        b.tenant,
-                        &b.device,
-                        b.registration,
-                        b.registration_generation,
-                    )
-                    .await?
-                    .into_iter()
-                    .find(|(s, _)| s == &subject)
-                    .map(|(_, revision)| revision)
-                    .unwrap_or(0)
+                    storage::revisions_in(self.custody(), c, b.tenant, &b.device)
+                        .await?
+                        .into_iter()
+                        .find(|(s, _)| s == &subject)
+                        .map(|(_, revision)| revision)
+                        .unwrap_or(0)
                 } else {
                     0
                 };
@@ -352,8 +339,7 @@ impl AccessRecovery for AccessMaterials {
                 &rss_mdm_recovery_credentials::eligibility::Unbound {
                     tenant,
                     device: b.device,
-                    registration: b.registration,
-                    registration_generation: b.registration_generation,
+
                     binding,
                     generation,
                 },
@@ -385,8 +371,6 @@ impl crate::Service {
                 let endpoint = crate::delivery::resolve_on(c, ctx.0).await?;
                 let anchor = rss_mdm_registration_service::device::endpoints::DaRegistration {
                     device: endpoint.device().into(),
-                    registration_id: endpoint.registration(),
-                    generation: endpoint.generation(),
                 };
                 let tenant = Uuid::parse_str(&endpoint.tenant().to_string())
                     .map_err(|_| crate::Error::Malformed)?;

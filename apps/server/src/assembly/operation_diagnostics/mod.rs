@@ -321,8 +321,7 @@ impl Diagnostics {
             device: l.query.device.clone(),
             actor: operation.actor.clone(),
             target_id: l.query.target.clone(),
-            registration_id: l.query.registration,
-            generation: l.query.generation,
+
             cursor: l.query.cursor.clone(),
             ..Default::default()
         };
@@ -410,7 +409,7 @@ impl Diagnostics {
                     rss_mdm_registration_service::agent::queries::registration_recovery_operation(
                         &s.access.registration(),
                         request,
-                        q.registration.ok_or(Error::Malformed)?,
+                        q.device.as_deref().ok_or(Error::Malformed)?,
                         id,
                         &identity,
                     )
@@ -441,8 +440,6 @@ impl Diagnostics {
                 p,
                 q.device.as_deref().ok_or(Error::Malformed)?,
                 id,
-                q.registration.ok_or(Error::Malformed)?,
-                q.generation.ok_or(Error::Malformed)?,
             )
             .await
             .map_err(Into::into),
@@ -464,13 +461,7 @@ impl Diagnostics {
                 .map_err(Into::into),
             O::Collection => s
                 .assets
-                .collection_receipt(
-                    p,
-                    q.device.as_deref().ok_or(Error::Malformed)?,
-                    id,
-                    q.registration,
-                    q.generation,
-                )
+                .collection_receipt(p, q.device.as_deref().ok_or(Error::Malformed)?, id)
                 .await
                 .map_err(Into::into),
             O::Policy => {
@@ -852,8 +843,6 @@ fn locator(
         },
         target: l.query.target.clone(),
         device: l.query.device.clone(),
-        registration: l.query.registration,
-        generation: l.query.generation,
     })
 }
 

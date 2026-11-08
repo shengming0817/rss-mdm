@@ -111,8 +111,6 @@ impl Events {
                 Caller::Agent {
                     target: Target {
                         device: principal.device().into(),
-                        registration: principal.registration(),
-                        generation: principal.generation(),
                     },
                 },
                 None,
@@ -340,8 +338,8 @@ impl Events {
                             activity.target = visible_target.map(|t| {
                                 rss_mdm_audit_integration::activity::ActivityTarget {
                                     device: t.device,
-                                    registration: t.registration,
-                                    generation: t.generation,
+
+
                                 }
                             });
                             activity.links.batch = Some(batch);
@@ -421,8 +419,8 @@ impl Events {
                     activity.target =
                         target.map(|t| rss_mdm_audit_integration::activity::ActivityTarget {
                             device: t.device,
-                            registration: t.registration,
-                            generation: t.generation,
+
+
                         });
                     audit_store
                         .append_in(
@@ -490,8 +488,7 @@ impl Application {
             "policy_event_member",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        audit.registration(target.registration);
-        audit.target(&target.device);
+        audit.target_device(&target.device);
         audit_store.prepare_in(tx, &audit, &[]).await?;
         let now = crate::action_admission::now(tx).await?;
         let reader =
@@ -540,8 +537,6 @@ impl Application {
         );
         activity.target = Some(rss_mdm_audit_integration::activity::ActivityTarget {
             device: target.device.clone(),
-            registration: target.registration,
-            generation: target.generation,
         });
         activity.links.batch = Some(batch);
         activity.links.member = Some(member);
@@ -811,8 +806,6 @@ impl Application {
             );
             activity.target = Some(rss_mdm_audit_integration::activity::ActivityTarget {
                 device: target.device.clone(),
-                registration: target.registration,
-                generation: target.generation,
             });
             activity.links.batch = Some(batch);
             activity.links.member = Some(member);
@@ -825,7 +818,6 @@ impl Application {
                 wire::PolicyEventSource::Ai => ActivityOrigin::Ai,
                 wire::PolicyEventSource::Policy { .. } => ActivityOrigin::Policy,
             };
-            audit.registration(target.registration);
             audit.target_device(&target.device);
             audit.owned_operation(
                 rss_mdm_audit_integration::operation::OperationOwner::PolicyEventMember,
@@ -876,11 +868,7 @@ pub async fn target_in(
             })
         })
         .await??;
-    Ok(current.map(|p| Target {
-        device: p.device,
-        registration: p.registration_id,
-        generation: p.generation,
-    }))
+    Ok(current.map(|p| Target { device: p.device }))
 }
 pub async fn event_device_current_in(
     profile: rss_mdm_install_support::StorageProfile,
@@ -896,9 +884,7 @@ pub async fn event_device_current_in(
                     crate::storage_profile::sql(profile).events_event_device_current_in_1,
                 )
                 .bind(tenant)
-                .bind(target.registration)
                 .bind(target.device)
-                .bind(target.generation)
                 .fetch_one(c)
                 .await
             })
@@ -931,7 +917,7 @@ impl Application {
             Some(rss_mdm_policy::SoftwareChannel::Agent) => rss_mdm_inventory::Channel::Agent,
             Some(rss_mdm_policy::SoftwareChannel::Mdm) => rss_mdm_inventory::Channel::Mdm,
             None => {
-                let registration = target.registration;
+                let registration = target.device.clone();
                 let name: String = tx
                     .with_connection(move |c| {
                         Box::pin(async move {

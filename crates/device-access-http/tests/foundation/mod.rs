@@ -112,13 +112,32 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         csr: material.csr(1)?,
         expires_in_seconds: 3600,
     };
-    let response = client
-        .post(format!("{base}/grants"))
-        .bearer_auth(&token)
-        .json(&grant_request)
-        .send()
-        .await?;
-    let grant: da::Grant = material::success(response).await?;
+    let grant_call = || {
+        client
+            .post(format!("{base}/grants"))
+            .bearer_auth(&token)
+            .json(&grant_request)
+            .send()
+    };
+    let (first, retry) = tokio::join!(grant_call(), grant_call());
+    let grant: da::Grant = material::success(first?).await?;
+    let retried: da::Grant = material::success(retry?).await?;
+    assert_eq!(
+        serde_json::to_value(&grant)?,
+        serde_json::to_value(retried)?
+    );
+    let mut conflicting_grant = serde_json::to_value(&grant_request)?;
+    conflicting_grant["expiresInSeconds"] = serde_json::json!(1800);
+    assert_eq!(
+        client
+            .post(format!("{base}/grants"))
+            .bearer_auth(&token)
+            .json(&conflicting_grant)
+            .send()
+            .await?
+            .status(),
+        409
+    );
     let issue = da::CertificateRequest {
         operation_id: Uuid::new_v4(),
         grant_id: grant.grant_id,
@@ -154,15 +173,29 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             assert!(other.verify(&chain, now()).is_err());
         }
     }
-    let replay: enroll::Candidate = material::success(
+    let replay_call = || {
         client
             .post(format!("{base}/certificates"))
             .json(&issue)
             .send()
-            .await?,
-    )
-    .await?;
-    assert_eq!(candidate.issuance_id, replay.issuance_id);
+    };
+    let (left, right) = tokio::join!(replay_call(), replay_call());
+    for response in [left?, right?] {
+        let replay: enroll::Candidate = material::success(response).await?;
+        assert_eq!(candidate.issuance_id, replay.issuance_id);
+        assert_eq!(candidate.certificate_chain, replay.certificate_chain);
+    }
+    let mut conflicting_issue = serde_json::to_value(&issue)?;
+    conflicting_issue["csr"] = serde_json::json!(material.csr(2)?);
+    assert_eq!(
+        client
+            .post(format!("{base}/certificates"))
+            .json(&conflicting_issue)
+            .send()
+            .await?
+            .status(),
+        409
+    );
     assert_eq!(material.issued_count()?, 1);
     let peer = material.client(Some((&candidate, 1)))?;
     let activate = enroll::ActivationRequest {
@@ -179,15 +212,16 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .status(),
         401
     );
-    let receipt: da::Registration = material::success(
-        peer.post(format!("{base}/activate"))
-            .json(&activate)
-            .send()
-            .await?,
-    )
-    .await?;
+    let activate_call = || peer.post(format!("{base}/activate")).json(&activate).send();
+    let (first, retry) = tokio::join!(activate_call(), activate_call());
+    let receipt: da::Registration = material::success(first?).await?;
+    let retried: da::Registration = material::success(retry?).await?;
+    assert_eq!(
+        serde_json::to_value(&receipt)?,
+        serde_json::to_value(retried)?
+    );
     assert_eq!(receipt.device, grant.device);
-    let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.registrations WHERE purpose='da_device' AND channel IS NULL),(SELECT count(*) FROM rss_da.report_sources),(SELECT count(*) FROM rss_da.requests)").fetch_one(&c.operator).await?;
+    let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM rss_da.devices WHERE purpose = 'da_device' AND channel IS NULL), (SELECT count(*) FROM rss_da.report_sources), (SELECT count(*) FROM rss_da.requests)").fetch_one(&c.operator).await?;
     assert_eq!(counts, (1, 0, 0));
     assert!(
         sqlx::query_scalar::<_, Option<String>>("SELECT to_regclass('rss_da.agent_tasks')::text")
@@ -318,8 +352,8 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     let ack = Acknowledgement {
         version: 1,
         operation: Uuid::new_v4(),
-        registration: receipt.registration,
-        generation: receipt.generation,
+        device_id: receipt.device.to_string(),
+
         revision: trust_public.revision,
         digest: trust_public.installation_digest()?,
     };
@@ -466,7 +500,6 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     // Durable export retention survives process reload, even after every live consumer ACKs.
     let retained:i64=sqlx::query_scalar("SELECT max_verify_until FROM rss_da.signing_keys WHERE tenant_id=$1::uuid AND usage='da_configuration' AND key_id=$2").bind(c.tenant.to_string()).bind(old_key).fetch_one(&c.operator).await?;
     assert!(retained >= signed.decode()?.expires_at);
-    unknown_recovery(&c, &material, &client, base2, &token, export.operation_id).await?;
     // Verify configuration trust before the business proof changes current policy selection.
     Box::pin(business::verify(
         &c,
@@ -477,6 +510,16 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     ))
     .await
     .context("DA business owner proof")?;
+    unknown_recovery(
+        &c,
+        &material,
+        &client,
+        base2,
+        &token,
+        export.operation_id,
+        &receipt.device,
+    )
+    .await?;
 
     let renewal = da::GrantRequest {
         operation_id: Uuid::new_v4(),
@@ -516,8 +559,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
             .await?,
     )
     .await?;
-    assert_eq!(renewed_receipt.registration, receipt.registration);
-    assert_eq!(renewed_receipt.generation, receipt.generation);
+    assert_eq!(renewed_receipt.device, receipt.device);
     assert_ne!(renewed_receipt.credential, receipt.credential);
     assert_eq!(
         peer.get(format!("{base2}/configuration-trust"))
@@ -540,8 +582,8 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
     material::empty(
         client
             .post(format!(
-                "{base2}/registrations/{}/revoke",
-                receipt.registration
+                "{base2}/devices/{}/registration/revoke",
+                receipt.device
             ))
             .bearer_auth(&token)
             .json(&serde_json::json!({"operationId":Uuid::new_v4()}))
@@ -592,6 +634,7 @@ async fn unknown_recovery(
     base: &str,
     token: &str,
     old_export: Uuid,
+    old_device: &str,
 ) -> Result<()> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rss_mdm_agent_wire::{da, enroll};
@@ -600,7 +643,8 @@ async fn unknown_recovery(
         secret: rss_mdm_agent_wire::runtime::Secret::parse(
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbA",
         )?,
-        csr: m.csr(3)?,
+        // Reusing the same key still creates a distinct product identity.
+        csr: m.csr(1)?,
         expires_in_seconds: 3600,
     };
     let grant: da::Grant = material::success(
@@ -691,7 +735,7 @@ async fn unknown_recovery(
     .await?;
     assert_eq!(replay.certificate_chain, recovered.certificate_chain);
     assert_eq!(m.issued_count()?, previous + 1);
-    let peer = m.client(Some((&recovered, 3)))?;
+    let peer = m.client(Some((&recovered, 1)))?;
     let registration: da::Registration = material::success(
         peer.post(format!("{base}/activate"))
             .json(&enroll::ActivationRequest {
@@ -703,6 +747,25 @@ async fn unknown_recovery(
             .await?,
     )
     .await?;
+    assert_eq!(registration.device, grant.device);
+    assert_ne!(registration.device, old_device);
+    let history: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT
+          (SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1 AND device=$2),
+          (SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1 AND device=$3),
+          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND definition#>>'{target,device}'=$2),
+          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND definition#>>'{target,device}'=$3)")
+        .bind(registration.tenant).bind(old_device).bind(&registration.device)
+        .fetch_one(&c.operator).await?;
+    assert!(
+        history.0 > 0 && history.2 > 0,
+        "original history and direct policy remain"
+    );
+    assert_eq!(
+        (history.1, history.3),
+        (0, 0),
+        "new enrollment inherits neither history nor direct policy"
+    );
     let trust: da::ConfigurationTrust = material::success(
         peer.get(format!("{base}/configuration-trust"))
             .send()
@@ -714,8 +777,8 @@ async fn unknown_recovery(
             .json(&rss_mdm_agent_wire::task_trust::Acknowledgement {
                 version: 1,
                 operation: Uuid::new_v4(),
-                registration: registration.registration,
-                generation: registration.generation,
+                device_id: registration.device.clone(),
+
                 revision: trust.revision,
                 digest: trust.installation_digest()?,
             })
@@ -736,7 +799,7 @@ async fn unknown_recovery(
         .execute(&mut *tx)
         .await?;
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM rss_da.registrations")
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM rss_da.devices")
             .fetch_one(&mut *tx)
             .await?,
         0

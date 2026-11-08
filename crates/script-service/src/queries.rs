@@ -11,8 +11,6 @@ pub struct Record<R> {
     pub policy_id: Uuid,
     pub version_id: Uuid,
     pub device: String,
-    pub registration_id: Uuid,
-    pub generation: i64,
     pub occurrence: String,
     pub available_at: i64,
     pub deadline: i64,
@@ -44,7 +42,7 @@ pub struct Diagnostics {
     executed_at: i64,
     failure: Option<w::TaskFailure>,
 }
-const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'registrationId',r.registration,'generation',r.generation,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'resourceId',r.resource_id,'state',r.state,'authorization',r.invocation->'authorization','attemptId',r.state->'delivery'->>'attempt'";
+const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'resourceId',r.resource_id,'state',r.state,'authorization',r.invocation->'authorization','attemptId',r.state->'delivery'->>'attempt'";
 fn summary_select() -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut query = sqlx::QueryBuilder::new("SELECT jsonb_build_object(");
     query.push(METADATA).push(",'result',CASE WHEN r.result IS NULL THEN NULL ELSE (r.result-'output') || jsonb_build_object('diagnostics',(r.result->'diagnostics')-'stdout'-'stderr') END) AS document FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid");
@@ -100,20 +98,26 @@ pub async fn detail_on(
     ))
 }
 
-/// Latest historical run for this exact current registration, across Policy versions.
+/// Latest historical run for this exact current device, across Policy versions.
 pub async fn latest_assignment_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     policy: Uuid,
     target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
 ) -> Result<Option<Summary>> {
-    summary_select().push(" AND v.policy=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 ORDER BY r.available_at DESC,r.id DESC LIMIT 1")
-        .build_query_scalar::<serde_json::Value>().bind(tenant.to_string()).bind(policy).bind(&target.device)
-        .bind(target.registration_id).bind(target.generation).fetch_optional(c).await?
-        .map(|v|crate::stored(serde_json::from_value(v))).transpose()
+    summary_select()
+        .push(" AND v.policy=$2 AND r.device=$3 ORDER BY r.available_at DESC,r.id DESC LIMIT 1")
+        .build_query_scalar::<serde_json::Value>()
+        .bind(tenant.to_string())
+        .bind(policy)
+        .bind(&target.device)
+        .fetch_optional(c)
+        .await?
+        .map(|v| crate::stored(serde_json::from_value(v)))
+        .transpose()
 }
 /// This owner contributes metadata only; payloads are read through the bounded summary projection.
-pub const RELATION_SQL: &str = "SELECT r.id,r.device,'action_run'::text AS kind,r.registration,r.generation,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,r.state->>'execution' AS status,0::bigint AS input_bytes FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid";
+pub const RELATION_SQL: &str = "SELECT r.id,r.device,'action_run'::text AS kind,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,r.state->>'execution' AS status,0::bigint AS input_bytes FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid";
 
 /// Bounded, redacted evidence for directory rows already selected under device authorization.
 pub async fn run_summaries_on(

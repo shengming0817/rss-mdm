@@ -309,10 +309,7 @@ pub struct TelemetryConfiguration {
     pub tenant_id: uuid::Uuid,
     /// Trusted device coordinate.
     pub device_id: String,
-    /// Exact active registration incarnation.
-    pub registration_id: uuid::Uuid,
-    /// Exact registration generation.
-    pub generation: u64,
+
     /// Exact source incarnation for producer sequence ownership.
     pub source_epoch: uuid::Uuid,
     /// Lease issue time in UTC Unix seconds.
@@ -548,9 +545,7 @@ impl TelemetryConfiguration {
     /// Canonical bytes in a distinct runtime signing domain. Verification and local time are caller-owned.
     pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
         if self.tenant_id.is_nil()
-            || self.registration_id.is_nil()
             || self.source_epoch.is_nil()
-            || self.generation == 0
             || self.device_id.is_empty()
             || self.device_id.len() > 1024
             || self.device_id.chars().any(char::is_control)

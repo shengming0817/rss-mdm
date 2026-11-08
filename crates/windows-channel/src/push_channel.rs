@@ -27,7 +27,7 @@ fn aad(
     crate::protection::native_aad(
         p.tenant(),
         kind,
-        &(p.registration(), p.generation(), p.credential(), session),
+        &(p.device(), p.epoch(), p.credential(), session),
     )
 }
 pub(crate) async fn send(
@@ -43,8 +43,8 @@ pub(crate) async fn send(
     };
     let tenant = p.tenant().to_string();
     let session = response.header.session_id;
-    let existing = sqlx::query("SELECT results FROM mdm_windows.push_queries WHERE tenant_id=$1::uuid AND registration=$2 AND session=$3")
-        .bind(&tenant).bind(p.registration()).bind(i64::from(session)).fetch_optional(&mut *c).await.map_err(db)?;
+    let existing = sqlx::query("SELECT results FROM mdm_windows.push_queries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3) AND push_queries.protocol_epoch = $4")
+        .bind(&tenant).bind(p.device()).bind(i64::from(session)).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(row) = existing {
         let Some(sealed) = row.try_get::<Option<Vec<u8>>, _>("results").map_err(db)? else {
             return Ok(true);
@@ -92,8 +92,8 @@ pub(crate) async fn send(
     let sealed = key
         .seal_bytes(&bytes, &aad(p, session, "windows.push.query")?)
         .map_err(|_| corrupt())?;
-    sqlx::query("INSERT INTO mdm_windows.push_queries(tenant_id,registration,generation,credential,session,message,command,configuration,request) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(response.header.message_id)).bind(i64::from(id)).bind(push.configuration.as_slice()).bind(sealed).execute(c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_windows.push_queries (tenant_id, device, credential, session, message, command, configuration, request, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9)")
+        .bind(&tenant).bind(p.device()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(response.header.message_id)).bind(i64::from(id)).bind(push.configuration.as_slice()).bind(sealed).bind(p.epoch()).execute(c).await.map_err(db)?;
     response.commands.push(command);
     Ok(true)
 }
@@ -125,8 +125,8 @@ pub(crate) async fn receive(
 ) -> Result<s::Message, Error> {
     let tenant = p.tenant().to_string();
     let session = raw.header.session_id;
-    let row=sqlx::query("SELECT message,command,configuration,request,results FROM mdm_windows.push_queries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND credential=$4 AND session=$5 FOR UPDATE")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).fetch_optional(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT message, command, configuration, request, results FROM mdm_windows.push_queries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND credential = $3 AND session = $4) AND push_queries.protocol_epoch = $5 FOR UPDATE")
+        .bind(&tenant).bind(p.device()).bind(p.credential()).bind(i64::from(session)).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(raw.clone());
     };
@@ -217,7 +217,7 @@ pub(crate) async fn receive(
             &aad(p, session, "windows.push.results")?,
         )
         .map_err(|_| corrupt())?;
-    sqlx::query("UPDATE mdm_windows.push_queries SET results=$4 WHERE tenant_id=$1::uuid AND registration=$2 AND session=$3").bind(&tenant).bind(p.registration()).bind(i64::from(session)).bind(sealed).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_windows.push_queries SET results = $4 WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3) AND push_queries.protocol_epoch = $5").bind(&tenant).bind(p.device()).bind(i64::from(session)).bind(sealed).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
     if let Some(push) = &w.push {
         let uri = targets(w);
         if raw
@@ -237,20 +237,19 @@ pub(crate) async fn receive(
             let aad = crate::protection::native_aad(
                 p.tenant(),
                 "windows.push.channel",
-                &(p.registration(), p.generation(), push.configuration),
+                &(p.device(), push.configuration),
             )?;
             let digest = key.mac(value.as_bytes(), &aad).map_err(|_| corrupt())?;
             let sealed = key
                 .seal_bytes(value.as_bytes(), &aad)
                 .map_err(|_| corrupt())?;
-            // The management transaction already owns the registration/channel fence.
+            // The management transaction already owns the device/channel fence.
             // Compare the observed URI under the saved coordinates before re-binding it.
-            let previous = sqlx::query("SELECT generation,revision,configuration,digest FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE")
-                .bind(&tenant).bind(p.registration()).fetch_optional(&mut *c).await.map_err(db)?;
+            let previous = sqlx::query("SELECT revision, configuration, digest FROM mdm_windows.push_channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE")
+                .bind(&tenant).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
             let mut same_uri = false;
             let mut same_binding = false;
             if let Some(previous) = &previous {
-                let generation: i64 = previous.try_get("generation").map_err(db)?;
                 let configuration: [u8; 32] = previous
                     .try_get::<Vec<u8>, _>("configuration")
                     .map_err(db)?
@@ -259,7 +258,7 @@ pub(crate) async fn receive(
                 let old_aad = crate::protection::native_aad(
                     p.tenant(),
                     "windows.push.channel",
-                    &(p.registration(), generation, configuration),
+                    &(p.device(), configuration),
                 )?;
                 same_uri = key
                     .verify_mac(
@@ -268,14 +267,14 @@ pub(crate) async fn receive(
                         &previous.try_get::<Vec<u8>, _>("digest").map_err(db)?,
                     )
                     .is_ok();
-                same_binding = generation == p.generation() && configuration == push.configuration;
+                same_binding = configuration == push.configuration;
             }
             if !same_uri || !same_binding {
-                let revision: i64 = sqlx::query_scalar("INSERT INTO mdm_windows.push_channels(tenant_id,registration,generation,revision,configuration,uri,digest,attempt_until) VALUES($1::uuid,$2,$3,1,$4,$5,$6,clock_timestamp()+interval '30 days') ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,revision=push_channels.revision+1,configuration=excluded.configuration,uri=excluded.uri,digest=excluded.digest,attempt_until=CASE WHEN $7 THEN push_channels.attempt_until ELSE excluded.attempt_until END,next_push=CASE WHEN $7 THEN push_channels.next_push ELSE clock_timestamp() END,lease_id=CASE WHEN $7 THEN push_channels.lease_id END,lease_until=CASE WHEN $7 THEN push_channels.lease_until END,settled_id=NULL,failures=CASE WHEN $7 THEN push_channels.failures ELSE 0 END,status=CASE WHEN $7 AND NOT(push_channels.configuration<>excluded.configuration AND push_channels.status=403) THEN push_channels.status END,outcome=CASE WHEN $7 AND NOT(push_channels.configuration<>excluded.configuration AND coalesce(push_channels.status=403,false)) THEN push_channels.outcome END RETURNING revision")
-                    .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(push.configuration.as_slice()).bind(sealed).bind(digest.as_slice()).bind(same_uri).fetch_one(&mut *c).await.map_err(db)?;
+                let revision: i64 = sqlx::query_scalar("INSERT INTO mdm_windows.push_channels (tenant_id, device, revision, configuration, uri, digest, attempt_until) VALUES (CAST($1 AS uuid), $2, 1, $3, $4, $5, clock_timestamp() + CAST('30 days' AS interval)) ON CONFLICT (tenant_id, device) DO UPDATE SET revision = push_channels.revision + 1, configuration = excluded.configuration, uri = excluded.uri, digest = excluded.digest, attempt_until = CASE WHEN $6 THEN push_channels.attempt_until ELSE excluded.attempt_until END, next_push = CASE WHEN $6 THEN push_channels.next_push ELSE clock_timestamp() END, lease_id = CASE WHEN $6 THEN push_channels.lease_id END, lease_until = CASE WHEN $6 THEN push_channels.lease_until END, settled_id = NULL, failures = CASE WHEN $6 THEN push_channels.failures ELSE 0 END, status = CASE WHEN $6 AND NOT(push_channels.configuration <> excluded.configuration AND push_channels.status = 403) THEN push_channels.status END, outcome = CASE WHEN $6 AND NOT(push_channels.configuration <> excluded.configuration AND COALESCE(push_channels.status = 403, FALSE)) THEN push_channels.outcome END RETURNING revision")
+                    .bind(&tenant).bind(p.device()).bind(push.configuration.as_slice()).bind(sealed).bind(digest.as_slice()).bind(same_uri).fetch_one(&mut *c).await.map_err(db)?;
                 let fact = rss_mdm_audit_integration::Fact::observation(
                     audit,
-                    &format!("windows-push:{}:{revision}:route", p.registration()),
+                    &format!("windows-push:{}:{revision}:route", p.device()),
                     200,
                     "success",
                     None,
@@ -302,8 +301,8 @@ pub(crate) async fn result_eligible(
     session: u32,
     reference: &s::Reference,
 ) -> Result<Option<bool>, Error> {
-    let row=sqlx::query("SELECT request FROM mdm_windows.push_queries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND credential=$4 AND session=$5 AND message=$6 AND command=$7")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).fetch_optional(c).await.map_err(db)?;
+    let row=sqlx::query("SELECT request FROM mdm_windows.push_queries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND credential = $3 AND session = $4 AND message = $5 AND command = $6) AND push_queries.protocol_epoch = $7")
+        .bind(p.tenant().to_string()).bind(p.device()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).bind(p.epoch()).fetch_optional(c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(None);
     };

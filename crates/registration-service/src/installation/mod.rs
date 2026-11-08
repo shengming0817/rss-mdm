@@ -53,8 +53,6 @@ pub struct Installation {
     pub policy: Uuid,
     pub version: Uuid,
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
     pub platform: rss_mdm_policy::Platform,
     pub source: rss_mdm_inventory::ReportSource,
     pub release: Uuid,

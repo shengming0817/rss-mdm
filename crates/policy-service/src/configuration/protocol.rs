@@ -74,11 +74,11 @@ pub async fn settle_dispatch_failures(
 ) -> Result<()> {
     use rss_mdm_audit_integration::Fact;
     let tenant = tx.tenant_id().to_string();
-    let registration = principal.registration();
-    let generation = principal.generation();
+    let registration = principal.device().to_owned();
+
     let ids = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar::<_, Uuid>("SELECT o.id FROM mdm_planning.configuration_operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.dispatch_failure IS NOT NULL AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64")
-            .bind(tenant).bind(registration).bind(generation).fetch_all(c).await
+        sqlx::query_scalar::<_, Uuid>("SELECT o.id FROM mdm_planning.configuration_operations AS o INNER JOIN rss_device_command.commands AS d ON d.tenant_id = o.tenant_id AND d.command_id = CAST(o.id AS text) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.dispatch_failure IS NOT NULL AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64")
+            .bind(tenant).bind(&registration).fetch_all(c).await
     })).await?;
     for id in ids {
         let op = storage::load(tx, &service.protection, id).await?;
@@ -114,8 +114,7 @@ async fn effect_assessment(
 ) -> Result<rss_mdm_windows_mdm::native::verification::EffectAssessment> {
     let tenant = tx.tenant_id();
     let id = op.id;
-    let registration = op.registration;
-    let generation = op.registration_generation;
+    let registration = op.device.clone();
     let Task::Windows { request } = &op.request.task else {
         return Err(Error::Malformed.into());
     };
@@ -124,7 +123,7 @@ async fn effect_assessment(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(channels
-                    .assessment(c, tenant, id, registration, generation, request)
+                    .assessment(c, tenant, id, registration, request)
                     .await)
             })
         })
@@ -180,7 +179,6 @@ pub(crate) async fn native_fact_in(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     context.target_device(&op.device);
-    context.registration(op.registration);
     let fact = Fact::business(
         &context,
         rss_mdm_audit_integration::operation::OperationOwner::Configuration,

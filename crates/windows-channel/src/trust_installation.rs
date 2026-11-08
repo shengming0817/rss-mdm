@@ -24,7 +24,7 @@ fn aad(
     crate::protection::native_aad(
         p.tenant(),
         kind,
-        &(p.registration(), p.generation(), p.credential(), id),
+        &(p.device(), p.epoch(), p.credential(), id),
     )
 }
 fn reference(command: &s::Command) -> Option<(u32, u32)> {
@@ -50,8 +50,8 @@ async fn targets(
         .into_iter()
         .map(|c| (c, false))
         .collect::<Vec<_>>();
-    let previous:Option<Vec<u8>>=sqlx::query_scalar("SELECT body FROM mdm_pki.installations WHERE tenant_id=$1::uuid AND purpose='windows' AND registration=$2")
-        .bind(p.tenant().to_string()).bind(p.registration()).fetch_optional(&mut *c).await.map_err(db)?;
+    let previous:Option<Vec<u8>>=sqlx::query_scalar("SELECT body FROM mdm_pki.installations WHERE tenant_id = CAST($1 AS uuid) AND purpose = 'windows' AND device = $2")
+        .bind(p.tenant().to_string()).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(bytes) = previous {
         let public: rss_mdm_agent_wire::pki::Trust =
             serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
@@ -115,8 +115,8 @@ pub(crate) async fn send(
     let digest = trust.installation_digest();
     let tenant = p.tenant().to_string();
     let session = i64::from(response.header.session_id);
-    let done:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.installations WHERE tenant_id=$1::uuid AND registration=$2 AND purpose='windows' AND revision=$3 AND digest=$4)")
-        .bind(&tenant).bind(p.registration()).bind(trust.revision as i64).bind(&digest).fetch_one(&mut *c).await.map_err(db)?;
+    let done:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_pki.installations WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND purpose = 'windows' AND revision = $3 AND digest = $4)")
+        .bind(&tenant).bind(p.device()).bind(trust.revision as i64).bind(&digest).fetch_one(&mut *c).await.map_err(db)?;
     if done {
         return Ok(false);
     }
@@ -124,8 +124,8 @@ pub(crate) async fn send(
     if authorities.is_empty() || authorities.len() > 64 {
         return Err(Error::Conflict);
     }
-    let confirmed:Vec<String>=sqlx::query_scalar("SELECT DISTINCT authority FROM mdm_windows.trust_deliveries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 AND digest=$5 AND confirmed")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(trust.revision as i64).bind(&digest).fetch_all(&mut *c).await.map_err(db)?;
+    let confirmed:Vec<String>=sqlx::query_scalar("SELECT DISTINCT authority FROM mdm_windows.trust_deliveries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND digest = $4 AND confirmed AND trust_deliveries.protocol_epoch = $5")
+        .bind(&tenant).bind(p.device()).bind(trust.revision as i64).bind(&digest).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     let Some(authority) = authorities
         .into_iter()
         .find(|(a, _)| !confirmed.contains(&rss_mdm_device_trust::digest(&a.certificate)))
@@ -133,8 +133,8 @@ pub(crate) async fn send(
         return Ok(false);
     };
     let authority_digest = rss_mdm_device_trust::digest(&authority.0.certificate);
-    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_windows.trust_deliveries WHERE tenant_id=$1::uuid AND registration=$2 AND session=$3 AND revision=$4 AND authority=$5)")
-        .bind(&tenant).bind(p.registration()).bind(session).bind(trust.revision as i64).bind(&authority_digest).fetch_one(&mut *c).await.map_err(db)? {return Ok(true);}
+    if sqlx::query_scalar::<_,bool>("SELECT EXISTS (SELECT 1 FROM mdm_windows.trust_deliveries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3 AND revision = $4 AND authority = $5) AND trust_deliveries.protocol_epoch = $6)")
+        .bind(&tenant).bind(p.device()).bind(session).bind(trust.revision as i64).bind(&authority_digest).bind(p.epoch()).fetch_one(&mut *c).await.map_err(db)? {return Ok(true);}
     // One authority per message fits negotiated device budgets; progress survives message/session changes.
     let authorities = [authority];
     let count = 1;
@@ -231,13 +231,12 @@ pub(crate) async fn send(
             &aad(p, id, "windows.pki.results")?,
         )
         .map_err(|_| unavailable())?;
-    sqlx::query("INSERT INTO mdm_windows.trust_deliveries(tenant_id,id,registration,generation,credential,revision,digest,session,message,first_command,request,results,authority) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)")
-        .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(trust.revision as i64).bind(&digest).bind(session)
-        .bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(sealed).bind(results).bind(&authority_digest).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_windows.trust_deliveries (tenant_id, id, device, credential, revision, digest, session, message, first_command, request, results, authority, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
+        .bind(&tenant).bind(id).bind(p.device()).bind(p.credential()).bind(trust.revision as i64).bind(&digest).bind(session)
+        .bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(sealed).bind(results).bind(&authority_digest).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
     let a = audit.fact_copy("windows_pki_install");
-    a.identify_device(p.registration());
-    a.registration(p.registration());
-    a.target(p.device());
+    a.identify_device(&(p.device()).to_string());
+    a.target_device(p.device());
     facts.push(rss_mdm_audit_integration::Fact::observation(
         &a,
         &format!("windows-pki:{id}:dispatch"),
@@ -258,8 +257,8 @@ pub(crate) async fn receive(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<s::Message, Error> {
     let (raw, expected) = message;
-    let rows=sqlx::query("SELECT * FROM mdm_windows.trust_deliveries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND credential=$4 AND session=$5 ORDER BY first_command FOR UPDATE")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(raw.header.session_id)).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT * FROM mdm_windows.trust_deliveries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND credential = $3 AND session = $4 AND trust_deliveries.protocol_epoch = $5 ORDER BY first_command FOR UPDATE")
+        .bind(p.tenant().to_string()).bind(p.device()).bind(p.credential()).bind(i64::from(raw.header.session_id)).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
         let id: Uuid = row.try_get("id").map_err(db)?;
@@ -393,8 +392,8 @@ pub(crate) async fn receive(
             && !row.try_get::<bool, _>("confirmed").map_err(db)?
             && row.try_get::<String, _>("digest").map_err(db)? == trust.installation_digest()
         {
-            let installed:Vec<String>=sqlx::query_scalar("SELECT DISTINCT authority FROM mdm_windows.trust_deliveries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 AND digest=$5 AND confirmed")
-                .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(trust.revision as i64).bind(trust.installation_digest()).fetch_all(&mut *c).await.map_err(db)?;
+            let installed:Vec<String>=sqlx::query_scalar("SELECT DISTINCT authority FROM mdm_windows.trust_deliveries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND revision = $3 AND digest = $4 AND confirmed AND trust_deliveries.protocol_epoch = $5")
+                .bind(p.tenant().to_string()).bind(p.device()).bind(trust.revision as i64).bind(trust.installation_digest()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
             let complete = targets(c, w, p).await?.iter().all(|(cert, _)| {
                 installed.contains(&rss_mdm_device_trust::digest(&cert.certificate))
             });
@@ -403,7 +402,7 @@ pub(crate) async fn receive(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &p.tenant().to_string(),
-                    p.registration(),
+                    p.device(),
                     &trust,
                     &Acknowledgement {
                         operation: id,

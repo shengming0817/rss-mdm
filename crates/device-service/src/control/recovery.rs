@@ -428,17 +428,15 @@ pub(crate) async fn apply_prepared(
                 rss_mdm_registration_service::Purpose::Primary,
             )
             .await;
-            if let Ok((id, generation)) = registration {
+            if registration.is_ok() {
                 rss_mdm_registration_service::command_authority::resolve_in(
                     &service.transactions.store,
                     tx,
                     &name,
-                    id,
-                    generation,
                 )
                 .await?;
             }
-            let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.command_device::text,a.generation,a.epoch,CASE WHEN r.authority_epoch=a.epoch THEN r.recovery_after END AS recovery_after FROM mdm_access.command_authorities a LEFT JOIN mdm_devices.control_recovery r USING(tenant_id,device) WHERE a.tenant_id=$1::uuid AND a.device=$2 FOR UPDATE OF a").bind(tenant).bind(key).fetch_one(c).await})).await?;
+            let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT CAST(a.command_device AS text), a.generation, a.epoch, CASE WHEN r.authority_epoch = a.epoch THEN r.recovery_after END AS recovery_after FROM mdm_access.command_authorities AS a LEFT JOIN mdm_devices.control_recovery AS r USING (tenant_id, device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 FOR UPDATE OF a").bind(tenant).bind(key).fetch_one(c).await})).await?;
             let scope = dc::Scope::new(
                 service.transactions.tenant,
                 stored(dc::DeviceId::parse(
@@ -534,7 +532,6 @@ pub(crate) async fn apply_prepared(
                     rss_mdm_audit_integration::AuditIntent::Management,
                 );
                 fact_audit.target_device(&operation.device);
-                fact_audit.registration(operation.registration);
                 let fact = Fact::business(&fact_audit, rss_mdm_audit_integration::operation::OperationOwner::DeviceControl, &format!("command:{id}:recover:{}", command.version()), 200, "success", None)?
                     .with_details(serde_json::json!({"previousVersion":previous_version,"after":service::status(command.status()),"version":command.version()}))?
                     .with_activity(&crate::control::timeline::native_activity(&operation, command.status(), rss_mdm_audit_integration::activity::ActivityPhase::Reconciled))?;

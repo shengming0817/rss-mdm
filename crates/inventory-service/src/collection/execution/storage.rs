@@ -17,8 +17,6 @@ pub async fn native_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<super::m
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         target: super::model::Target {
             device: row.try_get("device")?,
-            registration: row.try_get("registration")?,
-            generation: row.try_get("generation")?,
         },
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
@@ -57,7 +55,7 @@ pub async fn active_count_on(
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*) FROM mdm_inventory.collection_tasks t WHERE tenant_id=$1::uuid AND device=$2 AND deadline>$3 AND ((channel='agent' AND agent_state->>'execution' IN('not_started','running') AND agent_state->>'cancellation'<>'confirmed') OR (channel='mdm' AND native_delivery<>'cancelled' AND NOT EXISTS(SELECT 1 FROM mdm_access.collection_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.collection_run) AND r.sealed_at IS NOT NULL)))")
-        .bind(tenant.to_string()).bind(device).bind(now).fetch_one(c).await
+        .bind(tenant.to_string()).bind(&device).bind(now).fetch_one(c).await
 }
 pub async fn owned_ids_on(
     c: &mut sqlx::PgConnection,
@@ -123,8 +121,6 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ag
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         target: super::model::Target {
             device: row.try_get("device")?,
-            registration: row.try_get("registration")?,
-            generation: row.try_get("generation")?,
         },
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
@@ -189,8 +185,8 @@ pub async fn save_run(
                     data: EventData::Policy {
                         run_id: run.id,
                         policy_version: run.policy_version,
-                        registration_id: run.target.registration,
-                        generation: run.target.generation,
+                        device_id: run.target.device.to_string(),
+
                         status: status.into(),
                     },
                 },
@@ -211,10 +207,10 @@ pub async fn pending_on(
     now: i64,
 ) -> Result<(Option<Uuid>, Option<i64>)> {
     let tenant = tenant.to_string();
-    let pending = sqlx::query_scalar("SELECT t.id FROM mdm_inventory.collection_tasks t JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(t.tenant_id,t.policy_version) WHERE t.tenant_id=$1::uuid AND v.policy=$2 AND t.device=$3 AND t.registration=$4 AND t.deadline>$5 AND ((t.channel='agent' AND t.agent_state->>'execution' IN('not_started','running') AND t.agent_state->>'cancellation'<>'confirmed') OR (t.channel='mdm' AND t.native_delivery<>'cancelled' AND NOT EXISTS(SELECT 1 FROM mdm_access.collection_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.collection_run) AND r.sealed_at IS NOT NULL))) ORDER BY t.available_at DESC,t.id DESC LIMIT 1")
-        .bind(&tenant).bind(owner).bind(&target.device).bind(target.registration).bind(now).fetch_optional(&mut *c).await?;
-    let last = sqlx::query_scalar("SELECT max(coalesce(triggered_at,created_at)) FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2 AND registration=$3")
-        .bind(tenant).bind(version).bind(target.registration).fetch_one(c).await?;
+    let pending = sqlx::query_scalar("SELECT t.id FROM mdm_inventory.collection_tasks AS t INNER JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (t.tenant_id, t.policy_version) WHERE t.tenant_id = CAST($1 AS uuid) AND v.policy = $2 AND t.device = $3 AND t.device = $4 AND t.deadline > $5 AND ((t.channel = 'agent' AND t.agent_state ->> 'execution' IN ('not_started', 'running') AND t.agent_state ->> 'cancellation' <> 'confirmed') OR (t.channel = 'mdm' AND t.native_delivery <> 'cancelled' AND NOT EXISTS (SELECT 1 FROM mdm_access.collection_runs AS r WHERE (r.tenant_id, r.id) = (t.tenant_id, t.collection_run) AND r.sealed_at IS NOT NULL))) ORDER BY t.available_at DESC, t.id DESC LIMIT 1")
+        .bind(&tenant).bind(owner).bind(&target.device).bind(target.device.clone()).bind(now).fetch_optional(&mut *c).await?;
+    let last = sqlx::query_scalar("SELECT max(COALESCE(triggered_at, created_at)) FROM mdm_inventory.collection_tasks WHERE tenant_id = CAST($1 AS uuid) AND policy_version = $2 AND device = $3")
+        .bind(tenant).bind(version).bind(target.device.clone()).fetch_one(c).await?;
     Ok((pending, last))
 }
 pub async fn pending_in(
@@ -240,8 +236,8 @@ pub async fn last_started_on(
     version: Uuid,
     target: &super::model::Target,
 ) -> Result<Option<i64>> {
-    Ok(sqlx::query_scalar("SELECT max(coalesce(started_at,(agent_state->>'startedAt')::bigint)) FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2 AND registration=$3")
-        .bind(tenant.to_string()).bind(version).bind(target.registration).fetch_one(c).await?)
+    Ok(sqlx::query_scalar("SELECT max(COALESCE(started_at, CAST(agent_state ->> 'startedAt' AS bigint))) FROM mdm_inventory.collection_tasks WHERE tenant_id = CAST($1 AS uuid) AND policy_version = $2 AND device = $3")
+        .bind(tenant.to_string()).bind(version).bind(target.device.clone()).fetch_one(c).await?)
 }
 pub async fn last_started_in(
     tx: &mut PgTransaction<'_>,

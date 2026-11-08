@@ -22,8 +22,7 @@ pub async fn record_in(
     let inserted =
         sqlx::query(crate::storage_profile::sql(profile, usage).observations_record_in_1)
             .bind(tenant)
-            .bind(input.registration)
-            .bind(input.generation as i64)
+            .bind(&input.device_id)
             .bind(input.sequence as i64)
             .bind(input.operation)
             .bind(&body)
@@ -46,7 +45,7 @@ pub async fn record_in(
     }
     Ok(true)
 }
-/// Only the current registration generation is eligible; device clock never orders reports.
+/// Only the current active device is eligible; device clock never orders reports.
 pub async fn latest_in(
     profile: rss_mdm_install_support::StorageProfile,
     usage: crate::Use,
@@ -63,14 +62,13 @@ pub async fn latest_in(
         Some(device),
     )
     .await?;
-    let Some((registration, generation)) = consumers.first() else {
+    let Some(device) = consumers.first() else {
         return Ok(None);
     };
     let row: Option<(serde_json::Value, i64)> =
         sqlx::query_as(crate::storage_profile::sql(profile, usage).observations_latest_in_1)
             .bind(tenant)
-            .bind(registration)
-            .bind(generation)
+            .bind(device)
             .fetch_optional(c)
             .await
             .map_err(db)?;

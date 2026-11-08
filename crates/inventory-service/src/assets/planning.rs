@@ -237,7 +237,7 @@ impl SnapshotReader {
                                 .await?;
                                 let registrations: Vec<String> = sources
                                     .iter()
-                                    .map(|r| r.try_get("registration"))
+                                    .map(|r| r.try_get("device"))
                                     .collect::<std::result::Result<_, sqlx::Error>>()?;
                                 sqlx::query_scalar(
                                     crate::storage_profile::sql(profile)
@@ -404,7 +404,7 @@ impl SnapshotReader {
 }
 
 pub(super) struct SelectedSources {
-    pub subjects: BTreeMap<String, (String, u64)>,
+    pub subjects: BTreeMap<String, String>,
 }
 impl SnapshotReader {
     pub(super) async fn select_sources_on(
@@ -433,13 +433,12 @@ impl SnapshotReader {
                 let scope = crate::device::scope_dataset(
                     profile,
                     tenant,
-                    stored(Uuid::parse_str(row.try_get("registration")?))?,
+                    &device,
                     source.as_str(),
                     stored(Uuid::parse_str(row.try_get("epoch")?))?,
                     dataset,
                 )?;
-                let generation: u64 = stored(row.try_get::<&str, _>("generation")?.parse())?;
-                subjects.insert(stored(scope.encode())?, (device.clone(), generation));
+                subjects.insert(stored(scope.encode())?, device.clone());
             }
         }
         Ok(SelectedSources { subjects })

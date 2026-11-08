@@ -26,7 +26,7 @@ impl Transactions {
         let mut after = Uuid::nil();
         loop {
             let rows:Vec<(Uuid,bool,String)>=tx.with_connection(move|c|Box::pin(async move{
-    sqlx::query_as("SELECT o.id,d.terminal_at IS NULL,d.status FROM mdm_planning.configuration_operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) JOIN mdm_devices.retirement_channels r ON(r.tenant_id,r.registration)=(o.tenant_id,o.registration) WHERE o.tenant_id=$1::uuid AND r.operation=$2 AND o.id>$3 ORDER BY o.id LIMIT 64").bind(tenant.to_string()).bind(retirement).bind(after).fetch_all(c).await
+    sqlx::query_as("SELECT o.id, d.terminal_at IS NULL, d.status FROM mdm_planning.configuration_operations AS o INNER JOIN rss_device_command.commands AS d ON (d.tenant_id, d.command_id) = (o.tenant_id, CAST(o.id AS text)) INNER JOIN mdm_devices.retirement_channels AS r ON (r.tenant_id, r.device) = (o.tenant_id, o.device) WHERE o.tenant_id = CAST($1 AS uuid) AND r.operation = $2 AND o.id > $3 ORDER BY o.id LIMIT 64").bind(tenant.to_string()).bind(retirement).bind(after).fetch_all(c).await
    })).await?;
             let count = rows.len();
             for (id, active, status) in rows {

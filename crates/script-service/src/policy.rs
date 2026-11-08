@@ -208,7 +208,7 @@ impl ScriptPolicy {
         if run.state.started_at.is_none() {
             let now = crate::storage::now(tx).await?;
             if self
-                .entry_in(service, tx, &run.target.device, now)
+                .entry_in(service, tx, &run.target.device.clone(), now)
                 .await?
                 .is_none()
             {
@@ -269,7 +269,7 @@ impl ScriptPolicy {
         let binding = crate::agent_facts::agent_binding_in(
             tx,
             service.agent_store.clone(),
-            target.registration,
+            target.device.clone(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -313,7 +313,7 @@ impl ScriptPolicy {
         let binding = crate::agent_facts::agent_binding_in(
             tx,
             service.agent_store.clone(),
-            run.target.registration,
+            run.target.device.clone(),
         )
         .await?
         .ok_or(Error::Forbidden)?;

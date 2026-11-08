@@ -69,7 +69,7 @@ pub async fn accept_for_device(
                 )
                 .bind(tenant)
                 .bind(version)
-                .bind(device)
+                .bind(&device)
                 .bind(now)
                 .bind(explicit_allowed)
                 .fetch_optional(c)
@@ -79,7 +79,7 @@ pub async fn accept_for_device(
         .await?;
     if explicit.is_none() {
         let tenant = tx.tenant_id().to_string();
-        let registration = target.registration;
+        let device = target.device.clone();
         let previous = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -88,7 +88,7 @@ pub async fn accept_for_device(
                             .enrollment_tasks_admission_accept_for_device_2,
                     )
                     .bind(tenant)
-                    .bind(registration)
+                    .bind(&device)
                     .fetch_one(c)
                     .await
                 })
@@ -112,7 +112,7 @@ pub async fn accept_for_device(
                 }
                 (now, format!("checkin:{request}"))
             }
-            (Trigger::Registration, _) => (now, format!("registration:{}", target.registration)),
+            (Trigger::Registration, _) => (now, format!("device:{}", target.device)),
             (Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. }, _) => {
                 let Some(due) = schedule.due(-1, now, target.device.as_bytes())? else {
                     return Ok(());
@@ -271,8 +271,6 @@ pub async fn queue_run_in(
             .bind(id)
             .bind(version)
             .bind(target.device)
-            .bind(target.registration)
-            .bind(target.generation)
             .bind(input.occurrence)
             .bind(input.available)
             .bind(input.deadline)
@@ -313,7 +311,7 @@ pub async fn queue_run_in(
     }
     audit.plan(version);
     audit.target(&id.to_string());
-    audit.registration(input.target.registration);
+    audit.target_device(&input.target.device);
     let result: Result<()> = async {
         let run = storage::read_run(profile, tx, id).await?;
         let fact = Fact::business(
@@ -356,9 +354,9 @@ pub fn policy_occurrence(
     event: &str,
 ) -> String {
     match frequency {
-        Frequency::OncePerVersion => format!("version:{}", target.registration),
-        Frequency::OncePerEntry => format!("entry:{source}:{entry}:{}", target.registration),
-        Frequency::EveryTrigger => format!("{event}:{}", target.registration),
+        Frequency::OncePerVersion => format!("version:{}", target.device),
+        Frequency::OncePerEntry => format!("entry:{source}:{entry}:{}", target.device),
+        Frequency::EveryTrigger => format!("{event}:{}", target.device),
     }
 }
 pub async fn occurrence_available_in(
@@ -382,7 +380,7 @@ pub async fn occurrence_available_in(
                 )
                 .bind(tenant)
                 .bind(version)
-                .bind(device)
+                .bind(&device)
                 .bind(key)
                 .fetch_one(c)
                 .await
@@ -414,7 +412,7 @@ fn dispatch(
     use rss_transactional_messaging::{message::*, outbox::PendingMessage};
     use sha2::{Digest, Sha256};
     let payload = checked_input(serde_json::to_vec(
-        &serde_json::json!({"version":1,"policyVersion":version,"taskId":input.id,"device":input.target.device,"registrationId":input.target.registration,"generation":input.target.generation}),
+        &serde_json::json!({"version":1,"policyVersion":version,"taskId":input.id,"device":input.target.device}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         checked_input(MessageId::parse(&format!("enrollment.{}", input.id)))?,

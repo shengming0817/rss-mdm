@@ -31,8 +31,7 @@ pub trait Inventory: Send + Sync {
         &'a self,
         c: &'a mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
-        registration: uuid::Uuid,
-        generation: i64,
+        device: String,
     ) -> std::pin::Pin<
         Box<
             dyn Future<Output = std::result::Result<rss_mdm_inventory::channel::Observation, Error>>

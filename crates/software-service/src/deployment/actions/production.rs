@@ -21,7 +21,7 @@ fn dispatch(
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
     let payload = checked_input(serde_json::to_vec(
-        &json!({"version":1,"source":source,"taskId":id,"device":target.device,"registrationId":target.registration,"generation":target.generation}),
+        &json!({"version":1,"source":source,"taskId":id,"device":target.device}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         checked_input(MessageId::parse(&format!("action.{id}")))?,
@@ -144,7 +144,7 @@ pub(crate) async fn queue_run_in(
         return Err(Error::Conflict.into());
     }
     let tenant = tx.tenant_id().to_string();
-    let registration = target.registration;
+    let device = target.device.clone();
     let target = target.clone();
     let digest = fingerprint.clone();
     let origin = checked_input(serde_json::to_value(origin))?;
@@ -155,8 +155,8 @@ pub(crate) async fn queue_run_in(
     let (kind, version) = source.columns();
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_software_deployment.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,invocation,retirement) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).bind(invocation).bind(retirement).execute(c).await?;Ok(())
+        sqlx::query("INSERT INTO mdm_software_deployment.action_runs (tenant_id, id, source_kind, policy_version, device, occurrence, available_at, deadline, state, dispatch_fingerprint, created_at, source_objects, origin, invocation, retirement) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)")
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).bind(invocation).bind(retirement).execute(c).await?;Ok(())
     })).await?;
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
@@ -182,7 +182,7 @@ pub(crate) async fn queue_run_in(
     }
     source.audit(&audit);
     audit.target(&id.to_string());
-    audit.registration(registration);
+    audit.target_device(&device);
     let result: Result<()> = async {
         let run = super::storage::read_run(tx, id).await?;
         let fact = Fact::business(
@@ -232,7 +232,7 @@ pub(crate) async fn occurrence_available_in(
     let device = target.device.clone();
     let key = occurrence.to_owned();
     let exists: bool = tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4)").bind(tenant).bind(version).bind(device).bind(key).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4)").bind(tenant).bind(version).bind(&device).bind(key).fetch_one(c).await
     })).await?;
     Ok(!exists
         && service

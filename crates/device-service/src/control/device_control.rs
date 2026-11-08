@@ -86,30 +86,11 @@ pub enum Applicability {
 }
 
 /// A capability read has no operation identity, deadline, confirmation or secret.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Check {
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub source: ReportSource,
     pub action: Kind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RegistrationConfirmation {
-    pub registration_id: Uuid,
-    pub generation: i64,
-}
-impl RegistrationConfirmation {
-    pub fn check(self, registration: Uuid, generation: i64) -> Result<(), Error> {
-        if self.registration_id.is_nil() || self.generation < 1 {
-            return Err(Error::Malformed);
-        }
-        if self.registration_id != registration || self.generation != generation {
-            return Err(Error::Conflict);
-        }
-        Ok(())
-    }
 }
 
 #[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
@@ -121,17 +102,8 @@ impl RegistrationConfirmation {
 )]
 pub enum Action {
     Restart {},
-    Lock {
-        confirmed: bool,
-        expected_registration_id: Uuid,
-        expected_generation: i64,
-        pin: String,
-    },
-    Wipe {
-        confirmed: bool,
-        expected_registration_id: Uuid,
-        expected_generation: i64,
-    },
+    Lock { confirmed: bool, pin: String },
+    Wipe { confirmed: bool },
 }
 impl std::fmt::Debug for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -146,33 +118,21 @@ impl Action {
             Self::Wipe { .. } => Kind::Wipe,
         }
     }
-    pub fn confirmation(&self) -> Result<Option<RegistrationConfirmation>, Error> {
-        let (confirmed, registration_id, generation) = match self {
-            Self::Restart {} => return Ok(None),
-            Self::Lock {
-                confirmed,
-                expected_registration_id,
-                expected_generation,
-                pin,
-            } => {
+    pub fn confirmation(&self) -> Result<bool, Error> {
+        let confirmed = match self {
+            Self::Restart {} => return Ok(false),
+            Self::Lock { confirmed, pin } => {
                 if pin.len() != 6 || !pin.bytes().all(|v| v.is_ascii_digit()) {
                     return Err(Error::Malformed);
                 }
-                (*confirmed, *expected_registration_id, *expected_generation)
+                *confirmed
             }
-            Self::Wipe {
-                confirmed,
-                expected_registration_id,
-                expected_generation,
-            } => (*confirmed, *expected_registration_id, *expected_generation),
+            Self::Wipe { confirmed } => *confirmed,
         };
-        if !confirmed || registration_id.is_nil() || generation < 1 {
+        if !confirmed {
             return Err(Error::Malformed);
         }
-        Ok(Some(RegistrationConfirmation {
-            registration_id,
-            generation,
-        }))
+        Ok(true)
     }
     pub(crate) fn task(&self, source: ReportSource) -> Result<Task, Error> {
         let mut task = self.kind().native_shape(source)?;
@@ -221,7 +181,7 @@ impl Input {
     }
 }
 
-/// Reauthorization refreshes grants, never changes the original action, PIN or registration.
+/// Reauthorization refreshes grants, never changes the original device, action or PIN.
 #[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Reauthorization {
@@ -233,24 +193,14 @@ pub struct Reauthorization {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DangerousActionConfirmation {
     pub confirmed: bool,
-    pub expected_registration_id: Uuid,
-    pub expected_generation: i64,
 }
 impl Reauthorization {
-    pub fn registration(&self) -> Result<Option<RegistrationConfirmation>, Error> {
-        self.confirmation
-            .as_ref()
-            .map(|v| {
-                if !v.confirmed || v.expected_registration_id.is_nil() || v.expected_generation < 1
-                {
-                    return Err(Error::Malformed);
-                }
-                Ok(RegistrationConfirmation {
-                    registration_id: v.expected_registration_id,
-                    generation: v.expected_generation,
-                })
-            })
-            .transpose()
+    pub fn confirmed(&self) -> Result<bool, Error> {
+        match &self.confirmation {
+            None => Ok(false),
+            Some(value) if value.confirmed => Ok(true),
+            Some(_) => Err(Error::Malformed),
+        }
     }
 }
 
@@ -259,11 +209,7 @@ pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
     use rss_mdm_apple_mdm::native::{input::FieldValue, request::Request};
     let action = match kind {
         Kind::Restart => Action::Restart {},
-        Kind::Wipe => Action::Wipe {
-            confirmed: true,
-            expected_registration_id: Uuid::nil(),
-            expected_generation: 0,
-        },
+        Kind::Wipe => Action::Wipe { confirmed: true },
         Kind::Lock => {
             let Task::Macos {
                 request: Request::Command { command },
@@ -279,8 +225,7 @@ pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
             }
             Action::Lock {
                 confirmed: true,
-                expected_registration_id: Uuid::nil(),
-                expected_generation: 0,
+
                 pin: pin.clone(),
             }
         }
@@ -298,10 +243,10 @@ pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
 pub async fn source_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    registration: Uuid,
+    device: &str,
 ) -> crate::control::Result<Option<ReportSource>> {
-    let sources = sqlx::query_scalar::<_, String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND enabled AND source IN('mdm.apple','mdm.windows') ORDER BY source")
-        .bind(tenant.to_string()).bind(registration).fetch_all(c).await?;
+    let sources = sqlx::query_scalar::<_, String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND device=$2 AND enabled AND source IN('mdm.apple','mdm.windows') ORDER BY source")
+        .bind(tenant.to_string()).bind(device).fetch_all(c).await?;
     match sources.as_slice() {
         [] => Ok(None),
         [source] if source == "mdm.apple" => Ok(Some(ReportSource::MdmApple)),
@@ -329,15 +274,15 @@ pub(crate) async fn applicability_on(
             Ok(Task::Windows {
                 request: rss_mdm_windows_mdm::native::Execution::SyncMl { request },
             }) => {
-                windows_checks.push((id, check.registration, check.generation, request));
+                windows_checks.push((id, check.device.clone(), request));
             }
             Ok(Task::Macos {
                 request: rss_mdm_apple_mdm::native::request::Request::Command { command },
             }) => {
                 apples.push(crate::control::apple_facts::AppleControlCheck {
                     id,
-                    registration: check.registration,
-                    generation: check.generation,
+                    device: check.device.clone(),
+
                     action: check.action,
                     command,
                 });
@@ -380,9 +325,7 @@ impl crate::control::Service {
     pub(crate) async fn validate_control_in(
         &self,
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-        _device: &str,
-        registration: Uuid,
-        generation: i64,
+        device: &str,
         input: &Create,
         action: Kind,
     ) -> crate::control::Result<()> {
@@ -391,8 +334,8 @@ impl crate::control::Service {
         }
         let tenant = tx.tenant_id();
         let checks = [Check {
-            registration,
-            generation,
+            device: device.to_owned(),
+
             source: input.task.source(),
             action,
         }];

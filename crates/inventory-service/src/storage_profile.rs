@@ -28,7 +28,6 @@ pub(crate) struct Statements {
     pub collection_channel_finish_in_2: &'static str,
     pub collection_channel_abandon_in_1: &'static str,
     pub collection_channel_abandon_in_2: &'static str,
-    pub assets_channel_details_in_1: &'static str,
     pub assets_channel_snapshot_details_in_1: &'static str,
     pub assets_channel_snapshot_details_in_2: &'static str,
     pub object_manifest: &'static str,
@@ -48,263 +47,8 @@ macro_rules! define_storage {
     ($module:ident, $access_schema:literal, $access_path:literal, $access:literal, $owner:literal, $command_runtime:literal, $inventory_runtime:literal, $policy_runtime:literal, $scope_runtime:literal, $telemetry_runtime:literal, $runtime:literal, $api:literal, $index_11:literal, $index_12:literal, $index_13:literal, $index_14:literal, $index_15:literal, $index_16:literal, $index_17:literal, $index_18:literal, $index_19:literal, $index_20:literal, $index_21:literal, $index_22:literal, $index_23:literal, $contract_table_24:literal, $contract_table_25:literal, $contract_table_26:literal, $contract_table_27:literal, $access_contract_tables:literal, $access_contract_functions:literal, $access_contract_external_relations:literal, $asset_reader:literal, $asset_source:literal, $asset_schema:literal, $scope_object:literal, $authority_search_path:literal, $ingestion_runtime:literal) => {
         mod $module {
             pub(super) const SQL: super::Statements = super::Statements {
-                collection: concat!(r###"BEGIN;
-SET LOCAL check_function_bodies=false;
-
-
-CREATE FUNCTION "###, $access_schema, r###"capture_collection_history() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path TO "###, $access_path, r###"
-    AS $$
-DECLARE r jsonb; d jsonb; v bigint; t uuid; fields text[];
-BEGIN
- IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NULL; END IF;
- IF TG_OP='DELETE' THEN r=to_jsonb(OLD); ELSE r=to_jsonb(NEW); END IF;
- t=(r->>'tenant_id')::uuid;
- fields=ARRAY(SELECT f->'definition'->>'key' FROM jsonb_array_elements((r->>'attempts')::jsonb->'definition'->'fields') f);
- IF TG_OP='UPDATE' AND (to_jsonb(NEW)-'delivery_pending') IS NOT DISTINCT FROM (to_jsonb(OLD)-'delivery_pending') THEN
-  fields=ARRAY[]::text[];
- ELSIF r->>'result'='pending' AND cardinality(fields)>0 AND fields<@ARRAY['channel.agent.installation','channel.mdm.enrollment']::text[] THEN
-  fields=ARRAY[]::text[];
- END IF;
- v=mdm.record_asset_change(t,'collection',jsonb_build_object('run',r->>'id','registration',r->>'registration'),fields);
- IF TG_OP<>'DELETE' THEN
-  d=jsonb_build_object('id',r->>'id','result',r->>'result','progress_version',r->>'progress_version','delivery_pending',r->'delivery_pending');
- END IF;
- INSERT INTO "###, $access_schema, r###"collection_history VALUES(t,(r->>'id')::uuid,r->>'scope',(r->>'sequence')::bigint,v,d);
- RETURN NULL;
-END $$;
-
-
-CREATE FUNCTION "###, $access_schema, r###"immutable_collection() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
- IF OLD.sealed_at IS NOT NULL AND (to_jsonb(OLD)-'delivery_pending') IS DISTINCT FROM (to_jsonb(NEW)-'delivery_pending') THEN
-  -- A transport timeout with no device evidence is not a published collection result.
-  -- Only its original Agent attempt may acquire its first immutable batch.
-  IF OLD.reason='timeout' AND OLD.batch IS NULL AND OLD.digest IS NULL
-   AND OLD.source IN('agent.script','agent.osquery','agent.native')
-   AND NEW.reason='complete' AND NEW.batch IS NOT NULL AND NEW.digest IS NOT NULL
-   AND NEW.sealed_at>=OLD.sealed_at
-   AND OLD.attempts::jsonb->'definition'=NEW.attempts::jsonb->'definition'
-   AND (to_jsonb(OLD)-ARRAY['attempts','progress_version','result','reason','batch','digest','sealed_at','delivery_pending'])
-       =(to_jsonb(NEW)-ARRAY['attempts','progress_version','result','reason','batch','digest','sealed_at','delivery_pending'])
-  THEN RETURN NEW; END IF;
-  RAISE EXCEPTION 'sealed collection is immutable' USING ERRCODE='23514';
- END IF;
- RETURN NEW;
-END $$;
-
-
-CREATE FUNCTION "###, $access_schema, r###"prune_agent_collections(p_registration uuid, p_epoch uuid) RETURNS bigint
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path TO 'pg_catalog', 'pg_temp'
-    AS $$
-DECLARE removed bigint;
-BEGIN
- DELETE FROM "###, $access_schema, r###"collection_runs r
- WHERE r.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-   AND r.registration=p_registration AND r.source='agent.builtin' AND r.epoch=p_epoch
-   AND NOT r.delivery_pending AND r.id IN (
-    SELECT id FROM "###, $access_schema, r###"collection_runs
-    WHERE tenant_id=r.tenant_id AND registration=p_registration
-      AND source='agent.builtin' AND epoch=p_epoch AND NOT delivery_pending
-    ORDER BY sealed_at DESC,id DESC OFFSET 224
-   );
- GET DIAGNOSTICS removed = ROW_COUNT;
- RETURN removed;
-END $$;
-
-
-CREATE TABLE "###, $access_schema, r###"collection_history (
-    tenant_id uuid NOT NULL,
-    run uuid NOT NULL,
-    scope text NOT NULL,
-    sequence bigint NOT NULL,
-    revision bigint NOT NULL,
-    document jsonb,
-    CONSTRAINT collection_history_document_check CHECK (((document IS NULL) OR (octet_length((document)::text) <= 67108864)))
-);
-
-
-ALTER TABLE ONLY "###, $access_schema, r###"collection_history FORCE ROW LEVEL SECURITY;
-
-
-CREATE TABLE "###, $access_schema, r###"collection_runs (
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    registration uuid NOT NULL,
-    source text NOT NULL,
-    epoch uuid NOT NULL,
-    scope text NOT NULL,
-    sequence bigint NOT NULL,
-    started_at bigint NOT NULL,
-    attempts text NOT NULL,
-    evidence jsonb,
-    CONSTRAINT collection_evidence_check CHECK (octet_length(evidence::text)<=CASE WHEN source='agent.builtin' AND evidence ? 'agentReport' THEN 2097152 ELSE 131072 END),
-    result text NOT NULL,
-    reason text,
-    batch bytea,
-    digest text,
-    input_digest text CHECK(input_digest ~ '^[0-9a-f]{64}$'),
-    sealed_at bigint,
-    delivery_pending boolean DEFAULT false NOT NULL,
-    deadline timestamp with time zone,
-    CONSTRAINT collection_runs_attempts_check CHECK ((octet_length(attempts) <= 33554432)),
-    CONSTRAINT collection_runs_batch_check CHECK (((octet_length(batch) >= 1) AND (octet_length(batch) <= 4194304))),
-    CONSTRAINT collection_runs_check CHECK (((result = 'pending'::text) = (sealed_at IS NULL))),
-    CONSTRAINT collection_runs_check1 CHECK (((sealed_at IS NULL) = (reason IS NULL))),
-    CONSTRAINT collection_runs_check2 CHECK (((batch IS NULL) = (digest IS NULL))),
-    CONSTRAINT collection_runs_check3 CHECK (((NOT delivery_pending) OR (batch IS NOT NULL))),
-    CONSTRAINT collection_runs_check4 CHECK (((batch IS NULL) OR (sealed_at IS NOT NULL))),
-    CONSTRAINT collection_runs_digest_check CHECK ((digest ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT collection_runs_reason_check CHECK ((reason = ANY (ARRAY['complete'::text, 'message_budget'::text, 'aborted'::text, 'timeout'::text, 'superseded'::text, 'revoked'::text]))),
-    CONSTRAINT collection_runs_result_check CHECK ((result = ANY (ARRAY['pending'::text, 'snapshot'::text, 'partial'::text, 'failed'::text]))),
-    CONSTRAINT collection_runs_scope_check CHECK ((octet_length(scope) <= 4096)),
-    CONSTRAINT collection_runs_sequence_check CHECK ((sequence >= 0)),
-    CONSTRAINT collection_runs_started_at_check CHECK ((started_at >= 0)),
-    CONSTRAINT collection_source_profile CHECK ((source='mdm.apple' OR (source='mdm.windows' AND evidence ? 'nativeTemplate')) = (deadline IS NOT NULL))
-);
-
-
-ALTER TABLE ONLY "###, $access_schema, r###"collection_runs FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE ONLY "###, $access_schema, r###"collection_history
-    "###, $index_11, r###" PRIMARY KEY (tenant_id, run, revision);
-
-
-ALTER TABLE ONLY "###, $access_schema, r###"collection_runs
-    "###, $index_12, r###" PRIMARY KEY (tenant_id, id);
-
-
-"###, $index_13, " ON ", $access_schema, r###"collection_runs USING btree (tenant_id, registration, source, epoch, sealed_at DESC, id DESC) WHERE ((source = 'agent.builtin'::text) AND (NOT delivery_pending));
-
-
-"###, $index_14, " ON ", $access_schema, r###"collection_runs USING btree (tenant_id, deadline, id) WHERE (deadline IS NOT NULL AND sealed_at IS NULL);
-
-"###, $index_15, " ON ", $access_schema, r###"collection_runs(tenant_id,registration,id)
- WHERE source='mdm.windows' AND sealed_at IS NULL;
-
-
-"###, $index_16, " ON ", $access_schema, r###"collection_runs USING btree (tenant_id, registration, source, epoch, sequence) WHERE (source = 'mdm.apple'::text);
-
-
-"###, $index_17, " ON ", $access_schema, r###"collection_runs USING btree (tenant_id, registration, source, epoch, sequence) WHERE delivery_pending;
-
-
-"###, $index_18, " ON ", $access_schema, r###"collection_runs USING btree (tenant_id, scope, sequence) WHERE (source = ANY (ARRAY['agent.script'::text, 'agent.osquery'::text, 'agent.native'::text]));
-
-
-"###, $index_19, " ON ", $access_schema, r###"collection_history USING btree (tenant_id, scope, run, revision DESC);
-
-
-"###, $index_20, " ON ", $access_schema, r###"collection_runs USING btree (tenant_id, registration, source, epoch, sequence DESC);
-
-
-"###, $index_21, " ON ", $access_schema, r###"collection_runs USING btree (tenant_id, registration, source, epoch, sequence) WHERE (source = 'mdm.windows'::text);
-
-
-
-
-ALTER TABLE "###, $access_schema, r###"collection_history ENABLE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "###, $access_schema, r###"collection_runs ENABLE ROW LEVEL SECURITY;
-
-
-CREATE POLICY tenant ON "###, $access_schema, r###"collection_history USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
-
-CREATE POLICY tenant ON "###, $access_schema, r###"collection_runs USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-COMMIT;
-"###),
-                collection_relations: concat!(r###"BEGIN;
-SET LOCAL check_function_bodies=false;
-
-
-CREATE TRIGGER collection_history AFTER INSERT OR DELETE OR UPDATE ON "###, $access_schema, "collection_runs FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"capture_collection_history();
-
-
-CREATE TRIGGER immutable_collection BEFORE UPDATE ON "###, $access_schema, "collection_runs FOR EACH ROW EXECUTE FUNCTION ", $access_schema, r###"immutable_collection();
-
-
-ALTER TABLE ONLY "###, $access_schema, r###"collection_history
-    "###, $index_22, r###" FOREIGN KEY (tenant_id, revision) REFERENCES mdm.asset_changes(tenant_id, revision);
-
-
-ALTER TABLE ONLY "###, $access_schema, r###"collection_runs
-    "###, $index_23, " FOREIGN KEY (tenant_id, registration) REFERENCES ", $access_schema, r###"registrations(tenant_id, id);
-
-
-REVOKE ALL ON FUNCTION "###, $access_schema, r###"capture_collection_history() FROM PUBLIC;
-
-
-REVOKE ALL ON FUNCTION "###, $access_schema, r###"immutable_collection() FROM PUBLIC;
-
-
-REVOKE ALL ON FUNCTION "###, $access_schema, r###"prune_agent_collections(p_registration uuid, p_epoch uuid) FROM PUBLIC;
-
-GRANT ALL ON FUNCTION "###, $access_schema, "prune_agent_collections(p_registration uuid, p_epoch uuid) TO ", $access, r###";
-
-
-GRANT SELECT ON TABLE "###, $access_schema, "collection_history TO ", $inventory_runtime, ",", $access, r###";
-
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "collection_runs TO ", $access, r###";
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "collection_runs TO ", $inventory_runtime, r###";
-
-GRANT SELECT,INSERT ON TABLE "###, $access_schema, "collection_runs TO ", $command_runtime, r###";
-
-GRANT SELECT(tenant_id,scope,id,result,attempts,evidence,sequence,sealed_at) ON "###, $access_schema, "collection_runs TO ", $policy_runtime, r###";
-
-
-GRANT UPDATE(attempts) ON TABLE "###, $access_schema, "collection_runs TO ", $access, r###";
-
-GRANT UPDATE(attempts) ON TABLE "###, $access_schema, "collection_runs TO ", $command_runtime, r###";
-
-
-GRANT UPDATE(result) ON TABLE "###, $access_schema, "collection_runs TO ", $access, r###";
-
-GRANT UPDATE(result) ON TABLE "###, $access_schema, "collection_runs TO ", $command_runtime, r###";
-
-
-GRANT UPDATE(reason) ON TABLE "###, $access_schema, "collection_runs TO ", $access, r###";
-
-GRANT UPDATE(reason) ON TABLE "###, $access_schema, "collection_runs TO ", $command_runtime, r###";
-
-
-GRANT UPDATE(batch) ON TABLE "###, $access_schema, "collection_runs TO ", $access, r###";
-
-GRANT UPDATE(batch) ON TABLE "###, $access_schema, "collection_runs TO ", $command_runtime, r###";
-
-
-GRANT UPDATE(digest) ON TABLE "###, $access_schema, "collection_runs TO ", $access, r###";
-
-GRANT UPDATE(digest) ON TABLE "###, $access_schema, "collection_runs TO ", $command_runtime, r###";
-
-
-GRANT UPDATE(sealed_at) ON TABLE "###, $access_schema, "collection_runs TO ", $access, r###";
-
-GRANT UPDATE(sealed_at) ON TABLE "###, $access_schema, "collection_runs TO ", $command_runtime, r###";
-
-
-GRANT UPDATE(delivery_pending) ON TABLE "###, $access_schema, "collection_runs TO ", $access, r###";
-
-GRANT UPDATE(delivery_pending) ON TABLE "###, $access_schema, "collection_runs TO ", $command_runtime, r###";
-
-GRANT UPDATE(evidence) ON "###, $access_schema, "collection_runs TO ", $access, ",", $command_runtime, r###";
-
-
-GRANT SELECT ON "###, $access_schema, "collection_versions,", $access_schema, "collection_items TO ", $access, ",", $inventory_runtime, ",", $command_runtime, r###";
-
-GRANT SELECT(tenant_id,registration,source,epoch,id,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest,input_digest) ON "###, $access_schema, "collection_runs TO ", $telemetry_runtime, r###";
-
-GRANT INSERT(tenant_id,registration,source,epoch,id,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest,input_digest,delivery_pending) ON "###, $access_schema, "collection_runs TO ", $telemetry_runtime, r###";
-COMMIT;
-"###),
+                collection: concat!("BEGIN; SET LOCAL check_function_bodies TO 'false'; CREATE FUNCTION ", $access_schema, "capture_collection_history() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path TO ", $access_path, " AS $$\nDECLARE r jsonb; d jsonb; v bigint; t uuid; fields text[];\nBEGIN\n IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NULL; END IF;\n IF TG_OP='DELETE' THEN r=to_jsonb(OLD); ELSE r=to_jsonb(NEW); END IF;\n t=(r->>'tenant_id')::uuid;\n fields=ARRAY(SELECT f->'definition'->>'key' FROM jsonb_array_elements((r->>'attempts')::jsonb->'definition'->'fields') f);\n IF TG_OP='UPDATE' AND (to_jsonb(NEW)-'delivery_pending') IS NOT DISTINCT FROM (to_jsonb(OLD)-'delivery_pending') THEN\n  fields=ARRAY[]::text[];\n ELSIF r->>'result'='pending' AND cardinality(fields)>0 AND fields<@ARRAY['channel.agent.installation','channel.mdm.enrollment']::text[] THEN\n  fields=ARRAY[]::text[];\n END IF;\n v=mdm.record_asset_change(t,'collection',jsonb_build_object('run',r->>'id','device',r->>'device'),fields);\n IF TG_OP<>'DELETE' THEN\n  d=jsonb_build_object('id',r->>'id','result',r->>'result','progress_version',r->>'progress_version','delivery_pending',r->'delivery_pending');\n END IF;\n INSERT INTO ", $access_schema, "collection_history VALUES(t,(r->>'id')::uuid,r->>'scope',(r->>'sequence')::bigint,v,d);\n RETURN NULL;\nEND $$; CREATE FUNCTION ", $access_schema, "immutable_collection() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n IF OLD.sealed_at IS NOT NULL AND (to_jsonb(OLD)-'delivery_pending') IS DISTINCT FROM (to_jsonb(NEW)-'delivery_pending') THEN\n  -- A transport timeout with no device evidence is not a published collection result.\n  -- Only its original Agent attempt may acquire its first immutable batch.\n  IF OLD.reason='timeout' AND OLD.batch IS NULL AND OLD.digest IS NULL\n   AND OLD.source IN('agent.script','agent.osquery','agent.native')\n   AND NEW.reason='complete' AND NEW.batch IS NOT NULL AND NEW.digest IS NOT NULL\n   AND NEW.sealed_at>=OLD.sealed_at\n   AND OLD.attempts::jsonb->'definition'=NEW.attempts::jsonb->'definition'\n   AND (to_jsonb(OLD)-ARRAY['attempts','progress_version','result','reason','batch','digest','sealed_at','delivery_pending'])\n       =(to_jsonb(NEW)-ARRAY['attempts','progress_version','result','reason','batch','digest','sealed_at','delivery_pending'])\n  THEN RETURN NEW; END IF;\n  RAISE EXCEPTION 'sealed collection is immutable' USING ERRCODE='23514';\n END IF;\n RETURN NEW;\nEND $$; CREATE FUNCTION ", $access_schema, "prune_agent_collections(p_device text, p_epoch uuid) RETURNS bigint LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'pg_catalog', 'pg_temp' AS $$\nDECLARE removed bigint;\nBEGIN\n DELETE FROM ", $access_schema, "collection_runs r\n WHERE r.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid\n   AND r.device=p_device AND r.source='agent.builtin' AND r.epoch=p_epoch\n   AND NOT r.delivery_pending AND r.id IN (\n    SELECT id FROM ", $access_schema, "collection_runs\n    WHERE tenant_id=r.tenant_id AND device=p_device\n      AND source='agent.builtin' AND epoch=p_epoch AND NOT delivery_pending\n    ORDER BY sealed_at DESC,id DESC OFFSET 224\n   );\n GET DIAGNOSTICS removed = ROW_COUNT;\n RETURN removed;\nEND $$; CREATE TABLE ", $access_schema, "collection_history (tenant_id uuid NOT NULL, run uuid NOT NULL, scope text NOT NULL, sequence bigint NOT NULL, revision bigint NOT NULL, document jsonb, CONSTRAINT collection_history_document_check CHECK (document IS NULL OR octet_length(CAST(document AS text)) <= 67108864)); ALTER TABLE ONLY ", $access_schema, "collection_history FORCE ROW LEVEL SECURITY ; CREATE TABLE ", $access_schema, "collection_runs (tenant_id uuid NOT NULL, id uuid NOT NULL, device text NOT NULL, source text NOT NULL, epoch uuid NOT NULL, scope text NOT NULL, sequence bigint NOT NULL, started_at bigint NOT NULL, attempts text NOT NULL, evidence jsonb, CONSTRAINT collection_evidence_check CHECK (octet_length(CAST(evidence AS text)) <= CASE WHEN source = 'agent.builtin' AND evidence ? 'agentReport' THEN 2097152 ELSE 131072 END), result text NOT NULL, reason text, batch bytea, digest text, input_digest text CHECK (input_digest ~ '^[0-9a-f]{64}$'), sealed_at bigint, delivery_pending boolean DEFAULT FALSE NOT NULL, deadline timestamp with time zone, CONSTRAINT collection_runs_attempts_check CHECK (octet_length(attempts) <= 33554432), CONSTRAINT collection_runs_batch_check CHECK (octet_length(batch) >= 1 AND octet_length(batch) <= 4194304), CONSTRAINT collection_runs_check CHECK ((result = CAST('pending' AS text)) = (sealed_at IS NULL)), CONSTRAINT collection_runs_check1 CHECK ((sealed_at IS NULL) = (reason IS NULL)), CONSTRAINT collection_runs_check2 CHECK ((batch IS NULL) = (digest IS NULL)), CONSTRAINT collection_runs_check3 CHECK (NOT delivery_pending OR batch IS NOT NULL), CONSTRAINT collection_runs_check4 CHECK (batch IS NULL OR sealed_at IS NOT NULL), CONSTRAINT collection_runs_digest_check CHECK (digest ~ CAST('^[0-9a-f]{64}$' AS text)), CONSTRAINT collection_runs_reason_check CHECK (reason = ANY(ARRAY[CAST('complete' AS text), CAST('message_budget' AS text), CAST('aborted' AS text), CAST('timeout' AS text), CAST('superseded' AS text), CAST('revoked' AS text)])), CONSTRAINT collection_runs_result_check CHECK (result = ANY(ARRAY[CAST('pending' AS text), CAST('snapshot' AS text), CAST('partial' AS text), CAST('failed' AS text)])), CONSTRAINT collection_runs_scope_check CHECK (octet_length(scope) <= 4096), CONSTRAINT collection_runs_sequence_check CHECK (sequence >= 0), CONSTRAINT collection_runs_started_at_check CHECK (started_at >= 0), CONSTRAINT collection_source_profile CHECK ((source = 'mdm.apple' OR (source = 'mdm.windows' AND evidence ? 'nativeTemplate')) = (deadline IS NOT NULL))); ALTER TABLE ONLY ", $access_schema, "collection_runs FORCE ROW LEVEL SECURITY ; ALTER TABLE ONLY ", $access_schema, "collection_history ", $index_11, " PRIMARY KEY (tenant_id, run, revision); ALTER TABLE ONLY ", $access_schema, "collection_runs ", $index_12, " PRIMARY KEY (tenant_id, id); ", $index_13, " ON ", $access_schema, "collection_runs (tenant_id, device, source, epoch, sealed_at DESC, id DESC) WHERE source = CAST('agent.builtin' AS text) AND NOT delivery_pending; ", $index_14, " ON ", $access_schema, "collection_runs (tenant_id, deadline, id) WHERE deadline IS NOT NULL AND sealed_at IS NULL; ", $index_15, " ON ", $access_schema, "collection_runs (tenant_id, device, id) WHERE source = 'mdm.windows' AND sealed_at IS NULL; ", $index_16, " ON ", $access_schema, "collection_runs (tenant_id, device, source, epoch, sequence) WHERE source = CAST('mdm.apple' AS text); ", $index_17, " ON ", $access_schema, "collection_runs (tenant_id, device, source, epoch, sequence) WHERE delivery_pending; ", $index_18, " ON ", $access_schema, "collection_runs (tenant_id, scope, sequence) WHERE source = ANY(ARRAY[CAST('agent.script' AS text), CAST('agent.osquery' AS text), CAST('agent.native' AS text)]); ", $index_19, " ON ", $access_schema, "collection_history (tenant_id, scope, run, revision DESC); ", $index_20, " ON ", $access_schema, "collection_runs (tenant_id, device, source, epoch, sequence DESC); ", $index_21, " ON ", $access_schema, "collection_runs (tenant_id, device, source, epoch, sequence) WHERE source = CAST('mdm.windows' AS text); ALTER TABLE ", $access_schema, "collection_history ENABLE ROW LEVEL SECURITY ; ALTER TABLE ", $access_schema, "collection_runs ENABLE ROW LEVEL SECURITY ; CREATE POLICY tenant ON ", $access_schema, "collection_history AS PERMISSIVE FOR all TO PUBLIC USING (tenant_id = CAST(NULLIF(current_setting(CAST('rss.tenant_id' AS text), TRUE), CAST('' AS text)) AS uuid)) WITH CHECK (tenant_id = CAST(NULLIF(current_setting(CAST('rss.tenant_id' AS text), TRUE), CAST('' AS text)) AS uuid)); CREATE POLICY tenant ON ", $access_schema, "collection_runs AS PERMISSIVE FOR all TO PUBLIC USING (tenant_id = CAST(NULLIF(current_setting(CAST('rss.tenant_id' AS text), TRUE), CAST('' AS text)) AS uuid)) WITH CHECK (tenant_id = CAST(NULLIF(current_setting(CAST('rss.tenant_id' AS text), TRUE), CAST('' AS text)) AS uuid)); COMMIT"),
+                collection_relations: concat!("BEGIN;\nSET LOCAL check_function_bodies=false;\n\n\nCREATE TRIGGER collection_history AFTER INSERT OR DELETE OR UPDATE ON ", $access_schema, "collection_runs FOR EACH ROW EXECUTE FUNCTION ", $access_schema, "capture_collection_history();\n\n\nCREATE TRIGGER immutable_collection BEFORE UPDATE ON ", $access_schema, "collection_runs FOR EACH ROW EXECUTE FUNCTION ", $access_schema, "immutable_collection();\n\n\nALTER TABLE ONLY ", $access_schema, "collection_history\n    ", $index_22, " FOREIGN KEY (tenant_id, revision) REFERENCES mdm.asset_changes(tenant_id, revision);\n\n\nALTER TABLE ONLY ", $access_schema, "collection_runs ", $index_23, " FOREIGN KEY (tenant_id, device) REFERENCES ", $access_schema, "devices (tenant_id, id);\n\n\nREVOKE ALL ON FUNCTION ", $access_schema, "capture_collection_history() FROM PUBLIC;\n\n\nREVOKE ALL ON FUNCTION ", $access_schema, "immutable_collection() FROM PUBLIC;\n\n\nREVOKE ALL ON FUNCTION ", $access_schema, "prune_agent_collections(p_device text, p_epoch uuid) FROM PUBLIC;\n\nGRANT ALL ON FUNCTION ", $access_schema, "prune_agent_collections(p_device text, p_epoch uuid) TO ", $access, ";\n\n\nGRANT SELECT ON TABLE ", $access_schema, "collection_history TO ", $inventory_runtime, ",", $access, ";\n\n\nGRANT SELECT,INSERT ON TABLE ", $access_schema, "collection_runs TO ", $access, ";\n\nGRANT SELECT,INSERT ON TABLE ", $access_schema, "collection_runs TO ", $inventory_runtime, ";\n\nGRANT SELECT,INSERT ON TABLE ", $access_schema, "collection_runs TO ", $command_runtime, ";\n\nGRANT SELECT(tenant_id,scope,id,result,attempts,evidence,sequence,sealed_at) ON ", $access_schema, "collection_runs TO ", $policy_runtime, ";\n\n\nGRANT UPDATE(attempts) ON TABLE ", $access_schema, "collection_runs TO ", $access, ";\n\nGRANT UPDATE(attempts) ON TABLE ", $access_schema, "collection_runs TO ", $command_runtime, ";\n\n\nGRANT UPDATE(result) ON TABLE ", $access_schema, "collection_runs TO ", $access, ";\n\nGRANT UPDATE(result) ON TABLE ", $access_schema, "collection_runs TO ", $command_runtime, ";\n\n\nGRANT UPDATE(reason) ON TABLE ", $access_schema, "collection_runs TO ", $access, ";\n\nGRANT UPDATE(reason) ON TABLE ", $access_schema, "collection_runs TO ", $command_runtime, ";\n\n\nGRANT UPDATE(batch) ON TABLE ", $access_schema, "collection_runs TO ", $access, ";\n\nGRANT UPDATE(batch) ON TABLE ", $access_schema, "collection_runs TO ", $command_runtime, ";\n\n\nGRANT UPDATE(digest) ON TABLE ", $access_schema, "collection_runs TO ", $access, ";\n\nGRANT UPDATE(digest) ON TABLE ", $access_schema, "collection_runs TO ", $command_runtime, ";\n\n\nGRANT UPDATE(sealed_at) ON TABLE ", $access_schema, "collection_runs TO ", $access, ";\n\nGRANT UPDATE(sealed_at) ON TABLE ", $access_schema, "collection_runs TO ", $command_runtime, ";\n\n\nGRANT UPDATE(delivery_pending) ON TABLE ", $access_schema, "collection_runs TO ", $access, ";\n\nGRANT UPDATE(delivery_pending) ON TABLE ", $access_schema, "collection_runs TO ", $command_runtime, ";\n\nGRANT UPDATE(evidence) ON ", $access_schema, "collection_runs TO ", $access, ",", $command_runtime, ";\n\n\nGRANT SELECT ON ", $access_schema, "collection_versions,", $access_schema, "collection_items TO ", $access, ",", $inventory_runtime, ",", $command_runtime, ";\n\nGRANT SELECT (tenant_id, device, source, epoch, id, scope, sequence, started_at, sealed_at, attempts, result, reason, batch, digest, input_digest)\n  ON TABLE ", $access_schema, "collection_runs\n  TO ", $telemetry_runtime, ";\n\nGRANT INSERT (tenant_id, device, source, epoch, id, scope, sequence, started_at, sealed_at, attempts, result, reason, batch, digest, input_digest, delivery_pending)\n  ON TABLE ", $access_schema, "collection_runs\n  TO ", $telemetry_runtime, ";\nCOMMIT;\n"),
                 collection_metadata: concat!(r###"-- Collection progress remains canonical for worker recovery; display reads use immutable metadata.
 BEGIN;
 CREATE TABLE "###, $access_schema, r###"collection_versions (
@@ -367,32 +111,32 @@ CREATE TRIGGER capture_collection_metadata BEFORE INSERT OR UPDATE ON "###, $acc
  FOR EACH ROW EXECUTE FUNCTION "###, $access_schema, r###"capture_collection_metadata();
 COMMIT;
 "###),
-                collection_store_start_in_1: concat!("INSERT INTO ", $access_schema, "collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,floor(extract(epoch FROM clock_timestamp()))::bigint,$8,'pending')"),
+                collection_store_start_in_1: concat!("INSERT INTO ", $access_schema, "collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), CAST($3 AS text), $4, CAST($5 AS uuid), $6, $7, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint), $8, 'pending')"),
                 collection_store_save_attempts_in_1: concat!("UPDATE ", $access_schema, "collection_runs SET attempts=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND sealed_at IS NULL"),
                 collection_store_seal_1: concat!("UPDATE ", $access_schema, "collection_runs SET attempts=$3,result=$4,reason=$5,batch=$6,digest=$7,sealed_at=$8,delivery_pending=$9 WHERE tenant_id=$1::uuid AND id=$2::uuid AND sealed_at IS NULL"),
-                collection_store_terminate_1: concat!("SELECT tenant_id::text,registration::text,source,epoch::text,id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND sealed_at IS NULL ORDER BY sequence FOR UPDATE"),
-                collection_store_agent_report_in_1: concat!("SELECT tenant_id::text,registration::text,source,epoch::text,id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND id=$5::uuid"),
-                collection_store_collection_1: concat!("SELECT tenant_id::text,registration::text,source,epoch::text,id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND scope::jsonb->>'dataset'='inventory' AND ($5::uuid IS NULL OR id=$5::uuid) ORDER BY sequence DESC LIMIT 1"),
-                collection_store_load_on_1: concat!("SELECT tenant_id::text,registration::text,source,epoch::text,id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE"),
-                collection_store_read_on_1: concat!("SELECT tenant_id::text,registration::text,source,epoch::text,id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid"),
+                collection_store_terminate_1: concat!("SELECT CAST(tenant_id AS text), CAST(device AS text), source, CAST(epoch AS text), CAST(id AS text), scope, sequence, started_at, sealed_at, attempts, result, reason, batch, digest FROM ", $access_schema, "collection_runs WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND sealed_at IS NULL ORDER BY sequence FOR UPDATE"),
+                collection_store_agent_report_in_1: concat!("SELECT CAST(tenant_id AS text), CAST(device AS text), source, CAST(epoch AS text), CAST(id AS text), scope, sequence, started_at, sealed_at, attempts, result, reason, batch, digest FROM ", $access_schema, "collection_runs WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND source = $3 AND epoch = CAST($4 AS uuid) AND id = CAST($5 AS uuid)"),
+                collection_store_collection_1: concat!("SELECT CAST(tenant_id AS text), CAST(device AS text), source, CAST(epoch AS text), CAST(id AS text), scope, sequence, started_at, sealed_at, attempts, result, reason, batch, digest FROM ", $access_schema, "collection_runs WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND source = $3 AND epoch = CAST($4 AS uuid) AND CAST(scope AS jsonb) ->> 'dataset' = 'inventory' AND (CAST($5 AS uuid) IS NULL OR id = CAST($5 AS uuid)) ORDER BY sequence DESC LIMIT 1"),
+                collection_store_load_on_1: concat!("SELECT CAST(tenant_id AS text), CAST(device AS text), source, CAST(epoch AS text), CAST(id AS text), scope, sequence, started_at, sealed_at, attempts, result, reason, batch, digest FROM ", $access_schema, "collection_runs WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) FOR UPDATE"),
+                collection_store_read_on_1: concat!("SELECT CAST(tenant_id AS text), CAST(device AS text), source, CAST(epoch AS text), CAST(id AS text), scope, sequence, started_at, sealed_at, attempts, result, reason, batch, digest FROM ", $access_schema, "collection_runs WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid)"),
                 collection_store_pending_count_1: concat!("SELECT count(*) FROM (SELECT 1 FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND delivery_pending LIMIT 1001) q"),
-                collection_store_pending_reports_1: concat!("SELECT tenant_id::text,registration::text,source,epoch::text,id::text,scope,sequence,started_at,sealed_at,attempts,result,reason,batch,digest FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND delivery_pending ORDER BY registration,source,epoch,sequence,id LIMIT 32"),
+                collection_store_pending_reports_1: concat!("SELECT CAST(tenant_id AS text), CAST(device AS text), source, CAST(epoch AS text), CAST(id AS text), scope, sequence, started_at, sealed_at, attempts, result, reason, batch, digest FROM ", $access_schema, "collection_runs WHERE tenant_id = CAST($1 AS uuid) AND delivery_pending ORDER BY device, source, epoch, sequence, id LIMIT 32"),
                 collection_store_expire_timed_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline<=clock_timestamp())"),
                 collection_store_next_expiry_1: concat!("SELECT ceil(extract(epoch FROM min(deadline)-clock_timestamp())*1000)::bigint FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline>clock_timestamp()"),
                 collection_store_delivered_1: concat!("SELECT scope,sequence,digest,delivery_pending FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE"),
                 collection_store_delivered_2: concat!("UPDATE ", $access_schema, "collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending"),
                 collection_store_expire_timed_2: concat!("SELECT id::text,scope::jsonb->>'dataset' FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline<=clock_timestamp() ORDER BY deadline,id LIMIT 32 FOR UPDATE SKIP LOCKED"),
-                collection_agent_accept_in_1: concat!("SELECT registration::text,source,epoch::text,input_digest,sealed_at FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR SHARE"),
-                collection_agent_accept_in_2: concat!("SELECT count(*) FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='agent.builtin' AND epoch=$3::uuid AND delivery_pending"),
-                collection_agent_accept_in_3: concat!("SELECT ", $access_schema, "prune_agent_collections($1::uuid,$2::uuid)"),
-                collection_agent_accept_in_4: concat!("INSERT INTO ", $access_schema, "collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending,input_digest,evidence) VALUES($1::uuid,$4::uuid,$2::uuid,'agent.builtin',$3::uuid,$6,$5,$9,$11,$10,'complete',$7,$8,$9,true,$12,$13)"),
-                collection_channel_start_in_1: concat!("INSERT INTO ", $access_schema, "collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,evidence,deadline) VALUES($1::uuid,$2,$3,$4,$5::uuid,$6,$7,$8,$9,'pending',$10,CASE WHEN $4='mdm.apple' THEN clock_timestamp()+interval '5 minutes' END)"),
-                collection_channel_finish_in_1: concat!("SELECT scope,sequence,sealed_at,attempts FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND source=$4 AND epoch=$5::uuid FOR UPDATE"),
+                collection_agent_accept_in_1: concat!("SELECT CAST(device AS text), source, CAST(epoch AS text), input_digest, sealed_at FROM ", $access_schema, "collection_runs WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) FOR SHARE"),
+                collection_agent_accept_in_2: concat!("SELECT count(*) FROM ", $access_schema, "collection_runs WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND source = 'agent.builtin' AND epoch = CAST($3 AS uuid) AND delivery_pending"),
+                collection_agent_accept_in_3: concat!("SELECT ", $access_schema, "prune_agent_collections($1::text,$2::uuid)"),
+                collection_agent_accept_in_4: concat!("INSERT INTO ", $access_schema, "collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, reason, batch, digest, sealed_at, delivery_pending, input_digest, evidence) VALUES (CAST($1 AS uuid), CAST($4 AS uuid), CAST($2 AS text), 'agent.builtin', CAST($3 AS uuid), $6, $5, $9, $11, $10, 'complete', $7, $8, $9, TRUE, $12, $13)"),
+                collection_channel_start_in_1: concat!("INSERT INTO ", $access_schema, "collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, evidence, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, CAST($5 AS uuid), $6, $7, $8, $9, 'pending', $10, CASE WHEN $4 = 'mdm.apple' THEN clock_timestamp() + CAST('5 minutes' AS interval) END)"),
+                collection_channel_finish_in_1: concat!("SELECT scope, sequence, sealed_at, attempts FROM ", $access_schema, "collection_runs WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3 AND source = $4 AND epoch = CAST($5 AS uuid) FOR UPDATE"),
                 collection_channel_finish_in_2: concat!("UPDATE ", $access_schema, "collection_runs SET attempts=$3,result='snapshot',reason='complete',batch=$4,digest=$5,sealed_at=$6,delivery_pending=true,evidence=$7::jsonb WHERE tenant_id=$1::uuid AND id=$2"),
                 collection_channel_abandon_in_1: concat!("SELECT attempts FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE"),
-                collection_channel_abandon_in_2: concat!("UPDATE ", $access_schema, "collection_runs SET attempts=$3,result='failed',reason=$4,sealed_at=$5,delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL RETURNING registration"),
-                assets_channel_details_in_1: concat!("SELECT id,device FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=ANY($2)"),
-                assets_channel_snapshot_details_in_1: concat!("SELECT r.id,r.generation,s.source,s.epoch FROM unnest($2::uuid[],$3::bigint[],$4::text[],$5::text[]) t(id,generation,source,channel) JOIN ", $access_schema, "registrations r ON r.tenant_id=$1::uuid AND r.id=t.id AND r.generation=t.generation AND r.channel=t.channel AND r.state='active' JOIN ", $access_schema, "report_sources s ON s.tenant_id=r.tenant_id AND s.registration=r.id AND s.source=t.source AND s.enabled"),
+                collection_channel_abandon_in_2: concat!("UPDATE ", $access_schema, "collection_runs SET attempts = $3, result = 'failed', reason = $4, sealed_at = $5, delivery_pending = FALSE WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND sealed_at IS NULL RETURNING device"),
+
+                assets_channel_snapshot_details_in_1: concat!("SELECT r.id, s.source, s.epoch FROM unnest(CAST($2 AS text[]), CAST($3 AS text[]), CAST($4 AS text[])) AS t (id, source, channel) INNER JOIN ", $access_schema, "devices AS r ON r.tenant_id = CAST($1 AS uuid) AND r.id = t.id AND r.channel = t.channel AND r.state = 'active' INNER JOIN ", $access_schema, "report_sources AS s ON s.tenant_id = r.tenant_id AND s.device = r.id AND s.source = t.source AND s.enabled"),
                 assets_channel_snapshot_details_in_2: concat!("WITH selected AS MATERIALIZED(SELECT DISTINCT ON(scope) scope,id,result,attempts,evidence::text AS evidence FROM ", $access_schema, "collection_runs WHERE tenant_id=$1::uuid AND scope=ANY($2) AND sealed_at IS NOT NULL ORDER BY scope,sequence DESC),budget AS(SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok"),
                 object_manifest: concat!(r###"{"tables":[""###, $access_schema, r###"collection_history",""###, $access_schema, r###"collection_items",""###, $access_schema, r###"collection_runs",""###, $access_schema, r###"collection_versions"],"functions":[""###, $access_schema, r###"capture_collection_history",""###, $access_schema, r###"capture_collection_metadata",""###, $access_schema, r###"immutable_collection",""###, $access_schema, r###"prune_agent_collections",""###, $asset_reader, r###""],"views":[]}"###),
                 access_contract: concat!(r###"{"tables":[{"###, $contract_table_24, r###","read_write":false,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_25, r###","read_write":true,"updates":["attempts","result","reason","batch","digest","sealed_at","delivery_pending","evidence"],"delete_policy":null},{"###, $contract_table_26, r###","read_write":false,"read_only":true,"updates":[],"delete_policy":null},{"###, $contract_table_27, r###","read_write":false,"read_only":true,"updates":[],"delete_policy":null}"###, $access_contract_tables, r###"],"functions":[{"name":""###, $asset_reader, r###"","search_path":"search_path=pg_catalog"},{"name":""###, $access_schema, r###"prune_agent_collections","search_path":"search_path=pg_catalog, pg_temp"},{"name":"mdm.capture_asset_cut","search_path":"search_path=pg_catalog, mdm"},{"name":"mdm.asset_cut_contains","search_path":"search_path=pg_catalog, mdm"},{"name":"mdm.asset_visible","search_path":"search_path=pg_catalog, mdm"}"###, $access_contract_functions, r###"],"external_relations":["mdm.field_versions","mdm.collection_definitions","mdm.collection_results","mdm.array_versions","mdm.array_items","mdm.manual_assignments""###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
@@ -414,10 +158,10 @@ WITH context AS (
   SELECT FROM jsonb_array_elements(definition->'fields') f WHERE f->'scope'=p_scope AND f->'definition'->>'key'=ANY(p_fields)
  ) ORDER BY source,dataset LIMIT 4097
 ), sources AS MATERIALIZED (
- SELECT DISTINCT r.device,r.registration,r.generation,r.channel,r.source,r.epoch,d.dataset,
+ SELECT DISTINCT r.device,r.channel,r.source,r.epoch,d.dataset,
  format('{"tenant":%s,"object":%s,"registration":%s,"source":%s,"dataset":%s,"epoch":%s}',
   to_json((SELECT tenant::text FROM context)),to_json("###, $scope_object, r###"),
-  to_json(r.registration),to_json(r.source),to_json(d.dataset),to_json(r.epoch)) AS scope
+  to_json(r.device),to_json(r.source),to_json(d.dataset),to_json(r.epoch)) AS scope
  FROM "###, $asset_source, r###"(p_devices,p_cut) r JOIN datasets d USING(source)
  LIMIT 2001
 ), latest AS MATERIALIZED (
@@ -598,7 +342,7 @@ define_storage!(
     "mdm_assets.read_snapshot",
     "mdm_access.asset_sources_at",
     "SCHEMA mdm_assets",
-    "CASE WHEN d.dataset='inventory' THEN r.registration ELSE r.registration||':'||d.dataset END",
+    "CASE WHEN d.dataset='inventory' THEN r.device ELSE r.device||':'||d.dataset END",
     "search_path=pg_catalog, mdm_access",
     "mdm_runtime"
 );
@@ -638,7 +382,7 @@ define_storage!(
     "rss_da.read_asset_snapshot",
     "rss_da.asset_sources_at",
     "SCHEMA rss_da",
-    "'da:'||(CASE WHEN d.dataset='inventory' THEN r.registration ELSE r.registration||':'||d.dataset END)",
+    "'da:'||(CASE WHEN d.dataset='inventory' THEN r.device ELSE r.device||':'||d.dataset END)",
     "search_path=pg_catalog, rss_da",
     "da_runtime"
 );

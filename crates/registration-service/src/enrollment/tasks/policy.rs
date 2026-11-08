@@ -94,7 +94,7 @@ impl EnrollmentPolicy {
     ) -> Result<bool> {
         Ok(self.run_admission_in(service, tx, target).await?
             && self
-                .entry_in(service, tx, &target.device, now)
+                .entry_in(service, tx, &target.device.clone(), now)
                 .await?
                 .is_some())
     }
@@ -123,7 +123,7 @@ impl EnrollmentPolicy {
         if run.state.started_at.is_none() {
             let now = storage::now(tx).await?;
             if self
-                .entry_in(service, tx, &run.target.device, now)
+                .entry_in(service, tx, &run.target.device.clone(), now)
                 .await?
                 .is_none()
             {
@@ -175,7 +175,7 @@ impl EnrollmentPolicy {
         let profile = service.profile();
 
         let (platform, architecture) =
-            agent_facts::profile_in(profile, service, tx, run.target.registration)
+            agent_facts::profile_in(profile, service, tx, run.target.device.clone())
                 .await?
                 .ok_or(Error::Forbidden)?;
         let entry = self
@@ -204,12 +204,7 @@ impl EnrollmentPolicy {
                     rss_mdm_policy::Architecture::X86_64 => wire::TaskArchitecture::X86_64,
                     rss_mdm_policy::Architecture::Aarch64 => wire::TaskArchitecture::Aarch64,
                 },
-                registration_id: run.target.registration,
-                generation: run
-                    .target
-                    .generation
-                    .try_into()
-                    .map_err(|_| Error::Malformed)?,
+
                 task_id: run.id,
                 attempt_id: attempt,
                 permit,

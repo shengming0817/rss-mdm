@@ -150,10 +150,10 @@ pub(crate) fn candidate(
                 (at, format!("checkin:{event}"))
             }
             (Trigger::Registration, Some(TriggerInput::Agent(_)) | None) => {
-                (now, format!("registration:{}", target.registration))
+                (now, format!("device:{}", target.device))
             }
             (Trigger::Registration, Some(TriggerInput::Registration { at })) => {
-                (at, format!("registration:{}", target.registration))
+                (at, format!("device:{}", target.device))
             }
             (Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. }, _) => {
                 let Some(due) = schedule.collection_due(started, now, target.device.as_bytes())?
@@ -206,7 +206,7 @@ pub(crate) async fn explicit_on(
     allowed: bool,
 ) -> Result<Option<(Uuid, i64, i64)>> {
     Ok(sqlx::query_as("SELECT t.id,t.created_at,t.deadline FROM mdm_policy.triggers t WHERE t.tenant_id=$1::uuid AND t.version=$2 AND t.deadline>$4 AND $5 AND NOT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks r WHERE r.tenant_id=t.tenant_id AND r.policy_version=t.version AND r.device=$3 AND r.occurrence='explicit:'||t.id::text) ORDER BY t.created_at,t.id LIMIT 1")
-        .bind(tenant.to_string()).bind(version).bind(device).bind(now).bind(allowed).fetch_optional(c).await?)
+        .bind(tenant.to_string()).bind(version).bind(&device).bind(now).bind(allowed).fetch_optional(c).await?)
 }
 /// Exact production deduplication identity; absence is never inferred from version history.
 pub(crate) async fn occurrence_on(
@@ -217,7 +217,7 @@ pub(crate) async fn occurrence_on(
     occurrence: &str,
 ) -> Result<Option<Uuid>> {
     Ok(sqlx::query_scalar("SELECT id FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND occurrence=$4")
-        .bind(tenant.to_string()).bind(version).bind(device).bind(occurrence).fetch_optional(c).await?)
+        .bind(tenant.to_string()).bind(version).bind(&device).bind(occurrence).fetch_optional(c).await?)
 }
 pub struct RunInput<'a> {
     pub origin: ActivityOrigin,
@@ -297,9 +297,8 @@ pub async fn queue_run_in(
     let id = input.id;
     let now = input.now;
     tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_inventory.collection_tasks(tenant_id,id,policy_version,channel,device,registration,generation,occurrence,available_at,deadline,agent_state,dispatch_fingerprint,created_at,source_objects,origin,native_delivery,triggered_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)")
-            .bind(tenant).bind(id).bind(version).bind(channel).bind(target.device).bind(target.registration)
-            .bind(target.generation).bind(input.occurrence).bind(input.available).bind(input.deadline)
+        sqlx::query("INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, policy_version, channel, device, occurrence, available_at, deadline, agent_state, dispatch_fingerprint, created_at, source_objects, origin, native_delivery, triggered_at) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)")
+            .bind(tenant).bind(id).bind(version).bind(channel).bind(target.device).bind(input.occurrence).bind(input.available).bind(input.deadline)
             .bind(state).bind(fingerprint).bind(now).bind(evidence).bind(origin).bind(delivery).bind(input.triggered_at).execute(c).await?;
         Ok(())
     })).await?;
@@ -321,7 +320,7 @@ pub async fn queue_run_in(
     audit.identify_service("collection-admission");
     audit.plan(version);
     audit.target(&id.to_string());
-    audit.registration(input.target.registration);
+    audit.target_device(&input.target.device);
     let result: Result<()> = async {
         let activity = super::activity::accepted(id, version, input.target, input.origin);
         let fact = Fact::business(
@@ -361,9 +360,9 @@ pub fn policy_occurrence(
     event: &str,
 ) -> String {
     match frequency {
-        Frequency::OncePerVersion => format!("version:{}", target.registration),
-        Frequency::OncePerEntry => format!("entry:{source}:{entry}:{}", target.registration),
-        Frequency::EveryTrigger => format!("{event}:{}", target.registration),
+        Frequency::OncePerVersion => format!("version:{}", target.device),
+        Frequency::OncePerEntry => format!("entry:{source}:{entry}:{}", target.device),
+        Frequency::EveryTrigger => format!("{event}:{}", target.device),
     }
 }
 pub async fn occurrence_available_in(
@@ -403,7 +402,7 @@ fn dispatch(
     use rss_transactional_messaging::{message::*, outbox::PendingMessage};
     use sha2::{Digest, Sha256};
     let payload = checked_input(serde_json::to_vec(
-        &serde_json::json!({"version":1,"policyVersion":version,"taskId":input.id,"device":input.target.device,"registrationId":input.target.registration,"generation":input.target.generation}),
+        &serde_json::json!({"version":1,"policyVersion":version,"taskId":input.id,"device":input.target.device}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         checked_input(MessageId::parse(&format!("collection.{}", input.id)))?,

@@ -7,8 +7,6 @@ pub struct Observation {
     pub tenant: Uuid,
     pub installation: Uuid,
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
     pub authority: Uuid,
     pub sequence: i64,
     pub issued_at: i64,
@@ -81,13 +79,11 @@ impl Observation {
 
         if self.tenant.is_nil()
             || self.installation.is_nil()
-            || self.registration.is_nil()
             || self.authority.is_nil()
             || self.policy.is_nil()
             || self.policy_version.is_nil()
             || self.device.is_empty()
             || self.device.len() > 256
-            || self.generation < 1
             || self.sequence < 1
             || self.issued_at < 0
             || self.issued_at > now
@@ -219,8 +215,7 @@ mod tests {
             tenant: Uuid::new_v4(),
             installation: Uuid::new_v4(),
             device: "da".into(),
-            registration: Uuid::new_v4(),
-            generation: 1,
+
             authority: Uuid::new_v4(),
             sequence: 1,
             issued_at: 100,

@@ -794,7 +794,7 @@ impl Transactions {
         let old = storage::load(tx, &self.protection, id).await?;
         let current =
             storage::current_registration(tx, &old.device, old.request.task.purpose()?).await?;
-        let foreign = current != (old.registration, old.registration_generation);
+        let foreign = current != old.device.clone();
         let previous = super::protection::fingerprint(
             &self.protection,
             self.tenant,
@@ -895,7 +895,7 @@ impl Transactions {
             if !remove {
                 return Err(Error::Forbidden.into());
             }
-            let (registration, _) =
+            let registration =
                 storage::current_registration(tx, device, input.task.purpose()?).await?;
             let tenant = tx.tenant_id();
             let execution = input.operation_id;
@@ -919,7 +919,7 @@ impl Transactions {
                 retirement,
                 version,
                 device: device.into(),
-                registration,
+
                 execution,
                 required: input.task.permissions()?,
             }
@@ -1011,8 +1011,6 @@ impl Transactions {
                     let original = storage::load(tx, &self.protection, id).await?;
                     Some(ActivityTarget {
                         device: original.device,
-                        registration: original.registration,
-                        generation: original.registration_generation,
                     })
                 } else {
                     match storage::current_registration(
@@ -1022,10 +1020,8 @@ impl Transactions {
                     )
                     .await
                     {
-                        Ok((registration, generation)) => Some(ActivityTarget {
+                        Ok(_) => Some(ActivityTarget {
                             device: device.into(),
-                            registration,
-                            generation,
                         }),
                         Err(Fault::Request(Error::Conflict)) => None,
                         Err(error) => return Err(error),
@@ -1041,7 +1037,7 @@ impl Transactions {
                 context.target_device(device);
                 context.plan(version);
                 if let Some(target) = &activity.target {
-                    context.registration(target.registration);
+                    context.target_device(&target.device);
                 }
                 let key = format!(
                     "configuration-claim:{}:{policy}:{version}:{}:{assigned}",

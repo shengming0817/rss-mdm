@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 /// Fingerprint of the generated, fixed public schema artifact.
 pub const SCHEMA_FINGERPRINT: &str =
-    "e1becb715d0813bc8c9ee49ce43ce51f3221bcb1af126938713f87ef840a1c8f";
+    "9aa24493f46a902d1dd0152f363488cd26c16244dede708e5d8116f7b72ae7b5";
 /// Canonical manifest for fixed consumer artifacts.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/task_trust/manifest.json");
 /// Task-signing trust protocol version.
@@ -143,7 +143,7 @@ impl Trust {
     }
 }
 /// Acknowledgement after durable installation and readback, sent over an authenticated channel.
-/// The service compares registration and generation with authenticated identity, not request claims.
+/// The service compares device identity with authenticated identity, not request claims.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Acknowledgement {
@@ -153,12 +153,14 @@ pub struct Acknowledgement {
     pub operation: Uuid,
     /// Exact protocol version.
     pub version: u8,
-    /// Existing registration; this operation never creates a new device identity.
-    #[serde(with = "crate::runtime::strict_uuid")]
-    #[schemars(schema_with = "crate::runtime::uuid_schema")]
-    pub registration: Uuid,
-    /// Existing registration generation.
-    pub generation: u64,
+    /// Original device identity, checked against the authenticated transport.
+    #[serde(
+        rename = "deviceId",
+        deserialize_with = "crate::runtime::profile_device"
+    )]
+    #[schemars(schema_with = "crate::runtime::device_schema")]
+    pub device_id: String,
+
     /// Installed complete-set revision.
     pub revision: u64,
     /// Digest returned by `Trust::installation_digest`.
@@ -168,9 +170,8 @@ impl Acknowledgement {
     /// Check shape before comparing the registration with the authenticated channel.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.operation.is_nil()
-            || self.registration.is_nil()
+            || !crate::runtime::valid_device_id(&self.device_id)
             || self.version != API_VERSION
-            || !(1..=i64::MAX as u64).contains(&self.generation)
             || !(1..=i64::MAX as u64).contains(&self.revision)
             || self.digest.len() != 64
             || !self
@@ -200,14 +201,15 @@ pub struct Observation {
     /// Exact observation format.
     #[schemars(extend("const" = 1))]
     pub version: u8,
-    /// Authenticated registration identity.
-    #[serde(with = "crate::runtime::strict_uuid")]
-    #[schemars(schema_with = "crate::runtime::uuid_schema")]
-    pub registration: Uuid,
-    /// Authenticated registration generation.
-    #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
-    pub generation: u64,
-    /// Monotonic sequence within this registration generation and domain.
+    /// Original device identity, checked against the authenticated transport.
+    #[serde(
+        rename = "deviceId",
+        deserialize_with = "crate::runtime::profile_device"
+    )]
+    #[schemars(schema_with = "crate::runtime::device_schema")]
+    pub device_id: String,
+
+    /// Monotonic sequence within this device identity and domain.
     #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
     pub sequence: u64,
     /// Target revision, absent when fetching the target failed.
@@ -277,8 +279,7 @@ impl Observation {
         };
         if self.version != API_VERSION
             || self.operation.is_nil()
-            || self.registration.is_nil()
-            || !number(self.generation)
+            || !crate::runtime::valid_device_id(&self.device_id)
             || !number(self.sequence)
             || self.observed_at < 0
             || !material(self.target_revision, &self.target_digest)

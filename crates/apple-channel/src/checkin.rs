@@ -54,9 +54,8 @@ pub async fn checkin(
     }
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
-    audit.identify_device(principal.registration());
+    audit.identify_device(&(principal.device()).to_string());
     audit.target_device(principal.device());
-    audit.registration(principal.registration());
     let user_access = if protocol::user(&dictionary)?.is_some() {
         match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {
             Ok(access) => access,
@@ -108,8 +107,7 @@ pub async fn checkin(
             &bytes,
             &crate::material::aad(
                 &principal.tenant().to_string(),
-                principal.registration(),
-                principal.generation(),
+                principal.device(),
                 "",
                 0,
                 "apple.checkin.replay",
@@ -208,7 +206,7 @@ async fn checkin_on(
     let principal = *principal;
     let udid = *udid;
     let tenant = principal.tenant().to_string();
-    let registration = principal.registration().to_string();
+    let device = principal.device().to_string();
     crate::device::store::lock_channel(
         rss_mdm_install_support::StorageProfile::Mdm,
         tx,
@@ -217,7 +215,7 @@ async fn checkin_on(
         principal.require_channel()?,
     )
     .await?;
-    // Recheck under the same registration lock used by revoke/replacement, before every mutation.
+    // Recheck under the same device lock used by revoke/replacement, before every mutation.
     crate::device::store::revalidate_source(
         rss_mdm_install_support::StorageProfile::Mdm,
         tx,
@@ -225,7 +223,7 @@ async fn checkin_on(
         rss_mdm_inventory::ReportSource::MdmApple,
     )
     .await?;
-    let row=sqlx::query("SELECT udid,state FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state<>'retired' FOR UPDATE").bind(&tenant).bind(&registration).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let row=sqlx::query("SELECT udid, state FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND state <> 'retired' FOR UPDATE").bind(&tenant).bind(&device).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if udid.is_some_and(|udid| row.try_get::<String, _>("udid").ok().as_deref() != Some(udid)) {
         return Err(Error::Unauthorized);
     }
@@ -247,13 +245,13 @@ async fn checkin_on(
                 return Ok(Some("replay"));
             };
             (
-                format!("apple-token:{registration}:{scope}:{revision}"),
+                format!("apple-token:{device}:{scope}:{revision}"),
                 serde_json::json!({"tokenRevision":revision,"userScope":scope}),
             )
         }
         CheckIn::CheckOut { .. } => {
             departure
-                .departed(tx, &tenant, principal.registration())
+                .departed(tx, &tenant, principal.device().to_string())
                 .await
                 .map_err(|_| crate::Error::Unavailable(crate::Failure::AppleStorage))?;
             rss_mdm_registration_service::retire(
@@ -261,26 +259,26 @@ async fn checkin_on(
                 tx,
                 facts,
                 &tenant,
-                principal.registration(),
+                principal.device(),
                 "revoked",
                 *retirement,
             )
             .await?;
             (
-                format!("apple-checkout:{registration}"),
+                format!("apple-checkout:{device}"),
                 serde_json::json!({"state":"revoked"}),
             )
         }
         CheckIn::UserAuthenticate { user, .. } => {
             *response = protocol::xml(protocol::dictionary([("DigestChallenge", "".into())]))?;
             (
-                format!("apple-user-auth:{registration}:{user}:{digest}"),
+                format!("apple-user-auth:{device}:{user}:{digest}"),
                 serde_json::json!({"userScope":user.to_string()}),
             )
         }
         CheckIn::SetBootstrapToken { .. } | CheckIn::GetBootstrapToken => {
             crate::material::bootstrap_allowed(tx, principal).await?;
-            let current=sqlx::query("SELECT bootstrap,bootstrap_revision FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(principal.registration()).fetch_one(&mut *tx).await.map_err(db)?;
+            let current=sqlx::query("SELECT bootstrap, bootstrap_revision FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE").bind(&tenant).bind(principal.device()).fetch_one(&mut *tx).await.map_err(db)?;
             let revision = current
                 .try_get::<i64, _>("bootstrap_revision")
                 .map_err(db)?;
@@ -297,8 +295,7 @@ async fn checkin_on(
                                 sealed,
                                 &crate::material::aad(
                                     &tenant,
-                                    principal.registration(),
-                                    principal.generation(),
+                                    principal.device(),
                                     "",
                                     revision,
                                     "apple.bootstrap",
@@ -324,8 +321,7 @@ async fn checkin_on(
                                 token,
                                 &crate::material::aad(
                                     &tenant,
-                                    principal.registration(),
-                                    principal.generation(),
+                                    principal.device(),
                                     "",
                                     revision,
                                     "apple.bootstrap",
@@ -334,7 +330,7 @@ async fn checkin_on(
                             .map_err(|_| Error::Unavailable(Failure::AppleStorage))
                     })
                     .transpose()?;
-                sqlx::query("UPDATE mdm_apple.devices SET bootstrap=$3,bootstrap_revision=$4 WHERE tenant_id=$1::uuid AND registration=$2").bind(&tenant).bind(principal.registration()).bind(sealed).bind(revision).execute(&mut *tx).await.map_err(db)?;
+                sqlx::query("UPDATE mdm_apple.devices SET bootstrap = $3, bootstrap_revision = $4 WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(&tenant).bind(principal.device()).bind(sealed).bind(revision).execute(&mut *tx).await.map_err(db)?;
             } else {
                 let mut body = plist::Dictionary::new();
                 if let Some(sealed) = current
@@ -346,8 +342,7 @@ async fn checkin_on(
                             &sealed,
                             &crate::material::aad(
                                 &tenant,
-                                principal.registration(),
-                                principal.generation(),
+                                principal.device(),
                                 "",
                                 revision,
                                 "apple.bootstrap",
@@ -363,7 +358,7 @@ async fn checkin_on(
                 return Ok(Some("success"));
             }
             (
-                format!("apple-bootstrap:{registration}:{revision}:{digest}"),
+                format!("apple-bootstrap:{device}:{revision}:{digest}"),
                 serde_json::json!({"action":if matches!(input,CheckIn::GetBootstrapToken){"get"}else{"set"}}),
             )
         }
@@ -399,9 +394,8 @@ pub async fn manage(
     let credential = app.mount.credential(leaf.fingerprint())?;
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
-    audit.identify_device(principal.registration());
+    audit.identify_device(&(principal.device()).to_string());
     audit.target_device(principal.device());
-    audit.registration(principal.registration());
     let user_access = if message.user.is_some() {
         match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {
             Ok(access) => access,

@@ -61,7 +61,7 @@ impl Worker {
         let profile = self.service.profile();
 
         let (task, status) = rss_runtime::ManagedTask::prepare(
-            "mdm-registration-enrollment-recovery",
+            "mdm-device-enrollment-recovery",
             Duration::from_secs(20),
         );
         self.readiness.bind(status);

@@ -8,7 +8,7 @@ pub async fn record_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     purpose: &str,
-    registration: Uuid,
+    device: &str,
     issuer: &str,
     certificate: &[u8],
 ) -> Result<(), Error> {
@@ -17,19 +17,19 @@ pub async fn record_in(
         c,
         tenant,
         purpose,
-        Some(registration),
+        Some(device),
         issuer,
         certificate,
     )
     .await
 }
-/// Issued candidates are mapped before activation; a registration can be attached once.
+/// Issued candidates are mapped before activation; a device can be attached once.
 pub async fn record_candidate_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     purpose: &str,
-    registration: Option<Uuid>,
+    device: Option<&str>,
     issuer: &str,
     certificate: &[u8],
 ) -> Result<(), Error> {
@@ -51,7 +51,7 @@ pub async fn record_candidate_in(
             .bind(&fingerprint)
             .bind(issuer)
             .bind(&serial)
-            .bind(registration)
+            .bind(device)
             .bind(end)
             .bind(certificate)
             .bind(rss_mdm_device_trust::qualification::VERSION)
@@ -63,7 +63,7 @@ pub async fn record_candidate_in(
             .map_err(|_| Error::Storage)?
             .rows_affected();
     if changed == 0 {
-        let old: (Option<Uuid>, Vec<u8>, String, bool) =
+        let old: (Option<String>, Vec<u8>, String, bool) =
             sqlx::query_as(crate::storage_profile::sql(profile).certificates_record_candidate_in_2)
                 .bind(tenant)
                 .bind(purpose)
@@ -75,7 +75,7 @@ pub async fn record_candidate_in(
                 .fetch_one(&mut *c)
                 .await
                 .map_err(|_| Error::Storage)?;
-        if (old.0.is_some() && registration.is_some() && old.0 != registration)
+        if (old.0.is_some() && device.is_some() && old.0.as_deref() != device)
             || old.1 != certificate
             || old.2 != issuer
             || !old.3
@@ -83,12 +83,12 @@ pub async fn record_candidate_in(
             return Err(Error::Conflict);
         }
     }
-    if registration.is_some() {
+    if device.is_some() {
         sqlx::query(crate::storage_profile::sql(profile).certificates_record_candidate_in_3)
             .bind(tenant)
             .bind(purpose)
             .bind(sha2::Sha256::digest(certificate).to_vec())
-            .bind(registration)
+            .bind(device)
             .execute(c)
             .await
             .map_err(|_| Error::Storage)?;
@@ -99,12 +99,12 @@ pub async fn revoke_registration_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registration: Uuid,
+    device: &str,
 ) -> Result<(), Error> {
     let rows: Vec<(String, String, String)> =
         sqlx::query_as(crate::storage_profile::sql(profile).certificates_revoke_registration_in_1)
             .bind(tenant)
-            .bind(registration)
+            .bind(device)
             .fetch_all(&mut *c)
             .await
             .map_err(|_| Error::Storage)?;
@@ -190,7 +190,7 @@ pub async fn current_native_credential_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registration: Uuid,
+    device: &str,
     purpose: rss_mdm_agent_wire::pki::Purpose,
     now: i64,
 ) -> Result<bool, Error> {
@@ -199,7 +199,7 @@ pub async fn current_native_credential_in(
         crate::storage_profile::sql(profile).certificates_current_native_credential_in_1,
     )
     .bind(tenant)
-    .bind(registration)
+    .bind(device)
     .bind(crate::registry::purpose(purpose))
     .fetch_all(c)
     .await

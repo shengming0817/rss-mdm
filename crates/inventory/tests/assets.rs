@@ -20,8 +20,7 @@ fn fact(value: &str, source: &str) -> SourceFact {
             scope: rss_mdm_inventory::CollectionScope::Device,
             source: rss_mdm_inventory::Source::parse(source).unwrap(),
             dataset: Some("collector".into()),
-            registration: Some("registration".into()),
-            registration_generation: Some(1),
+            device_id: Some("device".into()),
             epoch: Some("epoch".into()),
             snapshot_id: "batch".into(),
             observed_at: 1,
@@ -101,8 +100,7 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
     assert!(rss_mdm_inventory::Source::parse("other").is_err());
     let mut manual = fact("tag", "manual");
     manual.evidence.dataset = None;
-    manual.evidence.registration = None;
-    manual.evidence.registration_generation = None;
+    manual.evidence.device_id = None;
     manual.evidence.epoch = None;
     manual.evidence.actor = Some("alice".into());
     for state in [State::Missing, State::Unsupported, State::Conflict] {
@@ -208,8 +206,7 @@ fn two_endpoint_manual_values_keep_identity_and_conflict_at_equal_priority() {
     let manual = |endpoint: &str, value: &str| {
         let mut source = fact(value, "manual");
         source.evidence.dataset = None;
-        source.evidence.registration = None;
-        source.evidence.registration_generation = None;
+        source.evidence.device_id = None;
         source.evidence.epoch = None;
         source.evidence.actor = Some("operator".into());
         EndpointSourceFact {

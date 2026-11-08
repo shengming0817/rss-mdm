@@ -141,14 +141,14 @@ impl Tasks for AgentTasks {
     ) -> Pending<'a, Option<(wire::TaskPayload, rss_mdm_audit_integration::Fact, i64)>> {
         Box::pin(async move {
             let tenant = tx.tenant_id().to_string();
-            let registration = p.registration();
+            let registration = p.device().to_owned();
             let binding = tx
                 .with_connection(move |c| {
                     Box::pin(async move {
                         Ok(rss_mdm_agent_channel::Bindings::new(
                             rss_mdm_install_support::StorageProfile::Mdm,
                         )
-                        .binding(c, tenant, registration)
+                        .binding(c, tenant, registration.to_string())
                         .await)
                     })
                 })
@@ -165,7 +165,7 @@ impl Tasks for AgentTasks {
             let after = rss_mdm_agent_channel::delivery::offer_after_in(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
-                p.registration(),
+                p.device().to_string(),
             )
             .await?;
             let mut candidates = Vec::new();
@@ -176,7 +176,7 @@ impl Tasks for AgentTasks {
                 candidates.extend(
                     rss_mdm_device_service::control::actions::poll::offer_candidates(
                         tx,
-                        p.registration(),
+                        p.device().to_string(),
                         now,
                         after,
                     )
@@ -190,7 +190,7 @@ impl Tasks for AgentTasks {
                 candidates.extend(
                     rss_mdm_script_service::poll::offer_candidates(
                         tx,
-                        p.registration(),
+                        p.device().to_string(),
                         now,
                         after,
                     )
@@ -204,7 +204,7 @@ impl Tasks for AgentTasks {
                 candidates.extend(
                     rss_mdm_inventory_service::collection::execution::poll::offer_candidates(
                         tx,
-                        p.registration(),
+                        p.device().to_string(),
                         now,
                         after,
                     )
@@ -218,7 +218,7 @@ impl Tasks for AgentTasks {
                 candidates.extend(
                     rss_mdm_software_service::deployment::actions::poll::offer_candidates(
                         tx,
-                        p.registration(),
+                        p.device().to_string(),
                         now,
                         after,
                     )
@@ -233,7 +233,7 @@ impl Tasks for AgentTasks {
                     rss_mdm_registration_service::enrollment::tasks::poll::offer_candidates(
                         rss_mdm_install_support::StorageProfile::Mdm,
                         tx,
-                        p.registration(),
+                        p.device().to_string(),
                         now,
                         after,
                     )
@@ -251,7 +251,7 @@ impl Tasks for AgentTasks {
                 candidates.extend(
                     rss_mdm_device_access_postgres::device_access::execution::poll::offer_candidates(
                         tx,
-                        p.registration(),
+                        p.device().to_string(),
                         now,
                         after,
                     )
@@ -271,7 +271,7 @@ impl Tasks for AgentTasks {
                         rss_mdm_recovery_credentials::tasks::actions::poll::offer_candidates(
                             profile,
                             tx,
-                            p.registration(),
+                            p.device().to_string(),
                             now,
                             after,
                         )
@@ -387,7 +387,7 @@ impl Tasks for AgentTasks {
             rss_mdm_agent_channel::delivery::offer_through_in(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 tx,
-                p.registration(),
+                p.device().to_string(),
                 inspected,
             )
             .await?;
@@ -605,26 +605,26 @@ impl Tasks for AgentTasks {
     fn cancellations<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        registration: Uuid,
+        registration: String,
         after: Option<Uuid>,
     ) -> Pending<'a, Vec<wire::TaskCancellation>> {
         Box::pin(async move {
             let mut page = rss_mdm_device_service::control::actions::poll::cancellations(
                 tx,
-                registration,
+                registration.clone(),
                 after,
             )
             .await
             .map_err(fault)?;
             page.extend(
-                rss_mdm_script_service::poll::cancellations(tx, registration, after)
+                rss_mdm_script_service::poll::cancellations(tx, registration.clone(), after)
                     .await
                     .map_err(script_fault)?,
             );
             page.extend(
                 rss_mdm_inventory_service::collection::execution::poll::cancellations(
                     tx,
-                    registration,
+                    registration.clone(),
                     after,
                 )
                 .await
@@ -633,7 +633,7 @@ impl Tasks for AgentTasks {
             page.extend(
                 rss_mdm_software_service::deployment::actions::poll::cancellations(
                     tx,
-                    registration,
+                    registration.clone(),
                     after,
                 )
                 .await
@@ -643,7 +643,7 @@ impl Tasks for AgentTasks {
                 rss_mdm_registration_service::enrollment::tasks::poll::cancellations(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     tx,
-                    registration,
+                    registration.clone(),
                     after,
                 )
                 .await
@@ -652,7 +652,7 @@ impl Tasks for AgentTasks {
             page.extend(
                 rss_mdm_device_access_postgres::device_access::execution::poll::cancellations(
                     tx,
-                    registration,
+                    registration.clone(),
                     after,
                 )
                 .await
@@ -663,7 +663,7 @@ impl Tasks for AgentTasks {
                     rss_mdm_recovery_credentials::tasks::actions::poll::cancellations(
                         credentials.profile(),
                         tx,
-                        registration,
+                        registration.clone(),
                         after,
                     )
                     .await
@@ -907,7 +907,7 @@ pub(super) async fn prepare(
                 let binding = rss_mdm_agent_channel::Bindings::new(
                     rss_mdm_install_support::StorageProfile::Mdm,
                 )
-                .binding(c, tenant, p.registration())
+                .binding(c, tenant, p.device().to_string())
                 .await?
                 .ok_or(rss_mdm_agent_channel::Error::Unauthorized)?;
                 if !binding.inventory() || !binding.task() {

@@ -399,7 +399,7 @@ pub(crate) async fn prepare(
         PreparedRecovery::Native(work, run_id)
     } else if let Some(work) = actions::scheduled::Work::parse(entity) {
         if let Some(device) =
-            actions::scheduled::device_in(&service.transactions.policy_reader, tx, work).await?
+            actions::scheduled::device_in(&service.transactions.policy_reader, tx, &work).await?
         {
             if !actions::run_recovery::try_lock_device(tx, &device).await? {
                 return Ok(None);
@@ -470,7 +470,7 @@ pub(crate) async fn apply_prepared(
             .await
             .map(|()| false),
         PreparedRecovery::Scheduled(work, run) => {
-            actions::scheduled::advance_in(service, tx, work, run)
+            actions::scheduled::advance_in(service, tx, &work, run)
                 .await
                 .map(|()| false)
         }
@@ -492,17 +492,15 @@ pub(crate) async fn apply_prepared(
                 rss_mdm_registration_service::Purpose::Primary,
             )
             .await;
-            if let Ok((id, generation)) = registration {
+            if registration.is_ok() {
                 rss_mdm_registration_service::command_authority::resolve_in(
                     &service.transactions.store,
                     tx,
                     &name,
-                    id,
-                    generation,
                 )
                 .await?;
             }
-            let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.command_device::text,a.generation,a.epoch,CASE WHEN r.authority_epoch=a.epoch THEN r.recovery_after END AS recovery_after FROM mdm_access.command_authorities a LEFT JOIN mdm_software_deployment.device_recovery r USING(tenant_id,device) WHERE a.tenant_id=$1::uuid AND a.device=$2 FOR UPDATE OF a").bind(tenant).bind(key).fetch_one(c).await})).await?;
+            let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT CAST(a.command_device AS text), a.generation, a.epoch, CASE WHEN r.authority_epoch = a.epoch THEN r.recovery_after END AS recovery_after FROM mdm_access.command_authorities AS a LEFT JOIN mdm_software_deployment.device_recovery AS r USING (tenant_id, device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 FOR UPDATE OF a").bind(tenant).bind(key).fetch_one(c).await})).await?;
             let scope = dc::Scope::new(
                 service.transactions.tenant,
                 stored(dc::DeviceId::parse(
@@ -601,7 +599,6 @@ pub(crate) async fn apply_prepared(
                     rss_mdm_audit_integration::AuditIntent::Management,
                 );
                 fact_audit.target_device(&operation.device);
-                fact_audit.registration(operation.registration);
                 let fact = Fact::business(&fact_audit, rss_mdm_audit_integration::operation::OperationOwner::SoftwareDeployment, &format!("command:{id}:recover:{}", command.version()), 200, "success", None)?
                     .with_details(serde_json::json!({"previousVersion":previous_version,"after":service::status(command.status()),"version":command.version()}))?
                     .with_activity(&crate::deployment::timeline::native_activity(&operation, command.status(), rss_mdm_audit_integration::activity::ActivityPhase::Reconciled))?;
@@ -654,7 +651,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for SoftwareService {
             if entity.starts_with("scheduled:") && actions::scheduled::Work::parse(entity).is_none() { return Err(Error::Unavailable(Failure::CommandInvariant).into()); }
             if entity == "inputs" { return crate::deployment::source_changes::pending_in(tx, service.transactions.source.clone()).await; }
             if let Some(work)=actions::run_recovery::Work::parse(entity) { return actions::run_recovery::needs_step(service,tx,work).await; }
-            if let Some(work)=actions::scheduled::Work::parse(entity) { return Ok(actions::scheduled::device_in(&service.transactions.policy_reader, tx,work).await?.is_some()); }
+            if let Some(work)=actions::scheduled::Work::parse(entity) { return Ok(actions::scheduled::device_in(&service.transactions.policy_reader, tx,&work).await?.is_some()); }
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
             if let Some(digest)=entity.strip_prefix("agent-install:") {
                 let Some(device)=agent_install_device(tx,digest).await? else {return Ok(false)};

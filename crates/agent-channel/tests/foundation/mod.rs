@@ -76,8 +76,6 @@ async fn accepted(c: &Context, p: &registration::DevicePrincipal) -> Result<Uuid
         members: vec![registration::device::endpoints::PrimaryRegistration {
             device: p.device().into(),
             channel: rss_mdm_inventory::Channel::Agent,
-            registration_id: p.registration(),
-            generation: p.generation(),
         }],
     };
     let policy = Uuid::new_v4();
@@ -118,7 +116,7 @@ async fn accepted(c: &Context, p: &registration::DevicePrincipal) -> Result<Uuid
     let mut tx = c.seed().await?;
     sqlx::query("INSERT INTO rss_da.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(actor)?).bind(at).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.policy_versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'request_mdm_enrollment',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_da.enrollment_runs(tenant_id,id,policy_version,origin,source_objects,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint) VALUES($1::uuid,$2,$3,'\"policy\"',$4,$5,$6,$7,'once',$8,$8,$9,$10,true,$11)").bind(c.tenant.to_string()).bind(run).bind(version).bind(json!([object])).bind(p.device()).bind(p.registration()).bind(p.generation()).bind(at).bind(at+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(at+300,at)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.enrollment_runs (tenant_id, id, policy_version, origin, source_objects, device, occurrence, created_at, available_at, deadline, state, gateway_accepted, dispatch_fingerprint) VALUES (CAST($1 AS uuid), $2, $3, '\"policy\"', $4, $5, 'once', $6, $6, $7, $8, TRUE, $9)").bind(c.tenant.to_string()).bind(run).bind(version).bind(json!([object])).bind(p.device()).bind(at).bind(at+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(at+300,at)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(run)
 }
@@ -140,15 +138,14 @@ async fn exercise(c: &Context) -> Result<()> {
         &[rss_mdm_agent_wire::task_trust::KeyState::Active],
     )
     .await?;
-    let (registration, grant, device) = material::seed_registration(c).await?;
+    let (device, grant) = material::seed_registration(c).await?;
     let capabilities = vec![
         w::Capability::InventoryCollectionV1,
         w::Capability::MdmEnrollmentV1,
     ];
     let (p, pki_trust) =
-        material::authenticated_agent(c, registration, grant, &device, capabilities.clone())
-            .await?;
-    material::seed_ack(c, &trust, registration, p.generation()).await?;
+        material::authenticated_agent(c, grant, &device, capabilities.clone()).await?;
+    material::seed_ack(c, &trust, &device).await?;
     let context = execution_context();
     let mut tx = c.seed().await?;
     use registration::agent::RuntimeBinding;
@@ -165,15 +162,14 @@ async fn exercise(c: &Context) -> Result<()> {
                 profile: DA,
                 tenant: c.tenant,
                 device: device.clone(),
-                registration,
-                generation: p.generation(),
+
                 epoch: p.epoch(),
                 operation: Uuid::new_v4(),
             },
             &profile,
         )
         .await?;
-    assert_eq!(binding.registration_id, registration);
+    assert_eq!(binding.device_id, device);
     let loaded = rss_mdm_task_trust::trust::load(
         DA,
         rss_mdm_task_trust::Use::AgentTask,
@@ -350,7 +346,7 @@ async fn exercise(c: &Context) -> Result<()> {
         result,
         serde_json::to_value(w::EnrollmentEntryOutcome::Opened)?
     );
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm'").bind(c.tenant.to_string()).bind(&device).fetch_one(&c.operator).await?;
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM rss_da.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND channel = 'mdm'").bind(c.tenant.to_string()).bind(&device).fetch_one(&c.operator).await?;
     assert_eq!(count, 0, "Opened is UI evidence only");
     let forbidden:Vec<String>=sqlx::query_scalar("SELECT nspname::text FROM pg_namespace WHERE nspname IN('mdm_devices','mdm_apple','mdm_windows','mdm_access','mdm_agent','mdm_policy','mdm_scope','mdm_recovery','mdm_webhook')").fetch_all(&c.operator).await?;
     assert!(
@@ -362,8 +358,8 @@ async fn exercise(c: &Context) -> Result<()> {
         .bind(Uuid::new_v4().to_string())
         .execute(&mut *tx)
         .await?;
-    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.registrations WHERE id=$1")
-        .bind(registration)
+    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_da.devices WHERE id = $1")
+        .bind(&device)
         .fetch_one(&mut *tx)
         .await?;
     assert_eq!(visible, 0);
@@ -374,10 +370,10 @@ async fn exercise(c: &Context) -> Result<()> {
     // A revocation that wins the registration row lock invalidates the old principal.
     let mut revoke = c.seed().await?;
     sqlx::query(
-        "UPDATE rss_da.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2",
+        "UPDATE rss_da.devices SET state = 'revoked' WHERE tenant_id = CAST($1 AS uuid) AND id = $2",
     )
     .bind(c.tenant.to_string())
-    .bind(registration)
+    .bind(&device)
     .execute(&mut *revoke)
     .await?;
     let next = w::TaskClaimRequest::new(Uuid::new_v4(), vec![], context.clone())?;

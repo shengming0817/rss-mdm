@@ -46,8 +46,6 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, lock: bool) -> Result<Run>
         policy_version: row.try_get("policy_version")?,
         target: Target {
             device: row.try_get("device")?,
-            registration: row.try_get("registration")?,
-            generation: row.try_get("generation")?,
         },
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         available_at: row.try_get("available_at")?,
@@ -84,10 +82,10 @@ pub async fn save_run(
 pub async fn agent_profile_in(
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    device: String,
 ) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
     Ok(
-        agent_facts::agent_binding_in(tx, service.agent_store.clone(), registration)
+        agent_facts::agent_binding_in(tx, service.agent_store.clone(), device)
             .await?
             .and_then(|b| {
                 let platform = match b.platform.as_str() {
@@ -121,7 +119,7 @@ pub async fn active_count_on(
     device: &str,
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT count(*) FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running','unknown','waiting_reboot') AND (deadline>$3 OR state->>'startedAt' IS NOT NULL) AND state->>'cancellation'<>'confirmed'").bind(tenant.to_string()).bind(device).bind(now).fetch_one(c).await
+    sqlx::query_scalar("SELECT count(*) FROM rss_da.access_runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running','unknown','waiting_reboot') AND (deadline>$3 OR state->>'startedAt' IS NOT NULL) AND state->>'cancellation'<>'confirmed'").bind(tenant.to_string()).bind(&device).bind(now).fetch_one(c).await
 }
 
 pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {

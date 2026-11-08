@@ -118,7 +118,7 @@ impl Service {
                     service.grant_live(c, &grant).await?;
                     if service.issuer.purpose() == rss_mdm_agent_wire::pki::Purpose::Agent
                         && grant
-                            .try_get::<Option<Uuid>, _>("target_registration")
+                            .try_get::<Option<Uuid>, _>("predecessor")
                             .map_err(db)?
                             .is_none()
                     {
@@ -415,8 +415,7 @@ impl Service {
                         c,
                         &tenant,
                         rss_mdm_pki_service::registry::purpose(service.issuer.purpose()),
-                        g.try_get::<Option<Uuid>, _>("target_registration")
-                            .map_err(db)?,
+                        Some(&g.try_get::<String, _>("device").map_err(db)?),
                         &hex(certificate.metadata.issuer),
                         certificate.chain.first().ok_or(Error::Corrupt)?,
                     )

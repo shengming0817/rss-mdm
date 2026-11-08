@@ -2,7 +2,7 @@
 
 Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 Action；Operation、Run、Attempt 持有实际设备执行。管理员会话、岗位或权限变化不撤销已经发布的 Policy；当前管理员可显式停用或修改分配。
 
-执行型 Policy 在 Agent 签入时按当前 Scope、触发、频率、窗口和历史原子受理。发布不展开全部设备 Run，没有 Policy×设备×周期任务矩阵。每次签入分页查询，持久游标循环访问后续策略。Offer、内容下载、Start permit 和事件回执复用原通道，签名绑定 tenant/device/registration/generation/task/attempt、内容摘要与预算。
+执行型 Policy 在 Agent 签入时按当前 Scope、触发、频率、窗口和历史原子受理。发布不展开全部设备 Run，没有 Policy×设备×周期任务矩阵。每次签入分页查询，持久游标循环访问后续策略。Offer、内容下载、Start permit 和事件回执复用原通道，签名绑定 tenant/device/task/attempt、内容摘要与预算。
 
 频率区分每执行版本一次、每次入组一次、每次触发；直接设备分配只记录目标定义变化，不预生成设备任务。显式重执行是一条有期限的持久触发，仍由设备主动领取。定时触发在签入时计算，迟到按 Skip 的明确容忍秒数或 CoalesceOne 处理。窗口支持跨午夜，归属开始日；DST gap 跳过，fold 取较早时刻。已经开始而结果未知的脚本按 tenant、device 和逻辑 Resource 身份阻断后续执行；新 Policy、版本、注册世代和取消请求均不能绕过，原 attempt 的迟到结果可以结算 Unknown。
 

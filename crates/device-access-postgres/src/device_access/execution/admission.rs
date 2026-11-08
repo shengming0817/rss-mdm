@@ -132,13 +132,9 @@ impl Plan {
         let matched = tx
             .with_connection_context(&mut context, |(b, target), c| {
                 Box::pin(async move {
-                    Ok(crate::delivery::for_binding_on(c, b).await.map(|a| {
-                        a.is_some_and(|a| {
-                            a.device == target.device
-                                && a.registration == target.registration
-                                && a.generation == target.generation
-                        })
-                    }))
+                    Ok(crate::delivery::for_binding_on(c, b)
+                        .await
+                        .map(|a| a.is_some_and(|a| a.device == target.device)))
                 })
             })
             .await??;
@@ -146,7 +142,7 @@ impl Plan {
             return Ok(false);
         }
         let native =
-            agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.registration)
+            agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.device.clone())
                 .await?;
         if !native
             .as_ref()
@@ -199,7 +195,7 @@ impl Plan {
         if issue.run != self.delivery || !self.allowed_in(service, tx, target).await? {
             return Err(Error::Forbidden.into());
         }
-        let (_, architecture) = runs::agent_profile_in(service, tx, target.registration)
+        let (_, architecture) = runs::agent_profile_in(service, tx, target.device.clone())
             .await?
             .ok_or(Error::Forbidden)?;
         let run = runs::load_run(tx, issue.run).await?;
@@ -235,8 +231,7 @@ impl Plan {
             wire_version: wire::WIRE_VERSION,
             tenant_id: b.tenant,
             device_id: target.device.clone(),
-            registration_id: target.registration,
-            generation: u64::try_from(target.generation).map_err(|_| Error::Invariant)?,
+
             platform: b.intent.platform(),
             architecture: match architecture {
                 rss_mdm_policy::Architecture::X86_64 => wire::TaskArchitecture::X86_64,
@@ -289,8 +284,6 @@ pub(crate) async fn prepare_reconciliation_in(
         tx,
         &Target {
             device: device.device().to_owned(),
-            registration: device.registration(),
-            generation: device.generation(),
         },
         None,
     )
@@ -328,10 +321,8 @@ pub(crate) async fn prepare_target_reconciliation_in(
     }
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
     let name = target.device.clone();
-    let registration = target.registration;
-    let generation = target.generation;
     let documents:Vec<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{
-        sqlx::query_scalar("SELECT b.document FROM rss_da.bindings b JOIN rss_da.agent_delivery d ON(d.tenant_id,d.da_registration,d.da_generation)=(b.tenant_id,b.registration,b.registration_generation) WHERE b.tenant_id=$1 AND d.agent_device=$2 AND d.agent_registration=$3 AND ($4::uuid IS NULL OR b.document->>'policy'=$4::text) AND d.agent_generation=$5 AND d.enabled ORDER BY b.id LIMIT 128").bind(tenant).bind(name).bind(registration).bind(policy).bind(generation).fetch_all(c).await
+        sqlx::query_scalar("SELECT b.document FROM rss_da.bindings AS b INNER JOIN rss_da.agent_delivery AS d ON (d.tenant_id, d.da_device) = (b.tenant_id, b.device) WHERE b.tenant_id = $1 AND d.agent_device = $2 AND (CAST($3 AS uuid) IS NULL OR b.document ->> 'policy' = CAST($3 AS text)) AND d.enabled ORDER BY b.id LIMIT 128").bind(tenant).bind(name).bind(policy).fetch_all(c).await
     })).await?;
     let mut bindings = Vec::new();
     for document in documents {
@@ -483,8 +474,6 @@ pub(crate) async fn reconcile_in(
         };
         let target = Target {
             device: agent.device,
-            registration: agent.registration,
-            generation: agent.generation,
         };
         let t = tenant;
         let outstanding:bool=tx.with_connection(move|c|Box::pin(async move{

@@ -2098,12 +2098,6 @@
           },
           "type": "array"
         },
-        "generation": {
-          "description": "Exact registration generation.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
         "issuedAt": {
           "description": "Lease issue time in UTC Unix seconds.",
           "format": "int64",
@@ -2146,11 +2140,6 @@
         },
         "policyVersion": {
           "description": "Uploads must retain this exact version.",
-          "format": "uuid",
-          "type": "string"
-        },
-        "registrationId": {
-          "description": "Exact active registration incarnation.",
           "format": "uuid",
           "type": "string"
         },
@@ -2201,8 +2190,6 @@
         "resourceDigest",
         "tenantId",
         "deviceId",
-        "registrationId",
-        "generation",
         "sourceEpoch",
         "issuedAt",
         "expiresAt",

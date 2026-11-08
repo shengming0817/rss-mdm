@@ -23,7 +23,7 @@ pub async fn state_on(
     }
     let name = device.to_owned();
     let rows = {
-        sqlx::query_as::<_,(Uuid,i64,String)>("SELECT r.id,r.generation,s.source FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel=$3 AND r.state='active' AND s.enabled AND s.source IN('mdm.windows','mdm.apple','agent.builtin')")
+        sqlx::query_as::<_,(String,String)>("SELECT r.id, s.source FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (s.tenant_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.channel = $3 AND r.state = 'active' AND s.enabled AND s.source IN ('mdm.windows', 'mdm.apple', 'agent.builtin')")
             .bind(tenant.to_string()).bind(name).bind(channel).fetch_all(&mut *c).await
     }?;
     if rows.is_empty() {
@@ -32,9 +32,7 @@ pub async fn state_on(
     if rows.len() != 1 {
         return status(State::AmbiguousRegistration);
     }
-    let (registration, generation, source) = &rows[0];
-    let registration = *registration;
-    let generation = *generation;
+    let (registration, source) = &rows[0];
     let source = match source.as_str() {
         "mdm.windows" => ReportSource::MdmWindows,
         "mdm.apple" => ReportSource::MdmApple,
@@ -43,11 +41,11 @@ pub async fn state_on(
     };
     let fact = service
         .inventory
-        .detail_on(c, tenant, registration, generation, source)
+        .detail_on(c, tenant, registration.clone(), source)
         .await?;
     if source == ReportSource::MdmApple {
         let rights={
-            sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant.to_string()).bind(registration).fetch_optional(&mut *c).await
+            sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant.to_string()).bind(&registration).fetch_optional(&mut *c).await
         }?.unwrap_or(false);
         if !rights {
             return status(State::MissingNativeRights);
@@ -94,7 +92,6 @@ pub async fn state_on(
                 c,
                 &tenant_name,
                 registration,
-                generation,
             )
             .await?;
             match recovery::signal(&fact, package, &contact, now) {
@@ -108,7 +105,7 @@ pub async fn state_on(
             let gate = recovery::gate_on(
                 c,
                 &tenant_name,
-                (registration, generation, version),
+                (registration.clone(), version),
                 snapshot,
                 last_contact,
                 now,

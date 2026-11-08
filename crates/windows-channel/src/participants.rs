@@ -160,16 +160,14 @@ pub trait Departure: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        registration: Uuid,
+        registration: String,
     ) -> Pending<'a, ()>;
 }
 pub trait WakeDemand: Send + Sync {
-    fn candidates<'a>(&'a self, c: &'a mut PgConnection, after: Uuid) -> Pending<'a, Vec<Uuid>>;
-    fn pending<'a>(
+    fn candidates<'a>(
         &'a self,
         c: &'a mut PgConnection,
-        device: &'a str,
-        registration: Uuid,
-        generation: i64,
-    ) -> Pending<'a, bool>;
+        after: &'a str,
+    ) -> Pending<'a, Vec<String>>;
+    fn pending<'a>(&'a self, c: &'a mut PgConnection, device: &'a str) -> Pending<'a, bool>;
 }

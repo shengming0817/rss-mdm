@@ -924,13 +924,13 @@ pub static POLICY_PREVIEWS: Resource = Resource {
     collection: Some(&super::collections::Description::QueryOwner),
 };
 
-pub static DEVICE_REGISTRATIONS: Resource = Resource {
-    id: "device_registrations",
-    category: Category::Facts,
+pub static DEVICE_REGISTRATION: Resource = Resource {
+    id: "device_registration",
+    category: Category::ReadModel,
     owner: "registration-service",
     proof: "enrollment.http",
-    query: QueryPolicy::Unified,
-    collection: Some(&super::collections::Description::QueryOwner),
+    query: QueryPolicy::NotCollection,
+    collection: None,
 };
 
 pub static GROUP_RESULTS: Resource = Resource {

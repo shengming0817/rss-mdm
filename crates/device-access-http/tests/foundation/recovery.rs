@@ -58,7 +58,7 @@ pub async fn verify(
     })?;
     let mut connection = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
     let revoked: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_da.registrations WHERE state='revoked'")
+        sqlx::query_scalar("SELECT count(*) FROM rss_da.devices WHERE state = 'revoked'")
             .fetch_one(&mut connection)
             .await?;
     assert!(revoked > 0);
@@ -171,7 +171,7 @@ pub async fn verify(
         "cold restore must not resurrect the backup's sync authority"
     );
     let preserved: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_da.registrations WHERE state='revoked'")
+        sqlx::query_scalar("SELECT count(*) FROM rss_da.devices WHERE state = 'revoked'")
             .fetch_one(&mut connection)
             .await?;
     assert_eq!(

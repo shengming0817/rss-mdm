@@ -11,10 +11,7 @@ impl SoftwareService {
         self.transactions.runtime.validate_transaction(tx)?;
         storage::lock_device(tx, p.device()).await?;
         let op = storage::load(tx, &self.transactions.protection, operation).await?;
-        if op.registration != p.registration()
-            || op.registration_generation != p.generation()
-            || op.device != p.device()
-        {
+        if op.device != p.device() || op.device != p.device() {
             return Err(Error::Unauthorized.into());
         }
         let now = storage::now(tx).await?;

@@ -21,8 +21,6 @@ use uuid::Uuid;
 pub struct Agent {
     pub installation: Uuid,
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -66,12 +64,6 @@ impl ResolvedDevice {
     pub fn device(&self) -> &str {
         &self.anchor.device
     }
-    pub fn registration(&self) -> Uuid {
-        self.anchor.registration_id
-    }
-    pub fn generation(&self) -> i64 {
-        self.anchor.generation
-    }
 }
 async fn current_agent(c: &mut PgConnection, tenant: &str, agent: &Agent) -> Result<(), Error> {
     if rss_mdm_registration_service::device::installation_in(StorageProfile::Mdm, c).await?
@@ -88,7 +80,7 @@ async fn current_agent(c: &mut PgConnection, tenant: &str, agent: &Agent) -> Res
     )
     .await?
     .ok_or(Error::Forbidden)?;
-    if r.registration_id != agent.registration || r.generation != agent.generation {
+    if r.device != agent.device {
         return Err(Error::Forbidden);
     }
     Ok(())
@@ -120,9 +112,9 @@ pub(crate) async fn lock_da_targets(
     devices: &[String],
     extra: Option<&Agent>,
 ) -> Result<(), Error> {
-    let before:Vec<(String,Uuid,i64)>=sqlx::query_as("SELECT agent_device,agent_registration,revision FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_device=ANY($2) AND enabled ORDER BY agent_device,agent_registration").bind(tenant).bind(devices).fetch_all(&mut *c).await.map_err(db)?;
+    let before:Vec<(String,i64)>=sqlx::query_as("SELECT agent_device,revision FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_device=ANY($2) AND enabled ORDER BY agent_device").bind(tenant).bind(devices).fetch_all(&mut *c).await.map_err(db)?;
     let mut agents = std::collections::BTreeSet::new();
-    for (agent, _, _) in &before {
+    for (agent, _) in &before {
         agents.insert(agent.as_str());
     }
     if let Some(agent) = extra {
@@ -134,7 +126,7 @@ pub(crate) async fn lock_da_targets(
     for device in devices.iter().collect::<std::collections::BTreeSet<_>>() {
         endpoints::lock_da_in(c, tenant, device).await?;
     }
-    let after:Vec<(String,Uuid,i64)>=sqlx::query_as("SELECT agent_device,agent_registration,revision FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_device=ANY($2) AND enabled ORDER BY agent_device,agent_registration").bind(tenant).bind(devices).fetch_all(c).await.map_err(db)?;
+    let after:Vec<(String,i64)>=sqlx::query_as("SELECT agent_device,revision FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_device=ANY($2) AND enabled ORDER BY agent_device").bind(tenant).bind(devices).fetch_all(c).await.map_err(db)?;
     if before != after {
         return Err(Error::ReadConflict);
     }
@@ -152,21 +144,17 @@ pub async fn resolve_on(
             .await?;
         DaRegistration {
             device: p.device().into(),
-            registration_id: p.registration(),
-            generation: p.generation(),
         }
     } else if p.kind() == RegistrationKind::Agent && p.profile() == StorageProfile::Mdm {
-        let row=sqlx::query("SELECT da_device,da_registration,da_generation FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND agent_registration=$2 AND agent_generation=$3 AND agent_installation=$4 AND agent_device=$5 AND enabled")
-            .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.installation()).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Forbidden)?;
+        let row=sqlx::query("SELECT da_device FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND agent_device=$2 AND agent_installation=$3 AND enabled")
+            .bind(&tenant).bind(p.device()).bind(p.installation()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Forbidden)?;
         let da = DaRegistration {
             device: row.try_get("da_device").map_err(db)?,
-            registration_id: row.try_get("da_registration").map_err(db)?,
-            generation: row.try_get("da_generation").map_err(db)?,
         };
         rss_mdm_registration_service::device::require_use_in(c, p, ConsumerUse::AgentTask).await?;
         current_da(c, &tenant, &da).await?;
-        let live:bool=sqlx::query_scalar("SELECT enabled FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_registration=$2 AND da_generation=$3 AND agent_registration=$4 AND agent_generation=$5 AND agent_installation=$6 AND agent_device=$7")
-            .bind(&tenant).bind(da.registration_id).bind(da.generation).bind(p.registration()).bind(p.generation()).bind(p.installation()).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false);
+        let live:bool=sqlx::query_scalar("SELECT enabled FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_device=$2 AND agent_device=$3 AND agent_installation=$4")
+            .bind(&tenant).bind(&da.device).bind(p.device()).bind(p.installation()).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false);
         if !live {
             return Err(Error::Forbidden);
         }
@@ -186,16 +174,14 @@ pub async fn for_da_on(
 ) -> Result<Option<Agent>, Error> {
     lock_da_target(c, &tenant.to_string(), &da.device, None).await?;
     current_da(c, &tenant.to_string(), da).await?;
-    let row=sqlx::query("SELECT agent_installation,agent_device,agent_registration,agent_generation FROM rss_da.agent_delivery WHERE tenant_id=$1 AND da_registration=$2 AND da_generation=$3 AND enabled")
-        .bind(tenant).bind(da.registration_id).bind(da.generation).fetch_optional(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT agent_installation,agent_device FROM rss_da.agent_delivery WHERE tenant_id=$1 AND da_device=$2 AND enabled")
+        .bind(tenant).bind(&da.device).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(r) = row else {
         return Ok(None);
     };
     let agent = Agent {
         installation: r.try_get("agent_installation").map_err(db)?,
         device: r.try_get("agent_device").map_err(db)?,
-        registration: r.try_get("agent_registration").map_err(db)?,
-        generation: r.try_get("agent_generation").map_err(db)?,
     };
     match current_agent(c, &tenant.to_string(), &agent).await {
         Ok(()) => Ok(Some(agent)),
@@ -240,17 +226,18 @@ impl Service {
                 current_da(c,p.tenant_id(),&input.da).await?;
                 current_agent(c,p.tenant_id(),&input.agent).await?;
             } else {
-                let exact:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_device=$2 AND da_registration=$3 AND da_generation=$4 AND agent_installation=$5 AND agent_device=$6 AND agent_registration=$7 AND agent_generation=$8)")
-                    .bind(p.tenant_id()).bind(&input.da.device).bind(input.da.registration_id).bind(input.da.generation).bind(input.agent.installation).bind(&input.agent.device).bind(input.agent.registration).bind(input.agent.generation).fetch_one(&mut *c).await.map_err(db)?;
+                let exact:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_device=$2 AND agent_installation=$3 AND agent_device=$4)")
+                    .bind(p.tenant_id()).bind(&input.da.device).bind(input.agent.installation).bind(&input.agent.device).fetch_one(&mut *c).await.map_err(db)?;
                 if !exact {return Err(Error::Conflict);}
             }
             let op=Operation::new(p,input.operation_id,digest)?;
             if crate::operations::replay(c,&op).await?.is_some(){return Err(Error::Conflict);}
-            let rev:Option<i64>=sqlx::query_scalar("SELECT revision FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_registration=$2 FOR UPDATE").bind(p.tenant_id()).bind(input.da.registration_id).fetch_optional(&mut *c).await.map_err(db)?;
+            let rev:Option<i64>=sqlx::query_scalar("SELECT revision FROM rss_da.agent_delivery WHERE tenant_id=$1::uuid AND da_device=$2 FOR UPDATE").bind(p.tenant_id()).bind(&input.da.device).fetch_optional(&mut *c).await.map_err(db)?;
             if rev.unwrap_or(0)!=input.expected_revision{return Err(Error::Conflict);}
             let revision=input.expected_revision.checked_add(1).ok_or(Error::Capacity)?;
-            sqlx::query("INSERT INTO rss_da.agent_delivery(tenant_id,da_device,da_registration,da_generation,agent_installation,agent_device,agent_registration,agent_generation,enabled,revision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,da_registration) DO UPDATE SET da_generation=excluded.da_generation,agent_installation=excluded.agent_installation,agent_device=excluded.agent_device,agent_registration=excluded.agent_registration,agent_generation=excluded.agent_generation,enabled=excluded.enabled,revision=excluded.revision")
-                .bind(p.tenant_id()).bind(&input.da.device).bind(input.da.registration_id).bind(input.da.generation).bind(input.agent.installation).bind(&input.agent.device).bind(input.agent.registration).bind(input.agent.generation).bind(input.enabled).bind(revision).execute(&mut *c).await.map_err(db)?;
+            sqlx::query("INSERT INTO rss_da.agent_delivery(tenant_id,da_device,agent_installation,agent_device,enabled,revision) VALUES($1::uuid,$2,$3,$4,$5,$6) ON CONFLICT(tenant_id,da_device) DO UPDATE SET agent_installation=excluded.agent_installation,agent_device=excluded.agent_device,enabled=excluded.enabled,revision=excluded.revision")
+                .bind(p.tenant_id()).bind(&input.da.device).bind(input.agent.installation).bind(&input.agent.device).bind(input.enabled).bind(revision).execute(&mut *c).await.map_err(db)?;
+
             crate::operations::save(c,&op,&revision.to_string(),a).await?;
             Ok(crate::service::Change{value:revision,replay:false})
         })).await;
@@ -308,8 +295,6 @@ pub async fn for_binding_on(
         b.tenant,
         &DaRegistration {
             device: b.device.clone(),
-            registration_id: b.registration,
-            generation: b.registration_generation,
         },
     )
     .await

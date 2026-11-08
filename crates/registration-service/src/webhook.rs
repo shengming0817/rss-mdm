@@ -31,13 +31,11 @@ impl EventSink for WebhookEvents {
     clippy::too_many_arguments,
     reason = "original transaction notification carries the explicit sink and registration fact coordinates"
 )]
-pub(crate) async fn registration(
+pub(crate) async fn device(
     sink: Option<&dyn EventSink>,
     c: &mut PgConnection,
     tenant: &str,
     device: &str,
-    id: Uuid,
-    generation: i64,
     channel: &str,
     state: &str,
 ) -> Result<(), crate::Error> {
@@ -50,15 +48,17 @@ pub(crate) async fn registration(
         EventType::Retired
     };
     let event = Event {
-        event_id: events::identity(id, &format!("registration:{generation}:{state}")),
+        event_id: events::identity(
+            Uuid::parse_str(tenant).map_err(|_| crate::Error::Malformed)?,
+            &format!("device:{device}:{state}"),
+        ),
         event_type: kind,
         version: 1,
         occurred_at: events::now_on(c).await.map_err(|_| crate::Error::Storage)?,
         tenant_id: Uuid::parse_str(tenant).map_err(|_| crate::Error::Malformed)?,
         device_id: device.into(),
         data: EventData::Registration {
-            registration_id: id,
-            generation,
+            device_id: device.into(),
             channel: channel.into(),
             state: state.into(),
         },

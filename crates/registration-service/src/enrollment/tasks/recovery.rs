@@ -28,7 +28,6 @@ pub async fn audit_recovery(
         );
         audit.plan(run.policy_version);
         audit.target_device(&run.target.device);
-        audit.registration(run.target.registration);
         let bytes =
             crate::enrollment::tasks::checked_input(serde_json::to_vec(&(&previous, &run.state)))?;
         use sha2::Digest;
@@ -184,13 +183,11 @@ pub async fn recover_one(
     let tenant = tx.tenant_id().to_string();
     let stale = tx
         .with_connection(move |c| {
-            Box::pin(crate::device::read::stale_registration_in(
+            Box::pin(crate::device::read::inactive_in(
                 profile,
                 c,
                 tenant,
-                target.registration,
                 target.device,
-                target.generation,
             ))
         })
         .await?;

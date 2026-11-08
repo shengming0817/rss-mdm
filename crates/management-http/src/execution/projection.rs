@@ -215,8 +215,7 @@ pub enum Availability {
 #[serde(rename_all = "camelCase")]
 struct DdmItem {
     operation_id: Uuid,
-    registration_id: Uuid,
-    generation: i64,
+    device_id: String,
     channel: AppleChannel,
     user_key: String,
     native_values_redacted: bool,
@@ -233,8 +232,8 @@ pub fn ddm(page: super::declarations::Page) -> Ddm {
         .into_iter()
         .map(|item| DdmItem {
             operation_id: item.operation,
-            registration_id: item.registration,
-            generation: item.generation,
+            device_id: item.device.clone(),
+
             channel: AppleChannel::Apple,
             user_key: item.user,
             native_values_redacted: item.redacted,

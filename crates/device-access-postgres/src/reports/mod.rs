@@ -95,8 +95,7 @@ pub(crate) async fn admit(
     if let Some(i) = identity
         && (i.service_id != p.installation()
             || i.tenant.to_string() != p.tenant().to_string()
-            || i.registration != p.registration()
-            || i.generation != p.generation())
+            || i.device_id != p.device())
     {
         return Err(Error::Forbidden);
     }
@@ -112,7 +111,7 @@ impl Service {
         a: &RequestAudit,
     ) -> Result<Receipt, Error> {
         input.validate().map_err(|_| Error::Malformed)?;
-        a.identify_device(p.registration());
+        a.identify_device(&(p.device()).to_string());
         let document = serde_json::to_value(input).map_err(|_| Error::Malformed)?;
         self.write(a, (self, p, input, document), |ctx, c| {
             Box::pin(async move {
@@ -131,7 +130,7 @@ impl Service {
         a: &RequestAudit,
     ) -> Result<Receipt, Error> {
         input.validate().map_err(|_| Error::Malformed)?;
-        a.identify_device(p.registration());
+        a.identify_device(&(p.device()).to_string());
         let document = serde_json::to_value(input).map_err(|_| Error::Malformed)?;
         self.write(a, (self, signing, p, input, document), |ctx, c| {
             Box::pin(async move {

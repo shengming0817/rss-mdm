@@ -88,40 +88,28 @@ pub async fn seed_trust(c: &Context, protection: &Protector, states: &[KeyState]
     tx.commit().await?;
     Ok(trust)
 }
-pub async fn seed_registration(c: &Context) -> Result<(Uuid, Uuid, String)> {
+pub async fn seed_registration(c: &Context) -> Result<(String, Uuid)> {
     let tenant = Uuid::parse_str(&c.tenant.to_string())?;
-    let registration = Uuid::new_v4();
     let grant = Uuid::new_v4();
-    let device = format!("trust-{registration}");
+    let device = Uuid::new_v4().to_string();
     let mut tx = c.operator.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(c.tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1,$2)")
-        .bind(tenant)
-        .bind(&device)
-        .execute(&mut *tx)
-        .await?;
     sqlx::query("INSERT INTO mdm_access.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1,$2,$2,'download','seed',$3,$4,'windows',repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')")
         .bind(tenant).bind(grant).bind(&c.inputs.installation.instance_id).bind(&device).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,certificate_grant_id,state,purpose,epoch) VALUES($1,$2,$3,'agent',2,$4,'active','primary',$5)")
-        .bind(tenant).bind(registration).bind(&device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.devices (tenant_id, id, channel, certificate_grant_id, state, purpose, epoch) VALUES ($1, $2, 'agent', $3, 'active', 'primary', $4)")
+        .bind(tenant).bind(&device).bind(grant).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok((registration, grant, device))
+    Ok((device, grant))
 }
-pub async fn seed_ack(
-    c: &Context,
-    trust: &Trust,
-    registration: Uuid,
-    generation: i64,
-) -> Result<()> {
-    sqlx::query("INSERT INTO mdm_task_signing.acknowledgements VALUES($1::uuid,'agent_task',$2,$3,$4,$5,$6)")
+pub async fn seed_ack(c: &Context, trust: &Trust, device: &str) -> Result<()> {
+    sqlx::query("INSERT INTO mdm_task_signing.acknowledgements (tenant_id,usage,operation_id,device,revision,digest) VALUES($1::uuid,'agent_task',$2,$3,$4,$5)")
         .bind(c.tenant.to_string())
         .bind(Uuid::new_v4())
-        .bind(registration)
-        .bind(generation)
-        .bind(trust.revision as i64)
+        .bind(&device)
+            .bind(trust.revision as i64)
         .bind(trust.installation_digest()?)
         .execute(&c.operator)
         .await?;
@@ -210,7 +198,6 @@ pub async fn peer_material(
 
 pub async fn authenticated_agent(
     c: &Context,
-    registration: Uuid,
     grant: Uuid,
     device: &str,
     capabilities: Vec<rss_mdm_agent_wire::runtime::Capability>,
@@ -224,7 +211,12 @@ pub async fn authenticated_agent(
     let credential = Uuid::new_v4();
     let issuance = Uuid::new_v4();
     let operation = Uuid::new_v4();
-    let epoch = Uuid::new_v4();
+    let epoch: Uuid =
+        sqlx::query_scalar("SELECT epoch FROM mdm_access.devices WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant)
+            .bind(&device)
+            .fetch_one(&c.operator)
+            .await?;
     use rss_mdm_agent_wire::{enroll, runtime as w};
     let profile = enroll::RuntimeProfile {
         capabilities,
@@ -250,8 +242,7 @@ pub async fn authenticated_agent(
             wire_version: 1,
             operation_id: operation,
             device_id: device.into(),
-            registration_id: registration,
-            generation: 2,
+
             source: w::ReportSource::AgentBuiltin,
             epoch,
             capabilities: profile.capabilities.clone(),
@@ -273,10 +264,10 @@ pub async fn authenticated_agent(
         .bind(c.tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1,$2,$3,'agent',$4,'active')")
-        .bind(tenant).bind(credential).bind(registration).bind(&fingerprint).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,next_sequence,enabled) VALUES($1,$2,'agent.builtin',$3,0,true)")
-        .bind(tenant).bind(registration).bind(epoch).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.credentials (tenant_id, id, device, channel, locator, state, purpose) VALUES ($1, $2, $3, 'agent', $4, 'active', 'primary')")
+        .bind(tenant).bind(credential).bind(&device).bind(&fingerprint).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.report_sources (tenant_id, device, source, epoch, next_sequence, enabled) VALUES ($1, $2, 'agent.builtin', $3, 0, TRUE)")
+        .bind(tenant).bind(&device).bind(epoch).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.certificate_issuances(tenant_id,id,grant_id,operation_id,request_digest,authority_digest,csr,spki,identity,profile,not_before,not_after,state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) VALUES($1,$2,$3,$4,repeat('1',64),repeat('2',64),$5,$6,$7,$8,$9,$10,'issued',$11,$12,$13,$4,repeat('3',64),$14,$15)")
         .bind(tenant).bind(issuance).bind(grant).bind(operation).bind(csr)
         .bind(meta.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).bind(&meta.identity)

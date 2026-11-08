@@ -64,7 +64,7 @@ impl SoftwareService {
                             rss_mdm_registration_service::Purpose::Primary,
                         )
                         .await?
-                            != (op.registration, op.registration_generation)
+                            != op.device.clone()
                         || !storage::authority_decision(
                             &s.transactions.source,
                             &s.transactions.lifecycle,
@@ -174,13 +174,7 @@ pub(crate) async fn installation_observations_on(
     }
     let targets = ops
         .iter()
-        .map(|op| {
-            (
-                op.registration,
-                op.registration_generation,
-                op.request.task.source(),
-            )
-        })
+        .map(|op| (op.device.clone(), op.request.task.source()))
         .collect::<Vec<_>>();
     let current = inventory.details_on(c, tenant, &targets, lock).await?;
     let requests = ops
@@ -188,12 +182,11 @@ pub(crate) async fn installation_observations_on(
         .filter(|op| matches!(op.request.task, Task::Windows { .. }))
         .map(|op| crate::deployment::windows_results::InstallationRead {
             id: op.id,
-            registration: op.registration,
-            generation: op.registration_generation,
+            device: op.device.to_string(),
+
             snapshot: current
                 .get(&(
-                    op.registration,
-                    op.registration_generation,
+                    op.device.clone(),
                     op.request.task.source().as_str().to_owned(),
                 ))
                 .and_then(|f| match f {
@@ -225,7 +218,7 @@ pub(crate) async fn installation_observations_on(
         installations_on(c, tenant, &ops.iter().map(|op| op.id).collect::<Vec<_>>()).await?;
     let registrations = observations
         .values()
-        .filter_map(|v| v.registration.as_ref().map(|r| r.id))
+        .filter_map(|v| v.registration.as_ref().map(|r| r.device.clone()))
         .collect();
     let profiles = agent.bindings(c, tenant.to_string(), registrations).await?;
     let requests = ops
@@ -247,8 +240,8 @@ pub(crate) async fn installation_observations_on(
         let row = metadata.remove(&op.id).ok_or(Error::Conflict)?;
         let observation = observations.remove(&op.id).ok_or(Error::Conflict)?;
         let bound = observation.registration;
-        let agent_id = bound.as_ref().map(|r| r.id);
-        let profile = agent_id.and_then(|id| profiles.get(&id).map(|p| p.capabilities.clone()));
+        let agent_id = bound.as_ref().map(|r| &r.device);
+        let profile = agent_id.and_then(|id| profiles.get(id).map(|p| p.capabilities.clone()));
         let rows = match apple.remove(&op.id) {
             Some(apple_facts::AppleEvidence::Observations(rows)) => rows,
             None => Vec::new(),
@@ -258,8 +251,7 @@ pub(crate) async fn installation_observations_on(
         let facts = InstallationFacts {
             current: current
                 .get(&(
-                    op.registration,
-                    op.registration_generation,
+                    op.device.clone(),
                     op.request.task.source().as_str().to_owned(),
                 ))
                 .and_then(|fact| match fact {
@@ -425,7 +417,7 @@ fn installation_from_facts(
         };
     }
     let registered = if let Some(registration) = bound {
-        serde_json::json!({"deviceId":registration.device,"registrationId":registration.id,"state":registration.state,"capabilities":profile})
+        serde_json::json!({"deviceId":registration.device,"state":registration.state,"capabilities":profile})
     } else {
         serde_json::Value::Null
     };
@@ -580,7 +572,7 @@ impl crate::deployment::transactions::Transactions {
         device: &str,
         event: Option<(Uuid, i64)>,
     ) -> Result<Option<(Uuid, Uuid, Package, i64, bool)>> {
-        let (registration, generation) = match storage::current_registration(
+        let registration = match storage::current_registration(
             tx,
             device,
             rss_mdm_registration_service::Purpose::Primary,
@@ -591,9 +583,8 @@ impl crate::deployment::transactions::Transactions {
             Err(Fault::Request(Error::Conflict)) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let Some((rss_mdm_inventory::channel::Observation::Ready(fact), platform)) = self
-            .agent_install_fact_in(tx, registration, generation)
-            .await?
+        let Some((rss_mdm_inventory::channel::Observation::Ready(fact), platform)) =
+            self.agent_install_fact_in(tx, registration.clone()).await?
         else {
             return Ok(None);
         };
@@ -608,15 +599,13 @@ impl crate::deployment::transactions::Transactions {
         let target = SoftwareTarget::new(platform, architecture);
         let now = storage::now(tx).await?;
         let tenant = tx.tenant_id().to_string();
+        let value = registration.clone();
         let contact = tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(
                         rss_mdm_registration_service::installation::queries::native_contact_on(
-                            c,
-                            &tenant,
-                            registration,
-                            generation,
+                            c, &tenant, &value,
                         )
                         .await,
                     )
@@ -676,13 +665,14 @@ impl crate::deployment::transactions::Transactions {
                 let tenant = tx.tenant_id().to_string();
                 let snapshot = fact.snapshot;
                 let last_contact = contact.last;
+                let value = registration.clone();
                 let gate = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
                             Ok(recovery::gate_on(
                                 c,
                                 &tenant,
-                                (registration, generation, version),
+                                (value.clone(), version),
                                 snapshot,
                                 last_contact,
                                 now,
@@ -767,7 +757,7 @@ impl crate::deployment::transactions::Transactions {
     ) -> Result<()> {
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
-        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_software_deployment.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND r.state='active' AND o.authority->>'kind'='agent_install' AND d.status IN('published','received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
+        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_software_deployment.operations AS o INNER JOIN rss_device_command.commands AS d ON d.tenant_id = o.tenant_id AND d.command_id = CAST(o.id AS text) INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (o.tenant_id, o.device) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND r.state = 'active' AND o.authority ->> 'kind' = 'agent_install' AND d.status IN ('published', 'received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
         for id in ids {
             let op = storage::load(tx, &self.protection, id).await?;
             let now = storage::now(tx).await?;
@@ -837,12 +827,12 @@ impl crate::deployment::transactions::Transactions {
     pub(crate) async fn agent_install_fact_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        registration: Uuid,
-        generation: i64,
+        registration: String,
     ) -> Result<Option<(rss_mdm_inventory::channel::Observation, Platform)>> {
         let tenant = tx.tenant_id();
         let inventory = self.inventory.clone();
-        let source=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND enabled AND source IN ('mdm.windows','mdm.apple')").bind(tenant.to_string()).bind(registration).fetch_optional(c).await})).await?;
+        let value = registration.clone();
+        let source=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND enabled AND source IN ('mdm.windows', 'mdm.apple')").bind(tenant.to_string()).bind(&value).fetch_optional(c).await})).await?;
         let (source, platform) = match source.as_deref() {
             Some("mdm.windows") => (ReportSource::MdmWindows, Platform::Windows),
             Some("mdm.apple") => (ReportSource::MdmApple, Platform::Macos),
@@ -851,11 +841,9 @@ impl crate::deployment::transactions::Transactions {
         let tenant = tx.tenant_id();
         let fact = tx
             .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(inventory
-                        .detail_on(c, tenant, registration, generation, source)
-                        .await)
-                })
+                Box::pin(
+                    async move { Ok(inventory.detail_on(c, tenant, registration, source).await) },
+                )
             })
             .await??;
         Ok(Some((fact, platform)))
@@ -873,7 +861,7 @@ impl crate::deployment::transactions::Transactions {
             PolicyEventDecision as Decision, PolicyEventOperation as Operation,
         };
         if let Some((rss_mdm_inventory::channel::Observation::Ready(fact), platform)) = self
-            .agent_install_fact_in(tx, target.registration, target.generation)
+            .agent_install_fact_in(tx, target.device.clone())
             .await?
         {
             let (_, Published::AgentInstall { action }) =
@@ -896,16 +884,14 @@ impl crate::deployment::transactions::Transactions {
                     .get(&SoftwareTarget::new(platform, architecture))
             }) {
                 let tenant = tx.tenant_id().to_string();
-                let registration = target.registration;
-                let generation = target.generation;
+                let registration = target.device.clone();
                 let contact = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
                             Ok(rss_mdm_registration_service::installation::queries::native_contact_on(
                                 c,
                                 &tenant,
-                                registration,
-                                generation,
+                                &registration,
                             )
                             .await)
                         })
@@ -926,7 +912,7 @@ impl crate::deployment::transactions::Transactions {
         }
         let tenant = tx.tenant_id().to_string();
         let t = target.clone();
-        let existing:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT o.id FROM mdm_software_deployment.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND o.registration=$3 AND o.registration_generation=$4 AND o.authority->>'kind'='agent_install' AND d.terminal_at IS NULL AND d.deadline>floor(extract(epoch FROM clock_timestamp())*1000000)::bigint ORDER BY d.queued_at DESC,o.id DESC LIMIT 1").bind(tenant).bind(t.device).bind(t.registration).bind(t.generation).fetch_optional(c).await})).await?;
+        let existing:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT o.id FROM mdm_software_deployment.operations AS o INNER JOIN rss_device_command.commands AS d ON (d.tenant_id, d.command_id) = (o.tenant_id, CAST(o.id AS text)) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.authority ->> 'kind' = 'agent_install' AND d.terminal_at IS NULL AND d.deadline > CAST(floor(EXTRACT(EPOCH FROM clock_timestamp()) * 1000000) AS bigint) ORDER BY d.queued_at DESC, o.id DESC LIMIT 1").bind(tenant).bind(t.device).fetch_optional(c).await})).await?;
         if let Some(id) = existing {
             let operation = storage::load(tx, &self.protection, id).await?;
             let authority::Authority::AgentInstall { package, .. } = operation.authority else {

@@ -30,7 +30,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 
 同一 actor/上传 ID 的元数据由 PostgreSQL 持久化已确认 offset。续传从已确认清单恢复，未确认对象由登记意图保留并参与额度计算；多实例的 epoch 防止旧写者推进新 frontier。`POST /api/v1/software/content/cleanup` 需要 ResourceWrite，每轮有界检查过期且无有效引用、无活跃读写的候选。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。删除屏障与新 Resource 引用串行，S3/卷 I/O 在事务外执行。不得手工删除内容控制状态或正在使用的物理对象。
 
-密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、生命周期绑定、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
+密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、生命周期绑定、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
 
 Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）、`runAs`（system、logged_in_user）、`encoding: utf8`、参数 Schema 与 `bindings`、输出 Schema、`purpose`、timeoutSeconds/outputBytes/maxRows。参数仅支持字符串、整数、布尔，必须显式提供。脚本使用 bindings，SQL 模板使用 sql 中声明的命名参数并保持 bindings 为空；参数作为字面量绑定，不拼接 shell 命令或 SQL 语法。Schema 采用有界闭合子集，拒绝引用、组合器、正则与未知关键字。
 
@@ -73,7 +73,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 ## Agent 状态与结果
 
-1. `POST /api/v1/agent/runtime/tasks/claim`：wireVersion=1、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
+1. `POST /api/v1/agent/runtime/tasks/claim`：wireVersion=1、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个设备的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
 2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次检查当前凭据、原任务/attempt、明确材料撤回和取消。客户端最终核对长度/hash。
 3. 验签后向 `/tasks/{taskId}/events` 提交 received，再完成材料下载和准备，最后提交 start。Received 保留原 attempt 至任务 deadline；Offer 短领取窗口不再限制下载。事件包含 wireVersion=1、operationId、attemptId、event、executionContext。只有独立签名的 Start permit 可以授权启动，offer 本身不能启动。Start permit 使用原 Run deadline，不另设短窗口；原 operationId 重放复用同一 permit，并复核取消、撤回和设备身份。服务端不以 permit 签发时间推算进程运行超时，实际执行预算由 Agent 执行器控制。
 4. 返回 result（exitCode、quality、output、diagnostics、collectedAt）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown，原首启截止不丢弃其后产生的结果。结果仍须通过原 attempt、真实设备身份、撤回和取消等边界检查。
@@ -83,7 +83,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 采集模板使用 collection purpose 和字段键→JSON Pointer 映射，不另建版本体系。映射引用统一版本化目录中的内置或自定义字段，按字段类型、平台、来源与敏感级别冻结；不再限制为三个固定字段。脚本与 SQL 分别使用 agent.script 与 agent.osquery。预算合法、exitCode=0、输出完整且执行仍可信时，字段独立校验后经 CollectionRun→Observation→Inventory 发布；缺失或无效字段可形成部分结果，合法字段仍可更新。失败、截断、超预算和不可信结果不清空历史可信事实；来源冲突与完整快照/tombstone 删除按统一选值规则处理，不引入 TTL。
 
 
-归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。发布、取消和执行事件的审计保留策略或执行版本关联；执行事件 target 为 task，registrationId 可反查设备，同一 operationId 可关联执行回执。
+归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。发布、取消和执行事件的审计保留策略或执行版本关联；执行事件 target 为 task，deviceId 标识所属设备，同一 operationId 可关联执行回执。
 
 服务端的软件变体选择使用当前 Agent 注册声明的平台和架构，终端必须再用本机真实 OS/架构核验签名任务。注册声明不等于受检硬件事实；统一 applicability 的受检事实仍由 [PBI #2572](https://dev.azure.com/shengming0923/rss/_workitems/edit/2572) 跟踪。
 

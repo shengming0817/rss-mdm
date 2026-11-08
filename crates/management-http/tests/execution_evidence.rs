@@ -110,7 +110,6 @@ fn other_evidence() -> [(&'static str, Evidence); 5] {
     let record = json!({
         "taskId": Uuid::from_u128(1), "policyId": Uuid::from_u128(2),
         "versionId": Uuid::from_u128(3), "device": "device-a",
-        "registrationId": Uuid::from_u128(4), "generation": 1,
         "occurrence": "once", "availableAt": 1, "deadline": 100,
         "state": state, "authorization": null, "attemptId": null, "result": null
     });
@@ -180,8 +179,7 @@ fn page(evidence: Option<Evidence>, kind: KindOfOperation) -> Page {
                 id: Uuid::from_u128(1),
                 kind,
                 device: "device-a".into(),
-                registration_id: Uuid::from_u128(4),
-                generation: 1,
+
                 origin: "direct".into(),
                 policy: None,
                 deadline: 100,
@@ -268,47 +266,20 @@ fn non_native_evidence_keeps_its_owner_and_projection_can_omit_evidence() {
 }
 
 #[test]
-fn registration_catalog_and_mounted_projection_share_the_certificate_grant_field() {
-    use rss_mdm_registration_service::enrollment::registrations::{Row, SCHEMA};
+fn registration_response_preserves_the_certificate_grant_field() {
+    use rss_mdm_registration_service::enrollment::registration::Registration;
     let document = document();
-    let path = "/api/v1/devices/{device}/registrations";
-    let schema = response_schema(&document, path);
-    let reference = schema["properties"]["items"]["items"]["$ref"]
-        .as_str()
-        .unwrap();
-    let row_schema = schema
-        .pointer(reference.strip_prefix('#').unwrap())
-        .unwrap();
-    assert!(row_schema["properties"].get("certificateGrantId").is_some());
-    assert!(row_schema["properties"].get("agentGrantId").is_none());
-    let catalog = &endpoint(&document, path)["request"]["query_owner"];
-    let catalog = serde_json::to_value(catalog).unwrap();
-    assert_eq!(
-        catalog,
-        serde_json::to_value(rss_mdm_http_contract::QueryDeclaration::Directory(&SCHEMA)).unwrap()
-    );
+    let path = "/api/v1/devices/{device}/registration";
     let grant = Uuid::from_u128(7);
-    let row: Row = serde_json::from_value(json!({
-        "registrationId": Uuid::from_u128(4), "source": "agent.builtin",
-        "generation": 1, "status": "active", "userContextId": null,
-        "enrollmentId": null, "certificateGrantId": grant
+    let row: Registration = serde_json::from_value(json!({
+        "deviceId": "device-4", "source": "agent.builtin",
+        "status": "active", "enrolledUser": false,
+        "enrollmentId": null, "certificateGrantId": grant, "windowsDeclared": null
     }))
     .unwrap();
-    let projected = SCHEMA
-        .parse("fields=certificateGrantId")
-        .unwrap()
-        .project_typed(row)
-        .unwrap();
-    let value = serde_json::to_value(rss_mdm_query::Page {
-        items: vec![projected],
-        next_cursor: None,
-    })
-    .unwrap();
-    assert_eq!(value["items"][0], json!({"certificateGrantId": grant}));
+    let value = serde_json::to_value(row).unwrap();
+    assert_eq!(value["certificateGrantId"], json!(grant));
     validator(&document, path).validate(&value).unwrap();
-    assert!(
-        !serde_json::to_string(&catalog)
-            .unwrap()
-            .contains("agentGrantId")
-    );
+    assert!(value.get("registrationId").is_none());
+    assert!(value.get("generation").is_none());
 }

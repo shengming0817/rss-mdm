@@ -21,8 +21,6 @@ use uuid::Uuid;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Target {
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 pub use actions::production::messaging_domain;
 pub use actions::storage;

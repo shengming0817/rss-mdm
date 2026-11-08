@@ -471,17 +471,17 @@ impl HttpState {
 pub async fn retire_in(
     tx: &mut sqlx::PgConnection,
     tenant: &str,
-    registration: uuid::Uuid,
+    device: String,
 ) -> Result<(), Error> {
     use crate::database::db;
-    sqlx::query("UPDATE mdm_apple.ade_enrollments SET revoked=true WHERE tenant_id=$1::uuid AND enrollment=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.account_flows SET revoked=true,material=NULL,profile=NULL WHERE tenant_id=$1::uuid AND enrollment=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)")
-        .bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.devices SET state='retired',bootstrap=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.channels SET state='retired',material=NULL,material_digest=NULL,push_lease_until=NULL WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.profiles SET retired_at=coalesce(retired_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.declarations SET retired_at=coalesce(retired_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.ade_enrollments SET revoked = TRUE WHERE tenant_id = CAST($1 AS uuid) AND enrollment = (SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2)").bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.account_flows SET revoked = TRUE, material = NULL, profile = NULL WHERE tenant_id = CAST($1 AS uuid) AND enrollment = (SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2)")
+        .bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.devices SET state = 'retired', bootstrap = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text)").bind(tenant).bind(device.to_string()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.channels SET state = 'retired', material = NULL, material_digest = NULL, push_lease_until = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.scep_attempts SET state = 'superseded' WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text)").bind(tenant).bind(device.to_string()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.profiles SET retired_at = COALESCE(retired_at, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint)) WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.declarations SET retired_at = COALESCE(retired_at, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint)) WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(&device).execute(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 
@@ -552,7 +552,7 @@ pub use storage_authority::verify_authority;
 /// This owner's exact privileges in the shared host transaction role.
 pub const UPDATE_COLUMNS: &str = include_str!("update-columns.sql");
 
-/// Minimal read columns for borrowed registration retirement; token material stays private.
+/// Minimal read columns for borrowed device retirement; token material stays private.
 pub const READ_COLUMNS: &str = include_str!("read-columns.sql");
 
 /// This owner's exact privileges in the shared host transaction role.

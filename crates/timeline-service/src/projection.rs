@@ -123,7 +123,7 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
             .map(|v| Uuid::parse_str(v.as_str()))
             .transpose()
             .map_err(|_| Error::Integrity)?,
-        registration_id: uuid("registration")?,
+
         registration_request_id: uuid("registrationRequest")?,
         instance_id: uuid("instance")?,
         audit_outcome: match event.facts().outcome() {

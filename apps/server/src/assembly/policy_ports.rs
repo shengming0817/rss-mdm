@@ -363,7 +363,7 @@ impl ExecutionEvents for Events {
             let binding = rss_mdm_device_service::control::agent_facts::agent_binding_in(
                 tx,
                 Arc::new(super::agent_facts::AgentFacts),
-                principal.registration(),
+                principal.device().to_string(),
             )
             .await
             .map_err(fault)?;
@@ -418,8 +418,6 @@ impl ExecutionEvents for Events {
                         .await
                         .map_err(fault)?;
                     Ok(run.target.device == value.device
-                        && run.target.registration == value.registration
-                        && run.target.generation == value.generation
                         && run.state.execution == rss_mdm_task_state::Execution::Running
                         && run.state.started_at.is_some())
                 }
@@ -430,9 +428,7 @@ impl ExecutionEvents for Events {
                     .map_err(software_fault),
                 Owner::Access => {
                     let device = value.device.clone();
-                    let registration = value.registration;
-                    let generation = value.generation;
-                    tx.with_connection(move|c|Box::pin(async move{rss_mdm_device_access_postgres::device_access::execution::events::parent_current_on(c,&device,registration,generation,id).await})).await.map_err(Into::into)
+                    tx.with_connection(move|c|Box::pin(async move{rss_mdm_device_access_postgres::device_access::execution::events::parent_current_on(c,&device,id).await})).await.map_err(Into::into)
                 }
                 Owner::Credential(profile) => self
                     .credentials
@@ -443,8 +439,6 @@ impl ExecutionEvents for Events {
                         tx,
                         &rss_mdm_recovery_credentials::tasks::Target {
                             device: value.device.clone(),
-                            registration: value.registration,
-                            generation: value.generation,
                         },
                         id,
                     )
@@ -456,8 +450,6 @@ impl ExecutionEvents for Events {
                         tx,
                         &rss_mdm_registration_service::enrollment::tasks::Target {
                             device: value.device.clone(),
-                            registration: value.registration,
-                            generation: value.generation,
                         },
                         id,
                     )
@@ -469,8 +461,6 @@ impl ExecutionEvents for Events {
                         tx,
                         &rss_mdm_script_service::Target {
                             device: value.device.clone(),
-                            registration: value.registration,
-                            generation: value.generation,
                         },
                         id,
                     )
@@ -482,8 +472,6 @@ impl ExecutionEvents for Events {
                         tx,
                         &rss_mdm_inventory_service::collection::execution::model::Target {
                             device: value.device.clone(),
-                            registration: value.registration,
-                            generation: value.generation,
                         },
                         id,
                     )
@@ -535,8 +523,6 @@ impl ExecutionEvents for Events {
                             policy.version,
                             &rss_mdm_recovery_credentials::tasks::Target {
                                 device: value.device.clone(),
-                                registration: value.registration,
-                                generation: value.generation,
                             },
                             cause,
                             deadline,
@@ -552,8 +538,6 @@ impl ExecutionEvents for Events {
                             policy.version,
                             &rss_mdm_registration_service::enrollment::tasks::Target {
                                 device: value.device.clone(),
-                                registration: value.registration,
-                                generation: value.generation,
                             },
                             cause,
                             deadline,
@@ -569,8 +553,6 @@ impl ExecutionEvents for Events {
                             policy.version,
                             &rss_mdm_script_service::Target {
                                 device: value.device.clone(),
-                                registration: value.registration,
-                                generation: value.generation,
                             },
                             cause,
                             deadline,
@@ -587,8 +569,6 @@ impl ExecutionEvents for Events {
                             policy.version,
                             &rss_mdm_inventory_service::collection::execution::model::Target {
                                 device: value.device.clone(),
-                                registration: value.registration,
-                                generation: value.generation,
                             },
                             cause,
                             deadline,
@@ -895,13 +875,12 @@ fn software_agent_registration_observation(
 ) -> AgentRegistration {
     let rss_mdm_software_service::deployment::queries::records::AgentRegistration {
         device_id,
-        registration_id,
         state,
         capabilities,
     } = v;
     AgentRegistration {
         device_id,
-        registration_id,
+
         state,
         capabilities,
     }
@@ -910,8 +889,6 @@ fn software_agent_registration_observation(
 fn software_target(v: &Target) -> rss_mdm_software_service::deployment::Target {
     rss_mdm_software_service::deployment::Target {
         device: v.device.clone(),
-        registration: v.registration,
-        generation: v.generation,
     }
 }
 fn software_progress(

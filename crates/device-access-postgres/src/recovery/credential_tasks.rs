@@ -37,15 +37,8 @@ impl Product for AccessEligibility {
                 .await
                 .map_err(super::custody_error)?
                 .ok_or(Error::Forbidden)?;
-            if (
-                delivery.device.as_str(),
-                delivery.registration,
-                delivery.generation,
-            ) != (
-                target.device.as_str(),
-                target.registration,
-                target.generation,
-            ) || b.generation != *binding_generation
+            if delivery.device != target.device
+                || b.generation != *binding_generation
                 || !matches!(
                     &b.configuration.windows,
                     rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::RssFactor { .. }
@@ -72,8 +65,7 @@ impl Product for AccessEligibility {
             }
             Ok(Binding {
                 device: b.device,
-                registration: b.registration,
-                generation: b.registration_generation,
+
                 subject: Subject::RssLogin {
                     binding: *binding,
                     binding_generation: *binding_generation,

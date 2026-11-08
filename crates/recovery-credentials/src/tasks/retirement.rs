@@ -8,7 +8,7 @@ pub async fn retire_in(
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<Fact>,
     tenant: &str,
-    registration: Uuid,
+    registration: String,
 ) -> Result<()> {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
@@ -18,7 +18,7 @@ pub async fn retire_in(
         AuditIntent::Management,
     );
     audit.identify_service("credential-retirement");
-    audit.registration(registration);
+    audit.target_device(&registration);
     let candidates = match profile {
         rss_mdm_install_support::StorageProfile::Mdm => include_str!("retirement-mdm.sql"),
         rss_mdm_install_support::StorageProfile::Da => include_str!("retirement-da.sql"),
@@ -27,7 +27,7 @@ pub async fn retire_in(
     loop {
         let rows = sqlx::query(candidates)
             .bind(tenant)
-            .bind(registration)
+            .bind(&registration)
             .bind(after)
             .fetch_all(&mut *c)
             .await?;
@@ -43,7 +43,7 @@ pub async fn retire_in(
                 sqlx::query_scalar::<_, bool>(
                     crate::storage_profile::sql(profile).tasks_retirement_retire_in_2,
                 )
-                .bind(registration)
+                .bind(&registration)
                 .bind(id)
                 .bind(previous)
                 .bind(serde_json::to_value(state).map_err(|_| Error::Malformed)?)
@@ -78,7 +78,7 @@ pub async fn progress_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registrations: &[Uuid],
+    registrations: &[String],
 ) -> Result<(bool, Option<Uuid>)> {
     let row: (bool, Option<Uuid>) =
         sqlx::query_as(crate::storage_profile::sql(profile).tasks_retirement_progress_on_1)

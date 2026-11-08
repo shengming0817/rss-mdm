@@ -60,8 +60,7 @@ impl NativeDelivery for Delivery {
                 rss_mdm_windows_channel::collection_plan::eligible_on(
                     c,
                     tenant,
-                    target.registration,
-                    target.generation,
+                    &target.device,
                     template,
                 )
                 .await
@@ -70,8 +69,7 @@ impl NativeDelivery for Delivery {
                 rss_mdm_apple_channel::collection_admission::eligible_on(
                     c,
                     tenant,
-                    target.registration,
-                    target.generation,
+                    target.device.clone(),
                     template,
                 )
                 .await

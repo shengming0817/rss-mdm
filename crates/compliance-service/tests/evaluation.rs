@@ -53,8 +53,7 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
     input.definition.platform = Platform::Windows;
     let source = |s: &str| SourceReference {
         source: s.into(),
-        registration: "registration".into(),
-        generation: "1".into(),
+        device_id: "device".into(),
         epoch: "epoch".into(),
     };
     let value = assessment(

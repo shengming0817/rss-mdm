@@ -477,11 +477,11 @@ async fn device_observations(
 ) -> Result<String> {
     let object = planning::endpoint(c).await?;
     let member = &object.members[0];
-    let registration = member.registration_id;
+    let registration = &member.device;
     let mut tx = seed_transaction(c).await?;
     if source == rss_mdm_inventory::Source::MdmApple {
-        sqlx::query("UPDATE mdm_access.requests SET source='mdm.apple',windows_profile=NULL WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
-        sqlx::query("UPDATE mdm_access.report_sources SET source='mdm.apple' WHERE tenant_id=$1::uuid AND registration=$2").bind(c.tenant.to_string()).bind(registration).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_access.requests SET source = 'mdm.apple', windows_profile = NULL WHERE tenant_id = CAST($1 AS uuid) AND id = (SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2)").bind(c.tenant.to_string()).bind(&registration).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_access.report_sources SET source = 'mdm.apple' WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(c.tenant.to_string()).bind(&registration).execute(&mut *tx).await?;
     }
     let collection = Uuid::new_v4().to_string();
     let fields = observations
@@ -499,11 +499,11 @@ async fn device_observations(
     let definition =
         rss_mdm_inventory::CollectionDefinition::new(&collection, "1", source, fields)?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &definition).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3").bind(c.tenant.to_string()).bind(registration).bind(source.as_str()).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3").bind(c.tenant.to_string()).bind(&registration).bind(source.as_str()).fetch_one(&mut *tx).await?;
     let stream = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
-        registration,
+        &registration,
         source.as_str(),
         epoch,
         &collection,

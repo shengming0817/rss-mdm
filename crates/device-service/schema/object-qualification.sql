@@ -14,10 +14,9 @@ BEGIN
   -- endpoint or pending owner task is not an execution barrier.
   IF EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=tenant
    AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_devices.checkpoints WHERE tenant_id=tenant),e.revision)
-   AND (e.kind IN('device','registration','source','credential') OR e.fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])
+   AND (e.kind IN('device','source','credential') OR e.fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])
    AND (e.identity->>'device' IN(SELECT m->>'device' FROM jsonb_array_elements(p_input->'members') m)
-    OR e.identity->>'registration' IN(SELECT m->>'registrationId' FROM jsonb_array_elements(p_input->'members') m)
-    OR (e.identity->>'device' IS NULL AND e.identity->>'registration' IS NULL))
+    OR e.identity->>'device' IS NULL)
   ) THEN RETURN NULL; END IF;
   -- Automatic matches reject a new competitor before Device fanout. Explicit
   -- human confirmation remains authoritative while its members/evidence match.
@@ -40,7 +39,6 @@ BEGIN
   IF EXISTS(SELECT FROM jsonb_array_elements(p_input->'members') member WHERE NOT EXISTS(
    SELECT FROM mdm_devices.members m WHERE m.tenant_id=tenant AND m.association_id=(p_input#>>'{object,id}')::uuid
     AND NOT m.released AND m.device=member->>'device' AND m.channel=member->>'channel'
-    AND m.registration_id::text=member->>'registrationId' AND m.generation=(member->>'generation')::bigint
   )) THEN RETURN NULL; END IF;
  ELSIF p_input#>>'{object,kind}' IS DISTINCT FROM 'endpoint' THEN
   RAISE EXCEPTION 'invalid device object' USING ERRCODE='23514';

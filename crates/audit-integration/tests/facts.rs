@@ -343,7 +343,7 @@ fn receipt_subject_is_not_the_authenticated_actor_or_a_run_namespace() {
         AuditIntent::Management,
     );
     let registration = uuid::Uuid::new_v4();
-    audit.identify_device(registration);
+    audit.identify_device(&(registration).to_string());
     let request = uuid::Uuid::new_v4();
     audit.owned_operation(
         O::ScriptInvocation,
@@ -352,7 +352,7 @@ fn receipt_subject_is_not_the_authenticated_actor_or_a_run_namespace() {
         AuditIntent::Management,
     );
     audit.receipt_actor(&format!("self-service:device:{registration}:1"));
-    audit.registration_at(registration, 1);
+    audit.target_device(&registration);
     let fact = Fact::business(
         &audit,
         O::ScriptInvocation,

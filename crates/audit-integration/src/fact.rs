@@ -146,7 +146,7 @@ impl Fact {
             "operation": snapshot.operation_id,
             "operationLocator": owner.map(|owner|crate::operation::OperationLocator::from_snapshot(context.profile(),owner,&snapshot)).transpose()?.flatten(),
             "registrationRequest": registration,
-            "registration": snapshot.registration_id, "software": snapshot.software,
+            "device": snapshot.device_target, "software": snapshot.software,
             "plan": snapshot.plan,
             "writeOutcome": request.map(|_| snapshot.write_outcome),
             "details": null,
@@ -209,11 +209,6 @@ impl Fact {
                 .and_then(serde_json::Value::as_object_mut)
         {
             locator.insert("device".into(), serde_json::json!(target.device));
-            locator.insert(
-                "registration".into(),
-                serde_json::json!(target.registration),
-            );
-            locator.insert("generation".into(), serde_json::json!(target.generation));
         }
         let details = payload["details"]
             .as_object_mut()

@@ -22,7 +22,7 @@ fn dispatch(
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
     let payload = checked_input(serde_json::to_vec(
-        &json!({"version":1,"source":source,"taskId":id,"device":target.device,"registrationId":target.registration,"generation":target.generation}),
+        &json!({"version":1,"source":source,"taskId":id,"device":target.device}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         checked_input(MessageId::parse(&format!("action.{id}")))?,
@@ -99,15 +99,15 @@ pub(crate) async fn queue_run_in(
         return Err(Error::Conflict.into());
     }
     let tenant = tx.tenant_id().to_string();
-    let registration = target.registration;
+    let registration = &target.device;
     let target = target.clone();
     let digest = fingerprint.clone();
     let origin = checked_input(serde_json::to_value(origin))?;
     let (kind, version) = source.columns();
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_devices.unmanage_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).execute(c).await?;Ok(())
+        sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, source_kind, policy_version, device, occurrence, available_at, deadline, state, dispatch_fingerprint, created_at, source_objects, origin) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).execute(c).await?;Ok(())
     })).await?;
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
@@ -127,7 +127,7 @@ pub(crate) async fn queue_run_in(
     audit.identify_service("execution-admission");
     source.audit(&audit);
     audit.target(&id.to_string());
-    audit.registration(registration);
+    audit.target_device(&registration);
     let result: Result<()> = async {
         let run = super::storage::read_run(tx, id).await?;
         let fact = Fact::business(
@@ -173,10 +173,10 @@ pub async fn policy_pending_in(
 ) -> Result<(bool, Option<i64>)> {
     let tenant = tx.tenant_id().to_string();
     let device = target.device.clone();
-    let registration = target.registration.to_string();
+    let registration = target.device.to_string();
     let value=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or(state->>'execution'='unknown' OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_devices.unmanage_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
-            .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).fetch_one(c).await
+        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT COALESCE(bool_or(state ->> 'execution' = 'unknown' OR ((state ->> 'execution' = 'running' OR (state ->> 'execution' = 'not_started' AND deadline > $4)) AND state ->> 'cancellation' <> 'confirmed')), FALSE), max(created_at) FILTER (WHERE policy_version = $6) FROM mdm_devices.unmanage_runs AS r INNER JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (r.tenant_id, r.policy_version) WHERE r.tenant_id = CAST($1 AS uuid) AND v.policy = CAST($2 AS uuid) AND device = $3 AND (device = CAST($5 AS text) OR state ->> 'execution' = 'unknown')")
+            .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(&registration).bind(version).fetch_one(c).await
     })).await?;
     Ok(value)
 }
@@ -198,10 +198,10 @@ pub fn policy_occurrence(
     event: &str,
 ) -> String {
     match frequency {
-        rss_mdm_policy::Frequency::OncePerVersion => format!("version:{}", target.registration),
+        rss_mdm_policy::Frequency::OncePerVersion => format!("version:{}", target.device),
         rss_mdm_policy::Frequency::OncePerEntry => {
-            format!("entry:{entry_source}:{entry}:{}", target.registration)
+            format!("entry:{entry_source}:{entry}:{}", target.device)
         }
-        rss_mdm_policy::Frequency::EveryTrigger => format!("{event}:{}", target.registration),
+        rss_mdm_policy::Frequency::EveryTrigger => format!("{event}:{}", target.device),
     }
 }

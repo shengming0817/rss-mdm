@@ -84,14 +84,11 @@
       "additionalProperties": false,
       "description": "Identity must match the authenticated transport and current registration.",
       "properties": {
-        "generation": {
-          "description": "Current positive registration generation.",
-          "format": "int64",
-          "type": "integer"
-        },
-        "registration": {
-          "description": "Current DA registration.",
-          "format": "uuid",
+        "deviceId": {
+          "description": "Original device identity, checked against the authenticated transport.",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$",
           "type": "string"
         },
         "serviceId": {
@@ -108,8 +105,7 @@
       "required": [
         "serviceId",
         "tenant",
-        "registration",
-        "generation"
+        "deviceId"
       ],
       "type": "object"
     },

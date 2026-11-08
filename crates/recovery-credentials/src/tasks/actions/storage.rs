@@ -83,8 +83,6 @@ async fn run_in(
             .map_err(|_| Error::Invariant)?,
         target: Target {
             device: row.try_get("device")?,
-            registration: row.try_get("registration")?,
-            generation: row.try_get("generation")?,
         },
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         available_at: row.try_get("available_at")?,
@@ -173,8 +171,8 @@ pub async fn save_run(
                 data: EventData::Policy {
                     run_id: run.id,
                     policy_version: version,
-                    registration_id: run.target.registration,
-                    generation: run.target.generation,
+                    device_id: run.target.device.to_string(),
+
                     status: status.into(),
                 },
             };
@@ -188,7 +186,7 @@ pub async fn save_run(
 pub async fn agent_profile_in(
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    registration: String,
 ) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
     Ok(
         agent_facts::agent_binding_in(tx, service.agent_store.clone(), registration)

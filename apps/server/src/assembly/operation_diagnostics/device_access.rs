@@ -248,8 +248,6 @@ impl Diagnostics {
                     p,
                     l.query.device.as_deref().ok_or(Error::Malformed)?,
                     id,
-                    l.query.registration.ok_or(Error::Malformed)?,
-                    l.query.generation.ok_or(Error::Malformed)?,
                 )
                 .await
                 .map_err(Into::into);

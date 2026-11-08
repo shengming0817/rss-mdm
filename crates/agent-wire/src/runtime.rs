@@ -55,7 +55,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "b6f32827491902ad059869ddac1f2c0b8bcb2587b8cec3311ba666084a62ea05";
+    "29bc6b38cae79c317f4931e2bac835dd2afd1e00e7c6f73017e57f800edd488e";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,14 +299,7 @@ pub struct BindingProfile {
     #[schemars(extend("minLength" = 1, "maxLength" = 256, "pattern" = "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$"))]
     #[serde(deserialize_with = "profile_device")]
     pub device_id: String,
-    /// Immutable registration identity.
-    #[serde(with = "strict_uuid")]
-    #[schemars(schema_with = "crate::runtime::uuid_schema")]
-    pub registration_id: Uuid,
-    /// Channel-local registration generation.
-    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
-    #[serde(deserialize_with = "profile_generation")]
-    pub generation: u64,
+
     /// Authorized report source.
     #[schemars(extend("const" = "agent.builtin"))]
     pub source: ReportSource,
@@ -678,17 +671,15 @@ pub(crate) fn nonzero_digest_schema(generator: &mut schemars::SchemaGenerator) -
     schema
 }
 
-fn profile_device<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    let value = String::deserialize(d)?;
-    if value.trim().is_empty() || value.chars().count() > 256 || value.chars().any(char::is_control)
-    {
-        return Err(D::Error::custom(WireError::InvalidValue));
-    }
-    Ok(value)
+pub(crate) fn valid_device_id(value: &str) -> bool {
+    !value.trim().is_empty() && value.chars().count() <= 256 && !value.chars().any(char::is_control)
 }
-fn profile_generation<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
-    let value = u64::deserialize(d)?;
-    if value == 0 || value > i64::MAX as u64 {
+pub(crate) fn device_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":"string", "minLength":1,"maxLength":256,"pattern":"^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$"})
+}
+pub(crate) fn profile_device<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let value = String::deserialize(d)?;
+    if !valid_device_id(&value) {
         return Err(D::Error::custom(WireError::InvalidValue));
     }
     Ok(value)

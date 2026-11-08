@@ -58,8 +58,7 @@ pub enum EventData {
     DeviceAccess {
         operation_id: Uuid,
         binding_id: Uuid,
-        registration_id: Uuid,
-        registration_generation: i64,
+        device_id: String,
         instance_id: Uuid,
         principal_id: Uuid,
         previous_principal: Option<Uuid>,
@@ -70,16 +69,14 @@ pub enum EventData {
         phase: String,
     },
     Registration {
-        registration_id: Uuid,
-        generation: i64,
+        device_id: String,
         channel: String,
         state: String,
     },
     Policy {
         run_id: Uuid,
         policy_version: Uuid,
-        registration_id: Uuid,
-        generation: i64,
+        device_id: String,
         status: String,
     },
     Compliance {
@@ -107,8 +104,7 @@ impl Event {
                 EventData::DeviceAccess {
                     operation_id,
                     binding_id,
-                    registration_id,
-                    registration_generation,
+                    device_id,
                     instance_id,
                     principal_id,
                     previous_principal,
@@ -120,24 +116,14 @@ impl Event {
                 },
                 EventType::DeviceAccessChanged,
             ) => {
-                [
-                    operation_id,
-                    binding_id,
-                    registration_id,
-                    instance_id,
-                    principal_id,
-                ]
-                .iter()
-                .all(|id| !id.is_nil())
-                    && previous_principal.is_none_or(|id| !id.is_nil())
-                    && [
-                        *registration_generation,
-                        *binding_generation,
-                        *factor_generation,
-                        *revision,
-                    ]
+                [operation_id, binding_id, instance_id, principal_id]
                     .iter()
-                    .all(|v| *v > 0)
+                    .all(|id| !id.is_nil())
+                    && device_id == &self.device_id
+                    && previous_principal.is_none_or(|id| !id.is_nil())
+                    && [*binding_generation, *factor_generation, *revision]
+                        .iter()
+                        .all(|v| *v > 0)
                     && matches!(
                         phase.as_str(),
                         "accepted" | "pending" | "applied" | "failed" | "unknown" | "retired"
@@ -145,21 +131,17 @@ impl Event {
             }
             (
                 EventData::Registration {
-                    registration_id,
-                    generation,
+                    device_id,
                     channel,
                     state,
                 },
                 kind,
             ) => {
-                !registration_id.is_nil()
-                    && *generation > 0
+                device_id == &self.device_id
                     && matches!(channel.as_str(), "mdm" | "agent")
                     && match kind {
                         EventType::Registered => state == "active",
-                        EventType::Retired => {
-                            matches!(state.as_str(), "retired" | "revoked" | "superseded")
-                        }
+                        EventType::Retired => state == "revoked",
                         _ => false,
                     }
             }
@@ -167,16 +149,14 @@ impl Event {
                 EventData::Policy {
                     run_id,
                     policy_version,
-                    registration_id,
-                    generation,
+                    device_id,
                     status,
                 },
                 EventType::PolicyTerminal,
             ) => {
                 !run_id.is_nil()
                     && !policy_version.is_nil()
-                    && !registration_id.is_nil()
-                    && *generation > 0
+                    && device_id == &self.device_id
                     && matches!(
                         status.as_str(),
                         "succeeded" | "failed" | "cancelled" | "expired"
@@ -394,8 +374,8 @@ mod tests {
             data: EventData::Policy {
                 run_id: Uuid::new_v4(),
                 policy_version: Uuid::new_v4(),
-                registration_id: Uuid::new_v4(),
-                generation: 1,
+                device_id: Uuid::new_v4().to_string(),
+
                 status: "unknown".into(),
             },
         };

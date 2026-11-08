@@ -164,10 +164,8 @@ impl Transactions {
         if device != authority.device || input.target != NativeTarget::Device {
             return Err(Error::Forbidden.into());
         }
-        let (registration, registration_generation) =
-            storage::current_registration(tx, device).await?;
-        if (registration, registration_generation) != (authority.registration, authority.generation)
-        {
+        let registration = storage::current_registration(tx, device).await?;
+        if registration != authority.device {
             return Err(Error::Conflict.into());
         }
         let materials = self.materials.clone();
@@ -181,14 +179,9 @@ impl Transactions {
         {
             return Err(Error::Forbidden.into());
         }
-        let command_authority = rss_mdm_registration_service::command_authority::resolve_in(
-            &self.store,
-            tx,
-            device,
-            registration,
-            registration_generation,
-        )
-        .await?;
+        let command_authority =
+            rss_mdm_registration_service::command_authority::resolve_in(&self.store, tx, device)
+                .await?;
         let (scope, coordinate) = (command_authority.scope, command_authority.coordinate);
         let spec = dc::CommandSpec::new(
             scope,
@@ -202,8 +195,7 @@ impl Transactions {
         self.store.queue(tx, spec, message).await?;
         let binding = rss_mdm_registration_service::command_authority::CommandBinding {
             operation: input.operation_id,
-            registration,
-            generation: registration_generation,
+            device: registration.to_string(),
         };
         let tenant = self.tenant;
         let channel = self.apple_profiles.clone();
@@ -221,8 +213,6 @@ impl Transactions {
             &crate::native::input_storage::Identity {
                 operation: input.operation_id,
                 device,
-                registration,
-                generation: registration_generation,
             },
             input,
         )?;
@@ -240,16 +230,8 @@ impl Transactions {
         }
         let authority = checked_input(serde_json::to_string(&authority))?;
         let digest = fingerprint.clone();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_recovery_tasks.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,input_context) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11,$12)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(input_context).execute(c).await?;Ok(())})).await?;
-        apple::own(
-            tx,
-            self.apple_profiles.clone(),
-            device,
-            registration,
-            registration_generation,
-            input,
-        )
-        .await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_recovery_tasks.operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, input_context) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, $7, CAST($8 AS jsonb), $9, $10)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(input_context).execute(c).await?;Ok(())})).await?;
+        apple::own(tx, self.apple_profiles.clone(), device, input).await?;
         let response = created(tx, self, audit, input.operation_id, fingerprint).await?;
         crate::native::worker_wake::notify_in(tx, crate::native::worker_wake::Work::CommandRelay)
             .await?;

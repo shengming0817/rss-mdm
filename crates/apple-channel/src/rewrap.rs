@@ -42,8 +42,7 @@ fn aad(tenant: &str, table: &str, column: &str, row: &PgRow) -> Result<DerivedAa
         "profiles" => crate::profiles::aad(row),
         "declarations" | "status_reports" => crate::ddm::aad_parts(
             tenant,
-            id("registration")?,
-            number("generation")?,
+            &text("device")?,
             &text("user_key")?,
             id(if table == "status_reports" {
                 "id"
@@ -58,8 +57,7 @@ fn aad(tenant: &str, table: &str, column: &str, row: &PgRow) -> Result<DerivedAa
         ),
         "attempts" => crate::protection::aad(
             tenant,
-            id("registration")?,
-            number("generation")?,
+            &text("device")?,
             id("id")?,
             if column == "request" {
                 crate::protection::Part::Request
@@ -69,16 +67,14 @@ fn aad(tenant: &str, table: &str, column: &str, row: &PgRow) -> Result<DerivedAa
         ),
         "devices" => crate::material::aad(
             tenant,
-            id("registration")?,
-            number("generation")?,
+            &text("device")?,
             "",
             number("bootstrap_revision")?,
             "apple.bootstrap",
         ),
         "channels" => crate::material::aad(
             tenant,
-            id("registration")?,
-            number("generation")?,
+            &text("device")?,
             &text("user_key")?,
             number("token_revision")?,
             "apple.push.material",
@@ -107,13 +103,8 @@ pub async fn run(c: &mut PgConnection, tenant: &str, protection: &Protector) -> 
         ("channels", "material"),
     ] {
         // Identifiers come exclusively from this exhaustive fixed list, never a caller or configuration.
-        let generation = if table == "devices" {
-            ",(SELECT r.generation FROM mdm_access.registrations r WHERE r.tenant_id=owned.tenant_id AND r.id=owned.registration) AS generation"
-        } else {
-            ""
-        };
         let query = format!(
-            "SELECT ctid::text AS maintenance_row,*{generation} FROM mdm_apple.{table} owned WHERE tenant_id=$1::uuid AND {column} IS NOT NULL AND substring({column} FROM 1 FOR $2)<>$3 ORDER BY ctid LIMIT 64 FOR UPDATE"
+            "SELECT ctid::text AS maintenance_row,* FROM mdm_apple.{table} owned WHERE tenant_id=$1::uuid AND {column} IS NOT NULL AND substring({column} FROM 1 FOR $2)<>$3 ORDER BY ctid LIMIT 64 FOR UPDATE"
         );
         let rows = sqlx::query(sqlx::AssertSqlSafe(query))
             .bind(tenant)

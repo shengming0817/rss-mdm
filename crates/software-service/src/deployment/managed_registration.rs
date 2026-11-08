@@ -54,19 +54,11 @@ impl AuthorityReader {
             .execute(&mut *c)
             .await
             .map_err(crate::deployment::database::db)?;
-        let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.input_context,o.authority,mdm_software_deployment.installation_status(o.id) AS status FROM mdm_software_deployment.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(&tenant).bind(installation).fetch_optional(&mut *c).await.map_err(crate::deployment::database::db)?.ok_or(Error::Forbidden)?;
+        let row=sqlx::query("SELECT o.device, o.request, o.input_context, o.authority, mdm_software_deployment.installation_status(o.id) AS status FROM mdm_software_deployment.operations AS o WHERE o.tenant_id = CAST($1 AS uuid) AND o.id = $2").bind(&tenant).bind(installation).fetch_optional(&mut *c).await.map_err(crate::deployment::database::db)?.ok_or(Error::Forbidden)?;
         if row
-            .try_get::<Uuid, _>("registration")
+            .try_get::<String, _>("device")
             .map_err(crate::deployment::database::db)?
-            != p.registration()
-            || row
-                .try_get::<i64, _>("registration_generation")
-                .map_err(crate::deployment::database::db)?
-                != p.generation()
-            || row
-                .try_get::<String, _>("device")
-                .map_err(crate::deployment::database::db)?
-                != p.device()
+            != p.device()
         {
             return Err(Error::Forbidden);
         }
@@ -279,17 +271,16 @@ impl rss_mdm_registration_service::installation::Installations for AuthorityRead
             let value:std::result::Result<_,Error>=async {
                 if tenant!=self.tenant {return Err(Error::Forbidden);}
                 crate::deployment::authorization::lock_shared_on(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant.to_string(),&self.instance).await?;
-                let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.input_context,o.authority,mdm_software_deployment.installation_status(o.id) AS status FROM mdm_software_deployment.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(database::db)?.ok_or(Error::Forbidden)?;
+                let row=sqlx::query("SELECT o.device, o.request, o.input_context, o.authority, mdm_software_deployment.installation_status(o.id) AS status FROM mdm_software_deployment.operations AS o WHERE o.tenant_id = CAST($1 AS uuid) AND o.id = $2").bind(tenant.to_string()).bind(id).fetch_optional(&mut *c).await.map_err(database::db)?.ok_or(Error::Forbidden)?;
                 let request=crate::deployment::input_storage::open_row(&self.protection,tenant,id,&row,"request")?;
                 let authority:authority::Authority=serde_json::from_value(row.try_get("authority").map_err(database::db)?).map_err(|_|Error::Malformed)?;
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(database::db)?;
                 if now>=request.deadline || !matches!(row.try_get::<String,_>("status").map_err(database::db)?.as_str(),"queued"|"published"|"received"|"applied") || !authority.valid(self.source.as_ref(),self.lifecycle.as_ref(),c,&self.protection,&[authorization::Permission::SoftwareDeploy],now).await? {return Err(Error::Forbidden);}
                 let authority::Authority::AgentInstall{package,download_origin,origin,device,policy,version,..}=authority else{return Err(Error::Forbidden)};
                 rss_mdm_registration_service::lifecycle::require_work_in(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant.to_string(),&device).await?;
-                let registration=row.try_get("registration").map_err(database::db)?;let generation=row.try_get("registration_generation").map_err(database::db)?;
-                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(tenant.to_string()).bind(registration).bind(&device).bind(generation).fetch_one(c).await.map_err(database::db)?;
+                let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant.to_string()).bind(&device).fetch_one(c).await.map_err(database::db)?;
                 if !active {return Err(Error::Forbidden);}
-                Ok(rss_mdm_registration_service::installation::Installation{id,policy,version,device,registration,generation,platform:package.target.parts().0,source:request.task.source(),release:package.release.release_id,deadline:request.deadline,input_version:request.input_version,download_origin,origin})
+                Ok(rss_mdm_registration_service::installation::Installation{id,policy,version,device,platform:package.target.parts().0,source:request.task.source(),release:package.release.release_id,deadline:request.deadline,input_version:request.input_version,download_origin,origin})
             }.await;
             value.map_err(registration_error)
         })

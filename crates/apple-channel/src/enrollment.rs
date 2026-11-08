@@ -441,7 +441,7 @@ pub async fn attempt(
     apple: &Apple,
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
 ) -> Result<PgRow, Error> {
-    let row=sqlx::query("SELECT state,configuration,spki,fingerprint,authorization_version,transaction_id,csr_digest,registration::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND issuer=$4 FOR UPDATE")
+    let row=sqlx::query("SELECT state, configuration, spki, fingerprint, authorization_version, transaction_id, csr_digest, CAST(device AS text) FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND enrollment = CAST($3 AS uuid) AND issuer = $4 FOR UPDATE")
         .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.enrollment().to_string()).bind(leaf.issuer().as_slice()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if !matches!(
         row.try_get::<String, _>("state").map_err(db)?.as_str(),
@@ -464,8 +464,8 @@ pub async fn persist_leaf(
 ) -> Result<(), Error> {
     sqlx::query("UPDATE mdm_apple.scep_attempts SET fingerprint=$3,serial=$4,certificate=$5,not_before=$6,not_after=$7 WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.fingerprint().as_slice()).bind(leaf.serial()).bind(leaf.certificate()).bind(leaf.not_before()).bind(leaf.not_after()).execute(&mut *tx).await.map_err(db)?;
-    let registration: Option<Uuid> = sqlx::query_scalar(
-        "SELECT registration FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2",
+    let device: Option<String> = sqlx::query_scalar(
+        "SELECT device FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $2",
     )
     .bind(tenant)
     .bind(leaf.attempt())
@@ -482,7 +482,7 @@ pub async fn persist_leaf(
         tx,
         tenant,
         "apple",
-        registration,
+        device.as_deref(),
         &issuer,
         leaf.certificate(),
     )
@@ -513,19 +513,12 @@ pub async fn bind(
                     auth: &auth,
                     proof: &proof,
                     audit,
-                    facts: Vec::new(),
                 },
             ),
             |(app, inputs), tx| {
                 Box::pin(async move {
                     tx.with_connection_context(inputs, |inputs, c| Box::pin(bind_on(c, inputs)))
                         .await?;
-                    for fact in &inputs.facts {
-                        app.audit_store
-                            .append(tx, fact)
-                            .await
-                            .map_err(Error::from)?;
-                    }
                     let fact = rss_mdm_audit_integration::Fact::observation(
                         inputs.audit,
                         &format!("apple-bind:{}", inputs.leaf.attempt()),
@@ -553,7 +546,6 @@ struct BindInputs<'a> {
     auth: &'a Coordinates,
     proof: &'a Admission,
     audit: &'a RequestAudit,
-    facts: Vec<rss_mdm_audit_integration::Fact>,
 }
 async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Result<(), Error> {
     let BindInputs {
@@ -563,7 +555,6 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
         auth,
         proof,
         audit,
-        facts,
     } = inputs;
     let app = *app;
     let leaf = *leaf;
@@ -588,17 +579,11 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     let credential = app.mount.credential(leaf.fingerprint())?;
     let receipt = app
         .devices
-        .bind_native_in(
-            tx,
-            proof,
-            &credential,
-            [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
-            facts,
-        )
+        .bind_native_in(tx, proof, &credential, [Uuid::new_v4(), Uuid::new_v4()])
         .await?;
     persist_leaf(tx, &tenant, leaf).await?;
-    sqlx::query("UPDATE mdm_apple.scep_attempts SET state='bound',registration=$3::uuid WHERE tenant_id=$1::uuid AND id=$2::uuid")
-        .bind(&tenant).bind(leaf.attempt().to_string()).bind(receipt.registration.to_string()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.scep_attempts SET state = 'bound', device = CAST($3 AS text) WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid)")
+        .bind(&tenant).bind(leaf.attempt().to_string()).bind(receipt.device.to_string()).execute(&mut *tx).await.map_err(db)?;
     let issuer = leaf
         .issuer()
         .iter()
@@ -609,19 +594,19 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
         tx,
         &tenant,
         "apple",
-        receipt.registration,
+        &receipt.device,
         &issuer,
         leaf.certificate(),
     )
     .await
     .map_err(|_| Error::Unavailable(Failure::Database))?;
-    sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state,access_rights) SELECT $1::uuid,$2::uuid,$3,'pending_token',access_rights FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$4")
-        .bind(&tenant).bind(receipt.registration.to_string()).bind(udid).bind(leaf.attempt()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) SELECT CAST($1 AS uuid), CAST($2 AS text), $3, 'pending_token', access_rights FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $4")
+        .bind(&tenant).bind(receipt.device.to_string()).bind(udid).bind(leaf.attempt()).execute(&mut *tx).await.map_err(db)?;
     crate::notify(tx, "apple").await.map_err(db)?;
     proof.mark_bound_in(tx).await?;
     proof.bind_audit(audit)?;
     audit.target_device(&auth.device);
-    audit.registration(receipt.registration);
+    audit.target_device(&receipt.device);
     Ok(())
 }
 
@@ -638,9 +623,9 @@ pub async fn progress_in(
     c: &mut sqlx::PgConnection,
     context: &rss_mdm_registration_service::enrollment::read::Context,
 ) -> Result<ProgressEvidence, Error> {
-    let attempt = if let Some(registration) = &context.registration {
-        let issued: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts s JOIN mdm_access.credentials k ON k.tenant_id=s.tenant_id AND k.registration=s.registration AND k.locator=encode(s.fingerprint,'hex') WHERE s.tenant_id=$1::uuid AND s.enrollment=$2 AND s.registration=$3 AND s.state='bound' AND s.certificate IS NOT NULL AND k.channel='mdm' AND k.state='active')")
-            .bind(&context.tenant).bind(context.enrollment).bind(registration.id)
+    let attempt = if let Some(device) = &context.registration {
+        let issued: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_access.credentials AS k ON k.tenant_id = s.tenant_id AND k.device = s.device AND k.locator = encode(s.fingerprint, 'hex') WHERE s.tenant_id = CAST($1 AS uuid) AND s.enrollment = $2 AND s.device = $3 AND s.state = 'bound' AND s.certificate IS NOT NULL AND k.channel = 'mdm' AND k.state = 'active')")
+            .bind(&context.tenant).bind(context.enrollment).bind(&device.device)
             .fetch_one(&mut *c).await.map_err(db)?;
         (issued, issued)
     } else {
@@ -649,12 +634,12 @@ pub async fn progress_in(
         .fetch_one(&mut *c).await.map_err(db)?;
         attempt
     };
-    let state = if let Some(registration) = &context.registration {
+    let state = if let Some(device) = &context.registration {
         sqlx::query_scalar::<_, String>(
-            "SELECT state FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2",
+            "SELECT state FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2",
         )
         .bind(&context.tenant)
-        .bind(registration.id)
+        .bind(&device.device)
         .fetch_optional(c)
         .await
         .map_err(db)?

@@ -17,120 +17,123 @@ REVOKE ALL ON FUNCTION mdm_software_deployment.installation_status(uuid) FROM PU
 
 -- The registration owner participates on its original audit connection. Narrow
 -- product functions preserve the shared command component's exclusive runtime ACL.
-CREATE FUNCTION mdm_software_deployment.retirement_commands(p_registration uuid, p_after text) RETURNS SETOF rss_device_command.commands
+CREATE FUNCTION mdm_software_deployment.retirement_commands(p_device text, p_after text) RETURNS SETOF rss_device_command.commands
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT a.device_id FROM (
   SELECT DISTINCT d.device_id FROM mdm_software_deployment.operations o
   JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
-  JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
+  JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
   WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-   AND o.registration=p_registration AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
+   AND o.device=p_device AND (r.state<>'active' OR (r.retirement IS NOT NULL AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
   ORDER BY d.device_id
  ) scope CROSS JOIN LATERAL rss_device_command.lock_authority(nullif(current_setting('rss.tenant_id',true),'')::uuid,scope.device_id) a;
  SELECT d.* FROM mdm_software_deployment.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
- JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
+ JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
+  AND o.device=p_device AND (r.state<>'active' OR (r.retirement IS NOT NULL AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
   AND d.command_id COLLATE "C" > p_after ORDER BY d.command_id COLLATE "C" LIMIT 64;
 $$;
-REVOKE ALL ON FUNCTION mdm_software_deployment.retirement_commands(uuid,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_software_deployment.retirement_commands(text,text) FROM PUBLIC;
 
-CREATE FUNCTION mdm_software_deployment.save_retired_command(p_registration uuid, p_run uuid, p_previous bigint, p_terminal bigint) RETURNS boolean
+CREATE FUNCTION mdm_software_deployment.save_retired_command(p_device text, p_run uuid, p_previous bigint, p_terminal bigint) RETURNS boolean
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT a.device_id FROM mdm_software_deployment.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
- JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
+ JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
  CROSS JOIN LATERAL rss_device_command.lock_authority(o.tenant_id,d.device_id) a
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND o.id=p_run AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')));
+  AND o.device=p_device AND o.id=p_run AND (r.state<>'active' OR (r.retirement IS NOT NULL AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')));
  SELECT coalesce((SELECT rss_device_command.save(d.tenant_id,d.device_id,d.command_id,p_previous,'cancelled',d.published_at,d.received_at,p_terminal)
  FROM mdm_software_deployment.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
- JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
+ JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND o.id=p_run AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))
+  AND o.device=p_device AND o.id=p_run AND (r.state<>'active' OR (r.retirement IS NOT NULL AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))
   AND d.version=p_previous AND d.terminal_at IS NULL),false);
 $$;
-REVOKE ALL ON FUNCTION mdm_software_deployment.save_retired_command(uuid,uuid,bigint,bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_software_deployment.save_retired_command(text,uuid,bigint,bigint) FROM PUBLIC;
 
 -- Retirement uses the action owner reducer and a narrow CAS projection on the
 -- original audit connection. The application role retains read-only table access.
-CREATE FUNCTION mdm_software_deployment.save_retired_action(p_registration uuid, p_run uuid, p_previous jsonb, p_state jsonb) RETURNS boolean
+CREATE FUNCTION mdm_software_deployment.save_retired_action(p_device text, p_run uuid, p_previous jsonb, p_state jsonb) RETURNS boolean
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  WITH changed AS (
   UPDATE mdm_software_deployment.action_runs a SET state=p_state
   WHERE a.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-   AND a.registration=p_registration AND a.id=p_run AND a.state=p_previous
+   AND a.device=p_device AND a.id=p_run AND a.state=p_previous
    AND a.state->>'execution' IN ('not_started','running','waiting_reboot','unknown')
    AND a.state->>'cancellation'='none'
-   AND EXISTS(SELECT 1 FROM mdm_access.registrations r
-    WHERE (r.tenant_id,r.id)=(a.tenant_id,a.registration) AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(a.tenant_id,a.id)))))
+   AND EXISTS(SELECT 1 FROM mdm_access.devices r
+    WHERE (r.tenant_id,r.id)=(a.tenant_id,a.device) AND (r.state<>'active' OR (r.retirement IS NOT NULL AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(a.tenant_id,a.id)))))
   RETURNING a.id
  ) SELECT EXISTS(SELECT 1 FROM changed);
 $$;
-REVOKE ALL ON FUNCTION mdm_software_deployment.save_retired_action(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_software_deployment.save_retired_action(text,uuid,jsonb,jsonb) FROM PUBLIC;
 
 CREATE TABLE mdm_software_deployment.agent_admission (
-    tenant_id uuid NOT NULL,
-    registration uuid NOT NULL,
-    policy_after uuid
+    tenant_id uuid NOT NULL
+  , device text NOT NULL
+  , policy_after uuid
 );
 
 ALTER TABLE ONLY mdm_software_deployment.agent_admission FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_software_deployment.action_receipts (
-    device text NOT NULL,
-    registration uuid NOT NULL,
-    generation bigint NOT NULL CHECK(generation > 0),
-    tenant_id uuid NOT NULL,
-    actor text NOT NULL,
-    id uuid NOT NULL,
-    fingerprint bytea NOT NULL,
-    response jsonb NOT NULL,
-    audit_details jsonb,
-    CONSTRAINT action_receipts_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
-    CONSTRAINT action_receipts_response_check CHECK ((octet_length((response)::text) <= 6291456))
+    device text NOT NULL
+  , tenant_id uuid NOT NULL
+  , actor text NOT NULL
+  , id uuid NOT NULL
+  , fingerprint bytea NOT NULL
+  , response jsonb NOT NULL
+  , audit_details jsonb
+  , CONSTRAINT action_receipts_fingerprint_check CHECK (octet_length(fingerprint) = 32)
+  , CONSTRAINT action_receipts_response_check CHECK (octet_length(CAST(response AS text)) <= 6291456)
 );
 
 ALTER TABLE ONLY mdm_software_deployment.action_receipts FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_software_deployment.action_runs (
- origin jsonb NOT NULL CHECK(origin IN ('"system"','"policy"','"human"','"ai"')),
- source_objects jsonb NOT NULL,
- tenant_id uuid NOT NULL,
- id uuid NOT NULL,
- source_kind text DEFAULT 'policy'::text NOT NULL,
- retirement uuid,
- policy_version uuid,
- device text NOT NULL,
- registration uuid NOT NULL,
- generation bigint NOT NULL,
- occurrence text NOT NULL,
- created_at bigint NOT NULL,
- available_at bigint NOT NULL,
- deadline bigint NOT NULL,
- state jsonb NOT NULL,
- gateway_accepted boolean DEFAULT false NOT NULL,
- dispatch_fingerprint bytea NOT NULL,
- dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
- result jsonb,
- invocation jsonb CHECK (invocation IS NULL OR (jsonb_typeof(invocation)='object' AND octet_length(invocation::text)<=131072)),
- CONSTRAINT action_runs_available_at_check CHECK ((available_at >= 0)),
- CONSTRAINT action_runs_check CHECK ((source_kind IN('policy','retirement')) AND (policy_version IS NOT NULL)),
- CONSTRAINT action_runs_check1 CHECK ((deadline > available_at)),
- CONSTRAINT action_runs_created_at_check CHECK ((created_at >= 0)),
- CONSTRAINT action_runs_dispatch_fingerprint_check CHECK ((octet_length(dispatch_fingerprint) = 32)),
- CONSTRAINT action_runs_generation_check CHECK ((generation > 0)),
- CONSTRAINT action_runs_occurrence_check CHECK (((octet_length(occurrence) >= 1) AND (octet_length(occurrence) <= 256))),
- CONSTRAINT action_runs_result_check CHECK ((octet_length((result)::text) <= 1114112)),
- CONSTRAINT action_runs_state_check CHECK ((octet_length((state)::text) <= 4096)),
- software_effect jsonb CHECK (software_effect IS NULL OR (jsonb_typeof(software_effect)='object' AND octet_length(software_effect::text)<=4096)),
- invocation_archive jsonb CHECK (invocation_archive IS NULL OR octet_length(invocation_archive::text)<=196608)
-
+    origin jsonb NOT NULL CHECK (origin IN ('"system"', '"policy"', '"human"', '"ai"'))
+  , source_objects jsonb NOT NULL
+  , tenant_id uuid NOT NULL
+  , id uuid NOT NULL
+  , source_kind text DEFAULT CAST('policy' AS text) NOT NULL
+  , retirement uuid
+  , policy_version uuid
+  , device text NOT NULL
+  , occurrence text NOT NULL
+  , created_at bigint NOT NULL
+  , available_at bigint NOT NULL
+  , deadline bigint NOT NULL
+  , state jsonb NOT NULL
+  , gateway_accepted boolean DEFAULT FALSE NOT NULL
+  , dispatch_fingerprint bytea NOT NULL
+  , dispatch_failure jsonb CHECK (dispatch_failure IS NULL
+                               OR (jsonb_typeof(dispatch_failure) = 'object'
+                               AND octet_length(CAST(dispatch_failure AS text)) <= 8192))
+  , result jsonb
+  , invocation jsonb CHECK (invocation IS NULL
+                         OR (jsonb_typeof(invocation) = 'object'
+                         AND octet_length(CAST(invocation AS text)) <= 131072))
+  , CONSTRAINT action_runs_available_at_check CHECK (available_at >= 0)
+  , CONSTRAINT action_runs_check CHECK (source_kind IN ('policy', 'retirement')
+                                    AND policy_version IS NOT NULL)
+  , CONSTRAINT action_runs_check1 CHECK (deadline > available_at)
+  , CONSTRAINT action_runs_created_at_check CHECK (created_at >= 0)
+  , CONSTRAINT action_runs_dispatch_fingerprint_check CHECK (octet_length(dispatch_fingerprint) = 32)
+  , CONSTRAINT action_runs_occurrence_check CHECK (octet_length(occurrence) >= 1
+                                               AND octet_length(occurrence) <= 256)
+  , CONSTRAINT action_runs_result_check CHECK (octet_length(CAST(result AS text)) <= 1114112)
+  , CONSTRAINT action_runs_state_check CHECK (octet_length(CAST(state AS text)) <= 4096)
+  , software_effect jsonb CHECK (software_effect IS NULL
+                              OR (jsonb_typeof(software_effect) = 'object'
+                              AND octet_length(CAST(software_effect AS text)) <= 4096))
+  , invocation_archive jsonb CHECK (invocation_archive IS NULL
+                                 OR octet_length(CAST(invocation_archive AS text)) <= 196608)
 );
 
 ALTER TABLE ONLY mdm_software_deployment.action_runs FORCE ROW LEVEL SECURITY;
@@ -146,36 +149,41 @@ GRANT SELECT,INSERT ON mdm_software_deployment.device_recovery TO mdm_command_ru
 GRANT UPDATE(authority_epoch,recovery_after) ON mdm_software_deployment.device_recovery TO mdm_command_runtime;
 
 CREATE TABLE mdm_software_deployment.operations (
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    device text NOT NULL,
-    request bytea NOT NULL,
-    input_context jsonb NOT NULL CHECK (jsonb_typeof(input_context)='object' AND octet_length(input_context::text)<=4096),
-    fingerprint bytea NOT NULL,
-    registration uuid NOT NULL,
-    registration_generation bigint NOT NULL,
-    generation bigint NOT NULL,
-    epoch bigint NOT NULL,
-    authority jsonb NOT NULL,
-    revision bigint DEFAULT 1 NOT NULL,
-    observed_command_version bigint NOT NULL DEFAULT 1 CHECK(observed_command_version>0),
-    dispatch_fingerprint bytea NOT NULL,
-    dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
-    gateway_accepted boolean DEFAULT false NOT NULL,
-    source_kind text DEFAULT 'policy'::text NOT NULL,
- retirement uuid,
-    policy_version uuid,
-    CONSTRAINT operation_authority_source CHECK(authority->>'kind' IN ('agent_install','software') AND authority->>'tenant'=tenant_id::text AND authority->>'device'=device AND authority->>'version'=policy_version::text AND authority->>'operation'=id::text),
-    CONSTRAINT operation_source CHECK(source_kind='policy' AND policy_version IS NOT NULL),
-    CONSTRAINT operations_authority_check CHECK ((octet_length((authority)::text) <= 1048576)),
-    CONSTRAINT operations_dispatch_fingerprint_check CHECK ((octet_length(dispatch_fingerprint) = 32)),
-    CONSTRAINT operations_epoch_check CHECK ((epoch > 0)),
-    CONSTRAINT operations_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
-    CONSTRAINT operations_generation_check CHECK ((generation > 0)),
-    CONSTRAINT operations_registration_generation_check CHECK ((registration_generation > 0)),
-    CONSTRAINT operations_request_check CHECK ((octet_length(request) BETWEEN 68 AND 33554500)),
-    CONSTRAINT operations_revision_check CHECK ((revision > 0)),
-    CONSTRAINT operations_source_kind_check CHECK ((source_kind = ANY (ARRAY['policy'::text])))
+    tenant_id uuid NOT NULL
+  , id uuid NOT NULL
+  , device text NOT NULL
+  , request bytea NOT NULL
+  , input_context jsonb NOT NULL CHECK (jsonb_typeof(input_context) = 'object'
+                                    AND octet_length(CAST(input_context AS text)) <= 4096)
+  , fingerprint bytea NOT NULL
+  , generation bigint NOT NULL
+  , epoch bigint NOT NULL
+  , authority jsonb NOT NULL
+  , revision bigint DEFAULT 1 NOT NULL
+  , observed_command_version bigint NOT NULL DEFAULT 1 CHECK (observed_command_version > 0)
+  , dispatch_fingerprint bytea NOT NULL
+  , dispatch_failure jsonb CHECK (dispatch_failure IS NULL
+                               OR (jsonb_typeof(dispatch_failure) = 'object'
+                               AND octet_length(CAST(dispatch_failure AS text)) <= 8192))
+  , gateway_accepted boolean DEFAULT FALSE NOT NULL
+  , source_kind text DEFAULT CAST('policy' AS text) NOT NULL
+  , retirement uuid
+  , policy_version uuid
+  , CONSTRAINT operation_authority_source CHECK (authority ->> 'kind' IN ('agent_install', 'software')
+                                             AND authority ->> 'tenant' = CAST(tenant_id AS text)
+                                             AND authority ->> 'device' = device
+                                             AND authority ->> 'version' = CAST(policy_version AS text)
+                                             AND authority ->> 'operation' = CAST(id AS text))
+  , CONSTRAINT operation_source CHECK (source_kind = 'policy'
+                                   AND policy_version IS NOT NULL)
+  , CONSTRAINT operations_authority_check CHECK (octet_length(CAST(authority AS text)) <= 1048576)
+  , CONSTRAINT operations_dispatch_fingerprint_check CHECK (octet_length(dispatch_fingerprint) = 32)
+  , CONSTRAINT operations_epoch_check CHECK (epoch > 0)
+  , CONSTRAINT operations_fingerprint_check CHECK (octet_length(fingerprint) = 32)
+  , CONSTRAINT operations_generation_check CHECK (generation > 0)
+  , CONSTRAINT operations_request_check CHECK (octet_length(request) BETWEEN 68 AND 33554500)
+  , CONSTRAINT operations_revision_check CHECK (revision > 0)
+  , CONSTRAINT operations_source_kind_check CHECK (source_kind = ANY(ARRAY[CAST('policy' AS text)]))
 );
 
 ALTER TABLE ONLY mdm_software_deployment.operations FORCE ROW LEVEL SECURITY;
@@ -209,8 +217,7 @@ CREATE TABLE mdm_software_deployment.requests (
 
 ALTER TABLE ONLY mdm_software_deployment.requests FORCE ROW LEVEL SECURITY;
 
-ALTER TABLE ONLY mdm_software_deployment.agent_admission
-    ADD CONSTRAINT agent_admission_pkey PRIMARY KEY (tenant_id, registration);
+ALTER TABLE ONLY mdm_software_deployment.agent_admission ADD CONSTRAINT agent_admission_pkey PRIMARY KEY (tenant_id, device);
 
 ALTER TABLE ONLY mdm_software_deployment.action_receipts
     ADD CONSTRAINT action_receipts_pkey PRIMARY KEY (tenant_id, actor, id);
@@ -230,9 +237,18 @@ ALTER TABLE ONLY mdm_software_deployment.policy_recovery
 ALTER TABLE ONLY mdm_software_deployment.requests
     ADD CONSTRAINT requests_pkey PRIMARY KEY (tenant_id, actor, id);
 
-CREATE INDEX collection_starts ON mdm_software_deployment.action_runs(tenant_id,policy_version,device,registration,generation,((state->>'startedAt')::bigint) DESC) WHERE state->>'startedAt' IS NOT NULL;
+CREATE INDEX collection_starts
+  ON mdm_software_deployment.action_runs (tenant_id
+                                        , policy_version
+                                        , device
+                                        , (CAST(state ->> 'startedAt' AS bigint)) DESC)
+  WHERE state ->> 'startedAt' IS NOT NULL;
 
-CREATE INDEX action_due ON mdm_software_deployment.action_runs USING btree (tenant_id, registration, available_at, id);
+CREATE INDEX action_due
+  ON mdm_software_deployment.action_runs (tenant_id
+                                        , device
+                                        , available_at
+                                        , id);
 
 CREATE INDEX action_runs_software_stage_latest ON mdm_software_deployment.action_runs USING btree (tenant_id, policy_version, device, created_at DESC, id DESC);
 
@@ -264,39 +280,44 @@ CREATE POLICY tenant ON mdm_software_deployment.requests USING ((tenant_id = (NU
 
 -- Wake eligibility reads published work without giving the Windows role access
 -- to shared command storage. Reauthorization and user scope remain checked in Rust.
-CREATE FUNCTION mdm_software_deployment.windows_pending_operations(p_registration uuid, p_generation bigint, p_after uuid) RETURNS SETOF mdm_software_deployment.operations
+CREATE FUNCTION mdm_software_deployment.windows_pending_operations(p_device text, p_after uuid) RETURNS SETOF mdm_software_deployment.operations
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT o.* FROM mdm_software_deployment.operations o
  JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
- JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation)
+ JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND o.registration_generation=p_generation AND o.id>p_after
+  AND o.device=p_device AND o.id>p_after
   AND r.state='active' AND o.gateway_accepted AND o.dispatch_failure IS NULL
   AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
   AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
  ORDER BY o.id LIMIT 64;
 $$;
-REVOKE ALL ON FUNCTION mdm_software_deployment.windows_pending_operations(uuid,bigint,uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_software_deployment.windows_pending_operations(text,uuid) FROM PUBLIC;
 
 -- Discovery starts with work, never with every installed push channel. Authority
 -- is still rechecked by Software in the eventual claimant's transaction.
-CREATE FUNCTION mdm_software_deployment.windows_wake_candidates(p_after uuid) RETURNS TABLE(registration uuid)
+CREATE FUNCTION mdm_software_deployment.windows_wake_candidates(p_after text) RETURNS TABLE(device text)
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
- SELECT o.registration FROM mdm_software_deployment.operations o
+ SELECT o.device FROM mdm_software_deployment.operations o
  JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
- JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation)
+ JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration>p_after AND r.state='active'
+  AND o.device>p_after AND r.state='active'
   AND o.gateway_accepted AND o.dispatch_failure IS NULL
   AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
   AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
- ORDER BY registration LIMIT 32;
+ ORDER BY device LIMIT 32;
 $$;
-REVOKE ALL ON FUNCTION mdm_software_deployment.windows_wake_candidates(uuid) FROM PUBLIC;
-CREATE INDEX windows_wake_operations ON mdm_software_deployment.operations(tenant_id,registration,registration_generation,id)
- WHERE gateway_accepted AND dispatch_failure IS NULL AND input_context->>'platform'='windows';
+REVOKE ALL ON FUNCTION mdm_software_deployment.windows_wake_candidates(text) FROM PUBLIC;
+CREATE INDEX windows_wake_operations
+  ON mdm_software_deployment.operations (tenant_id
+                                       , device
+                                       , id)
+  WHERE gateway_accepted
+    AND dispatch_failure IS NULL
+    AND input_context ->> 'platform' = 'windows';
 
 CREATE INDEX action_software_effect ON mdm_software_deployment.action_runs(tenant_id,device) WHERE software_effect IS NOT NULL;
 COMMIT;
@@ -357,7 +378,7 @@ BEGIN
  IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
  t=coalesce(NEW.tenant_id,OLD.tenant_id);
  INSERT INTO mdm_software_deployment.software_binding_revisions VALUES(t,1) ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm_software_deployment.software_binding_revisions.revision+1 RETURNING revision INTO v;
- SELECT device INTO d FROM mdm_access.registrations WHERE tenant_id=t AND id=coalesce(NEW.registration,OLD.registration);
+ d=coalesce(NEW.device,OLD.device);
  IF d IS NOT NULL THEN INSERT INTO mdm_software_deployment.software_binding_changes VALUES(t,d,v) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=EXCLUDED.revision; END IF;
  RETURN coalesce(NEW,OLD);
 END;$$;

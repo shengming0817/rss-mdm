@@ -58,13 +58,13 @@ pub(crate) async fn prepare(
     protection: &rss_mdm_native_protection::Protector,
     tenant: &str,
     collection: Uuid,
-    registration: Uuid,
-    generation: i64,
+    device: &str,
+
     sequence: i64,
     deadline: &str,
     user: &str,
 ) -> Result<Option<Context>, Error> {
-    let mut device = None;
+    let mut device_facts = None;
     let mut security = None;
     for (phase, command) in [
         (
@@ -98,15 +98,14 @@ pub(crate) async fn prepare(
             let plain = crate::protection::open(
                 protection,
                 tenant,
-                registration,
-                generation,
+                device,
                 row.try_get("id").map_err(db)?,
                 crate::protection::Part::Response,
                 &sealed,
             )?;
             let body = protocol::decode(plain.expose())?;
             if phase == "collect_device" {
-                device = Some(body);
+                device_facts = Some(body);
             } else {
                 security = Some(body);
             }
@@ -116,20 +115,19 @@ pub(crate) async fn prepare(
             let request = crate::protection::seal(
                 protection,
                 tenant,
-                registration,
-                generation,
+                device,
                 id,
                 crate::protection::Part::Request,
                 &bytes,
             )?;
-            sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,collection,phase,request,state,collection_sequence,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'pending',$8,$9::text::timestamptz)")
-                .bind(tenant).bind(id).bind(registration).bind(generation).bind(collection).bind(phase).bind(request).bind(sequence).bind(deadline).execute(&mut *c).await.map_err(db)?;
+            sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, collection, phase, request, state, collection_sequence, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'pending', $7, CAST(CAST($8 AS text) AS timestamptz))")
+                .bind(tenant).bind(id).bind(&device).bind(collection).bind(phase).bind(request).bind(sequence).bind(deadline).execute(&mut *c).await.map_err(db)?;
             crate::notify(c, "apple").await.map_err(db)?;
             return Ok(None);
         }
     }
     Ok(Some(Context::from_reports(
-        &device.ok_or(Error::Malformed)?,
+        &device_facts.ok_or(Error::Malformed)?,
         security.as_ref(),
         if user.is_empty() {
             Channel::Device
@@ -168,21 +166,20 @@ pub(crate) async fn security_valid(
     let plain = crate::protection::open(
         protection,
         &tenant,
-        p.registration(),
-        p.generation(),
+        p.device(),
         row.try_get("id").map_err(db)?,
         crate::protection::Part::Response,
         &sealed,
     )?;
-    let device = protocol::decode(plain.expose())?;
-    let Ok(context) = Context::from_reports(&device, Some(response), Channel::Device) else {
+    let device_facts = protocol::decode(plain.expose())?;
+    let Ok(context) = Context::from_reports(&device_facts, Some(response), Channel::Device) else {
         return Ok(false);
     };
     let mask: i32 = sqlx::query_scalar(
-        "SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2",
+        "SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2",
     )
     .bind(&tenant)
-    .bind(p.registration())
+    .bind(p.device())
     .fetch_one(c)
     .await
     .map_err(db)?;

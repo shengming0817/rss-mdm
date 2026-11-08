@@ -91,7 +91,7 @@ impl Harness {
             &[rss_mdm_agent_wire::task_trust::KeyState::Active],
         )
         .await?;
-        let (registration, grant, device) = material::seed_registration(&c).await?;
+        let (device, grant) = material::seed_registration(&c).await?;
         let caps = vec![
             w::Capability::InventoryCollectionV1,
             w::Capability::TaskExecuteV1,
@@ -99,14 +99,13 @@ impl Harness {
             w::Capability::DeviceUnmanageV1,
             w::Capability::InventoryNativeV1,
         ];
-        let p =
-            material::authenticated_agent(&c, registration, grant, &device, caps.clone()).await?;
-        material::seed_ack(&c, &trust, registration, 2).await?;
+        let p = material::authenticated_agent(&c, grant, &device, caps.clone()).await?;
+        material::seed_ack(&c, &trust, &device).await?;
         let mut tx = command::seed_transaction(&c).await?;
-        sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2,1,$3,'windows','x86_64',$4)").bind(c.tenant.to_string()).bind(registration).bind(serde_json::to_string(&caps)?).bind(serde_json::to_value(context())?).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_agent.bindings (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), $2, 1, $3, 'windows', 'x86_64', $4)").bind(c.tenant.to_string()).bind(&device).bind(serde_json::to_string(&caps)?).bind(serde_json::to_value(context())?).execute(&mut *tx).await?;
         tx.commit().await?;
         let object = serde_json::from_value(
-            json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent","registrationId":registration,"generation":2}]}),
+            json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent"}]}),
         )?;
         let scope = planning::published(&c, &object).await?.scope;
         let a = Fixture::open(&c, true).await?;
@@ -188,7 +187,7 @@ impl Harness {
     async fn run(&self, version: Uuid, resource: &str, deadline: i64) -> Result<Uuid> {
         let id = Uuid::new_v4();
         let mut tx = command::seed_transaction(&self.c).await?;
-        sqlx::query("INSERT INTO mdm_script.runs(tenant_id,id,policy_version,resource_id,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,source_objects,origin,gateway_accepted) VALUES($1::uuid,$2,$3,$4,$5,$6,2,$7,$8,$8,$9,$10,$11,$12,'\"policy\"',true)").bind(self.c.tenant.to_string()).bind(id).bind(version).bind(resource).bind(self.p.device()).bind(self.p.registration()).bind(id.to_string()).bind(now()).bind(deadline).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(deadline,now())?)?).bind(vec![0u8;32]).bind(json!([self.object])).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_script.runs (tenant_id, id, policy_version, resource_id, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint, source_objects, origin, gateway_accepted) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, '\"policy\"', TRUE)").bind(self.c.tenant.to_string()).bind(id).bind(version).bind(resource).bind(self.p.device()).bind(id.to_string()).bind(now()).bind(deadline).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(deadline,now())?)?).bind(vec![0u8;32]).bind(json!([self.object])).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(id)
     }
@@ -233,8 +232,6 @@ impl Harness {
         .await?;
         let target = script::Target {
             device: self.p.device().into(),
-            registration: self.p.registration(),
-            generation: self.p.generation(),
         };
         Ok(script::transaction::run(
             &self.audit,

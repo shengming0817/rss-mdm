@@ -48,8 +48,6 @@ pub struct Binding {
     pub id: Uuid,
     pub tenant: Uuid,
     pub device: String,
-    pub registration: Uuid,
-    pub registration_generation: i64,
     pub person: Person,
     pub origin: Origin,
     pub generation: i64,
@@ -109,7 +107,6 @@ impl Binding {
         if self.operation_id.is_nil()
             || self.id.is_nil()
             || self.tenant.is_nil()
-            || self.registration.is_nil()
             || self.policy.is_nil()
             || self.policy_version.is_nil()
             || self.device.is_empty()
@@ -117,7 +114,6 @@ impl Binding {
             || self.generation < 1
             || self.factor_generation < 1
             || self.revision < 1
-            || self.registration_generation < 1
             || self
                 .received_revision
                 .is_some_and(|r| r < 1 || r > self.revision)
@@ -145,8 +141,6 @@ impl Binding {
                 "rss-mdm-device-access.v1",
                 self.tenant,
                 &self.device,
-                self.registration,
-                self.registration_generation,
                 (self.id, self.operation_id),
                 self.generation,
                 self.factor_generation,

@@ -88,12 +88,12 @@ pub async fn check_on(
     let Some(agent) = agents.pop() else {
         return Ok(Eligibility::Unknown);
     };
-    if agent.registration != target.registration || agent.generation != target.generation {
+    if agent.device != target.device {
         return Ok(Eligibility::Ineligible);
     }
     let tenant = tenant.to_string();
-    let registration = target.registration;
-    let Some(input) = store.announcement(c, tenant, registration).await? else {
+    let device = target.device.clone();
+    let Some(input) = store.announcement(c, tenant, device).await? else {
         return Ok(Eligibility::Unknown);
     };
     let profiles = input.profiles();
@@ -127,8 +127,8 @@ pub async fn collection_requirements_on(
     requirements: &rss_mdm_resource::Applicability,
 ) -> Result<bool> {
     let tenant = tenant.to_string();
-    let registration = target.registration;
-    let Some(input) = store.announcement(c, tenant, registration).await? else {
+    let device = target.device.clone();
+    let Some(input) = store.announcement(c, tenant, device).await? else {
         return Ok(false);
     };
     let environment = environment(&input);
@@ -181,7 +181,7 @@ pub async fn require_on(
         return Ok(Eligibility::Ineligible);
     }
     let Some(binding) =
-        agent_facts::agent_binding_on(c, tenant, store.clone(), target.registration).await?
+        agent_facts::agent_binding_on(c, tenant, store.clone(), target.device.clone()).await?
     else {
         return Ok(Eligibility::Unknown);
     };

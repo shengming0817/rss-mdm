@@ -21,9 +21,7 @@ pub(crate) async fn project_activity(
         return Ok(None);
     };
     if let Some(target) = &activity.target
-        && (target.registration.is_nil()
-            || target.generation <= 0
-            || !crate::model::identifier(&target.device))
+        && !crate::model::identifier(&target.device)
     {
         return Err(Error::Integrity);
     }
@@ -91,8 +89,6 @@ pub(super) fn summary(
             .as_ref()
             .map(|t| rss_mdm_agent_wire::activities::ActivityTarget {
                 device: t.device.clone(),
-                registration: t.registration,
-                generation: t.generation,
             }),
         links: ActivityLinks {
             policy: activity.links.policy,

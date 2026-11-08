@@ -96,7 +96,7 @@ impl Preview {
             return Ok(Eligibility::Ineligible);
         }
         let Some(binding) = store
-            .binding(c, tenant.to_string(), target.registration)
+            .binding(c, tenant.to_string(), target.device.clone())
             .await?
         else {
             return Ok(Eligibility::Unknown);

@@ -123,12 +123,12 @@ pub(crate) async fn policy(
     })();
     result.unwrap_or_else(|error| fault(Some(&message), error))
 }
-pub(crate) async fn current_parent(app: &HttpState, parent: Uuid) -> Result<(), Error> {
+pub(crate) async fn current_parent(app: &HttpState, parent: &str) -> Result<(), Error> {
     let mut c = app
         .access
         .begin_read(&app.identity.tenant().to_string())
         .await?;
-    let certificate: Vec<u8> = sqlx::query_scalar("SELECT material.certificate FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN LATERAL (SELECT e.certificate FROM mdm_access.enrollment_certificates e WHERE e.tenant_id=r.tenant_id AND e.request_id=r.request_id UNION ALL SELECT n.certificate FROM mdm_windows.renewals n WHERE n.tenant_id=r.tenant_id AND n.registration=r.id AND n.activated_at IS NOT NULL) material ON encode(sha256(material.certificate),'hex')=k.locator WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.purpose='primary' AND r.state='active' AND k.state='active'")
+    let certificate: Vec<u8> = sqlx::query_scalar("SELECT material.certificate FROM mdm_access.devices AS r INNER JOIN mdm_access.credentials AS k ON (k.tenant_id, k.device) = (r.tenant_id, r.id) INNER JOIN LATERAL (SELECT e.certificate FROM mdm_access.enrollment_certificates AS e WHERE e.tenant_id = r.tenant_id AND e.request_id = r.request_id UNION ALL SELECT n.certificate FROM mdm_windows.renewals AS n WHERE n.tenant_id = r.tenant_id AND n.device = r.id AND n.activated_at IS NOT NULL) AS material ON encode(sha256(material.certificate), 'hex') = k.locator WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.purpose = 'primary' AND r.state = 'active' AND k.state = 'active' AND k.purpose = 'primary'")
         .bind(app.identity.tenant().to_string()).bind(parent).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     app.windows()?.ca.verify(&[certificate.into()], now(app)?)?;
     Ok(())
@@ -199,7 +199,7 @@ async fn issue_message(
             .map(|b| format!("{b:02X}"))
             .collect::<String>()
     };
-    let subject = format!("CN={}", intent.registration);
+    let subject = format!("CN={}", intent.device);
     let w = app.windows()?;
     let provision = rss_mdm_windows_mdm::provisioning::encode(
         &rss_mdm_windows_mdm::provisioning::Provisioning {
@@ -216,7 +216,7 @@ async fn issue_message(
             management_url: &w.management_url(Purpose::WindowsDeclared),
             renewal_discovery_url: &w.renewal_discovery_url(Purpose::WindowsDeclared),
             provider_id: &w.provider(Purpose::WindowsDeclared)?,
-            username: &intent.registration.to_string(),
+            username: &intent.device.to_string(),
             client_password: Secret(&secrets.client_password),
             server_password: Secret(&secrets.server_password),
             server_nonce: &secrets.server_nonce,
@@ -274,8 +274,7 @@ pub(crate) async fn prepare_request(
     {
         return Err(Error::Forbidden);
     }
-    audit.identify_device(parent.registration());
-    audit.registration(parent.registration());
+    audit.identify_device(&(parent.device()).to_string());
     audit.target_device(parent.device());
     audit.operation(
         operation,
@@ -318,7 +317,7 @@ async fn intent_on(
     digest: [u8; 32],
     csr: &[u8],
     input: &soap::Issue,
-) -> Result<((Uuid, issuance::Intent), Option<(Uuid, Uuid, Uuid)>), Error> {
+) -> Result<((Uuid, issuance::Intent), Option<(Uuid, Uuid, String)>), Error> {
     rss_mdm_registration_service::admission::lock_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         connection,
@@ -335,16 +334,16 @@ async fn intent_on(
         parent,
     )
     .await?;
-    if let Some(row) = sqlx::query("SELECT request_id,digest,parent_id,parent_generation,parent_credential FROM mdm_windows.linked_enrollments WHERE tenant_id=$1::uuid AND id=$2")
+    if let Some(row) = sqlx::query("SELECT request_id,digest,device,parent_credential FROM mdm_windows.linked_enrollments WHERE tenant_id=$1::uuid AND id=$2")
         .bind(&tenant).bind(operation).fetch_optional(&mut *c).await.map_err(db)? {
-        if row.try_get::<Vec<u8>,_>("digest").map_err(db)?.as_slice()!=digest || row.try_get::<Uuid,_>("parent_id").map_err(db)?!=parent.registration() || row.try_get::<i64,_>("parent_generation").map_err(db)?!=parent.generation() || row.try_get::<Uuid,_>("parent_credential").map_err(db)?!=parent.credential() { return Err(Error::Conflict); }
+        if row.try_get::<Vec<u8>,_>("digest").map_err(db)?.as_slice()!=digest || row.try_get::<String,_>("device").map_err(db)?!=parent.device() || row.try_get::<Uuid,_>("parent_credential").map_err(db)?!=parent.credential() { return Err(Error::Conflict); }
         let id: Uuid = row.try_get("request_id").map_err(db)?;
         let row = enrollment_store::intent(c,&tenant,id.to_string()).await.map_err(db)?.ok_or(Error::Conflict)?;
         let mut intent = issuance::intent(row)?;
         if intent.csr!=csr || intent.configuration!=w.configuration { return Err(Error::Conflict); }
         let previous = intent.signing_attempt;
         issuance::resume_intent(c, w, &tenant, id, &mut intent).await?;
-        let replacement = (previous != intent.signing_attempt).then_some((previous,intent.signing_attempt,intent.registration));
+        let replacement = (previous != intent.signing_attempt).then_some((previous,intent.signing_attempt,intent.device.clone()));
         return Ok(((id,intent),replacement));
     }
     let id = Uuid::new_v4();
@@ -364,8 +363,11 @@ async fn intent_on(
     .fetch_one(&mut *c)
     .await
     .map_err(db)?;
+    let parent_request = crate::enrollment_store::native_request(c, &tenant, parent.device(), None)
+        .await
+        .map_err(db)?;
     let protocol_device =
-        crate::protocol_device::on(c, &tenant, parent.registration(), parent.device()).await?;
+        crate::protocol_device::on(c, &tenant, parent_request, parent.device()).await?;
     if input
         .additional_context
         .0
@@ -379,16 +381,18 @@ async fn intent_on(
         "Device" => rss_mdm_windows_mdm::provisioning::EnrollmentType::Device,
         _ => return Err(Error::Forbidden),
     };
-    let registration = Uuid::new_v4();
     let intent = issuance::Intent {
         signing_attempt: Uuid::new_v4(),
         protocol_device: Some(protocol_device),
         enrollment_type,
         csr: csr.to_vec(),
-        profile: w.ca.profile(&verified, registration, now(app)?)?.encode()?,
+        profile: w
+            .ca
+            .profile(&verified, parent.device(), now(app)?)?
+            .encode()?,
         issuer: w.ca.der()?,
         configuration: w.configuration.clone(),
-        registration,
+        device: parent.device().into(),
         credential: Uuid::new_v4(),
         epoch: Uuid::new_v4(),
         sealed: w
@@ -415,7 +419,7 @@ async fn intent_on(
             profile: &intent.profile,
             issuer: &intent.issuer,
             configuration: &intent.configuration,
-            registration: intent.registration.to_string(),
+            device: intent.device.clone(),
             credential: intent.credential.to_string(),
             epoch: intent.epoch.to_string(),
             secrets: &intent.sealed,
@@ -423,8 +427,8 @@ async fn intent_on(
     )
     .await
     .map_err(db)?;
-    sqlx::query("INSERT INTO mdm_windows.linked_enrollments(tenant_id,id,parent_id,parent_generation,parent_credential,request_id,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
-        .bind(&tenant).bind(operation).bind(parent.registration()).bind(parent.generation()).bind(parent.credential()).bind(id).bind(digest.as_slice()).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_windows.linked_enrollments(tenant_id,id,device,parent_credential,request_id,digest) VALUES($1::uuid,$2,$3,$4,$5,$6)")
+        .bind(&tenant).bind(operation).bind(parent.device()).bind(parent.credential()).bind(id).bind(digest.as_slice()).execute(&mut *c).await.map_err(db)?;
     Ok(((id, intent), None))
 }
 pub(crate) async fn complete(
@@ -451,25 +455,26 @@ pub(crate) async fn complete(
     .credential(leaf.fingerprint())?;
     let budget = app.devices.retirement_budget();
     let result = app.audit_store.write(parent.tenant(),
-            &budget.source_control(),(app,parent,id,intent,certificate,audit,&credential,Vec::new()),|(app,parent,id,intent,certificate,audit,credential,facts),tx|Box::pin(async move {
-        let replayed = tx.with_connection_context(&mut (*app,*parent,*id,*intent,*certificate,*credential,&mut *facts),|(app,parent,id,intent,certificate,credential,facts),c|Box::pin(async move {
+            &budget.source_control(),(app,parent,id,intent,certificate,audit,&credential),|(app,parent,id,intent,certificate,audit,credential),tx|Box::pin(async move {
+        let replayed = tx.with_connection_context(&mut (*app,*parent,*id,*intent,*certificate,*credential),|(app,parent,id,intent,certificate,credential),c|Box::pin(async move {
             let (app,parent,id,intent,certificate,credential) = (*app,*parent,*id,*intent,*certificate,*credential);
             rss_mdm_registration_service::admission::lock_in(rss_mdm_install_support::StorageProfile::Mdm, c, &parent.tenant().to_string()).await?;
             crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c,parent).await?;
             issuance::require_current_intent(c, &parent.tenant().to_string(), id, intent).await?;
             if let Some(old) = enrollment_store::certificate(c,&parent.tenant().to_string(),id.to_string()).await.map_err(db)? {
-                let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND state='active' AND purpose='windows_declared' AND parent_id=$3 AND parent_generation=$4)")
-                    .bind(parent.tenant().to_string()).bind(intent.registration).bind(parent.registration()).bind(parent.generation()).fetch_one(c).await.map_err(db)?;
+                let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND device=$2 AND state='active' AND purpose='windows_declared' AND protocol_request=$3 AND id=$4)")
+                    .bind(parent.tenant().to_string()).bind(&intent.device).bind(id).bind(intent.credential).fetch_one(c).await.map_err(db)?;
                 if !live || old != certificate { return Err(Error::Conflict); } return Ok(true);
             }
-            crate::device::linked::bind_in(rss_mdm_install_support::StorageProfile::Mdm, c,parent,credential,id,[intent.registration,intent.credential,intent.epoch],facts,app.devices.retirement()).await?;
+            crate::device::linked::bind_in(rss_mdm_install_support::StorageProfile::Mdm, c,parent,credential,id,[intent.credential,intent.epoch]).await?;
+            sqlx::query("UPDATE mdm_access.management_sessions s SET state='superseded' WHERE s.tenant_id=$1::uuid AND s.device=$2 AND s.state IN('challenge','collecting') AND EXISTS(SELECT FROM mdm_access.requests q WHERE q.tenant_id=s.tenant_id AND q.device=s.device AND q.protocol_epoch=s.protocol_epoch AND q.authority_kind='parent_certificate' AND q.state='cancelled')")
+                .bind(parent.tenant().to_string()).bind(parent.device()).execute(&mut *c).await.map_err(db)?;
             let secrets = app.windows()?.protection.open(&parent.tenant().to_string(),id,&intent.sealed)?;
-            rss_mdm_pki_service::certificates::record_in(rss_mdm_install_support::StorageProfile::Mdm, c,&parent.tenant().to_string(),"windows",intent.registration,
+            rss_mdm_pki_service::certificates::record_in(rss_mdm_install_support::StorageProfile::Mdm, c,&parent.tenant().to_string(),"windows",&intent.device,
                 &rss_mdm_device_trust::digest(&intent.issuer),certificate).await.map_err(|_|Error::Unavailable(Failure::Database))?;
             enrollment_store::insert_certificate(c,&parent.tenant().to_string(),id.to_string(),certificate,&secrets.server_nonce).await.map_err(db)?;
             Ok(false)
         })).await?;
-        for fact in facts.iter() { app.audit_store.append(tx, fact).await.map_err(Error::from)?; }
         let fact = rss_mdm_audit_integration::Fact::observation(audit, &format!("windows-linked:{id}:issued"), 200, "success", Some(*id)).map_err(Error::from)?;
         (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;
         audit.mark_commit_started(); Ok(())

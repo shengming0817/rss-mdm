@@ -377,7 +377,7 @@ CPU `busy_percent` 是至少 250ms 双读窗口的百分比；内存与文件系
 后续上传相对基线的累计增量及逐接口起点，由历史查询计算 increase/rate。该标记仅用于周期网络性能采集，不能用于普通资产采集。
 
 Agent 可向 runtime 的 `POST /telemetry/gaps` 提交固定 `TelemetryGapReport`，未知结果用
-`GET /telemetry/gaps/{reportId}` 恢复。原 reportId、registrationId、generation、createdAt 与内容在重试期间保持不变，
+`GET /telemetry/gaps/{reportId}` 恢复。原 reportId、deviceId、createdAt 与内容在重试期间保持不变，
 收到 durable receipt 后仅清除该快照；新缺口不能被旧回执清掉。原注册失效后不能将其缺口归入新注册。
 这类诊断不携带 Policy/field，也不证明连续缺失或真实覆盖率；时间跨度只给出首末观测界限。
 接收/幂等期限及容量见 [telemetry owner](../../crates/telemetry-service/README.md)。

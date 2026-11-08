@@ -105,13 +105,13 @@ pub async fn receive(
         rss_mdm_inventory::ReportSource::MdmApple,
     )
     .await?;
-    if target.registration != p.registration || target.generation != p.generation {
+    if target.device != p.device {
         return Err(Error::Conflict);
     }
     let scope = crate::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         p.tenant,
-        p.registration,
+        &p.device,
         "mdm.apple",
         target.epoch,
         &dataset,
@@ -122,8 +122,8 @@ pub async fn receive(
     rss_mdm_inventory_postgres::register_collection_in(c, p.tenant, &definition)
         .await
         .map_err(|_| Error::Malformed)?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,deadline,evidence) VALUES($1::uuid,$2,$3,'mdm.apple',$4,$5,$6,$7,$8,'pending',clock_timestamp(),$9)")
-        .bind(p.tenant.to_string()).bind(report.id).bind(p.registration).bind(target.epoch).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(target.sequence)
+    sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, deadline, evidence) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.apple', $4, $5, $6, $7, $8, 'pending', clock_timestamp(), $9)")
+        .bind(p.tenant.to_string()).bind(report.id).bind(&p.device).bind(target.epoch).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(target.sequence)
         .bind(report.received_at).bind(serde_json::to_string(&progress).map_err(|_|Error::Malformed)?).bind(report.evidence).execute(&mut *c).await.map_err(db)?;
     let mut run = store::load_on(
         rss_mdm_install_support::StorageProfile::Mdm,

@@ -33,10 +33,10 @@ WITH tables AS (
  ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),('mdm_planning.configuration_objects','operation'),('mdm_planning.configuration_objects','digest'),('mdm_planning.configuration_objects','diagnosis'),
  ('mdm_devices.unmanage_runs','source_objects'),('mdm_devices.unmanage_runs','state'),('mdm_devices.unmanage_runs','result'),('mdm_devices.unmanage_runs','gateway_accepted'),
 
- ('mdm_access.command_authorities','epoch'),('mdm_access.command_authorities','registration'),('mdm_access.command_authorities','registration_generation'),
+ ('mdm_access.command_authorities','epoch'),
  ('mdm_devices.control_operations','observed_command_version'),('mdm_devices.control_operations','dispatch_failure'),('mdm_devices.control_operations','authority'),('mdm_devices.control_operations','revision'),('mdm_devices.control_operations','gateway_accepted'),
- ('mdm_access.registrations','state'),('mdm_access.credentials','state'),('mdm_access.report_sources','enabled'),
- ('mdm_access.report_sources','next_sequence'),('mdm_access.registrations','next_command'),('mdm_access.registrations','ready'),('mdm_access.registrations','first_authenticated_at'),('mdm_access.registrations','last_communication_received_at'),('mdm_access.enrollment_certificates','server_nonce'),
+ ('mdm_access.devices','state'),('mdm_access.credentials','state'),('mdm_access.report_sources','enabled'),
+ ('mdm_access.report_sources','next_sequence'),('mdm_access.devices','next_command'),('mdm_access.devices','ready'),('mdm_access.devices','first_authenticated_at'),('mdm_access.devices','last_communication_received_at'),('mdm_access.enrollment_certificates','server_nonce'),
  ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
  ('mdm_access.collection_runs','evidence'),('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
 
@@ -91,7 +91,7 @@ WITH tables AS (
  ('mdm_access.requests',true,true,false),
 
  ('mdm_access.command_authorities',true,true,false),('mdm_devices.control_operations',true,true,false),('mdm_devices.control_requests',true,true,false),('mdm_planning.configuration_objects',true,true,false),
- ('mdm_access.devices',true,false,false),('mdm_access.registrations',true,false,false),('mdm_access.registration_admission',true,false,false),('mdm_access.credentials',true,false,false),('mdm_access.report_sources',true,false,false),('mdm_access.enrollment_intents',true,false,false),('mdm_access.enrollment_certificates',true,false,false),('mdm_access.authorization_rules',true,false,false),('mdm_access.user_groups',true,false,false),('mdm_access.api_keys',true,false,false),
+ ('mdm_access.devices',true,false,false),('mdm_access.registration_admission',true,false,false),('mdm_access.credentials',true,false,false),('mdm_access.report_sources',true,false,false),('mdm_access.enrollment_intents',true,false,false),('mdm_access.enrollment_certificates',true,false,false),('mdm_access.authorization_rules',true,false,false),('mdm_access.user_groups',true,false,false),('mdm_access.api_keys',true,false,false),
  ('mdm_access.management_sessions',true,true,false),('mdm_access.management_messages',true,true,false),('mdm_access.collection_runs',true,true,false),('rss_audit.records',true,false,false),
  ('rss_device_command.commands',true,false,false),('rss_device_command.authorities',true,false,false),
  ('rss_reconcile.targets',true,false,false),('rss_reconcile.resources',true,false,false),('rss_reconcile.target_resources',true,false,false),('rss_reconcile.scans',true,false,false),

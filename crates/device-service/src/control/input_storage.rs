@@ -11,8 +11,6 @@ use zeroize::Zeroizing;
 pub(crate) struct Identity<'a> {
     pub operation: Uuid,
     pub device: &'a str,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 #[derive(Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -83,12 +81,6 @@ pub(crate) fn open_row(
     let identity = Identity {
         operation,
         device: &device,
-        registration: row
-            .try_get("registration")
-            .map_err(crate::control::database::db)?,
-        generation: row
-            .try_get("registration_generation")
-            .map_err(crate::control::database::db)?,
     };
     let metadata: Metadata = serde_json::from_value(
         row.try_get("input_context")

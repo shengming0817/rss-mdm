@@ -1,7 +1,6 @@
 use crate::binding_facts::{Binding, Pending};
 use crate::{Error, database::db};
 use sqlx::{PgConnection, Row};
-use uuid::Uuid;
 pub struct Bindings {
     profile: rss_mdm_install_support::StorageProfile,
 }
@@ -16,7 +15,7 @@ impl Bindings {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
         context: &'a rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     ) -> Pending<'a, ()> {
         let profile = self.profile();
@@ -24,7 +23,7 @@ impl Bindings {
         Box::pin(async move {
             let row = sqlx::query(crate::storage_profile::sql(profile).bindings_update_context_1)
                 .bind(&tenant)
-                .bind(registration)
+                .bind(&device)
                 .fetch_optional(&mut *c)
                 .await
                 .map_err(db)?
@@ -45,7 +44,7 @@ impl Bindings {
                 let value = serde_json::to_value(context).map_err(|_| Error::Malformed)?;
                 sqlx::query(crate::storage_profile::sql(profile).bindings_update_context_2)
                     .bind(tenant)
-                    .bind(registration)
+                    .bind(&device)
                     .bind(value)
                     .execute(c)
                     .await
@@ -58,20 +57,20 @@ impl Bindings {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
     ) -> Pending<'a, Option<Binding>> {
         Box::pin(async move {
             Ok(self
-                .bindings(c, tenant, vec![registration])
+                .bindings(c, tenant, vec![device.clone()])
                 .await?
-                .remove(&registration))
+                .remove(&device))
         })
     }
     pub fn announcement<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
     ) -> Pending<'a, Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>> {
         let profile = self.profile();
 
@@ -79,7 +78,7 @@ impl Bindings {
             let value: Option<serde_json::Value> =
                 sqlx::query_scalar(crate::storage_profile::sql(profile).bindings_announcement_1)
                     .bind(tenant)
-                    .bind(registration)
+                    .bind(&device)
                     .fetch_optional(c)
                     .await
                     .map_err(db)?
@@ -94,7 +93,7 @@ impl Bindings {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
         input: &'a rss_mdm_agent_wire::runtime::TaskClaimRequest,
     ) -> Pending<'a, ()> {
         let profile = self.profile();
@@ -103,7 +102,7 @@ impl Bindings {
             let value = serde_json::to_value(input).map_err(|_| Error::Malformed)?;
             let n = sqlx::query(crate::storage_profile::sql(profile).bindings_announce_1)
                 .bind(tenant)
-                .bind(registration)
+                .bind(&device)
                 .bind(value)
                 .execute(c)
                 .await
@@ -119,14 +118,14 @@ impl Bindings {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registrations: Vec<Uuid>,
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, Binding>> {
+        devices: Vec<String>,
+    ) -> Pending<'a, std::collections::BTreeMap<String, Binding>> {
         let profile = self.profile();
 
         Box::pin(async move {
             let rows = sqlx::query(crate::storage_profile::sql(profile).bindings_bindings_1)
                 .bind(tenant)
-                .bind(registrations)
+                .bind(devices)
                 .fetch_all(c)
                 .await
                 .map_err(db)?;
@@ -134,7 +133,7 @@ impl Bindings {
                 .map(|r| {
                     let value = |key: &str| r.try_get::<String, _>(key).map_err(db);
                     Ok((
-                        r.try_get("registration").map_err(db)?,
+                        r.try_get("device").map_err(db)?,
                         Binding {
                             execution_context: serde_json::from_value(
                                 r.try_get("execution_context").map_err(db)?,
@@ -157,7 +156,7 @@ pub(crate) async fn inventory_in(
     p: &crate::device::DevicePrincipal,
 ) -> Result<(), Error> {
     if !Bindings::new(profile)
-        .binding(c, p.tenant().to_string(), p.registration())
+        .binding(c, p.tenant().to_string(), p.device().to_owned())
         .await?
         .is_some_and(|b| b.inventory())
     {
@@ -167,13 +166,13 @@ pub(crate) async fn inventory_in(
 }
 #[allow(
     clippy::too_many_arguments,
-    reason = "original enrollment transaction persists explicit product, registration and negotiated Agent facts"
+    reason = "original enrollment transaction persists explicit product, device and negotiated Agent facts"
 )]
 pub(crate) async fn bind_agent_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut sqlx::PgConnection,
     tenant: &str,
-    registration: Uuid,
+    device: String,
     capabilities: &str,
     platform: rss_mdm_agent_wire::runtime::TaskPlatform,
     architecture: rss_mdm_agent_wire::runtime::TaskArchitecture,
@@ -193,7 +192,7 @@ pub(crate) async fn bind_agent_in(
     };
     sqlx::query(crate::storage_profile::sql(profile).bindings_bind_agent_in_1)
         .bind(tenant)
-        .bind(registration.to_string())
+        .bind(device.to_string())
         .bind(capabilities)
         .bind(platform)
         .bind(architecture)
@@ -225,7 +224,7 @@ impl rss_mdm_registration_service::agent::RuntimeBinding for Bindings {
                 profile,
                 c,
                 &b.tenant.to_string(),
-                b.registration,
+                b.device.clone(),
                 &serde_json::to_string(&p.capabilities)
                     .map_err(|_| rss_mdm_registration_service::Error::Malformed)?,
                 p.platform,
@@ -234,19 +233,14 @@ impl rss_mdm_registration_service::agent::RuntimeBinding for Bindings {
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
-            let collections =
-                crate::builtin_collections(profile, c, b.tenant, b.registration, b.epoch)
-                    .await
-                    .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
+            let collections = crate::builtin_collections(profile, c, b.tenant, &b.device, b.epoch)
+                .await
+                .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
             Ok(rss_mdm_agent_wire::runtime::BindingProfile {
                 wire_version: 1,
                 operation_id: b.operation,
-                device_id: b.device,
-                registration_id: b.registration,
-                generation: b
-                    .generation
-                    .try_into()
-                    .map_err(|_| rss_mdm_registration_service::Error::Corrupt)?,
+                device_id: b.device.clone(),
+
                 source: rss_mdm_agent_wire::runtime::ReportSource::AgentBuiltin,
                 epoch: b.epoch,
                 capabilities: p.capabilities.clone(),

@@ -98,27 +98,6 @@ impl Service {
         operation: Uuid,
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
-        self.authorize_target(p, id, operation, None, a).await
-    }
-    pub async fn authorize_reenrollment(
-        &self,
-        p: &AuthorizedPrincipal,
-        id: Uuid,
-        operation: Uuid,
-        device: &str,
-        a: &RequestAudit,
-    ) -> Result<wire::GrantReceipt, Failure> {
-        self.authorize_target(p, id, operation, Some(device), a)
-            .await
-    }
-    async fn authorize_target(
-        &self,
-        p: &AuthorizedPrincipal,
-        id: Uuid,
-        operation: Uuid,
-        device: Option<&str>,
-        a: &RequestAudit,
-    ) -> Result<wire::GrantReceipt, Failure> {
         let profile = self.profile();
 
         self.proof(p, a)?;
@@ -129,12 +108,12 @@ impl Service {
             "agent_grant_authorize",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        self.write(a, (self, p, id, operation, device, a), |ctx, c| {
+        self.write(a, (self, p, id, operation, a), |ctx, c| {
             Box::pin(async move {
-                let (service, p, id, operation, device, a) = ctx;
+                let (service, p, id, operation, a) = ctx;
                 let tenant = service.tenant.to_string();
                 let action = "authorize";
-                let d = digest(&(action, *id, *operation, *device))?;
+                let d = digest(&(action, *id, *operation))?;
                 let op = crate::operations::Operation {
                     actor: crate::operations::Actor::from_authorized(p),
                     key: *operation,
@@ -186,31 +165,6 @@ impl Service {
                         crate::quotas::Channel::Agent,
                     )
                     .await?;
-                    if let Some(device) = device {
-                        crate::lifecycle::authorize_reenrollment_in(profile, c, p, device).await?;
-                        let retired: bool = sqlx::query_scalar(
-                            crate::storage_profile::sql(profile)
-                                .certificate_grants_authorize_target_1,
-                        )
-                        .bind(&tenant)
-                        .bind(*device)
-                        .fetch_one(&mut *c)
-                        .await
-                        .map_err(db)?;
-                        if !retired {
-                            return Err(Error::Conflict);
-                        }
-                        sqlx::query(
-                            crate::storage_profile::sql(profile)
-                                .certificate_grants_authorize_target_2,
-                        )
-                        .bind(&tenant)
-                        .bind(*id)
-                        .bind(*device)
-                        .execute(&mut *c)
-                        .await
-                        .map_err(db)?;
-                    }
                     p.check_live()?;
                     sqlx::query(
                         crate::storage_profile::sql(profile).certificate_grants_authorize_target_3,
@@ -377,7 +331,7 @@ impl Service {
     pub async fn recovery(
         &self,
         p: &AuthorizedPrincipal,
-        registration: Uuid,
+        device_id: &str,
         input: &wire::GrantRequest,
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
@@ -392,19 +346,19 @@ impl Service {
             "agent_recovery_grant",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let digest = digest(&(registration, input))?;
+        let digest = digest(&(device_id, input))?;
         self.write(
             a,
-            (self, p, registration, input, a, bound, digest),
+            (self, p, device_id, input, a, bound, digest),
             |ctx, c| {
                 Box::pin(async move {
-                    let (service, p, registration, input, a, bound, digest) = ctx;
+                    let (service, p, device_id, input, a, bound, digest) = ctx;
                     let tenant = service.tenant.to_string();
                     let row = sqlx::query(
                         crate::storage_profile::sql(profile).certificate_grants_recovery_1,
                     )
                     .bind(&tenant)
-                    .bind(*registration)
+                    .bind(*device_id)
                     .fetch_optional(&mut *c)
                     .await
                     .map_err(db)?
@@ -450,7 +404,6 @@ impl Service {
                         .bind(&*digest)
                         .bind(&*bound)
                         .bind(f64::from(seconds))
-                        .bind(*registration)
                         .bind(row.try_get::<Uuid, _>("id").map_err(db)?)
                         .execute(&mut *c)
                         .await
@@ -533,8 +486,8 @@ impl Service {
         version(input.wire_version, input.operation_id)?;
         let principal = self.authenticate(peer).await?;
         let bound = hex(csr(&input.csr)?.spki());
-        let d = digest(&(principal.registration(), principal.credential(), input))?;
-        a.identify_device(principal.registration());
+        let d = digest(&(principal.device(), principal.credential(), input))?;
+        a.identify_device(&(principal.device()).to_string());
         a.target(principal.device());
         a.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,
@@ -556,7 +509,7 @@ impl Service {
                 let row =
                     sqlx::query(crate::storage_profile::sql(profile).certificate_grants_renew_1)
                         .bind(&tenant)
-                        .bind(p.registration())
+                        .bind(p.device())
                         .fetch_one(&mut *c)
                         .await
                         .map_err(db)?;
@@ -598,7 +551,6 @@ impl Service {
                     .bind(&*d)
                     .bind(&*bound)
                     .bind(f64::from(seconds))
-                    .bind(p.registration())
                     .bind(p.credential())
                     .execute(&mut *c)
                     .await

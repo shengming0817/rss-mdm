@@ -8,7 +8,7 @@ WITH reachable AS (
  ('mdm_software_deployment.action_receipts',true,false),('mdm_software_deployment.policy_recovery',true,false),('mdm_software_deployment.agent_install_inputs',true,false),
  ('mdm_flow.native_protection',true,false),
  ('mdm_agent.bindings',false,false)), updates(relation,col) AS (VALUES
- ('mdm_access.command_authorities','epoch'),('mdm_access.command_authorities','registration'),('mdm_access.command_authorities','registration_generation'),
+ ('mdm_access.command_authorities','epoch'),
  ('mdm_software_deployment.operations','authority'),('mdm_software_deployment.operations','revision'),('mdm_software_deployment.operations','request'),
  ('mdm_software_deployment.action_runs','state'),('mdm_software_deployment.action_runs','result'),('mdm_software_deployment.action_runs','invocation'),('mdm_software_deployment.action_runs','source_objects'),('mdm_software_deployment.action_runs','software_effect'),
  ('mdm_software_deployment.policy_recovery','input_revision'),('mdm_software_deployment.agent_install_inputs','input_revision'),

@@ -5,7 +5,7 @@ use rss_mdm_agent_wire::filevault as w;
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_registration_service::DevicePrincipal;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 pub struct FilevaultService {
@@ -73,14 +73,10 @@ impl FilevaultService {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.target_device(&source.device);
-        audit.registration_at(source.registration, source.generation);
         let fact = Fact::business(
             audit,
             rss_mdm_audit_integration::operation::OperationOwner::Filevault,
-            &format!(
-                "filevault:{}:{}:{}",
-                source.registration, source.generation, input.operation_id
-            ),
+            &format!("filevault:{}:{}", source.device, input.operation_id),
             200,
             "success",
             None,
@@ -129,16 +125,14 @@ impl FilevaultService {
         let source = Source {
             tenant: Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Malformed)?,
             device: device.into(),
-            registration: input.registration,
-            generation: input.generation,
         };
-        audit.registration_at(source.registration, source.generation);
+        audit.target_device(&source.device);
         let fact = Fact::business(
             audit,
             rss_mdm_audit_integration::operation::OperationOwner::Filevault,
             &format!(
-                "filevault:configure:{}:{}:{}",
-                source.registration, source.generation, input.operation_id
+                "filevault:configure:{}:{}",
+                source.device, input.operation_id
             ),
             200,
             "success",
@@ -165,8 +159,8 @@ impl FilevaultService {
                                         Permission::SecurityOperate,
                                     )
                                     .await?;
-                                                        let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND operation=$4)")
-                                        .bind(ctx.2.tenant).bind(ctx.2.registration).bind(ctx.2.generation).bind(ctx.3.operation_id).fetch_one(&mut *c).await?;
+                                                        let replayed:bool=sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2 AND operation = $3)")
+                                        .bind(ctx.2.tenant).bind(&ctx.2.device).bind(ctx.3.operation_id).fetch_one(&mut *c).await?;
                                     let value=owner::configure(c, ctx.2, ctx.3, &ctx.0.protection).await?;
                                     Ok::<_,Error>((value,replayed))
                                 })
@@ -219,34 +213,32 @@ impl FilevaultService {
         audit.target_device(device);
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(4));
         let result=self.audit.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_|Error::Malformed)?,&budget.source_control(),(self,p,device,input,audit),|ctx,tx|Box::pin(async move {
-            let (value,replayed,registration,generation)=tx.with_connection_context(ctx,|ctx,c|Box::pin(async move {
+            let (value,replayed)=tx.with_connection_context(ctx,|ctx,c|Box::pin(async move {
                 use sha2::{Digest,Sha256};
-                use sqlx::Row;
-                crate::service::authorize(rss_mdm_install_support::StorageProfile::Mdm, c,ctx.1,ctx.2,Permission::SecurityOperate).await?;
+                            crate::service::authorize(rss_mdm_install_support::StorageProfile::Mdm, c,ctx.1,ctx.2,Permission::SecurityOperate).await?;
                 crate::service::authorize(rss_mdm_install_support::StorageProfile::Mdm, c,ctx.1,&ctx.3.other_device,Permission::SecurityOperate).await?;
                 let tenant=rss_request_context::TenantId::parse(ctx.1.tenant_id()).map_err(|_|Error::Malformed)?;
                 let object=rss_mdm_device_service::planning::PlanningObjects::paired_in(c,tenant,ctx.2).await?;
                 let members=object.members.iter().filter(|m|m.device==ctx.2 || m.device==ctx.3.other_device).collect::<Vec<_>>();
                 if members.len()!=2 {return Err(Error::Forbidden);}
                 let t=Uuid::parse_str(ctx.1.tenant_id()).map_err(|_|Error::Malformed)?;
-                let sources=members.iter().map(|m|Source{tenant:t,device:m.device.clone(),registration:m.registration_id,generation:m.generation}).collect::<Vec<_>>();
+                let sources=members.iter().map(|m|Source{tenant:t,device:m.device.clone(),}).collect::<Vec<_>>();
                 let left=sources.iter().find(|s|s.device==ctx.2).ok_or(Error::Forbidden)?;
                 let right=sources.iter().find(|s|s.device==ctx.3.other_device).ok_or(Error::Forbidden)?;
                 let digest=Sha256::digest(serde_json::to_vec(&(ctx.2,ctx.3)).map_err(|_|Error::Malformed)?).to_vec();
-                if let Some(row)=sqlx::query("SELECT purpose,digest,receipt FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND operation=$4")
-                    .bind(t).bind(left.registration).bind(left.generation).bind(ctx.3.operation_id).fetch_optional(&mut *c).await? {
+                if let Some(row)=sqlx::query("SELECT purpose, digest, receipt FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2 AND operation = $3")
+                    .bind(t).bind(&left.device).bind(ctx.3.operation_id).fetch_optional(&mut *c).await? {
                     if row.try_get::<String,_>("purpose")?!="link" || row.try_get::<Vec<u8>,_>("digest")?!=digest {return Err(Error::Conflict);}
-                    return serde_json::from_value(row.try_get("receipt")?).map(|value|(value,true,left.registration,left.generation)).map_err(|_|Error::Integrity);
+                    return serde_json::from_value(row.try_get("receipt")?).map(|value|(value,true)).map_err(|_|Error::Integrity);
                 }
                 let rss_mdm_inventory_service::objects::ObjectRef::Association(association)=object.object else {return Err(Error::Forbidden);};
                 owner::merge(c,&ctx.0.protection,left,right,association,object.association_version.ok_or(Error::Forbidden)?).await?;
                 let result=owner::configuration(c,left,&ctx.0.protection).await?;
-                sqlx::query("INSERT INTO mdm_recovery.filevault_receipts(tenant_id,registration,generation,operation,purpose,digest,receipt,devices) VALUES($1,$2,$3,$4,'link',$5,$6,$7)")
-                    .bind(t).bind(left.registration).bind(left.generation).bind(ctx.3.operation_id).bind(digest)
+                sqlx::query("INSERT INTO mdm_recovery.filevault_receipts (tenant_id, device, operation, purpose, digest, receipt, devices) VALUES ($1, $2, $3, 'link', $4, $5, $6)")
+                    .bind(t).bind(&left.device).bind(ctx.3.operation_id).bind(digest)
                     .bind(serde_json::to_value(&result).map_err(|_|Error::Malformed)?).bind(vec![left.device.clone(),right.device.clone()]).execute(c).await?;
-                Ok((result,false,left.registration,left.generation))
+                Ok((result,false))
             })).await?;
-            ctx.4.registration_at(registration,generation);
             if !replayed {
                 let fact=Fact::business(ctx.4,rss_mdm_audit_integration::operation::OperationOwner::Filevault,&format!("filevault:link:{}:{}",ctx.2,ctx.3.operation_id),200,"success",None).map_err(|_|Error::Audit)?;
                 ctx.0.audit.append(tx,&fact).await?;
@@ -257,24 +249,13 @@ impl FilevaultService {
     }
 }
 
-#[derive(schemars::JsonSchema, Clone, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FilevaultSelection {
-    pub registration: Option<Uuid>,
-    pub generation: Option<i64>,
-}
 impl FilevaultService {
     /// Management readers use their own resource authority, never a device credential or cached revision.
     pub async fn management_configuration(
         &self,
         p: &AuthorizedPrincipal,
         device: &str,
-        selection: &FilevaultSelection,
     ) -> Result<w::Configuration, Error> {
-        use sqlx::Row;
-        if selection.registration.is_some() != selection.generation.is_some() {
-            return Err(Error::Malformed);
-        }
         p.require(Permission::SecurityOperate, Some(device))?;
         let mut tx = self.pool.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -289,16 +270,14 @@ impl FilevaultService {
             Permission::SecurityOperate,
         )
         .await?;
-        let rows=sqlx::query("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active' AND purpose='primary' AND channel IN('agent','mdm') AND ($3::uuid IS NULL OR id=$3) AND ($4::bigint IS NULL OR generation=$4) ORDER BY id LIMIT 2")
-            .bind(p.tenant_id()).bind(device).bind(selection.registration).bind(selection.generation).fetch_all(&mut *tx).await?;
+        let rows=sqlx::query("SELECT id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active' AND purpose = 'primary' AND channel IN ('agent', 'mdm') ORDER BY id LIMIT 2")
+            .bind(p.tenant_id()).bind(device).fetch_all(&mut *tx).await?;
         if rows.len() != 1 {
             return Err(Error::Conflict);
         }
         let source = Source {
             tenant: Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Malformed)?,
             device: device.into(),
-            registration: rows[0].try_get("id")?,
-            generation: rows[0].try_get("generation")?,
         };
         let value = owner::configuration(&mut tx, &source, &self.protection).await?;
         tx.rollback().await?;
@@ -313,26 +292,20 @@ pub async fn filevault_operation_receipt(
     p: &AuthorizedPrincipal,
     device: &str,
     id: Uuid,
-    registration: Uuid,
-    generation: i64,
 ) -> Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error> {
     if p.profile() != rss_mdm_install_support::StorageProfile::Mdm {
         return Err(Error::Forbidden);
-    }
-    if registration.is_nil() || generation < 1 {
-        return Err(Error::Malformed);
     }
     let tenant =
         rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Malformed)?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let result=store.read(tenant,&budget.control(),p,|p,tx|Box::pin(async move{
         tx.with_connection_context(p,|p,c|Box::pin(async move{
-            use sqlx::Row;
-            rss_mdm_authorization_service::lock_shared_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;
+                    rss_mdm_authorization_service::lock_shared_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;
             let grant=rss_mdm_authorization_service::snapshot_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;
             grant.require(p,Permission::SecurityOperate,Some(device)).map_err(rss_mdm_authorization_service::Error::from)?;
-            let row=sqlx::query("SELECT receipt,purpose,devices FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1::uuid AND operation=$2 AND devices @> ARRAY[$3]::text[] AND registration=$4 AND generation=$5")
-                .bind(p.tenant_id()).bind(id).bind(device).bind(registration).bind(generation).fetch_optional(c).await?;
+            let row=sqlx::query("SELECT receipt, purpose, devices FROM mdm_recovery.filevault_receipts WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND devices @> CAST(ARRAY[$3] AS text[])")
+                .bind(p.tenant_id()).bind(id).bind(device).fetch_optional(c).await?;
             let Some(row)=row else {return Ok(None)};
             let devices:Vec<String>=row.try_get("devices")?;
             if devices.is_empty(){return Err(Error::Integrity);}

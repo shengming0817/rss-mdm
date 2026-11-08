@@ -11,8 +11,6 @@ pub struct AppleAdmission {
 pub struct AppleRegistration {
     pub tenant: String,
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 pub struct AppleCommand {
     pub operation: Uuid,
@@ -28,10 +26,7 @@ async fn eligible(
     p: &DevicePrincipal,
     op: &storage::Operation,
 ) -> Result<bool> {
-    if op.registration != p.registration()
-        || op.registration_generation != p.generation()
-        || !matches!(op.request.task, Task::Macos { .. })
-    {
+    if op.device != p.device() || !matches!(op.request.task, Task::Macos { .. }) {
         return Err(Error::Unauthorized.into());
     }
     let now = storage::now(tx).await?;
@@ -74,13 +69,13 @@ impl Transactions {
     ) -> Result<Vec<Uuid>> {
         self.runtime.validate_transaction(tx)?;
         let tenant = tx.tenant_id().to_string();
-        let registration = p.registration().to_string();
-        let generation = p.generation();
+        let registration = p.device().to_string();
+
         let scope = user.to_owned();
         let cursor = after;
         Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_planning.configuration_operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND o.dispatch_failure IS NULL AND o.input_context->>'platform'='macos' AND d.status IN ('published','received') AND o.id>$4 AND ($5='' OR (o.input_context->'target'->>'kind'='user' AND o.input_context->'target'->>'userId'=$5)) AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64")
-            .bind(tenant).bind(registration).bind(generation).bind(cursor).bind(scope).fetch_all(c).await
+        sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_planning.configuration_operations AS o INNER JOIN rss_device_command.commands AS d ON d.tenant_id = o.tenant_id AND d.command_id = CAST(o.id AS text) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = CAST($2 AS text) AND o.gateway_accepted AND o.dispatch_failure IS NULL AND o.input_context ->> 'platform' = 'macos' AND d.status IN ('published', 'received') AND o.id > $3 AND ($4 = '' OR (o.input_context -> 'target' ->> 'kind' = 'user' AND o.input_context -> 'target' ->> 'userId' = $4)) AND CAST(o.input_context ->> 'deadline' AS bigint) > EXTRACT(EPOCH FROM clock_timestamp()) ORDER BY o.id LIMIT 64")
+            .bind(tenant).bind(&registration).bind(cursor).bind(scope).fetch_all(c).await
   })).await?)
     }
     pub async fn apple_settle_in(
@@ -168,11 +163,10 @@ impl Transactions {
         id: Uuid,
         input_version: &str,
         user: &str,
-        registration: Uuid,
-        generation: i64,
+        device: &str,
     ) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
-        if registration != p.registration() || generation != p.generation() {
+        if device != p.device() {
             return Err(Error::Unauthorized.into());
         }
         let op = storage::load(tx, &self.protection, id).await?;
@@ -201,9 +195,9 @@ impl Transactions {
     ) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
         let tenant = tx.tenant_id().to_string();
-        let registration = p.registration();
-        let generation = p.generation();
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_planning.configuration_operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND registration=$4 AND registration_generation=$5 AND dispatch_failure IS NULL").bind(tenant).bind(id).bind(sqlx::types::Json(model::DispatchFailure::Macos{reason})).bind(registration).bind(generation).execute(c).await?;Ok(())})).await?;
+        let registration = p.device().to_owned();
+
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_planning.configuration_operations SET dispatch_failure = $3, revision = revision + 1 WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $4 AND dispatch_failure IS NULL").bind(tenant).bind(id).bind(sqlx::types::Json(model::DispatchFailure::Macos{reason})).bind(&registration).execute(c).await?;Ok(())})).await?;
         Ok(())
     }
     pub async fn apple_declarations_in(
@@ -221,8 +215,7 @@ impl Transactions {
             let status = self.required_command(tx, &op).await?.status();
             if (status == dc::Status::Applied
                 || (!status.is_terminal() && now < op.request.deadline))
-                && op.registration == p.registration()
-                && op.registration_generation == p.generation()
+                && op.device == p.device()
                 && op.request.target.user_key() == user
                 && storage::authority_decision(&self.source, &self.protection, tx, &op, now)
                     .await?
@@ -249,8 +242,6 @@ fn admission(
         target: AppleRegistration {
             tenant: s.tenant.to_string(),
             device: op.device,
-            registration: op.registration,
-            generation: op.registration_generation,
         },
         command: AppleCommand {
             operation: op.id,
@@ -317,15 +308,14 @@ impl Transactions {
     pub async fn apple_wake_commands_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        registration: Uuid,
-        generation: i64,
+        device: String,
         after: Uuid,
     ) -> Result<WakePage> {
         self.runtime.validate_transaction(tx)?;
         let tenant = tx.tenant_id().to_string();
         let ids:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move {
-   sqlx::query_scalar("SELECT o.id FROM mdm_planning.configuration_operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.gateway_accepted AND d.status IN ('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND o.input_context->>'platform'='macos' AND o.dispatch_failure IS NULL AND o.id>$4 ORDER BY o.id LIMIT 64")
-    .bind(tenant).bind(registration).bind(generation).bind(after).fetch_all(c).await
+   sqlx::query_scalar("SELECT o.id FROM mdm_planning.configuration_operations AS o INNER JOIN rss_device_command.commands AS d ON d.tenant_id = o.tenant_id AND d.command_id = CAST(o.id AS text) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.gateway_accepted AND d.status IN ('published', 'received') AND CAST(o.input_context ->> 'deadline' AS bigint) > EXTRACT(EPOCH FROM clock_timestamp()) AND o.input_context ->> 'platform' = 'macos' AND o.dispatch_failure IS NULL AND o.id > $3 ORDER BY o.id LIMIT 64")
+    .bind(tenant).bind(device).bind(after).fetch_all(c).await
   })).await?;
         let next = if ids.len() == 64 {
             ids.last().copied()
@@ -357,10 +347,7 @@ impl Transactions {
         self.runtime.validate_transaction(tx)?;
         storage::lock_device(tx, p.device()).await?;
         let op = storage::load(tx, &self.protection, operation).await?;
-        if op.registration != p.registration()
-            || op.registration_generation != p.generation()
-            || op.device != p.device()
-        {
+        if op.device != p.device() || op.device != p.device() {
             return Err(Error::Unauthorized.into());
         }
         let now = storage::now(tx).await?;

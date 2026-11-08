@@ -66,12 +66,12 @@ impl Delivery {
                     let mut prepared = Vec::new();
                     for row in rows {
                         let needed = matches!(&row.disposition, PushDisposition::Ready { .. })
-                            && s.wake_pending(tx, row.registration, row.generation, &row.user_key)
+                            && s.wake_pending(tx, row.device.clone(), &row.user_key)
                                 .await?;
                         prepared.push((row, needed));
                     }
                     for (row, needed) in prepared {
-                        let registration = row.registration;
+                        let device = row.device;
                         let user_key = row.user_key.clone();
                         let tenant = s.tenant.to_string();
                         let facts = s.facts.clone();
@@ -82,12 +82,7 @@ impl Delivery {
                                     Box::pin(async move {
                                         Ok(facts
                                             .reject_push(
-                                                c,
-                                                tenant,
-                                                registration,
-                                                user_key,
-                                                revision,
-                                                scope,
+                                                c, tenant, device, user_key, revision, scope,
                                             )
                                             .await)
                                     })
@@ -102,7 +97,7 @@ impl Delivery {
                         if !needed {
                             tx.with_connection(move |c| {
                                 Box::pin(async move {
-                                    Ok(facts.defer_push(c, tenant, registration, user_key).await)
+                                    Ok(facts.defer_push(c, tenant, device, user_key).await)
                                 })
                             })
                             .await
@@ -110,25 +105,19 @@ impl Delivery {
                             continue;
                         }
                         let id = Uuid::new_v4();
+                        let value = device.clone();
                         tx.with_connection(move |c| {
                             Box::pin(async move {
                                 Ok(facts
-                                    .lease_push(
-                                        c,
-                                        tenant,
-                                        id,
-                                        registration,
-                                        user_key,
-                                        configuration,
-                                    )
+                                    .lease_push(c, tenant, id, value, user_key, configuration)
                                     .await)
                             })
                         })
                         .await
                         .map_err(storage)??;
-                        audit.registration(registration);
+                        audit.target_device(&device);
                         audit.operation(id, "apple_push", AuditIntent::Management);
-                        audit.target(&registration.to_string());
+                        audit.target(&device.to_string());
                         s.audit
                             .append_in(
                                 tx,
@@ -143,7 +132,7 @@ impl Delivery {
                             .await?;
                         return Ok(Some(Wake {
                             id,
-                            registration,
+                            device: device.to_string(),
                             revision: row.revision,
                             user_key: row.user_key,
                             token,
@@ -165,10 +154,11 @@ impl Delivery {
     async fn wake_pending(
         &self,
         tx: &mut PgTransaction<'_>,
-        registration: Uuid,
-        generation: i64,
+        device: String,
+
         user: &str,
     ) -> Result<bool, Error> {
+        let value = device.clone();
         if user.is_empty() {
             let facts = self.facts.clone();
             let business = self.business.clone();
@@ -177,7 +167,7 @@ impl Delivery {
                 .with_connection(move |c| {
                     Box::pin(async move {
                         Ok(facts
-                            .maintenance_due(business.as_ref(), c, tenant, registration)
+                            .maintenance_due(business.as_ref(), c, tenant, value)
                             .await)
                     })
                 })
@@ -191,7 +181,7 @@ impl Delivery {
         loop {
             let page = self
                 .business
-                .wake_commands(tx, registration, generation, after)
+                .wake_commands(tx, device.clone(), after)
                 .await?;
             for (id, target) in page.commands {
                 if target == user {
@@ -223,11 +213,9 @@ impl Delivery {
         let user = user.to_owned();
         let rows = tx
             .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(facts
-                        .pending_collections(c, tenant, registration, user, 64)
-                        .await)
-                })
+                Box::pin(
+                    async move { Ok(facts.pending_collections(c, tenant, device, user, 64).await) },
+                )
             })
             .await
             .map_err(storage)??;
@@ -246,9 +234,9 @@ impl Delivery {
             "apple_push",
             AuditIntent::Management,
         );
-        audit.registration(wake.registration);
+        audit.target_device(&wake.device);
         audit.operation(wake.id, "apple_push", AuditIntent::Management);
-        audit.target(&wake.registration.to_string());
+        audit.target(&wake.device.to_string());
         audit.identify_service("apple-push");
         let result=self.run(&audit,(self,wake,&audit),|ctx,tx|Box::pin(async move {
    let (s,wake,audit)=*ctx;s.business.prepare_wake(tx,Vec::new(),audit).await?;

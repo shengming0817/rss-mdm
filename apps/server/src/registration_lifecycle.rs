@@ -10,7 +10,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
         tx: &'a mut sqlx::PgConnection,
         facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
         tenant: &'a str,
-        registration: uuid::Uuid,
+        registration: &'a str,
         state: &'a str,
     ) -> std::pin::Pin<
         Box<
@@ -35,14 +35,14 @@ impl rss_mdm_registration_service::Retirement for Bridge {
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
-            rss_mdm_device_service::control::retire_in(tx, facts, tenant, registration)
+            rss_mdm_device_service::control::retire_in(tx, facts, tenant, registration.to_string())
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_software_service::deployment::retirement::retire_in(
                 tx,
                 facts,
                 tenant,
-                registration,
+                registration.to_string(),
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
@@ -50,7 +50,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
                 tx,
                 facts,
                 tenant,
-                registration,
+                registration.to_string(),
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
@@ -59,18 +59,23 @@ impl rss_mdm_registration_service::Retirement for Bridge {
                 tx,
                 facts,
                 tenant,
-                registration,
+                registration.to_string(),
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
-            rss_mdm_script_service::retirement::retire_in(tx, facts, tenant, registration)
-                .await
-                .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
+            rss_mdm_script_service::retirement::retire_in(
+                tx,
+                facts,
+                tenant,
+                registration.to_string(),
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_inventory_service::collection::execution::retirement::retire_in(
                 tx,
                 facts,
                 tenant,
-                registration,
+                registration.to_string(),
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
@@ -78,7 +83,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
                 tx,
                 facts,
                 tenant,
-                registration,
+                registration.to_string(),
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
@@ -87,7 +92,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
                 tx,
                 facts,
                 tenant,
-                registration,
+                registration.to_string(),
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
@@ -95,7 +100,7 @@ impl rss_mdm_registration_service::Retirement for Bridge {
                 tx,
                 facts,
                 tenant,
-                registration,
+                registration.to_string(),
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
@@ -106,14 +111,14 @@ impl rss_mdm_registration_service::Retirement for Bridge {
                 ),
                 tx,
                 tenant,
-                registration,
+                registration.to_string(),
             )
             .await
             .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_windows_channel::retire_in(tx, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
-            rss_mdm_apple_channel::retire_in(tx, tenant, registration)
+            rss_mdm_apple_channel::retire_in(tx, tenant, registration.to_string())
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             crate::collection::terminate(

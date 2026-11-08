@@ -293,7 +293,7 @@ impl rss_mdm_software_service::deployment::inventory::Inventory for Inventory {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        targets: &'a [(Uuid, i64, rss_mdm_inventory::ReportSource)],
+        targets: &'a [(String, rss_mdm_inventory::ReportSource)],
         lock: bool,
     ) -> rss_mdm_software_service::deployment::inventory::Pending<
         'a,
@@ -422,7 +422,7 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
         c: &'a mut PgConnection,
         tenant: TenantId,
         retirement: Uuid,
-        registration: Uuid,
+        registration: String,
         execution: Uuid,
     ) -> rss_mdm_software_service::deployment::retirement::Pending<'a, ()> {
         Box::pin(async move {
@@ -446,7 +446,7 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
         c: &'a mut PgConnection,
         tenant: TenantId,
         retirement: Uuid,
-        registration: Uuid,
+        registration: String,
         reason: &'static str,
         execution: Option<Uuid>,
         unknown: bool,

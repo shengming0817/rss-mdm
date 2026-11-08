@@ -3,17 +3,17 @@ use crate::{Error, database::db};
 pub async fn eligible_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    registration: uuid::Uuid,
-    generation: i64,
+    device: String,
+
     template: &rss_mdm_resource::NativeCollectionDefinition,
 ) -> Result<bool, Error> {
-    let purpose:Option<String>=sqlx::query_scalar("SELECT purpose FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active'")
-        .bind(tenant.to_string()).bind(registration).bind(generation).fetch_optional(&mut *c).await.map_err(db)?;
+    let purpose:Option<String>=sqlx::query_scalar("SELECT purpose FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active'")
+        .bind(tenant.to_string()).bind(&device).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(purpose) = purpose else {
         return Ok(false);
     };
-    let rights:Option<i32>=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'")
-        .bind(tenant.to_string()).bind(registration).fetch_optional(&mut *c).await.map_err(db)?;
+    let rights:Option<i32>=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'")
+        .bind(tenant.to_string()).bind(&device).fetch_optional(&mut *c).await.map_err(db)?;
     let required = template
         .spec()
         .adapter
@@ -28,8 +28,8 @@ pub async fn eligible_on(
         rss_mdm_resource::TemplateScope::User { identity } => identity,
         _ => return Ok(false),
     };
-    let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND state='active')")
-        .bind(tenant.to_string()).bind(registration).bind(generation).bind(user).fetch_one(c).await.map_err(db)?;
+    let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND state = 'active')")
+        .bind(tenant.to_string()).bind(&device).bind(user).fetch_one(c).await.map_err(db)?;
     if !active {
         return Ok(false);
     }

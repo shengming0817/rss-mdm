@@ -36,8 +36,6 @@ impl Eligibility for AccessEligibility {
             if b.generation != *binding_generation
                 || b.state == rss_mdm_device_access::State::Revoked
                 || b.device != binding.device
-                || b.registration != binding.registration
-                || b.registration_generation != binding.generation
                 || !matches!(&b.account, Some(rss_mdm_agent_wire::runtime::AccessAccount::Windows { sid: current, .. }) if current == sid)
             {
                 return Err(Error::Conflict);

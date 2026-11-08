@@ -258,10 +258,10 @@ async fn prepare_in(
         let tenant = tx.tenant_id().to_string();
         Some(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,String>("SELECT device FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?)
     } else if let Some(work) = super::scheduled::Work::parse(entity) {
-        super::scheduled::device_in(&service.transactions.policy_reader, tx, work).await?
-    } else if let Some((registration, _)) = checkin(entity) {
+        super::scheduled::device_in(&service.transactions.policy_reader, tx, &work).await?
+    } else if let Some(device) = checkin(entity) {
         let tenant = tx.tenant_id().to_string();
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(registration).fetch_optional(c).await})).await?
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id AS device FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(tenant).bind(&device).fetch_optional(c).await})).await?
     } else {
         None
     };
@@ -309,13 +309,13 @@ async fn advance_in(
         };
     }
     if let Some(work) = super::scheduled::Work::parse(entity) {
-        super::scheduled::advance_in(service, tx, work, Uuid::new_v4()).await?;
-        return super::scheduled::delay_in(service, tx, work).await;
+        super::scheduled::advance_in(service, tx, &work, Uuid::new_v4()).await?;
+        return super::scheduled::delay_in(service, tx, &work).await;
     }
-    if let Some((registration, generation)) = checkin(entity) {
-        super::checkins::step(service, tx, registration, generation, Uuid::new_v4()).await?;
+    if let Some(device) = checkin(entity) {
+        super::checkins::step(service, tx, device.clone(), Uuid::new_v4()).await?;
         let tenant = tx.tenant_id().to_string();
-        let active:bool=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_native_checkins WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND (active_event IS NOT NULL OR pending_event IS NOT NULL))").bind(tenant).bind(registration).bind(generation).fetch_one(c).await})).await?;
+        let active:bool=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_inventory.collection_native_checkins WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND (active_event IS NOT NULL OR pending_event IS NOT NULL))").bind(tenant).bind(&device).fetch_one(c).await})).await?;
         return Ok(active.then_some(Duration::from_millis(20)));
     }
     if let Some(id) = entity
@@ -357,14 +357,14 @@ async fn pending_in(
         })).await?);
     }
     if let Some(work) = super::scheduled::Work::parse(entity) {
-        return Ok(super::scheduled::delay_in(service, tx, work)
+        return Ok(super::scheduled::delay_in(service, tx, &work)
             .await?
             .is_some());
     }
-    if let Some((registration, generation)) = checkin(entity) {
+    if let Some(device) = checkin(entity) {
         return Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_native_checkins WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND (active_event IS NOT NULL OR pending_event IS NOT NULL))")
-                .bind(tenant).bind(registration).bind(generation).fetch_one(c).await
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_inventory.collection_native_checkins WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND (active_event IS NOT NULL OR pending_event IS NOT NULL))")
+                .bind(tenant).bind(&device).fetch_one(c).await
         })).await?);
     }
     Err(Error::Unavailable(crate::Failure::PlanningStorage).into())
@@ -396,11 +396,8 @@ impl rss_reconcile::Timer for Timer {
     }
 }
 
-fn checkin(entity: &str) -> Option<(Uuid, i64)> {
-    let (a, b) = entity.strip_prefix("checkin:")?.split_once(':')?;
-    let generation = b.parse().ok()?;
-    if generation <= 0 {
-        return None;
-    }
-    Some((a.parse().ok()?, generation))
+fn checkin(entity: &str) -> Option<String> {
+    let device = entity.strip_prefix("checkin:")?;
+    (!device.is_empty() && device.len() <= 256 && !device.chars().any(char::is_control))
+        .then(|| device.to_owned())
 }

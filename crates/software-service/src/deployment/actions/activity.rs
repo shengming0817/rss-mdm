@@ -7,8 +7,6 @@ pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
     let mut fact = Activity::new(ActivityKind::Execution, phase);
     fact.target = Some(ActivityTarget {
         device: run.target.device.clone(),
-        registration: run.target.registration,
-        generation: run.target.generation,
     });
     fact.links.task = Some(run.id);
     fact.links.retirement = run.retirement;

@@ -152,7 +152,7 @@ pub async fn consumers_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     usage: ConsumerUse,
-) -> Result<Vec<(Uuid, i64)>, Error> {
+) -> Result<Vec<String>, Error> {
     consumers_for_device_in(profile, c, tenant, usage, None).await
 }
 /// Current consumers for one endpoint, using the same registration-owned eligibility rule.
@@ -162,8 +162,8 @@ pub async fn consumers_for_device_in(
     tenant: TenantId,
     usage: ConsumerUse,
     device: Option<&str>,
-) -> Result<Vec<(Uuid, i64)>, Error> {
-    sqlx::query_as(crate::storage_profile::sql(profile).device_trust_consumers)
+) -> Result<Vec<String>, Error> {
+    sqlx::query_scalar(crate::storage_profile::sql(profile).device_trust_consumers)
         .bind(tenant.to_string())
         .bind(usage.as_str())
         .bind(device)
@@ -181,14 +181,12 @@ pub struct DevicePrincipal {
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
     device: String,
-    registration: Uuid,
-    generation: i64,
     kind: RegistrationKind,
     installation: Uuid,
     credential: Uuid,
-    user_context: Option<Uuid>,
+    enrolled_user: bool,
     purpose: Purpose,
-    parent: Option<(Uuid, i64)>,
+    protocol_request: Option<Uuid>,
     epoch: Uuid,
 }
 impl DevicePrincipal {
@@ -198,8 +196,9 @@ impl DevicePrincipal {
     pub fn purpose(&self) -> Purpose {
         self.purpose
     }
-    pub fn parent(&self) -> Option<(Uuid, i64)> {
-        self.parent
+    /// WinDC context is identified by its enrollment request, within this device.
+    pub fn protocol_request(&self) -> Option<Uuid> {
+        self.protocol_request
     }
     pub fn epoch(&self) -> Uuid {
         self.epoch
@@ -209,12 +208,6 @@ impl DevicePrincipal {
     }
     pub fn device(&self) -> &str {
         &self.device
-    }
-    pub fn registration(&self) -> Uuid {
-        self.registration
-    }
-    pub fn generation(&self) -> i64 {
-        self.generation
     }
     pub fn kind(&self) -> RegistrationKind {
         self.kind
@@ -229,8 +222,8 @@ impl DevicePrincipal {
         self.channel().ok_or(Error::Forbidden)
     }
     /// Full enrollment permits only its enrolled-user scope; this is not an OS or organization identity.
-    pub fn user_context(&self) -> Option<Uuid> {
-        self.user_context
+    pub fn enrolled_user(&self) -> bool {
+        self.enrolled_user
     }
     pub fn credential(&self) -> Uuid {
         self.credential
@@ -241,8 +234,6 @@ impl DevicePrincipal {
 pub struct BindRegistration {
     pub operation_id: Uuid,
     pub request_id: Uuid,
-    /// Zero denotes a never-registered channel. Includes revoked/superseded history.
-    pub expected_generation: i64,
     pub source: ReportSource,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -250,8 +241,6 @@ pub struct RegistrationReceipt {
     pub operation_id: Uuid,
     pub request_id: Uuid,
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
     pub channel: Channel,
     pub credential: Uuid,
     pub epoch: Uuid,
@@ -259,7 +248,7 @@ pub struct RegistrationReceipt {
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RevocationReceipt {
     pub operation_id: Uuid,
-    pub registration: Uuid,
+    pub device: String,
 }
 
 /// App-owned service; the router and trusted channel adapters share the same policy/store.
@@ -311,14 +300,14 @@ impl DeviceService {
 pub fn scope(
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
-    registration: Uuid,
+    device: &str,
     source: &str,
     epoch: Uuid,
 ) -> Result<Scope, DeviceError> {
     scope_dataset(
         profile,
         tenant,
-        registration,
+        device,
         source,
         epoch,
         rss_mdm_inventory::DATASET,
@@ -327,7 +316,7 @@ pub fn scope(
 pub fn scope_dataset(
     profile: rss_mdm_install_support::StorageProfile,
     tenant: TenantId,
-    registration: Uuid,
+    device: &str,
     source: &str,
     epoch: Uuid,
     dataset: &str,
@@ -335,22 +324,22 @@ pub fn scope_dataset(
     Ok(Scope::new(
         tenant,
         // Lifecycle CAS is object-wide. Each independently activated fixed dataset
-        // has its own subject within the registration; Device identity stays in our mapping.
+        // has its own subject within the device. The library Registration wrapper carries deviceId.
         Id::new(if dataset == rss_mdm_inventory::DATASET {
             match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => registration.to_string(),
-                rss_mdm_install_support::StorageProfile::Da => format!("da:{registration}"),
+                rss_mdm_install_support::StorageProfile::Mdm => device.to_owned(),
+                rss_mdm_install_support::StorageProfile::Da => format!("da:{device}"),
             }
         } else {
             match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => format!("{registration}:{dataset}"),
+                rss_mdm_install_support::StorageProfile::Mdm => format!("{device}:{dataset}"),
                 rss_mdm_install_support::StorageProfile::Da => {
-                    format!("da:{registration}:{dataset}")
+                    format!("da:{device}:{dataset}")
                 }
             }
         })
         .map_err(|_| DeviceError::InvalidSource)?,
-        Registration::new(registration.to_string()).map_err(|_| DeviceError::InvalidSource)?,
+        Registration::new(device.to_owned()).map_err(|_| DeviceError::InvalidSource)?,
         Id::new(source).map_err(|_| DeviceError::InvalidSource)?,
         Id::new(dataset).map_err(|_| DeviceError::InvalidSource)?,
         Epoch::new(epoch.to_string()).map_err(|_| DeviceError::InvalidSource)?,
@@ -382,23 +371,11 @@ impl DeviceService {
         credential: &VerifiedChannelCredential,
         command: &BindRegistration,
         device: String,
-        ids: [Uuid; 3],
-        facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+        ids: [Uuid; 2],
     ) -> Result<RegistrationReceipt, Error> {
         let profile = self.profile();
 
-        store::bind_in(
-            profile,
-            tx,
-            proof,
-            credential,
-            command,
-            device,
-            ids,
-            facts,
-            self.access.retirement.as_ref(),
-        )
-        .await
+        store::bind_in(profile, tx, proof, credential, command, device, ids).await
     }
     /// Both native authority kinds enter the same registration mutation after live admission.
     #[allow(
@@ -410,21 +387,11 @@ impl DeviceService {
         tx: &mut sqlx::PgConnection,
         admission: &crate::enrollment::native::Admission,
         credential: &VerifiedChannelCredential,
-        ids: [Uuid; 3],
-        facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+        ids: [Uuid; 2],
     ) -> Result<RegistrationReceipt, Error> {
         let profile = self.profile();
 
-        store::bind_native_in(
-            profile,
-            tx,
-            admission,
-            credential,
-            ids,
-            facts,
-            self.access.retirement.as_ref(),
-        )
-        .await
+        store::bind_native_in(profile, tx, admission, credential, ids).await
     }
 }
 
@@ -471,15 +438,13 @@ pub async fn authenticate_endpoint_in(
         profile,
         tenant,
         device,
-        registration: row.try_get("id").map_err(db)?,
-        generation: row.try_get("generation").map_err(db)?,
         epoch: row.try_get("epoch").map_err(db)?,
         credential: row.try_get("credential").map_err(db)?,
         kind,
         installation,
         purpose,
-        parent: None,
-        user_context: None,
+        protocol_request: None,
+        enrolled_user: false,
     };
     if row.try_get::<String, _>("identity").map_err(db)? != peer.metadata().identity {
         return Err(Error::Unauthorized);

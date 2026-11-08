@@ -285,7 +285,7 @@ async fn report_inner(
     let scope = device::scope(
         principal.profile(),
         principal.tenant(),
-        principal.registration(),
+        principal.device(),
         InventorySource::AgentBuiltin.as_str(),
         principal.epoch(),
     )
@@ -294,13 +294,12 @@ async fn report_inner(
         "agent_report",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(principal.registration());
-    audit.registration(principal.registration());
+    audit.identify_device(&(principal.device()).to_string());
     audit.target_device(principal.device());
     let scope = crate::device::scope_dataset(
         principal.profile(),
         principal.tenant(),
-        principal.registration(),
+        principal.device(),
         InventorySource::AgentBuiltin.as_str(),
         Uuid::parse_str(scope.epoch().as_str()).map_err(|_| Error::Malformed)?,
         input.collection().dataset(),
@@ -360,7 +359,7 @@ async fn status_inner(
     let scope = device::scope(
         principal.profile(),
         principal.tenant(),
-        principal.registration(),
+        principal.device(),
         InventorySource::AgentBuiltin.as_str(),
         principal.epoch(),
     )
@@ -369,8 +368,7 @@ async fn status_inner(
         "agent_report_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    audit.identify_device(principal.registration());
-    audit.registration(principal.registration());
+    audit.identify_device(&(principal.device()).to_string());
     audit.target_device(principal.device());
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
     let live_scope = crate::device::store::revalidate_source(
@@ -584,14 +582,14 @@ async fn builtin_collections(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    registration: Uuid,
+    device: &str,
     epoch: Uuid,
 ) -> Result<Vec<wire::CollectionDefinition>, Error> {
     let key = rss_mdm_inventory::builtin::MDM_ENROLLMENT;
     let scope = device::scope_dataset(
         profile,
         tenant,
-        registration,
+        device,
         InventorySource::AgentBuiltin.as_str(),
         epoch,
         key.as_str(),

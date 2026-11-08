@@ -23,11 +23,7 @@ pub async fn directory_presence_on(
         &fields,
     )
     .await?;
-    let mut owners = selected
-        .subjects
-        .into_iter()
-        .map(|(scope, (device, _))| (scope, device))
-        .collect::<BTreeMap<_, _>>();
+    let mut owners = selected.subjects;
     let (present, manual) = rss_mdm_inventory_postgres::directory_presence_in(
         c,
         tenant,

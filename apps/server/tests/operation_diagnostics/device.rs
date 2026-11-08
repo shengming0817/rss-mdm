@@ -20,14 +20,10 @@ pub(super) async fn seed(c: &Context) -> Result<Seed> {
             Member {
                 device: "background-mdm".into(),
                 channel: Channel::Mdm,
-                registration_id: Uuid::new_v4(),
-                generation: 1,
             },
             Member {
                 device: "background-agent".into(),
                 channel: Channel::Agent,
-                registration_id: Uuid::new_v4(),
-                generation: 1,
             },
         ],
         evidence: "automatic unique hardware match".into(),

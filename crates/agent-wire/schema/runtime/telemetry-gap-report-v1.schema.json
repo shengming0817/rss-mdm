@@ -98,23 +98,19 @@
       "format": "int64",
       "type": "integer"
     },
+    "deviceId": {
+      "description": "Original device identity, checked against the authenticated transport.",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+      "type": "string"
+    },
     "gaps": {
       "description": "At most one aggregate per closed reason.",
       "items": {
         "$ref": "#/$defs/TelemetryGap"
       },
       "type": "array"
-    },
-    "generation": {
-      "description": "Original registration generation.",
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "registrationId": {
-      "description": "Original registration, including during credential renewal.",
-      "format": "uuid",
-      "type": "string"
     },
     "reportId": {
       "description": "Stable idempotency identity.",
@@ -124,8 +120,7 @@
   },
   "required": [
     "reportId",
-    "registrationId",
-    "generation",
+    "deviceId",
     "createdAt",
     "gaps"
   ],

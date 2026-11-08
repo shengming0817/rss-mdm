@@ -5,8 +5,6 @@ use rss_mdm_inventory::{ArrayFact, Catalog, CollectionScope, Source, SourceFact,
 #[derive(serde::Deserialize)]
 struct SourceRow {
     device: String,
-    registration: String,
-    generation: String,
     channel: String,
     source: String,
     epoch: String,
@@ -90,7 +88,7 @@ pub fn decode(
         let expected = crate::device::scope_dataset(
             profile,
             tenant,
-            stored(Uuid::parse_str(&row.registration))?,
+            &row.device,
             &row.source,
             stored(Uuid::parse_str(&row.epoch))?,
             &row.dataset,
@@ -102,10 +100,7 @@ pub fn decode(
             .get_mut(&row.device)
             .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
         device.channels.insert(row.channel);
-        subjects.insert(
-            row.scope,
-            (row.device, stored(row.generation.parse::<u64>())?),
-        );
+        subjects.insert(row.scope, row.device);
     }
     let facts = stored(rss_mdm_inventory_postgres::snapshot::decode(
         stored(serde_json::from_value(raw["observed"].clone()))?,
@@ -114,33 +109,25 @@ pub fn decode(
     ))?;
     let mut scalars: BTreeMap<(String, FieldKey), Vec<SourceFact>> = BTreeMap::new();
     let mut arrays: BTreeMap<(String, FieldKey), Vec<ArrayFact>> = BTreeMap::new();
-    for mut row in facts.scalars {
+    for row in facts.scalars {
         if &row.fact.evidence.scope != scope {
             continue;
         }
-        let (device, generation) = subjects
+        let device = subjects
             .get(&row.scope)
             .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
-        row.fact.evidence.registration_generation = Some(*generation);
-        if let Some(old) = &mut row.fact.last_known {
-            old.evidence.registration_generation = Some(*generation);
-        }
         scalars
             .entry((device.clone(), row.field))
             .or_default()
             .push(row.fact);
     }
-    for mut row in facts.arrays {
+    for row in facts.arrays {
         if &row.fact.evidence.scope != scope {
             continue;
         }
-        let (device, generation) = subjects
+        let device = subjects
             .get(&row.scope)
             .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
-        row.fact.evidence.registration_generation = Some(*generation);
-        if let Some(old) = &mut row.fact.last_known {
-            old.evidence.registration_generation = Some(*generation);
-        }
         arrays
             .entry((device.clone(), row.field))
             .or_default()
@@ -171,10 +158,10 @@ pub fn decode(
     let quality_rows: Vec<Value> = stored(serde_json::from_value(raw["quality"].clone()))?;
     for value in quality_rows {
         let row: quality::Record = stored(serde_json::from_value(value.clone()))?;
-        let (device, generation) = subjects
+        let device = subjects
             .get(&row.scope)
             .ok_or(Error::Unavailable(Failure::CollectionQuery))?;
-        let mut quality = quality::decode_record(&row, *generation)?;
+        let mut quality = quality::decode_record(&row)?;
         let selected: Vec<String> =
             stored(serde_json::from_value(value["selected_fields"].clone()))?;
         quality

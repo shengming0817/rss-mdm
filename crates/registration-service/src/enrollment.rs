@@ -4,7 +4,7 @@ pub mod credentials;
 pub mod managed;
 pub mod native;
 pub mod read;
-pub mod registrations;
+pub mod registration;
 pub mod store;
 use crate::Error;
 use rss_mdm_inventory::ReportSource;
@@ -39,7 +39,6 @@ impl WindowsProfile {
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Create {
-    pub device_id: String,
     pub password: Password,
     pub source: ReportSource,
     pub windows_profile: Option<WindowsProfile>,
@@ -89,8 +88,7 @@ pub struct Receipt {
     pub enrollment_id: Uuid,
     pub status: String,
     pub expires_at: i64,
-    #[serde(rename = "registrationId")]
-    pub registration: Option<Uuid>,
+    pub device_id: String,
     pub source: ReportSource,
 }
 /// All fields originate in PG, never in device claims.
@@ -102,7 +100,7 @@ pub struct Authorization {
     pub instance: String,
     pub credential_ref: Uuid,
     pub version: i64,
-    pub expected_generation: i64,
+
     pub operation: Uuid,
     pub state: String,
     pub source: ReportSource,
@@ -132,14 +130,6 @@ pub struct SelfCreate {
     pub source: ReportSource,
     pub windows_profile: Option<WindowsProfile>,
 }
-#[derive(schemars::JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SelfReceipt {
-    pub device_id: String,
-    #[serde(flatten)]
-    pub receipt: Receipt,
-}
-
 /// Enrollment password generation, independent of browser authentication.
 pub fn random() -> String {
     use base64::Engine;
@@ -219,8 +209,7 @@ impl EnrollmentService {
         if (input.source == ReportSource::MdmWindows) != input.windows_profile.is_some() {
             return Err(Error::Malformed);
         }
-        let permission = proof.enrollment(&input.device_id)?;
-        audit.target_device(&input.device_id);
+        let permission = proof.new_enrollment()?;
         let reference = self
             .credentials
             .insert(continuation.duplicate().map_err(|_| Error::Unauthorized)?)?;
@@ -245,7 +234,7 @@ impl EnrollmentService {
         continuation: &rss_mdm_authorization_service::credential::RequestCredential,
         key: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
-    ) -> Result<SelfReceipt, Error> {
+    ) -> Result<Receipt, Error> {
         let profile = self.profile();
 
         if key.is_nil()
@@ -254,15 +243,7 @@ impl EnrollmentService {
         {
             return Err(Error::Malformed);
         }
-        // Namespace is derived from authenticated identity and operation, never a device claim.
-        let device_id = format!(
-            "self:{}:{}:{}",
-            proof.instance_id(),
-            proof.principal_id(),
-            key
-        );
-        let permission = proof.self_enrollment(&device_id)?;
-        audit.target_device(&device_id);
+        let permission = proof.new_self_enrollment()?;
         let reference = self
             .credentials
             .insert(continuation.duplicate().map_err(|_| Error::Unauthorized)?)?;
@@ -278,8 +259,7 @@ impl EnrollmentService {
             audit,
         )
         .await;
-        let receipt = self.settle_handoff(reference, result, audit)?;
-        Ok(SelfReceipt { device_id, receipt })
+        self.settle_handoff(reference, result, audit)
     }
     pub async fn resume(
         &self,
@@ -347,17 +327,12 @@ impl EnrollmentService {
         )
         .await
     }
-    pub async fn registrations(
+    pub async fn registration(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
         device: &str,
-        page: &rss_mdm_query::directory::Query,
-        codec: &rss_mdm_query::cursor::CursorCodec,
-    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<registrations::Row>>, Error>
-    {
-        let profile = self.profile();
-
-        registrations::list(profile, &self.access, request, device, page, codec).await
+    ) -> Result<registration::Registration, Error> {
+        registration::read(self.profile(), &self.access, request, device).await
     }
     pub async fn cancel(
         &self,

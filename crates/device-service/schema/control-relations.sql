@@ -9,11 +9,9 @@ ALTER TABLE ONLY mdm_devices.unmanage_runs
 ALTER TABLE ONLY mdm_devices.unmanage_runs
     ADD CONSTRAINT unmanage_runs_tenant_id_policy_version_fkey FOREIGN KEY (tenant_id, policy_version) REFERENCES mdm_policy.versions(tenant_id, id);
 
-ALTER TABLE ONLY mdm_devices.unmanage_runs
-    ADD CONSTRAINT unmanage_runs_tenant_id_registration_fkey FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id);
+ALTER TABLE ONLY mdm_devices.unmanage_runs ADD CONSTRAINT unmanage_runs_tenant_id_registration_fkey FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices (tenant_id, id);
 
-ALTER TABLE ONLY mdm_devices.control_operations
-    ADD CONSTRAINT control_operations_tenant_id_device_fkey FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.command_authorities(tenant_id, device);
+ALTER TABLE ONLY mdm_devices.control_operations ADD CONSTRAINT control_operations_tenant_id_device_fkey FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.command_authorities (tenant_id, device);
 
 ALTER TABLE ONLY mdm_devices.control_operations
     ADD CONSTRAINT control_operations_tenant_id_policy_version_fkey FOREIGN KEY (tenant_id, policy_version) REFERENCES mdm_policy.versions(tenant_id, id);
@@ -21,8 +19,7 @@ ALTER TABLE ONLY mdm_devices.control_operations
 ALTER TABLE ONLY mdm_devices.unmanage_policy_recovery
     ADD CONSTRAINT unmanage_policy_recovery_tenant_id_policy_fkey FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.policies(tenant_id, id);
 
-ALTER TABLE ONLY mdm_devices.control_requests
-    ADD CONSTRAINT control_requests_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation) REFERENCES mdm_devices.control_operations(tenant_id, id);
+ALTER TABLE ONLY mdm_devices.control_requests ADD CONSTRAINT control_requests_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation) REFERENCES mdm_devices.control_operations (tenant_id, id);
 
 GRANT USAGE ON SCHEMA mdm_devices TO mdm_command_runtime;
 
@@ -62,13 +59,13 @@ GRANT SELECT ON TABLE mdm_devices.control_operations TO mdm_access;
 
 GRANT SELECT ON mdm_devices.unmanage_runs TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_devices.windows_pending_operations(uuid,bigint,uuid) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_devices.windows_pending_operations(text,uuid) TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_devices.windows_wake_candidates(uuid) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_devices.windows_wake_candidates(text) TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_devices.retirement_commands(uuid,text),mdm_devices.save_retired_command(uuid,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_devices.retirement_commands(text,text),mdm_devices.save_retired_command(text,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime;
 
-GRANT EXECUTE ON FUNCTION mdm_devices.save_retired_action(uuid,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_devices.save_retired_action(text,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
 
 COMMIT;
 

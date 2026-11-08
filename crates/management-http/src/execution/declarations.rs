@@ -13,8 +13,7 @@ pub struct Page {
 }
 pub struct Item {
     pub operation: Uuid,
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub user: String,
     pub redacted: bool,
     pub observation: rss_mdm_policy_service::configuration::queries::records::NativeObservation,

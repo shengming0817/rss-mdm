@@ -631,7 +631,7 @@ async fn aggregate_complete_results_and_revalidate_inputs() -> Result<()> {
     // Indeterminate current evidence exposes its retained observation without counting it as an installation.
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm.inventory SET state='unknown_incomplete',last_known_version=value_version,last_known_batch=batch_id,last_known_observed=observed_at,last_known_received=received_at,value_version=NULL,value=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.software.installations'")
-        .bind(c.tenant.to_string()).bind(a.members[0].registration_id.to_string()).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(a.members[0].device.to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
     let uncertain = query(&c, &fixture, &http, json!({"context":"endpoint"})).await?;
     let uncertain_rows = http
@@ -844,8 +844,8 @@ async fn group_assessment_and_associated_domain() -> Result<()> {
     };
     sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1::uuid,$2,1,'confirmed','verified software fixture','{}','fixture',1)").bind(c.tenant.to_string()).bind(association).execute(&mut *tx).await?;
     for member in &paired.members {
-        sqlx::query("INSERT INTO mdm_devices.members(tenant_id,association_id,device,channel,registration_id,generation) VALUES($1::uuid,$2,$3,$4,$5,$6)")
-            .bind(c.tenant.to_string()).bind(association).bind(&member.device).bind(member.channel.as_str()).bind(member.registration_id).bind(member.generation).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_devices.members (tenant_id, association_id, device, channel, device_id) VALUES (CAST($1 AS uuid), $2, $3, $4, $5)")
+            .bind(c.tenant.to_string()).bind(association).bind(&member.device).bind(member.channel.as_str()).bind(member.device.clone()).execute(&mut *tx).await?;
     }
     sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) VALUES($1::uuid,$2,1,$3,$4)")
         .bind(c.tenant.to_string()).bind(paired.object.key()).bind(serde_json::to_value(&paired)?).bind(paired.members.iter().map(|m|m.device.clone()).collect::<Vec<_>>()).execute(&mut *tx).await?;

@@ -11,8 +11,6 @@ pub struct Record {
     pub policy_id: Uuid,
     pub version_id: Uuid,
     pub device: String,
-    pub registration_id: Uuid,
-    pub generation: i64,
     pub occurrence: String,
     pub available_at: i64,
     pub deadline: i64,
@@ -21,7 +19,7 @@ pub struct Record {
     pub attempt_id: Option<Uuid>,
     pub result: Option<super::actions::result::RunResult>,
 }
-const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'registrationId',r.registration,'generation',r.generation,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'authorization',NULL::jsonb,'attemptId',r.state->'delivery'->>'attempt'";
+const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'authorization',NULL::jsonb,'attemptId',r.state->'delivery'->>'attempt'";
 pub async fn page_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
@@ -101,14 +99,13 @@ pub async fn diagnostic_on(
         rss_mdm_install_support::StorageProfile::Da => DA_RELATION_SQL,
     };
     let mut sql = sqlx::QueryBuilder::<sqlx::Postgres>::new("WITH owned AS (");
-    sql.push(relation).push(") SELECT policy FROM owned WHERE id=$2 AND device=$3 AND ($4::uuid IS NULL OR registration=$4) AND ($5::bigint IS NULL OR generation=$5)");
+    sql.push(relation)
+        .push(") SELECT policy FROM owned WHERE id=$2 AND device=$3");
     let policy: Option<Uuid> = sql
         .build_query_scalar()
         .bind(proof.tenant_id())
         .bind(locator.operation_id)
         .bind(device)
-        .bind(locator.registration)
-        .bind(locator.generation)
         .fetch_optional(&mut *c)
         .await?;
     match policy {
@@ -127,7 +124,7 @@ pub async fn diagnostic_on(
     }
 }
 
-/// Correlate only the original Agent registration and generation.
+/// Correlate only the original Agent device.
 pub async fn assignment_ids_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
@@ -141,14 +138,12 @@ pub async fn assignment_ids_on(
             .bind(tenant.to_string())
             .bind(policy)
             .bind(&target.device)
-            .bind(target.registration_id)
-            .bind(target.generation)
             .bind(channel.as_str())
             .fetch_all(c)
             .await?,
     )
 }
 
-pub const RELATION_SQL: &str = "SELECT r.id,r.device,'action_run'::text AS kind,r.registration,r.generation,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') AS status,0::bigint AS input_bytes FROM mdm_recovery_tasks.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid";
+pub const RELATION_SQL: &str = "SELECT r.id,r.device,'action_run'::text AS kind,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') AS status,0::bigint AS input_bytes FROM mdm_recovery_tasks.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid";
 
-pub const DA_RELATION_SQL: &str = "SELECT r.id,r.device,'action_run'::text AS kind,r.registration,r.generation,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') AS status,0::bigint AS input_bytes FROM rss_da.credential_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid";
+pub const DA_RELATION_SQL: &str = "SELECT r.id,r.device,'action_run'::text AS kind,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') AS status,0::bigint AS input_bytes FROM rss_da.credential_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid";

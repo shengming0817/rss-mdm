@@ -78,17 +78,16 @@ pub(crate) async fn purge_inputs(
             return Ok(CopyState::Retained);
         }
     }
-    let rows=sqlx::query("SELECT id,registration,generation,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 FOR UPDATE")
+    let rows=sqlx::query("SELECT id, device, request FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 FOR UPDATE")
         .bind(tenant).bind(operation).fetch_all(&mut *c).await.map_err(crate::database::db)?;
     for row in rows {
         let id = row.try_get("id").map_err(crate::database::db)?;
-        let registration = row.try_get("registration").map_err(crate::database::db)?;
-        let generation = row.try_get("generation").map_err(crate::database::db)?;
+        let device = row.try_get("device").map_err(crate::database::db)?;
+
         let plain = crate::protection::open(
             key,
             tenant,
-            registration,
-            generation,
+            device,
             id,
             crate::protection::Part::Request,
             &row.try_get::<Vec<u8>, _>("request")
@@ -100,8 +99,7 @@ pub(crate) async fn purge_inputs(
         let sealed = crate::protection::seal(
             key,
             tenant,
-            registration,
-            generation,
+            device,
             id,
             crate::protection::Part::Request,
             &encoded,

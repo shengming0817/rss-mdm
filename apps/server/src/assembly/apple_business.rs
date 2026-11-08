@@ -63,38 +63,45 @@ fn fault(e: rss_mdm_device_service::control::transaction::Fault) -> rss_mdm_appl
     }
 }
 
-pub(super) fn target(t: rss_mdm_device_service::control::NativeTarget) -> Target {
+pub(super) fn target(
+    t: rss_mdm_device_service::control::NativeTarget,
+) -> Result<Target, rss_mdm_apple_channel::Error> {
     match t {
-        rss_mdm_device_service::control::NativeTarget::Device => Target::Device,
-        rss_mdm_device_service::control::NativeTarget::User { user_id } => Target::User { user_id },
+        rss_mdm_device_service::control::NativeTarget::Device => Ok(Target::Device),
+        rss_mdm_device_service::control::NativeTarget::User { user_id } => {
+            Ok(Target::User { user_id })
+        }
+        rss_mdm_device_service::control::NativeTarget::EnrolledUser => {
+            Err(rss_mdm_apple_channel::Error::Unsupported)
+        }
     }
 }
 pub(super) fn command(
     c: rss_mdm_device_service::control::apple_facts::AppleCommand,
-) -> AppleCommand {
-    AppleCommand {
+) -> Result<AppleCommand, rss_mdm_apple_channel::Error> {
+    Ok(AppleCommand {
         operation: c.operation,
         owner: c.owner,
         authorized_declarations: c.authorized_declarations,
         assets: c.assets,
         deadline: c.deadline,
         input_version: c.input_version,
-        target: target(c.target),
+        target: target(c.target)?,
         request: c.request,
-    }
+    })
 }
-fn admission(a: rss_mdm_device_service::control::apple_business::AppleAdmission) -> Admission {
-    Admission {
+fn admission(
+    a: rss_mdm_device_service::control::apple_business::AppleAdmission,
+) -> Result<Admission, rss_mdm_apple_channel::Error> {
+    Ok(Admission {
         eligible: a.eligible,
         dispatch: a.dispatch,
-        command: command(a.command),
+        command: command(a.command)?,
         target: AppleRegistration {
             tenant: a.target.tenant,
             device: a.target.device,
-            registration: a.target.registration,
-            generation: a.target.generation,
         },
-    }
+    })
 }
 impl Business for AppleBusiness {
     fn prepare_wake<'a>(
@@ -127,35 +134,34 @@ impl Business for AppleBusiness {
     fn wake_commands<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        registration: Uuid,
-        generation: i64,
+        registration: String,
         after: Uuid,
     ) -> Pending<'a, WakePage> {
         Box::pin(async move {
             let left = self
                 .0
-                .apple_wake_commands_in(tx, registration, generation, after)
+                .apple_wake_commands_in(tx, registration.clone(), after)
                 .await
                 .map_err(fault)?;
             let right = self
                 .1
-                .apple_wake_commands_in(tx, registration, generation, after)
+                .apple_wake_commands_in(tx, registration.clone(), after)
                 .await
                 .map_err(policy_fault)?;
             let software = self
                 .3
-                .apple_wake_commands_in(tx, registration, generation, after)
+                .apple_wake_commands_in(tx, registration.clone(), after)
                 .await
                 .map_err(software_fault)?;
             let bootstrap = self
                 .4
-                .apple_wake_commands_in(tx, registration, generation, after)
+                .apple_wake_commands_in(tx, registration.clone(), after)
                 .await
                 .map_err(registration_fault)?;
             let recovery = match &self.5 {
                 Some(recovery) => Some(
                     recovery
-                        .apple_wake_commands_in(tx, registration, generation, after)
+                        .apple_wake_commands_in(tx, registration.clone(), after)
                         .await
                         .map_err(recovery_fault)?,
                 ),
@@ -336,26 +342,26 @@ impl Business for AppleBusiness {
                     .1
                     .apple_command_in(tx, p, id)
                     .await
-                    .map(configuration_admission)
-                    .map_err(policy_fault),
+                    .map_err(policy_fault)
+                    .and_then(configuration_admission),
                 Owner::Device => self
                     .0
                     .apple_command_in(tx, p, id)
                     .await
-                    .map(admission)
-                    .map_err(fault),
+                    .map_err(fault)
+                    .and_then(admission),
                 Owner::Software => self
                     .3
                     .apple_command_in(tx, p, id)
                     .await
-                    .map(software_admission)
-                    .map_err(software_fault),
+                    .map_err(software_fault)
+                    .and_then(software_admission),
                 Owner::Registration => self
                     .4
                     .apple_command_in(tx, p, id)
                     .await
-                    .map(registration_admission)
-                    .map_err(registration_fault),
+                    .map_err(registration_fault)
+                    .and_then(registration_admission),
                 Owner::Recovery => self
                     .5
                     .as_ref()
@@ -430,8 +436,7 @@ impl Business for AppleBusiness {
                         fact.operation,
                         &fact.input_version,
                         &fact.user,
-                        fact.registration,
-                        fact.generation,
+                        &fact.device,
                     )
                     .await
                     .map_err(policy_fault),
@@ -443,8 +448,7 @@ impl Business for AppleBusiness {
                         fact.operation,
                         &fact.input_version,
                         &fact.user,
-                        fact.registration,
-                        fact.generation,
+                        &fact.device,
                     )
                     .await
                     .map_err(software_fault),
@@ -525,7 +529,8 @@ impl Business for AppleBusiness {
                     .await
                     .map_err(policy_fault)?
                     .into_iter()
-                    .map(configuration_admission),
+                    .map(configuration_admission)
+                    .collect::<Result<Vec<_>, _>>()?,
             );
             rows.extend(
                 self.3
@@ -533,7 +538,8 @@ impl Business for AppleBusiness {
                     .await
                     .map_err(software_fault)?
                     .into_iter()
-                    .map(software_admission),
+                    .map(software_admission)
+                    .collect::<Result<Vec<_>, _>>()?,
             );
             rows.sort_by_key(|v| v.command.operation);
             Ok(rows)
@@ -598,14 +604,14 @@ impl Business for AppleBusiness {
                     .1
                     .apple_asset_authority_in(tx, p, id)
                     .await
-                    .map(|(r, t)| (r, super::configuration_channels::target(t)))
-                    .map_err(policy_fault),
+                    .map_err(policy_fault)
+                    .and_then(|(r, t)| Ok((r, super::configuration_channels::target(t)?))),
                 Owner::Software => self
                     .3
                     .apple_asset_authority_in(tx, p, id)
                     .await
-                    .map(|(r, t)| (r, software_target(t)))
-                    .map_err(software_fault),
+                    .map_err(software_fault)
+                    .and_then(|(r, t)| Ok((r, software_target(t)?))),
                 Owner::Device | Owner::Registration | Owner::Recovery => {
                     Err(rss_mdm_apple_channel::Error::Forbidden)
                 }
@@ -650,7 +656,7 @@ impl Departure for AppleBusiness {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        registration: Uuid,
+        registration: String,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             rss_mdm_device_service::control::unmanage::native_departure_in(
@@ -690,15 +696,13 @@ fn policy_fault(e: rss_mdm_policy_service::transaction::Fault) -> rss_mdm_apple_
 
 fn configuration_admission(
     a: rss_mdm_policy_service::configuration::apple::AppleAdmission,
-) -> Admission {
-    Admission {
+) -> Result<Admission, rss_mdm_apple_channel::Error> {
+    Ok(Admission {
         eligible: a.eligible,
         dispatch: a.dispatch,
         target: AppleRegistration {
             tenant: a.target.tenant,
             device: a.target.device,
-            registration: a.target.registration,
-            generation: a.target.generation,
         },
         command: AppleCommand {
             operation: a.command.operation,
@@ -707,10 +711,10 @@ fn configuration_admission(
             assets: Vec::new(),
             deadline: a.command.deadline,
             input_version: a.command.input_version,
-            target: super::configuration_channels::target(a.command.target),
+            target: super::configuration_channels::target(a.command.target)?,
             request: a.command.request,
         },
-    }
+    })
 }
 
 fn collection_fault(
@@ -761,44 +765,47 @@ fn software_fault(
     }
 }
 
-pub(super) fn software_target(t: rss_mdm_software_service::deployment::NativeTarget) -> Target {
+pub(super) fn software_target(
+    t: rss_mdm_software_service::deployment::NativeTarget,
+) -> Result<Target, rss_mdm_apple_channel::Error> {
     match t {
-        rss_mdm_software_service::deployment::NativeTarget::Device => Target::Device,
+        rss_mdm_software_service::deployment::NativeTarget::Device => Ok(Target::Device),
         rss_mdm_software_service::deployment::NativeTarget::User { user_id } => {
-            Target::User { user_id }
+            Ok(Target::User { user_id })
+        }
+        rss_mdm_software_service::deployment::NativeTarget::EnrolledUser => {
+            Err(rss_mdm_apple_channel::Error::Unsupported)
         }
     }
 }
 
 pub(super) fn software_command(
     c: rss_mdm_software_service::deployment::apple_facts::AppleCommand,
-) -> AppleCommand {
-    AppleCommand {
+) -> Result<AppleCommand, rss_mdm_apple_channel::Error> {
+    Ok(AppleCommand {
         operation: c.operation,
         owner: c.owner,
         authorized_declarations: c.authorized_declarations,
         assets: c.assets,
         deadline: c.deadline,
         input_version: c.input_version,
-        target: software_target(c.target),
+        target: software_target(c.target)?,
         request: c.request,
-    }
+    })
 }
 
 fn software_admission(
     a: rss_mdm_software_service::deployment::apple_business::AppleAdmission,
-) -> Admission {
-    Admission {
+) -> Result<Admission, rss_mdm_apple_channel::Error> {
+    Ok(Admission {
         eligible: a.eligible,
         dispatch: a.dispatch,
-        command: software_command(a.command),
+        command: software_command(a.command)?,
         target: AppleRegistration {
             tenant: a.target.tenant,
             device: a.target.device,
-            registration: a.target.registration,
-            generation: a.target.generation,
         },
-    }
+    })
 }
 
 pub(super) fn software_policy_error(
@@ -858,44 +865,45 @@ fn registration_fault(
 
 pub(super) fn registration_target(
     t: rss_mdm_registration_service::installation::NativeTarget,
-) -> Target {
+) -> Result<Target, rss_mdm_apple_channel::Error> {
     match t {
-        rss_mdm_registration_service::installation::NativeTarget::Device => Target::Device,
+        rss_mdm_registration_service::installation::NativeTarget::Device => Ok(Target::Device),
         rss_mdm_registration_service::installation::NativeTarget::User { user_id } => {
-            Target::User { user_id }
+            Ok(Target::User { user_id })
+        }
+        rss_mdm_registration_service::installation::NativeTarget::EnrolledUser => {
+            Err(rss_mdm_apple_channel::Error::Unsupported)
         }
     }
 }
 
 pub(super) fn registration_command(
     c: rss_mdm_registration_service::installation::apple_facts::AppleCommand,
-) -> AppleCommand {
-    AppleCommand {
+) -> Result<AppleCommand, rss_mdm_apple_channel::Error> {
+    Ok(AppleCommand {
         operation: c.operation,
         owner: c.owner,
         authorized_declarations: c.authorized_declarations,
         assets: c.assets,
         deadline: c.deadline,
         input_version: c.input_version,
-        target: registration_target(c.target),
+        target: registration_target(c.target)?,
         request: c.request,
-    }
+    })
 }
 
 fn registration_admission(
     a: rss_mdm_registration_service::installation::apple_business::AppleAdmission,
-) -> Admission {
-    Admission {
+) -> Result<Admission, rss_mdm_apple_channel::Error> {
+    Ok(Admission {
         eligible: a.eligible,
         dispatch: a.dispatch,
-        command: registration_command(a.command),
+        command: registration_command(a.command)?,
         target: AppleRegistration {
             tenant: a.target.tenant,
             device: a.target.device,
-            registration: a.target.registration,
-            generation: a.target.generation,
         },
-    }
+    })
 }
 
 pub(super) fn registration_policy_error(
@@ -1001,8 +1009,6 @@ fn recovery_admission(
         target: AppleRegistration {
             tenant: a.target.tenant,
             device: a.target.device,
-            registration: a.target.registration,
-            generation: a.target.generation,
         },
     }
 }

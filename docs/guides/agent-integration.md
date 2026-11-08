@@ -26,11 +26,11 @@
 
 候选还不是活跃设备身份。客户端持本机私钥，在真实 mTLS 下调用 `/api/v1/agent/enroll/activate`，提交 issuanceId 与稳定 operationId。服务端在一个审计事务内复查原授权、期限、来源与证书，并创建独立 DeviceId、Registration、一个活跃凭据及冻结采集定义。CA 信任、原生证书、DeviceId、主机名、HTTP 转发头都不能单独建立 Agent 身份。
 
-`POST /api/v1/agent/enroll/status` 用原 grantId/operationId/secret 查询持久进度。成功激活回执固定，ACK 丢失后重试原 operation；不能通过换 operation 绕开未知结果。普通用户取消未完成授权使用 `/api/v1/agent-requests/{id}/cancel`。注册后的撤销仍使用 `/api/v1/devices/{device}/registrations/{registration}/revoke`，要求资源级 credentials 权限。
+`POST /api/v1/agent/enroll/status` 用原 grantId/operationId/secret 查询持久进度。成功激活回执固定，ACK 丢失后重试原 operation；不能通过换 operation 绕开未知结果。普通用户取消未完成授权使用 `/api/v1/agent-requests/{id}/cancel`。注册后的撤销仍使用 `/api/v1/devices/{device}/registration/revoke`，要求资源级 credentials 权限。
 
 ## 同身份换证与未知签发恢复
 
-当前有效 mTLS 设备手动调用 `/api/v1/agent/enroll/renewal-grants`；证书已过期或私钥丢失时，管理员通过 `/api/v1/agent-registrations/{id}/recovery` 创建短期恢复授权。两者复用同一候选签发和持有者激活路径，激活以原凭据为 CAS 前驱，仅替换凭据，保留 DeviceId、registration、generation、epoch、能力、采集定义和执行日志。旧凭据立即成为 retired，不能继续运行或续期。
+当前有效 mTLS 设备手动调用 `/api/v1/agent/enroll/renewal-grants`；证书已过期或私钥丢失时，管理员通过 `/api/v1/devices/{id}/registration/recovery` 创建短期恢复授权。两者复用同一候选签发和持有者激活路径，激活以原凭据为 CAS 前驱，仅替换凭据，保留 deviceId、epoch、能力、采集定义和执行日志。旧凭据立即成为 retired，不能继续运行或续期。
 
 续期授权已提交但响应丢失时，客户端以原 `wireVersion:1`、`operationId` 和 `secret` 调用 `POST /api/v1/agent/enroll/renewal-grants/status`，无需旧客户端证书即可取回原授权回执，再沿原 `/status`、签发与激活操作继续。该入口仅查询当前租户已有的续期授权，不创建授权、不延长期限、不重新签发；未知 operation 与错误 secret 均返回 `invalid_identity`。过期与撤销状态仍保留，不能据查询回执恢复在线业务权限。请求只使用已安装签名连接配置中的 HTTPS origins，不发送 Bearer。
 
@@ -48,7 +48,7 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 待投递报告达到有界容量时返回 service_unavailable，优先恢复既有 reportId。历史裁剪不得删除 pending 报告。Agent 与 Windows MDM 均由 `collection_runs` 持有不可变报告和最小交付进度，不存在第二套报告队列或 owner 分支。
 
-恢复及 Agent 状态读取共同核对持久报告的 tenant、registration、source、epoch、dataset、reportId、sequence、coverage、规范字节和摘要，并要求报告已封存；数据库关系列与冻结报告内容不一致时拒绝恢复。
+恢复及 Agent 状态读取共同核对持久报告的 tenant、deviceId、source、epoch、dataset、reportId、sequence、coverage、规范字节和摘要，并要求报告已封存；数据库关系列与冻结报告内容不一致时拒绝恢复。
 
 后台沿用唯一的 Inventory 运行时：保存不可变完整 CollectionRun 结果，通过有界摘要引用提交 Observation。产品投影验证引用和来源后应用成功字段；部分结果与失败不能清空旧事实，只有完整快照或显式 tombstone 能删除对应来源旧项。`GET /api/v1/agent/runtime/reports/{reportId}` 只允许当前有效 credential 读取当前注册/epoch 内的报告，返回 durable ack、Observation 状态与 Projection 状态。credential 被替换或撤销后，新报告和状态读取立即返回 401；替换前已提交的不可变报告仍可由后台恢复投递。
 
@@ -163,7 +163,7 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 
 管理员通过同源 `GET/PUT /api/v1/agent-connections` 读取和保存 draft，通过 `POST /api/v1/agent-connections/publish` 发布指定 revision；保存不表示部署或生效。写入使用原 operationId、CAS revision 和近期会话，未知结果先查询 `GET /api/v1/agent-connection-operations/{id}`，null 只表示仍未知。`GET /api/v1/registration-channels` 展示实际配置的各公开入口。Nginx 部署与逐 origin 的 HTTPS 观察由原宿主维护流程持有，发布要求观察对应当前 draft revision 且在最近五分钟内，网页不执行部署操作。
 
-设备通过已认证的 `GET /api/v1/agent/enroll/connections` 获取签名配置，使用已安装公钥验签，拒绝跨服务/租户、回滚、同 revision 异内容或非规范 origin，原子保存并读回后才使用。`POST .../connections/acknowledgements` 绑定 registration、generation、revision、摘要与真实网关 origin；`POST .../connections/failures` 只记录闭合失败原因，不改变已安装 revision 或授权。管理端通过设备 observation 和带 target revision 的 `/agent-connections/devices` 分页分别读取实际 ACK、失败与未确认设备。
+设备通过已认证的 `GET /api/v1/agent/enroll/connections` 获取签名配置，使用已安装公钥验签，拒绝跨服务/租户、回滚、同 revision 异内容或非规范 origin，原子保存并读回后才使用。`POST .../connections/acknowledgements` 绑定 deviceId、revision、摘要与真实网关 origin；`POST .../connections/failures` 只记录闭合失败原因，不改变已安装 revision 或授权。管理端通过设备 observation 和带 target revision 的 `/agent-connections/devices` 分页分别读取实际 ACK、失败与未确认设备。
 
 发布采用 `A → A+B → B`，重叠阶段优先 B，设备经 B 确认后才允许移除 A。`connection_deployment_unobserved` 和 `connection_retirement_blocked` 为明确发布阻断。所有已知地址失联时，通过受保护的 `GET /api/v1/agent-connections/configuration` 下载和离线导入恢复。导入不能扩大 CA、凭据或业务权限；通信状态、密钥命名空间、执行 authority 与内容缓存都绑定稳定身份。正常入口和程序更新保留原注册、世代、执行日志及未决操作。Windows/Apple 原生 URL 由各自协议配置持有。
 
@@ -171,7 +171,7 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 
 ## 任务签名信任与安装确认
 
-任务签名信任独立于设备 PKI 的证书信任版本，复用已认证 Agent mTLS 通道。`GET /api/v1/agent/runtime/task-trust` 返回稳定服务身份和租户绑定的完整 Ed25519 公钥集合；Agent 先验证版本单调性、既有 key ID 的公钥不变、唯一 active key，再持久保存并读回。只有完成这些步骤后，才向同一路径 POST 安装 ACK。ACK 固定原 operation、registration、generation、revision 和完整集合摘要；响应未知时重放同一 ACK，不能将收到响应正文等同于本地持久化成功。正式 DTO 与 schema 见 [任务信任](../../crates/agent-wire/src/task_trust.rs) 和 [manifest](../../crates/agent-wire/schema/task_trust/manifest.json)。
+任务签名信任独立于设备 PKI 的证书信任版本，复用已认证 Agent mTLS 通道。`GET /api/v1/agent/runtime/task-trust` 返回稳定服务身份和租户绑定的完整 Ed25519 公钥集合；Agent 先验证版本单调性、既有 key ID 的公钥不变、唯一 active key，再持久保存并读回。只有完成这些步骤后，才向同一路径 POST 安装 ACK。ACK 固定原 operation、deviceId、revision 和完整集合摘要；响应未知时重放同一 ACK，不能将收到响应正文等同于本地持久化成功。正式 DTO 与 schema 见 [任务信任](../../crates/agent-wire/src/task_trust.rs) 和 [manifest](../../crates/agent-wire/schema/task_trust/manifest.json)。
 
 租户管理通过 `GET/POST /api/v1/task-signing/trust` 读取、准备或激活密钥，写入使用 `Idempotency-Key`、`expectedRevision` 和近期真实管理员会话。准备新密钥只发布 prepared 公钥；管理员可滚动激活，不等待全体设备在线。任务与 telemetry 配置发放仍逐设备核对当前 active key，以及包含该键 prepared/active 状态的精确 revision/digest 安装 ACK；未确认设备可以获取信任、ACK、续期和恢复，但不能领取新签名内容。原键转为 verify_only，保留历史验证材料。退役仍等待实际当前消费者确认 verify_only，并清空原任务引用及配置验证窗口；telemetry 至少保留到 expires_at + backfill_seconds。新激活键由受控重启消费，旧进程不能继续用已退出 active 状态的键签发任务。准备阶段仍有效的旧签名权威可以重启加载。
 
@@ -196,7 +196,7 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 
 ## 周期遥测配置
 
-遥测沿用 runtime family 和已认证 mTLS 通道，通过 `telemetry.collect.v1` 显式声明能力；不会退回普通报告或一次性任务。目录与接口见[资产指南](assets.md)。配置响应为 `SignedTelemetryConfiguration`，复用现有任务签名信任、active key 与当前注册代际的持久安装 ACK。协议包的 `TelemetryConfiguration::signing_bytes` 定义独立签名域；Agent 按既有任务信任验证签名，并核对本地 tenant/device/registration/generation/source epoch 与可信 UTC 时钟。
+遥测沿用 runtime family 和已认证 mTLS 通道，通过 `telemetry.collect.v1` 显式声明能力；不会退回普通报告或一次性任务。目录与接口见[资产指南](assets.md)。配置响应为 `SignedTelemetryConfiguration`，复用现有任务签名信任、active key 与当前 deviceId的持久安装 ACK。协议包的 `TelemetryConfiguration::signing_bytes` 定义独立签名域；Agent 按既有任务信任验证签名，并核对本地 tenant/device/source epoch 与可信 UTC 时钟。
 
 配置是最长五分钟的执行租约。到期后停止开始采集并重新获取配置，不能用旧签名、旧注册或 mTLS 本身代替新授权。提频有单独的固定 UTC 到期时间；在有效租约内到期时恢复正常周期。有效租约仍需执行外层运行时间、输出和上传预算，脚本参数只作为字面量传递。材料由精确配置的受保护内容入口读取并核对长度与 SHA-256；配置、采集输出或设备日志均不能自行授予来源权限。
 
@@ -322,7 +322,7 @@ RP 自己建立应用会话，每次使用前调用 GET `/relying-parties/{rp}/s
 ### 独立 FileVault CMS 托管
 
 Agent runtime 的 `GET /filevault/configuration` 返回当前设备的采集授权与公开收件证书；默认关闭。
-管理者通过设备恢复凭据的 `GET filevault/configuration` 读取当前配置，再以 `POST` 显式授权，提供当前注册代际、配置 revision、收件证书指纹及幂等 operation；并发修改冲突后重新读取。多个有效来源时必须指定注册及代际。
+管理者通过设备恢复凭据的 `GET filevault/configuration` 读取当前配置，再以 `POST` 显式授权，提供当前 deviceId、配置 revision、收件证书指纹及幂等 operation；并发修改冲突后重新读取。多个有效来源时必须指定注册及代际。
 端上系统服务只读 Apple 生成的 `/var/db/FileVaultPRK.dat`，通过 `POST /filevault/escrows` 上传原始 CMS；
 `GET /filevault/operations/{id}` 恢复未知提交结果。此路径不依赖普通任务或 MDM 注册，不接收员工 bearer、任意文件路径或目标 URL。
 文件缺失或证书不匹配必须等待合法平台材料，采集不能自动安装 profile、生成/轮换 PRK 或改变账号密码。
@@ -366,8 +366,8 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 
 ### 从设备定位原申请与管理恢复回执
 
-`GET /api/v1/devices/{device}/agent-requests` 使用统一有界查询；`registration` 筛选同时覆盖原登记 grant 与指向该登记的 recovery／renewal grant。`GET /api/v1/agent-requests/{id}` 返回无秘密原对象，分别标识 grant、issuance、原操作、登记代次、前驱凭据和真实激活事实。`requirements` 描述继续所需的材料或当前阻断，不声称管理员已经取得或丢失设备材料。
+`GET /api/v1/devices/{device}/agent-requests` 使用统一有界查询，范围覆盖该设备的原登记 grant 与 recovery／renewal grant。`GET /api/v1/agent-requests/{id}` 返回无秘密原对象，分别标识 grant、issuance、原操作、设备身份、前驱凭据和真实激活事实。`requirements` 描述继续所需的材料或当前阻断，不声称管理员已经取得或丢失设备材料。
 
-原登记恢复提交结果通过 `GET /api/v1/agent-registrations/{id}/recovery-operations/{operation}?actor=...&instance=...` 读取。原签发恢复操作从 `GET /api/v1/agent-issuances/{id}/recovery-operations` 分页发现，并沿已有 `GET /api/v1/agent-issuances/{id}/recovery-operations/{operation}?actor=...&instance=...` 查询。所有精确回执查询必须明确原 actor、instance；不提供当前登录人缺省。查询引用中的主体不是授权凭证，服务端仍按当前调用者的设备 Credentials 权限核验。
+原登记恢复提交结果通过 `GET /api/v1/devices/{id}/registration/recovery-operations/{operation}?actor=...&instance=...` 读取。原签发恢复操作从 `GET /api/v1/agent-issuances/{id}/recovery-operations` 分页发现，并沿已有 `GET /api/v1/agent-issuances/{id}/recovery-operations/{operation}?actor=...&instance=...` 查询。所有精确回执查询必须明确原 actor、instance；不提供当前登录人缺省。查询引用中的主体不是授权凭证，服务端仍按当前调用者的设备 Credentials 权限核验。
 
 授权管理员可以读回他人原操作，但写入继续使用当前认证主体。null 仅表示没有找到指定原回执；链已关联、该次管理操作已提交、设备已持证激活是不同事实。刷新、重新登录、超时或未知结果都不授权自动重放写入。查询不返回 secret、原始 CSR、签发配置，也不会重新签发或延长期限。

@@ -507,10 +507,8 @@ fn scope_filter(
         if changes {
             sql.push(" AND e.revision>").push_bind(since);
         }
-        sql.push(" AND f.activity->'target'->>'registration'=")
-            .push_bind(m.registration.to_string())
-            .push(" AND (f.activity->'target'->>'generation')::bigint=")
-            .push_bind(m.generation)
+        sql.push(" AND f.activity->'target'->>'device'=")
+            .push_bind(m.device.clone())
             .push(")");
     }
     if scope.members.is_empty() {
