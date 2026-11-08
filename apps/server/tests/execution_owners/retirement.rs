@@ -323,15 +323,31 @@ async fn cancellation_audit(
             "each cancelled task appears once in its device timeline"
         );
         let item = facts[0];
-        assert_eq!(item.fact.device_id.as_deref(), Some(h.p.device()));
-        assert_eq!(item.fact.target.kind, "device");
-        assert_eq!(item.fact.target.id, h.p.device());
-        assert_eq!(item.fact.audit_outcome, "succeeded");
+        assert_eq!(
+            (
+                item.fact.device_id.as_deref(),
+                item.fact.target.kind.as_str(),
+                item.fact.target.id.as_str(),
+                item.fact.audit_outcome.as_str(),
+                item.operation_confirmed,
+            ),
+            (
+                Some(h.p.device()),
+                "device",
+                h.p.device(),
+                "succeeded",
+                true
+            )
+        );
         let locator = item.operation.as_ref().expect("cancelled task locator");
-        assert_eq!(locator.owner, owner);
-        assert_eq!(locator.operation_id, id);
-        assert_eq!(locator.device.as_deref(), Some(h.p.device()));
-        assert!(item.operation_confirmed);
+        assert_eq!(
+            (
+                locator.owner,
+                locator.operation_id,
+                locator.device.as_deref()
+            ),
+            (owner, id, Some(h.p.device()))
+        );
     }
     let other = Query {
         device: Some(Uuid::new_v4().to_string()),
