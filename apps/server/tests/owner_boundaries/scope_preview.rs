@@ -483,3 +483,112 @@ async fn frozen_set_absence_matches_formal_scope_publication() -> Result<()> {
     c.close().await;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "T2: historical Policy lifecycle receipts recheck current permissions for the original Scope response"]
+async fn lifecycle_replay_rechecks_historical_group_authority() -> Result<()> {
+    use rss_mdm_policy_service::{management::Change, operation::Operation};
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[
+            P::PolicyRead,
+            P::PolicyWrite,
+            P::InventoryRead,
+            P::DeviceUnmanage,
+            P::GroupRead,
+            P::GroupWrite,
+        ])
+        .await?;
+    let p = c.authenticate(&account).await?;
+    let groups = Owners::open(&c).await?;
+    let group = groups.create(&c, &p, None).await?;
+    let f = crate::policy_management_t2_support::Fixture::open(&c).await?;
+    let first = f
+        .create(
+            &c,
+            &p,
+            ScopeDefinition {
+                targets: BTreeSet::from([Reference::Group(group)]),
+                limitations: None,
+                exclusions: Default::default(),
+            },
+        )
+        .await?;
+    let enable = Operation {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 1,
+        input: Change::Enable,
+    };
+    let original = f
+        .policies
+        .change(&p, first.id, &enable, &c.request(&p)?)
+        .await?;
+    assert_eq!(
+        original.definition.scope.targets,
+        BTreeSet::from([Reference::Group(group)])
+    );
+    let disabled = f
+        .policies
+        .change(
+            &p,
+            first.id,
+            &Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 2,
+                input: Change::Disable,
+            },
+            &c.request(&p)?,
+        )
+        .await?;
+    let mut definition = disabled.definition;
+    definition.scope.targets.clear();
+    f.policies
+        .change(
+            &p,
+            first.id,
+            &Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 3,
+                input: Change::Put {
+                    definition: Box::new(definition),
+                    enabled: false,
+                },
+            },
+            &c.request(&p)?,
+        )
+        .await?;
+    assert_eq!(
+        serde_json::to_value(
+            f.policies
+                .change(&p, first.id, &enable, &c.request(&p)?)
+                .await?
+        )?,
+        serde_json::to_value(original)?
+    );
+    sqlx::query("UPDATE mdm_access.authorization_rules SET document=jsonb_set(document,'{grants}',(SELECT jsonb_agg(g) FROM jsonb_array_elements(document->'grants') g WHERE g->>'operation'<>'group_read')),revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(account.rule).execute(&c.operator).await?;
+    let current = f
+        .policies
+        .scope_read(
+            &p,
+            &c.request(&p)?,
+            rss_mdm_scope::ScopeOwner {
+                policy: first.id,
+                stage: None,
+            },
+        )
+        .await?;
+    assert!(
+        current.definition.targets.is_empty(),
+        "current Policy permissions remain usable"
+    );
+    assert!(matches!(
+        f.policies
+            .change(&p, first.id, &enable, &c.request(&p)?)
+            .await,
+        Err(rss_mdm_policy_service::Error::Forbidden)
+    ));
+    f.close().await?;
+    drop(groups);
+    c.close().await;
+    Ok(())
+}

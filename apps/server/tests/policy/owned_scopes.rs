@@ -57,6 +57,12 @@ async fn policy_owns_scope_cas_receipt_and_retirement() -> Result<()> {
         (2, first.version, 1)
     );
     assert_eq!(unchanged.scopes[0].task, first.scopes[0].task);
+    let draft = rss_mdm_policy_service::management::scopes::Qualification {
+        expected_revision: 2,
+        definition: Box::new(unchanged.definition.clone()),
+        scope_result: None,
+    };
+    f.policies.qualify(&p, first.id, &draft).await?;
     let mut change = put(&unchanged);
     if let Change::Put { definition, .. } = &mut change.input {
         definition.scope.limitations = Some(Default::default());
@@ -74,6 +80,13 @@ async fn policy_owns_scope_cas_receipt_and_retirement() -> Result<()> {
         (3, first.version, 2)
     );
     assert_eq!(changed.scopes[0].id, scope);
+    assert!(
+        matches!(
+            f.policies.qualify(&p, first.id, &draft).await,
+            Err(rss_mdm_policy_service::Error::Conflict)
+        ),
+        "a preview completed after another save must fail its final qualification"
+    );
     assert!(changed.scopes[0].task.is_some());
     assert!(matches!(
         f.policies
@@ -203,7 +216,7 @@ async fn stage_identity_is_owned_and_reorder_does_not_republish() -> Result<()> 
     let id = Uuid::new_v4();
     let scope = json!({"targets":[],"limitations":null,"exclusions":[]});
     let definition = serde_json::from_value(
-        json!({"scope":scope,"action":{"kind":"software","resource":{"kind":"software","id":resource.resource().as_str(),"version":resource.label().as_str(),"variants":{"windows_x86_64":"msi"}},"channel":"agent","delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":300,"rollout":{"stages":[{"id":a,"scope":scope,"opensAt":0},{"id":b,"scope":scope,"opensAt":0}]}}}),
+        json!({"scope":scope,"action":{"kind":"software","resource":{"kind":"software","id":resource.resource().as_str(),"version":resource.label().as_str(),"variants":{"windows_x86_64":"msi"}},"channel":"agent","delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":300,"rollout":{"stages":[{"id":a,"scope":scope,"opensAt":0},{"id":b,"scope":scope,"opensAt":1}]}}}),
     )?;
     let first = f
         .policies
@@ -226,6 +239,9 @@ async fn stage_identity_is_owned_and_reorder_does_not_republish() -> Result<()> 
     if let Change::Put { definition, .. } = &mut request.input {
         if let rss_mdm_policy::Action::Software { rollout, .. } = &mut definition.action {
             rollout.stages.swap(0, 1);
+            for (index, stage) in rollout.stages.iter_mut().enumerate() {
+                stage.opens_at = index as i64;
+            }
         }
     }
     let second = f.policies.change(&p, id, &request, &c.request(&p)?).await?;

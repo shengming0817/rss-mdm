@@ -212,8 +212,14 @@ impl Policies {
                             .replay_in(tx, op.operation_id, &hash)
                             .await?,
                     )? {
+                        let value: View = stored(serde_json::from_value(value))?;
+                        let mut definitions = value.scopes.iter().map(|s|s.definition.clone()).collect::<Vec<_>>();
+                        let definition = value.definition.clone().try_map_scopes(|_, scope| {definitions.push(scope);Ok::<_,Error>(Uuid::from_u128(1))})?;
+                        authorize_policy_snapshot(&authorization,p,&definition)?;
+                        if definition.action.resource().is_some() {authorization.require(p,Permission::ResourceRead,None)?;}
+                        for scope in definitions {s.scopes.authorize_definition_in(tx,p,&scope).await?;}
                         p.check_live()?;
-                        return stored(serde_json::from_value(value));
+                        return Ok(value);
                     }
                     if old.as_ref().map_or(0, |p| p.revision as u64) != op.expected_revision || old.as_ref().is_some_and(|p| p.state == rss_mdm_policy::State::Archived) { return Err(Error::Conflict.into()); }
                     let core_change = s.bind_change_in(tx, p, id, old.as_ref(), &op.input).await?;
