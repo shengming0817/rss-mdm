@@ -7,6 +7,19 @@ use super::{
 use sqlx::Connection;
 use std::collections::BTreeMap;
 
+/// Leave the reserved PostgreSQL slots and one ordinary deployment connection outside the runtime budget.
+pub(super) async fn connection_budget(connection: &mut sqlx::PgConnection) -> Result<u32> {
+    let available: i32 = sqlx::query_scalar(
+        "SELECT current_setting('max_connections')::int \
+         - current_setting('superuser_reserved_connections')::int \
+         - current_setting('reserved_connections')::int - 1",
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(|_| Error::Storage)?;
+    u32::try_from(available).map_err(|_| Error::Input)
+}
+
 pub(super) async fn prepare(input: &Input, instance: uuid::Uuid) -> Result<()> {
     tokio::time::timeout(
         std::time::Duration::from_secs(90),

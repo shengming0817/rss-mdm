@@ -32,7 +32,7 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
             &serde_json::to_vec(slot).map_err(|_| Error::Input)?,
         )?;
     }
-    let runtime: Value = journal.load("runtime.json")?.ok_or(Error::Corrupt)?;
+    let mut runtime: Value = journal.load("runtime.json")?.ok_or(Error::Corrupt)?;
     let decoded: crate::config::Config =
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
     let compiled = decoded.compile().map_err(|_| Error::Corrupt)?;
@@ -41,6 +41,8 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
         return Err(Error::Input);
     }
     let mut c = operator_connection(input, base).await?;
+    let connection_budget = super::postgres::connection_budget(&mut c).await?;
+    runtime["background"]["database_connection_budget"] = serde_json::json!(connection_budget);
     super::providers::reconcile::storage(input, &compiled.config, &mut c).await?;
     super::providers::reconcile::wns(input, &mut c).await?;
     super::providers::mail::reconcile(input, &mut c).await?;
@@ -63,7 +65,8 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
             .await?,
         );
     }
-    completed += super::application::reconcile(input, &reservations, &mut c).await?;
+    completed +=
+        super::application::reconcile(input, &reservations, &mut c, connection_budget).await?;
     c.close().await.map_err(|_| Error::Storage)?;
     Ok(completed)
 }

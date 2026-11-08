@@ -72,6 +72,8 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 `init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
 
+正式 Compose 通过 `MDM_PG_MAX_CONNECTIONS` 配置产品 PostgreSQL 的 `max_connections`。声明额外宿主时，为全部宿主一起分配连接容量。安装器从实际 PostgreSQL 读取容量，扣除数据库保留槽和一个部署维护连接，应用启动时按已启用模块的物理连接池核对预算。调整已有部署的容量时，先应用 PostgreSQL 配置，再运行 `prepare-hosts` 生成新的运行版本，重建服务并复验该版本。
+
 `installation.json` 的 `stage=initialized` 表示种子初始化完成，不宣称网络或设备效果。检查 HTTPS `/readyz`、实际登录和授权后，用原安装输入执行一次真实宿主观察：
 
 ```sh

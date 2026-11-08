@@ -123,7 +123,7 @@ def storage_roundtrip(owner, business):
 
 
 def qualify(owner,origin,other_origin,port,second_backend):
-    # Declare capacity before installation; maintenance cannot enlarge the persisted budget.
+    # Declare both host slots and provision their shared database capacity before installation.
     inputs='/var/lib/rss-mdm/inputs/'
     slot=dict(origin=other_origin,listen=second_backend+':8081',deployment=dict(
         directory='/var/lib/rss-mdm/runtime/second',gateway_directory='/var/lib/rss-mdm/runtime/gateway',

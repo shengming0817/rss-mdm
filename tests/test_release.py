@@ -102,6 +102,11 @@ class CandidatePublication(unittest.TestCase):
 
 
 class WorkingSource(unittest.TestCase):
+    def test_da_runtime_is_in_the_candidate_source(self):
+        inputs = release.source_inputs(release.ROOT)
+        self.assertIn('crates/device-access-runtime/Cargo.toml', inputs)
+        self.assertIn('crates/device-access-runtime/schema/roles.sql', inputs)
+
     def test_private_header_in_source_is_rejected_before_docker(self):
         import subprocess
         with tempfile.TemporaryDirectory() as temporary:

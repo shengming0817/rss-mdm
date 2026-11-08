@@ -7,6 +7,7 @@ use ring::{
     rand::{SecureRandom, SystemRandom},
 };
 use serde::{Deserialize, Serialize};
+use sqlx::Connection;
 use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -375,7 +376,13 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
     if saved.receipt.stage == Stage::Initialized {
         return Ok(saved.receipt);
     }
-    let mut runtime = runtime(input, journal, &saved)?;
+    let mut database =
+        sqlx::PgConnection::connect_with(&input.database("mdm_owner")?.options().map_err(invalid)?)
+            .await
+            .map_err(|_| Error::Storage)?;
+    let connection_budget = super::postgres::connection_budget(&mut database).await?;
+    database.close().await.map_err(|_| Error::Storage)?;
+    let mut runtime = runtime(input, journal, &saved, connection_budget)?;
     let telemetry =
         super::default_telemetry::prepare(input, journal, saved.receipt.tenant_id).await?;
     runtime["telemetry"] = serde_json::to_value(telemetry).map_err(invalid)?;
@@ -417,7 +424,6 @@ async fn publish_progress(
     account: bool,
     progress: Option<super::model::Provisioning>,
 ) -> Result<()> {
-    use sqlx::Connection;
     let mut c =
         sqlx::PgConnection::connect_with(&input.database("mdm_owner")?.options().map_err(invalid)?)
             .await
@@ -518,7 +524,12 @@ async fn initialize_account(
     let _ = initialized;
     Ok(())
 }
-fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json::Value> {
+fn runtime(
+    input: &Input,
+    journal: &Journal,
+    saved: &Saved,
+    connection_budget: u32,
+) -> Result<serde_json::Value> {
     let audit = match input.audit_mode {
         AuditMode::Plain => serde_json::json!({"mode":"plain"}),
         AuditMode::Ledger => {
@@ -526,7 +537,7 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
         }
     };
     Ok(serde_json::json!({
-        "background":{"device_concurrency":4,"database_connection_budget":128*(input.additional_hosts.len()+1),"database_host_instances":input.additional_hosts.len()+1},
+        "background":{"device_concurrency":4,"database_connection_budget":connection_budget,"database_host_instances":input.additional_hosts.len()+1},
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
         "device_access":{"database":input.database("da_access")?,"deployment_authorities":[],"platform_sso":null,"registration":null},
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},

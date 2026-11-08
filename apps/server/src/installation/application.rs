@@ -80,6 +80,7 @@ pub(super) async fn reconcile(
     input: &Input,
     slots: &BTreeMap<Uuid, usize>,
     c: &mut PgConnection,
+    connection_budget: u32,
 ) -> Result<usize> {
     let receipts: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND (receipt->'result'->>'phase'='enabled' OR (receipt->'result'->>'phase'='host_pending' AND jsonb_typeof(receipt->'result'->'application')='object')) ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
     let mut completed = 0;
@@ -112,6 +113,7 @@ pub(super) async fn reconcile(
             return Err(Error::Conflict);
         }
         let before = fingerprint(&runtime)?;
+        runtime["background"]["database_connection_budget"] = json!(connection_budget);
         desired(c, progress.tenant_id, &mut runtime).await?;
         let digest = fingerprint(&runtime)?;
         if digest != before {
