@@ -17,15 +17,8 @@ pub async fn verify_authority(
         .split("$$")
         .nth(1)
         .expect("owner body");
-    let reference = crate::install_sql(profile)
-        .split_once(crate::storage_profile::sql(profile).authority_verify_authority_3)
-        .expect("owner reference function")
-        .1
-        .split("$$")
-        .nth(1)
-        .expect("owner reference body");
     let channel = crate::projections_sql(profile)
-        .split_once(crate::storage_profile::sql(profile).authority_verify_authority_4)
+        .split_once(crate::storage_profile::sql(profile).authority_verify_authority_3)
         .expect("owner channel function")
         .1
         .split("$$")
@@ -35,7 +28,6 @@ pub async fn verify_authority(
         sqlx::query_scalar(crate::storage_profile::sql(profile).authority_admission)
             .bind(admission)
             .bind(state)
-            .bind(reference)
             .bind(channel)
             .fetch_optional(c)
             .await?;

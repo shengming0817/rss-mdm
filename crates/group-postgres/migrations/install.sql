@@ -189,6 +189,6 @@ BEGIN
 EXCEPTION WHEN lock_not_available THEN RAISE EXCEPTION 'group reference busy' USING ERRCODE='40001';
 END $$;
 REVOKE ALL ON FUNCTION mdm_group.lock_reference_target(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_group.lock_reference_target(uuid) TO mdm_group_runtime,mdm_scope_runtime;
-GRANT USAGE ON SCHEMA mdm_group TO mdm_scope_runtime;
-GRANT SELECT ON mdm_group.groups,mdm_group.source_state,mdm_group.member_runs,mdm_group.member_rows,mdm_group.member_changes TO mdm_scope_runtime;
+GRANT EXECUTE ON FUNCTION mdm_group.lock_reference_target(uuid) TO mdm_group_runtime,mdm_scope_runtime,mdm_policy_runtime;
+GRANT USAGE ON SCHEMA mdm_group TO mdm_scope_runtime,mdm_policy_runtime;
+GRANT SELECT ON mdm_group.groups,mdm_group.source_state,mdm_group.member_runs,mdm_group.member_rows,mdm_group.member_changes TO mdm_scope_runtime,mdm_policy_runtime;

@@ -10,6 +10,7 @@ pub(crate) struct Statements {
     pub group_reference_facts: &'static str,
     pub group_blocker_facts: &'static str,
     pub admission: &'static str,
+    pub configuration_admission: &'static str,
     pub access_admission: &'static str,
     pub authority_admission: &'static str,
     pub lib_accept_group_change_in_1: &'static str,
@@ -19,11 +20,12 @@ pub(crate) struct Statements {
     pub lib_target_members_in_1: &'static str,
     pub store_head_in_1: &'static str,
     pub store_head_in_2: &'static str,
-    pub store_lock_references_in_1: &'static str,
     pub store_put_in_1: &'static str,
     pub store_put_in_2: &'static str,
     pub store_put_in_3: &'static str,
-    pub store_delete_in_1: &'static str,
+    pub store_retire_in: &'static str,
+    pub store_owned_in: &'static str,
+    pub store_owner_in: &'static str,
     pub store_replace_sources_in_1: &'static str,
     pub store_replace_sources_in_2: &'static str,
     pub store_create_run_in_1: &'static str,
@@ -56,12 +58,9 @@ pub(crate) struct Statements {
     pub store_complete_relation_page_in_1: &'static str,
     pub state_admission_on_1: &'static str,
     pub state_state_on_1: &'static str,
-    pub directory_column_1: &'static str,
-    pub directory_directory_in_1: &'static str,
     pub authority_verify_authority_1: &'static str,
     pub authority_verify_authority_2: &'static str,
     pub authority_verify_authority_3: &'static str,
-    pub authority_verify_authority_4: &'static str,
     pub group_change_admission: &'static str,
     pub object_manifest: &'static str,
     pub access_contract: &'static str,
@@ -71,7 +70,7 @@ pub(crate) struct Statements {
     pub queue_counts: &'static str,
 }
 macro_rules! define_storage {
-    ($module:ident, $schema:literal, $schema_decl:literal, $schema_name:literal, $access_schema:literal, $access:literal, $tasks:literal, $tasks_name:literal, $asset_dispatch:literal, $asset_dispatch_name:literal, $group_changes:literal, $group_changes_name:literal, $owner:literal, $command_runtime:literal, $inventory_runtime:literal, $scope_runtime:literal, $policy_runtime:literal, $telemetry_runtime:literal, $scope_admission_header:literal, $scope_state_header:literal, $lock_reference_target_header:literal, $channel_admission_header:literal, $create_mdm_scope:literal, $role_mdm_identity_runtime:literal, $role_mdm_resource_runtime:literal, $role_mdm_software_runtime:literal, $object_qualification:literal, $index_26:literal, $index_27:literal, $index_28:literal, $index_29:literal, $index_30:literal, $index_31:literal, $index_32:literal, $index_33:literal, $index_34:literal, $index_35:literal, $index_36:literal, $index_37:literal, $index_38:literal, $index_39:literal, $index_40:literal, $index_41:literal, $index_42:literal, $index_43:literal, $index_44:literal, $access_contract_external_relations:literal, $operations:literal, $operations_name:literal) => {
+    ($module:ident, $schema:literal, $schema_decl:literal, $schema_name:literal, $access_schema:literal, $access:literal, $tasks:literal, $tasks_name:literal, $asset_dispatch:literal, $asset_dispatch_name:literal, $group_changes:literal, $group_changes_name:literal, $owner:literal, $command_runtime:literal, $inventory_runtime:literal, $scope_runtime:literal, $policy_runtime:literal, $telemetry_runtime:literal, $scope_admission_header:literal, $scope_state_header:literal, $channel_admission_header:literal, $create_mdm_scope:literal, $role_mdm_identity_runtime:literal, $role_mdm_resource_runtime:literal, $role_mdm_software_runtime:literal, $object_qualification:literal, $index_26:literal, $index_27:literal, $index_28:literal, $index_29:literal, $index_30:literal, $index_31:literal, $index_32:literal, $index_33:literal, $index_34:literal, $index_35:literal, $index_36:literal, $index_37:literal, $index_38:literal, $index_39:literal, $index_40:literal, $index_41:literal, $index_42:literal, $index_43:literal, $index_44:literal, $access_contract_external_relations:literal, $operations:literal, $operations_name:literal) => {
         mod $module {
             pub(super) const SQL: super::Statements = super::Statements {
                 install: concat!(r###"-- Scope owns definitions, frozen inputs and collection results.
@@ -175,6 +174,9 @@ ALTER TABLE ONLY "###, $schema, r###"scope_versions FORCE ROW LEVEL SECURITY;
 CREATE TABLE "###, $schema, r###"scopes (
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
+    policy_id uuid NOT NULL CHECK (policy_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    stage_id uuid CHECK (stage_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    UNIQUE NULLS NOT DISTINCT (tenant_id,policy_id,stage_id),
     revision bigint NOT NULL,
     deleted boolean DEFAULT false NOT NULL,
     calculation_revision bigint DEFAULT 0 NOT NULL,
@@ -308,17 +310,6 @@ CREATE POLICY tenant ON "###, $operations, r###" USING ((tenant_id = (NULLIF(cur
 
 COMMIT;
 
--- A foreign owner may pin an existing Scope without receiving Scope UPDATE rights.
-"###, $lock_reference_target_header, "p_scope uuid) RETURNS SETOF ", $schema, r###"scopes
-LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
-DECLARE t uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid;
-BEGIN
- IF t IS NULL THEN RAISE EXCEPTION 'scope tenant missing' USING ERRCODE='42501'; END IF;
- PERFORM pg_advisory_xact_lock_shared(hashtextextended('scope:'||t::text||':'||p_scope::text,3048));
- RETURN QUERY SELECT s.* FROM "###, $schema, r###"scopes s WHERE s.tenant_id=t AND s.id=p_scope AND NOT s.deleted FOR SHARE;
-END $$;
-REVOKE ALL ON FUNCTION "###, $schema, r###"lock_reference_target(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION "###, $schema, "lock_reference_target(uuid) TO ", $policy_runtime, ",", $scope_runtime, r###";
 "###),
                 relations: concat!(r###"BEGIN;
 ALTER TABLE ONLY "###, $schema, r###"scope_results
@@ -373,17 +364,15 @@ GRANT SELECT ON TABLE "###, $schema, "scope_source_members TO ", $command_runtim
 
 GRANT SELECT ON TABLE "###, $schema, "scope_runs TO ", $command_runtime, r###";
 
-GRANT SELECT,INSERT,DELETE ON TABLE "###, $schema, "scope_sources TO ", $scope_runtime, r###";
+GRANT SELECT ON TABLE "###, $schema, "scope_sources TO ", $scope_runtime, r###";
 
-GRANT SELECT,INSERT ON TABLE "###, $schema, "scope_versions TO ", $scope_runtime, r###";
+GRANT SELECT ON TABLE "###, $schema, "scope_versions TO ", $scope_runtime, r###";
 
-GRANT SELECT,INSERT ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r###";
+GRANT SELECT ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r###";
 
 GRANT SELECT ON TABLE "###, $schema, "scopes TO ", $command_runtime, r###";
 
-GRANT UPDATE(revision) ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r###";
 
-GRANT UPDATE(deleted) ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r###";
 
 GRANT UPDATE(calculation_revision) ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r###";
 
@@ -397,7 +386,15 @@ GRANT EXECUTE ON FUNCTION "###, $schema, "scope_admission(uuid,text) TO ", $acce
 
 
 GRANT SELECT ON "###, $schema, "scopes,", $schema, "scope_runs,", $schema, "scope_source_members TO ", $access, r###";
-GRANT SELECT,INSERT ON "###, $operations, " TO ", $scope_runtime, r###";
+GRANT SELECT ON "###, $operations, " TO ", $scope_runtime, r###";
+-- Policy is the sole configuration writer; calculation stays on the Scope runtime.
+GRANT USAGE ON "###, $schema_decl, " TO ", $policy_runtime, r###";
+GRANT SELECT,INSERT ON "###, $schema, "scopes,", $schema, "scope_versions,", $schema, "scope_sources,", $tasks, ",", $operations, " TO ", $policy_runtime, r###";
+GRANT UPDATE(revision,deleted) ON "###, $schema, "scopes TO ", $policy_runtime, r###";
+GRANT DELETE ON "###, $schema, "scope_sources TO ", $policy_runtime, r###";
+GRANT SELECT ON "###, $schema, "scope_runs TO ", $policy_runtime, r###";
+GRANT UPDATE(phase) ON "###, $schema, "scope_runs TO ", $policy_runtime, r###";
+GRANT UPDATE(completed,failure,failure_detail,replacement_task) ON "###, $tasks, " TO ", $policy_runtime, r###";
 COMMIT;
 
 GRANT USAGE ON "###, $schema_decl, " TO ", $inventory_runtime, ",", $policy_runtime, ",", $telemetry_runtime, r###";
@@ -597,14 +594,14 @@ AND NOT EXISTS(SELECT 1 FROM relations t JOIN pg_attribute col ON col.attrelid=t
  CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
 "###),
                 group_blocker_facts: concat!(r#"
-SELECT s.id,s.revision,
+SELECT s.id,s.revision,s.policy_id,s.stage_id,
  ARRAY(SELECT role FROM (VALUES ('target',v.definition->'targets'),('limitation',v.definition->'limitations'),('exclusion',v.definition->'exclusions')) roles(role,entries)
  WHERE EXISTS(SELECT FROM jsonb_array_elements(coalesce(nullif(entries,'null'::jsonb),'[]'::jsonb)) e WHERE e->>'kind'='group' AND (e->>'id')::uuid=$2::uuid)) AS roles
 FROM "#, $schema, "scope_sources e JOIN ", $schema, "scopes s ON(s.tenant_id,s.id)=(e.tenant_id,e.scope) JOIN ", $schema, r#"scope_versions v ON(v.tenant_id,v.id,v.revision)=(s.tenant_id,s.id,s.revision)
 WHERE e.tenant_id=$1::uuid AND e.kind='group' AND e.target=$2::uuid::text AND NOT s.deleted
 "#),
                 group_reference_facts: concat!(r###"
-SELECT s.tenant_id,s.id,s.revision,s.deleted,s.resolution,s.resolution_revision,s.calculation_revision,
+SELECT s.tenant_id,s.id,s.policy_id,s.stage_id,s.revision,s.deleted,s.resolution,s.resolution_revision,s.calculation_revision,
  r.phase,
  ARRAY(SELECT (e->>'id')::uuid FROM jsonb_array_elements(coalesce(nullif(v.definition->'targets','null'::jsonb),'[]'::jsonb)) e WHERE e->>'kind'='group' ORDER BY (e->>'id')::uuid) AS target_group_ids,
  ARRAY(SELECT (e->>'id')::uuid FROM jsonb_array_elements(coalesce(nullif(v.definition->'limitations','null'::jsonb),'[]'::jsonb)) e WHERE e->>'kind'='group' ORDER BY (e->>'id')::uuid) AS limitation_group_ids,
@@ -627,10 +624,10 @@ SELECT current_setting('transaction_isolation')='read committed'
 AND (SELECT count(*) FROM owned)=9
 AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication OR oid IN(SELECT relowner FROM owned))
 AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT relrowsecurity OR NOT relforcerowsecurity
- OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR NOT has_table_privilege(current_user,t.oid,'INSERT')
+ OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR has_table_privilege(current_user,t.oid,'INSERT')<>(t.relname NOT IN('scopes','scope_versions','scope_sources',"###, $operations_name, r###"))
  OR has_table_privilege(current_user,t.oid,'TRUNCATE') OR has_table_privilege(current_user,t.oid,'TRIGGER')
  OR has_table_privilege(current_user,t.oid,'REFERENCES')
- OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname='scope_sources')
+ OR has_table_privilege(current_user,t.oid,'DELETE')
  OR (SELECT count(*) FROM pg_policy p WHERE p.polrelid=t.oid)<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=t.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polroles=ARRAY[0::oid]
   AND p.polpermissive
@@ -638,7 +635,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT relrowsecurity OR NOT relforcerow
   AND pg_get_expr(p.polwithcheck,p.polrelid)=pg_get_expr(p.polqual,p.polrelid)))
 AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
  WHERE has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <>
- ((t.relname='scopes' AND a.attname IN('revision','deleted','resolution','resolution_revision','calculation_revision'))
+ ((t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision'))
  OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
  OR (t.relname="###, $tasks_name, r###" AND a.attname IN('completed','failure','failure_detail','replacement_task'))
  OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor'))))
@@ -655,16 +652,61 @@ AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM owned) 
 -- original login must also remain within the write capability, even without INHERIT.
 AND NOT EXISTS(SELECT 1 FROM owned t CROSS JOIN reachable r WHERE
  has_table_privilege(r.oid,t.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
- OR (has_table_privilege(r.oid,t.oid,'DELETE') AND t.relname<>'scope_sources')
+ OR has_table_privilege(r.oid,t.oid,'DELETE')
+ OR (has_any_column_privilege(r.oid,t.oid,'INSERT') AND t.relname IN('scopes','scope_versions','scope_sources',"###, $operations_name, r###"))
  OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
   AND (has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES')
    OR (has_column_privilege(r.oid,t.oid,a.attnum,'UPDATE') AND NOT (
-    (t.relname='scopes' AND a.attname IN('revision','deleted','resolution','resolution_revision','calculation_revision'))
+    (t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision'))
     OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
     OR (t.relname="###, $tasks_name, r###" AND a.attname IN('completed','failure','failure_detail','replacement_task'))
     OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor')))))))
 AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute col ON col.attrelid=t.oid
  CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
+"###),
+                configuration_admission: concat!(r###"WITH execution_roles AS (
+ SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(session_user,oid,'SET')
+), reachable AS (
+ SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))
+), expected(relation,selectable,insertable,deletable,updates) AS (VALUES
+ ('"###, $schema, r###"scopes',true,true,false,ARRAY['revision','deleted']),
+ ('"###, $schema, r###"scope_versions',true,true,false,ARRAY[]::text[]),
+ ('"###, $schema, r###"scope_sources',true,true,true,ARRAY[]::text[]),
+ ('"###, $schema, r###"scope_runs',true,false,false,ARRAY['phase']),
+ ('"###, $schema, r###"scope_results',true,false,false,ARRAY[]::text[]),
+ ('"###, $schema, r###"scope_source_members',true,false,false,ARRAY[]::text[]),
+ ('"###, $schema, r###"scope_projection_runs',true,false,false,ARRAY[]::text[]),
+ ('"###, $schema, r###"scope_channel_results',true,false,false,ARRAY[]::text[]),
+ ('"###, $asset_dispatch, r###"',false,false,false,ARRAY[]::text[]),
+ ('"###, $group_changes, r###"',false,false,false,ARRAY[]::text[]),
+ ('"###, $tasks, r###"',true,true,false,ARRAY['completed','failure','failure_detail','replacement_task']),
+ ('"###, $operations, r###"',true,true,false,ARRAY[]::text[])
+), owned AS (SELECT e.*,c.* FROM expected e JOIN pg_class c ON c.oid=to_regclass(e.relation))
+SELECT current_setting('transaction_isolation')='read committed'
+AND (SELECT count(*) FROM owned)=12
+AND NOT EXISTS(SELECT FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication OR oid IN(SELECT relowner FROM owned)
+ OR has_schema_privilege(oid,"###, $schema_name, r###",'CREATE'))
+AND NOT EXISTS(SELECT FROM owned t WHERE NOT relrowsecurity OR NOT relforcerowsecurity
+ OR has_table_privilege(current_user,t.oid,'SELECT')<>selectable
+ OR has_table_privilege(current_user,t.oid,'INSERT')<>insertable
+ OR has_table_privilege(current_user,t.oid,'DELETE')<>deletable
+ OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
+ OR NOT EXISTS(SELECT FROM pg_policy p WHERE p.polrelid=t.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polroles=ARRAY[0::oid] AND p.polpermissive
+ AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
+ AND pg_get_expr(p.polwithcheck,p.polrelid)=pg_get_expr(p.polqual,p.polrelid))
+ OR EXISTS(SELECT FROM pg_attribute a WHERE a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
+ AND has_column_privilege(current_user,t.oid,a.attnum,'UPDATE')<>(a.attname::text=ANY(t.updates))))
+AND NOT EXISTS(SELECT FROM owned t CROSS JOIN reachable r WHERE has_table_privilege(r.oid,t.oid,'UPDATE,TRUNCATE,TRIGGER,REFERENCES')
+ OR (has_table_privilege(r.oid,t.oid,'INSERT') AND NOT t.insertable) OR (has_table_privilege(r.oid,t.oid,'DELETE') AND NOT t.deletable)
+ OR EXISTS(SELECT FROM pg_attribute a WHERE a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
+ AND (has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES')
+ OR (has_column_privilege(r.oid,t.oid,a.attnum,'INSERT') AND NOT t.insertable)
+ OR (has_column_privilege(r.oid,t.oid,a.attnum,'UPDATE') AND NOT a.attname::text=ANY(t.updates)))))
+AND NOT EXISTS(SELECT FROM owned t,LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
+AND NOT EXISTS(SELECT FROM owned t JOIN pg_attribute col ON col.attrelid=t.oid CROSS JOIN LATERAL aclexplode(col.attacl) a
+ WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
+AND EXISTS(SELECT FROM pg_index i WHERE i.indrelid='"###, $schema, r###"scopes'::regclass AND i.indisunique AND i.indnullsnotdistinct AND i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL
+ AND (SELECT array_agg(a.attname::text ORDER BY k.n) FROM unnest(i.indkey) WITH ORDINALITY k(num,n) JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.num WHERE k.n<=i.indnkeyatts)=ARRAY['tenant_id','policy_id','stage_id'])
 "###),
                 access_admission: concat!(r###"WITH expected(name) AS (VALUES
  ('"###, $schema, r###"scopes'),
@@ -694,8 +736,7 @@ SELECT (SELECT count(*) FROM relations)=(SELECT count(*) FROM expected)
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
  ('"###, $schema, "scope_admission(uuid,text)', 'plpgsql', 'jsonb', true, false, 'v', ARRAY['p_scope','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['", $access, "','", $command_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $inventory_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[]),
  ('"###, $schema, "scope_state(uuid,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['", $access, "','", $command_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $inventory_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[]),
- ('"###, $schema, "lock_reference_target(uuid)', 'plpgsql', '", $schema, "scopes', true, true, 'v', ARRAY['p_scope']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['", $policy_runtime, "','", $scope_runtime, "','", $owner, r###"']::text[]),
- ('"###, $schema, "channel_admission(uuid,text,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_channel','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['", $access, "','", $command_runtime, "','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[])
+ ('"###, $schema, "channel_admission(uuid,text,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_channel','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['", $access, "','", $command_runtime, "','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)
@@ -721,11 +762,12 @@ ORDER BY e.signature LIMIT 1
                 lib_target_members_in_1: concat!("SELECT DISTINCT m.input->'object' FROM ", $schema, "scopes s JOIN ", $schema, "scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) JOIN ", $schema, "scope_source_members m ON(m.tenant_id,m.run)=(r.tenant_id,r.id) JOIN LATERAL jsonb_array_elements(r.input->'sources') WITH ORDINALITY source(value,ordinal) ON source.ordinal=m.source+1 WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.input->'definition'->'targets' @> jsonb_build_array(source.value->'reference') AND EXISTS(SELECT 1 FROM jsonb_array_elements($3::jsonb) candidate WHERE candidate=m.input->'object')"),
                 store_head_in_1: concat!("SELECT s.revision,s.resolution,s.resolution_revision,s.calculation_revision,v.definition FROM ", $schema, "scopes s JOIN ", $schema, "scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted FOR UPDATE OF s"),
                 store_head_in_2: concat!("SELECT s.revision,s.resolution,s.resolution_revision,s.calculation_revision,v.definition FROM ", $schema, "scopes s JOIN ", $schema, "scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted FOR SHARE OF s"),
-                store_lock_references_in_1: concat!("SELECT v.definition FROM ", $schema, "lock_reference_target($2::uuid) s JOIN ", $schema, "scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid"),
-                store_put_in_1: concat!("INSERT INTO ", $schema, "scopes(tenant_id,id,revision,deleted) VALUES($1::uuid,$2,1,false) ON CONFLICT DO NOTHING"),
-                store_put_in_2: concat!("UPDATE ", $schema, "scopes SET revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3 AND NOT deleted"),
+                store_put_in_1: concat!("INSERT INTO ", $schema, "scopes(tenant_id,id,revision,deleted,policy_id,stage_id) VALUES($1::uuid,$2,1,false,$3,$4) ON CONFLICT DO NOTHING"),
+                store_put_in_2: concat!("UPDATE ", $schema, "scopes SET revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3 AND NOT deleted AND policy_id=$4 AND stage_id IS NOT DISTINCT FROM $5"),
                 store_put_in_3: concat!("INSERT INTO ", $schema, "scope_versions(tenant_id,id,revision,definition) VALUES($1::uuid,$2,$3,$4)"),
-                store_delete_in_1: concat!("UPDATE ", $schema, "scopes SET deleted=true,revision=$4 WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3 AND NOT deleted"),
+                store_retire_in: concat!("UPDATE ", $schema, "scopes SET deleted=true WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3 AND NOT deleted AND policy_id=$4 AND stage_id IS NOT DISTINCT FROM $5"),
+                store_owned_in: concat!("SELECT s.id,s.deleted,s.revision,s.resolution,s.resolution_revision,s.calculation_revision,v.definition FROM ", $schema, "scopes s JOIN ", $schema, "scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid AND s.policy_id=$2 AND s.stage_id IS NOT DISTINCT FROM $3 FOR SHARE OF s"),
+                store_owner_in: concat!("SELECT policy_id,stage_id FROM ", $schema, "scopes WHERE tenant_id=$1::uuid AND id=$2"),
                 store_replace_sources_in_1: concat!("DELETE FROM ", $schema, "scope_sources WHERE tenant_id=$1::uuid AND scope=$2"),
                 store_replace_sources_in_2: concat!("INSERT INTO ", $schema, "scope_sources SELECT $1::uuid,$2,* FROM unnest($3::text[],$4::text[])"),
                 store_create_run_in_1: concat!("INSERT INTO ", $schema, "scope_runs(tenant_id,id,scope,definition_revision,asset_cut,input,fingerprint,phase) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sources')"),
@@ -758,12 +800,9 @@ ORDER BY e.signature LIMIT 1
                 store_complete_relation_page_in_1: concat!("UPDATE ", $asset_dispatch, " SET relation_consumed=$2,relation_watermark=$3,relation_position=$4,relation_cursor=$5 WHERE tenant_id=$1::uuid"),
                 state_admission_on_1: concat!("SELECT ", $schema, "scope_admission($2,NULL) WHERE nullif(current_setting('rss.tenant_id',true),'')::uuid=$1::uuid"),
                 state_state_on_1: concat!("SELECT ", $schema, "scope_state($2,NULL) WHERE nullif(current_setting('rss.tenant_id',true),'')::uuid=$1::uuid"),
-                directory_column_1: concat!("(", $schema, "scope_admission(id,NULL)->>'state'='fresh')"),
-                directory_directory_in_1: concat!("SELECT jsonb_build_object('id',id,'revision',revision,'deleted',deleted,'calculationRevision',calculation_revision,'resolution',resolution,'resolutionRevision',resolution_revision) FROM ", $schema, "scopes WHERE tenant_id="),
                 authority_verify_authority_1: concat!($scope_admission_header),
                 authority_verify_authority_2: concat!($scope_state_header),
-                authority_verify_authority_3: concat!($lock_reference_target_header),
-                authority_verify_authority_4: concat!($channel_admission_header),
+                authority_verify_authority_3: concat!($channel_admission_header),
                 group_change_admission: concat!(r###"WITH execution_roles AS (SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(session_user,oid,'SET')), reachable AS (SELECT r.oid FROM pg_roles r WHERE EXISTS(SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE')))
 SELECT EXISTS(SELECT FROM pg_class c WHERE c.oid='"###, $group_changes, r###"'::regclass AND c.relkind='r'
  AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner NOT IN(SELECT oid FROM reachable)
@@ -781,7 +820,7 @@ SELECT EXISTS(SELECT FROM pg_class c WHERE c.oid='"###, $group_changes, r###"'::
  AND NOT EXISTS(SELECT FROM pg_attribute col CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE col.attrelid=c.oid AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))))
  AND NOT EXISTS(SELECT FROM pg_roles WHERE oid IN(SELECT oid FROM reachable) AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication))
 "###),
-                object_manifest: concat!(r###"{"tables":[""###, $asset_dispatch, r###"",""###, $group_changes, r###"",""###, $schema, r###"scope_channel_results",""###, $schema, r###"scope_projection_runs",""###, $schema, r###"scope_results",""###, $schema, r###"scope_runs",""###, $schema, r###"scope_source_members",""###, $schema, r###"scope_sources",""###, $schema, r###"scope_versions",""###, $schema, r###"scopes",""###, $tasks, r###"",""###, $operations, r###""],"functions":[""###, $schema, r###"channel_admission",""###, $schema, r###"guard_scope_channel_result",""###, $schema, r###"lock_reference_target",""###, $schema, r###"scope_admission",""###, $schema, r###"scope_state"],"views":[]}"###),
+                object_manifest: concat!(r###"{"tables":[""###, $asset_dispatch, r###"",""###, $group_changes, r###"",""###, $schema, r###"scope_channel_results",""###, $schema, r###"scope_projection_runs",""###, $schema, r###"scope_results",""###, $schema, r###"scope_runs",""###, $schema, r###"scope_source_members",""###, $schema, r###"scope_sources",""###, $schema, r###"scope_versions",""###, $schema, r###"scopes",""###, $tasks, r###"",""###, $operations, r###""],"functions":[""###, $schema, r###"channel_admission",""###, $schema, r###"guard_scope_channel_result",""###, $schema, r###"scope_admission",""###, $schema, r###"scope_state"],"views":[]}"###),
                 access_contract: concat!(r###"{"tables":[],"functions":[{"name":""###, $schema, r###"scope_admission","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"scope_state","search_path":"search_path=pg_catalog"},{"name":""###, $schema, r###"channel_admission","search_path":"search_path=pg_catalog"}],"external_relations":["###, $access_contract_external_relations, r###"],"verified_schemas":[]}"###),
                 operation_lock: concat!("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,'", $operations, "',$2::text,$3::text)::text,2889))"),
                 operation_replay: concat!("SELECT fingerprint,response,instance::text FROM ", $operations, " WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3"),
@@ -817,7 +856,6 @@ define_storage!(
     "mdm_telemetry_runtime",
     "CREATE FUNCTION mdm_scope.scope_admission(",
     "CREATE FUNCTION mdm_scope.scope_state(",
-    "CREATE FUNCTION mdm_scope.lock_reference_target(",
     "CREATE FUNCTION mdm_scope.channel_admission(",
     "CREATE SCHEMA IF NOT EXISTS mdm_scope",
     "mdm_identity_runtime",
@@ -868,7 +906,6 @@ define_storage!(
     "da_telemetry_runtime",
     "CREATE FUNCTION rss_da.scope_admission(",
     "CREATE FUNCTION rss_da.scope_state(",
-    "CREATE FUNCTION rss_da.lock_reference_target(",
     "CREATE FUNCTION rss_da.channel_admission(",
     "CREATE SCHEMA IF NOT EXISTS rss_da",
     "da_identity_runtime",

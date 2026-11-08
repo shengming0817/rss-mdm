@@ -28,20 +28,12 @@ pub enum Work {
         /// Authored Policy identity.
         policy: Uuid,
     },
-    /// Fan out a completed Scope publication.
-    PolicyScope {
-        /// Source Scope identity.
-        scope: Uuid,
-        /// Completed publication identity.
-        run: Uuid,
-    },
 }
 impl Work {
     /// Stable persisted work kind.
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Lifecycle { .. } => "policy_lifecycle",
-            Self::PolicyScope { .. } => "policy_scope",
             Self::PolicyReconcile { .. } => "policy_reconcile",
             Self::PolicyEvent { .. } => "policy_event",
         }
@@ -50,7 +42,6 @@ impl Work {
     pub fn target(&self) -> String {
         match self {
             Self::Lifecycle { policy, .. } => policy.to_string(),
-            Self::PolicyScope { scope, .. } => scope.to_string(),
             Self::PolicyReconcile { policy } => policy.to_string(),
             Self::PolicyEvent { batch } => batch.to_string(),
         }

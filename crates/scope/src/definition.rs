@@ -72,3 +72,19 @@ mod tests {
         );
     }
 }
+
+/// Immutable ownership of a Scope by one Policy or one of its stable stages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScopeOwner {
+    /// Policy identity within the storage tenant.
+    pub policy: Uuid,
+    /// Stable stage identity; absent for the main scope.
+    pub stage: Option<Uuid>,
+}
+impl ScopeOwner {
+    /// Whether the owner coordinates are nonempty identities.
+    pub fn is_valid(self) -> bool {
+        !self.policy.is_nil() && self.stage.is_none_or(|s| !s.is_nil())
+    }
+}
