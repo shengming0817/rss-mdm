@@ -289,8 +289,6 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         serde_json::from_value(vector["signed"].clone())?;
     telemetry.configuration.tenant_id = Uuid::parse_str(&c.tenant.to_string())?;
     telemetry.configuration.device_id = principal.device().into();
-    telemetry.configuration.device_id = device.clone();
-    telemetry.configuration.device_id = Uuid::new_v4().to_string();
     telemetry.configuration.issued_at = now;
     telemetry.configuration.expires_at = now + 300;
     telemetry.configuration.backfill_seconds = 3600;
@@ -323,7 +321,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         .bind(c.tenant.to_string())
         .execute(&mut *update)
         .await?;
-    sqlx::query("UPDATE mdm_access.devices SET WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
+    sqlx::query("UPDATE mdm_access.devices SET state = 'revoked' WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
         .bind(c.tenant.to_string())
         .bind(&device)
         .execute(&mut *update)

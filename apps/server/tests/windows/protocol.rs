@@ -1,6 +1,7 @@
 //! Real TLS, HTTP adapter and persisted SyncML package recovery with the real business participant.
 #[path = "fixture.rs"]
 mod fixture;
+mod identity_cases;
 use crate::{
     authority_t2_support::Context, command_runtime_t2_support as command,
     native_identity_t2_support as identity,
@@ -651,6 +652,7 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     let c = Context::open("shared", &[]).await?;
     let n = identity::seed(&c, "windows").await?;
     let w = windows(&c, &n).await?;
+    let old_child = protocol_peer(&c, &n, "declared-old").await?;
     let child = protocol_peer(&c, &n, "declared").await?;
     let primary_mount = device::ChannelMount::new(Mdm, c.tenant, MdmWindows, Purpose::Primary);
     let declared_mount =
@@ -680,7 +682,25 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
         )?
         .encode()?;
     let mut tx = command::seed_transaction(&c).await?;
+    sqlx::query(
+        "UPDATE mdm_access.requests SET windows_profile='Full' WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(n.request)
+    .execute(&mut *tx)
+    .await?;
     let parent = store::management_in(Mdm, &mut tx, &parent_evidence).await?;
+    let old_evidence = declared_mount.credential(Sha256::digest(&old_child.certificate).into())?;
+    device::linked::request_in(Mdm, &mut tx, &parent, old_child.request, Uuid::new_v4()).await?;
+    device::linked::bind_in(
+        Mdm,
+        &mut tx,
+        &parent,
+        &old_evidence,
+        old_child.request,
+        [old_child.credential, old_child.epoch],
+    )
+    .await?;
     device::linked::request_in(Mdm, &mut tx, &parent, child.request, Uuid::new_v4()).await?;
     let receipt = device::linked::bind_in(
         Mdm,
@@ -693,6 +713,58 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     .await?;
     assert_eq!(receipt.device, n.device);
     assert_ne!(receipt.epoch, n.epoch);
+    // The primary enrollment query must select its credential while WinDC is also active.
+    sqlx::query("INSERT INTO mdm_pki.trust(tenant_id,purpose,revision,body) VALUES($1::uuid,'windows',1,$2)")
+        .bind(c.tenant.to_string()).bind(serde_json::to_vec(&n.trust)?).execute(&mut *tx).await?;
+    for peer in [&n, &child] {
+        rss_mdm_pki_service::certificates::record_in(
+            Mdm,
+            &mut tx,
+            &c.tenant.to_string(),
+            "windows",
+            &n.device,
+            &n.trust.issuers[0].digest,
+            &peer.certificate,
+        )
+        .await?;
+    }
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    assert!(
+        rss_mdm_pki_service::certificates::current_native_credential_in(
+            Mdm,
+            &mut tx,
+            &c.tenant.to_string(),
+            &n.device,
+            rss_mdm_agent_wire::pki::Purpose::Windows,
+            now,
+        )
+        .await?
+    );
+    sqlx::query("SAVEPOINT primary_availability")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(n.credential)
+    .execute(&mut *tx)
+    .await?;
+    assert!(
+        !rss_mdm_pki_service::certificates::current_native_credential_in(
+            Mdm,
+            &mut tx,
+            &c.tenant.to_string(),
+            &n.device,
+            rss_mdm_agent_wire::pki::Purpose::Windows,
+            now,
+        )
+        .await?,
+        "WinDC cannot make an unavailable primary credential usable"
+    );
+    sqlx::query("ROLLBACK TO SAVEPOINT primary_availability")
+        .execute(&mut *tx)
+        .await?;
     // Signed certificate and provisioning material are prerequisites to this session proof.
     sqlx::query("INSERT INTO mdm_access.enrollment_intents(tenant_id,request_id,csr,profile,issuer,configuration,device,credential,epoch,secrets,signing_attempt,protocol_device)
         SELECT tenant_id,$2,$3,$4,issuer,configuration,device,$5,$6,$7,$8,protocol_device FROM mdm_access.enrollment_intents WHERE tenant_id=$1::uuid AND request_id=$9")
@@ -704,6 +776,7 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
         .execute(&mut *tx).await?;
     tx.commit().await?;
     let h = host(&c, &n, w.clone()).await?;
+    identity_cases::prepare(&c, &n, &child, &old_child, &h.assembly).await?;
     let parent_http = client(&n)?;
     let child_http = client(&child)?;
     let parent_bytes = first_package(&n, "/ManagementServer/MDM.svc", "client-secret", 17)?;
@@ -722,6 +795,7 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     )
     .await?;
     assert_ne!(parent_reply, child_reply);
+    identity_cases::routed(&c, &n, &child, &old_child).await?;
     let rows: Vec<(Uuid, Uuid, i64)> = sqlx::query_as(
         "SELECT protocol_epoch,credential,last_message FROM mdm_access.management_sessions
          WHERE tenant_id=$1::uuid AND device=$2 AND session_id='17' ORDER BY protocol_epoch",

@@ -50,22 +50,13 @@
           "additionalProperties": false,
           "required": [
             "kind",
-            "registrationId",
-            "generation",
             "channel",
-            "state"
+            "state",
+            "deviceId"
           ],
           "properties": {
             "kind": {
               "const": "registration"
-            },
-            "registrationId": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "generation": {
-              "type": "integer",
-              "minimum": 1
             },
             "channel": {
               "enum": [
@@ -80,6 +71,11 @@
                 "revoked",
                 "superseded"
               ]
+            },
+            "deviceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
             }
           }
         },
@@ -91,8 +87,7 @@
             "runId",
             "policyVersion",
             "status",
-            "registrationId",
-            "generation"
+            "deviceId"
           ],
           "properties": {
             "kind": {
@@ -114,13 +109,10 @@
                 "expired"
               ]
             },
-            "registrationId": {
+            "deviceId": {
               "type": "string",
-              "format": "uuid"
-            },
-            "generation": {
-              "type": "integer",
-              "minimum": 1
+              "minLength": 1,
+              "maxLength": 255
             }
           }
         },
@@ -191,16 +183,15 @@
             "kind",
             "operationId",
             "bindingId",
-            "registrationId",
             "instanceId",
             "principalId",
             "previousPrincipal",
-            "registrationGeneration",
             "bindingGeneration",
             "factorGeneration",
             "revision",
             "revoked",
-            "phase"
+            "phase",
+            "deviceId"
           ],
           "properties": {
             "kind": {
@@ -211,10 +202,6 @@
               "format": "uuid"
             },
             "bindingId": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "registrationId": {
               "type": "string",
               "format": "uuid"
             },
@@ -232,10 +219,6 @@
                 "null"
               ],
               "format": "uuid"
-            },
-            "registrationGeneration": {
-              "type": "integer",
-              "minimum": 1
             },
             "bindingGeneration": {
               "type": "integer",
@@ -261,6 +244,11 @@
                 "unknown",
                 "retired"
               ]
+            },
+            "deviceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
             }
           }
         }

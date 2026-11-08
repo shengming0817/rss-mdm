@@ -253,7 +253,7 @@ async fn input_copy(
     plist::to_writer_xml(&mut bytes, &plist)?;
     let aad = ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(binding.device.clone(), 1i64, attempt))?,
+        &serde_json::to_string(&(binding.device.clone(), attempt))?,
         "apple.attempt.request",
         1,
     )?

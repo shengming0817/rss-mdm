@@ -58,6 +58,7 @@ async fn historical(c: &Context, key: &Protector, original: Uuid) -> Result<Vec<
     #[serde(rename_all = "camelCase")]
     struct Metadata<'a> {
         platform: &'a str,
+        purpose: rss_mdm_registration_service::Purpose,
         deadline: i64,
         input_version: &'a str,
         target: &'a configuration::NativeTarget,
@@ -71,6 +72,7 @@ async fn historical(c: &Context, key: &Protector, original: Uuid) -> Result<Vec<
         input.operation_id = id;
         let meta = Metadata {
             platform: "windows",
+            purpose: input.task.purpose()?,
             deadline: input.deadline,
             input_version: &input.input_version,
             target: &input.target,

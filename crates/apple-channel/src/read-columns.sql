@@ -3,4 +3,4 @@
 ('mdm_apple.account_flows','tenant_id'),
 ('mdm_apple.account_flows','enrollment'),
 ('mdm_apple.scep_attempts','tenant_id'),
-('mdm_apple.scep_attempts','registration')
+('mdm_apple.scep_attempts','device')

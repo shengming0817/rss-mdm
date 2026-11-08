@@ -84,8 +84,16 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
         Some("waiting_reboot") => "waiting_reboot",
         _ => phase,
     };
-    let device_id = if supported && request && action == "management_write" {
-        match payload.pointer("/details/deviceId") {
+    let device_id = if supported {
+        let device = payload
+            .get("device")
+            .filter(|value| !value.is_null())
+            .or_else(|| {
+                (request && action == "management_write")
+                    .then(|| payload.pointer("/details/deviceId"))
+                    .flatten()
+            });
+        match device {
             None | Some(Value::Null) => None,
             Some(Value::String(device)) if crate::model::identifier(device) => Some(device.clone()),
             _ => return Err(Error::Integrity),

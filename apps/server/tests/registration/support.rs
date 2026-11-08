@@ -138,6 +138,7 @@ struct InputIdentity<'a> {
 #[serde(rename_all = "camelCase")]
 struct Metadata {
     platform: String,
+    purpose: rss_mdm_registration_service::Purpose,
     deadline: i64,
     input_version: String,
     target: owner::NativeTarget,
@@ -197,6 +198,7 @@ pub async fn installation(
     };
     let metadata = Metadata {
         platform: "windows".into(),
+        purpose: input.task.purpose()?,
         deadline,
         input_version: input.input_version.clone(),
         target: input.target.clone(),

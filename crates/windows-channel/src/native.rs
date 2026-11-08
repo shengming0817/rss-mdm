@@ -503,14 +503,17 @@ pub(crate) async fn send_on(
             continue;
         }
         let request = &op.request;
-        if let W::SyncMl { request } = request {
-            let reason = if request
+        let linked = match request {
+            W::SyncMl { request } => request
                 .requires_linked_enrollment()
-                .map_err(|_| Error::Malformed)?
-                != (p.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared)
-            {
-                Some("enrollment_purpose_mismatch")
-            } else if request.validate_provider(provider_id).is_err() {
+                .map_err(|_| Error::Malformed)?,
+            _ => false,
+        };
+        if linked != (p.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared) {
+            continue;
+        }
+        if let W::SyncMl { request } = request {
+            let reason = if request.validate_provider(provider_id).is_err() {
                 Some("enrollment_provider_scope")
             } else if request.management_addresses().map_or(true, |urls| {
                 urls.iter().any(|u| !management_urls.contains(u))
@@ -526,7 +529,7 @@ pub(crate) async fn send_on(
                 continue;
             }
         }
-        let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform,a.declared_versions FROM mdm_windows.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.id).fetch_optional(&mut *c).await.map_err(db)?;
+        let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform,a.declared_versions,a.device,a.protocol_epoch FROM mdm_windows.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.device=$3 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.id).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
         let items = if let Some(old) = &old {
             sqlx::query("SELECT command,item_ordinal,kind,uri,status,receipt_accepted,value,value IS NOT NULL AS has_value,result_accepted FROM mdm_windows.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
                 .bind(&tenant).bind(old.try_get::<Uuid, _>("id").map_err(db)?)
@@ -621,8 +624,8 @@ pub(crate) async fn send_on(
                 let value = if let Some(sealed) = sealed {
                     let aad = result_aad(
                         p.tenant(),
-                        p.device(),
-                        p.epoch(),
+                        old.try_get::<&str, _>("device").map_err(db)?,
+                        old.try_get("protocol_epoch").map_err(db)?,
                         attempt,
                         item.try_get("command").map_err(db)?,
                         item.try_get("item_ordinal").map_err(db)?,
@@ -697,7 +700,7 @@ pub(crate) async fn send_on(
                         old.try_get::<i64, _>("ordinal").map_err(db)? + 1,
                         AttemptPhase::Execute,
                     )
-                } else if old.try_get::<i64, _>("session").map_err(db)? != session {
+                } else if !same_session(old, p, session)? {
                     (
                         old.try_get::<i64, _>("ordinal").map_err(db)? + 1,
                         AttemptPhase::Prepare,
@@ -724,7 +727,7 @@ pub(crate) async fn send_on(
                     && ((old.try_get::<String, _>("phase").map_err(db)? == "execute"
                         && accepted)
                         || (old.try_get::<String, _>("phase").map_err(db)? == "observe"
-                            && old.try_get::<i64, _>("session").map_err(db)? != session)) =>
+                            && !same_session(old, p, session)?)) =>
             {
                 (
                     old.try_get::<i64, _>("ordinal").map_err(db)? + 1,
@@ -736,7 +739,7 @@ pub(crate) async fn send_on(
                     && ((old.try_get::<String, _>("phase").map_err(db)? == "execute"
                         && accepted)
                         || (old.try_get::<String, _>("phase").map_err(db)? == "observe"
-                            && old.try_get::<i64, _>("session").map_err(db)? != session)) =>
+                            && !same_session(old, p, session)?)) =>
             {
                 (
                     old.try_get::<i64, _>("ordinal").map_err(db)? + 1,
@@ -745,7 +748,7 @@ pub(crate) async fn send_on(
             }
             (Some(old), W::SyncMl { request })
                 if old.try_get::<String, _>("phase").map_err(db)? == "execute"
-                    && old.try_get::<i64, _>("session").map_err(db)? != session
+                    && !same_session(old, p, session)?
                     && request.read_only().map_err(|_| protocol())? =>
             {
                 (
@@ -759,8 +762,7 @@ pub(crate) async fn send_on(
             (Some(old), W::SyncMl { request })
                 if (old.try_get::<String, _>("phase").map_err(db)? == "execute" && accepted)
                     || (old.try_get::<String, _>("phase").map_err(db)? == "observe"
-                        && (old.try_get::<i64, _>("session").map_err(db)? != session
-                            || summary_changed)) =>
+                        && (!same_session(old, p, session)? || summary_changed)) =>
             {
                 if platform.is_none() {
                     continue;
@@ -769,7 +771,7 @@ pub(crate) async fn send_on(
                     .management_addresses()
                     .map_err(|_| Error::Malformed)?
                     .is_empty()
-                    && old.try_get::<i64, _>("session").map_err(db)? == session
+                    && same_session(old, p, session)?
                 {
                     continue;
                 }
@@ -970,6 +972,16 @@ pub(crate) async fn send_on(
 
     Ok(pending || outstanding)
 }
+fn same_session(
+    old: &sqlx::postgres::PgRow,
+    principal: &DevicePrincipal,
+    session: i64,
+) -> std::result::Result<bool, Error> {
+    Ok(
+        old.try_get::<Uuid, _>("protocol_epoch").map_err(db)? == principal.epoch()
+            && old.try_get::<i64, _>("session").map_err(db)? == session,
+    )
+}
 // Versions are stored with the original attempt under the same tenant transaction.
 // A summary only schedules a read; only accepted full Results prove the effect.
 fn declared_query_needed(
@@ -993,8 +1005,8 @@ fn declared_query_needed(
             .map(|v| {
                 let aad = result_aad(
                     p.tenant(),
-                    p.device(),
-                    p.epoch(),
+                    old.try_get::<&str, _>("device").map_err(db)?,
+                    old.try_get("protocol_epoch").map_err(db)?,
                     attempt,
                     item.try_get("command").map_err(db)?,
                     item.try_get("item_ordinal").map_err(db)?,
@@ -1030,7 +1042,7 @@ fn declared_query_needed(
         &facts,
         queried.as_ref(),
         versions,
-        old.try_get::<i64, _>("session").map_err(db)? == session,
+        same_session(old, p, session)?,
     ))
 }
 pub(super) fn item_evidence(

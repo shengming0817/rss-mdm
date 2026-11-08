@@ -275,7 +275,7 @@ async fn apple_facts(
         )]));
         let mut bytes = Vec::new();
         body.to_writer_xml(&mut bytes)?;
-        let owner = serde_json::to_string(&(n.device.clone(), 1i64, id))?;
+        let owner = serde_json::to_string(&(n.device.clone(), id))?;
         let response = a.resources.protection.seal_bytes(
             &bytes,
             &ProtectionContext::new(c.tenant, &owner, "apple.attempt.response", 1)?.derive(),
@@ -336,7 +336,7 @@ async fn apple_reads_distinguish_platform_evidence_and_product_configuration() -
 }
 
 #[tokio::test]
-#[ignore = "T2 #3136: missing primary, stale generations, source conflicts and corrupt facts are not conflated"]
+#[ignore = "T2 #3136: missing primary, stale protocol contexts, source conflicts and corrupt facts are not conflated"]
 async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Result<()> {
     let (c, a, http) = open().await?;
     let foreign = Context::open("shared", &[]).await?;
@@ -349,8 +349,9 @@ async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Res
         let outsider=foreign.account(&[Permission::InventoryRead]).await?;
         assert_eq!(http.get(&foreign,Arc::new(foreign.authenticate(&outsider).await?),&n.device).await?.0,403);
         windows(&c,&n,"10.0.22631.0").await?;
-        change(&c, "UPDATE mdm_windows.capabilities SET WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.clone()).await?;
+        change(&c, "UPDATE mdm_windows.capabilities SET protocol_epoch = gen_random_uuid() WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.clone()).await?;
         assert_eq!(capability(&read(&c,&http,&p,&n).await?,"wipe")["devicePrerequisite"]["state"],"unknown");
+        windows(&c,&n,"10.0.22631.0").await?;
         change(&c, "UPDATE mdm_windows.capabilities SET os_version = 'corrupt' WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.clone()).await?;
         assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,503);
         windows(&c,&n,"10.0.22631.0").await?;

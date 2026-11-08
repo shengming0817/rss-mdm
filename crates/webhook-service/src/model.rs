@@ -381,4 +381,60 @@ mod tests {
         };
         assert!(e.validate().is_err());
     }
+
+    #[test]
+    fn identity_events_match_the_declared_delivery_schema() {
+        let id = Uuid::from_u128(1);
+        let schema = serde_json::from_str(crate::events::EVENT_SCHEMA).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for (event_type, data) in [
+            (
+                EventType::Registered,
+                EventData::Registration {
+                    device_id: "device-a".into(),
+                    channel: "mdm".into(),
+                    state: "active".into(),
+                },
+            ),
+            (
+                EventType::PolicyTerminal,
+                EventData::Policy {
+                    run_id: id,
+                    policy_version: id,
+                    device_id: "device-a".into(),
+                    status: "succeeded".into(),
+                },
+            ),
+            (
+                EventType::DeviceAccessChanged,
+                EventData::DeviceAccess {
+                    operation_id: id,
+                    binding_id: id,
+                    device_id: "device-a".into(),
+                    instance_id: id,
+                    principal_id: id,
+                    previous_principal: None,
+                    binding_generation: 1,
+                    factor_generation: 1,
+                    revision: 1,
+                    revoked: false,
+                    phase: "applied".into(),
+                },
+            ),
+        ] {
+            let event = Event {
+                event_id: id,
+                event_type,
+                version: 1,
+                occurred_at: 1,
+                tenant_id: id,
+                device_id: "device-a".into(),
+                data,
+            };
+            event.validate().unwrap();
+            let bytes = serde_json::to_vec(&event).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            validator.validate(&value).unwrap();
+        }
+    }
 }

@@ -12,7 +12,7 @@ Windows 使用固定版本 step-ca，宿主只加载公开 `trust_file` 与受�
 
 Windows UsernameToken 只接受 `<enrollmentId>@<注册 origin 的主机名>` 与一次性口令，主机名不含端口；纯 UUID、错误域和非规范 UUID 均拒绝。从注册详情的 `instructions.username` 复制该值。用户以本机管理员身份打开“设置 → 账户 → 访问工作或学校 → 连接 → 仅注册到设备管理”，输入用户名、口令及详情提供的注册服务器；Full／Device 必须与授权一致。Discovery 支持无响应体的 GET／HEAD 连通性探测和原生 SOAP POST。签发期间持续核对原管理员授权，最终绑定提交后证书才可准入。响应丢失沿原意图恢复；重启后由原管理员重新登录、resume。证书安装位置及 Full/Device 注册须在对应 Windows 版本上单独验收，EntDMID 不能替代 mTLS 身份。
 
-管理会话同时校验证书链、用途、当前凭据映射与 SyncML 认证。采用 APPSRV BASIC / CLIENT DIGEST；会话绑定注册世代、证书与消息关联，精确重传返回原响应，异内容冲突。被替代会话不能继续推进。撤销后，每次请求立即通过当前凭据映射拒绝，包括保留连接上的后续请求。缺少、回滚或过期的签名 CRL 同样拒绝认证。Full 用户任务的 `NativeTarget.User.userId` 必须等于当前注册的 `userContextId`，创建、投递和回执都重新核对。会话初始 LoginStatus.User 只表示该已认证会话的用户可用；None、Others 或缺失时用户任务等待，设备任务仍可执行。续期保持注册与用户上下文，重新注册生成新的上下文，旧标识不能沿用。
+管理会话同时校验证书链、用途、当前凭据映射与 SyncML 认证。采用 APPSRV BASIC / CLIENT DIGEST；会话绑定设备、协议 epoch、证书与消息关联，精确重传返回原响应，异内容冲突。被替代会话不能继续推进。撤销后，每次请求立即通过当前凭据映射拒绝，包括保留连接上的后续请求。缺少、回滚或过期的签名 CRL 同样拒绝认证。Full 用户任务使用 `target.kind="enrolled_user"`，创建、投递和回执均重新核对当前设备的 `enrolledUser` 资格。会话初始 LoginStatus.User 只表示该已认证会话的用户可用；None、Others 或缺失时用户任务等待，设备任务仍可执行。续证保留设备身份及原协议上下文；新注册分配新的 deviceId。WinDC 在主设备下使用独立协议上下文。
 
 会话以加密的原始请求和实际响应记录为唯一关联来源，重启后按 MsgID 从原始请求和响应连续重建，跳过无历史可查的查询，不重编码历史响应；Expected 增量维护预算和关联索引，没有另存的关联缓存。当前预算为最多 128 条消息、每条 XML 512 KiB、编码对象 16 MiB、解码对象 12 MiB；响应还受设备声明的 MaxMsgSize / MaxObjSize 限制。非 Final 包仅积累回执，完整 Final 与当前授权共同决定成功结算。
 

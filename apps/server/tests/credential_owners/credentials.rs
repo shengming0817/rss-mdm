@@ -390,7 +390,7 @@ async fn input_secrets(
             .await?;
     let aad = rss_mdm_native_protection::ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(coordinate.binding.device.clone(), 1i64, attempt))?,
+        &serde_json::to_string(&(coordinate.binding.device.clone(), attempt))?,
         "apple.attempt.request",
         1,
     )?

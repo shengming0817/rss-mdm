@@ -112,14 +112,14 @@ pub async fn apple(
     for user in std::iter::once("").chain(users.iter().map(String::as_str)) {
         let aad = ProtectionContext::new(
             c.tenant,
-            &serde_json::to_string(&(n.device.clone(), 1i64, user, 1i64))?,
+            &serde_json::to_string(&(n.device.clone(), user, 1i64))?,
             "apple.push.material",
             1,
         )?
         .derive();
         let compare = ProtectionContext::new(
             c.tenant,
-            &serde_json::to_string(&(n.device.clone(), 1i64, user, 0i64))?,
+            &serde_json::to_string(&(n.device.clone(), user, 0i64))?,
             "apple.push.compare",
             1,
         )?
@@ -218,12 +218,14 @@ async fn seed_operation(
     #[serde(rename_all = "camelCase")]
     struct Metadata<'a> {
         platform: &'a str,
+        purpose: rss_mdm_registration_service::Purpose,
         deadline: i64,
         input_version: &'a str,
         target: &'a serde_json::Value,
     }
     let meta = Metadata {
         platform: "macos",
+        purpose: rss_mdm_registration_service::Purpose::Primary,
         deadline: input["deadline"].as_i64().unwrap(),
         input_version: input["inputVersion"].as_str().unwrap(),
         target: &input["target"],
@@ -265,7 +267,7 @@ pub async fn dispatched(c: &Context, n: &Native, key: &Protector, operation: Uui
     .encode(id)?;
     let aad = ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(n.device.clone(), 1i64, id))?,
+        &serde_json::to_string(&(n.device.clone(), id))?,
         "apple.attempt.request",
         1,
     )?
@@ -356,7 +358,7 @@ pub async fn publication(
     let publication = json!({"input_version":version.to_string(),"version":id.to_string(),"owner":owner,"inputs":[declaration],"assets":[],"context":context(true),"legacy":[]});
     let aad = ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(n.device.clone(), 1i64, user, id))?,
+        &serde_json::to_string(&(n.device.clone(), user, id))?,
         "apple.ddm.publication",
         1,
     )?
