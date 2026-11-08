@@ -53,9 +53,7 @@ class CandidatePublication(unittest.TestCase):
                 def copy_inputs(_, source, __):
                     source.mkdir()
                     inputs = ["deployment/providers.lock.json", "deployment/Dockerfile", "Cargo.lock", "rust-toolchain.toml"]
-                    inputs += ["fixtures/mdm-config.example.json"]
-                    inputs += ["crates/device-access-runtime/schema/roles.sql" if name == "deployment/device-access-roles.sql" else "apps/server/schema/" + Path(name).name if name.endswith("-roles.sql") else name
-                               for name in release.DEPLOYMENT_FILES if name != "mdm-config.example.json"]
+                    inputs += [release.deployment_source(name) for name in release.DEPLOYMENT_FILES]
                     for name in inputs:
                         target = source / name; target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_bytes((release.ROOT / name).read_bytes())
