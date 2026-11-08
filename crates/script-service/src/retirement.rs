@@ -1,6 +1,6 @@
 //! Cancel exact device work without a second transaction or terminal-result mirror.
 use crate::{Error, transaction::Result};
-use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit};
+use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit, operation::OperationOwner};
 use sqlx::Row;
 use uuid::Uuid;
 pub async fn retire_in(
@@ -17,6 +17,7 @@ pub async fn retire_in(
         AuditIntent::Management,
     );
     audit.identify_service("device-retirement");
+    audit.target_device(&device);
 
     let mut after = Uuid::nil();
     loop {
@@ -43,10 +44,15 @@ pub async fn retire_in(
             if !changed {
                 return Err(Error::Conflict.into());
             }
-            audit.target(&id.to_string());
+            audit.owned_operation(
+                OperationOwner::Script,
+                id,
+                "credential_revoke",
+                AuditIntent::Management,
+            );
             facts.push(Fact::business(
                 &audit,
-                rss_mdm_audit_integration::operation::OperationOwner::Script,
+                OperationOwner::Script,
                 &format!("device-retirement:{device}:task:{id}"),
                 200,
                 "success",

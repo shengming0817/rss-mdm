@@ -1,6 +1,6 @@
 //! Cancel exact Agent work using the initiating product's retirement authority and transaction.
 use crate::tasks::{Error, transaction::Result};
-use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit};
+use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit, operation::OperationOwner};
 use sqlx::Row;
 use uuid::Uuid;
 pub async fn retire_in(
@@ -55,10 +55,15 @@ pub async fn retire_in(
             if !changed {
                 return Err(Error::Conflict.into());
             }
-            audit.target(&id.to_string());
+            audit.owned_operation(
+                OperationOwner::CredentialTask,
+                id,
+                "credential_revoke",
+                AuditIntent::Management,
+            );
             facts.push(Fact::business(
                 &audit,
-                rss_mdm_audit_integration::operation::OperationOwner::CredentialTask,
+                OperationOwner::CredentialTask,
                 &format!("credential-retirement:{registration}:task:{id}"),
                 200,
                 "success",

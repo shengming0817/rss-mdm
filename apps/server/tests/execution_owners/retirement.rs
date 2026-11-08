@@ -135,6 +135,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     assert_eq!(h.state(script).await?["cancellation"], "requested");
     let cancelled:String=sqlx::query_scalar("SELECT agent_state->>'cancellation' FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(collection).fetch_one(&h.c.operator).await?;
     assert_eq!(cancelled, "confirmed");
+    cancellation_audit(&h, script, collection, credential).await?;
     running.expire(at + 301);
     running.cancel();
     let mut tx = command::seed_transaction(&h.c).await?;
@@ -273,6 +274,79 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     tx.rollback().await?;
     h.close().await
 }
+// Exercise the durable facts and real timeline projection, including task and device lookup.
+async fn cancellation_audit(
+    h: &Harness,
+    script: Uuid,
+    collection: Uuid,
+    credential: Uuid,
+) -> Result<()> {
+    use rss_mdm_audit_integration::operation::OperationOwner;
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_timeline_service::Query;
+    let account = h.c.account(&[Permission::AuditRead]).await?;
+    let proof = h.c.authenticate(&account).await?;
+    let timeline =
+        h.c.database
+            .timeline(h.c.audit.clone(), h.c.tenant, &[7; 32])?;
+    let query = Query {
+        device: Some(h.p.device().into()),
+        action: Some("credential_revoke".into()),
+        limit: Some(200),
+        ..Default::default()
+    };
+    let mut page = timeline
+        .diagnostics(&proof, "device_timeline", &query)
+        .await?;
+    for _ in 0..4 {
+        if page.coverage.complete {
+            break;
+        }
+        page = timeline
+            .diagnostics(&proof, "device_timeline", &query)
+            .await?;
+    }
+    assert!(page.coverage.complete);
+    for (owner, id) in [
+        (OperationOwner::Script, script),
+        (OperationOwner::CollectionExecution, collection),
+        (OperationOwner::CredentialTask, credential),
+    ] {
+        let facts: Vec<_> = page
+            .items
+            .iter()
+            .filter(|item| item.fact.operation_id == Some(id))
+            .collect();
+        assert_eq!(
+            facts.len(),
+            1,
+            "each cancelled task appears once in its device timeline"
+        );
+        let item = facts[0];
+        assert_eq!(item.fact.device_id.as_deref(), Some(h.p.device()));
+        assert_eq!(item.fact.target.kind, "device");
+        assert_eq!(item.fact.target.id, h.p.device());
+        assert_eq!(item.fact.audit_outcome, "succeeded");
+        let locator = item.operation.as_ref().expect("cancelled task locator");
+        assert_eq!(locator.owner, owner);
+        assert_eq!(locator.operation_id, id);
+        assert_eq!(locator.device.as_deref(), Some(h.p.device()));
+        assert!(item.operation_confirmed);
+    }
+    let other = Query {
+        device: Some(Uuid::new_v4().to_string()),
+        ..query
+    };
+    assert!(
+        timeline
+            .diagnostics(&proof, "device_timeline", &other)
+            .await?
+            .items
+            .is_empty()
+    );
+    Ok(())
+}
+
 pub(super) async fn native(
     h: &Harness,
     reason: Option<&str>,
