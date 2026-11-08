@@ -12,12 +12,6 @@
       "description": "Registration-owner allocated endpoint identity.",
       "type": "string"
     },
-    "generation": {
-      "description": "Positive registration generation, checked against the current mapping.",
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
-    },
     "issuanceId": {
       "description": "Original persisted certificate signing attempt.",
       "format": "uuid",
@@ -25,11 +19,6 @@
     },
     "operationId": {
       "description": "Stable caller operation identity; changed input under the same ID conflicts.",
-      "format": "uuid",
-      "type": "string"
-    },
-    "registration": {
-      "description": "Registration identity; renewed credentials retain the same generation.",
       "format": "uuid",
       "type": "string"
     },
@@ -48,8 +37,6 @@
     "serviceId",
     "tenant",
     "device",
-    "registration",
-    "generation",
     "credential",
     "issuanceId",
     "operationId"

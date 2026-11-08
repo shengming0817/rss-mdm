@@ -233,8 +233,8 @@ pub async fn agent_source_on(
     tenant: rss_request_context::TenantId,
     target: &Target,
 ) -> Result<bool> {
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='agent.native' AND enabled)")
-        .bind(tenant.to_string()).bind(target.registration).fetch_one(c).await?)
+    Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'agent.native' AND enabled)")
+        .bind(tenant.to_string()).bind(target.device.clone()).fetch_one(c).await?)
 }
 pub async fn agent_source_in(tx: &mut PgTransaction<'_>, target: &Target) -> Result<bool> {
     let tenant = tx.tenant_id();
@@ -268,7 +268,7 @@ impl CollectionPolicy {
         let binding = super::agent_facts::agent_binding_in(
             tx,
             service.agent_store.clone(),
-            target.registration,
+            target.device.clone(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -288,8 +288,7 @@ impl CollectionPolicy {
             execution,
             tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
             device_id: target.device.clone(),
-            registration_id: target.registration,
-            generation: target.generation.try_into().map_err(|_| Error::Malformed)?,
+
             platform: plan.platform(),
             architecture: match frozen.input.architecture {
                 rss_mdm_policy::Architecture::X86_64 => wire::TaskArchitecture::X86_64,

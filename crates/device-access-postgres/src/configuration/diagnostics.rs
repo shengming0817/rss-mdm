@@ -54,13 +54,13 @@ impl Service {
             let publication = policy::selected_on(c, tenant, device).await.map_err(fault)?;
             let now = crate::platform_sso::store::now(c).await?;
             let identity = da::ReportIdentity { service_id: service.service_id()?, tenant,
-                registration: anchor.registration_id, generation: anchor.generation };
+                device_id: anchor.device.clone(),  };
 
             // Each authority retains bounded references per immutable Policy, even after a
             // complete snapshot omits configuration, reports ordinary delivery, or is revoked.
             let previous: Vec<serde_json::Value> = sqlx::query_scalar(
-                "SELECT mandatory FROM rss_da.deployment_evidence WHERE tenant_id=$1 AND registration=$2 AND generation=$3")
-                .bind(tenant).bind(anchor.registration_id).bind(anchor.generation)
+                "SELECT mandatory FROM rss_da.deployment_evidence WHERE tenant_id = $1 AND device = $2")
+                .bind(tenant).bind(&anchor.device)
                 .fetch_all(&mut *c).await.map_err(crate::database::db)?;
             let mut locked = Vec::new();
             for value in previous {

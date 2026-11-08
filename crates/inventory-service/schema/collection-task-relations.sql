@@ -2,12 +2,12 @@
 BEGIN;
 ALTER TABLE mdm_inventory.collection_tasks ADD FOREIGN KEY(tenant_id,policy_version) REFERENCES mdm_policy.versions(tenant_id,id);
 ALTER TABLE mdm_inventory.collection_tasks ADD FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id);
-ALTER TABLE mdm_inventory.collection_tasks ADD FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
-ALTER TABLE mdm_inventory.collection_tasks ADD FOREIGN KEY(tenant_id,collection_run) REFERENCES mdm_access.collection_runs(tenant_id,id);
-ALTER TABLE mdm_inventory.collection_admission ADD FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
-ALTER TABLE mdm_inventory.collection_output_chunks ADD FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_agent.task_attempts(tenant_id,id);
+ALTER TABLE mdm_inventory.collection_tasks ADD FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices (tenant_id, id);
+ALTER TABLE mdm_inventory.collection_tasks ADD FOREIGN KEY (tenant_id, collection_run) REFERENCES mdm_access.collection_runs (tenant_id, id);
+ALTER TABLE mdm_inventory.collection_admission ADD FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices (tenant_id, id);
+ALTER TABLE mdm_inventory.collection_output_chunks ADD FOREIGN KEY (tenant_id, attempt) REFERENCES mdm_agent.task_attempts (tenant_id, id);
 ALTER TABLE mdm_inventory.collection_policy_recovery ADD FOREIGN KEY(tenant_id,policy) REFERENCES mdm_policy.policies(tenant_id,id);
-ALTER TABLE mdm_inventory.collection_native_checkins ADD FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
+ALTER TABLE mdm_inventory.collection_native_checkins ADD FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices (tenant_id, id);
 GRANT USAGE ON SCHEMA mdm_inventory TO mdm_command_runtime,mdm_policy_runtime;
 GRANT SELECT,INSERT ON mdm_inventory.collection_tasks TO mdm_command_runtime,mdm_policy_runtime;
 GRANT UPDATE(agent_state,agent_result,native_delivery,collection_run,started_at,source_objects) ON mdm_inventory.collection_tasks TO mdm_command_runtime,mdm_policy_runtime;

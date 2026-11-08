@@ -101,7 +101,7 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
     let proof = c.authenticate(&account).await?;
     let authority = Authority::DeviceControl {
         action: rss_mdm_device_service::control::device_control::Kind::Restart,
-        confirmation: None,
+        confirmation: false,
         required: input.task.permissions()?,
         actor: proof.actor(),
     };
@@ -214,8 +214,7 @@ async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Resul
     assert_eq!(reply.synchronized.len(), 1);
     let fact = &reply.synchronized[0];
     assert_eq!(fact.operation, id);
-    assert_eq!(fact.registration, n.registration);
-    assert_eq!(fact.generation, 1);
+    assert_eq!(fact.device.clone(), n.device.clone());
     assert_eq!(fact.user, user);
     assert_eq!(fact.input_version, version);
     assert_eq!(fact.publication_version, id.to_string());
@@ -223,7 +222,7 @@ async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Resul
     assert_eq!(rows.len(), 2);
     assert!(rows.contains(&(id.to_string(), "applied".into())));
     assert!(rows.contains(&(sentinel.to_string(), "published".into())));
-    let projection:Vec<u8>=sqlx::query_scalar("SELECT projection FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2 AND user_key=$3 AND generation=1").bind(c.tenant.to_string()).bind(id).bind(&user).fetch_one(&c.operator).await?;
+    let projection:Vec<u8>=sqlx::query_scalar("SELECT projection FROM mdm_apple.declarations WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND user_key = $3").bind(c.tenant.to_string()).bind(id).bind(&user).fetch_one(&c.operator).await?;
     assert!(!projection.is_empty());
     let untouched: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT projection FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2",
@@ -233,7 +232,7 @@ async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Resul
     .fetch_one(&c.operator)
     .await?;
     assert!(untouched.is_none());
-    let reports:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.status_reports WHERE tenant_id=$1::uuid AND registration=$2 AND generation=1 AND user_key=$3").bind(c.tenant.to_string()).bind(n.registration).bind(&user).fetch_one(&c.operator).await?;
+    let reports:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.status_reports WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3").bind(c.tenant.to_string()).bind(n.device.clone()).bind(&user).fetch_one(&c.operator).await?;
     assert_eq!(reports, 2);
     let replay =
         rss_mdm_apple_channel::ddm::prepare(apple.clone(), &ddm(&n.device, &user, &token)?, None)?;

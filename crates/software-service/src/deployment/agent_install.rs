@@ -21,23 +21,16 @@ async fn observed_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     device: &str,
-) -> std::result::Result<
-    Option<(
-        SoftwareTarget,
-        rss_mdm_inventory::channel::Current,
-        Uuid,
-        i64,
-    )>,
-    Error,
-> {
+) -> std::result::Result<Option<(SoftwareTarget, rss_mdm_inventory::channel::Current, String)>, Error>
+{
     use crate::deployment::database::db;
     use rss_mdm_inventory::ReportSource;
-    let rows=sqlx::query_as::<_,(Uuid,i64,String)>("SELECT r.id,r.generation,s.source FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='mdm' AND r.state='active' AND s.enabled AND s.source IN('mdm.windows','mdm.apple')")
+    let rows=sqlx::query_as::<_,(String,String)>("SELECT r.id, s.source FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (s.tenant_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.channel = 'mdm' AND r.state = 'active' AND s.enabled AND s.source IN ('mdm.windows', 'mdm.apple')")
         .bind(tenant).bind(device).fetch_all(&mut *c).await.map_err(db)?;
     if rows.len() != 1 {
         return Ok(None);
     }
-    let (registration, generation, source) = &rows[0];
+    let (registration, source) = &rows[0];
     let (source, platform) = match source.as_str() {
         "mdm.windows" => (ReportSource::MdmWindows, Platform::Windows),
         "mdm.apple" => (ReportSource::MdmApple, Platform::Macos),
@@ -45,7 +38,7 @@ async fn observed_on(
     };
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
     let fact = match facts
-        .detail_on(c, tenant_id, *registration, *generation, source)
+        .detail_on(c, tenant_id, registration.clone(), source)
         .await?
     {
         rss_mdm_inventory::channel::Observation::Ready(fact) => fact,
@@ -63,12 +56,11 @@ async fn observed_on(
         Some("aarch64") => Architecture::Aarch64,
         _ => return Ok(None),
     };
-    if source==ReportSource::MdmApple && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant).bind(registration).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false){return Ok(None);}
+    if source==ReportSource::MdmApple && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant).bind(registration).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false){return Ok(None);}
     Ok(Some((
         SoftwareTarget::new(platform, architecture),
         fact,
-        *registration,
-        *generation,
+        registration.clone(),
     )))
 }
 
@@ -81,7 +73,7 @@ pub async fn absent_on(
 ) -> Result<Option<(SoftwareTarget, rss_mdm_inventory::channel::AgentEvidence)>, Error> {
     Ok(observed_on(facts, c, tenant, device)
         .await?
-        .and_then(|(target, fact, _, _)| {
+        .and_then(|(target, fact, _)| {
             (fact.state == "absent")
                 .then_some(fact.evidence)
                 .flatten()
@@ -119,9 +111,7 @@ pub async fn dispatch_ready_on(
     else {
         return Err(Error::Malformed);
     };
-    let Some((target, fact, registration, generation)) =
-        observed_on(facts, c, tenant, device).await?
-    else {
+    let Some((target, fact, registration)) = observed_on(facts, c, tenant, device).await? else {
         return Ok(false);
     };
     let Some(package) = action.packages.get(&target) else {
@@ -141,8 +131,7 @@ pub async fn dispatch_ready_on(
     let contact = rss_mdm_registration_service::installation::queries::native_contact_on(
         c,
         tenant,
-        registration,
-        generation,
+        &registration,
     )
     .await?;
     Ok(matches!(

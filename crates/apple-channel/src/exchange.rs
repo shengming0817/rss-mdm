@@ -215,8 +215,6 @@ impl ports::AppleAttempt for CommandAttempt {
                         uuid::Uuid::parse_str(&target.tenant).map_err(|_| Error::Malformed)?,
                         command.operation,
                         &target.device,
-                        target.registration,
-                        target.generation,
                         &self.report,
                         status,
                     )

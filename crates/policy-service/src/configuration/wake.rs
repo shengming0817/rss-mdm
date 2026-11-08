@@ -75,7 +75,7 @@ impl Transactions {
         p: &rss_mdm_registration_service::DevicePrincipal,
     ) -> std::result::Result<(), Error> {
         let tenant = p.tenant().to_string();
-        let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(&tenant).bind(p.registration()).bind(p.device()).bind(p.generation()).fetch_one(&mut *c).await.map_err(db)?;
+        let current:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND id = $3 AND state = 'active')").bind(&tenant).bind(p.device()).bind(p.device()).fetch_one(&mut *c).await.map_err(db)?;
         if !current {
             return Err(Error::Conflict);
         }

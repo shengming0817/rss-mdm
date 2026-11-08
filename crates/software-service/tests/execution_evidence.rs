@@ -53,8 +53,7 @@ fn task() -> SoftwareTaskSpec {
         wire_version: 1,
         tenant_id: id,
         device_id: "device".into(),
-        registration_id: id,
-        generation: 1,
+
         task_id: id,
         attempt_id: id,
         permit: TaskPermit::Start,

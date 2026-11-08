@@ -14,12 +14,11 @@ pub struct NativeContact {
 pub async fn native_contact_on(
     c: &mut PgConnection,
     tenant: &str,
-    registration: Uuid,
-    generation: i64,
+    device: &str,
 ) -> std::result::Result<NativeContact, crate::Error> {
     let (active, bindings, last) = sqlx::query_as::<_, (i64, i64, Option<i64>)>(
-        "SELECT count(*) FILTER(WHERE r.state='active'),count(*),floor(extract(epoch FROM max(coalesce(r.last_communication_received_at,r.first_authenticated_at,g.created_at))))::bigint FROM mdm_access.certificate_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.certificate_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.source='native' AND g.native_authority->>'registration'=$2 AND g.native_authority->>'generation'=$3 AND r.channel='agent' AND r.purpose='primary'",
-    ).bind(tenant).bind(registration.to_string()).bind(generation.to_string())
+        "SELECT count(*) FILTER (WHERE r.state = 'active'), count(*), CAST(floor(EXTRACT(EPOCH FROM max(COALESCE(r.last_communication_received_at, r.first_authenticated_at, g.created_at)))) AS bigint) FROM mdm_access.certificate_grants AS g INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.certificate_grant_id) = (g.tenant_id, g.id) WHERE g.tenant_id = CAST($1 AS uuid) AND g.source = 'native' AND g.native_authority ->> 'device' = $2 AND r.channel = 'agent' AND r.purpose = 'primary'",
+    ).bind(tenant).bind(device)
         .fetch_one(c).await.map_err(crate::database::db)?;
     Ok(NativeContact {
         active,
@@ -32,11 +31,10 @@ pub async fn native_contact_on(
 pub async fn cleanup_pending_on(
     c: &mut PgConnection,
     tenant: &str,
-    registration: Uuid,
-    generation: i64,
+    device: &str,
 ) -> std::result::Result<bool, crate::Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND source->>'registration'=$2 AND source->>'generation'=$3 AND active AND NOT cleanup_complete)")
-        .bind(tenant).bind(registration.to_string()).bind(generation.to_string())
+    sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND source->>'device'=$2 AND active AND NOT cleanup_complete)")
+        .bind(tenant).bind(device)
         .fetch_one(c).await.map_err(crate::database::db)
 }
 
@@ -63,7 +61,6 @@ pub struct BootstrapObservation {
 
 #[derive(Deserialize)]
 pub struct AgentRegistration {
-    pub id: Uuid,
     pub device: String,
     pub state: crate::enrollment::read::RegistrationState,
 }
@@ -126,15 +123,7 @@ pub async fn installations_on(
     Ok(output)
 }
 
-const INSTALLATIONS: &str = r#"
-WITH selected AS MATERIALIZED (
- SELECT i AS installation,
- (SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=i AND active) AS bootstrap,
- (SELECT jsonb_build_object('id',r.id,'device',r.device,'state',r.state) FROM mdm_access.certificate_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.certificate_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=$1::uuid AND g.source='native' AND g.native_authority->>'installation'=i::text ORDER BY r.id LIMIT 1) AS registration
- FROM unnest($2::uuid[]) i
-), budget AS (SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
-SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok
-"#;
+const INSTALLATIONS: &str = "WITH selected AS MATERIALIZED (SELECT i AS installation, (SELECT jsonb_build_object('state', state, 'delivery', delivery, 'cleanup', cleanup, 'cleanupComplete', cleanup_complete, 'cleanupRetryAt', cleanup_retry_at, 'deadline', deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id = CAST($1 AS uuid) AND installation = i AND active) AS bootstrap, (SELECT jsonb_build_object('device', r.id, 'state', r.state) FROM mdm_access.certificate_grants AS g INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.certificate_grant_id) = (g.tenant_id, g.id) WHERE g.tenant_id = CAST($1 AS uuid) AND g.source = 'native' AND g.native_authority ->> 'installation' = CAST(i AS text) ORDER BY r.id LIMIT 1) AS registration FROM unnest(CAST($2 AS uuid[])) AS i), budget AS (SELECT COALESCE(sum(pg_column_size(selected)), 0) <= 16777216 AS ok FROM selected) SELECT selected.*, budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok";
 
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -331,4 +320,4 @@ impl schemars::JsonSchema for CommandStatus {
     }
 }
 
-pub const RELATION_SQL: &str = "SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,'policy'::text AS source_kind,(o.authority->'installation'->>'version')::uuid AS policy_version,(o.authority->'installation'->>'policy')::uuid AS policy,(o.input_context->>'deadline')::bigint AS deadline,coalesce(d.status,'unknown') AS status,(octet_length(o.request)+octet_length(o.authority::text)+octet_length(o.input_context::text)+coalesce(octet_length(o.dispatch_failure::text),0)+1024)::bigint AS input_bytes FROM mdm_registration_tasks.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid";
+pub const RELATION_SQL: &str = "SELECT o.id, o.device, CAST('command' AS text) AS kind, CAST('policy' AS text) AS source_kind, CAST(o.authority -> 'installation' ->> 'version' AS uuid) AS policy_version, CAST(o.authority -> 'installation' ->> 'policy' AS uuid) AS policy, CAST(o.input_context ->> 'deadline' AS bigint) AS deadline, COALESCE(d.status, 'unknown') AS status, CAST(octet_length(o.request) + octet_length(CAST(o.authority AS text)) + octet_length(CAST(o.input_context AS text)) + COALESCE(octet_length(CAST(o.dispatch_failure AS text)), 0) + 1024 AS bigint) AS input_bytes FROM mdm_registration_tasks.operations AS o LEFT JOIN rss_device_command.commands AS d ON (d.tenant_id, d.command_id) = (o.tenant_id, CAST(o.id AS text)) WHERE o.tenant_id = CAST($1 AS uuid)";

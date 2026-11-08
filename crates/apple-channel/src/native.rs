@@ -29,7 +29,7 @@ pub(crate) fn rights(mask: i32) -> Vec<&'static str> {
     .collect()
 }
 
-/// Only authenticated evidence from this exact registration generation is usable.
+/// Only authenticated evidence from this exact device generation is usable.
 pub(crate) async fn control_applicability(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
@@ -41,10 +41,12 @@ pub(crate) async fn control_applicability(
     if requests.len() > 1000 {
         return Err(Error::Malformed);
     }
-    let registrations = requests.iter().map(|r| r.registration).collect::<Vec<_>>();
-    let generations = requests.iter().map(|r| r.generation).collect::<Vec<_>>();
-    let rows=sqlx::query("WITH targets AS (SELECT DISTINCT * FROM unnest($2::uuid[],$3::bigint[]) AS t(registration,generation)), selected AS (SELECT t.*,o.operation FROM targets t LEFT JOIN LATERAL (SELECT d.operation FROM mdm_apple.attempts d JOIN mdm_apple.attempts s ON(s.tenant_id,s.operation,s.registration,s.generation)=(d.tenant_id,d.operation,d.registration,d.generation) WHERE d.tenant_id=$1::uuid AND d.registration=t.registration AND d.generation=t.generation AND d.phase='resolve_device' AND s.phase='resolve_security' AND d.state='acknowledged' AND s.state='acknowledged' AND d.accepted AND s.accepted ORDER BY greatest(d.received_at,s.received_at) DESC,d.operation LIMIT 1) o ON true), evidence AS MATERIALIZED (SELECT t.registration,t.generation,a.id,a.phase,a.response,d.access_rights FROM selected t JOIN mdm_apple.devices d ON(d.tenant_id,d.registration)=($1::uuid,t.registration) AND d.state='active' JOIN mdm_apple.attempts a ON(a.tenant_id,a.registration,a.generation,a.operation)=($1::uuid,t.registration,t.generation,t.operation) WHERE a.phase IN('resolve_device','resolve_security') AND a.state='acknowledged' AND a.accepted), budget AS(SELECT coalesce(sum(octet_length(response)),0)::bigint AS bytes FROM evidence) SELECT evidence.*,budget.bytes FROM budget LEFT JOIN evidence ON budget.bytes<=16777216")
-        .bind(tenant).bind(registrations).bind(generations).fetch_all(c).await.map_err(db)?;
+    let registrations = requests
+        .iter()
+        .map(|r| r.device.clone())
+        .collect::<Vec<_>>();
+    let rows=sqlx::query("WITH targets AS (SELECT DISTINCT * FROM unnest(CAST($2 AS text[])) AS t (device)), selected AS (SELECT t.*, o.operation FROM targets AS t LEFT JOIN LATERAL (SELECT d.operation FROM mdm_apple.attempts AS d INNER JOIN mdm_apple.attempts AS s ON (s.tenant_id, s.operation, s.device) = (d.tenant_id, d.operation, d.device) WHERE d.tenant_id = CAST($1 AS uuid) AND d.device = t.device AND d.phase = 'resolve_device' AND s.phase = 'resolve_security' AND d.state = 'acknowledged' AND s.state = 'acknowledged' AND d.accepted AND s.accepted ORDER BY GREATEST(d.received_at, s.received_at) DESC, d.operation LIMIT 1) AS o ON TRUE), evidence AS MATERIALIZED (SELECT t.device, a.id, a.phase, a.response, d.access_rights FROM selected AS t INNER JOIN mdm_apple.devices AS d ON (d.tenant_id, d.device) = (CAST($1 AS uuid), t.device) AND d.state = 'active' INNER JOIN mdm_apple.attempts AS a ON (a.tenant_id, a.device, a.operation) = (CAST($1 AS uuid), t.device, t.operation) WHERE a.phase IN ('resolve_device', 'resolve_security') AND a.state = 'acknowledged' AND a.accepted), budget AS (SELECT CAST(COALESCE(sum(octet_length(response)), 0) AS bigint) AS bytes FROM evidence) SELECT evidence.*, budget.bytes FROM budget LEFT JOIN evidence ON budget.bytes <= 16777216")
+        .bind(tenant).bind(registrations).fetch_all(c).await.map_err(db)?;
     let bytes: i64 = rows
         .first()
         .ok_or(Error::Malformed)?
@@ -58,31 +60,28 @@ pub(crate) async fn control_applicability(
         security: Option<plist::Dictionary>,
         rights: i32,
     }
-    let mut reports: BTreeMap<(Uuid, i64), Reports> = BTreeMap::new();
+    let mut reports: BTreeMap<String, Reports> = BTreeMap::new();
     for row in rows {
         let Some(id) = row.try_get::<Option<Uuid>, _>("id").map_err(db)? else {
             continue;
         };
-        let registration = row.try_get("registration").map_err(db)?;
-        let generation = row.try_get("generation").map_err(db)?;
+        let device = row.try_get("device").map_err(db)?;
+
         let sealed: Vec<u8> = row.try_get("response").map_err(db)?;
         let plain = crate::protection::open(
             protection,
             tenant,
-            registration,
-            generation,
+            device,
             id,
             crate::protection::Part::Response,
             &sealed,
         )?;
         let body = protocol::decode(plain.expose())?;
-        let entry = reports
-            .entry((registration, generation))
-            .or_insert(Reports {
-                device: None,
-                security: None,
-                rights: row.try_get("access_rights").map_err(db)?,
-            });
+        let entry = reports.entry(device.to_string()).or_insert(Reports {
+            device: None,
+            security: None,
+            rights: row.try_get("access_rights").map_err(db)?,
+        });
         match row.try_get::<String, _>("phase").map_err(db)?.as_str() {
             "resolve_device" => entry.device = Some(body),
             "resolve_security" => entry.security = Some(body),
@@ -95,7 +94,7 @@ pub(crate) async fn control_applicability(
             device: Some(device),
             security: Some(security),
             rights: mask,
-        }) = reports.get(&(request.registration, request.generation))
+        }) = reports.get(&request.device)
         {
             let facts = device
                 .get("QueryResponses")
@@ -130,7 +129,7 @@ pub(crate) async fn context(
     p: &DevicePrincipal,
     command: &AppleCommand,
 ) -> Result<Option<Context>, Error> {
-    let rows=sqlx::query("SELECT id,phase,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND operation=$4 AND phase IN('resolve_device','resolve_security') AND state='acknowledged' AND accepted ORDER BY phase").bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(command.operation).fetch_all(c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT id, phase, response FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND operation = $3 AND phase IN ('resolve_device', 'resolve_security') AND state = 'acknowledged' AND accepted ORDER BY phase").bind(p.tenant().to_string()).bind(p.device()).bind(command.operation).fetch_all(c).await.map_err(db)?;
     let mut device = None;
     let mut security = None;
     for row in rows {
@@ -138,8 +137,7 @@ pub(crate) async fn context(
         let plain = crate::protection::open(
             protection,
             &p.tenant().to_string(),
-            p.registration(),
-            p.generation(),
+            p.device(),
             row.try_get("id").map_err(db)?,
             crate::protection::Part::Response,
             &sealed,
@@ -172,7 +170,7 @@ pub(crate) async fn resolve(
     command: &AppleCommand,
 ) -> Result<crate::protocol_types::AppleDispatch, Error> {
     let tenant = p.tenant().to_string();
-    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
+    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(&tenant).bind(p.device()).fetch_one(&mut *c).await.map_err(db)?;
     if rights & 1040 != 1040 {
         return Ok(crate::protocol_types::AppleDispatch::Rejected(
             rss_mdm_apple_mdm::native::Error::AccessRight,
@@ -198,7 +196,7 @@ pub(crate) async fn resolve(
             protocol::dictionary([("RequestType", "SecurityInfo".into())]),
         ),
     ] {
-        let row=sqlx::query("SELECT id,state,request,accepted,next_attempt<=clock_timestamp() AS ready FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase=$3 AND registration=$4 AND generation=$5 FOR UPDATE").bind(&tenant).bind(command.operation).bind(phase).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+        let row=sqlx::query("SELECT id, state, request, accepted, next_attempt <= clock_timestamp() AS ready FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND phase = $3 AND device = $4 FOR UPDATE").bind(&tenant).bind(command.operation).bind(phase).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
         if let Some(row) = row {
             let state: String = row.try_get("state").map_err(db)?;
             if state == "acknowledged" {
@@ -220,8 +218,7 @@ pub(crate) async fn resolve(
             let plain = crate::protection::open(
                 protection,
                 &tenant,
-                p.registration(),
-                p.generation(),
+                p.device(),
                 id,
                 crate::protection::Part::Request,
                 &sealed,
@@ -237,13 +234,12 @@ pub(crate) async fn resolve(
         let sealed = crate::protection::seal(
             protection,
             &tenant,
-            p.registration(),
-            p.generation(),
+            p.device(),
             id,
             crate::protection::Part::Request,
             &bytes,
         )?;
-        sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,state,deadline,next_attempt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sent',to_timestamp($8),clock_timestamp()+interval '30 seconds')").bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(command.operation).bind(phase).bind(sealed).bind(command.deadline as f64).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, operation, phase, request, state, deadline, next_attempt) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'sent', to_timestamp($7), clock_timestamp() + CAST('30 seconds' AS interval))").bind(&tenant).bind(id).bind(p.device()).bind(command.operation).bind(phase).bind(sealed).bind(command.deadline as f64).execute(&mut *c).await.map_err(db)?;
         return Ok(crate::protocol_types::AppleDispatch::Ready(bytes));
     }
     Ok(crate::protocol_types::AppleDispatch::Waiting)

@@ -37,8 +37,8 @@ pub trait Store: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registrations: Vec<Uuid>,
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, Binding>>;
+        devices: Vec<String>,
+    ) -> Pending<'a, std::collections::BTreeMap<String, Binding>>;
     /// Original task bytes visible to this transaction, independent of current execution eligibility.
     fn payload<'a>(
         &'a self,
@@ -51,30 +51,30 @@ pub trait Store: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
     ) -> Pending<'a, Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>>;
     fn binding<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
     ) -> Pending<'a, Option<Binding>> {
         Box::pin(async move {
             Ok(self
-                .bindings(c, tenant, vec![registration])
+                .bindings(c, tenant, vec![device.clone()])
                 .await?
-                .remove(&registration))
+                .remove(&device))
         })
     }
 }
 pub async fn agent_binding_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     store: std::sync::Arc<dyn Store>,
-    registration: Uuid,
+    device: String,
 ) -> crate::control::transaction::Result<Option<Binding>> {
     let tenant = tx.tenant_id();
     tx.with_connection(move |c| {
-        Box::pin(async move { Ok(agent_binding_on(c, tenant, store, registration).await) })
+        Box::pin(async move { Ok(agent_binding_on(c, tenant, store, device).await) })
     })
     .await?
 }
@@ -82,15 +82,13 @@ pub async fn agent_binding_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     store: std::sync::Arc<dyn Store>,
-    registration: Uuid,
+    device: String,
 ) -> crate::control::transaction::Result<Option<Binding>> {
-    Ok(store.binding(c, tenant.to_string(), registration).await?)
+    Ok(store.binding(c, tenant.to_string(), device).await?)
 }
 
 pub struct RegisteredAgent {
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
     pub binding: Binding,
 }
 pub async fn agent_targets_in(
@@ -110,7 +108,7 @@ pub async fn agent_targets_on(
     store: std::sync::Arc<dyn Store>,
     devices: Vec<String>,
 ) -> crate::control::transaction::Result<Vec<RegisteredAgent>> {
-    let registrations = rss_mdm_registration_service::device::read::active_channel_in(
+    let devices = rss_mdm_registration_service::device::read::active_channel_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         tenant.to_string(),
@@ -119,20 +117,15 @@ pub async fn agent_targets_on(
         rss_mdm_registration_service::Purpose::Primary,
     )
     .await?;
-    let ids = registrations.iter().map(|(_, id, _)| *id).collect();
+    let ids = devices.clone();
     let bindings = store.bindings(c, tenant.to_string(), ids).await?;
-    Ok(registrations
+    Ok(devices
         .into_iter()
-        .filter_map(|(device, registration, generation)| {
+        .filter_map(|device| {
             bindings
-                .get(&registration)
+                .get(&device)
                 .cloned()
-                .map(|binding| RegisteredAgent {
-                    device,
-                    registration,
-                    generation,
-                    binding,
-                })
+                .map(|binding| RegisteredAgent { device, binding })
         })
         .collect())
 }

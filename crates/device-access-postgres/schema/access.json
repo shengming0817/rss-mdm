@@ -14,11 +14,8 @@
       "read_write": true,
       "read_only": false,
       "updates": [
-        "agent_device",
-        "agent_generation",
         "agent_installation",
-        "agent_registration",
-        "da_generation",
+        "agent_device",
         "enabled",
         "revision"
       ],
@@ -134,7 +131,6 @@
       "updates": [
         "document",
         "parent",
-        "registration",
         "revoked",
         "signing_kid",
         "version"

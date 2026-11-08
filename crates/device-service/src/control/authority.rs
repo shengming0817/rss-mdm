@@ -13,14 +13,13 @@ pub enum Authority {
         retirement: uuid::Uuid,
         version: uuid::Uuid,
         device: String,
-        registration: uuid::Uuid,
         execution: uuid::Uuid,
         required: Vec<Permission>,
     },
 
     DeviceControl {
         action: crate::control::device_control::Kind,
-        confirmation: Option<crate::control::device_control::RegistrationConfirmation>,
+        confirmation: bool,
         required: Vec<Permission>,
         actor: Actor,
     },
@@ -46,7 +45,7 @@ impl Authority {
         proof: &AuthorizedPrincipal,
         device: &str,
         action: crate::control::device_control::Kind,
-        confirmation: Option<crate::control::device_control::RegistrationConfirmation>,
+        confirmation: bool,
     ) -> Result<Self, Error> {
         let permissions = [action.permission()];
         for &permission in &permissions {
@@ -80,12 +79,7 @@ impl Authority {
         }
     }
 
-    pub(crate) fn control_matches(
-        &self,
-        input: &crate::control::Create,
-        registration: uuid::Uuid,
-        generation: i64,
-    ) -> Result<bool, Error> {
+    pub(crate) fn control_matches(&self, input: &crate::control::Create) -> Result<bool, Error> {
         let Self::DeviceControl {
             action,
             confirmation,
@@ -95,11 +89,8 @@ impl Authority {
         else {
             return Ok(false);
         };
-        if required != &[action.permission()] || action.dangerous() != confirmation.is_some() {
+        if required != &[action.permission()] || action.dangerous() != *confirmation {
             return Ok(false);
-        }
-        if let Some(confirmation) = confirmation {
-            confirmation.check(registration, generation)?;
         }
         crate::control::device_control::matches(*action, input)
     }

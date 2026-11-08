@@ -8,7 +8,7 @@ use uuid::Uuid;
 pub async fn offer_candidates(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    registration: String,
     now: i64,
     after: Option<(i64, Uuid)>,
 ) -> Result<Vec<(i64, Uuid)>> {
@@ -39,7 +39,7 @@ pub async fn offer_candidates(
 pub async fn cancellations(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    registration: String,
     after: Option<Uuid>,
 ) -> Result<Vec<wire::TaskCancellation>> {
     let tenant = tx.tenant_id().to_string();

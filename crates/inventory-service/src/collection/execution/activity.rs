@@ -7,8 +7,6 @@ pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
     let mut fact = Activity::new(ActivityKind::Execution, phase);
     fact.target = Some(ActivityTarget {
         device: run.target.device.clone(),
-        registration: run.target.registration,
-        generation: run.target.generation,
     });
     fact.links.task = Some(run.id);
     fact.links.version = Some(run.policy_version);
@@ -65,8 +63,6 @@ pub fn accepted(
     let mut fact = Activity::new(ActivityKind::Execution, ActivityPhase::Accepted);
     fact.target = Some(ActivityTarget {
         device: target.device.clone(),
-        registration: target.registration,
-        generation: target.generation,
     });
     fact.links.task = Some(id);
     fact.links.version = Some(version);

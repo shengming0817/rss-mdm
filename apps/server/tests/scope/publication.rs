@@ -72,7 +72,7 @@ async fn admission(
         let (scope, device) = ctx.clone();
         Ok(tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_as("SELECT mdm_scope.scope_state($1,NULL),mdm_scope.channel_admission($1,'mdm',$2)")
-                .bind(scope).bind(device).fetch_one(c).await
+                .bind(scope).bind(&device).fetch_one(c).await
         })).await?)
     })).await?)
 }

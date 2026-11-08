@@ -19,15 +19,12 @@ impl LockPins {
         c: &mut PgConnection,
         tenant: Uuid,
         device: &str,
-        registration: Uuid,
-        generation: i64,
         operation: Uuid,
         pin: &str,
     ) -> Result<(), Error> {
         let binding = Binding {
             device: device.into(),
-            registration,
-            generation,
+
             subject: Subject::LockPin { operation },
         };
         let coordinates = storage::reserve_in(

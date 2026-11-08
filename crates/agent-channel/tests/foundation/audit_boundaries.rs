@@ -29,7 +29,7 @@ pub async fn snapshot(c: &Context) -> Result<Vec<serde_json::Value>> {
         };
     }
     for query in [
-        rows!("rss_da.registrations"),
+        rows!("rss_da.devices"),
         rows!("rss_da.report_sources"),
         rows!("rss_da.agent_bindings"),
         rows!("rss_da.agent_task_attempts"),
@@ -66,16 +66,16 @@ pub async fn task_trust(
     let ack = Acknowledgement {
         operation: Uuid::new_v4(),
         version: 1,
-        registration: p.registration(),
-        generation: p.generation() as u64,
+        device_id: p.device().to_string(),
+
         revision: trust.revision,
         digest: trust.installation_digest()?,
     };
     let observation = Observation {
         operation: Uuid::new_v4(),
         version: 1,
-        registration: p.registration(),
-        generation: p.generation() as u64,
+        device_id: p.device().to_string(),
+
         sequence: 1,
         target_revision: Some(trust.revision),
         target_digest: Some(trust.installation_digest()?),

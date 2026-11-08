@@ -46,32 +46,21 @@ pub(super) async fn read(
         .await
         .map_err(db)?
         .ok_or(Error::Unauthorized)?;
-    let registration: Uuid = row.try_get("id").map_err(db)?;
-    let parent = row
-        .try_get::<Option<Uuid>, _>("parent_id")
-        .map_err(db)?
-        .zip(
-            row.try_get::<Option<i64>, _>("parent_generation")
-                .map_err(db)?,
-        );
     let p = DevicePrincipal {
         profile,
         tenant: credential.tenant,
         device: row.try_get("device").map_err(db)?,
-        registration,
-        generation: row.try_get("generation").map_err(db)?,
         kind: RegistrationKind::from_channel(credential.channel),
         installation: installation_in(profile, c).await?,
         credential: row.try_get("credential").map_err(db)?,
         purpose: Purpose::parse(&row.try_get::<String, _>("purpose").map_err(db)?)?,
         epoch: row.try_get("epoch").map_err(db)?,
-        parent,
-        user_context: (row
+        protocol_request: row.try_get("protocol_request").map_err(db)?,
+        enrolled_user: (row
             .try_get::<Option<String>, _>("windows_profile")
             .map_err(db)?
             .as_deref()
-            == Some("Full"))
-        .then_some(parent.map_or(registration, |p| p.0)),
+            == Some("Full")),
     };
     validate(profile, c, &p).await?;
     Ok(p)
@@ -100,20 +89,6 @@ pub(super) async fn validate(
     }
 
     let tenant = p.tenant().to_string();
-    if let Some((parent, generation)) = p.parent() {
-        let live: bool =
-            sqlx::query_scalar(crate::storage_profile::sql(profile).device_management_validate_1)
-                .bind(&tenant)
-                .bind(parent)
-                .bind(generation)
-                .bind(p.device())
-                .fetch_one(&mut *c)
-                .await
-                .map_err(db)?;
-        if !live {
-            return Err(Error::Unauthorized);
-        }
-    }
     if matches!(
         p.kind(),
         RegistrationKind::Agent | RegistrationKind::DaDevice
@@ -145,20 +120,23 @@ pub(super) async fn validate(
             ));
         }
     }
-    let live: bool =
-        sqlx::query_scalar(crate::storage_profile::sql(profile).device_management_validate_3)
-            .bind(tenant)
-            .bind(p.registration())
-            .bind(p.generation())
-            .bind(p.device())
-            .bind(p.purpose().as_str())
-            .bind(p.epoch())
-            .bind(p.credential())
-            .bind(p.parent().map(|p| p.0))
-            .bind(p.parent().map(|p| p.1))
-            .fetch_one(&mut *c)
-            .await
-            .map_err(db)?;
+    // Only the linked native protocol needs its request owner. Agent and DA consumers
+    // revalidate the exact primary credential without access to native enrollment secrets.
+    let sql = crate::storage_profile::sql(profile);
+    let mut query = sqlx::query_scalar(if p.protocol_request().is_some() {
+        sql.device_management_validate_3
+    } else {
+        sql.device_management_validate_primary
+    })
+    .bind(tenant)
+    .bind(p.device())
+    .bind(p.purpose().as_str())
+    .bind(p.epoch())
+    .bind(p.credential());
+    if p.protocol_request().is_some() {
+        query = query.bind(p.protocol_request());
+    }
+    let live: bool = query.fetch_one(&mut *c).await.map_err(db)?;
     if !live {
         return Err(Error::Unauthorized);
     }

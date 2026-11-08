@@ -71,7 +71,6 @@ pub async fn verify(c: &Context) -> Result<()> {
                             directory::EventTarget {
                                 device: "directory-proof",
                                 batch: Some(batch),
-                                registration: Some(registration),
                             },
                             members,
                         )

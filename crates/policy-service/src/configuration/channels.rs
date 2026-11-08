@@ -73,16 +73,14 @@ pub trait WindowsEvidence: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
         id: Uuid,
-        registration: Uuid,
-        generation: i64,
+        registration: String,
         request: rss_mdm_windows_mdm::native::Execution,
     ) -> Pending<'a, rss_mdm_windows_mdm::native::verification::EffectAssessment>;
 }
 
 pub struct ObservationRead {
     pub id: Uuid,
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub task: super::Task,
     pub profile: bool,
     pub status: rss_device_command::Status,

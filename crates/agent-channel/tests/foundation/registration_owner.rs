@@ -11,13 +11,19 @@ impl registration::Retirement for Retire {
         c: &'a mut sqlx::PgConnection,
         facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
         tenant: &'a str,
-        id: Uuid,
+        id: &'a str,
         _state: &'a str,
     ) -> agent::Pending<'a, ()> {
         Box::pin(async move {
-            registration::enrollment::tasks::retirement::retire_in(DA, c, facts, tenant, id)
-                .await
-                .map_err(|_| registration::Error::Storage)?;
+            registration::enrollment::tasks::retirement::retire_in(
+                DA,
+                c,
+                facts,
+                tenant,
+                id.to_string(),
+            )
+            .await
+            .map_err(|_| registration::Error::Storage)?;
             rss_mdm_pki_service::certificates::revoke_registration_in(DA, c, tenant, id)
                 .await
                 .map_err(|_| registration::Error::Storage)?;

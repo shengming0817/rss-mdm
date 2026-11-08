@@ -6,11 +6,11 @@ from pathlib import Path
 from task_trust_materials import run
 
 
-def leaf(directory, purpose, registration, request, attempt):
+def leaf(directory, purpose, device, request, attempt, suffix=""):
     root = directory / 'task-trust-ca'
-    destination = directory / ('native-' + registration)
+    destination = directory / ('native-' + device + ('-' + suffix if suffix else ''))
     destination.mkdir(mode=0o700)
-    subject = registration if purpose == 'windows' else request.replace('-', '') + attempt.replace('-', '')
+    subject = device if purpose == 'windows' else request.replace('-', '') + attempt.replace('-', '')
     def certificate(name, subject, usage, extra=''):
         ext = destination / (name + '.conf')
         ext.write_text('basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=' + usage + '\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n' + extra)

@@ -46,8 +46,6 @@ pub struct Query {
     pub device: Option<String>,
     pub operation_id: Option<Uuid>,
     pub request_id: Option<Uuid>,
-    pub registration_id: Option<Uuid>,
-    pub generation: Option<i64>,
     pub owner: Option<rss_mdm_audit_integration::operation::OperationOwner>,
     pub actor: Option<String>,
     pub action: Option<String>,
@@ -68,8 +66,6 @@ pub static AUDIT: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema 
         "device",
         "operationId",
         "requestId",
-        "registrationId",
-        "generation",
         "owner",
         "actor",
         "action",
@@ -88,8 +84,6 @@ pub static DEVICE_TIMELINE: rss_mdm_query::window::Schema = rss_mdm_query::windo
         "targetType",
         "operationId",
         "requestId",
-        "registrationId",
-        "generation",
         "owner",
         "actor",
         "action",
@@ -113,7 +107,7 @@ impl Query {
             .map_err(|_| Error::Malformed)?;
         let mut value = serde_json::Map::new();
         for (key, v) in context {
-            let v = if matches!(key.as_str(), "from" | "until" | "generation") {
+            let v = if matches!(key.as_str(), "from" | "until") {
                 serde_json::Value::from(v.parse::<i64>().map_err(|_| Error::Malformed)?)
             } else {
                 serde_json::Value::String(v)
@@ -132,8 +126,6 @@ impl Query {
         if !(1..=200).contains(&self.limit.unwrap_or(50))
             || self.operation_id.is_some_and(|v| v.is_nil())
             || self.request_id.is_some_and(|v| v.is_nil())
-            || self.registration_id.is_some_and(|v| v.is_nil())
-            || self.generation.is_some_and(|v| v < 1)
             || self.from.is_some_and(|v| v < 0)
             || self.until.is_some_and(|v| v < 0)
             || self.from.zip(self.until).is_some_and(|(a, b)| a >= b)
@@ -186,7 +178,6 @@ pub struct FactView {
     pub operation_id: Option<Uuid>,
     pub related_operation_ids: Vec<Uuid>,
     pub request_id: Option<Uuid>,
-    pub registration_id: Option<Uuid>,
     pub registration_request_id: Option<Uuid>,
     pub instance_id: Option<Uuid>,
     pub audit_outcome: String,

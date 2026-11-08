@@ -13,8 +13,6 @@ use uuid::Uuid;
 pub struct Source {
     pub tenant: Uuid,
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 impl Source {
     pub fn agent(p: &rss_mdm_registration_service::DevicePrincipal) -> Result<Self, Error> {
@@ -26,13 +24,11 @@ impl Source {
         Ok(Self {
             tenant: Uuid::parse_str(&p.tenant().to_string()).map_err(|_| Error::Malformed)?,
             device: p.device().into(),
-            registration: p.registration(),
-            generation: p.generation(),
         })
     }
     async fn require_current(&self, c: &mut PgConnection) -> Result<(), Error> {
-        let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.registrations WHERE tenant_id=$1 AND id=$2 AND generation=$3 AND device=$4 AND state='active' AND channel IN('agent','mdm') AND purpose='primary')")
-            .bind(self.tenant).bind(self.registration).bind(self.generation).bind(&self.device).fetch_one(c).await?;
+        let active: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_access.devices WHERE tenant_id = $1 AND id = $2 AND state = 'active' AND channel IN ('agent', 'mdm') AND purpose = 'primary')")
+            .bind(self.tenant).bind(&self.device).fetch_one(c).await?;
         if !active {
             return Err(Error::Forbidden);
         }
@@ -46,27 +42,26 @@ pub async fn source_binding(
     create: bool,
 ) -> Result<Option<Binding>, Error> {
     source.require_current(c).await?;
-    let mut id: Option<Uuid> = sqlx::query_scalar("SELECT s.custody FROM mdm_recovery.filevault_sources s JOIN mdm_recovery.filevault_custodies f ON(f.tenant_id,f.id,f.epoch)=(s.tenant_id,s.custody,s.epoch) WHERE s.tenant_id=$1 AND s.registration=$2 AND s.generation=$3 AND s.active AND f.active AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association,s.association_version,s.registration,s.generation))")
-        .bind(source.tenant).bind(source.registration).bind(source.generation).fetch_optional(&mut *c).await?;
+    let mut id: Option<Uuid> = sqlx::query_scalar("SELECT s.custody FROM mdm_recovery.filevault_sources AS s INNER JOIN mdm_recovery.filevault_custodies AS f ON (f.tenant_id, f.id, f.epoch) = (s.tenant_id, s.custody, s.epoch) WHERE s.tenant_id = $1 AND s.device = $2 AND s.active AND f.active AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association, s.association_version, s.device))")
+        .bind(source.tenant).bind(&source.device).fetch_optional(&mut *c).await?;
     if id.is_none() && create {
         // An explicit administrative configuration may start a new independent custody;
         // it never revives the old grant or copies its material.
         let custody = Uuid::new_v4();
-        sqlx::query("INSERT INTO mdm_recovery.filevault_custodies(tenant_id,id,origin_device,origin_registration,origin_generation) VALUES($1,$2,$3,$4,$5)")
-            .bind(source.tenant).bind(custody).bind(&source.device).bind(source.registration).bind(source.generation).execute(&mut *c).await?;
-        sqlx::query("INSERT INTO mdm_recovery.filevault_sources(tenant_id,registration,generation,custody,epoch) VALUES($1,$2,$3,$4,1) ON CONFLICT(tenant_id,registration,generation) DO UPDATE SET custody=excluded.custody,epoch=excluded.epoch,active=true,association=NULL,association_version=NULL")
-            .bind(source.tenant).bind(source.registration).bind(source.generation).bind(custody).execute(&mut *c).await?;
+        sqlx::query("INSERT INTO mdm_recovery.filevault_custodies(tenant_id,id,origin_device) VALUES($1,$2,$3)")
+            .bind(source.tenant).bind(custody).bind(&source.device).execute(&mut *c).await?;
+        sqlx::query("INSERT INTO mdm_recovery.filevault_sources (tenant_id, device, custody, epoch) VALUES ($1, $2, $3, 1) ON CONFLICT (tenant_id, device) DO UPDATE SET custody = excluded.custody, epoch = excluded.epoch, active = TRUE, association = NULL, association_version = NULL")
+            .bind(source.tenant).bind(&source.device).bind(custody).execute(&mut *c).await?;
         id = Some(custody);
     }
     let Some(id) = id else {
         return Ok(None);
     };
-    let row=sqlx::query("SELECT epoch,origin_device,origin_registration,origin_generation FROM mdm_recovery.filevault_custodies WHERE tenant_id=$1 AND id=$2 AND active FOR UPDATE")
+    let row=sqlx::query("SELECT epoch,origin_device FROM mdm_recovery.filevault_custodies WHERE tenant_id=$1 AND id=$2 AND active FOR UPDATE")
         .bind(source.tenant).bind(id).fetch_optional(c).await?.ok_or(Error::Conflict)?;
     Ok(Some(Binding {
         device: row.try_get("origin_device")?,
-        registration: row.try_get("origin_registration")?,
-        generation: row.try_get("origin_generation")?,
+
         subject: Subject::Filevault {
             custody: id,
             epoch: row.try_get("epoch")?,
@@ -78,8 +73,8 @@ pub async fn active(c: &mut PgConnection, tenant: Uuid, binding: &Binding) -> Re
     let Subject::Filevault { custody, epoch } = binding.subject else {
         return Err(Error::Malformed);
     };
-    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_recovery.filevault_custodies f WHERE f.tenant_id=$1 AND f.id=$2 AND f.epoch=$3 AND f.active AND f.origin_device=$4 AND f.origin_registration=$5 AND f.origin_generation=$6 AND EXISTS(SELECT FROM mdm_recovery.filevault_sources s JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(s.tenant_id,s.registration,s.generation) WHERE s.tenant_id=f.tenant_id AND s.custody=f.id AND s.epoch=f.epoch AND s.active AND r.state='active' AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association,s.association_version,s.registration,s.generation))))")
-        .bind(tenant).bind(custody).bind(epoch).bind(&binding.device).bind(binding.registration).bind(binding.generation).fetch_one(c).await?;
+    let valid:bool=sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_recovery.filevault_custodies AS f WHERE f.tenant_id = $1 AND f.id = $2 AND f.epoch = $3 AND f.active AND f.origin_device = $4 AND EXISTS (SELECT FROM mdm_recovery.filevault_sources AS s INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (s.tenant_id, s.device) WHERE s.tenant_id = f.tenant_id AND s.custody = f.id AND s.epoch = f.epoch AND s.active AND r.state = 'active' AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association, s.association_version, s.device))))")
+        .bind(tenant).bind(custody).bind(epoch).bind(&binding.device).fetch_one(c).await?;
     if valid { Ok(()) } else { Err(Error::Conflict) }
 }
 fn coordinates(binding: &Binding) -> Result<(Uuid, i64), Error> {
@@ -133,8 +128,6 @@ pub async fn configuration(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Configure {
     pub operation_id: Uuid,
-    pub registration: Uuid,
-    pub generation: i64,
     pub expected_revision: i64,
     pub enabled: bool,
     pub recipient_id: String,
@@ -145,17 +138,13 @@ pub async fn configure(
     input: &Configure,
     protection: &Protection,
 ) -> Result<w::Configuration, Error> {
-    if input.operation_id.is_nil()
-        || input.expected_revision < 0
-        || input.registration != source.registration
-        || input.generation != source.generation
-    {
+    if input.operation_id.is_nil() || input.expected_revision < 0 {
         return Err(Error::Malformed);
     }
     source.require_current(c).await?;
     let digest = Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Malformed)?).to_vec();
-    if let Some(row)=sqlx::query("SELECT digest,receipt,purpose FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND operation=$4")
-        .bind(source.tenant).bind(source.registration).bind(source.generation).bind(input.operation_id).fetch_optional(&mut *c).await? {
+    if let Some(row)=sqlx::query("SELECT digest, receipt, purpose FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2 AND operation = $3")
+        .bind(source.tenant).bind(&source.device).bind(input.operation_id).fetch_optional(&mut *c).await? {
         if row.try_get::<String,_>("purpose")? != "configure" || row.try_get::<Vec<u8>,_>("digest")? != digest {return Err(Error::Conflict);}
         return serde_json::from_value(row.try_get("receipt")?).map_err(|_|Error::Integrity);
     }
@@ -182,8 +171,8 @@ pub async fn configure(
         return Err(Error::Conflict);
     }
     let result = configuration(c, source, protection).await?;
-    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts(tenant_id,registration,generation,operation,purpose,digest,receipt,devices) VALUES($1,$2,$3,$4,'configure',$5,$6,$7)")
-        .bind(source.tenant).bind(source.registration).bind(source.generation).bind(input.operation_id).bind(digest)
+    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts (tenant_id, device, operation, purpose, digest, receipt, devices) VALUES ($1, $2, $3, 'configure', $4, $5, $6)")
+        .bind(source.tenant).bind(&source.device).bind(input.operation_id).bind(digest)
         .bind(serde_json::to_value(&result).map_err(|_|Error::Malformed)?).bind(vec![source.device.clone()]).execute(c).await?;
     Ok(result)
 }
@@ -193,8 +182,8 @@ pub async fn receipt(
     operation: Uuid,
 ) -> Result<Option<w::Receipt>, Error> {
     source.require_current(c).await?;
-    let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT receipt FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND operation=$4 AND purpose='upload'")
-        .bind(source.tenant).bind(source.registration).bind(source.generation).bind(operation).fetch_optional(c).await?;
+    let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT receipt FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2 AND operation = $3 AND purpose = 'upload'")
+        .bind(source.tenant).bind(&source.device).bind(operation).fetch_optional(c).await?;
     value
         .map(|v| serde_json::from_value(v).map_err(|_| Error::Integrity))
         .transpose()
@@ -283,13 +272,18 @@ pub async fn receive(
     let cms = input.decode().map_err(|_| Error::Malformed)?;
     source.require_current(c).await?;
     let digest = Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Malformed)?).to_vec();
-    if let Some(row)=sqlx::query("SELECT digest,receipt FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND operation=$4 AND purpose='upload'")
-        .bind(source.tenant).bind(source.registration).bind(source.generation).bind(input.operation_id).fetch_optional(&mut *c).await? {
+    if let Some(row)=sqlx::query("SELECT digest, receipt FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2 AND operation = $3 AND purpose = 'upload'")
+        .bind(source.tenant).bind(&source.device).bind(input.operation_id).fetch_optional(&mut *c).await? {
         if row.try_get::<Vec<u8>,_>("digest")?!=digest {return Err(Error::Conflict);}
         return serde_json::from_value(row.try_get("receipt")?).map_err(|_|Error::Integrity);
     }
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3")
-        .bind(source.tenant).bind(source.registration).bind(source.generation).fetch_one(&mut *c).await?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_recovery.filevault_receipts WHERE tenant_id = $1 AND device = $2",
+    )
+    .bind(source.tenant)
+    .bind(&source.device)
+    .fetch_one(&mut *c)
+    .await?;
     if count >= 4096 {
         return Err(Error::Conflict);
     }
@@ -327,8 +321,8 @@ pub async fn receive(
         version: value.version,
         escrowed: true,
     };
-    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts(tenant_id,registration,generation,operation,purpose,digest,receipt,devices) VALUES($1,$2,$3,$4,'upload',$5,$6,$7)")
-        .bind(source.tenant).bind(source.registration).bind(source.generation).bind(input.operation_id).bind(digest)
+    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts (tenant_id, device, operation, purpose, digest, receipt, devices) VALUES ($1, $2, $3, 'upload', $4, $5, $6)")
+        .bind(source.tenant).bind(&source.device).bind(input.operation_id).bind(digest)
         .bind(serde_json::to_value(&receipt).map_err(|_|Error::Malformed)?).bind(vec![source.device.clone()]).execute(c).await?;
     Ok(receipt)
 }
@@ -336,13 +330,13 @@ pub async fn receive(
 pub async fn retire_source(
     c: &mut PgConnection,
     tenant: &str,
-    registration: Uuid,
+    registration: String,
 ) -> Result<(), Error> {
-    sqlx::query("UPDATE mdm_recovery.filevault_sources s SET association=NULL,association_version=NULL FROM mdm_recovery.filevault_custodies f WHERE s.tenant_id=$1::uuid AND (s.tenant_id,s.custody,s.epoch)=(f.tenant_id,f.id,f.epoch) AND f.origin_registration=$2 AND s.registration<>$2 AND s.active AND s.association IS NOT NULL AND mdm_devices.association_grant_current(s.association,s.association_version,s.registration,s.generation)")
-        .bind(tenant).bind(registration).execute(&mut *c).await?;
-    sqlx::query("UPDATE mdm_recovery.filevault_sources SET active=false WHERE tenant_id=$1::uuid AND registration=$2")
-        .bind(tenant).bind(registration).execute(&mut *c).await?;
-    sqlx::query("UPDATE mdm_recovery.filevault_custodies f SET active=false,enabled=false,revision=revision+1 WHERE tenant_id=$1::uuid AND active AND NOT EXISTS(SELECT FROM mdm_recovery.filevault_sources s JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(s.tenant_id,s.registration,s.generation) WHERE s.tenant_id=f.tenant_id AND s.custody=f.id AND s.epoch=f.epoch AND s.active AND r.state='active' AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association,s.association_version,s.registration,s.generation)))")
+    sqlx::query("UPDATE mdm_recovery.filevault_sources AS s SET association = NULL, association_version = NULL FROM mdm_recovery.filevault_custodies AS f WHERE s.tenant_id = CAST($1 AS uuid) AND (s.tenant_id, s.custody, s.epoch) = (f.tenant_id, f.id, f.epoch) AND f.origin_device = $2 AND s.device <> $2 AND s.active AND s.association IS NOT NULL AND mdm_devices.association_grant_current(s.association, s.association_version, s.device)")
+        .bind(tenant).bind(&registration).execute(&mut *c).await?;
+    sqlx::query("UPDATE mdm_recovery.filevault_sources SET active = FALSE WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
+        .bind(tenant).bind(&registration).execute(&mut *c).await?;
+    sqlx::query("UPDATE mdm_recovery.filevault_custodies AS f SET active = FALSE, enabled = FALSE, revision = revision + 1 WHERE tenant_id = CAST($1 AS uuid) AND active AND NOT EXISTS (SELECT FROM mdm_recovery.filevault_sources AS s INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (s.tenant_id, s.device) WHERE s.tenant_id = f.tenant_id AND s.custody = f.id AND s.epoch = f.epoch AND s.active AND r.state = 'active' AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association, s.association_version, s.device)))")
         .bind(tenant).execute(&mut *c).await?;
     sqlx::query("UPDATE mdm_recovery.entries e SET retired=true,current_version=NULL FROM mdm_recovery.filevault_custodies f WHERE e.tenant_id=$1::uuid AND e.subject->>'kind'='filevault' AND (f.tenant_id,f.id::text,f.epoch::text)=(e.tenant_id,e.subject->>'custody',e.subject->>'epoch') AND NOT f.active")
         .bind(tenant).execute(&mut *c).await?;
@@ -363,12 +357,12 @@ pub async fn merge(
     association_version: i64,
 ) -> Result<Binding, Error> {
     use subtle::ConstantTimeEq;
-    if left.tenant != right.tenant || left.registration == right.registration {
+    if left.tenant != right.tenant || left.device == right.device {
         return Err(Error::Malformed);
     }
     let tenant = left.tenant;
-    let qualified:bool=sqlx::query_scalar("SELECT mdm_devices.association_grant_current($1,$2,$3,$4) AND mdm_devices.association_grant_current($1,$2,$5,$6)")
-        .bind(association).bind(association_version).bind(left.registration).bind(left.generation).bind(right.registration).bind(right.generation).fetch_one(&mut *c).await?;
+    let qualified:bool=sqlx::query_scalar("SELECT mdm_devices.association_grant_current($1,$2,$3) AND mdm_devices.association_grant_current($1,$2,$4)")
+        .bind(association).bind(association_version).bind(&left.device).bind(&right.device).fetch_one(&mut *c).await?;
     if !qualified {
         return Err(Error::Forbidden);
     }

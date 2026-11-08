@@ -1,11 +1,18 @@
 BEGIN;
 CREATE TABLE mdm_access.agent_native_enrollments (
- tenant_id uuid NOT NULL,task uuid NOT NULL,attempt uuid NOT NULL,operation uuid NOT NULL,
- source_registration uuid NOT NULL,source_generation bigint NOT NULL,
- request uuid NOT NULL,request_digest text NOT NULL,authority jsonb NOT NULL,
- PRIMARY KEY(tenant_id,task),UNIQUE(tenant_id,request),UNIQUE(tenant_id,operation),
- FOREIGN KEY(tenant_id,request) REFERENCES mdm_access.requests(tenant_id,id),
- FOREIGN KEY(tenant_id,source_registration,source_generation) REFERENCES mdm_access.registrations(tenant_id,id,generation)
+    tenant_id uuid NOT NULL
+  , task uuid NOT NULL
+  , attempt uuid NOT NULL
+  , operation uuid NOT NULL
+  , source_device text NOT NULL
+  , request uuid NOT NULL
+  , request_digest text NOT NULL
+  , authority jsonb NOT NULL
+  , PRIMARY KEY (tenant_id, task)
+  , UNIQUE (tenant_id, request)
+  , UNIQUE (tenant_id, operation)
+  , FOREIGN KEY (tenant_id, request) REFERENCES mdm_access.requests (tenant_id, id)
+  , FOREIGN KEY (tenant_id, source_device) REFERENCES mdm_access.devices (tenant_id, id)
 );
 ALTER TABLE mdm_access.agent_native_enrollments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_native_enrollments FORCE ROW LEVEL SECURITY;

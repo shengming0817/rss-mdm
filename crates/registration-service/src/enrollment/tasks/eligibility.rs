@@ -11,7 +11,7 @@ pub async fn capable_in(
         profile,
         tx,
         service.agent_store.clone(),
-        target.registration,
+        target.device.clone(),
     )
     .await?
     else {
@@ -21,7 +21,7 @@ pub async fn capable_in(
         return Ok(false);
     }
     let Some((platform, _)) =
-        agent_facts::profile_in(profile, service, tx, target.registration).await?
+        agent_facts::profile_in(profile, service, tx, target.device.clone()).await?
     else {
         return Ok(false);
     };
@@ -42,9 +42,8 @@ pub async fn require_in(
     }
     let inventory = service.inventory.clone();
     let tenant = tx.tenant_id();
-    let registration = target.registration;
-    let generation = target.generation;
+    let device = target.device.clone();
     Ok(
-        matches!(tx.with_connection(move|c|Box::pin(async move {Ok(inventory.enrollment_on(c,tenant,registration,generation).await)})).await??,rss_mdm_inventory::channel::Observation::Ready(fact) if fact.state=="unenrolled"),
+        matches!(tx.with_connection(move|c|Box::pin(async move {Ok(inventory.enrollment_on(c,tenant,device).await)})).await??,rss_mdm_inventory::channel::Observation::Ready(fact) if fact.state=="unenrolled"),
     )
 }

@@ -443,7 +443,6 @@ async fn read_on(
 pub struct AggregateRequest {
     pub query: HistoryRequest,
     pub definition_version: std::num::NonZeroU64,
-    pub registration: uuid::Uuid,
     pub source: rss_mdm_inventory::Source,
     pub epoch: uuid::Uuid,
     pub dimensions: std::collections::BTreeMap<String, String>,
@@ -502,11 +501,7 @@ async fn aggregate_on(
     let scope = Scope::new(service.tenant, Id::new("mdm.telemetry")?);
     let stream = Stream::new(
         scope.clone(),
-        Id::new(format!(
-            "{}:{}",
-            request.registration,
-            request.source.as_str()
-        ))?,
+        Id::new(format!("{}:{}", input.device, request.source.as_str()))?,
         Id::new(request.epoch.to_string())?,
     );
     let series = Series::new(
@@ -580,7 +575,7 @@ async fn aggregate_on(
 
 fn source(
     row: &ObservedSample,
-    live: &[(uuid::Uuid, String, uuid::Uuid)],
+    live: &[(String, String, uuid::Uuid)],
 ) -> Option<rss_mdm_inventory::Source> {
     live.iter()
         .find(|(registration, source, epoch)| {
@@ -591,7 +586,7 @@ fn source(
 }
 fn latest(
     rows: Vec<ObservedSample>,
-    live: &[(uuid::Uuid, String, uuid::Uuid)],
+    live: &[(String, String, uuid::Uuid)],
     field: &rss_mdm_inventory::FieldDefinition,
     retired: bool,
     limit: usize,
@@ -659,7 +654,7 @@ fn latest(
 mod tests {
     use super::*;
     fn row(
-        registration: uuid::Uuid,
+        registration: &str,
         epoch: uuid::Uuid,
         source: rss_mdm_inventory::Source,
         at: i64,
@@ -702,20 +697,20 @@ mod tests {
     #[test]
     fn latest_uses_live_incarnation_and_source_priority_instead_of_receipt_order() {
         use rss_mdm_inventory::Source::{AgentNative, AgentScript};
-        let registration = uuid::Uuid::new_v4();
+        let registration = "device";
         let epoch = uuid::Uuid::new_v4();
         let mut field = crate::tests::fields().remove(0);
         field.sources.insert(AgentNative, 0);
         field.sources.insert(AgentScript, 1);
         let live = vec![
-            (registration, AgentNative.as_str().into(), epoch),
-            (registration, AgentScript.as_str().into(), epoch),
+            (registration.into(), AgentNative.as_str().into(), epoch),
+            (registration.into(), AgentScript.as_str().into(), epoch),
         ];
         let values = vec![
             row(registration, epoch, AgentNative, 100, 1),
             row(registration, epoch, AgentNative, 200, 2),
             row(registration, epoch, AgentScript, 300, 3),
-            row(uuid::Uuid::new_v4(), epoch, AgentNative, 400, 4),
+            row("other-device", epoch, AgentNative, 400, 4),
         ];
         let result = latest(values.clone(), &live, &field, false, 16).unwrap();
         assert_eq!(result.len(), 1);

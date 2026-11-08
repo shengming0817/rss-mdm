@@ -10,8 +10,7 @@ fn main() {
         resource_digest: [8; 32],
         tenant_id: id,
         device_id: "telemetry-vector".into(),
-        registration_id: id,
-        generation: 1,
+
         source_epoch: id,
         issued_at: 1000,
         expires_at: 1300,

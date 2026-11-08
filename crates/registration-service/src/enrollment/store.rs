@@ -1,7 +1,9 @@
 use super::*;
 use crate::{
-    authorization::context::EnrollmentPermission, database::db, device::store::lock_channel,
-    operations::Actor, operations::Operation,
+    authorization::context::{EnrollmentCreation, EnrollmentPermission},
+    database::db,
+    operations::Actor,
+    operations::Operation,
 };
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_inventory::ReportSource;
@@ -22,7 +24,7 @@ pub fn authorization(row: PgRow) -> Result<Authorization, Error> {
         instance: row.try_get("instance").map_err(db)?,
         credential_ref: uuid(&row, "credential_ref")?,
         version: row.try_get("password_version").map_err(db)?,
-        expected_generation: row.try_get("expected_generation").map_err(db)?,
+
         operation: uuid(&row, "issuance_operation")?,
         state: row.try_get("state").map_err(db)?,
         windows_profile: WindowsProfile::parse(
@@ -57,7 +59,7 @@ pub async fn request(
 pub async fn create_enrollment(
     profile: rss_mdm_install_support::StorageProfile,
     store: &rss_mdm_audit_integration::AuditStore,
-    permission: EnrollmentPermission<'_>,
+    permission: EnrollmentCreation<'_>,
     password: &Password,
     source: ReportSource,
     windows_profile: Option<WindowsProfile>,
@@ -65,10 +67,12 @@ pub async fn create_enrollment(
     key: Uuid,
     audit: &RequestAudit,
 ) -> Result<Receipt, Error> {
-    let proof = permission.proof;
+    let proof = permission.proof();
     permission.check()?;
-    let device = permission.device();
-    let password_digest = password.digest(proof.tenant_id(), device)?;
+    if key.is_nil() {
+        return Err(Error::Malformed);
+    }
+    let password_digest = password.digest(proof.tenant_id(), &key.to_string())?;
     if source == ReportSource::AgentBuiltin {
         return Err(Error::Malformed);
     }
@@ -77,7 +81,6 @@ pub async fn create_enrollment(
     }
     let digest = digest(&(
         "enrollment_create.v1",
-        device,
         source,
         windows_profile,
         &password_digest,
@@ -99,7 +102,7 @@ pub async fn create_enrollment(
                 store,
                 CreateInputs {
                     permission,
-                    password_digest,
+                    password,
                     source,
                     windows_profile,
                     session,
@@ -123,7 +126,7 @@ pub async fn create_enrollment(
                         rss_mdm_audit_integration::operation::OperationOwner::Registration,
                         &format!(
                             "enrollment_create:{}:{}",
-                            inputs.permission.proof.principal_id(),
+                            inputs.permission.proof().principal_id(),
                             op.key
                         ),
                         200,
@@ -151,8 +154,8 @@ pub async fn create_enrollment(
     crate::operations::settle(attempt, audit)
 }
 struct CreateInputs<'a> {
-    permission: EnrollmentPermission<'a>,
-    password_digest: String,
+    permission: EnrollmentCreation<'a>,
+    password: &'a Password,
     source: ReportSource,
     windows_profile: Option<WindowsProfile>,
     session: Uuid,
@@ -163,7 +166,7 @@ async fn create_enrollment_on(
     tx: &mut sqlx::PgConnection,
     CreateInputs {
         permission,
-        password_digest,
+        password,
         source,
         windows_profile,
         session,
@@ -173,16 +176,15 @@ async fn create_enrollment_on(
     audit: &RequestAudit,
 ) -> Result<(Receipt, bool), Error> {
     let proof = permission.proof();
-    let device = permission.device();
     let source = *source;
     let session = *session;
     let key = *key;
     crate::admission::lock_in(profile, tx, proof.tenant_id()).await?;
     if let Some(old) = crate::operations::replay(profile, tx, op).await? {
         permission.check()?;
-        return serde_json::from_str(&old)
-            .map(|receipt| (receipt, true))
-            .map_err(|_| Error::Storage);
+        let receipt: Receipt = serde_json::from_str(&old).map_err(|_| Error::Storage)?;
+        audit.target_device(&receipt.device_id);
+        return Ok((receipt, true));
     }
     crate::admission::require_new_in(
         profile,
@@ -192,15 +194,6 @@ async fn create_enrollment_on(
     )
     .await?;
     if permission.self_service() {
-        let expected = format!(
-            "self:{}:{}:{}",
-            proof.instance_id(),
-            proof.principal_id(),
-            key
-        );
-        if device != expected {
-            return Err(Error::Forbidden);
-        }
         crate::quotas::admit_on(
             profile,
             tx,
@@ -211,20 +204,8 @@ async fn create_enrollment_on(
         )
         .await?;
     }
-    if !permission.self_service() {
-        crate::lifecycle::authorize_reenrollment_in(profile, tx, proof, device).await?;
-    }
-    lock_channel(profile, tx, proof.tenant_id(), device, source.channel()).await?;
-    crate::lifecycle::require_work_in(profile, tx, proof.tenant_id(), device).await?;
-    let generation: i64 = sqlx::query_scalar(
-        crate::storage_profile::sql(profile).enrollment_store_create_enrollment_on_1,
-    )
-    .bind(proof.tenant_id())
-    .bind(device)
-    .bind(source.channel().as_str())
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(db)?;
+    let device = Uuid::new_v4().to_string();
+    let password_digest = password.digest(proof.tenant_id(), &device)?;
     let id = Uuid::new_v4();
     let grant = Uuid::new_v4();
     sqlx::query(crate::storage_profile::sql(profile).enrollment_store_create_enrollment_on_2)
@@ -232,7 +213,7 @@ async fn create_enrollment_on(
         .bind(grant.to_string())
         .bind(proof.principal_id())
         .bind(proof.instance_id())
-        .bind(device)
+        .bind(&device)
         .execute(&mut *tx)
         .await
         .map_err(db)?;
@@ -243,7 +224,7 @@ async fn create_enrollment_on(
     .bind(id.to_string())
     .bind(grant.to_string())
     .bind(source.as_str())
-    .bind(generation)
+    .bind(&device)
     .bind(password_digest)
     .bind(session.to_string())
     .bind(Uuid::new_v4().to_string())
@@ -253,7 +234,7 @@ async fn create_enrollment_on(
     .await
     .map_err(db)?;
     if permission.self_service() {
-        crate::device::registration_user::initialize_on(profile, tx, device, &proof.user()?)
+        crate::device::registration_user::initialize_on(profile, tx, &device, &proof.user()?)
             .await?;
     }
     let receipt = Receipt {
@@ -261,11 +242,11 @@ async fn create_enrollment_on(
         enrollment_id: id,
         status: "pending".into(),
         expires_at: expires,
-        registration: None,
+        device_id: device.clone(),
         source,
     };
     permission.check()?;
-    audit.target_device(device);
+    audit.target_device(&device);
     crate::operations::save(
         profile,
         tx,
@@ -436,14 +417,6 @@ async fn change_enrollment_on(
     if state == "cancelled" || state == "bound" && resume.is_none() {
         return Err(Error::Conflict);
     }
-    let registration = if state == "bound" {
-        Some(
-            crate::enrollment::store::active_registration(profile, tx, proof.tenant_id(), id)
-                .await?,
-        )
-    } else {
-        None
-    };
     if resume.is_some()
         && state == "pending"
         && permission.self_service()
@@ -499,7 +472,7 @@ async fn change_enrollment_on(
             "cancelled".into()
         },
         expires_at: expires,
-        registration,
+        device_id: device.to_owned(),
         source: ReportSource::parse(&row.try_get::<String, _>("source").map_err(db)?)
             .map_err(|_| Error::Storage)?,
     };
@@ -537,22 +510,6 @@ pub async fn enrollment_authorization(
         return Err(Error::Unauthorized);
     }
     authorization(row)
-}
-pub async fn active_registration(
-    profile: rss_mdm_install_support::StorageProfile,
-    tx: &mut sqlx::PgConnection,
-    tenant: &str,
-    id: Uuid,
-) -> Result<Uuid, Error> {
-    let row =
-        sqlx::query(crate::storage_profile::sql(profile).enrollment_store_active_registration_1)
-            .bind(tenant)
-            .bind(id.to_string())
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db)?
-            .ok_or(Error::Conflict)?;
-    uuid(&row, "id")
 }
 pub async fn mark_bound_in(
     profile: rss_mdm_install_support::StorageProfile,

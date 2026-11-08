@@ -335,8 +335,8 @@ mod tests {
             scope: CollectionScope::Device,
             source: Source::Manual,
             dataset: None,
-            registration: None,
-            registration_generation: None,
+            device_id: None,
+
             epoch: None,
             snapshot_id: "source".into(),
             observed_at: 1,

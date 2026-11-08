@@ -10,7 +10,7 @@ async fn candidate(h: &Harness, domain: &str) -> Result<(String, Uuid)> {
     let id = Uuid::new_v4();
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)").bind(h.c.tenant.to_string()).bind(id).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch,registration,registration_generation) VALUES($1::uuid,$2,$3,1,1,$4,1)").bind(h.c.tenant.to_string()).bind(&target.device).bind(id).bind(target.registration_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES (CAST($1 AS uuid), $2, $3, 1, 1)").bind(h.c.tenant.to_string()).bind(&target.device).bind(id).execute(&mut *tx).await?;
     // Text IDs intentionally do not parse as UUID. The unrelated expired command must be untouched.
     sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,2000000,1000000,$5,$2,$4,'published',1000000,2)")
         .bind(h.c.tenant.to_string()).bind(format!("foreign:{id}" )).bind(id).bind(vec![1u8;32]).bind(domain).execute(&mut *tx).await?;
@@ -172,7 +172,7 @@ async fn legal_candidates_page_across_restart_and_late_orphans() -> Result<()> {
     let mut tx = command::seed_transaction(&h.c).await?;
     // Include an already-observed live command with unchanged version, and 64 terminal
     // commands not yet observed by the owner. No worker or notification receiver is running.
-    sqlx::query("UPDATE rss_device_command.commands d SET status='cancelled',version=version+1,terminal_at=queued_at+1 FROM mdm_devices.control_operations o WHERE(o.tenant_id,o.id::text)=(d.tenant_id,d.command_id) AND o.tenant_id=$1::uuid AND o.registration=$2 AND o.id<>$3").bind(h.c.tenant.to_string()).bind(native.registration).bind(Uuid::from_u128(1)).execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_device_command.commands AS d SET status = 'cancelled', version = version + 1, terminal_at = queued_at + 1 FROM mdm_devices.control_operations AS o WHERE (o.tenant_id, CAST(o.id AS text)) = (d.tenant_id, d.command_id) AND o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.id <> $3").bind(h.c.tenant.to_string()).bind(native.device.clone()).bind(Uuid::from_u128(1)).execute(&mut *tx).await?;
     // A non-UUID text ID after all legal IDs must not be silently skipped by cursor decoding.
     sqlx::query("INSERT INTO rss_device_command.commands SELECT tenant_id,'zz-orphan',device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,'zz-orphan',outbox_fingerprint,status,version,published_at,received_at,terminal_at FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(h.c.tenant.to_string()).bind(&first).execute(&mut *tx).await?;
     tx.commit().await?;

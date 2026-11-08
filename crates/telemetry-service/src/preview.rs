@@ -287,7 +287,7 @@ impl Service {
                                     service.agent_facts.as_ref(),
                                     c,
                                     service.tenant,
-                                    device.registration_id,
+                                    device.device.clone(),
                                     frozen,
                                 )
                                 .await

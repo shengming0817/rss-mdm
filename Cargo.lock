@@ -5160,6 +5160,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "ipnet",
+ "jsonschema",
  "ring",
  "rss-contract",
  "rss-mdm-audit-integration",

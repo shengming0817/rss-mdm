@@ -7,8 +7,6 @@ pub type Pending<'a, T> =
 pub struct AppleRegistration {
     pub tenant: String,
     pub device: String,
-    pub registration: uuid::Uuid,
-    pub generation: i64,
 }
 pub trait AppleProfiles: Send + Sync {
     fn operation_permissions<'a>(
@@ -90,8 +88,7 @@ pub struct AppleCommand {
 #[derive(Clone)]
 pub struct AppleControlCheck {
     pub id: usize,
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub action: crate::control::device_control::Kind,
     pub command: rss_mdm_apple_mdm::native::input::CommandInput,
 }

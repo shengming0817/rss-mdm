@@ -103,7 +103,6 @@ pub(crate) async fn enrollment(
             .unix_seconds()
             .ok_or(Error::Unavailable(crate::Failure::Clock))?,
         &app.mount,
-        app.devices.retirement(),
     )
     .await?;
     crate::response(

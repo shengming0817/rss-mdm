@@ -84,7 +84,7 @@ async fn save(
             &crate::protection::collection_aad(&run.scope, id, session)?,
         )
         .map_err(|_| protocol())?;
-    sqlx::query("UPDATE mdm_windows.collections SET channel_state=$3,template_state=$4 WHERE tenant_id=$1::uuid AND id=$2 AND session_id=$5").bind(p.tenant().to_string()).bind(id).bind(serde_json::to_value(query).map_err(|_|protocol())?).bind(sealed).bind(session.to_string()).execute(c).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_windows.collections SET channel_state = $3, template_state = $4 WHERE (tenant_id = CAST($1 AS uuid) AND id = $2 AND session_id = $5) AND collections.protocol_epoch = $6").bind(p.tenant().to_string()).bind(id).bind(serde_json::to_value(query).map_err(|_|protocol())?).bind(sealed).bind(session.to_string()).bind(p.epoch()).execute(c).await.map_err(db)?;
     Ok(())
 }
 pub async fn receive(
@@ -95,8 +95,8 @@ pub async fn receive(
     history: &s::Expected,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<s::Message, Error> {
-    let rows=sqlx::query("SELECT w.id,w.channel_state,w.template_state,r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.kind='agent' ORDER BY w.first_command")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(message.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT w.id, w.channel_state, w.template_state, r.sealed_at FROM mdm_windows.collections AS w INNER JOIN mdm_access.collection_runs AS r USING (tenant_id, id) WHERE w.tenant_id = CAST($1 AS uuid) AND w.device = $2 AND w.session_id = $3 AND w.kind = 'agent' AND w.protocol_epoch = $4 ORDER BY w.first_command")
+        .bind(p.tenant().to_string()).bind(p.device()).bind(message.header.session_id.to_string()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
         let id: Uuid = row.try_get("id").map_err(db)?;
@@ -360,7 +360,7 @@ pub async fn send(
     if response.header.message_id as usize >= limits.session_messages {
         return Ok(false);
     }
-    let old=sqlx::query("SELECT w.id,w.session_id,w.channel_state,w.template_state,r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) JOIN mdm_access.management_sessions s ON(s.tenant_id,s.registration,s.session_id)=(w.tenant_id,w.registration,w.session_id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.kind='agent' AND (w.session_id=$3 OR (s.state='complete' AND r.sealed_at IS NULL AND (r.deadline IS NULL OR r.deadline>clock_timestamp()))) ORDER BY (w.session_id=$3) DESC,w.first_command DESC LIMIT 1").bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_optional(&mut *c).await.map_err(db)?;
+    let old=sqlx::query("SELECT w.id, w.session_id, w.channel_state, w.template_state, r.sealed_at FROM mdm_windows.collections AS w INNER JOIN mdm_access.collection_runs AS r USING (tenant_id, id) INNER JOIN mdm_access.management_sessions AS s ON (s.tenant_id, s.device, s.session_id) = (w.tenant_id, w.device, w.session_id) AND s.protocol_epoch = w.protocol_epoch WHERE w.tenant_id = CAST($1 AS uuid) AND w.device = $2 AND w.kind = 'agent' AND (w.session_id = $3 OR (s.state = 'complete' AND r.sealed_at IS NULL AND (r.deadline IS NULL OR r.deadline > clock_timestamp()))) AND w.protocol_epoch = $4 ORDER BY w.session_id = $3 DESC, w.first_command DESC LIMIT 1").bind(p.tenant().to_string()).bind(p.device()).bind(response.header.session_id.to_string()).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     let (id, query, mut state) = if let Some(row) = old {
         if row
             .try_get::<Option<i64>, _>("sealed_at")
@@ -406,10 +406,10 @@ pub async fn send(
                 1,
             )
             .await?;
-            sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,channel_state,template_state,kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,'agent')")
-                .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string())
+            sqlx::query("INSERT INTO mdm_windows.collections (tenant_id, id, device, session_id, request_message, first_command, channel_state, template_state, kind, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, 'agent', $9)")
+                .bind(p.tenant().to_string()).bind(id).bind(p.device()).bind(response.header.session_id.to_string())
                 .bind(i64::from(response.header.message_id)).bind(i64::from(first))
-                .bind(serde_json::to_value(&query).map_err(|_| protocol())?).bind(sealed).execute(&mut *c).await.map_err(db)?;
+                .bind(serde_json::to_value(&query).map_err(|_| protocol())?).bind(sealed).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         }
         (id, query, state)
     } else {
@@ -442,7 +442,7 @@ pub async fn send(
                 &crate::protection::collection_aad(&scope, id, response.header.session_id)?,
             )
             .map_err(|_| protocol())?;
-        sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,channel_state,template_state,kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,'agent')").bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(serde_json::to_value(&query).map_err(|_|protocol())?).bind(bytes).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_windows.collections (tenant_id, id, device, session_id, request_message, first_command, channel_state, template_state, kind, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, 'agent', $9)").bind(p.tenant().to_string()).bind(id).bind(p.device()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(serde_json::to_value(&query).map_err(|_|protocol())?).bind(bytes).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         (id, query, state)
     };
     let count = state

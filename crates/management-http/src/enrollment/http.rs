@@ -45,39 +45,19 @@ async fn enrollment_status(
         .map(Json)
         .map_err(Error::from)
 }
-async fn registrations(
+async fn registration(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     path: Result<Path<String>, axum::extract::rejection::PathRejection>,
-    query: rss_mdm_http_contract::query::OwnedQuery<
-        rss_mdm_http_contract::query::Directory<RegistrationsQuery>,
-    >,
-    Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
-) -> Result<
-    rss_mdm_http_contract::CollectionResponse<
-        Json<
-            rss_mdm_query::Page<
-                rss_mdm_query::directory::Projection<
-                    rss_mdm_registration_service::enrollment::registrations::Row,
-                >,
-            >,
-        >,
-    >,
-    Error,
-> {
-    (async {
-        let Path(device) = path.map_err(|_| Error::Malformed)?;
-        let page = query.parse().map_err(|_| Error::Malformed)?;
-        audit.target_device(&device);
-        app.service
-            .registrations(&auth, &device, &page, &codec)
-            .await
-            .map(Json)
-            .map_err(Error::from)
-    })
-    .await
-    .map(rss_mdm_http_contract::CollectionResponse)
+) -> Result<Json<rss_mdm_registration_service::enrollment::registration::Registration>, Error> {
+    let Path(device) = path.map_err(|_| Error::Malformed)?;
+    audit.target_device(&device);
+    app.service
+        .registration(&auth, &device)
+        .await
+        .map(Json)
+        .map_err(Error::from)
 }
 async fn resume_enrollment(
     State(app): State<Arc<HttpState>>,
@@ -128,15 +108,15 @@ async fn revoke_registration(
     headers: crate::api::WriteHeaders,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::device::RevocationReceipt>, Error> {
-    let Path((device, registration)) = path.map_err(|_| Error::Malformed)?;
+    let Path(device) = path.map_err(|_| Error::Malformed)?;
     let Json(EmptyRequest {}) = input.map_err(Error::from)?;
     let key = write_key(&headers, &audit, "credential_revoke")?;
     audit.target_device(&device);
     app.devices
-        .revoke_inner(&auth.proof, &device, registration, key, &audit)
+        .revoke_inner(&auth.proof, &device, key, &audit)
         .await
         .map(Json)
         .map_err(Error::from)
@@ -178,7 +158,7 @@ pub(crate) fn register(
 > {
     use rss_mdm_http_contract::routing::{get, post};
     let router = {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { quotas_routes, registration_user_routes, channels_routes, post_create_enrollment, get_enrollment_status, get_registrations, post_resume_enrollment, post_cancel_enrollment, post_revoke_registration } }
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { quotas_routes, registration_user_routes, channels_routes, post_create_enrollment, get_enrollment_status, get_registration, post_resume_enrollment, post_cancel_enrollment, post_revoke_registration } }
         RegisterModule1 {
             quotas_routes: super::quotas::routes(),
             registration_user_routes: super::registration_user::routes(),
@@ -199,12 +179,12 @@ pub(crate) fn register(
                     &[RouteOperation::Get],
                 ),
             ),
-            get_registrations: rss_mdm_http_contract::module::Route::new(
-                "/devices/{device}/registrations",
+            get_registration: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/registration",
                 get(
-                    registrations,
-                    &contracts::DEVICE_REGISTRATIONS,
-                    &[RouteOperation::List],
+                    registration,
+                    &contracts::DEVICE_REGISTRATION,
+                    &[RouteOperation::Get],
                 ),
             ),
             post_resume_enrollment: rss_mdm_http_contract::module::Route::new(
@@ -224,7 +204,7 @@ pub(crate) fn register(
                 ),
             ),
             post_revoke_registration: rss_mdm_http_contract::module::Route::new(
-                "/devices/{device}/registrations/{registration}/revoke",
+                "/devices/{device}/registration/revoke",
                 post(
                     revoke_registration,
                     &contracts::DEVICES,
@@ -241,10 +221,3 @@ pub(crate) fn register(
 }
 
 use rss_mdm_audit_integration::RequestAudit;
-
-struct RegistrationsQuery;
-impl rss_mdm_http_contract::query::DirectoryOwner for RegistrationsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_registration_service::enrollment::registrations::SCHEMA
-    }
-}

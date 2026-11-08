@@ -65,8 +65,8 @@ pub async fn send(
     if response.header.message_id as usize >= limits.session_messages {
         return Ok(false);
     }
-    let capabilities = sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(i64::from(response.header.session_id)).fetch_optional(&mut *c).await.map_err(db)?;
+    let capabilities = sqlx::query_as::<_,(String,i32)>("SELECT os_version, edition FROM mdm_windows.capabilities WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3) AND capabilities.protocol_epoch = $4")
+        .bind(p.tenant().to_string()).bind(p.device()).bind(i64::from(response.header.session_id)).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some((version, edition)) = capabilities else {
         return Ok(false);
     };
@@ -83,8 +83,8 @@ pub async fn send(
         edition: Some(edition.try_into().map_err(|_| corrupt())?),
         scope: rss_mdm_windows_mdm::native::Scope::Device,
     };
-    let ids: Vec<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_access.collection_runs r LEFT JOIN LATERAL (SELECT * FROM mdm_windows.collections w0 WHERE w0.tenant_id=r.tenant_id AND w0.id=r.id ORDER BY (w0.session_id=$3) DESC, w0.first_command DESC LIMIT 1) w ON true WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.source='mdm.windows' AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate' AND r.deadline>clock_timestamp() AND (w.id IS NULL OR w.session_id=$3 OR EXISTS(SELECT 1 FROM mdm_access.management_sessions s WHERE s.tenant_id=w.tenant_id AND s.registration=w.registration AND s.session_id=w.session_id AND s.state='complete')) ORDER BY r.sequence LIMIT 1 FOR UPDATE OF r")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
+    let ids: Vec<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_access.collection_runs AS r LEFT JOIN LATERAL (SELECT * FROM mdm_windows.collections AS w0 WHERE w0.tenant_id = r.tenant_id AND w0.id = r.id ORDER BY w0.session_id = $3 DESC, w0.first_command DESC LIMIT 1) AS w ON TRUE WHERE r.tenant_id = CAST($1 AS uuid) AND r.device = $2 AND r.source = 'mdm.windows' AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate' AND r.deadline > clock_timestamp() AND (w.id IS NULL OR w.session_id = $3 OR EXISTS (SELECT 1 FROM mdm_access.management_sessions AS s WHERE (s.tenant_id = w.tenant_id AND s.device = w.device AND s.protocol_epoch = w.protocol_epoch AND s.session_id = w.session_id AND s.state = 'complete') AND s.protocol_epoch = $4)) ORDER BY r.sequence LIMIT 1 FOR UPDATE OF r")
+        .bind(p.tenant().to_string()).bind(p.device()).bind(response.header.session_id.to_string()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     for id in ids {
         if !source.collection_eligible(c, p, id, true).await? {
             continue;
@@ -111,8 +111,8 @@ pub async fn send(
             );
             continue;
         }
-        let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT template_state FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2 AND kind='template' AND session_id=$3")
-            .bind(p.tenant().to_string()).bind(id).bind(response.header.session_id.to_string()).fetch_optional(&mut *c).await.map_err(db)?;
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT template_state FROM mdm_windows.collections WHERE (tenant_id = CAST($1 AS uuid) AND id = $2 AND kind = 'template' AND session_id = $3) AND collections.protocol_epoch = $4")
+            .bind(p.tenant().to_string()).bind(id).bind(response.header.session_id.to_string()).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
         let fresh = bytes.is_none();
         let mut state = match bytes {
             Some(bytes) => open(protection, &run, id, response.header.session_id, &bytes)?,
@@ -174,11 +174,11 @@ pub async fn send(
         }
         let bytes = seal(protection, &run, id, response.header.session_id, &state)?;
         if fresh {
-            sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,kind,template_state) VALUES($1::uuid,$2,$3,$4,$5,$6,'template',$7)")
-                .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(bytes).execute(&mut *c).await.map_err(db)?;
+            sqlx::query("INSERT INTO mdm_windows.collections (tenant_id, id, device, session_id, request_message, first_command, kind, template_state, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'template', $7, $8)")
+                .bind(p.tenant().to_string()).bind(id).bind(p.device()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(bytes).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         } else {
-            sqlx::query("UPDATE mdm_windows.collections SET template_state=$3 WHERE tenant_id=$1::uuid AND id=$2 AND kind='template' AND session_id=$4")
-                .bind(p.tenant().to_string()).bind(id).bind(bytes).bind(response.header.session_id.to_string()).execute(&mut *c).await.map_err(db)?;
+            sqlx::query("UPDATE mdm_windows.collections SET template_state = $3 WHERE (tenant_id = CAST($1 AS uuid) AND id = $2 AND kind = 'template' AND session_id = $4) AND collections.protocol_epoch = $5")
+                .bind(p.tenant().to_string()).bind(id).bind(bytes).bind(response.header.session_id.to_string()).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         }
         if count > 0 {
             source
@@ -186,8 +186,8 @@ pub async fn send(
                 .await?;
         }
     }
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.sealed_at IS NULL AND w.kind='template' AND w.session_id=$3)")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_one(c).await.map_err(db)
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.collection_runs AS r INNER JOIN mdm_windows.collections AS w USING (tenant_id, id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.device = $2 AND r.sealed_at IS NULL AND w.kind = 'template' AND w.session_id = $3 AND w.protocol_epoch = $4)")
+        .bind(p.tenant().to_string()).bind(p.device()).bind(response.header.session_id.to_string()).bind(p.epoch()).fetch_one(c).await.map_err(db)
 }
 pub async fn receive(
     source: &dyn crate::participants::Business,
@@ -199,8 +199,8 @@ pub async fn receive(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<(s::Message, Vec<Uuid>), Error> {
     let tenant = p.tenant().to_string();
-    let rows = sqlx::query("SELECT id,template_state FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND registration=$2 AND session_id=$3 AND kind='template' ORDER BY first_command")
-        .bind(&tenant).bind(p.registration()).bind(message.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
+    let rows = sqlx::query("SELECT id, template_state FROM mdm_windows.collections WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = $3 AND kind = 'template') AND collections.protocol_epoch = $4 ORDER BY first_command")
+        .bind(&tenant).bind(p.device()).bind(message.header.session_id.to_string()).bind(p.epoch()).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     let mut runs = Vec::new();
     for row in rows {
@@ -325,7 +325,7 @@ pub async fn receive(
             }
         }
         let bytes = seal(protection, &run, id, message.header.session_id, &state)?;
-        sqlx::query("UPDATE mdm_windows.collections SET template_state=$3 WHERE tenant_id=$1::uuid AND id=$2 AND kind='template' AND session_id=$4").bind(&tenant).bind(id).bind(bytes).bind(message.header.session_id.to_string()).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("UPDATE mdm_windows.collections SET template_state = $3 WHERE (tenant_id = CAST($1 AS uuid) AND id = $2 AND kind = 'template' AND session_id = $4) AND collections.protocol_epoch = $5").bind(&tenant).bind(id).bind(bytes).bind(message.header.session_id.to_string()).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         match settlement(
             !state.pending() && run.attempts.complete(),
             message.final_message,

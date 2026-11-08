@@ -78,24 +78,8 @@
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "type": "string"
         },
-        "generation": {
-          "description": "Channel-local registration generation.",
-          "format": "uint64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": "integer"
-        },
         "operationId": {
           "description": "Registration operation replay identity.",
-          "format": "uuid",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          },
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "type": "string"
-        },
-        "registrationId": {
-          "description": "Immutable registration identity.",
           "format": "uuid",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
@@ -117,8 +101,6 @@
         "wireVersion",
         "operationId",
         "deviceId",
-        "registrationId",
-        "generation",
         "source",
         "epoch",
         "capabilities",

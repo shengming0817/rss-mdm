@@ -11,20 +11,20 @@ use zeroize::Zeroizing;
 pub(crate) struct Identity<'a> {
     pub operation: Uuid,
     pub device: &'a str,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 #[derive(Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Metadata {
     platform: String,
+    purpose: rss_mdm_registration_service::Purpose,
     deadline: i64,
     input_version: String,
     target: NativeTarget,
 }
 impl Metadata {
-    fn of(input: &Create) -> Self {
-        Self {
+    fn of(input: &Create) -> Result<Self, Error> {
+        Ok(Self {
+            purpose: input.task.purpose()?,
             platform: match &input.task {
                 super::Task::Windows { .. } => "windows",
                 super::Task::Macos { .. } => "macos",
@@ -33,7 +33,7 @@ impl Metadata {
             deadline: input.deadline,
             input_version: input.input_version.clone(),
             target: input.target.clone(),
-        }
+        })
     }
 }
 fn invalid() -> Error {
@@ -60,7 +60,7 @@ pub(crate) fn seal(
     if identity.operation != input.operation_id {
         return Err(invalid());
     }
-    let metadata = Metadata::of(input);
+    let metadata = Metadata::of(input)?;
     let bytes = Zeroizing::new(serde_json::to_vec(input).map_err(|_| invalid())?);
     let sealed = protector
         .seal_bytes(&bytes, &aad(tenant, identity, &metadata)?)
@@ -83,12 +83,6 @@ pub(crate) fn open_row(
     let identity = Identity {
         operation,
         device: &device,
-        registration: row
-            .try_get("registration")
-            .map_err(crate::control::database::db)?,
-        generation: row
-            .try_get("registration_generation")
-            .map_err(crate::control::database::db)?,
     };
     let metadata: Metadata = serde_json::from_value(
         row.try_get("input_context")
@@ -100,7 +94,7 @@ pub(crate) fn open_row(
         .open_bytes(&sealed, &aad(tenant, &identity, &metadata)?)
         .map_err(|_| invalid())?;
     let input: Create = serde_json::from_slice(plain.expose()).map_err(|_| invalid())?;
-    if input.operation_id != operation || Metadata::of(&input) != metadata {
+    if input.operation_id != operation || Metadata::of(&input)? != metadata {
         return Err(invalid());
     }
     Ok(input)

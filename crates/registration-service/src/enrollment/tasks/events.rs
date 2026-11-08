@@ -90,8 +90,6 @@ impl crate::enrollment::tasks::Transactions {
         self.validate_in(tx)?;
         let run = crate::enrollment::tasks::storage::load_run(profile, tx, id).await?;
         Ok(run.target.device == target.device
-            && run.target.registration == target.registration
-            && run.target.generation == target.generation
             && run.state.execution == rss_mdm_task_state::Execution::Running
             && run.state.started_at.is_some())
     }

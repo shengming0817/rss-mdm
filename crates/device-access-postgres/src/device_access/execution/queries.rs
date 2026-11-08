@@ -11,8 +11,6 @@ pub struct Record {
     pub policy_id: Uuid,
     pub version_id: Uuid,
     pub device: String,
-    pub registration_id: Uuid,
-    pub generation: i64,
     pub occurrence: String,
     pub available_at: i64,
     pub deadline: i64,
@@ -21,7 +19,7 @@ pub struct Record {
     pub attempt_id: Option<Uuid>,
     pub result: Option<w::AccessResult>,
 }
-const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'registrationId',r.registration,'generation',r.generation,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'authorization',NULL::jsonb,'attemptId',r.state->'delivery'->>'attempt'";
+const METADATA: &str = "'taskId',r.id,'policyId',v.policy,'versionId',v.id,'device',r.device,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'authorization',NULL::jsonb,'attemptId',r.state->'delivery'->>'attempt'";
 pub async fn page_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
@@ -71,7 +69,7 @@ pub async fn detail_on(
     ))
 }
 
-/// Correlate only original registration/generation coordinates, including declared Windows children.
+/// Correlate only the original device identity.
 pub async fn assignment_ids_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
@@ -79,7 +77,7 @@ pub async fn assignment_ids_on(
     target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
     channel: rss_mdm_inventory::Channel,
 ) -> Result<Vec<Uuid>> {
-    Ok(sqlx::query_scalar("SELECT r.id FROM rss_da.access_runs r JOIN rss_da.policy_versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.device=$3 AND $6='agent' AND r.registration=$4 AND r.generation=$5 ORDER BY r.id").bind(tenant.to_string()).bind(policy).bind(&target.device).bind(target.registration_id).bind(target.generation).bind(channel.as_str()).fetch_all(c).await?)
+    Ok(sqlx::query_scalar("SELECT r.id FROM rss_da.access_runs AS r INNER JOIN rss_da.policy_versions AS v ON (v.tenant_id, v.id) = (r.tenant_id, r.policy_version) WHERE r.tenant_id = CAST($1 AS uuid) AND v.policy = $2 AND r.device = $3 AND $4 = 'agent' ORDER BY r.id").bind(tenant.to_string()).bind(policy).bind(&target.device).bind(channel.as_str()).fetch_all(c).await?)
 }
 
-pub const RELATION_SQL: &str = "SELECT r.id,r.device,'action_run'::text AS kind,r.registration,r.generation,'policy'::text AS source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') AS status,0::bigint AS input_bytes FROM rss_da.access_runs r JOIN rss_da.policy_versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid";
+pub const RELATION_SQL: &str = "SELECT r.id, r.device, CAST('action_run' AS text) AS kind, CAST('policy' AS text) AS source_kind, r.policy_version, v.policy, r.deadline, COALESCE(r.state ->> 'execution', 'unknown') AS status, CAST(0 AS bigint) AS input_bytes FROM rss_da.access_runs AS r INNER JOIN rss_da.policy_versions AS v ON (v.tenant_id, v.id) = (r.tenant_id, r.policy_version) WHERE r.tenant_id = CAST($1 AS uuid)";

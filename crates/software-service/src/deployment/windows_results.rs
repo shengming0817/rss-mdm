@@ -7,8 +7,7 @@ pub type Pending<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, crate::deployment::Error>> + Send + 'a>>;
 pub struct Read {
     pub id: Uuid,
-    pub registration: Uuid,
-    pub registration_generation: i64,
+    pub device: String,
     pub request: rss_mdm_windows_mdm::native::Execution,
     pub values: bool,
 }
@@ -18,8 +17,7 @@ pub struct Evidence {
 }
 pub struct InstallationRead {
     pub id: Uuid,
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub snapshot: Option<Uuid>,
 }
 #[derive(Debug, Default, PartialEq, Eq)]

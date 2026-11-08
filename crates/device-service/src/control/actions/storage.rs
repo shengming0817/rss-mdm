@@ -45,7 +45,7 @@ pub async fn read_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
 }
 async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{if locked {sqlx::query("SELECT id FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?;}sqlx::query("SELECT w.operation AS retirement,a.origin,a.source_kind,a.policy_version,a.device,a.registration::text,a.generation,a.available_at,a.deadline,a.state,a.result,a.source_objects FROM mdm_devices.unmanage_runs a LEFT JOIN mdm_devices.retirement_work w ON(w.tenant_id,w.execution)=(a.tenant_id,a.id) LEFT JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(w.tenant_id,w.operation) WHERE a.tenant_id=$1::uuid AND a.id=$2::uuid ").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::control::missing::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{if locked {sqlx::query("SELECT id FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?;}sqlx::query("SELECT w.operation AS retirement, a.origin, a.source_kind, a.policy_version, a.device, CAST(a.device AS text), a.available_at, a.deadline, a.state, a.result, a.source_objects FROM mdm_devices.unmanage_runs AS a LEFT JOIN mdm_devices.retirement_work AS w ON (w.tenant_id, w.execution) = (a.tenant_id, a.id) LEFT JOIN mdm_devices.retirements AS o ON (o.tenant_id, o.id) = (w.tenant_id, w.operation) WHERE a.tenant_id = CAST($1 AS uuid) AND a.id = CAST($2 AS uuid)").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::control::missing::ExecutionError::MissingTask))?;
     Ok(Run {
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         retirement: row.try_get("retirement")?,
@@ -58,8 +58,6 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
         },
         target: Target {
             device: row.try_get("device")?,
-            registration: stored(Uuid::parse_str(&row.try_get::<String, _>("registration")?))?,
-            generation: row.try_get("generation")?,
         },
         source_objects: stored(serde_json::from_value(row.try_get("source_objects")?))?,
         available_at: row.try_get("available_at")?,
@@ -116,8 +114,8 @@ pub async fn save_run(
                 data: EventData::Policy {
                     run_id: run.id,
                     policy_version: version,
-                    registration_id: run.target.registration,
-                    generation: run.target.generation,
+                    device_id: run.target.device.to_string(),
+
                     status: status.into(),
                 },
             };
@@ -236,7 +234,7 @@ impl ScheduledPolicy {
 pub(crate) async fn agent_profile_in(
     service: &crate::control::transactions::Transactions,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    registration: String,
 ) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
     let profile = crate::control::agent_facts::agent_binding_in(
         tx,

@@ -187,17 +187,11 @@ impl Subject {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
     pub subject: Subject,
 }
 impl Binding {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.device.is_empty()
-            || self.device.len() > 256
-            || self.registration.is_nil()
-            || self.generation < 1
-        {
+        if self.device.is_empty() || self.device.len() > 256 {
             return Err(Error::Malformed);
         }
         self.subject.validate()

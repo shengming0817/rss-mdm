@@ -55,10 +55,14 @@ pub struct TelemetryGap {
 pub struct TelemetryGapReport {
     /// Stable idempotency identity.
     pub report_id: uuid::Uuid,
-    /// Original registration, including during credential renewal.
-    pub registration_id: uuid::Uuid,
-    /// Original registration generation.
-    pub generation: u64,
+    /// Original device identity, checked against the authenticated transport.
+    #[serde(
+        rename = "deviceId",
+        deserialize_with = "crate::runtime::profile_device"
+    )]
+    #[schemars(schema_with = "crate::runtime::device_schema")]
+    pub device_id: String,
+
     /// Immutable report creation UTC microsecond; never renewed on retry.
     pub created_at: i64,
     /// At most one aggregate per closed reason.
@@ -68,9 +72,7 @@ impl TelemetryGapReport {
     /// Structural validation; current device authority and receiver time remain server-owned.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.report_id.is_nil()
-            || self.registration_id.is_nil()
-            || self.generation == 0
-            || self.generation > i64::MAX as u64
+            || !crate::runtime::valid_device_id(&self.device_id)
             || self.created_at <= 0
             || self
                 .created_at

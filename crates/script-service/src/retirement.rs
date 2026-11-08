@@ -1,13 +1,13 @@
-//! Cancel exact registration work without a second transaction or terminal-result mirror.
+//! Cancel exact device work without a second transaction or terminal-result mirror.
 use crate::{Error, transaction::Result};
-use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit};
+use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit, operation::OperationOwner};
 use sqlx::Row;
 use uuid::Uuid;
 pub async fn retire_in(
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<Fact>,
     tenant: &str,
-    registration: Uuid,
+    device: String,
 ) -> Result<()> {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
@@ -16,11 +16,12 @@ pub async fn retire_in(
         "credential_revoke",
         AuditIntent::Management,
     );
-    audit.identify_service("registration-retirement");
-    audit.registration(registration);
+    audit.identify_service("device-retirement");
+    audit.target_device(&device);
+
     let mut after = Uuid::nil();
     loop {
-        let rows = sqlx::query("SELECT id,state AS state FROM mdm_script.runs a WHERE tenant_id=$1::uuid AND registration=$2 AND id>$3 AND ((state->>'execution' IN ('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none')) AND EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE (r.tenant_id,r.id)=(a.tenant_id,a.registration) AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices d WHERE (d.tenant_id,d.id)=(r.tenant_id,r.device) AND d.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE (w.tenant_id,w.execution)=(a.tenant_id,a.id))))) ORDER BY id LIMIT 64").bind(tenant).bind(registration).bind(after).fetch_all(&mut *c).await?;
+        let rows = sqlx::query("SELECT id,state AS state FROM mdm_script.runs a WHERE tenant_id=$1::uuid AND device=$2 AND id>$3 AND ((state->>'execution' IN ('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none')) AND EXISTS(SELECT 1 FROM mdm_access.devices r WHERE (r.tenant_id,r.id)=(a.tenant_id,a.device) AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices d WHERE (d.tenant_id,d.id)=(r.tenant_id,r.id) AND d.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE (w.tenant_id,w.execution)=(a.tenant_id,a.id))))) ORDER BY id LIMIT 64").bind(tenant).bind(&device).bind(after).fetch_all(&mut *c).await?;
         let count = rows.len();
         for row in rows {
             let id: Uuid = row.try_get("id")?;
@@ -31,7 +32,7 @@ pub async fn retire_in(
                     crate::stored(serde_json::from_value(previous.clone()))?;
                 state.cancel();
                 sqlx::query_scalar::<_, bool>("SELECT mdm_script.save_retired_run($1,$2,$3,$4)")
-                    .bind(registration)
+                    .bind(&device)
                     .bind(id)
                     .bind(previous)
                     .bind(serde_json::to_value(state).map_err(|_| Error::Malformed)?)
@@ -43,11 +44,16 @@ pub async fn retire_in(
             if !changed {
                 return Err(Error::Conflict.into());
             }
-            audit.target(&id.to_string());
+            audit.owned_operation(
+                OperationOwner::Script,
+                id,
+                "credential_revoke",
+                AuditIntent::Management,
+            );
             facts.push(Fact::business(
                 &audit,
-                rss_mdm_audit_integration::operation::OperationOwner::Script,
-                &format!("registration-retirement:{registration}:task:{id}"),
+                OperationOwner::Script,
+                &format!("device-retirement:{device}:task:{id}"),
                 200,
                 "success",
                 None,
@@ -61,13 +67,13 @@ pub async fn retire_in(
     Ok(())
 }
 
-/// Pending execution and the first unconfirmed task across every retirement registration.
+/// Pending execution and the first unconfirmed task across every retirement device.
 pub async fn progress_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registrations: &[Uuid],
+    devices: &[String],
 ) -> Result<(bool, Option<Uuid>)> {
-    let row: (bool, Option<Uuid>) = sqlx::query_as("SELECT count(*)>0,(array_agg(t.id ORDER BY t.id) FILTER(WHERE t.state->>'execution'='unknown'))[1] FROM mdm_script.runs t WHERE t.tenant_id=$1::uuid AND t.registration=ANY($2) AND (t.state->>'execution' IN('running','waiting_reboot','unknown'))")
-        .bind(tenant).bind(registrations).fetch_one(c).await?;
+    let row: (bool, Option<Uuid>) = sqlx::query_as("SELECT count(*)>0,(array_agg(t.id ORDER BY t.id) FILTER(WHERE t.state->>'execution'='unknown'))[1] FROM mdm_script.runs t WHERE t.tenant_id=$1::uuid AND t.device=ANY($2) AND (t.state->>'execution' IN('running','waiting_reboot','unknown'))")
+        .bind(tenant).bind(devices).fetch_one(c).await?;
     Ok(row)
 }

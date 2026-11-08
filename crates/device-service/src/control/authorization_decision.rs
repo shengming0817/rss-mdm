@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum BlockReason {
     LifecycleBlocked,
-    RegistrationChanged,
+    DeviceInactive,
     InputMismatch,
     SourceInvalid,
 }
@@ -28,7 +28,7 @@ pub enum ReauthorizationReason {
     Terminal,
     AlreadyReceived,
     Expired,
-    RegistrationChanged,
+    DeviceInactive,
     InputMismatch,
     Unsupported,
 }
@@ -51,21 +51,17 @@ use std::collections::BTreeMap;
 pub(crate) fn decide(
     operation: &Operation,
     lifecycle: bool,
-    registration: Option<(Uuid, i64)>,
+    registration: Option<String>,
     source: bool,
 ) -> Result<Authorization> {
     let reason = if !lifecycle {
         Some(BlockReason::LifecycleBlocked)
     } else if matches!(operation.authority, Authority::DeviceControl { .. })
-        && !operation.authority.control_matches(
-            &operation.request,
-            operation.registration,
-            operation.registration_generation,
-        )?
+        && !operation.authority.control_matches(&operation.request)?
     {
         Some(BlockReason::InputMismatch)
-    } else if registration != Some((operation.registration, operation.registration_generation)) {
-        Some(BlockReason::RegistrationChanged)
+    } else if registration != Some(operation.device.clone()) {
+        Some(BlockReason::DeviceInactive)
     } else if !source {
         Some(BlockReason::SourceInvalid)
     } else {
@@ -82,7 +78,7 @@ pub(crate) fn reauthorization(
     operation: &Operation,
     status: dc::Status,
     now: i64,
-    registration: Option<(Uuid, i64)>,
+    registration: Option<String>,
     supported: bool,
     permitted: bool,
 ) -> Result<Reauthorization> {
@@ -90,11 +86,7 @@ pub(crate) fn reauthorization(
     let Authority::DeviceControl { confirmation, .. } = &operation.authority else {
         return Ok(Reauthorization::NotApplicable);
     };
-    let reason = if !operation.authority.control_matches(
-        &operation.request,
-        operation.registration,
-        operation.registration_generation,
-    )? {
+    let reason = if !operation.authority.control_matches(&operation.request)? {
         Some(R::InputMismatch)
     } else if !permitted {
         Some(R::PermissionDenied)
@@ -104,8 +96,8 @@ pub(crate) fn reauthorization(
         Some(R::AlreadyReceived)
     } else if now >= operation.request.deadline {
         Some(R::Expired)
-    } else if registration != Some((operation.registration, operation.registration_generation)) {
-        Some(R::RegistrationChanged)
+    } else if registration != Some(operation.device.clone()) {
+        Some(R::DeviceInactive)
     } else if !supported {
         Some(R::Unsupported)
     } else {
@@ -114,7 +106,7 @@ pub(crate) fn reauthorization(
     Ok(match reason {
         Some(reason) => Reauthorization::Unavailable { reason },
         None => Reauthorization::Available {
-            confirmation_required: confirmation.is_some(),
+            confirmation_required: *confirmation,
         },
     })
 }
@@ -184,15 +176,8 @@ pub(crate) async fn batch(
             )
             .await
         }?;
-        let mut current = BTreeMap::<String, Option<(Uuid, i64)>>::new();
-        for (device, id, generation) in rows {
-            current
-                .entry(device)
-                .and_modify(|v| *v = None)
-                .or_insert(Some((id, generation)));
-        }
-        for (device, value) in current {
-            registrations.insert((device, purpose.as_str()), value);
+        for device in rows {
+            registrations.insert((device.clone(), purpose.as_str()), Some(device));
         }
     }
     let mut permissions = BTreeMap::new();
@@ -216,7 +201,7 @@ pub(crate) async fn batch(
                 operation.device.clone(),
                 operation.request.task.purpose()?.as_str(),
             ))
-            .copied()
+            .cloned()
             .flatten();
         let status = *statuses
             .get(&operation.id)
@@ -230,8 +215,8 @@ pub(crate) async fn batch(
             controls.push((
                 operation.id,
                 device_control::Check {
-                    registration: operation.registration,
-                    generation: operation.registration_generation,
+                    device: operation.device.to_string(),
+
                     source: operation.request.task.source(),
                     action,
                 },
@@ -246,7 +231,10 @@ pub(crate) async fn batch(
             queries.tenant,
             queries.apple_results.clone(),
             queries.windows_results.clone(),
-            &controls.iter().map(|(_, check)| *check).collect::<Vec<_>>(),
+            &controls
+                .iter()
+                .map(|(_, check)| check.clone())
+                .collect::<Vec<_>>(),
         )
         .await?
         .into_iter()
@@ -263,7 +251,7 @@ pub(crate) async fn batch(
                 operation.device.clone(),
                 operation.request.task.purpose()?.as_str(),
             ))
-            .copied()
+            .cloned()
             .flatten();
         let decision = decide(
             operation,
@@ -301,7 +289,7 @@ pub(crate) async fn batch(
                 operation.device.clone(),
                 operation.request.task.purpose()?.as_str(),
             ))
-            .copied()
+            .cloned()
             .flatten();
         let authorization = decisions.remove(&operation.id).ok_or(Error::Conflict)?;
         let permitted = permissions.get(&operation.id) == Some(&true);

@@ -2,21 +2,30 @@
 CREATE SCHEMA mdm_telemetry;
 REVOKE ALL ON SCHEMA mdm_telemetry FROM PUBLIC;
 CREATE TABLE mdm_telemetry.batches (
- tenant_id uuid NOT NULL, id uuid NOT NULL, device text NOT NULL,
- registration uuid NOT NULL, credential uuid NOT NULL, generation bigint NOT NULL,
- source text NOT NULL CHECK(source IN ('agent.native','agent.script','agent.osquery')), epoch uuid NOT NULL,
- policy uuid NOT NULL, policy_version uuid NOT NULL,
- input_digest bytea NOT NULL CHECK(octet_length(input_digest)=32),
- context_digest bytea NOT NULL CHECK(octet_length(context_digest)=32),
- fields text[] NOT NULL CHECK(cardinality(fields) BETWEEN 1 AND 64),
- received_at bigint NOT NULL CHECK(received_at>=0),
- delivery text NOT NULL CHECK(delivery IN ('pending','published','unknown','blocked')),
- first_observed bigint NOT NULL, last_observed bigint NOT NULL CHECK(last_observed>=first_observed),
- quality jsonb NOT NULL CHECK(jsonb_typeof(quality)='object'),
- observations uuid[] NOT NULL CHECK(cardinality(observations) BETWEEN 1 AND 4096),current_assets boolean NOT NULL,
- PRIMARY KEY(tenant_id,id)
+    tenant_id uuid NOT NULL
+  , id uuid NOT NULL
+  , device text NOT NULL
+  , credential uuid NOT NULL
+  , source text NOT NULL CHECK (source IN ('agent.native', 'agent.script', 'agent.osquery'))
+  , epoch uuid NOT NULL
+  , policy uuid NOT NULL
+  , policy_version uuid NOT NULL
+  , input_digest bytea NOT NULL CHECK (octet_length(input_digest) = 32)
+  , context_digest bytea NOT NULL CHECK (octet_length(context_digest) = 32)
+  , fields text[] NOT NULL CHECK (cardinality(fields) BETWEEN 1 AND 64)
+  , received_at bigint NOT NULL CHECK (received_at >= 0)
+  , delivery text NOT NULL CHECK (delivery IN ('pending', 'published', 'unknown', 'blocked'))
+  , first_observed bigint NOT NULL
+  , last_observed bigint NOT NULL CHECK (last_observed >= first_observed)
+  , quality jsonb NOT NULL CHECK (jsonb_typeof(quality) = 'object')
+  , observations uuid[] NOT NULL CHECK (cardinality(observations) BETWEEN 1 AND 4096)
+  , current_assets boolean NOT NULL
+  , PRIMARY KEY (tenant_id, id)
 );
-CREATE INDEX pending_registration ON mdm_telemetry.batches(tenant_id,registration) WHERE delivery<>'published';
+CREATE INDEX pending_registration
+  ON mdm_telemetry.batches (tenant_id
+                          , device)
+  WHERE delivery <> 'published';
 CREATE TABLE mdm_telemetry.rate_windows (
  tenant_id uuid NOT NULL, minute bigint NOT NULL, batches bigint NOT NULL CHECK(batches>0), bytes bigint NOT NULL CHECK(bytes>0),
  PRIMARY KEY(tenant_id)
@@ -107,16 +116,19 @@ GRANT SELECT,INSERT ON mdm_telemetry.storage_binding TO mdm_telemetry_runtime;
 
 -- Device-reported bounded diagnostics, not field coverage or sampled values.
 CREATE TABLE mdm_telemetry.gap_reports (
- tenant_id uuid NOT NULL,id uuid NOT NULL,device text NOT NULL,
- registration uuid NOT NULL,generation bigint NOT NULL CHECK(generation>0),
- input_digest bytea NOT NULL CHECK(octet_length(input_digest)=32),
- report jsonb NOT NULL CHECK(jsonb_typeof(report)='object'),
- received_at bigint NOT NULL CHECK(received_at>=0),
- expires_at bigint NOT NULL CHECK(expires_at>received_at),
- PRIMARY KEY(tenant_id,id)
+    tenant_id uuid NOT NULL
+  , id uuid NOT NULL
+  , device text NOT NULL
+  , input_digest bytea NOT NULL CHECK (octet_length(input_digest) = 32)
+  , report jsonb NOT NULL CHECK (jsonb_typeof(report) = 'object')
+  , received_at bigint NOT NULL CHECK (received_at >= 0)
+  , expires_at bigint NOT NULL CHECK (expires_at > received_at)
+  , PRIMARY KEY (tenant_id, id)
 );
 CREATE INDEX gap_expiry ON mdm_telemetry.gap_reports(tenant_id,expires_at,id);
-CREATE INDEX gap_registration ON mdm_telemetry.gap_reports(tenant_id,registration);
+CREATE INDEX gap_registration
+  ON mdm_telemetry.gap_reports (tenant_id
+                              , device);
 CREATE INDEX gap_device_receipt ON mdm_telemetry.gap_reports(tenant_id,device,received_at,id);
 ALTER TABLE mdm_telemetry.gap_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.gap_reports FORCE ROW LEVEL SECURITY;

@@ -54,7 +54,7 @@ impl Queries {
         now: i64,
     ) -> crate::deployment::Result<Vec<crate::deployment::queries::records::RunSummary>> {
         let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT jsonb_build_object('taskId',r.id,'authorization',r.invocation->'authorization','attemptId',r.state->'delivery'->>'attempt','device',r.device,'registrationId',r.registration,'generation',r.generation,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'userAction',CASE WHEN v.frozen->>'kind'='software' AND v.frozen->'action'->>'intent'='available_install' AND r.state->>'execution'='not_started' AND r.state->>'cancellation'='none' AND r.state->'delivery'->>'kind' IN ('claimed','received') AND (r.state->'delivery'->>'leaseUntil')::bigint>$5 THEN 'waiting_user' ELSE NULL END,'result',",
+            "SELECT jsonb_build_object('taskId',r.id,'authorization',r.invocation->'authorization','attemptId',r.state->'delivery'->>'attempt','device',r.device,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'userAction',CASE WHEN v.frozen->>'kind'='software' AND v.frozen->'action'->>'intent'='available_install' AND r.state->>'execution'='not_started' AND r.state->>'cancellation'='none' AND r.state->'delivery'->>'kind' IN ('claimed','received') AND (r.state->'delivery'->>'leaseUntil')::bigint>$5 THEN 'waiting_user' ELSE NULL END,'result',",
         );
         query.push(RESULT_SUMMARY_SQL).push(") FROM mdm_software_deployment.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND ($3::bigint IS NULL OR (r.available_at,r.id)<($3,$4)) ORDER BY r.available_at DESC,r.id DESC LIMIT $6");
         query
@@ -109,7 +109,7 @@ impl Queries {
         } else {
             vec![]
         };
-        let mut value:Value=sqlx::query_scalar("SELECT jsonb_build_object('taskId',r.id,'authorization',r.invocation->'authorization','attemptId',r.state->'delivery'->>'attempt','device',r.device,'registrationId',r.registration,'generation',r.generation,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'result',r.result) FROM mdm_software_deployment.action_runs r WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(self.tenant.to_string()).bind(id).fetch_one(c).await?;
+        let mut value:Value=sqlx::query_scalar("SELECT jsonb_build_object('taskId', r.id, 'authorization', r.invocation -> 'authorization', 'attemptId', r.state -> 'delivery' ->> 'attempt', 'device', r.device, 'availableAt', r.available_at, 'deadline', r.deadline, 'state', r.state, 'effect', COALESCE(r.result ->> 'effect', 'unverified'), 'result', r.result) FROM mdm_software_deployment.action_runs AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2").bind(self.tenant.to_string()).bind(id).fetch_one(c).await?;
         value["nodes"] = json!(nodes);
         value["policyId"] = json!(policy);
         value["userAction"] = json!(user_action);

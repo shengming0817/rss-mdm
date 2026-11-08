@@ -16,16 +16,16 @@ CREATE TABLE mdm_devices.associations (
  CHECK((state='revoked')=(reason IS NOT NULL))
 );
 CREATE TABLE mdm_devices.members (
- tenant_id uuid NOT NULL, association_id uuid NOT NULL,
- device text NOT NULL, channel text NOT NULL CHECK(channel IN ('mdm','agent')),
- registration_id uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
- released boolean NOT NULL DEFAULT false,
- PRIMARY KEY(tenant_id,association_id,channel),
- UNIQUE(tenant_id,association_id,device),
- FOREIGN KEY(tenant_id,association_id) REFERENCES mdm_devices.associations(tenant_id,id),
- FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id),
- FOREIGN KEY(tenant_id,registration_id,generation) REFERENCES mdm_access.registrations(tenant_id,id,generation),
- FOREIGN KEY(tenant_id,registration_id,channel) REFERENCES mdm_access.registrations(tenant_id,id,channel)
+    tenant_id uuid NOT NULL
+  , association_id uuid NOT NULL
+  , device text NOT NULL
+  , channel text NOT NULL CHECK (channel IN ('mdm', 'agent'))
+  , released boolean NOT NULL DEFAULT FALSE
+  , PRIMARY KEY (tenant_id, association_id, channel)
+  , UNIQUE (tenant_id, association_id, device)
+  , FOREIGN KEY (tenant_id, association_id) REFERENCES mdm_devices.associations (tenant_id, id)
+  , FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices (tenant_id, id)
+  , FOREIGN KEY (tenant_id, device, channel) REFERENCES mdm_access.devices (tenant_id, id, channel)
 );
 CREATE UNIQUE INDEX one_unreleased_association ON mdm_devices.members(tenant_id,device) WHERE NOT released;
 CREATE TABLE mdm_devices.operations (
@@ -48,7 +48,9 @@ GRANT USAGE ON SCHEMA mdm_devices TO mdm_access,mdm_inventory_runtime,mdm_scope_
 GRANT SELECT,INSERT ON mdm_devices.associations,mdm_devices.members,mdm_devices.operations TO mdm_access;
 GRANT SELECT ON mdm_devices.associations,mdm_devices.members TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 GRANT UPDATE(version,state,evidence,hardware,confirmed_by,confirmed_at,revoked_by,revoked_at,reason) ON mdm_devices.associations TO mdm_access;
-GRANT UPDATE(registration_id,generation,released) ON mdm_devices.members TO mdm_access;
+GRANT UPDATE (released)
+  ON TABLE mdm_devices.members
+  TO mdm_access;
 CREATE TABLE mdm_devices.checkpoints (
  tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), from_cut jsonb,to_cut jsonb,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),page_through bigint CHECK(page_through>event_after),cursor text COLLATE "C",rebuild_after text COLLATE "C",rebuilding boolean NOT NULL DEFAULT true,object_revision bigint NOT NULL DEFAULT 0 CHECK(object_revision>=0),current_cut uuid,
@@ -86,16 +88,18 @@ CREATE TABLE mdm_devices.retirements (
  CHECK((forced_at IS NULL)=(forced_by IS NULL))
 );
 CREATE TABLE mdm_devices.retirement_channels (
- tenant_id uuid NOT NULL, operation uuid NOT NULL,
- device text NOT NULL, channel text NOT NULL CHECK(channel IN('mdm','agent')),
- registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
- parent_registration uuid,
- stage text NOT NULL CHECK(stage IN('cleanup','unenroll','revoke','complete')),
- effect text NOT NULL CHECK(effect IN('pending','confirmed','unknown','blocked')),
- execution uuid, blocking_execution uuid, reason text,
- PRIMARY KEY(tenant_id,operation,registration),
- FOREIGN KEY(tenant_id,operation) REFERENCES mdm_devices.retirements(tenant_id,id),
- FOREIGN KEY(tenant_id,registration,generation) REFERENCES mdm_access.registrations(tenant_id,id,generation)
+    tenant_id uuid NOT NULL
+  , operation uuid NOT NULL
+  , device text NOT NULL
+  , channel text NOT NULL CHECK (channel IN ('mdm', 'agent'))
+  , stage text NOT NULL CHECK (stage IN ('cleanup', 'unenroll', 'revoke', 'complete'))
+  , effect text NOT NULL CHECK (effect IN ('pending', 'confirmed', 'unknown', 'blocked'))
+  , execution uuid
+  , blocking_execution uuid
+  , reason text
+  , PRIMARY KEY (tenant_id, operation, device)
+  , FOREIGN KEY (tenant_id, operation) REFERENCES mdm_devices.retirements (tenant_id, id)
+  , FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices (tenant_id, id)
 );
 ALTER TABLE mdm_devices.retirements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.retirements FORCE ROW LEVEL SECURITY;
@@ -112,9 +116,12 @@ GRANT UPDATE(stage,effect,execution,blocking_execution,reason) ON mdm_devices.re
 CREATE INDEX pending_retirement_channels ON mdm_devices.retirement_channels(tenant_id,operation) WHERE stage<>'complete';
 
 CREATE TABLE mdm_devices.retirement_work (
- tenant_id uuid NOT NULL, operation uuid NOT NULL, registration uuid NOT NULL, execution uuid NOT NULL,
- PRIMARY KEY(tenant_id,execution),
- FOREIGN KEY(tenant_id,operation,registration) REFERENCES mdm_devices.retirement_channels(tenant_id,operation,registration)
+    tenant_id uuid NOT NULL
+  , operation uuid NOT NULL
+  , device text NOT NULL
+  , execution uuid NOT NULL
+  , PRIMARY KEY (tenant_id, execution)
+  , FOREIGN KEY (tenant_id, operation, device) REFERENCES mdm_devices.retirement_channels (tenant_id, operation, device)
 );
 ALTER TABLE mdm_devices.retirement_work ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.retirement_work FORCE ROW LEVEL SECURITY;
@@ -147,13 +154,13 @@ COMMIT;
 
 -- A source-sharing grant depends on this exact confirmed association, not peer liveness.
 -- This lets one transport retire without destroying the surviving transport's custody.
-CREATE FUNCTION mdm_devices.association_grant_current(p_id uuid,p_version bigint,p_registration uuid,p_generation bigint)
+CREATE FUNCTION mdm_devices.association_grant_current(p_id uuid,p_version bigint,p_device text)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT EXISTS(SELECT FROM mdm_devices.associations a JOIN mdm_devices.members m
   ON(m.tenant_id,m.association_id)=(a.tenant_id,a.id)
   WHERE a.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
    AND a.id=p_id AND a.version=p_version AND a.state='confirmed' AND NOT m.released
-   AND m.registration_id=p_registration AND m.generation=p_generation)
+   AND m.device=p_device)
 $$;
-REVOKE ALL ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,uuid,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,uuid,bigint) TO mdm_access,mdm_command_runtime,mdm_identity_runtime;
+REVOKE ALL ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,text) TO mdm_access,mdm_command_runtime,mdm_identity_runtime;

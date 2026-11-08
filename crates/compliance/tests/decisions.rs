@@ -48,8 +48,7 @@ fn platform_evidence_preserves_all_valid_agent_sources() {
     let sources = ["agent.builtin", "agent.script", "agent.osquery"]
         .map(|source| SourceReference {
             source: source.into(),
-            registration: "registration".into(),
-            generation: "1".into(),
+            device_id: "device".into(),
             epoch: "epoch".into(),
         })
         .to_vec();

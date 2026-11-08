@@ -13,12 +13,12 @@ WITH context AS (
 ), associations AS (
  SELECT jsonb_build_object('id',a.id,'version',a.version,'state',a.state,'evidence',a.evidence,'hardware',a.hardware,
   'confirmedBy',a.confirmed_by,'confirmedAt',a.confirmed_at,'revokedBy',a.revoked_by,'revokedAt',a.revoked_at,'reason',a.reason,
-  'members',(SELECT jsonb_agg(jsonb_build_object('device',m.device,'channel',m.channel,'registrationId',m.registration_id,'generation',m.generation) ORDER BY m.channel) FROM mdm_devices.members m WHERE (m.tenant_id,m.association_id)=(a.tenant_id,a.id))) AS document
+  'members',(SELECT jsonb_agg(jsonb_build_object('device',m.device,'channel',m.channel) ORDER BY m.channel) FROM mdm_devices.members m WHERE (m.tenant_id,m.association_id)=(a.tenant_id,a.id))) AS document
  FROM mdm_devices.associations a WHERE a.tenant_id=(SELECT tenant FROM context) AND a.id=ANY(p_associations)
 ), primary_registrations AS (
- SELECT jsonb_build_object('device',r.device,'channel',r.channel,'registrationId',r.id,'generation',r.generation) AS document
- FROM mdm_access.registrations r WHERE r.tenant_id=(SELECT tenant FROM context) AND r.device=ANY(p_devices) AND r.purpose='primary' AND r.state='active'
- AND EXISTS(SELECT FROM mdm_access.credentials k WHERE(k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active')
+ SELECT jsonb_build_object('device',r.id,'channel',r.channel) AS document
+ FROM mdm_access.devices r WHERE r.tenant_id=(SELECT tenant FROM context) AND r.id=ANY(p_devices) AND r.purpose='primary' AND r.state='active'
+ AND EXISTS(SELECT FROM mdm_access.credentials k WHERE(k.tenant_id,k.device)=(r.tenant_id,r.id) AND k.state='active' AND k.purpose='primary')
 ), keys AS (
  SELECT DISTINCT kind,value FROM mdm_assets.hardware_keys WHERE tenant_id=(SELECT tenant FROM context) AND device=ANY(p_devices)
 ), peers AS (

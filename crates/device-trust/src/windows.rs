@@ -11,7 +11,6 @@ use rss_mdm_certificate::{
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio_rustls::rustls::{pki_types::CertificateDer, server::danger::ClientCertVerifier};
-use uuid::Uuid;
 use x509_cert::{
     Certificate,
     der::{Decode, Encode, asn1::ObjectIdentifier},
@@ -82,16 +81,11 @@ impl WindowsDeviceTrust {
         }
         Ok(end)
     }
-    pub fn profile(
-        &self,
-        csr: &Csr,
-        registration: Uuid,
-        now: i64,
-    ) -> Result<IssuanceProfile, Error> {
+    pub fn profile(&self, csr: &Csr, device: &str, now: i64) -> Result<IssuanceProfile, Error> {
         let end = self.issuance_end(now)?;
         Ok(IssuanceProfile {
             version: 1,
-            registration,
+            device: device.to_owned(),
             start: now,
             end,
             spki: Sha256::digest(csr.public_key().to_der().map_err(invalid)?).into(),
@@ -112,7 +106,7 @@ impl WindowsDeviceTrust {
         // Go's CA encodes an ASCII UUID CN as PrintableString; Rust's Name parser
         // uses UTF8String. The strict Windows leaf profile already rejects extra RDNs.
         // Compare the canonical authorized value rather than a string encoding tag.
-        let subject = format!("CN={}", profile.registration);
+        let subject = format!("CN={}", profile.device);
         if profile.version != 1
             || profile.issuer
                 != Sha256::digest(crate::decode(

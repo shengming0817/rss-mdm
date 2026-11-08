@@ -1,5 +1,5 @@
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
-('rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb)','sql','boolean',true,false,'v',ARRAY['p_registration','p_run','p_previous','p_state']::text[],ARRAY['search_path=pg_catalog']::text[],$1::text,ARRAY['da_access','da_command_runtime','mdm_access','mdm_command_runtime']::text[])
+('rss_da.save_retired_access_run(text,uuid,jsonb,jsonb)','sql','boolean',true,false,'v',ARRAY['p_device','p_run','p_previous','p_state']::text[],ARRAY['search_path=pg_catalog']::text[],$1::text,ARRAY['da_access','da_command_runtime','mdm_access','mdm_command_runtime']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

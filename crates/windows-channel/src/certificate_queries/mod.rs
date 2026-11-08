@@ -22,11 +22,8 @@ pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| S
         Field::scalar("attempt", Kind::Uuid),
         Field::scalar("kind", Kind::Text),
         Field::scalar("enrollmentId", Kind::Uuid),
-        Field::scalar("registration", Kind::Uuid),
         Field::output("device"),
         Field::output("operationId"),
-        Field::output("expectedGeneration"),
-        Field::output("generation"),
         Field::output("registrationState"),
         Field::output("enrollmentState"),
         Field::output("predecessor"),
@@ -68,10 +65,7 @@ pub struct Context {
     pub kind: RequestKind,
     pub device: String,
     pub enrollment_id: Option<Uuid>,
-    pub registration: Uuid,
     pub operation_id: Uuid,
-    pub expected_generation: i64,
-    pub generation: Option<i64>,
     pub registration_state:
         Option<rss_mdm_registration_service::enrollment::read::RegistrationState>,
     pub enrollment_state: Option<rss_mdm_registration_service::enrollment::read::State>,
@@ -83,37 +77,36 @@ pub struct Context {
 // UNION (not UNION ALL) makes even a corrupt cycle finite; the transaction has a statement budget.
 const HISTORY: &str = r#"
 ), roots AS (
- SELECT i.signing_attempt AS attempt,'enrollment'::text AS kind,coalesce(g.device,parent.device) AS device,q.id AS enrollment_id,i.registration,
-        q.issuance_operation AS operation_id,q.expected_generation,NULL::uuid AS predecessor
+ SELECT i.signing_attempt AS attempt,'enrollment'::text AS kind,q.device,q.id AS enrollment_id,
+        q.issuance_operation AS operation_id,NULL::uuid AS predecessor
  FROM mdm_access.enrollment_intents i JOIN params p ON i.tenant_id=p.tenant
- JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(i.tenant_id,i.request_id)
- LEFT JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id)
- LEFT JOIN mdm_access.registrations parent ON(parent.tenant_id,parent.id)=(q.tenant_id,q.parent_id)
- WHERE coalesce(g.device,parent.device)=p.device
+ JOIN mdm_access.requests q ON(q.tenant_id,q.id,q.device)=(i.tenant_id,i.request_id,i.device)
+ WHERE q.device=p.device
  UNION ALL
- SELECT i.signing_attempt,'renewal',r.device,r.request_id,i.registration,i.id,i.generation,i.previous_credential
+ SELECT i.signing_attempt,'renewal',i.device,coalesce(k.protocol_request,r.request_id),i.id,i.previous_credential
  FROM mdm_windows.renewal_intents i JOIN params p ON i.tenant_id=p.tenant
- JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(i.tenant_id,i.registration)
- WHERE r.device=p.device
+ JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(i.tenant_id,i.device)
+ JOIN mdm_access.credentials k ON(k.tenant_id,k.id,k.device)=(i.tenant_id,i.previous_credential,i.device)
+ WHERE i.device=p.device
 ), history AS (
  SELECT * FROM roots
  UNION
- SELECT s.attempt,h.kind,h.device,h.enrollment_id,h.registration,h.operation_id,h.expected_generation,h.predecessor
+ SELECT s.attempt,h.kind,h.device,h.enrollment_id,h.operation_id,h.predecessor
  FROM history h JOIN mdm_pki.signing s ON s.successor=h.attempt
  JOIN params p ON s.tenant_id=p.tenant WHERE s.purpose='windows'
 ), candidates AS (
- SELECT h.*,r.generation,r.state AS registration_state,
+ SELECT h.*,r.state AS registration_state,
  CASE WHEN q.state='pending' AND q.expires_at<=statement_timestamp() THEN 'expired' ELSE q.state END AS enrollment_state,
- CASE WHEN h.kind='enrollment' THEN r.id IS NOT NULL ELSE n.id IS NOT NULL END AS linked,
- CASE WHEN h.kind='enrollment' THEN r.first_authenticated_at IS NOT NULL ELSE n.activated_at IS NOT NULL END AS activated
+ CASE WHEN h.kind='enrollment' THEN q.state='bound' ELSE n.id IS NOT NULL END AS linked,
+ CASE WHEN h.kind='enrollment' THEN CASE WHEN q.authority_kind='parent_certificate' THEN q.protocol_ready ELSE r.first_authenticated_at IS NOT NULL END ELSE n.activated_at IS NOT NULL END AS activated
  FROM history h CROSS JOIN params p
- LEFT JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(p.tenant,h.registration)
+ LEFT JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(p.tenant,h.device)
  LEFT JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(p.tenant,h.enrollment_id)
  LEFT JOIN mdm_windows.renewals n ON(n.tenant_id,n.id)=(p.tenant,h.operation_id) AND h.kind='renewal'
 )
-SELECT jsonb_build_object('attempt',attempt,'kind',kind,'device',device,'enrollmentId',enrollment_id,'registration',registration,
- 'operationId',operation_id,'expectedGeneration',expected_generation,'generation',generation,'registrationState',registration_state,
- 'enrollmentState',enrollment_state,'predecessor',predecessor,'linked',linked,'activated',activated)
+SELECT jsonb_build_object('attempt',attempt,'kind',kind,'device',device,'enrollmentId',enrollment_id,
+ 'operationId',operation_id,'registrationState',registration_state,
+ 'enrollmentState',enrollment_state,'predecessor',predecessor,'linked',coalesce(linked,false),'activated',coalesce(activated,false))
 FROM candidates WHERE true
 "#;
 fn sql(tenant: &str, device: &str) -> sqlx::QueryBuilder<sqlx::Postgres> {
@@ -130,7 +123,6 @@ fn column(name: &str) -> &'static str {
         "attempt" => "attempt::text COLLATE \"C\"",
         "kind" => "kind COLLATE \"C\"",
         "enrollmentId" => "enrollment_id::text COLLATE \"C\"",
-        "registration" => "registration::text COLLATE \"C\"",
         _ => unreachable!("checked Windows request field"),
     }
 }
@@ -211,12 +203,6 @@ fn view(mut context: Context, signing: pki::Signing, now: i64) -> Request {
         || matches!(context.enrollment_state, Some(State::Cancelled))
     {
         requirements.push(Requirement::Revoked);
-    }
-    if matches!(
-        context.registration_state,
-        Some(RegistrationState::Superseded)
-    ) {
-        requirements.push(Requirement::Superseded);
     }
     if matches!(context.enrollment_state, Some(State::Expired)) || signing.not_after <= now {
         requirements.push(Requirement::Expired);

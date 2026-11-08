@@ -60,46 +60,51 @@ REVOKE ALL ON FUNCTION mdm_planning.configuration_device_key(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_planning.configuration_device_key(text) TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
 CREATE INDEX configuration_device_recovery ON mdm_planning.configuration_devices(tenant_id,mdm_planning.configuration_device_key(device));
 CREATE TABLE mdm_planning.configuration_operations (
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    command_id text GENERATED ALWAYS AS(id::text) STORED,
-    device text NOT NULL,
-    request bytea NOT NULL CHECK(octet_length(request) BETWEEN 68 AND 33554500),
-    input_context jsonb NOT NULL CHECK(jsonb_typeof(input_context)='object' AND octet_length(input_context::text)<=4096),
-    fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
-    registration uuid NOT NULL,
-    registration_generation bigint NOT NULL CHECK(registration_generation>0),
-    generation bigint NOT NULL CHECK(generation>0),
-    epoch bigint NOT NULL CHECK(epoch>0),
-    authority jsonb NOT NULL CHECK(octet_length(authority::text)<=1048576),
-    revision bigint NOT NULL DEFAULT 1 CHECK(revision>0),
-    observed_command_version bigint NOT NULL DEFAULT 1 CHECK(observed_command_version>0),
-    dispatch_fingerprint bytea NOT NULL CHECK(octet_length(dispatch_fingerprint)=32),
-    dispatch_failure jsonb CHECK(dispatch_failure IS NULL OR(jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
-    gateway_accepted boolean NOT NULL DEFAULT false,
-    policy_version uuid NOT NULL,
-    PRIMARY KEY(tenant_id,id),
-    FOREIGN KEY(tenant_id,command_id) REFERENCES rss_device_command.commands(tenant_id,command_id),
-    FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.command_authorities(tenant_id,device),
-    FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id),
-    FOREIGN KEY(tenant_id,policy_version) REFERENCES mdm_policy.versions(tenant_id,id),
-    CHECK(coalesce(authority->>'kind' IN('policy','retirement') AND authority->>'tenant'=tenant_id::text AND authority->>'device'=device AND authority->>'version'=policy_version::text,false))
+    tenant_id uuid NOT NULL
+  , id uuid NOT NULL
+  , command_id text GENERATED ALWAYS AS (CAST(id AS text)) STORED
+  , device text NOT NULL
+  , request bytea NOT NULL CHECK (octet_length(request) BETWEEN 68 AND 33554500)
+  , input_context jsonb NOT NULL CHECK (jsonb_typeof(input_context) = 'object'
+                                    AND octet_length(CAST(input_context AS text)) <= 4096)
+  , fingerprint bytea NOT NULL CHECK (octet_length(fingerprint) = 32)
+  , generation bigint NOT NULL CHECK (generation > 0)
+  , epoch bigint NOT NULL CHECK (epoch > 0)
+  , authority jsonb NOT NULL CHECK (octet_length(CAST(authority AS text)) <= 1048576)
+  , revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0)
+  , observed_command_version bigint NOT NULL DEFAULT 1 CHECK (observed_command_version > 0)
+  , dispatch_fingerprint bytea NOT NULL CHECK (octet_length(dispatch_fingerprint) = 32)
+  , dispatch_failure jsonb CHECK (dispatch_failure IS NULL
+                               OR (jsonb_typeof(dispatch_failure) = 'object'
+                               AND octet_length(CAST(dispatch_failure AS text)) <= 8192))
+  , gateway_accepted boolean NOT NULL DEFAULT FALSE
+  , policy_version uuid NOT NULL
+  , PRIMARY KEY (tenant_id, id)
+  , FOREIGN KEY (tenant_id, command_id) REFERENCES rss_device_command.commands (tenant_id, command_id)
+  , FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.command_authorities (tenant_id, device)
+  , FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices (tenant_id, id)
+  , FOREIGN KEY (tenant_id, policy_version) REFERENCES mdm_policy.versions (tenant_id, id)
+  , CHECK (COALESCE(authority ->> 'kind' IN ('policy', 'retirement')
+                AND authority ->> 'tenant' = CAST(tenant_id AS text)
+                AND authority ->> 'device' = device
+                AND authority ->> 'version' = CAST(policy_version AS text)
+                  , FALSE))
 );
 CREATE TABLE mdm_planning.configuration_receipts (
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    actor text NOT NULL,
-    fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
-    PRIMARY KEY(tenant_id,actor,id),
-    FOREIGN KEY(tenant_id,id) REFERENCES mdm_planning.configuration_operations(tenant_id,id)
+    tenant_id uuid NOT NULL
+  , id uuid NOT NULL
+  , actor text NOT NULL
+  , fingerprint bytea NOT NULL CHECK (octet_length(fingerprint) = 32)
+  , PRIMARY KEY (tenant_id, actor, id)
+  , FOREIGN KEY (tenant_id, id) REFERENCES mdm_planning.configuration_operations (tenant_id, id)
 );
 CREATE TABLE mdm_planning.configuration_recovery (
-    tenant_id uuid NOT NULL,
-    device text NOT NULL,
-    authority_epoch bigint NOT NULL,
-    recovery_after text,
-    PRIMARY KEY(tenant_id,device),
-    FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.command_authorities(tenant_id,device)
+    tenant_id uuid NOT NULL
+  , device text NOT NULL
+  , authority_epoch bigint NOT NULL
+  , recovery_after text
+  , PRIMARY KEY (tenant_id, device)
+  , FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.command_authorities (tenant_id, device)
 );
 ALTER TABLE mdm_planning.configuration_operations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_planning.configuration_operations FORCE ROW LEVEL SECURITY;
@@ -112,34 +117,34 @@ ALTER TABLE mdm_planning.configuration_recovery FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_planning.configuration_recovery USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 COMMIT;
 
-CREATE FUNCTION mdm_planning.configuration_windows_pending_operations(p_registration uuid, p_generation bigint, p_after uuid) RETURNS SETOF mdm_planning.configuration_operations
+CREATE FUNCTION mdm_planning.configuration_windows_pending_operations(p_device text, p_after uuid) RETURNS SETOF mdm_planning.configuration_operations
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT o.* FROM mdm_planning.configuration_operations o
  JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
- JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation)
+ JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND o.registration_generation=p_generation AND o.id>p_after
+  AND o.device=p_device AND o.id>p_after
   AND r.state='active' AND o.gateway_accepted AND o.dispatch_failure IS NULL
   AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
   AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
  ORDER BY o.id LIMIT 64;
 $$;
-REVOKE ALL ON FUNCTION mdm_planning.configuration_windows_pending_operations(uuid,bigint,uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_planning.configuration_windows_pending_operations(text,uuid) FROM PUBLIC;
 
 -- Discovery starts with work, never with every installed push channel. Authority
 -- is still rechecked by the configuration owner in the eventual claimant's transaction.
-CREATE FUNCTION mdm_planning.configuration_windows_wake_candidates(p_after uuid) RETURNS TABLE(registration uuid)
+CREATE FUNCTION mdm_planning.configuration_windows_wake_candidates(p_after text) RETURNS TABLE(device text)
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
- SELECT o.registration FROM mdm_planning.configuration_operations o
+ SELECT o.device FROM mdm_planning.configuration_operations o
  JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
- JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation)
+ JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration>p_after AND r.state='active'
+  AND o.device>p_after AND r.state='active'
   AND o.gateway_accepted AND o.dispatch_failure IS NULL
   AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
   AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
- ORDER BY registration LIMIT 32;
+ ORDER BY device LIMIT 32;
 $$;
-REVOKE ALL ON FUNCTION mdm_planning.configuration_windows_wake_candidates(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_planning.configuration_windows_wake_candidates(text) FROM PUBLIC;

@@ -5,8 +5,6 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Target {
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 pub struct AgentRun {
     pub id: Uuid,

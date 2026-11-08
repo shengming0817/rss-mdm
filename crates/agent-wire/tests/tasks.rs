@@ -41,8 +41,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         device_id: "device".into(),
         platform: TaskPlatform::Macos,
         architecture: TaskArchitecture::Aarch64,
-        registration_id: id,
-        generation: 1,
+
         task_id: id,
         attempt_id: id,
         permit: TaskPermit::Offer,
@@ -103,7 +102,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
             s.content.sha256 = [3; 32];
         },
         |s: &mut TaskSpec| {
-            s.generation = 2;
+            s.device_id.push_str("-other");
         },
         |s: &mut TaskSpec| {
             s.permit = TaskPermit::Start;
@@ -163,8 +162,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         device_id: "device".into(),
         platform: TaskPlatform::Windows,
         architecture: TaskArchitecture::X86_64,
-        registration_id: id,
-        generation: 1,
+
         task_id: id,
         attempt_id: id,
         permit: TaskPermit::Offer,

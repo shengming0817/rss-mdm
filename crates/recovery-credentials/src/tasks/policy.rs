@@ -186,7 +186,7 @@ use sqlx::Row;
 pub async fn agent_versions_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    registration: String,
 ) -> Result<Vec<Uuid>> {
     let tenant = tx.tenant_id().to_string();
     let kinds = vec!["credential"];

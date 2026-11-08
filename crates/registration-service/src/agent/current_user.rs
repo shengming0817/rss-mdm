@@ -202,8 +202,7 @@ impl Service {
         audit.target_device(device.device());
         let digest = crate::enrollment::digest(&(
             "agent-current-user.v1",
-            device.registration(),
-            device.generation(),
+            device.device(),
             input,
             &reference,
         ));
@@ -254,7 +253,7 @@ impl Service {
                     if let Some(old) = old {
                         if old.try_get::<String, _>("digest").map_err(db)? != *digest
                             || old.try_get::<String, _>("instance").map_err(db)?
-                                != device.registration().to_string()
+                                != device.device()
                         {
                             return Err(Error::Conflict);
                         }
@@ -292,8 +291,6 @@ impl Service {
                     .bind(device.tenant().to_string())
                     .bind(device.device())
                     .bind(revision as i64)
-                    .bind(device.registration())
-                    .bind(device.generation())
                     .bind(
                         reference
                             .as_ref()
@@ -334,7 +331,7 @@ impl Service {
                     )
                     .bind(device.tenant().to_string())
                     .bind(actor)
-                    .bind(device.registration().to_string())
+                    .bind(device.device().to_string())
                     .bind(input.operation_id)
                     .bind(&*digest)
                     .bind(serde_json::to_string(&value).map_err(|_| Error::Corrupt)?)

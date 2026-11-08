@@ -76,31 +76,26 @@ impl Transactions {
         }
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
-        let (registration, registration_generation) =
-            storage::current_registration(tx, device, input.task.purpose()?).await?;
+        let registration = storage::current_registration(tx, device, input.task.purpose()?).await?;
         if input.task.purpose()? == rss_mdm_registration_service::Purpose::Primary {
-            storage::require_source(tx, registration, input.task.source()).await?;
+            storage::require_source(tx, registration.clone(), input.task.source()).await?;
         }
         if matches!(input.task, Task::Windows { .. })
-            && matches!(input.target, NativeTarget::User { .. })
+            && matches!(input.target, NativeTarget::EnrolledUser)
         {
             let target = input.target.clone();
+            let registration = registration.clone();
             let allowed=tx.with_connection(move|c| Box::pin(async move {
-                let (profile,context):(Option<String>,Uuid)=sqlx::query_as("SELECT q.windows_profile,coalesce(r.parent_id,r.id) FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.state='active'").bind(tenant.to_string()).bind(registration).bind(registration_generation).fetch_one(c).await?;
-                Ok(target.matches_windows_context((profile.as_deref()==Some("Full")).then_some(context)))
+                let profile: Option<String> = sqlx::query_scalar("SELECT q.windows_profile FROM mdm_access.devices d JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(d.tenant_id,d.request_id) WHERE d.tenant_id=$1::uuid AND d.id=$2 AND d.state='active'").bind(tenant.to_string()).bind(&registration).fetch_one(c).await?;
+                Ok(target.matches_windows_context(profile.as_deref() == Some("Full")))
             })).await?;
             if !allowed {
                 return Err(Error::Forbidden.into());
             }
         }
-        let bound = rss_mdm_registration_service::command_authority::resolve_in(
-            &self.store,
-            tx,
-            device,
-            registration,
-            registration_generation,
-        )
-        .await?;
+        let bound =
+            rss_mdm_registration_service::command_authority::resolve_in(&self.store, tx, device)
+                .await?;
         let spec = dc::CommandSpec::new(
             bound.scope,
             checked_input(dc::CommandId::parse(&id.to_string()))?,
@@ -113,16 +108,16 @@ impl Transactions {
         self.store.queue(tx, spec, message).await?;
         let binding = rss_mdm_registration_service::command_authority::CommandBinding {
             operation: id,
-            registration,
-            generation: registration_generation,
+            device: registration.to_string(),
         };
         let windows = matches!(input.task, Task::Windows { .. });
+        let value = binding.clone();
         tx.with_connection_context(&mut (self,), move |service, c| {
             Box::pin(async move {
                 Ok(service
                     .0
                     .channels
-                    .bind_command(c, tenant, binding, windows)
+                    .bind_command(c, tenant, value, windows)
                     .await)
             })
         })
@@ -163,8 +158,6 @@ impl Transactions {
             &input_storage::Identity {
                 operation: id,
                 device,
-                registration,
-                generation: registration_generation,
             },
             input,
         )?;
@@ -173,7 +166,7 @@ impl Transactions {
         let name = device.to_owned();
         let digest = fingerprint.clone();
         tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_planning.configuration_operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,policy_version,input_context) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)").bind(tenant.to_string()).bind(id).bind(name).bind(request).bind(digest).bind(registration).bind(registration_generation).bind(bound.coordinate.generation()).bind(bound.coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(policy_version).bind(input_context).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_planning.configuration_operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, policy_version, input_context) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)").bind(tenant.to_string()).bind(id).bind(name).bind(request).bind(digest).bind(bound.coordinate.generation()).bind(bound.coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(policy_version).bind(input_context).execute(c).await?;
             Ok(())
         })).await?;
         if input.profile_target().is_some() {

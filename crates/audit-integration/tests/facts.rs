@@ -342,8 +342,8 @@ fn receipt_subject_is_not_the_authenticated_actor_or_a_run_namespace() {
         "self_service_invoke",
         AuditIntent::Management,
     );
-    let registration = uuid::Uuid::new_v4();
-    audit.identify_device(registration);
+    let device = uuid::Uuid::new_v4().to_string();
+    audit.identify_device(&device);
     let request = uuid::Uuid::new_v4();
     audit.owned_operation(
         O::ScriptInvocation,
@@ -351,8 +351,8 @@ fn receipt_subject_is_not_the_authenticated_actor_or_a_run_namespace() {
         "self_service_invoke",
         AuditIntent::Management,
     );
-    audit.receipt_actor(&format!("self-service:device:{registration}:1"));
-    audit.registration_at(registration, 1);
+    audit.receipt_actor(&format!("self-service:device:{device}"));
+    audit.target_device(&device);
     let fact = Fact::business(
         &audit,
         O::ScriptInvocation,
@@ -373,12 +373,9 @@ fn receipt_subject_is_not_the_authenticated_actor_or_a_run_namespace() {
     assert_eq!(payload["operationLocator"]["owner"], "script_invocation");
     assert_eq!(
         payload["operationLocator"]["actor"],
-        format!("self-service:device:{registration}:1")
+        format!("self-service:device:{device}")
     );
-    assert_eq!(
-        audit.snapshot().actor,
-        Some(format!("device:{registration}"))
-    );
+    assert_eq!(audit.snapshot().actor, Some(format!("device:{device}")));
     let run = audit.fact_copy("script_accept");
     run.owned_operation(
         O::Script,

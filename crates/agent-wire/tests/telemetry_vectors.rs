@@ -33,16 +33,14 @@ fn signed_configuration_binds_destination_authority_and_lease() {
         vector["signingBytesSha256"].as_str().unwrap()
     );
     public.verify(&bytes, &signature).unwrap();
-    for change in 0..8 {
+    for change in 0..6 {
         let mut altered = signed.configuration.clone();
         match change {
             0 => altered.tenant_id = uuid::Uuid::new_v4(),
             1 => altered.device_id.push('x'),
-            2 => altered.registration_id = uuid::Uuid::new_v4(),
-            3 => altered.generation += 1,
-            4 => altered.source_epoch = uuid::Uuid::new_v4(),
-            5 => altered.policy_version = uuid::Uuid::new_v4(),
-            6 => altered.expires_at -= 1,
+            2 => altered.source_epoch = uuid::Uuid::new_v4(),
+            3 => altered.policy_version = uuid::Uuid::new_v4(),
+            4 => altered.expires_at -= 1,
             _ => altered.binding = "b".repeat(64),
         }
         assert!(

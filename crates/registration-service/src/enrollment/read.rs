@@ -32,7 +32,6 @@ pub enum Diagnostic {
     Expired,
     Cancelled,
     Revoked,
-    Superseded,
     CredentialUnavailable,
     ChannelUnavailable,
     Ready,
@@ -85,13 +84,14 @@ pub struct Status {
     enrollment_id: Uuid,
     status: State,
     expires_at: i64,
-    registration_id: Option<Uuid>,
+    device_id: String,
     source: ReportSource,
     instructions: Instructions,
     progress: Progress,
 }
 /// Trusted, tenant-limited coordinates read by the lifecycle owner; never a wire input.
 pub struct Context {
+    pub device: String,
     pub tenant: String,
     pub enrollment: Uuid,
     pub source: ReportSource,
@@ -103,8 +103,7 @@ pub struct Context {
     pub now: i64,
 }
 pub struct RegistrationContext {
-    pub id: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub state: RegistrationState,
     pub first_authenticated_at: Option<i64>,
     pub source_enabled: bool,
@@ -116,7 +115,6 @@ pub struct RegistrationContext {
 pub enum RegistrationState {
     Active,
     Revoked,
-    Superseded,
 }
 pub struct NativeDetails {
     pub instructions: Instructions,
@@ -190,7 +188,7 @@ pub async fn enrollment_status(
         enrollment_id: id,
         status,
         expires_at,
-        registration_id: context.registration.as_ref().map(|r| r.id),
+        device_id: context.device.clone(),
         source: context.source,
         instructions: details.instructions,
         progress,
@@ -198,9 +196,9 @@ pub async fn enrollment_status(
 }
 fn context(row: &sqlx::postgres::PgRow, tenant: &str, enrollment: Uuid) -> Result<Context, Error> {
     let registration = row
-        .try_get::<Option<Uuid>, _>("registration")
+        .try_get::<Option<String>, _>("active_device")
         .map_err(db)?
-        .map(|id| {
+        .map(|device| {
             let state = match row
                 .try_get::<String, _>("registration_state")
                 .map_err(db)?
@@ -208,13 +206,11 @@ fn context(row: &sqlx::postgres::PgRow, tenant: &str, enrollment: Uuid) -> Resul
             {
                 "active" => RegistrationState::Active,
                 "revoked" => RegistrationState::Revoked,
-                "superseded" => RegistrationState::Superseded,
                 _ => return Err(Error::Corrupt),
             };
             Ok(RegistrationContext {
-                id,
+                device,
                 state,
-                generation: row.try_get("generation").map_err(db)?,
                 first_authenticated_at: row.try_get("first_authenticated_at").map_err(db)?,
                 source_enabled: row.try_get("source_enabled").map_err(db)?,
             })
@@ -227,6 +223,7 @@ fn context(row: &sqlx::postgres::PgRow, tenant: &str, enrollment: Uuid) -> Resul
     };
     Ok(Context {
         tenant: tenant.into(),
+        device: row.try_get("device").map_err(db)?,
         enrollment,
         source,
         registration,
@@ -272,7 +269,6 @@ fn diagnostic(
     if let Some(r) = &context.registration {
         match r.state {
             RegistrationState::Revoked => return Diagnostic::Revoked,
-            RegistrationState::Superseded => return Diagnostic::Superseded,
             RegistrationState::Active => {}
         }
         if !r.source_enabled {
@@ -321,8 +317,7 @@ pub async fn record_authenticated_in(
     crate::device::store::revalidate_management(profile, c, principal).await?;
     sqlx::query(crate::storage_profile::sql(profile).enrollment_read_record_authenticated_in_1)
         .bind(principal.tenant().to_string())
-        .bind(principal.registration())
-        .bind(principal.generation())
+        .bind(principal.device())
         .execute(c)
         .await
         .map_err(db)?;

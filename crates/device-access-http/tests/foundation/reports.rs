@@ -13,8 +13,7 @@ pub async fn verify(
     let identity = da::ReportIdentity {
         service_id: registration.service_id,
         tenant: registration.tenant,
-        registration: registration.registration,
-        generation: registration.generation as i64,
+        device_id: registration.device.clone(),
     };
     let mut report = da::StatusReport {
         identity: identity.clone(),
@@ -43,7 +42,7 @@ pub async fn verify(
     assert_eq!(peer.post(&url).json(&report).send().await?.status(), 409);
     report.health = da::Health::Ready;
     report.sequence = 2;
-    report.identity.generation += 1;
+    report.identity.device_id = Uuid::new_v4().to_string();
     assert_eq!(peer.post(&url).json(&report).send().await?.status(), 403);
     report.identity = identity.clone();
     let application = da::ApplicationReport {
@@ -164,7 +163,7 @@ pub async fn verify(
         400
     );
     // A retained offline snapshot is stale by the original server receipt time.
-    sqlx::query("UPDATE rss_da.report_heads SET receipt=jsonb_set(receipt,'{receivedAt}',to_jsonb($1::bigint)) WHERE tenant_id=$2::uuid AND registration=$3 AND kind='status'").bind(now()-901).bind(c.tenant.to_string()).bind(registration.registration).execute(&c.operator).await?;
+    sqlx::query("UPDATE rss_da.report_heads SET receipt = jsonb_set(receipt, '{receivedAt}', to_jsonb(CAST($1 AS bigint))) WHERE tenant_id = CAST($2 AS uuid) AND device = $3 AND kind = 'status'").bind(now()-901).bind(c.tenant.to_string()).bind(&registration.device).execute(&c.operator).await?;
     let stale: serde_json::Value = material::success(
         client
             .get(format!(

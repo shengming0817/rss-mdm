@@ -506,9 +506,9 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
     let mut accepted = crate::admission::Accepted {
         tenant: "11111111-1111-4111-8111-111111111111".into(),
         device: "device".into(),
-        registration: uuid::Uuid::new_v4(),
+
         credential: uuid::Uuid::new_v4(),
-        generation: 1,
+
         source: rss_mdm_inventory::Source::AgentNative,
         epoch: uuid::Uuid::new_v4(),
         received_at: 3_000_000,
@@ -574,9 +574,9 @@ fn failed_current_needs_no_historical_context(
         let accepted = crate::admission::Accepted {
             tenant: "11111111-1111-4111-8111-111111111111".into(),
             device: "device".into(),
-            registration: uuid::Uuid::new_v4(),
+
             credential: uuid::Uuid::new_v4(),
-            generation: 1,
+
             source: d::Source::AgentNative,
             epoch: uuid::Uuid::new_v4(),
             received_at: 3_000_000,
@@ -668,9 +668,9 @@ fn raw_extensions_are_preserved_but_only_declared_values_become_facts() {
         let accepted = crate::admission::Accepted {
             tenant: "11111111-1111-4111-8111-111111111111".into(),
             device: "device".into(),
-            registration: uuid::Uuid::new_v4(),
+
             credential: uuid::Uuid::new_v4(),
-            generation: 1,
+
             source: d::Source::AgentNative,
             epoch: uuid::Uuid::new_v4(),
             received_at: 3_000_000,

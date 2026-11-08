@@ -334,7 +334,7 @@ pub async fn wake(push: &Push, delivery: &crate::delivery::Delivery) -> Result<W
     if outcome != PushOutcome::Accepted {
         eprintln!(
             "{}",
-            serde_json::json!({"event":"apple_push_result","wake_id":wake.id,"channel":if wake.user_key.is_empty(){"device"}else{"user"},"registration":wake.registration,"token_revision":wake.revision,"status":status,"outcome":outcome,"reason":reason,"timestamp":timestamp,"failure":failure})
+            serde_json::json!({"event":"apple_push_result","wake_id":wake.id,"channel":if wake.user_key.is_empty(){"device"}else{"user"},"device":wake.device,"token_revision":wake.revision,"status":status,"outcome":outcome,"reason":reason,"timestamp":timestamp,"failure":failure})
         );
     }
     Ok(if outcome == PushOutcome::Rejected {

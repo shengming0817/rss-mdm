@@ -21,11 +21,11 @@ impl Transactions {
         }
         let tenant = tx.tenant_id();
         let t = tenant.to_string();
-        let registration = channel.registration;
-        let generation = channel.generation;
+        let registration = channel.device.clone();
+        let value = registration.clone();
         let installations:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar("SELECT o.id FROM mdm_software_deployment.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.authority->>'kind'='agent_install' AND d.status='applied' ORDER BY o.id LIMIT 129")
-                .bind(t).bind(registration).bind(generation).fetch_all(c).await
+            sqlx::query_scalar("SELECT o.id FROM mdm_software_deployment.operations AS o INNER JOIN rss_device_command.commands AS d ON (d.tenant_id, d.command_id) = (o.tenant_id, CAST(o.id AS text)) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.authority ->> 'kind' = 'agent_install' AND d.status = 'applied' ORDER BY o.id LIMIT 129")
+                .bind(t).bind(&value).fetch_all(c).await
         })).await?;
         if installations.len() > 128 {
             return self
@@ -57,7 +57,7 @@ impl Transactions {
                             c,
                             tenant,
                             id,
-                            registration,
+                            registration.clone(),
                             "agent_installation_removal_unavailable",
                             Some(execution),
                             false,
@@ -83,9 +83,9 @@ impl Transactions {
         use crate::deployment::actions::{production, storage as runs};
 
         use rss_mdm_task_state::Execution;
-        let rows = cleanup_candidates(tx, channel.registration).await?;
+        let rows = cleanup_candidates(tx, channel.device.clone()).await?;
         let tenant = tx.tenant_id();
-        let registration = channel.registration;
+        let registration = channel.device.clone();
         if rows.len() > 128 {
             return self
                 .block_retirement_cleanup(tx, retirement, registration, "software_cleanup_limit")
@@ -93,8 +93,6 @@ impl Transactions {
         }
         let target = Target {
             device: channel.device.clone(),
-            registration,
-            generation: channel.generation,
         };
         let lifecycle = self.lifecycle.clone();
         let origin = tx
@@ -116,7 +114,7 @@ impl Transactions {
                     .block_retirement_cleanup(
                         tx,
                         retirement,
-                        registration,
+                        registration.clone(),
                         "software_effect_unconfirmed",
                     )
                     .await;
@@ -159,7 +157,7 @@ impl Transactions {
                                     c,
                                     tenant,
                                     retirement,
-                                    registration,
+                                    registration.clone(),
                                     reason,
                                     Some(id),
                                     unknown,
@@ -179,7 +177,7 @@ impl Transactions {
             let Some(binding) = crate::deployment::agent_facts::agent_binding_in(
                 tx,
                 self.agent_store.clone(),
-                registration,
+                registration.clone(),
             )
             .await?
             else {
@@ -187,7 +185,7 @@ impl Transactions {
                     .block_retirement_cleanup(
                         tx,
                         retirement,
-                        registration,
+                        registration.clone(),
                         "agent_binding_unavailable",
                     )
                     .await;
@@ -201,12 +199,13 @@ impl Transactions {
                     .block_retirement_cleanup(
                         tx,
                         retirement,
-                        registration,
+                        registration.clone(),
                         "software_removal_unsupported",
                     )
                     .await;
             }
-            let Some((platform, architecture)) = agent_profile_in(self, tx, registration).await?
+            let Some((platform, architecture)) =
+                agent_profile_in(self, tx, registration.clone()).await?
             else {
                 return Err(Error::Conflict.into());
             };
@@ -226,18 +225,18 @@ impl Transactions {
                     .block_retirement_cleanup(
                         tx,
                         retirement,
-                        registration,
+                        registration.clone(),
                         "software_removal_unsupported",
                     )
                     .await;
             }
-            let effect =
-                crate::deployment::actions::software::effect_key(&software, &target, &steps)?;
+            let effect = crate::deployment::actions::software::effect_key(&software, &steps)?;
             let lifecycle = self.lifecycle.clone();
+            let value = registration.clone();
             tx.with_connection(move |c| {
                 Box::pin(async move {
                     Ok(lifecycle
-                        .authorize_on(c, tenant, retirement, registration, id)
+                        .authorize_on(c, tenant, retirement, value, id)
                         .await)
                 })
             })
@@ -272,7 +271,7 @@ impl Transactions {
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
-        registration: Uuid,
+        registration: String,
         reason: &'static str,
     ) -> Result<bool> {
         let tenant = tx.tenant_id();
@@ -295,12 +294,12 @@ fn delivery_ended(state: &rss_mdm_task_state::RunState, now: i64) -> bool {
 }
 async fn cleanup_candidates(
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    registration: String,
 ) -> Result<Vec<sqlx::postgres::PgRow>> {
     let t = tx.tenant_id().to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query("SELECT DISTINCT ON(software_effect->'resource',software_effect->'target') id,policy_version,software_effect,result FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND software_effect IS NOT NULL AND result->>'effect' IN('verified','failed') ORDER BY software_effect->'resource',software_effect->'target',(result->>'effectObservedAt')::bigint DESC NULLS LAST,(result->>'effectReceivedAt')::bigint DESC NULLS LAST,created_at DESC,id DESC LIMIT 129")
-                .bind(t).bind(registration).fetch_all(c).await
+            sqlx::query("SELECT DISTINCT ON (software_effect -> 'resource', software_effect -> 'target') id, policy_version, software_effect, result FROM mdm_software_deployment.action_runs WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND software_effect IS NOT NULL AND result ->> 'effect' IN ('verified', 'failed') ORDER BY software_effect -> 'resource', software_effect -> 'target', CAST(result ->> 'effectObservedAt' AS bigint) DESC NULLS LAST, CAST(result ->> 'effectReceivedAt' AS bigint) DESC NULLS LAST, created_at DESC, id DESC LIMIT 129")
+                .bind(t).bind(&registration).fetch_all(c).await
         })).await?;
     Ok(rows)
 }

@@ -24,9 +24,6 @@ pub struct Acceptance<'a> {
 pub struct ChannelResult {
     pub device: String,
     pub channel: rss_mdm_inventory::Channel,
-    pub registration: Uuid,
-    pub generation: i64,
-    pub parent_registration: Option<Uuid>,
     pub stage: Stage,
     pub effect: Effect,
     pub execution: Option<Uuid>,
@@ -160,11 +157,8 @@ pub async fn accept_in(
             id,
         )
         .await?;
-        sqlx::query("INSERT INTO mdm_devices.retirement_channels(tenant_id,operation,device,channel,registration,generation,stage,effect) VALUES($1::uuid,$2,$3,$4,$5,$6,'cleanup','pending')")
-            .bind(&tenant).bind(id).bind(&member.device).bind(member.channel.as_str())
-            .bind(member.registration_id).bind(member.generation).execute(&mut *c).await?;
-        sqlx::query("INSERT INTO mdm_devices.retirement_channels(tenant_id,operation,device,channel,registration,generation,parent_registration,stage,effect) SELECT tenant_id,$2,device,channel,id,generation,parent_id,'cleanup','pending' FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND parent_id=$3 AND state='active'")
-            .bind(&tenant).bind(id).bind(member.registration_id).execute(&mut *c).await?;
+        sqlx::query("INSERT INTO mdm_devices.retirement_channels (tenant_id, operation, device, channel, stage, effect) VALUES (CAST($1 AS uuid), $2, $3, $4, 'cleanup', 'pending')")
+            .bind(&tenant).bind(id).bind(&member.device).bind(member.channel.as_str()).execute(&mut *c).await?;
     }
     link_policy_in(c, &tenant, input, id).await?;
     Ok((id, false))
@@ -220,7 +214,7 @@ pub(crate) async fn read_header_in(
 pub async fn read_in(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result<Retirement> {
     let header = read_header_in(c, tenant, id).await?;
     let t = tenant.to_string();
-    let rows=sqlx::query("SELECT device,channel,registration,generation,parent_registration,stage,effect,execution,blocking_execution,reason FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device,channel")
+    let rows=sqlx::query("SELECT device, channel, stage, effect, execution, blocking_execution, reason FROM mdm_devices.retirement_channels WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 ORDER BY device, channel")
         .bind(&t).bind(id).fetch_all(c).await?;
     let mut channels = Vec::new();
     for r in rows {
@@ -230,9 +224,7 @@ pub async fn read_in(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result
         channels.push(ChannelResult {
             device: r.try_get("device")?,
             channel: serde_json::from_value(parse("channel")?).map_err(|_| Error::Storage)?,
-            registration: r.try_get("registration")?,
-            generation: r.try_get("generation")?,
-            parent_registration: r.try_get("parent_registration")?,
+
             stage: serde_json::from_value(parse("stage")?).map_err(|_| Error::Storage)?,
             effect: serde_json::from_value(parse("effect")?).map_err(|_| Error::Storage)?,
             execution: r.try_get("execution")?,
@@ -277,7 +269,7 @@ pub async fn complete_target_in(
         return Ok(full);
     }
 
-    let rows=sqlx::query("SELECT device,channel,registration_id,generation FROM mdm_devices.members WHERE tenant_id=$1::uuid AND association_id=$2 AND NOT released ORDER BY device,channel")
+    let rows=sqlx::query("SELECT device, channel, device_id FROM mdm_devices.members WHERE tenant_id = CAST($1 AS uuid) AND association_id = $2 AND NOT released ORDER BY device, channel")
         .bind(tenant.to_string()).bind(id).fetch_all(c).await?;
     let mut members = Vec::new();
     for r in rows {
@@ -286,8 +278,6 @@ pub async fn complete_target_in(
                 device: r.try_get("device")?,
                 channel: serde_json::from_value(serde_json::Value::String(r.try_get("channel")?))
                     .map_err(|_| Error::Storage)?,
-                registration_id: r.try_get("registration_id")?,
-                generation: r.try_get("generation")?,
             },
         );
     }
@@ -331,7 +321,7 @@ pub async fn execution_permissions_in(
     let ids = targets.iter().map(|v| v.0).collect::<Vec<_>>();
     let devices = targets.iter().map(|v| v.1.clone()).collect::<Vec<_>>();
     let rows = sqlx::query_as::<_,(uuid::Uuid,bool)>(
-        "SELECT x.id,d.retirement IS NULL OR EXISTS(SELECT 1 FROM mdm_devices.retirement_work w JOIN mdm_devices.retirement_channels t ON(t.tenant_id,t.operation,t.registration)=(w.tenant_id,w.operation,w.registration) WHERE w.tenant_id=$1::uuid AND w.operation=d.retirement AND t.device=x.device AND w.execution=x.id AND t.stage IN('cleanup','unenroll')) FROM unnest($2::uuid[],$3::text[]) AS x(id,device) LEFT JOIN mdm_access.devices d ON(d.tenant_id,d.id)=($1::uuid,x.device)"
+        "SELECT x.id, d.retirement IS NULL OR EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w INNER JOIN mdm_devices.retirement_channels AS t ON (t.tenant_id, t.operation, t.device) = (w.tenant_id, w.operation, w.device) WHERE w.tenant_id = CAST($1 AS uuid) AND w.operation = d.retirement AND t.device = x.device AND w.execution = x.id AND t.stage IN ('cleanup', 'unenroll')) FROM unnest(CAST($2 AS uuid[]), CAST($3 AS text[])) AS x (id, device) LEFT JOIN mdm_access.devices AS d ON (d.tenant_id, d.id) = (CAST($1 AS uuid), x.device)"
     ).bind(tenant).bind(ids).bind(devices).fetch_all(c).await?;
     Ok(rows.into_iter().collect())
 }
@@ -341,7 +331,7 @@ async fn bind_execution_in(
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
-    registration: Uuid,
+    registration: String,
     execution: Uuid,
     stage: Stage,
 ) -> Result<()> {
@@ -350,8 +340,8 @@ async fn bind_execution_in(
     }
     let stage = serde_json::to_value(stage).map_err(|_| Error::Malformed)?;
     let stage = stage.as_str().ok_or(Error::Malformed)?;
-    let changed=sqlx::query("UPDATE mdm_devices.retirement_channels SET execution=$4,reason=NULL,effect='pending' WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND stage=$5 AND execution IS NULL")
-        .bind(tenant.to_string()).bind(operation).bind(registration).bind(execution).bind(stage).execute(c).await?;
+    let changed=sqlx::query("UPDATE mdm_devices.retirement_channels SET execution = $4, reason = NULL, effect = 'pending' WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3 AND stage = $5 AND execution IS NULL")
+        .bind(tenant.to_string()).bind(operation).bind(&registration).bind(execution).bind(stage).execute(c).await?;
     if changed.rows_affected() != 1 {
         return Err(Error::Conflict);
     }
@@ -380,15 +370,15 @@ pub async fn observe_in(
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
-    registration: Uuid,
+    registration: String,
     observation: Observation,
 ) -> Result<()> {
     let t = tenant.to_string();
-    let device: String = sqlx::query_scalar("SELECT device FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3")
-        .bind(&t).bind(operation).bind(registration).fetch_one(&mut *c).await?;
+    let device: String = sqlx::query_scalar("SELECT device FROM mdm_devices.retirement_channels WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3")
+        .bind(&t).bind(operation).bind(&registration).fetch_one(&mut *c).await?;
     lifecycle::lock_device_in(rss_mdm_install_support::StorageProfile::Mdm, c, &t, &device).await?;
-    let row = sqlx::query("SELECT t.stage,o.forced_at FROM mdm_devices.retirement_channels t JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(t.tenant_id,t.operation) WHERE t.tenant_id=$1::uuid AND t.operation=$2 AND t.registration=$3 FOR UPDATE OF t")
-        .bind(&t).bind(operation).bind(registration).fetch_one(&mut *c).await?;
+    let row = sqlx::query("SELECT t.stage, o.forced_at FROM mdm_devices.retirement_channels AS t INNER JOIN mdm_devices.retirements AS o ON (o.tenant_id, o.id) = (t.tenant_id, t.operation) WHERE t.tenant_id = CAST($1 AS uuid) AND t.operation = $2 AND t.device = $3 FOR UPDATE OF t")
+        .bind(&t).bind(operation).bind(&registration).fetch_one(&mut *c).await?;
     let current: String = row.try_get("stage")?;
     if row.try_get::<Option<i64>, _>("forced_at")?.is_some()
         || matches!(current.as_str(), "revoke" | "complete")
@@ -426,8 +416,8 @@ pub async fn observe_in(
     if current != expected {
         return Ok(());
     }
-    sqlx::query("UPDATE mdm_devices.retirement_channels SET stage=$4,effect=$5,reason=$6,blocking_execution=$7 WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND stage=$8")
-        .bind(t).bind(operation).bind(registration).bind(stage).bind(effect).bind(reason).bind(blocking).bind(expected).execute(c).await?;
+    sqlx::query("UPDATE mdm_devices.retirement_channels SET stage = $4, effect = $5, reason = $6, blocking_execution = $7 WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3 AND stage = $8")
+        .bind(t).bind(operation).bind(&registration).bind(stage).bind(effect).bind(reason).bind(blocking).bind(expected).execute(c).await?;
     Ok(())
 }
 
@@ -439,21 +429,21 @@ pub(crate) async fn settle_retirement_in(
     participant: &dyn rss_mdm_registration_service::Retirement,
 ) -> Result<Vec<rss_mdm_audit_integration::Fact>> {
     let t = tenant.to_string();
-    let row:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT t.operation,t.registration,t.device FROM mdm_devices.retirement_channels t JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(t.tenant_id,t.registration) WHERE t.tenant_id=$1::uuid AND t.operation=$2 AND (t.stage='revoke' OR (r.state<>'active' AND t.stage<>'complete')) ORDER BY t.device,t.registration LIMIT 1").bind(&t).bind(operation).fetch_optional(&mut *c).await?;
-    let Some((id, registration, device)) = row else {
+    let row:Option<(Uuid,String)>=sqlx::query_as("SELECT t.operation, t.device FROM mdm_devices.retirement_channels AS t INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (t.tenant_id, t.device) WHERE t.tenant_id = CAST($1 AS uuid) AND t.operation = $2 AND (t.stage = 'revoke' OR (r.state <> 'active' AND t.stage <> 'complete')) ORDER BY t.device LIMIT 1").bind(&t).bind(operation).fetch_optional(&mut *c).await?;
+    let Some((id, registration)) = row else {
         return Ok(vec![]);
     };
     if !lifecycle::try_lock_devices_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &t,
-        &[device],
+        std::slice::from_ref(&registration),
     )
     .await?
     {
         return Err(Error::Conflict);
     }
-    let active:bool=sqlx::query_scalar("SELECT state='active' FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&t).bind(registration).fetch_one(&mut *c).await?;
+    let active:bool=sqlx::query_scalar("SELECT state = 'active' FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 FOR UPDATE").bind(&t).bind(&registration).fetch_one(&mut *c).await?;
     let mut facts = Vec::new();
     if active {
         lifecycle::retire(
@@ -461,13 +451,13 @@ pub(crate) async fn settle_retirement_in(
             c,
             &mut facts,
             &t,
-            registration,
+            &registration,
             "revoked",
             participant,
         )
         .await?;
     }
-    sqlx::query("UPDATE mdm_devices.retirement_channels SET stage='complete',effect=CASE WHEN effect='confirmed' THEN effect ELSE 'unknown' END,reason=CASE WHEN effect='confirmed' THEN reason ELSE coalesce(reason,'device_cleanup_unconfirmed') END WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3").bind(t).bind(id).bind(registration).execute(c).await?;
+    sqlx::query("UPDATE mdm_devices.retirement_channels SET stage = 'complete', effect = CASE WHEN effect = 'confirmed' THEN effect ELSE 'unknown' END, reason = CASE WHEN effect = 'confirmed' THEN reason ELSE COALESCE(reason, 'device_cleanup_unconfirmed') END WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3").bind(t).bind(id).bind(&registration).execute(c).await?;
     Ok(facts)
 }
 /// References existing execution work; this table owns no attempt or retry state.
@@ -475,11 +465,11 @@ pub async fn authorize_execution_in(
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
-    registration: Uuid,
+    registration: String,
     execution: Uuid,
 ) -> Result<()> {
-    let changed=sqlx::query("INSERT INTO mdm_devices.retirement_work(tenant_id,operation,registration,execution) SELECT $1::uuid,$2,$3,$4 WHERE EXISTS(SELECT 1 FROM mdm_devices.retirement_channels t JOIN mdm_access.devices d ON(d.tenant_id,d.id,d.retirement)=(t.tenant_id,t.device,t.operation) WHERE t.tenant_id=$1::uuid AND t.operation=$2 AND t.registration=$3 AND t.stage IN('cleanup','unenroll')) ON CONFLICT DO NOTHING")
-        .bind(tenant.to_string()).bind(operation).bind(registration).bind(execution).execute(c).await?;
+    let changed=sqlx::query("INSERT INTO mdm_devices.retirement_work (tenant_id, operation, device, execution) SELECT CAST($1 AS uuid), $2, $3, $4 WHERE EXISTS (SELECT 1 FROM mdm_devices.retirement_channels AS t INNER JOIN mdm_access.devices AS d ON (d.tenant_id, d.id, d.retirement) = (t.tenant_id, t.device, t.operation) WHERE t.tenant_id = CAST($1 AS uuid) AND t.operation = $2 AND t.device = $3 AND t.stage IN ('cleanup', 'unenroll')) ON CONFLICT DO NOTHING")
+        .bind(tenant.to_string()).bind(operation).bind(&registration).bind(execution).execute(c).await?;
     if changed.rows_affected() != 1 {
         return Err(Error::Conflict);
     }
@@ -490,10 +480,10 @@ pub async fn prepare_unenrollment_in(
     c: &mut PgConnection,
     tenant: TenantId,
     operation: Uuid,
-    registration: Uuid,
+    registration: String,
     execution: Uuid,
 ) -> Result<()> {
-    authorize_execution_in(c, tenant, operation, registration, execution).await?;
+    authorize_execution_in(c, tenant, operation, registration.clone(), execution).await?;
     bind_execution_in(
         c,
         tenant,
@@ -510,11 +500,11 @@ pub async fn prepare_unenrollment_in(
 pub async fn native_departure_in(
     c: &mut PgConnection,
     tenant: &str,
-    registration: Uuid,
+    registration: String,
     confirmed: bool,
 ) -> Result<()> {
-    sqlx::query("UPDATE mdm_devices.retirement_channels SET stage='revoke',effect=CASE WHEN $3 THEN 'confirmed' ELSE 'unknown' END,reason=CASE WHEN $3 THEN NULL ELSE 'native_unenrollment_unverified' END WHERE tenant_id=$1::uuid AND registration=$2 AND stage='unenroll'")
-        .bind(tenant).bind(registration).bind(confirmed).execute(c).await?;
+    sqlx::query("UPDATE mdm_devices.retirement_channels SET stage = 'revoke', effect = CASE WHEN $3 THEN 'confirmed' ELSE 'unknown' END, reason = CASE WHEN $3 THEN NULL ELSE 'native_unenrollment_unverified' END WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND stage = 'unenroll'")
+        .bind(tenant).bind(&registration).bind(confirmed).execute(c).await?;
     Ok(())
 }
 
@@ -526,7 +516,7 @@ pub async fn cleanup_allowed_in(
     device: &str,
     execution: Option<Uuid>,
 ) -> Result<bool> {
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.retirement_channels t JOIN mdm_access.devices d ON(d.tenant_id,d.id,d.retirement)=(t.tenant_id,t.device,t.operation) JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(t.tenant_id,t.registration,t.generation) WHERE t.tenant_id=$1::uuid AND t.operation=$2 AND t.device=$3 AND t.stage='cleanup' AND r.state='active' AND ($4::uuid IS NULL OR EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.operation,w.registration,w.execution)=(t.tenant_id,t.operation,t.registration,$4))))").bind(tenant).bind(retirement).bind(device).bind(execution).fetch_one(c).await?)
+    Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_devices.retirement_channels AS t INNER JOIN mdm_access.devices AS d ON (d.tenant_id, d.id, d.retirement) = (t.tenant_id, t.device, t.operation) INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (t.tenant_id, t.device) WHERE t.tenant_id = CAST($1 AS uuid) AND t.operation = $2 AND t.device = $3 AND t.stage = 'cleanup' AND r.state = 'active' AND (CAST($4 AS uuid) IS NULL OR EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w WHERE (w.tenant_id, w.operation, w.device, w.execution) = (t.tenant_id, t.operation, t.device, $4))))").bind(tenant).bind(retirement).bind(device).bind(execution).fetch_one(c).await?)
 }
 pub async fn cleanup_context_in(
     c: &mut PgConnection,

@@ -9,7 +9,7 @@ pub async fn ready(
     object: &DaRegistration,
     now: i64,
 ) -> Result<(), Error> {
-    store::current_object(app, c, object, object.registration_id).await?;
+    store::current_object(app, c, object).await?;
     let login = configuration_for_object(c, app.tenant, object).await?;
     let rt = app.runtime()?;
     rt.evidence

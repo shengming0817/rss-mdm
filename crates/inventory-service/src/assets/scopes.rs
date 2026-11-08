@@ -77,8 +77,7 @@ impl AssetService {
             .into_iter()
             .map(|row| {
                 Ok(serde_json::json!({
-                    "registration":row.try_get::<String,_>("registration")?,
-                    "generation":row.try_get::<String,_>("generation")?,
+                    "device":row.try_get::<String,_>("device")?,
                     "source":row.try_get::<String,_>("source")?,
                     "epoch":row.try_get::<String,_>("epoch")?,
                 }))
@@ -179,16 +178,16 @@ impl AssetService {
 
 const SCOPES: &str = r#"
 WITH authority AS (
- SELECT registration,source,epoch FROM jsonb_to_recordset($2::jsonb)
- AS a(registration text,source text,epoch text)
+ SELECT device,source,epoch FROM jsonb_to_recordset($2::jsonb)
+ AS a(device text,source text,epoch text)
 ), streams AS (
  SELECT h.scope FROM mdm_access.collection_history h
- JOIN authority a ON a.registration=h.scope::jsonb->>'registration'
+ JOIN authority a ON a.device=h.scope::jsonb->>'registration'
    AND a.source=h.scope::jsonb->>'source' AND a.epoch=h.scope::jsonb->>'epoch'
  WHERE h.tenant_id=$1::uuid AND mdm.asset_visible($3::jsonb,h.revision)
  UNION
  SELECT c.identity->>'scope' FROM mdm.asset_changes c
- JOIN authority a ON a.registration=c.identity->>'registration'
+ JOIN authority a ON a.device=c.identity->>'device'
    AND a.source=(c.identity->>'scope')::jsonb->>'source'
    AND a.epoch=(c.identity->>'scope')::jsonb->>'epoch'
  WHERE c.tenant_id=$1::uuid AND c.kind='inventory' AND mdm.asset_visible($3::jsonb,c.revision)
@@ -203,7 +202,7 @@ WITH authority AS (
  ORDER BY h.scope_digest,h.field,h.field_scope,h.revision DESC
 ), facts AS (
  SELECT (h.field_scope::jsonb)::text AS scope FROM inventory h
- JOIN authority a ON a.registration=h.document->>'registration'
+ JOIN authority a ON a.device=h.document->>'registration'
    AND a.source=h.document->>'source' AND a.epoch=h.document->>'epoch'
  WHERE h.document IS NOT NULL AND h.document->>'state'<>'deleted'
    AND h.document->>'journal'=$7 AND h.document->>'generation'=$8
@@ -217,7 +216,7 @@ WITH authority AS (
    f->'scope' AS scope,
    (v.metadata->'fields'->(f->'definition'->>'key')->>'quality') AS quality
  FROM runs h
- JOIN authority a ON a.registration=h.scope::jsonb->>'registration'
+ JOIN authority a ON a.device=h.scope::jsonb->>'registration'
    AND a.source=h.scope::jsonb->>'source' AND a.epoch=h.scope::jsonb->>'epoch'
  JOIN mdm_access.collection_versions v ON v.tenant_id=$1::uuid AND v.version=h.document->>'progress_version'
  CROSS JOIN LATERAL jsonb_array_elements(v.metadata->'definition'->'fields') f

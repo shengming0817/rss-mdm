@@ -99,8 +99,8 @@ impl Registry {
             return Err(Error::Request);
         }
         Csr::verify(&csr).map_err(|_| Error::Storage)?;
-        let registration = Uuid::parse_str(&frozen.subject).map_err(|_| Error::Storage)?;
-        if !frozen.sans.is_empty() || t.subject.to_string() != format!("CN={registration}") {
+        let device = Uuid::parse_str(&frozen.subject).map_err(|_| Error::Storage)?;
+        if !frozen.sans.is_empty() || t.subject.to_string() != format!("CN={device}") {
             return Err(Error::Request);
         }
         let receipt = Receipt {

@@ -80,8 +80,7 @@ impl FrozenScript {
                 Architecture::X86_64 => wire::TaskArchitecture::X86_64,
                 Architecture::Aarch64 => wire::TaskArchitecture::Aarch64,
             },
-            registration_id: target.registration,
-            generation: target.generation.try_into().map_err(|_| Error::Malformed)?,
+
             task_id: run,
             attempt_id: attempt,
             permit,

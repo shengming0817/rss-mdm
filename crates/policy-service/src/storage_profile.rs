@@ -18,8 +18,8 @@ macro_rules! define_storage {
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid='"###, $access_schema, r###"collection_runs'::regclass AND a.attnum>0 AND NOT a.attisdropped
   AND has_column_privilege(current_user,a.attrelid,a.attnum,'SELECT')<>(a.attname IN('tenant_id','scope','id','result','attempts','evidence','sequence','sealed_at')))
 "###),
-                events_event_device_current_in_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')"),
-                events_event_scope_in_1: concat!("SELECT channel FROM ", $access_schema, "registrations WHERE tenant_id=$1::uuid AND id=$2"),
+                events_event_device_current_in_1: concat!("SELECT EXISTS (SELECT 1 FROM ", $access_schema, "devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')"),
+                events_event_scope_in_1: concat!("SELECT channel FROM ", $access_schema, "devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2"),
                 management_lifecycle_advance_lifecycle_work_in_1: concat!("SELECT ", $policy_schema, "lock_policy($1)"),
             };
         }

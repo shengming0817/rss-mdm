@@ -1,6 +1,6 @@
 # 设备注册与凭据
 
-注册授权与设备身份是两个阶段。创建 pending Enrollment 不代表设备已绑定；bound 表示原子绑定事实，当前凭据是否有效仍由注册状态和管理准入决定。身份与通道世代边界见 [ADR](../architecture/adr/202609100445-2348-device-principal.md)。
+注册授权与设备身份是两个阶段。创建 pending Enrollment 不代表设备已绑定；bound 表示原子绑定事实，当前凭据是否有效仍由注册状态和管理准入决定。身份与通道边界见 [ADR](../architecture/adr/202609100445-2348-device-principal.md)。
 
 ## 创建、续接与撤销
 
@@ -13,12 +13,12 @@ python3 hack/enrollment-password.py
 把生成的随机口令安全交给设备。管理员 cookie/token 不能传给设备。创建请求为 `POST /api/v1/enrollments`，例如：
 
 ```json
-{"deviceId":"device-1","password":"调用端生成并保存的口令","source":"mdm.windows","windowsProfile":"Full"}
+{"password":"调用端生成并保存的口令","source":"mdm.windows","windowsProfile":"Full"}
 ```
 
-原生 Enrollment 的 source 显式选择 mdm.windows 或 mdm.apple，不能由服务猜测。mdm.windows 必须显式提供 `windowsProfile: "Full" | "Device"`，其它来源不得提供此字段。此选择进入幂等输入并在授权后保持不变；设备 EnrollmentType 必须与授权一致。Full 注册的用户上下文标识为该注册的 UUID，可在有权查询的注册列表中读取 `userContextId`；Device 注册不提供用户上下文。查询 `/api/v1/enrollments/{id}` 获取当前状态；注册列表使用 `/api/v1/devices/{device}/registrations`，依 nextCursor 续页，再按 registrationId 撤销。
+原生 Enrollment 的 source 显式选择 mdm.windows 或 mdm.apple，不能由服务猜测。mdm.windows 必须显式提供 `windowsProfile: "Full" | "Device"`，其它来源不得提供此字段。此选择进入幂等输入并在授权后保持不变；设备 EnrollmentType 必须与授权一致。服务端在授权时分配并冻结随机 deviceId；同一请求精确重放返回同一身份，新注册始终产生新身份。Full 注册通过 `enrolledUser` 表示已注册用户上下文；Windows 配置使用 `target.kind="enrolled_user"`，不分配用户 UUID。查询 `/api/v1/enrollments/{id}` 获取当前状态；凭据管理使用 `GET /api/v1/devices/{device}/registration` 与 `POST /api/v1/devices/{device}/registration/revoke`。
 
-原管理员重新登录后可向 `/enrollments/{id}/resume` 提交新口令与新操作键；同一请求重试保持原键和参数。恢复保留原注册意图与预期世代，不复活撤销、取消或过期证书。未绑定授权可 cancel；已绑定设备走独立 revoke，撤销同时停用注册、凭据及来源。
+原管理员重新登录后可向 `/enrollments/{id}/resume` 提交新口令与新操作键；同一请求重试保持原键和参数。恢复保留原注册意图和 deviceId，不复活撤销、取消或过期证书。未绑定授权可 cancel；已绑定设备走独立 revoke，撤销同时停用注册、凭据及来源。
 
 响应丢失先查询和精确重放，不换键掩盖未知提交。回执是历史结果，不能代替当前授权；绑定仍需原授权用户在线身份，组织来源还需设备范围授权，进程内续接缓存也不是会话权威。
 
@@ -36,7 +36,7 @@ python3 hack/enrollment-password.py
 
 签发意图先持久化，证书、注册、回执与成功审计最终同事务提交；已签名但未绑定的证书不具管理权。拒绝/查询审计失败也不放行。日志只记录操作坐标与闭合错误类别，不记录口令、私钥或协议秘密。
 
-设备主体从真实认证与当前持久映射构造，客户端不能声明 tenant、注册世代或报告 scope。报告绑定注册/来源/epoch；同一报告重试保留身份。撤销后的新报告拒绝，撤销前已封存报告仍可按原 scope 恢复投递；不能把这一恢复通道用于任意新报告。
+设备主体从真实认证与当前持久映射构造，客户端不能选择 deviceId、tenant 或报告 scope。报告绑定 deviceId/来源/epoch；同一报告重试保留身份。撤销后的新报告拒绝，撤销前已封存报告仍可按原 scope 恢复投递；不能把这一恢复通道用于任意新报告。
 
 原生接入分别见 [Windows](windows-management.md)、[Apple](apple-management.md)，Agent 接入见 [Agent](agent-integration.md)。迁移与角色配置统一见 [安装](../deployment/installation.md) 和 [运维](../deployment/operations.md)。
 
@@ -44,7 +44,7 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 
 ## 自助注册与个人额度
 
-当前组织的有效用户可以直接创建自助注册，无需管理员批准。浏览器入口为“注册我的设备”；原生 MDM 使用 `POST /api/v1/self-enrollments`，参数与组织创建相同但不提供 deviceId。服务端分配独立设备身份，设备上报标识不能选择或覆盖已有组织设备。Windows 保留首次签发时的终端协议标识供后续 SyncML、续证和关联通道校验；该标识不用于跨通道合并。Agent 授权使用 `POST /api/v1/self-enrollments/agent`，沿用 Agent 的持久授权和秘密交付契约。
+当前组织的有效用户可以直接创建自助注册，无需管理员批准。浏览器入口为“注册我的设备”；原生 MDM 使用 `POST /api/v1/self-enrollments`，参数与组织创建相同，均不提供 deviceId。服务端分配独立设备身份，设备上报标识不能选择或覆盖已有组织设备。Windows 保留首次签发时的终端协议标识供后续 SyncML、续证和关联通道校验；该标识不用于跨通道合并。Agent 授权使用 `POST /api/v1/self-enrollments/agent`，沿用 Agent 的持久授权和秘密交付契约。
 
 “注册额度”页面由具有 registration_configuration_read／registration_configuration_write 的管理员读取／配置。每个租户持有自己的默认值和按用户、渠道的覆盖；覆盖留空表示继承，全部清空恢复默认值。0 禁止新增。Agent 的 Windows/macOS 共用一个额度，Windows MDM 和 macOS MDM 各自独立，默认值由注册服务持有。`GET /api/v1/registration-quotas/me` 读取自己的有效额度和当前占用。
 
@@ -77,7 +77,7 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 
 ## Windows 原证书申请读回
 
-具备设备 Credentials 权限的管理员通过 `GET /api/v1/devices/{device}/windows-certificate-requests` 定位现有登记或续期的原申请，可按 `enrollmentId` 或 `registration` 使用统一查询筛选；`/{attempt}` 读取原申请详情。原 signing issuer、attempt、期限与设备登记代次分别来自原 owner。已经被替代的 attempt 仍沿持久 successor 关系可定位，不会被当前申请冒充。
+具备设备 Credentials 权限的管理员通过 `GET /api/v1/devices/{device}/windows-certificate-requests` 定位现有登记或续期的原申请，按设备范围使用统一查询筛选；`/{attempt}` 读取原申请详情。原 signing issuer、attempt、期限与设备身份分别来自原 owner。已经被替代的 attempt 仍沿持久 successor 关系可定位，不会被当前申请冒充。
 
 对象下 `/recovery-operations` 提供原管理恢复操作引用；`/{operation}?actor=...&instance=...` 精确读回原提交结果，两个原主体参数必填。当前有设备凭据权限的管理员可查询他人回执。原 `POST /api/v1/pki/signing/recover` 仍要求全设备 Credentials，并核验原 CSR、公钥、登记身份、原签发者与有效期。
 

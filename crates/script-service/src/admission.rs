@@ -128,7 +128,7 @@ pub(crate) fn candidate(
                 }
                 (now, format!("checkin:{request}"))
             }
-            (Trigger::Registration, _) => (now, format!("registration:{}", target.registration)),
+            (Trigger::Registration, _) => (now, format!("device:{}", target.device.clone())),
             (Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. }, _) => {
                 let Some(due) = schedule.due(-1, now, target.device.as_bytes())? else {
                     return Ok(None);
@@ -211,7 +211,7 @@ pub async fn queue_run_in(
 ) -> Result<()> {
     use rss_transactional_messaging::outbox::{AppendOutcome, OutboxWriter};
     service.validate_in(tx)?;
-    storage::lock_device(tx, &input.target.device).await?;
+    storage::lock_device(tx, &input.target.device.clone()).await?;
     if storage::pending_in(
         tx,
         policy.owner,
@@ -279,9 +279,9 @@ pub async fn queue_run_in(
     let id = input.id;
     let now = input.now;
     tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_script.runs(tenant_id,id,policy_version,resource_id,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,invocation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
-            .bind(tenant).bind(id).bind(version).bind(resource).bind(target.device).bind(target.registration)
-            .bind(target.generation).bind(input.occurrence).bind(input.available).bind(input.deadline)
+        sqlx::query("INSERT INTO mdm_script.runs(tenant_id,id,policy_version,resource_id,device,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,invocation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+            .bind(tenant).bind(id).bind(version).bind(resource).bind(target.device.clone())
+            .bind(input.occurrence).bind(input.available).bind(input.deadline)
             .bind(state).bind(fingerprint).bind(now).bind(evidence).bind(origin).bind(invocation).execute(c).await?;
         Ok(())
     })).await?;
@@ -310,7 +310,7 @@ pub async fn queue_run_in(
     }
     audit.plan(version);
     audit.target(&id.to_string());
-    audit.registration(input.target.registration);
+
     let result: Result<()> = async {
         let run = storage::read_run(tx, id).await?;
         let fact = Fact::business(
@@ -350,9 +350,9 @@ pub fn policy_occurrence(
     event: &str,
 ) -> String {
     match frequency {
-        Frequency::OncePerVersion => format!("version:{}", target.registration),
-        Frequency::OncePerEntry => format!("entry:{source}:{entry}:{}", target.registration),
-        Frequency::EveryTrigger => format!("{event}:{}", target.registration),
+        Frequency::OncePerVersion => format!("version:{}", target.device.clone()),
+        Frequency::OncePerEntry => format!("entry:{source}:{entry}:{}", target.device.clone()),
+        Frequency::EveryTrigger => format!("{event}:{}", target.device.clone()),
     }
 }
 pub async fn occurrence_available_in(
@@ -392,7 +392,7 @@ fn dispatch(
     use rss_transactional_messaging::{message::*, outbox::PendingMessage};
     use sha2::{Digest, Sha256};
     let payload = checked_input(serde_json::to_vec(
-        &serde_json::json!({"version":1,"policyVersion":version,"taskId":input.id,"device":input.target.device,"registrationId":input.target.registration,"generation":input.target.generation}),
+        &serde_json::json!({"version":1,"policyVersion":version,"taskId":input.id,"device":input.target.device}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         checked_input(MessageId::parse(&format!("script.{}", input.id)))?,

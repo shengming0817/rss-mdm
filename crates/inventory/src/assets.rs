@@ -132,10 +132,9 @@ pub struct Evidence {
     pub source: crate::Source,
     /// Collector dataset identity; absent only for management assignments.
     pub dataset: Option<String>,
-    /// Current device registration; absent for Manual.
-    pub registration: Option<String>,
-    /// Registration generation resolved by the host; absent on Manual and raw provider reads.
-    pub registration_generation: Option<u64>,
+    /// Original enrolled device; absent for Manual.
+    pub device_id: Option<String>,
+
     /// Source epoch; absent for Manual.
     pub epoch: Option<String>,
     /// Immutable batch or operation identity.
@@ -301,15 +300,13 @@ fn resolve_state(definition: &FieldDefinition, sources: &[&SourceFact]) -> Resul
             if (
                 &e.scope,
                 e.source.as_str(),
-                &e.registration,
-                e.registration_generation,
+                &e.device_id,
                 &e.epoch,
                 &e.dataset,
             ) != (
                 &old.scope,
                 old.source.as_str(),
-                &old.registration,
-                old.registration_generation,
+                &old.device_id,
                 &old.epoch,
                 &old.dataset,
             ) {
@@ -383,16 +380,14 @@ pub(crate) fn validate_evidence(definition: &FieldDefinition, e: &Evidence) -> R
         || rss_contract::Timepoint::try_from(e.received_at).is_err()
         || if e.source == crate::Source::Manual {
             e.dataset.is_some()
-                || e.registration.is_some()
-                || e.registration_generation.is_some()
+                || e.device_id.is_some()
                 || e.epoch.is_some()
                 || e.actor.as_ref().is_none_or(|s| !bounded(s))
         } else {
             e.dataset.as_ref().is_none_or(|s| !bounded(s))
-                || e.registration.as_ref().is_none_or(|s| !bounded(s))
+                || e.device_id.as_ref().is_none_or(|s| !bounded(s))
                 || e.epoch.as_ref().is_none_or(|s| !bounded(s))
                 || e.actor.is_some()
-                || e.registration_generation == Some(0)
         }
     {
         return Err(Invalid::Evidence);

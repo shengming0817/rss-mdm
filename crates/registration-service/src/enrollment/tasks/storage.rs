@@ -53,8 +53,6 @@ async fn run_in(
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         target: crate::enrollment::tasks::Target {
             device: row.try_get("device")?,
-            registration: row.try_get("registration")?,
-            generation: row.try_get("generation")?,
         },
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
@@ -150,8 +148,8 @@ pub async fn save_run(
                 data: EventData::Policy {
                     run_id: run.id,
                     policy_version: run.policy_version,
-                    registration_id: run.target.registration,
-                    generation: run.target.generation,
+                    device_id: run.target.device.to_string(),
+
                     status: status.into(),
                 },
             };
@@ -165,7 +163,7 @@ pub async fn save_run(
 }
 
 /// The caller holds the device fence across this check and admission. Unknown is
-/// intentionally independent of Policy, version, registration, deadline and cancellation.
+/// intentionally independent of Policy, version, device, deadline and cancellation.
 pub async fn pending_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
@@ -183,10 +181,10 @@ pub async fn pending_in(
                     crate::storage_profile::sql(profile).enrollment_tasks_storage_pending_in_1,
                 )
                 .bind(tenant)
-                .bind(target.device)
+                .bind(&target.device)
                 .bind(policy)
                 .bind(version)
-                .bind(target.registration)
+                .bind(&target.device)
                 .bind(now)
                 .fetch_one(c)
                 .await
@@ -290,9 +288,7 @@ pub async fn receipt(
                 .bind(id)
                 .bind(fingerprint)
                 .bind(response)
-                .bind(target.device)
-                .bind(target.registration)
-                .bind(target.generation)
+                .bind(&target.device)
                 .execute(c)
                 .await?;
             Ok(())

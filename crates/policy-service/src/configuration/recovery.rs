@@ -98,13 +98,11 @@ impl Transactions {
         )
         .await
         {
-            Ok((registration, generation)) => {
+            Ok(_) => {
                 rss_mdm_registration_service::command_authority::resolve_in(
                     &self.store,
                     tx,
                     device,
-                    registration,
-                    generation,
                 )
                 .await?;
             }
@@ -114,7 +112,7 @@ impl Transactions {
         let tenant = tx.tenant_id();
         let name = device.to_owned();
         let Some((command_device,_generation,epoch,cursor))=tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query_as::<_,(Uuid,i64,i64,Option<String>)>("SELECT a.command_device,a.generation,a.epoch,CASE WHEN r.authority_epoch=a.epoch THEN r.recovery_after END FROM mdm_access.command_authorities a LEFT JOIN mdm_planning.configuration_recovery r USING(tenant_id,device) WHERE a.tenant_id=$1::uuid AND a.device=$2 FOR UPDATE OF a").bind(tenant.to_string()).bind(name).fetch_optional(c).await
+            sqlx::query_as::<_,(Uuid,i64,i64,Option<String>)>("SELECT a.command_device, a.generation, a.epoch, CASE WHEN r.authority_epoch = a.epoch THEN r.recovery_after END FROM mdm_access.command_authorities AS a LEFT JOIN mdm_planning.configuration_recovery AS r USING (tenant_id, device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 FOR UPDATE OF a").bind(tenant.to_string()).bind(name).fetch_optional(c).await
         })).await? else{return Ok(())};
         let scope = dc::Scope::new(
             tenant,
@@ -175,7 +173,7 @@ impl Transactions {
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
             context.target_device(device);
-            context.registration(operation.registration);
+            context.target_device(&operation.device);
             let fact = Fact::business(
                 &context,
                 rss_mdm_audit_integration::operation::OperationOwner::Configuration,
@@ -329,8 +327,6 @@ pub(crate) fn activity(
     let mut activity = Activity::new(kind, phase);
     activity.target = Some(ActivityTarget {
         device: op.device.clone(),
-        registration: op.registration,
-        generation: op.registration_generation,
     });
     activity.links.operation = Some(op.id);
     match &op.authority {

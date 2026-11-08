@@ -54,8 +54,7 @@ pub async fn create_in(
         let hash = digest(&(
             input.operation,
             input.attempt,
-            p.registration(),
-            p.generation(),
+            p.device(),
             input.source,
             input.password.digest(&tenant, &device)?,
         ));
@@ -68,7 +67,7 @@ pub async fn create_in(
                 enrollment_id: row.try_get("request").map_err(db)?,
                 status: row.try_get("state").map_err(db)?,
                 expires_at: row.try_get("expiry").map_err(db)?,
-                registration: None,
+                device_id: device,
                 source: input.source,
             },
             true,
@@ -89,8 +88,7 @@ pub async fn create_in(
     let hash = digest(&(
         input.operation,
         input.attempt,
-        p.registration(),
-        p.generation(),
+        p.device(),
         input.source,
         &password,
     ));
@@ -113,6 +111,7 @@ pub async fn create_in(
         .bind(password)
         .bind(deadline as f64)
         .bind(Uuid::new_v4())
+        .bind(&device)
         .bind(if input.source == ReportSource::MdmWindows {
             Some("Full")
         } else {
@@ -126,8 +125,7 @@ pub async fn create_in(
         .bind(input.task)
         .bind(input.attempt)
         .bind(input.operation)
-        .bind(p.registration())
-        .bind(p.generation())
+        .bind(p.device())
         .bind(id)
         .bind(hash)
         .bind(serde_json::to_value(input.actor).map_err(|_| Error::Malformed)?)
@@ -140,7 +138,7 @@ pub async fn create_in(
             enrollment_id: id,
             status: "pending".into(),
             expires_at: deadline,
-            registration: None,
+            device_id: device,
             source: input.source,
         },
         false,

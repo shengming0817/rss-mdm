@@ -49,7 +49,7 @@ impl NativeProgress for EnrollmentProgress {
                         rss_mdm_install_support::StorageProfile::Mdm,
                         c,
                         &context.tenant,
-                        registration.id,
+                        &registration.device.clone(),
                         purpose,
                         context.now,
                     )

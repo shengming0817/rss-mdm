@@ -37,14 +37,14 @@ pub async fn target_admission_on(
     use rss_mdm_policy::pages::TaskAdmissionState as State;
     let device = device.to_owned();
 
-    let rows = sqlx::query_as::<_, (Uuid,i64,String)>("SELECT r.id,r.generation,s.source FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='mdm' AND r.state='active' AND s.enabled AND s.source IN('mdm.windows','mdm.apple')").bind(tenant.to_string()).bind(&device).fetch_all(&mut *c).await?;
+    let rows = sqlx::query_as::<_, (String,String)>("SELECT r.id, s.source FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (s.tenant_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.channel = 'mdm' AND r.state = 'active' AND s.enabled AND s.source IN ('mdm.windows', 'mdm.apple')").bind(tenant.to_string()).bind(&device).fetch_all(&mut *c).await?;
     if rows.is_empty() {
         return Ok(TargetAdmission::Rejected(State::MissingRegistration));
     }
     if rows.len() > 1 {
         return Ok(TargetAdmission::Rejected(State::AmbiguousRegistration));
     }
-    let (registration, generation, source) = &rows[0];
+    let (registration, source) = &rows[0];
     let (report, platform) = if source == "mdm.windows" {
         (
             rss_mdm_inventory::ReportSource::MdmWindows,
@@ -53,9 +53,9 @@ pub async fn target_admission_on(
     } else {
         (rss_mdm_inventory::ReportSource::MdmApple, Platform::Macos)
     };
-    if platform==Platform::Macos && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4096 = 4096 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant.to_string()).bind(registration).fetch_optional(&mut *c).await?.unwrap_or(false) { return Ok(TargetAdmission::Rejected(State::MissingNativeRights)); }
+    if platform==Platform::Macos && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4096 = 4096 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant.to_string()).bind(registration).fetch_optional(&mut *c).await?.unwrap_or(false) { return Ok(TargetAdmission::Rejected(State::MissingNativeRights)); }
     let fact = facts
-        .detail_on(c, tenant, *registration, *generation, report)
+        .detail_on(c, tenant, registration.clone(), report)
         .await?;
     let (evidence, pending) = match fact {
         rss_mdm_inventory::channel::Observation::Ready(fact) => (fact.evidence, false),
@@ -70,11 +70,7 @@ pub async fn target_admission_on(
         _ => return Ok(TargetAdmission::Rejected(State::MissingArchitecture)),
     };
     let target = NativeTarget {
-        target: Target {
-            device,
-            registration: *registration,
-            generation: *generation,
-        },
+        target: Target { device },
         platform,
         architecture,
     };
@@ -102,7 +98,7 @@ pub async fn dispatch_authority_on(
         return Ok(false);
     };
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-    let row = sqlx::query("SELECT v.frozen,p.definition,r.source_objects,r.state,p.state='enabled' AS live,(p.definition->>'scope')::uuid AS scope,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_software_deployment.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations reg ON(reg.tenant_id,reg.id,reg.generation)=(r.tenant_id,r.registration,r.generation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.policy_version=$3 AND r.device=$4 AND reg.state='active'").bind(tenant).bind(operation).bind(version).bind(device).fetch_optional(&mut *c).await.map_err(crate::deployment::database::db)?;
+    let row = sqlx::query("SELECT v.frozen, p.definition, r.source_objects, r.state, p.state = 'enabled' AS live, CAST(p.definition ->> 'scope' AS uuid) AS scope, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint) AS now FROM mdm_software_deployment.action_runs AS r INNER JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (r.tenant_id, r.policy_version) INNER JOIN mdm_policy.policies AS p ON (p.tenant_id, p.id) = (v.tenant_id, v.policy) INNER JOIN mdm_access.devices AS reg ON (reg.tenant_id, reg.id) = (r.tenant_id, r.device) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.policy_version = $3 AND r.device = $4 AND reg.state = 'active'").bind(tenant).bind(operation).bind(version).bind(device).fetch_optional(&mut *c).await.map_err(crate::deployment::database::db)?;
     let Some(row) = row else {
         return Ok(false);
     };
@@ -266,7 +262,7 @@ impl SoftwareService {
                             rss_mdm_registration_service::Purpose::Primary,
                         )
                         .await?
-                            != (op.registration, op.registration_generation)
+                            != op.device.clone()
                         || !storage::authority_decision(
                             &s.transactions.source,
                             &s.transactions.lifecycle,
@@ -357,7 +353,7 @@ pub(crate) async fn authorities_on(
         .iter()
         .map(|(index, a)| serde_json::json!({"n":index,"a":a}))
         .collect::<Vec<_>>();
-    let rows=sqlx::query("WITH inputs AS(SELECT (value->>'n')::bigint AS n,value->'a' AS a FROM jsonb_array_elements($2)),selected AS MATERIALIZED(SELECT i.n,v.frozen FROM inputs i JOIN mdm_software_deployment.action_runs r ON(r.tenant_id,r.id,r.policy_version,r.device)=($1::uuid,(i.a->>'operation')::uuid,(i.a->>'version')::uuid,i.a->>'device') JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations reg ON(reg.tenant_id,reg.id,reg.generation)=(r.tenant_id,r.registration,r.generation) WHERE reg.state='active'),budget AS(SELECT coalesce(sum(octet_length(frozen::text)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216")
+    let rows=sqlx::query("WITH inputs AS (SELECT CAST(value ->> 'n' AS bigint) AS n, value -> 'a' AS a FROM jsonb_array_elements($2)), selected AS MATERIALIZED (SELECT i.n, v.frozen FROM inputs AS i INNER JOIN mdm_software_deployment.action_runs AS r ON (r.tenant_id, r.id, r.policy_version, r.device) = (CAST($1 AS uuid), CAST(i.a ->> 'operation' AS uuid), CAST(i.a ->> 'version' AS uuid), i.a ->> 'device') INNER JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (r.tenant_id, r.policy_version) INNER JOIN mdm_policy.policies AS p ON (p.tenant_id, p.id) = (v.tenant_id, v.policy) INNER JOIN mdm_access.devices AS reg ON (reg.tenant_id, reg.id) = (r.tenant_id, r.device) WHERE reg.state = 'active'), budget AS (SELECT CAST(COALESCE(sum(octet_length(CAST(frozen AS text))), 0) AS bigint) AS bytes FROM selected) SELECT selected.*, budget.bytes FROM budget LEFT JOIN selected ON budget.bytes <= 16777216")
         .bind(tenant.to_string()).bind(serde_json::Value::Array(inputs)).fetch_all(&mut *c).await.map_err(crate::deployment::database::db)?;
     if rows
         .first()

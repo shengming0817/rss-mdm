@@ -96,55 +96,16 @@ impl Signing {
         if self.usage != Use::AgentTask {
             return Err(Error::Forbidden);
         }
-        let (tenant, device, registration, generation) = match &payload {
-            TaskPayload::DeviceAccess(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Credential(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Collection(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Script(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Software(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Enrollment(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Unmanage(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
+        let (tenant, device) = match &payload {
+            TaskPayload::DeviceAccess(v) => (v.tenant_id, v.device_id.as_str()),
+            TaskPayload::Credential(v) => (v.tenant_id, v.device_id.as_str()),
+            TaskPayload::Collection(v) => (v.tenant_id, v.device_id.as_str()),
+            TaskPayload::Script(v) => (v.tenant_id, v.device_id.as_str()),
+            TaskPayload::Software(v) => (v.tenant_id, v.device_id.as_str()),
+            TaskPayload::Enrollment(v) => (v.tenant_id, v.device_id.as_str()),
+            TaskPayload::Unmanage(v) => (v.tenant_id, v.device_id.as_str()),
         };
-        if tenant.to_string() != p.tenant().to_string()
-            || device != p.device()
-            || registration != p.registration()
-            || generation != p.generation() as u64
-        {
+        if tenant.to_string() != p.tenant().to_string() || device != p.device() {
             return Err(Error::Forbidden);
         }
         self.revalidate(c, p).await?;

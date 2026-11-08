@@ -13,7 +13,6 @@ use uuid::Uuid;
 pub struct Source {
     pub id: Uuid,
     pub kind: rss_mdm_agent_wire::platform_sso::Kind,
-    pub registration: Uuid,
     pub object: DaRegistration,
     pub binding: Option<Uuid>,
     pub binding_generation: i64,
@@ -58,28 +57,26 @@ pub async fn source(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<Sour
     Ok(source)
 }
 pub async fn put(c: &mut PgConnection, tenant: &str, s: &Source) -> Result<(), Error> {
-    sqlx::query("INSERT INTO rss_da.psso_sources(tenant_id,id,kind,registration,binding,parent,version,revoked,signing_kid,document) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,id) DO UPDATE SET registration=excluded.registration,parent=excluded.parent,version=excluded.version,revoked=excluded.revoked,signing_kid=excluded.signing_kid,document=excluded.document")
-        .bind(tenant).bind(s.id).bind(s.kind.as_str()).bind(s.registration).bind(s.binding).bind(s.parent).bind(s.version).bind(s.revoked).bind(s.signing.as_ref().map(crypto::kid).transpose()?).bind(serde_json::to_value(s).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
+    sqlx::query("INSERT INTO rss_da.psso_sources (tenant_id, id, kind, device, binding, parent, version, revoked, signing_kid, document) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (tenant_id, id) DO UPDATE SET parent = excluded.parent, version = excluded.version, revoked = excluded.revoked, signing_kid = excluded.signing_kid, document = excluded.document")
+        .bind(tenant).bind(s.id).bind(s.kind.as_str()).bind(&s.object.device).bind(s.binding).bind(s.parent).bind(s.version).bind(s.revoked).bind(s.signing.as_ref().map(crypto::kid).transpose()?).bind(serde_json::to_value(s).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
     Ok(())
 }
 pub async fn current_object(
     app: &Context,
     c: &mut PgConnection,
     object: &DaRegistration,
-    registration: Uuid,
 ) -> Result<(), Error> {
     let tenant = app.tenant;
     crate::delivery::lock_da_target(c, &tenant.to_string(), &object.device, None).await?;
     fence(c, &tenant.to_string()).await?;
-    if object.registration_id != registration
-        || rss_mdm_registration_service::device::endpoints::current_da_in(
-            c,
-            &tenant.to_string(),
-            &object.device,
-        )
-        .await?
-        .as_ref()
-            != Some(object)
+    if rss_mdm_registration_service::device::endpoints::current_da_in(
+        c,
+        &tenant.to_string(),
+        &object.device,
+    )
+    .await?
+    .as_ref()
+        != Some(object)
     {
         return Err(Error::Unauthorized);
     }
@@ -93,7 +90,7 @@ pub async fn current_user(
 ) -> Result<(Source, Source, Binding), Error> {
     let tenant = app.tenant.to_string();
     let candidate = read(c, &tenant, id).await?;
-    current_object(app, c, &candidate.object, candidate.registration).await?;
+    current_object(app, c, &candidate.object).await?;
     let user = source(c, &tenant, id).await?;
     if user.object != candidate.object || user.version != candidate.version {
         return Err(Error::ReadConflict);
@@ -104,7 +101,7 @@ pub async fn current_user(
     {
         return Err(Error::Unauthorized);
     }
-    current_object(app, c, &user.object, user.registration).await?;
+    current_object(app, c, &user.object).await?;
     let desired = super::deployment::configuration_for_object(c, app.tenant, &user.object).await?;
     if desired.authentication == rss_mdm_agent_wire::platform_sso::AuthenticationMode::Password {
         app.runtime()?
@@ -125,7 +122,6 @@ pub async fn current_user(
     if device.kind != rss_mdm_agent_wire::platform_sso::Kind::Device
         || device.revoked
         || device.version != user.parent_version
-        || device.registration != user.registration
         || device.object != user.object
         || device.configuration != user.configuration
         || device.login_configuration != user.login_configuration
@@ -150,8 +146,6 @@ pub async fn current_user(
     };
     if binding.generation != user.binding_generation
         || binding.state == rss_mdm_device_access::State::Revoked
-        || user.object.registration_id != binding.registration
-        || user.object.generation != binding.registration_generation
         || user.object.device != binding.device
     {
         return Err(Error::Unauthorized);

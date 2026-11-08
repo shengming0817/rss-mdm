@@ -147,7 +147,6 @@
           "version": 1
         }
       ],
-      "generation": 1,
       "issuedAt": 1000,
       "maxBytes": 65536,
       "maxPoints": 64,
@@ -156,7 +155,6 @@
       "outputBytes": 4096,
       "policy": "11111111-2222-4333-8444-555555555555",
       "policyVersion": "11111111-2222-4333-8444-555555555555",
-      "registrationId": "11111111-2222-4333-8444-555555555555",
       "resourceDigest": [
         8,
         8,
@@ -203,8 +201,8 @@
       "uploadMillis": 10000
     },
     "keyId": "vector-key",
-    "signature": "oohqY3LJxLnD0giUI0ua1hGEP88t2pAtAiJ320Int_y0bjCVpq_oZlQ8v2minuq_ztvVcMjr9PfGBymaX8zRAQ"
+    "signature": "YLinrKAPUFjnuZteZkla7iASzQW9qermQZa0yMinYZucS2VRdZeWnDOSf8SUlkNczWehHfiBGWTz5qGwUj1VAA"
   },
-  "signingBytesLength": 1761,
-  "signingBytesSha256": "ca52eb73502b311a81c8fffc796d4451e9e293bd58eeb806c6ec944143e5f220"
+  "signingBytesLength": 1690,
+  "signingBytesSha256": "18f65dc3db7d8fcb9b50b10a035a1a000073914265b6ded9bccdec9050d83591"
 }

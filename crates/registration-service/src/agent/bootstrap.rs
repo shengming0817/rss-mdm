@@ -371,7 +371,7 @@ impl Service {
             proof["runtime"]=serde_json::to_value(&input.runtime).map_err(|_|Error::Malformed)?;
             let source=native::source(profile, c,s.tenant,proof).await?;
             let authority = s.native.as_ref().ok_or(Error::Unsupported)?.validate(c, &source).await?;
-            let native = serde_json::json!({"installation":source.installation(),"registration":source.principal().registration(),"credential":source.principal().credential(),"generation":source.principal().generation(),"source":source.report_source(),"runtime":input.runtime,"bootstrap":source.bootstrap()});
+            let native = serde_json::json!({"installation":source.installation(),"device":source.principal().device(),"credential":source.principal().credential(),"source":source.report_source(),"runtime":input.runtime,"bootstrap":source.bootstrap()});
             let (value,replay)=native::create_in(profile, c,authority,input,&native).await?;
             sqlx::query(crate::storage_profile::sql(profile).agent_bootstrap_native_grant_1)
                 .bind(s.tenant.to_string()).bind(id).execute(c).await.map_err(db)?;

@@ -84,8 +84,16 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
         Some("waiting_reboot") => "waiting_reboot",
         _ => phase,
     };
-    let device_id = if supported && request && action == "management_write" {
-        match payload.pointer("/details/deviceId") {
+    let device_id = if supported {
+        let device = payload
+            .get("device")
+            .filter(|value| !value.is_null())
+            .or_else(|| {
+                (request && action == "management_write")
+                    .then(|| payload.pointer("/details/deviceId"))
+                    .flatten()
+            });
+        match device {
             None | Some(Value::Null) => None,
             Some(Value::String(device)) if crate::model::identifier(device) => Some(device.clone()),
             _ => return Err(Error::Integrity),
@@ -123,7 +131,7 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
             .map(|v| Uuid::parse_str(v.as_str()))
             .transpose()
             .map_err(|_| Error::Integrity)?,
-        registration_id: uuid("registration")?,
+
         registration_request_id: uuid("registrationRequest")?,
         instance_id: uuid("instance")?,
         audit_outcome: match event.facts().outcome() {

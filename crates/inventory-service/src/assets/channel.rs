@@ -10,24 +10,21 @@ pub async fn detail_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    registration: Uuid,
-    generation: i64,
+    device: String,
     source: ReportSource,
 ) -> Result<Observation, Error> {
-    Ok(
-        details_in(profile, c, tenant, &[(registration, generation, source)])
-            .await?
-            .remove(&(registration, generation, source.as_str().to_owned()))
-            .unwrap_or(Observation::Unavailable),
-    )
+    Ok(details_in(profile, c, tenant, &[(device.clone(), source)])
+        .await?
+        .remove(&(device, source.as_str().to_owned()))
+        .unwrap_or(Observation::Unavailable))
 }
 /// Resolve a fixed authorized page against current registration and source generations.
 pub async fn details_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    targets: &[(Uuid, i64, ReportSource)],
-) -> Result<std::collections::BTreeMap<(Uuid, i64, String), Observation>, Error> {
+    targets: &[(String, ReportSource)],
+) -> Result<std::collections::BTreeMap<(String, String), Observation>, Error> {
     use std::collections::BTreeMap;
     if targets.len() > 1000 {
         return Err(Error::Malformed);
@@ -35,18 +32,9 @@ pub async fn details_in(
     if targets.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let ids = targets.iter().map(|t| t.0).collect::<Vec<_>>();
-    let devices: Vec<(Uuid, String)> =
-        sqlx::query_as(crate::storage_profile::sql(profile).assets_channel_details_in_1)
-            .bind(tenant.to_string())
-            .bind(&ids)
-            .fetch_all(&mut *c)
-            .await
-            .map_err(db)?;
-    let devices = devices.into_iter().collect::<BTreeMap<_, _>>();
     let locks = targets
         .iter()
-        .filter_map(|(id, _, source)| devices.get(id).map(|d| (d.clone(), source.channel())))
+        .map(|(device, source)| (device.clone(), source.channel()))
         .collect::<Vec<_>>();
     crate::device::store::lock_channels(profile, c, &tenant.to_string(), &locks).await?;
     snapshot_details_in(profile, c, tenant, targets).await
@@ -56,8 +44,8 @@ pub async fn snapshot_details_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    targets: &[(Uuid, i64, ReportSource)],
-) -> Result<std::collections::BTreeMap<(Uuid, i64, String), Observation>, Error> {
+    targets: &[(String, ReportSource)],
+) -> Result<std::collections::BTreeMap<(String, String), Observation>, Error> {
     use std::collections::BTreeMap;
     if targets.len() > 1000 {
         return Err(Error::Malformed);
@@ -65,21 +53,19 @@ pub async fn snapshot_details_in(
     if targets.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let ids = targets.iter().map(|t| t.0).collect::<Vec<_>>();
-    let generations = targets.iter().map(|t| t.1).collect::<Vec<_>>();
+    let ids = targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>();
     let sources = targets
         .iter()
-        .map(|t| t.2.as_str().to_owned())
+        .map(|t| t.1.as_str().to_owned())
         .collect::<Vec<_>>();
     let channels = targets
         .iter()
-        .map(|t| t.2.channel().as_str().to_owned())
+        .map(|t| t.1.channel().as_str().to_owned())
         .collect::<Vec<_>>();
-    let rows: Vec<(Uuid, i64, String, Uuid)> =
+    let rows: Vec<(String, String, Uuid)> =
         sqlx::query_as(crate::storage_profile::sql(profile).assets_channel_snapshot_details_in_1)
             .bind(tenant.to_string())
             .bind(ids)
-            .bind(generations)
             .bind(sources)
             .bind(channels)
             .fetch_all(&mut *c)
@@ -87,7 +73,7 @@ pub async fn snapshot_details_in(
             .map_err(db)?;
     let mut by_scope = BTreeMap::new();
     let mut scopes = Vec::new();
-    for (registration, generation, source, epoch) in rows {
+    for (device, source, epoch) in rows {
         let source = ReportSource::parse(&source).map_err(|_| Error::Malformed)?;
         let field = match source {
             ReportSource::AgentBuiltin => rss_mdm_inventory::builtin::MDM_ENROLLMENT,
@@ -96,14 +82,14 @@ pub async fn snapshot_details_in(
         let scope = crate::device::scope_dataset(
             profile,
             tenant,
-            registration,
+            &device,
             source.as_str(),
             epoch,
             field.as_str(),
         )?;
         by_scope.insert(
             scope.encode().map_err(|_| Error::Malformed)?,
-            (registration, generation, source, field),
+            (device, source, field),
         );
         scopes.push(scope);
     }
@@ -138,8 +124,7 @@ pub async fn snapshot_details_in(
         if latest.try_get::<String, _>("result").map_err(db)? != "snapshot" {
             continue;
         }
-        let (registration, generation, source, field) =
-            *by_scope.get(&scope).ok_or(Error::Malformed)?;
+        let (device, source, field) = by_scope.get(&scope).ok_or(Error::Malformed)?.clone();
         let id: Uuid = latest.try_get("id").map_err(db)?;
         let attempt: crate::collection::Attempts =
             serde_json::from_str(latest.try_get("attempts").map_err(db)?)
@@ -182,10 +167,7 @@ pub async fn snapshot_details_in(
             },
             None => Observation::ProjectionPending { evidence },
         };
-        result.insert(
-            (registration, generation, source.as_str().to_owned()),
-            observed,
-        );
+        result.insert((device, source.as_str().to_owned()), observed);
     }
     Ok(result)
 }

@@ -72,7 +72,7 @@ MODULES = {
                 'crates/script-service/src/queries.rs', 'crates/inventory-service/src/collection/execution/queries.rs',
                 'crates/inventory-service/src/collection/execution/model.rs', 'crates/inventory-service/src/collection/execution/recovery.rs')),
     'registration.directory': dict(prefix='assembly::registration_directory_t2::', profiles=('shared',),
-        inputs=('crates/registration-service/src/enrollment/registrations.rs', 'crates/registration-service/src/storage_profile.rs',
+        inputs=('crates/registration-service/src/enrollment/registration.rs', 'crates/registration-service/src/storage_profile.rs',
                 'crates/management-http/src/enrollment/http.rs', 'apps/server/tests/registration/directory.rs')),
     'references.lifecycle': dict(prefix='assembly::reference_blockers_t2::', profiles=('shared',),
         inputs=('crates/resource-service/*','crates/resource-postgres/*','crates/group-service/*','crates/scope-service/*','crates/scope-postgres/*','crates/policy-postgres/*','crates/policy-service/src/management/scope_changes.rs','crates/inventory-service/src/assets/*','crates/compliance-postgres/*','crates/software-service/src/publication/*','crates/software-service/src/catalog/*','crates/management-http/*','crates/http-contract/*','apps/server/src/resource_usage.rs','apps/server/src/assembly/resource.rs','apps/server/src/assembly/policy.rs','apps/server/tests/reference_blockers/*')),

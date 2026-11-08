@@ -1,10 +1,10 @@
-//! Parent certificate authority for independent WinDC registration lifecycle.
+//! WinDC uses the main MDM device and a purpose-bound enrollment request.
 //! ref: Microsoft declared-configuration-enrollment; sqlx src/transaction.rs.
 use super::*;
 use crate::database::db;
 use sqlx::Row;
 
-/// Create an enrollment request from a real current parent, without a browser grant.
+/// Freeze the main device and its current credential in a protocol request.
 pub async fn request_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
@@ -12,30 +12,19 @@ pub async fn request_in(
     id: Uuid,
     operation: Uuid,
 ) -> Result<(), Error> {
-    if profile != parent.profile() {
-        return Err(crate::Error::Forbidden);
-    }
-
-    if parent.purpose() != Purpose::Primary
+    if profile != parent.profile()
+        || parent.purpose() != Purpose::Primary
         || parent.channel() != Some(Channel::Mdm)
         || id.is_nil()
         || operation.is_nil()
     {
         return Err(Error::Forbidden);
     }
-    crate::lifecycle::require_work_in(profile, c, &parent.tenant().to_string(), parent.device())
-        .await?;
-    store::revalidate_management(profile, c, parent).await?;
     let tenant = parent.tenant().to_string();
+    crate::lifecycle::require_work_in(profile, c, &tenant, parent.device()).await?;
+    store::revalidate_management(profile, c, parent).await?;
     let windows_profile: String =
         sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_request_in_1)
-            .bind(&tenant)
-            .bind(parent.registration())
-            .fetch_one(&mut *c)
-            .await
-            .map_err(db)?;
-    let expected: i64 =
-        sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_request_in_2)
             .bind(&tenant)
             .bind(parent.device())
             .fetch_one(&mut *c)
@@ -44,10 +33,8 @@ pub async fn request_in(
     sqlx::query(crate::storage_profile::sql(profile).device_linked_request_in_3)
         .bind(tenant)
         .bind(id)
-        .bind(parent.registration())
-        .bind(parent.generation())
+        .bind(parent.device())
         .bind(parent.credential())
-        .bind(expected)
         .bind(operation)
         .bind(windows_profile)
         .execute(c)
@@ -55,79 +42,54 @@ pub async fn request_in(
         .map_err(db)?;
     Ok(())
 }
-/// Bind certificate and child registration in the caller's audit transaction; no report source.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "explicit parent proof and certificate receipt identities in one borrowed transaction"
-)]
+/// Bind the protocol credential to its original request; no device is allocated here.
 pub async fn bind_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     parent: &DevicePrincipal,
     credential: &VerifiedChannelCredential,
     request: Uuid,
-    ids: [Uuid; 3],
-    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
-    retirement: &dyn crate::Retirement,
+    ids: [Uuid; 2],
 ) -> Result<RegistrationReceipt, Error> {
-    if profile != credential.profile {
-        return Err(crate::Error::Forbidden);
-    }
-
-    if profile != parent.profile() {
-        return Err(crate::Error::Forbidden);
-    }
-
-    if credential.tenant != parent.tenant()
+    if profile != credential.profile
+        || profile != parent.profile()
+        || parent.purpose() != Purpose::Primary
+        || credential.tenant != parent.tenant()
         || credential.purpose != Purpose::WindowsDeclared
         || credential.source != ReportSource::MdmWindows
     {
         return Err(Error::Forbidden);
     }
-    crate::lifecycle::require_work_in(profile, c, &parent.tenant().to_string(), parent.device())
-        .await?;
-    store::revalidate_management(profile, c, parent).await?;
     let tenant = parent.tenant().to_string();
+    crate::lifecycle::require_work_in(profile, c, &tenant, parent.device()).await?;
+    store::revalidate_management(profile, c, parent).await?;
     let row = sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_1)
         .bind(&tenant)
         .bind(request)
-        .bind(parent.registration())
-        .bind(parent.generation())
+        .bind(parent.device())
         .bind(parent.credential())
         .fetch_optional(&mut *c)
         .await
         .map_err(db)?
         .ok_or(Error::Unauthorized)?;
-    let current: i64 =
-        sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_bind_in_2)
+    let prior: Vec<Uuid> =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_prior_credentials)
             .bind(&tenant)
             .bind(parent.device())
-            .fetch_one(&mut *c)
+            .bind(request)
+            .fetch_all(&mut *c)
             .await
             .map_err(db)?;
-    if current != row.try_get::<i64, _>("expected_generation").map_err(db)? {
-        return Err(Error::Conflict);
-    }
-    let old =
-        sqlx::query_scalar::<_, Uuid>(crate::storage_profile::sql(profile).device_linked_bind_in_3)
-            .bind(&tenant)
-            .bind(parent.device())
-            .fetch_optional(&mut *c)
+    for old in prior {
+        rss_mdm_pki_service::certificates::revoke_credential_in(profile, c, &tenant, old)
             .await
-            .map_err(db)?;
-    if let Some(old) = old {
-        crate::lifecycle::retire(profile, c, facts, &tenant, old, "superseded", retirement).await?;
+            .map_err(|_| Error::Storage)?;
     }
-    let generation = current.checked_add(1).ok_or(Error::Conflict)?;
-    sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_4)
+    // Supersede only earlier WinDC contexts. The main registration and its work survive.
+    sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_3)
         .bind(&tenant)
-        .bind(ids[0])
         .bind(parent.device())
-        .bind(generation)
         .bind(request)
-        .bind(ids[2])
-        .bind(parent.registration())
-        .bind(parent.generation())
         .execute(&mut *c)
         .await
         .map_err(db)?;
@@ -138,38 +100,27 @@ pub async fn bind_in(
         .collect();
     sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_5)
         .bind(&tenant)
-        .bind(ids[1])
         .bind(ids[0])
+        .bind(parent.device())
         .bind(locator)
+        .bind(request)
         .execute(&mut *c)
         .await
         .map_err(db)?;
     sqlx::query(crate::storage_profile::sql(profile).device_linked_bind_in_6)
         .bind(&tenant)
         .bind(request)
+        .bind(ids[1])
         .execute(&mut *c)
         .await
         .map_err(db)?;
-    crate::webhook::registration(
-        Some(&crate::WebhookEvents),
-        c,
-        &tenant,
-        parent.device(),
-        ids[0],
-        generation,
-        "mdm",
-        "active",
-    )
-    .await?;
     Ok(RegistrationReceipt {
         operation_id: row.try_get("issuance_operation").map_err(db)?,
         request_id: request,
         device: parent.device().into(),
-        registration: ids[0],
-        generation,
         channel: Channel::Mdm,
-        credential: ids[1],
-        epoch: ids[2],
+        credential: ids[0],
+        epoch: ids[1],
     })
 }
 /// Publish readiness only after a real authenticated SyncML exchange.
@@ -179,21 +130,56 @@ pub async fn ready_in(
     p: &DevicePrincipal,
 ) -> Result<bool, Error> {
     if profile != p.profile() {
-        return Err(crate::Error::Forbidden);
+        return Err(Error::Forbidden);
     }
-
     store::revalidate_management(profile, c, p).await?;
-    if p.purpose() == Purpose::WindowsDeclared {
-        return Ok(
-            sqlx::query(crate::storage_profile::sql(profile).device_linked_ready_in_1)
-                .bind(p.tenant().to_string())
-                .bind(p.registration())
-                .execute(c)
-                .await
-                .map_err(db)?
-                .rows_affected()
-                == 1,
-        );
+    let Some(request) = p.protocol_request() else {
+        return Ok(false);
+    };
+    Ok(
+        sqlx::query(crate::storage_profile::sql(profile).device_linked_ready_in_1)
+            .bind(p.tenant().to_string())
+            .bind(p.device())
+            .bind(request)
+            .execute(c)
+            .await
+            .map_err(db)?
+            .rows_affected()
+            == 1,
+    )
+}
+
+/// End only the authenticated WinDC request; the primary device and business work survive.
+pub async fn revoke_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut sqlx::PgConnection,
+    p: &DevicePrincipal,
+) -> Result<(), Error> {
+    if p.purpose() != Purpose::WindowsDeclared || profile != p.profile() {
+        return Err(Error::Forbidden);
     }
-    Ok(false)
+    let request = p.protocol_request().ok_or(Error::Unauthorized)?;
+    store::revalidate_management(profile, c, p).await?;
+    let tenant = p.tenant().to_string();
+    let credentials: Vec<Uuid> =
+        sqlx::query_scalar(crate::storage_profile::sql(profile).device_linked_revoke_credentials)
+            .bind(&tenant)
+            .bind(p.device())
+            .bind(request)
+            .fetch_all(&mut *c)
+            .await
+            .map_err(db)?;
+    for credential in credentials {
+        rss_mdm_pki_service::certificates::revoke_credential_in(profile, c, &tenant, credential)
+            .await
+            .map_err(|_| Error::Storage)?;
+    }
+    sqlx::query(crate::storage_profile::sql(profile).device_linked_revoke_state)
+        .bind(tenant)
+        .bind(p.device())
+        .bind(request)
+        .execute(c)
+        .await
+        .map_err(db)?;
+    Ok(())
 }

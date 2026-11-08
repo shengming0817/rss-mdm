@@ -22,8 +22,8 @@ pub async fn receive(
     let attempt = match attempt::lock(c, protection, p, id, Owner::Collection, bytes).await? {
         None => return Ok(None),
         Some(Reception::Replay) => {
-            return sqlx::query_as("SELECT collection,true FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND generation=$4")
-                .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).fetch_optional(c).await.map_err(db);
+            return sqlx::query_as("SELECT collection, TRUE FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3")
+                .bind(&tenant).bind(id).bind(p.device()).fetch_optional(c).await.map_err(db);
         }
         Some(Reception::Ready(attempt)) => attempt,
     };
@@ -136,8 +136,8 @@ pub async fn receive(
             .await
             .map_err(db)?;
             let context = serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
-            let rights: i32 = sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2")
-                .bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
+            let rights: i32 = sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
+                .bind(&tenant).bind(p.device()).fetch_one(&mut *c).await.map_err(db)?;
             let rights = crate::native::rights(rights);
             let target = rss_mdm_apple_mdm::native::Target {
                 context: &context,
@@ -197,8 +197,8 @@ pub async fn send(
 ) -> Result<(Vec<u8>, Vec<rss_mdm_audit_integration::Fact>), Error> {
     let mut facts = Vec::new();
     let tenant = p.tenant().to_string();
-    let rows=sqlx::query("SELECT id::text,collection,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND user_key=$4 AND phase IN ('collect','collect_device','collect_security') AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp() ORDER BY collection_sequence LIMIT 32 FOR UPDATE")
-        .bind(&tenant).bind(p.registration().to_string()).bind(p.generation()).bind(user_key).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT CAST(id AS text), collection, request FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND user_key = $3 AND phase IN ('collect', 'collect_device', 'collect_security') AND state IN ('pending', 'sent', 'not_now') AND next_attempt <= clock_timestamp() AND deadline > clock_timestamp() ORDER BY collection_sequence LIMIT 32 FOR UPDATE")
+        .bind(&tenant).bind(p.device().to_string()).bind(user_key).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let id = uuid(&row, "id")?;
         let collection: Uuid = row.try_get("collection").map_err(db)?;
@@ -236,8 +236,7 @@ pub async fn send(
         return crate::protection::open(
             protection,
             &tenant,
-            p.registration(),
-            p.generation(),
+            p.device(),
             id,
             crate::protection::Part::Request,
             &sealed,
@@ -257,7 +256,7 @@ pub async fn prepare_native(
     let template = rss_mdm_inventory_service::collection::native::template(c, tenant, id)
         .await?
         .ok_or(Error::Malformed)?;
-    let row=sqlx::query("SELECT c.registration,r.generation,c.sequence,c.deadline::text AS deadline,d.access_rights FROM mdm_access.collection_runs c JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(c.tenant_id,c.registration) JOIN mdm_apple.devices d ON(d.tenant_id,d.registration)=(r.tenant_id,r.id) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND c.sealed_at IS NULL AND d.state='active'").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT c.device, c.sequence, CAST(c.deadline AS text) AS deadline, d.access_rights FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) INNER JOIN mdm_apple.devices AS d ON (d.tenant_id, d.device) = (r.tenant_id, r.id) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND c.sealed_at IS NULL AND d.state = 'active'").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
     let required = template
         .spec()
         .adapter
@@ -307,8 +306,7 @@ pub async fn prepare_native(
         protection,
         tenant,
         id,
-        row.try_get("registration").map_err(db)?,
-        row.try_get("generation").map_err(db)?,
+        row.try_get("device").map_err(db)?,
         row.try_get("sequence").map_err(db)?,
         &row.try_get::<String, _>("deadline").map_err(db)?,
         user_key,
@@ -451,14 +449,13 @@ pub async fn prepare_native(
     let request = crate::protection::seal(
         protection,
         tenant,
-        row.try_get("registration").map_err(db)?,
-        row.try_get("generation").map_err(db)?,
+        row.try_get("device").map_err(db)?,
         id,
         crate::protection::Part::Request,
         &request,
     )?;
-    sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,collection,phase,request,state,collection_sequence,deadline,user_key,context) VALUES($1::uuid,$2,$3,$4,$2,'collect',$5,'pending',$6,$7::text::timestamptz,$8,$9)")
-        .bind(tenant).bind(id).bind(row.try_get::<Uuid,_>("registration").map_err(db)?).bind(row.try_get::<i64,_>("generation").map_err(db)?).bind(request).bind(row.try_get::<i64,_>("sequence").map_err(db)?).bind(row.try_get::<String,_>("deadline").map_err(db)?).bind(user_key).bind(serde_json::to_value(context).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, collection, phase, request, state, collection_sequence, deadline, user_key, context) VALUES (CAST($1 AS uuid), $2, $3, $2, 'collect', $4, 'pending', $5, CAST(CAST($6 AS text) AS timestamptz), $7, $8)")
+        .bind(tenant).bind(id).bind(row.try_get::<String,_>("device").map_err(db)?).bind(request).bind(row.try_get::<i64,_>("sequence").map_err(db)?).bind(row.try_get::<String,_>("deadline").map_err(db)?).bind(user_key).bind(serde_json::to_value(context).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
     crate::notify(c, "apple").await.map_err(db)?;
     Ok(Vec::new())
 }

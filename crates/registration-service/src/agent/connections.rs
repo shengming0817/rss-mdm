@@ -109,8 +109,6 @@ pub struct UnconfirmedDevices {
 #[serde(rename_all = "camelCase")]
 pub struct DeviceStatus {
     pub device: String,
-    pub registration: Uuid,
-    pub generation: u64,
     pub installed_revision: Option<u64>,
     pub origin: Option<String>,
     pub received_at: Option<i64>,
@@ -119,8 +117,7 @@ pub struct DeviceStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Observation {
     pub target_revision: Option<u64>,
-    pub registration: Uuid,
-    pub generation: u64,
+    pub device: String,
     pub acknowledgement: Option<w::Acknowledgement>,
     pub received_at: Option<i64>,
     pub failure: Option<FailureObservation>,
@@ -772,7 +769,7 @@ impl Service {
             return Err(Error::Forbidden.into());
         }
         let p = self.authenticate(peer).await?;
-        audit.identify_device(p.registration());
+        audit.identify_device(p.device());
         audit.target(p.device());
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,
@@ -812,8 +809,7 @@ impl Service {
                         .agent_connections_acknowledge_connections_1,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.registration())
-                .bind(p.generation())
+                .bind(p.device())
                 .bind(input.operation_id)
                 .fetch_optional(&mut *c)
                 .await
@@ -832,8 +828,7 @@ impl Service {
                         .agent_connections_acknowledge_connections_2,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.registration())
-                .bind(p.generation())
+                .bind(p.device())
                 .fetch_one(&mut *c)
                 .await
                 .map_err(db)?;
@@ -845,8 +840,7 @@ impl Service {
                         .agent_connections_acknowledge_connections_3,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.registration())
-                .bind(p.generation())
+                .bind(p.device())
                 .bind(input.operation_id)
                 .bind(input.revision as i64)
                 .bind(serde_json::to_value(input).map_err(|_| Error::Malformed)?)
@@ -875,7 +869,7 @@ impl Service {
             return Err(Error::Malformed.into());
         }
         let principal = self.authenticate(peer).await?;
-        audit.identify_device(principal.registration());
+        audit.identify_device(principal.device());
         audit.target(principal.device());
         audit.owned_operation(
             rss_mdm_audit_integration::operation::OperationOwner::Registration,
@@ -906,8 +900,7 @@ impl Service {
                         .agent_connections_report_connection_failure_1,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.registration())
-                .bind(p.generation())
+                .bind(p.device())
                 .bind(input.operation_id)
                 .fetch_optional(&mut *c)
                 .await
@@ -931,8 +924,7 @@ impl Service {
                         .agent_connections_report_connection_failure_2,
                 )
                 .bind(service.tenant.to_string())
-                .bind(p.registration())
-                .bind(p.generation())
+                .bind(p.device())
                 .bind(input.operation_id)
                 .bind(input.revision as i64)
                 .bind(document)
@@ -1016,9 +1008,7 @@ impl Service {
             }
             items.push(DeviceStatus {
                 device,
-                registration: row.try_get("id").map_err(db)?,
-                generation: u64::try_from(row.try_get::<i64, _>("generation").map_err(db)?)
-                    .map_err(|_| Error::Corrupt)?,
+
                 installed_revision: row
                     .try_get::<Option<i64>, _>("revision")
                     .map_err(db)?
@@ -1082,9 +1072,8 @@ impl Service {
                         .map(u64::try_from)
                         .transpose()
                         .map_err(|_| Error::Corrupt)?,
-                    registration: r.try_get("registration").map_err(db)?,
-                    generation: u64::try_from(r.try_get::<i64, _>("generation").map_err(db)?)
-                        .map_err(|_| Error::Corrupt)?,
+                    device: r.try_get("device").map_err(db)?,
+
                     acknowledgement: r
                         .try_get::<Option<serde_json::Value>, _>("document")
                         .map_err(db)?

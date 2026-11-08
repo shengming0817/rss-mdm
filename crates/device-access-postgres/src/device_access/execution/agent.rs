@@ -34,22 +34,20 @@ pub(crate) async fn principal(
         })
     })
     .await??;
-    let enabled =
-        agent_facts::agent_binding_in(tx, service.agent_store.clone(), principal.registration())
-            .await?
-            .is_some_and(|b| {
-                b.inventory() && b.capabilities.contains(&wire::Capability::DeviceAccessV1)
-            });
+    let enabled = agent_facts::agent_binding_in(
+        tx,
+        service.agent_store.clone(),
+        principal.device().to_owned(),
+    )
+    .await?
+    .is_some_and(|b| b.inventory() && b.capabilities.contains(&wire::Capability::DeviceAccessV1));
     if !enabled {
         return Err(Error::Forbidden.into());
     }
     Ok(())
 }
 pub(crate) fn belongs(run: &db::Run, p: &DevicePrincipal) -> Result<()> {
-    if run.target.device != p.device()
-        || run.target.registration != p.registration()
-        || run.target.generation != p.generation()
-    {
+    if run.target.device != p.device() {
         return Err(Error::Unauthorized.into());
     }
     Ok(())
@@ -89,7 +87,7 @@ impl Service {
         let binding = agent_facts::agent_binding_in(
             tx,
             service.transactions.agent_store.clone(),
-            p.registration(),
+            p.device().to_string(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -136,11 +134,11 @@ impl Service {
         self.agent_prepare_in(tx, p).await?;
         let service = self;
         let now = storage::now(tx).await?;
-        let event_key = format!("agent:{}:offer:{}", p.registration(), input.operation_id());
+        let event_key = format!("agent:{}:offer:{}", p.device(), input.operation_id());
         let binding = agent_facts::agent_binding_in(
             tx,
             self.transactions.agent_store.clone(),
-            p.registration(),
+            p.device().to_string(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -302,7 +300,7 @@ impl Service {
         let now = storage::now(tx).await?;
         let event_key = format!(
             "agent:{}:task:{id}:event:{}",
-            p.registration(),
+            p.device(),
             input.operation_id()
         );
         let allowed = plan
@@ -484,11 +482,11 @@ impl Service {
     pub async fn agent_cancellations_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        registration: Uuid,
+        device: String,
         after: Option<Uuid>,
     ) -> Result<Vec<wire::TaskCancellation>> {
         self.transactions.runtime.validate_transaction(tx)?;
-        super::poll::cancellations(tx, registration, after).await
+        super::poll::cancellations(tx, device, after).await
     }
 }
 use rss_mdm_audit_integration::RequestAudit;

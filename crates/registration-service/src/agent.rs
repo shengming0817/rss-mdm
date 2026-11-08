@@ -67,8 +67,6 @@ pub struct Binding {
     pub profile: rss_mdm_install_support::StorageProfile,
     pub tenant: rss_request_context::TenantId,
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
     pub epoch: Uuid,
     pub operation: Uuid,
 }

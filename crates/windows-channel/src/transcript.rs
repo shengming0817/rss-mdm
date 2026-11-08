@@ -31,9 +31,9 @@ pub(crate) async fn load(
     raw: &s::Message,
 ) -> Result<History, Error> {
     let bounds = CodecLimits::default();
-    let rows = sqlx::query("SELECT message_id,request,response,package_state FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2 AND session_id=$3 ORDER BY message_id LIMIT $4")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(raw.header.session_id.to_string())
-        .bind((bounds.session_messages + 1) as i64).fetch_all(c).await.map_err(db)?;
+    let rows = sqlx::query("SELECT message_id, request, response, package_state FROM mdm_access.management_messages WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = $3) AND management_messages.protocol_epoch = $5 ORDER BY message_id LIMIT $4")
+        .bind(p.tenant().to_string()).bind(p.device()).bind(raw.header.session_id.to_string())
+        .bind((bounds.session_messages + 1) as i64).bind(p.epoch()).fetch_all(c).await.map_err(db)?;
     if rows.len() > bounds.session_messages || rows.len() + 1 != raw.header.message_id as usize {
         return Err(corrupt());
     }
@@ -48,8 +48,8 @@ pub(crate) async fn load(
             return Err(corrupt());
         }
         let binding = (
-            p.registration(),
-            p.generation(),
+            p.device(),
+            p.epoch(),
             p.credential(),
             raw.header.session_id.to_string(),
             id,

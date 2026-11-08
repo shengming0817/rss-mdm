@@ -6,8 +6,7 @@ fn task() -> AccessTaskSpec {
         wire_version: 1,
         tenant_id: Uuid::from_u128(1),
         device_id: "endpoint".into(),
-        registration_id: Uuid::from_u128(2),
-        generation: 1,
+
         platform: TaskPlatform::Windows,
         architecture: TaskArchitecture::X86_64,
         task_id: Uuid::from_u128(3),
@@ -64,7 +63,7 @@ fn access_signature_binds_account_generation_and_configuration() {
             ..original.clone()
         },
         AccessTaskSpec {
-            registration_id: Uuid::from_u128(20),
+            device_id: Uuid::from_u128(20).to_string(),
             ..original.clone()
         },
         AccessTaskSpec {

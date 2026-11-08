@@ -3,8 +3,8 @@ use serde_json::json;
 fn report() -> TelemetryGapReport {
     TelemetryGapReport {
         report_id: uuid::Uuid::new_v4(),
-        registration_id: uuid::Uuid::new_v4(),
-        generation: 1,
+        device_id: uuid::Uuid::new_v4().to_string(),
+
         created_at: 1000000,
         gaps: vec![TelemetryGap {
             reason: TelemetryGapReason::Capacity,
@@ -33,12 +33,19 @@ fn gap_report_has_bounded_closed_diagnostic_semantics() {
             4 => bad.gaps[0].first = -1,
             5 => bad.gaps[0].last = 0,
             6 => bad.created_at = i64::MAX,
-            7 => bad.generation = 0,
+            7 => bad.device_id.clear(),
             _ => bad.report_id = uuid::Uuid::nil(),
         }
         assert!(bad.validate().is_err());
     }
-    for key in ["tenantId", "deviceId", "source", "policy", "binding"] {
+    for key in [
+        "tenantId",
+        "registrationId",
+        "generation",
+        "source",
+        "policy",
+        "binding",
+    ] {
         let mut bad = value.clone();
         bad[key] = json!("forged");
         assert!(serde_json::from_value::<TelemetryGapReport>(bad).is_err());

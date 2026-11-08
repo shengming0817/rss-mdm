@@ -139,15 +139,12 @@ pub async fn assessment_on(
     let targets =
         agent_facts::agent_targets_on(c, tenant, store.clone(), vec![target.device.clone()])
             .await?;
-    let Some(agent) = targets
-        .into_iter()
-        .find(|a| a.registration == target.registration && a.generation == target.generation)
-    else {
+    let Some(agent) = targets.into_iter().find(|a| a.device == target.device) else {
         return Ok(Assessment::Unknown);
     };
     let tenant = tenant.to_string();
-    let registration = target.registration;
-    let Some(announcement) = store.announcement(c, tenant, registration).await? else {
+    let device = target.device.clone();
+    let Some(announcement) = store.announcement(c, tenant, device).await? else {
         return Ok(Assessment::Unknown);
     };
     let environment = announcement.environment();

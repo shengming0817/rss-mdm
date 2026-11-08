@@ -21,8 +21,8 @@ impl Store for AgentFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registrations: Vec<Uuid>,
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, Binding>> {
+        registrations: Vec<String>,
+    ) -> Pending<'a, std::collections::BTreeMap<String, Binding>> {
         Box::pin(async move {
             Ok(
                 rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)
@@ -68,7 +68,7 @@ impl Store for AgentFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        registration: String,
     ) -> Pending<'a, Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>> {
         Box::pin(async move {
             rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)
@@ -84,10 +84,10 @@ impl rss_mdm_script_service::agent_facts::Store for AgentFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registrations: Vec<Uuid>,
+        registrations: Vec<String>,
     ) -> rss_mdm_script_service::agent_facts::Pending<
         'a,
-        std::collections::BTreeMap<Uuid, rss_mdm_script_service::agent_facts::Binding>,
+        std::collections::BTreeMap<String, rss_mdm_script_service::agent_facts::Binding>,
     > {
         Box::pin(async move {
             Ok(
@@ -135,7 +135,7 @@ impl rss_mdm_script_service::agent_facts::Store for AgentFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        registration: String,
     ) -> rss_mdm_script_service::agent_facts::Pending<
         'a,
         Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>,
@@ -154,11 +154,11 @@ impl rss_mdm_inventory_service::collection::execution::agent_facts::Store for Ag
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registrations: Vec<Uuid>,
+        registrations: Vec<String>,
     ) -> rss_mdm_inventory_service::collection::execution::agent_facts::Pending<
         'a,
         std::collections::BTreeMap<
-            Uuid,
+            String,
             rss_mdm_inventory_service::collection::execution::agent_facts::Binding,
         >,
     > {
@@ -210,7 +210,7 @@ impl rss_mdm_inventory_service::collection::execution::agent_facts::Store for Ag
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        registration: String,
     ) -> rss_mdm_inventory_service::collection::execution::agent_facts::Pending<
         'a,
         Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>,

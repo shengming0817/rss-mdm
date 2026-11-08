@@ -160,7 +160,7 @@ async fn configuration_on(
         service.agent_facts.as_ref(),
         c,
         service.tenant,
-        principal.registration(),
+        principal.device().to_string(),
         &frozen,
     )
     .await?;
@@ -219,11 +219,7 @@ async fn configuration_on(
         resource_digest: frozen.resource_digest,
         tenant_id: Uuid::parse_str(&principal.tenant().to_string()).map_err(|_| Error::Storage)?,
         device_id: principal.device().into(),
-        registration_id: principal.registration(),
-        generation: principal
-            .generation()
-            .try_into()
-            .map_err(|_| Error::Storage)?,
+
         source_epoch: epoch,
         issued_at: now,
         expires_at: now.checked_add(300).ok_or(Error::Storage)?,
@@ -386,7 +382,7 @@ async fn directory_on(
             Err(error) => return Err(error),
         }
         let Some(supported) =
-            crate::configurations::supported_on(service, c, principal.registration(), frozen)
+            crate::configurations::supported_on(service, c, principal.device().to_string(), frozen)
                 .await?
         else {
             continue;

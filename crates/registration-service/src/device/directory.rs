@@ -1,10 +1,5 @@
-//! Management identity reads include issued targets without inventing registered devices.
-//!
-//! `channels[].lastCommunicationReceivedAt` is a nullable UTC epoch second bound
-//! to that channel's primary registration ID and generation. Null means no accepted
-//! Windows/Apple management exchange or Agent task poll/report has been recorded
-//! for this registration. It is server receipt time, not device observation time,
-//! Inventory completeness or proof that the device is currently online.
+//! One channel enrollment per device. Last communication is server receipt time,
+//! independent of Inventory completeness or a claim that the device is online.
 use super::*;
 use crate::database::db;
 use rss_mdm_authorization_service::{Permission, Snapshot};
@@ -24,24 +19,16 @@ pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Sch
         Field::scalar("id", Kind::Text),
         Field::scalar(
             "status",
-            Kind::enumeration(&[
-                "active",
-                "pending",
-                "revoked",
-                "superseded",
-                "registered",
-                "cancelled",
-                "expired",
-            ]),
+            Kind::enumeration(&["active", "pending", "revoked", "cancelled", "expired"]),
         ),
-        Field::filter_only("channel", Kind::enum_set(&["mdm", "agent"])),
-        Field::filter_only(
+        Field::scalar("channel", Kind::enumeration(&["mdm", "agent"])),
+        Field::scalar(
             "source",
-            Kind::enum_set(&["mdm.windows", "mdm.apple", "agent.builtin"]),
+            Kind::enumeration(&["mdm.windows", "mdm.apple", "agent.builtin"]),
         ),
-        Field::output("primaryMdmRegistration"),
-        Field::output("channels"),
-        Field::output("enrollments"),
+        Field::output("platform"),
+        Field::output("lastCommunicationReceivedAt"),
+        Field::output("enrollment"),
         Field::output("inventoryAvailable"),
     ],
 });
@@ -51,12 +38,12 @@ fn error(e: rss_mdm_query::Error) -> Error {
         _ => Error::Malformed,
     }
 }
-fn column(profile: rss_mdm_install_support::StorageProfile, name: &str) -> &'static str {
+fn column(name: &str) -> &'static str {
     match name {
         "id" => "d.id COLLATE \"C\"",
         "status" => "d.status COLLATE \"C\"",
-        "channel" => crate::storage_profile::sql(profile).device_directory_column_1,
-        "source" => crate::storage_profile::sql(profile).device_directory_column_2,
+        "channel" => "d.channel COLLATE \"C\"",
+        "source" => "d.source COLLATE \"C\"",
         _ => unreachable!("checked identity field"),
     }
 }
@@ -127,20 +114,7 @@ fn selection(
             .push_bind(allowed.into_iter().collect::<Vec<_>>())
             .push(")");
     }
-    rss_mdm_query_postgres::append(
-        &mut sql,
-        q,
-        after,
-        match profile {
-            rss_mdm_install_support::StorageProfile::Mdm => {
-                |name: &str| column(rss_mdm_install_support::StorageProfile::Mdm, name)
-            }
-            rss_mdm_install_support::StorageProfile::Da => {
-                |name: &str| column(rss_mdm_install_support::StorageProfile::Da, name)
-            }
-        },
-    )
-    .map_err(error)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after, column).map_err(error)?;
     sql.push(crate::storage_profile::sql(profile).device_directory_selection_2);
     rss_mdm_query_postgres::order(&mut sql, q, |field: &str| match field {
         "id" => "s.id COLLATE \"C\"",
@@ -271,19 +245,7 @@ impl DeviceService {
                 .push_bind(allowed.into_iter().collect::<Vec<_>>())
                 .push(")");
         }
-        rss_mdm_query_postgres::filter(
-            &mut sql,
-            q,
-            match profile {
-                rss_mdm_install_support::StorageProfile::Mdm => {
-                    |name: &str| column(rss_mdm_install_support::StorageProfile::Mdm, name)
-                }
-                rss_mdm_install_support::StorageProfile::Da => {
-                    |name: &str| column(rss_mdm_install_support::StorageProfile::Da, name)
-                }
-            },
-        )
-        .map_err(error)?;
+        rss_mdm_query_postgres::filter(&mut sql, q, column).map_err(error)?;
         sql.push(") END FROM source_budget b");
         let (source_rows, value): (i64, Option<Value>) =
             sql.build_query_as().fetch_one(&mut *tx).await.map_err(db)?;
@@ -375,9 +337,11 @@ pub struct DeviceStatistics {
 pub struct Item {
     pub id: String,
     pub status: Status,
-    pub primary_mdm_registration: Option<Primary>,
-    pub channels: Vec<Channel>,
-    pub enrollments: Vec<Enrollment>,
+    pub channel: Option<rss_mdm_inventory::Channel>,
+    pub source: Option<Source>,
+    pub platform: Option<rss_mdm_agent_wire::runtime::TaskPlatform>,
+    pub last_communication_received_at: Option<i64>,
+    pub enrollment: Option<Enrollment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inventory_available: Option<bool>,
 }
@@ -387,8 +351,6 @@ pub enum Status {
     Active,
     Pending,
     Revoked,
-    Superseded,
-    Registered,
     Cancelled,
     Expired,
 }
@@ -403,49 +365,8 @@ pub enum Source {
 }
 #[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Primary {
-    pub registration_id: uuid::Uuid,
-    pub generation: i64,
-    pub source: Source,
-}
-#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Channel {
-    pub registration_id: uuid::Uuid,
-    pub channel: rss_mdm_inventory::Channel,
-    pub generation: i64,
-    pub status: crate::enrollment::read::RegistrationState,
-    pub source: Source,
-    pub platform: Option<rss_mdm_agent_wire::runtime::TaskPlatform>,
-    pub last_communication_received_at: Option<i64>,
-    pub children: Vec<Child>,
-    pub user_context: Option<UserContext>,
-}
-#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Child {
-    pub registration_id: uuid::Uuid,
-    pub purpose: String,
-    pub generation: i64,
-    pub status: crate::enrollment::read::RegistrationState,
-    pub ready: bool,
-    pub parent_registration_id: uuid::Uuid,
-    pub parent_generation: i64,
-}
-#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserContext {
-    pub id: uuid::Uuid,
-    pub parent_registration_id: uuid::Uuid,
-    pub parent_generation: i64,
-    pub registration_status: crate::enrollment::read::RegistrationState,
-}
-#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Enrollment {
     pub enrollment_id: uuid::Uuid,
-    pub source: Source,
-    pub platform: Option<rss_mdm_agent_wire::runtime::TaskPlatform>,
     pub status: crate::enrollment::read::State,
     pub expires_at: i64,
 }
@@ -455,11 +376,11 @@ mod response_tests {
     use super::*;
     #[test]
     fn bound_enrollment_uses_its_actual_state_owner() {
-        let value = serde_json::json!({"id":"device","status":"active","primaryMdmRegistration":null,"channels":[],"enrollments":[{"enrollmentId":uuid::Uuid::new_v4(),"source":"mdm.apple","platform":"macos","status":"bound","expiresAt":1}]});
+        let value = serde_json::json!({"id":"device","status":"active","channel":"mdm","source":"mdm.apple","platform":"macos","lastCommunicationReceivedAt":null,"enrollment":{"enrollmentId":uuid::Uuid::new_v4(),"status":"bound","expiresAt":1}});
         let item: Item = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(item).unwrap(), value);
         let mut unknown = value;
-        unknown["enrollments"][0]["status"] = "future".into();
+        unknown["enrollment"]["status"] = "future".into();
         assert!(serde_json::from_value::<Item>(unknown).is_err());
     }
 }

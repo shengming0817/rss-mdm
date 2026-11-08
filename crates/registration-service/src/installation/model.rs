@@ -15,18 +15,21 @@ use uuid::Uuid;
 )]
 pub enum NativeTarget {
     Device,
+    EnrolledUser,
     User { user_id: String },
 }
 impl NativeTarget {
-    pub(crate) fn matches_windows_context(&self, context: Option<Uuid>) -> bool {
+    pub(crate) fn matches_windows_context(&self, enrolled_user: bool) -> bool {
         match self {
             Self::Device => true,
-            Self::User { user_id } => context.is_some_and(|id| user_id == &id.to_string()),
+            Self::EnrolledUser => enrolled_user,
+            Self::User { .. } => false,
         }
     }
     pub fn user_key(&self) -> &str {
         match self {
             Self::Device => "",
+            Self::EnrolledUser => "enrolled_user",
             Self::User { user_id } => user_id,
         }
     }
@@ -136,6 +139,13 @@ impl Create {
             return Err(Error::Malformed);
         }
         self.target.validate()?;
+        if matches!(
+            (&self.task, &self.target),
+            (Task::Macos { .. }, NativeTarget::EnrolledUser)
+                | (Task::Windows { .. }, NativeTarget::User { .. })
+        ) {
+            return Err(Error::Malformed);
+        }
         if matches!(self.task, Task::Macos { .. })
             && let NativeTarget::User { user_id } = &self.target
         {
@@ -158,7 +168,7 @@ impl Create {
         {
             for object in request.objects().map_err(|_| Error::Malformed)? {
                 if (object.scope() == rss_mdm_windows_mdm::native::Scope::User)
-                    != matches!(self.target, NativeTarget::User { .. })
+                    != matches!(self.target, NativeTarget::EnrolledUser)
                 {
                     return Err(Error::Malformed);
                 }

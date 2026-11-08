@@ -293,7 +293,7 @@ impl Service {
 
         self.require_device(p, audit)?;
         input.validate().map_err(|_| Error::Malformed)?;
-        if input.registration != p.registration() || input.generation != p.generation() as u64 {
+        if input.device_id != p.device() {
             return Err(Error::Forbidden);
         }
         audit.owned_operation(

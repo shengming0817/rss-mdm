@@ -30,7 +30,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 
 同一 actor/上传 ID 的元数据由 PostgreSQL 持久化已确认 offset。续传从已确认清单恢复，未确认对象由登记意图保留并参与额度计算；多实例的 epoch 防止旧写者推进新 frontier。`POST /api/v1/software/content/cleanup` 需要 ResourceWrite，每轮有界检查过期且无有效引用、无活跃读写的候选。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。删除屏障与新 Resource 引用串行，S3/卷 I/O 在事务外执行。不得手工删除内容控制状态或正在使用的物理对象。
 
-密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、生命周期绑定、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
+密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、生命周期绑定、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
 
 Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）、`runAs`（system、logged_in_user）、`encoding: utf8`、参数 Schema 与 `bindings`、输出 Schema、`purpose`、timeoutSeconds/outputBytes/maxRows。参数仅支持字符串、整数、布尔，必须显式提供。脚本使用 bindings，SQL 模板使用 sql 中声明的命名参数并保持 bindings 为空；参数作为字面量绑定，不拼接 shell 命令或 SQL 语法。Schema 采用有界闭合子集，拒绝引用、组合器、正则与未知关键字。
 
@@ -55,7 +55,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 默认签入触发、每执行版本一次、没有结束时间。显式设备也通过 Scope 的直接设备来源表达。Scope 引用持续跟随当前结果；发布不复制永久目标名单，也不生成全体 Run。空目标分配有效，未来 Scope 成员自动获得资格。
 
-脚本分配需要 PolicyWrite、ResourceRead、全设备 InventoryRead 与设备范围 ScriptExecute；范围引用 Group 时还需 GroupRead；软件分配使用独立的设备范围 SoftwareDeploy，并要求当前企业软件生命周期有效。发布受理后归组织持有，不再依赖发布者的登录会话。Agent 注册须声明对应的 `task.execute.v1` 或 对应软件格式/作用域 profile；领取、下载和启动均重新核对凭据、注册世代和当前分配。
+脚本分配需要 PolicyWrite、ResourceRead、全设备 InventoryRead 与设备范围 ScriptExecute；范围引用 Group 时还需 GroupRead；软件分配使用独立的设备范围 SoftwareDeploy，并要求当前企业软件生命周期有效。发布受理后归组织持有，不再依赖发布者的登录会话。Agent 注册须声明对应的 `task.execute.v1` 或 对应软件格式/作用域 profile；领取、下载和启动均重新核对凭据、注册身份和当前分配。
 
 `frequency` 为 `once_per_version`、`once_per_entry` 或 `every_trigger`。可选 `schedule` 包含 trigger、notBefore、until、jitterSeconds、window 和 misfire。trigger 支持 manual、once(at)、interval(anchor,seconds)、weekly(zone,weekday,minute)、registration、check_in(minimumSeconds)。`until` 可省略。misfire 为 `{"kind":"coalesce_one"}`（默认）或 `{"kind":"skip","maxLatenessSeconds":30}`；窗口可跨午夜，星期按开始日计算，DST gap 跳过、fold 取较早时刻。
 
@@ -73,7 +73,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 ## Agent 状态与结果
 
-1. `POST /api/v1/agent/runtime/tasks/claim`：wireVersion=1、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
+1. `POST /api/v1/agent/runtime/tasks/claim`：wireVersion=1、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个设备的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
 2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次检查当前凭据、原任务/attempt、明确材料撤回和取消。客户端最终核对长度/hash。
 3. 验签后向 `/tasks/{taskId}/events` 提交 received，再完成材料下载和准备，最后提交 start。Received 保留原 attempt 至任务 deadline；Offer 短领取窗口不再限制下载。事件包含 wireVersion=1、operationId、attemptId、event、executionContext。只有独立签名的 Start permit 可以授权启动，offer 本身不能启动。Start permit 使用原 Run deadline，不另设短窗口；原 operationId 重放复用同一 permit，并复核取消、撤回和设备身份。服务端不以 permit 签发时间推算进程运行超时，实际执行预算由 Agent 执行器控制。
 4. 返回 result（exitCode、quality、output、diagnostics、collectedAt）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown，原首启截止不丢弃其后产生的结果。结果仍须通过原 attempt、真实设备身份、撤回和取消等边界检查。
@@ -83,7 +83,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 采集模板使用 collection purpose 和字段键→JSON Pointer 映射，不另建版本体系。映射引用统一版本化目录中的内置或自定义字段，按字段类型、平台、来源与敏感级别冻结；不再限制为三个固定字段。脚本与 SQL 分别使用 agent.script 与 agent.osquery。预算合法、exitCode=0、输出完整且执行仍可信时，字段独立校验后经 CollectionRun→Observation→Inventory 发布；缺失或无效字段可形成部分结果，合法字段仍可更新。失败、截断、超预算和不可信结果不清空历史可信事实；来源冲突与完整快照/tombstone 删除按统一选值规则处理，不引入 TTL。
 
 
-归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。发布、取消和执行事件的审计保留策略或执行版本关联；执行事件 target 为 task，registrationId 可反查设备，同一 operationId 可关联执行回执。
+归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。发布、取消和执行事件的审计保留策略或执行版本关联；执行事件 target 为 task，deviceId 标识所属设备，同一 operationId 可关联执行回执。
 
 服务端的软件变体选择使用当前 Agent 注册声明的平台和架构，终端必须再用本机真实 OS/架构核验签名任务。注册声明不等于受检硬件事实；统一 applicability 的受检事实仍由 [PBI #2572](https://dev.azure.com/shengming0923/rss/_workitems/edit/2572) 跟踪。
 
@@ -97,7 +97,7 @@ Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 
 
 ## 通道接入策略
 
-MDM 与 Agent 各自持有 DeviceId、注册世代、凭据、采集和策略。MDM 来源字段 `channel.agent.installation` 的 `absent` 才能触发安装；Agent 来源 `channel.mdm.enrollment` 的 `unenrolled` 才能触发标准入口。可以将这些字段用于动态 Group，再通过 Scope 分配策略。当前有效来源的最新完整观察是依据，没有 TTL 或最后连接时间门槛；未知、失败、第三方 MDM 和旧注册观察不会变成缺失。
+MDM 与 Agent 各自持有独立 deviceId、凭据、采集和策略。MDM 来源字段 `channel.agent.installation` 的 `absent` 才能触发安装；Agent 来源 `channel.mdm.enrollment` 的 `unenrolled` 才能触发标准入口。可以将这些字段用于动态 Group，再通过 Scope 分配策略。当前有效来源的最新完整观察是依据，没有 TTL 或最后连接时间门槛；未知、失败、第三方 MDM 和旧注册观察不会变成缺失。
 
 `ensure_agent_installed` 沿用 Software Resource / Content → Agent 包发布 → Group / Scope → Policy → Software / Registration owner。Action 使用 `packages` 按平台和架构显式选择一个发布 releaseId；没有 latest、格式回退、自动升级或格式迁移。发布需要全设备 SoftwareDeploy 与 Enrollment 授权，执行和下载复核当前授权、发布状态及冻结摘要。普通软件没有 Agent 发布记录时不能获得引导权限。
 
@@ -144,7 +144,7 @@ Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。�
 
 以下入口位于 `/api/v1/agent/runtime`，始终使用 Agent 系统服务的设备凭据。用户访问模式还使用 `X-RSS-User-Session`；设备模式不需要企业登录。无效或重复用户会话头不会降级为设备访问。系统服务根据真实 IPC 入口设置 source，模型参数不得控制 source，也不得接触设备私钥或企业凭据。confirmed 绑定当前请求身份、Policy 身份和确切调用输入。首次受理读取当前配置，回执中的配置/执行版本用于溯源，不是调用方的版本前置条件。
 
-- `GET /self-service?source=human|ai`（支持 filter/sort/fields/limit/cursor） 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software/enrollment 接口。目录复用 Scope、注册世代、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
+- `GET /self-service?source=human|ai`（支持 filter/sort/fields/limit/cursor） 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software/enrollment 接口。目录复用 Scope、注册身份、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
 - `POST /self-service/invocations` 针对当前设备接受 operationId、policyId、source、confirmed、parameters；不接受客户端配置/执行版本前置条件，返回 202 的 requestId/runId。精确重试返回原 Run；变化正文返回冲突。AvailableInstall 在显式请求前不创建 Run/Offer，不能自行 Start；安装按确切资源版本、检测意图及稳定 Device/SID/UID 效果目标在用户和 Policy 之间排除重复，Unknown 不允许盲重试。
 - `POST /self-service/resolve` 接受 source 与 selector：`{"kind":"id","id":"…"}`、`{"kind":"tool_name","name":"policy_…"}` 或 `{"kind":"alias","alias":"repair"}`，直接定位后检查当前资格。管理端 `POST /api/v1/policies/resolve` 接受同一 selector，仅授予当前管理读取能力。
 - 稳定工具名为 `policy_<无连字符 Policy UUID>`；`definition.alias` 经去首尾空白和 ASCII 小写规范化后在租户内唯一，使用 Policy 原 CAS/审计更新。停用或取消发布保留名称，清空、改名或归档释放；显示名可重复。目录默认/最大检查 64 个候选，空 items 仍可能有 nextCursor，精确解析不扫描目录页。
@@ -167,6 +167,6 @@ Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发
 
 MDM v1 仅支持系统 MSI、签名单包 MSIX 的 device provisioning、签名 PKG。每个安装包的 `signatures[].evidence` 指向不可变报告 artifact；报告 JSON 持有 `sha256`、`mechanism`、`publisher`、`verified:true`，由平台打包/验证流程产生，经现有 Catalog 启用审批校验和固定。服务端验证报告与材料匹配，不执行平台签名工具。自定义环境/参数、依赖包、EXE、DMG、Bundle、用户安装、MDM 自助和卸载均不准入。MDM 仅接受 `reboot:report`、`downgrade:deny` 和标准退出码（success 为 `[0]`、reboot 为空）；MSI timeout 必须为整分钟且不超过 255 分钟。Agent 原有能力独立保留。
 
-安装命令和下载都绑定原 action run、Policy/Resource 版本、注册世代及当前权限。切换通道产生新执行版本；未解决的安装效果按关联设备及所有包身份阻止重复写入，失败或离线不回退到另一通道。Windows MSI 通过原生 Status/Version，MSIX 通过精确 PackageFullName 的 IsProvisioned/Version 证明效果；缺失状态节点不算成功。PKG ACK 只证明协议受理，保持 Unknown，不推动成功率门禁。普通 PKG manifest 的 receipt 标识不被当作 InstalledApplicationList 的应用 bundle 标识。
+安装命令和下载都绑定原 action run、Policy/Resource 版本、注册身份及当前权限。切换通道产生新执行版本；未解决的安装效果按关联设备及所有包身份阻止重复写入，失败或离线不回退到另一通道。Windows MSI 通过原生 Status/Version，MSIX 通过精确 PackageFullName 的 IsProvisioned/Version 证明效果；缺失状态节点不算成功。PKG ACK 只证明协议受理，保持 Unknown，不推动成功率门禁。普通 PKG manifest 的 receipt 标识不被当作 InstalledApplicationList 的应用 bundle 标识。
 
 当前 schema 与冻结输入不读取旧通道格式。已有数据库只使用与其安装清单匹配的原 artifact 恢复；部署新版本使用当前安装流程，不重写历史 ledger 或删除 Unknown 运行。设备上的安装真实性由独立产品 T3 验收提供。

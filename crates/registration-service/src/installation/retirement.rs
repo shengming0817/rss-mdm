@@ -9,7 +9,7 @@ pub async fn retire_in(
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<Fact>,
     tenant: &str,
-    registration: Uuid,
+    registration: String,
 ) -> Result<(), Error> {
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
     let audit = RequestAudit::new(
@@ -20,12 +20,11 @@ pub async fn retire_in(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.identify_service("registration-retirement");
-    audit.registration(registration);
-    audit.target(&registration.to_string());
+    audit.target_device(&registration);
     let mut after = String::new();
     loop {
         let rows = sqlx::query("SELECT * FROM mdm_registration_tasks.retirement_commands($1,$2)")
-            .bind(registration)
+            .bind(&registration)
             .bind(&after)
             .fetch_all(&mut *c)
             .await
@@ -84,7 +83,7 @@ pub async fn retire_in(
             let changed: bool = sqlx::query_scalar(
                 "SELECT mdm_registration_tasks.save_retired_command($1,$2::uuid,$3,$4)",
             )
-            .bind(registration)
+            .bind(&registration)
             .bind(&id)
             .bind(previous)
             .bind(record.terminal_at)
@@ -117,7 +116,7 @@ pub async fn retire_in(
 pub async fn progress_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registrations: &[uuid::Uuid],
+    registrations: &[String],
 ) -> crate::installation::Result<(bool, Option<uuid::Uuid>)> {
-    Ok(sqlx::query_as("SELECT count(*)>0,(array_agg(id ORDER BY id) FILTER(WHERE priority=0))[1] FROM (SELECT o.id,CASE WHEN d.terminal_at IS NOT NULL THEN 0 ELSE 1 END AS priority FROM mdm_registration_tasks.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration=ANY($2) AND (d.terminal_at IS NULL OR (d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))))) pending").bind(tenant).bind(registrations).fetch_one(c).await?)
+    Ok(sqlx::query_as("SELECT count(*) > 0, ((array_agg(id ORDER BY id) FILTER (WHERE priority = 0)))[1] FROM (SELECT o.id, CASE WHEN d.terminal_at IS NOT NULL THEN 0 ELSE 1 END AS priority FROM mdm_registration_tasks.operations AS o INNER JOIN rss_device_command.commands AS d ON (d.tenant_id, d.command_id) = (o.tenant_id, CAST(o.id AS text)) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = ANY($2) AND (d.terminal_at IS NULL OR (d.status <> 'applied' AND (EXISTS (SELECT 1 FROM mdm_windows.attempts AS a WHERE (a.tenant_id, a.operation) = (o.tenant_id, o.id) AND a.phase = 'execute') OR EXISTS (SELECT 1 FROM mdm_apple.attempts AS a WHERE (a.tenant_id, a.operation) = (o.tenant_id, o.id) AND a.phase = 'execute' AND a.state <> 'pending'))))) AS pending").bind(tenant).bind(registrations).fetch_one(c).await?)
 }

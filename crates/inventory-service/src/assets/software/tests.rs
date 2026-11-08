@@ -32,8 +32,8 @@ fn array() -> ArrayInput {
             scope: CollectionScope::Device,
             source: Source::MdmWindows,
             dataset: Some("software".into()),
-            registration: Some(Uuid::new_v4().to_string()),
-            registration_generation: Some(1),
+            device_id: Some(Uuid::new_v4().to_string()),
+
             epoch: Some(Uuid::new_v4().to_string()),
             snapshot_id: "snapshot".into(),
             observed_at: 1,

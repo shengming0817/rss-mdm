@@ -47,8 +47,8 @@ impl AssetService {
             scope: rss_mdm_inventory::CollectionScope::Device,
             source: rss_mdm_inventory::Source::Manual,
             dataset: None,
-            registration: None,
-            registration_generation: None,
+            device_id: None,
+
             epoch: None,
             snapshot_id: change.operation_id.to_string(),
             observed_at: at.unix_seconds(),

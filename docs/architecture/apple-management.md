@@ -10,11 +10,11 @@ ADE 原生请求必须通过 Apple 根链/CMS 验证并匹配当前序列号、U
 
 APNs 只是唤醒，不推进命令。关联 ACK 记录接收，完整且认证的 ProfileList 记录产品 Profile 存在性，两者都不能证明 OS 防火墙效果。采集由 CollectionRun 独立关联和封存，不把 DeviceInformation 伪装成状态型命令。
 
-设备/用户通道共用绑定的设备证书，原生 UserID 只标识注册世代内的用户 scope，不建立账户目录。各通道分别持有加密 push 材料、token revision 与租约；Profile ownership 同样按 scope 隔离。一个通道的 token 失效不撤销其他通道的收发资格。CheckOut 和注册退役原子清理全部通道及 Bootstrap escrow。Bootstrap 仅在已接受的 ADE/监督/device enrollment 证据下提供。
+设备/用户通道共用绑定的设备证书，原生 UserID 只标识注册身份内的用户 scope，不建立账户目录。各通道分别持有加密 push 材料、token revision 与租约；Profile ownership 同样按 scope 隔离。一个通道的 token 失效不撤销其他通道的收发资格。CheckOut 和注册退役原子清理全部通道及 Bootstrap escrow。Bootstrap 仅在已接受的 ADE/监督/device enrollment 证据下提供。
 
 token revision 与租约隔离旧 APNs 回执，旧 410 不得清除新 token；配置拒绝持久暂停，短暂网络失败持久退避。健康状态区分内部故障、配置拒绝和设备离线，不能把重试伪造成业务进度。
 
-设备续期复用一次性签发与原生 attempt，保持稳定 profile 身份和注册世代；只有新密钥首次 mTLS/UDID 证明才替换凭据并隔离旧凭据。通用 CA renewal 保持关闭，离线跨过到期须人工重新注册。真实 Mac 的 profile 更新与证书生命周期仍需设备验收。
+设备续期复用一次性签发与原生 attempt，保持稳定 profile 身份和注册身份；只有新密钥首次 mTLS/UDID 证明才替换凭据并隔离旧凭据。通用 CA renewal 保持关闭，离线跨过到期须人工重新注册。真实 Mac 的 profile 更新与证书生命周期仍需设备验收。
 
 Apple 纯核心持有版本/条件编译、结果解释、Profile 组合/清单与 guards 规则；通道 adapter 只持有协议和其存储，Device、Software、Policy 配置、Registration 与 Inventory 分别持有所属资格与业务结算；Apple 通道在宿主共享 runtime 上持有交付事务。Profile 错误后的完整反向证据只释放本次失败预留，旧安装 guards 保留；部分或加密清单保持未知。Profile、push、collection 和结果读取端口按真实消费者收窄，复用一个 adapter 与现有 attempt 流。命令查询完成、原生 ACK、待重启/延后/Unknown 与真实效果分别保存。原生观察与读事实由 Apple 核心单源解释，通道负责保护材料读取与字段隐藏，App 组合各业务查询端口和读取授权，management HTTP 持有最终响应投影。
 
@@ -32,6 +32,6 @@ Legacy Profile 只从受保护的不可变 Resource 下载，使用已验证的 
 
 原生可选属性使用有类型的 Record，缺席保持缺席；完整空列表与未返回列表分别处理。Profiles/Certificates 标准包明确为 ManagedOnly；证书在内存解析，仅保留指纹、序列号及有效期等元数据。普通采集响应在原始字节完成认证与重放 MAC 后，只留存固定白名单投影。FileVault 恢复材料、Profile PayloadContent、证书 DER 和未声明扩展键不进入普通资产结果。
 
-DDM 新报告在原事务内封存 Partial CollectionRun，并由现有 Observation 管线交付；重复报告不分配新序号。报告绑定注册代次、UserID、订阅、publication 身份与声明 token。数组必须具有对应状态项的完整基线，增量或无序冲突产生显式 Unknown；Unknown 更新当前状态并独立保留 last_known，不将后到报告解释为较新设备事实。更新状态只作为资产证据，不生成更新执行操作。
+DDM 新报告在原事务内封存 Partial CollectionRun，并由现有 Observation 管线交付；重复报告不分配新序号。报告绑定注册身份、UserID、订阅、publication 身份与声明 token。数组必须具有对应状态项的完整基线，增量或无序冲突产生显式 Unknown；Unknown 更新当前状态并独立保留 last_known，不将后到报告解释为较新设备事实。更新状态只作为资产证据，不生成更新执行操作。
 
 官方 macOS v2 包提供经典 NativeCollection 和 DDM Configuration 两类真实内容。DDM 配置包含状态订阅和 activation；实例化后走普通 Resource/Content/Policy 生命周期。Resource 在创建时固化 blueprint ID、版本和初始摘要，目录移除后仍能读取来源。macOS v1、旧 Blueprint DTO、旧 Resource aggregate header 与旧 Inventory 投影格式不提供兼容读取；安装器按现有精确格式准入拒绝不匹配安装，不自动修改历史校验和或清空租户数据。

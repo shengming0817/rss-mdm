@@ -158,11 +158,10 @@ pub(crate) async fn prepare_request(
             .credential(proof.fingerprint())?,
         )
         .await?;
-    if let Some((parent, _)) = principal.parent() {
-        crate::linked::current_parent(app, parent).await?;
+    if principal.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
+        crate::linked::current_parent(app, principal.device()).await?;
     }
-    audit.identify_device(principal.registration());
-    audit.registration(principal.registration());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let digest = app
         .protection
@@ -171,11 +170,7 @@ pub(crate) async fn prepare_request(
             &crate::protection::native_aad(
                 principal.tenant(),
                 "windows.renewal.csr",
-                &(
-                    principal.registration(),
-                    principal.generation(),
-                    principal.credential(),
-                ),
+                &(principal.device(), principal.credential()),
             )?,
         )
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
@@ -203,13 +198,17 @@ async fn issue_on(
     crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, p)
         .await?;
     let windows = app.windows()?;
-    if let Some(old)=sqlx::query("SELECT n.id,n.proof_digest,n.certificate,q.windows_profile AS enrollment_type,n.configuration FROM mdm_windows.renewals n JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(n.tenant_id,n.registration) JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE n.tenant_id=$1::uuid AND n.registration=$2 AND n.generation=$3 AND n.previous_credential=$4 FOR UPDATE OF n")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).fetch_optional(&mut *c).await.map_err(db)? {
+    if let Some(old)=sqlx::query("SELECT n.id, n.proof_digest, n.certificate, q.windows_profile AS enrollment_type, n.configuration FROM mdm_windows.renewals AS n INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (n.tenant_id, n.device) INNER JOIN mdm_access.requests AS q ON (q.tenant_id, q.id) = (r.tenant_id, r.request_id) WHERE n.tenant_id = CAST($1 AS uuid) AND n.device = $2 AND n.previous_credential = $3 FOR UPDATE OF n")
+        .bind(&tenant).bind(p.device()).bind(p.credential()).fetch_optional(&mut *c).await.map_err(db)? {
         if old.try_get::<Vec<u8>,_>("proof_digest").map_err(db)?!=digest || old.try_get::<String,_>("configuration").map_err(db)?!=windows.configuration {return Err(Error::Conflict)}
         return Ok((old.try_get("id").map_err(db)?,old.try_get("certificate").map_err(db)?,old.try_get("enrollment_type").map_err(db)?,true));
     }
-    let original=sqlx::query("SELECT q.windows_profile AS enrollment_type,i.configuration FROM mdm_access.enrollment_intents i JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(i.tenant_id,i.request_id) WHERE i.tenant_id=$1::uuid AND i.registration=$2")
-        .bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
+    let request =
+        crate::enrollment_store::native_request(c, &tenant, p.device(), p.protocol_request())
+            .await
+            .map_err(db)?;
+    let original=sqlx::query("SELECT q.windows_profile AS enrollment_type, i.configuration FROM mdm_access.enrollment_intents AS i INNER JOIN mdm_access.requests AS q ON (q.tenant_id, q.id) = (i.tenant_id, i.request_id) WHERE i.tenant_id = CAST($1 AS uuid) AND i.request_id = $2")
+        .bind(&tenant).bind(request).fetch_one(&mut *c).await.map_err(db)?;
     if original.try_get::<String, _>("configuration").map_err(db)? != windows.configuration {
         return Err(Error::Conflict);
     }
@@ -228,8 +227,8 @@ async fn issue_on(
     }
     let certificate = &issued.certificate;
     let id = issued.id;
-    sqlx::query("INSERT INTO mdm_windows.renewals(tenant_id,id,registration,generation,previous_credential,proof_digest,certificate,fingerprint,configuration) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)")
-        .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(digest).bind(certificate).bind(issued.fingerprint.as_slice()).bind(&windows.configuration).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_windows.renewals (tenant_id, id, device, previous_credential, proof_digest, certificate, fingerprint, configuration) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8)")
+        .bind(&tenant).bind(id).bind(p.device()).bind(p.credential()).bind(digest).bind(certificate).bind(issued.fingerprint.as_slice()).bind(&windows.configuration).execute(&mut *c).await.map_err(db)?;
     let profile: Vec<u8> = sqlx::query_scalar(
         "SELECT profile FROM mdm_windows.renewal_intents WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -248,7 +247,7 @@ async fn issue_on(
         c,
         &tenant,
         "windows",
-        p.registration(),
+        p.device(),
         &issuer,
         certificate,
     )
@@ -293,7 +292,7 @@ async fn prepare_on(
     p: &DevicePrincipal,
     proof: &rss_mdm_device_trust::windows::RenewalProof,
     digest: &[u8],
-) -> Result<(Pending, Option<(Uuid, Uuid, Uuid)>), Error> {
+) -> Result<(Pending, Option<(Uuid, Uuid, String)>), Error> {
     let tenant = p.tenant().to_string();
     let tx = connection;
     crate::device::store::lock_channel(
@@ -311,8 +310,8 @@ async fn prepare_on(
     )
     .await?;
     let windows = app.windows()?;
-    if let Some(row) = sqlx::query("SELECT id,signing_attempt,proof_digest,profile,configuration FROM mdm_windows.renewal_intents WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND previous_credential=$4")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential())
+    if let Some(row) = sqlx::query("SELECT id, signing_attempt, proof_digest, profile, configuration FROM mdm_windows.renewal_intents WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND previous_credential = $3")
+        .bind(&tenant).bind(p.device()).bind(p.credential())
         .fetch_optional(&mut *tx).await.map_err(db)? {
         if row.try_get::<Vec<u8>,_>("proof_digest").map_err(db)? != digest
             || row.try_get::<String,_>("configuration").map_err(db)? != windows.configuration {
@@ -325,7 +324,7 @@ async fn prepare_on(
             sqlx::query("UPDATE mdm_windows.renewal_intents SET signing_attempt=$3,profile=$4 WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(&tenant).bind(pending.id).bind(pending.signing_attempt).bind(&pending.profile).execute(&mut *tx).await.map_err(db)?;
         }
-        let replacement = (previous != pending.signing_attempt).then_some((previous,pending.signing_attempt,p.registration()));
+        let replacement = (previous != pending.signing_attempt).then_some((previous,pending.signing_attempt,p.device().to_owned()));
         return Ok((pending,replacement));
     }
     let now = app
@@ -335,18 +334,18 @@ async fn prepare_on(
     if now >= proof.expires() {
         return Err(Error::Unauthorized);
     }
-    let original: String = sqlx::query_scalar("SELECT configuration FROM mdm_access.enrollment_intents WHERE tenant_id=$1::uuid AND registration=$2")
-        .bind(&tenant).bind(p.registration()).fetch_one(&mut *tx).await.map_err(db)?;
+    let request =
+        crate::enrollment_store::native_request(tx, &tenant, p.device(), p.protocol_request())
+            .await
+            .map_err(db)?;
+    let original: String = sqlx::query_scalar("SELECT configuration FROM mdm_access.enrollment_intents WHERE tenant_id = CAST($1 AS uuid) AND request_id = $2")
+        .bind(&tenant).bind(request).fetch_one(&mut *tx).await.map_err(db)?;
     if original != windows.configuration {
         return Err(Error::Conflict);
     }
     let profile = windows
         .ca
-        .profile(
-            &certificate::Csr::verify(proof.csr())?,
-            p.registration(),
-            now,
-        )?
+        .profile(&certificate::Csr::verify(proof.csr())?, p.device(), now)?
         .encode()?;
     let id = Uuid::new_v4();
     let signing_attempt = Uuid::new_v4();
@@ -359,8 +358,8 @@ async fn prepare_on(
         &certificate::IssuanceProfile::decode(&profile)?,
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_windows.renewal_intents(tenant_id,id,registration,generation,previous_credential,proof_digest,profile,configuration,signing_attempt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)")
-        .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential())
+    sqlx::query("INSERT INTO mdm_windows.renewal_intents (tenant_id, id, device, previous_credential, proof_digest, profile, configuration, signing_attempt) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8)")
+        .bind(&tenant).bind(id).bind(p.device()).bind(p.credential())
         .bind(digest).bind(&profile).bind(&windows.configuration).bind(signing_attempt).execute(&mut *tx).await.map_err(db)?;
 
     Ok((
@@ -451,14 +450,14 @@ async fn activate_on(
     purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<Option<Uuid>, Error> {
     let tenant = app.identity.tenant().to_string();
-    let original: Option<(Uuid,String)> = sqlx::query_as("SELECT r.id,r.device FROM mdm_windows.renewals n JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(n.tenant_id,n.registration) WHERE n.tenant_id=$1::uuid AND n.fingerprint=$2 AND n.activated_at IS NULL")
-        .bind(&tenant).bind(leaf.fingerprint().as_slice()).fetch_optional(&mut *c).await.map_err(db)?;
-    let Some((registration, internal_device)) = original else {
+    let original: Option<(String,Uuid)> = sqlx::query_as("SELECT n.device,coalesce(k.protocol_request,r.request_id) AS request FROM mdm_windows.renewals n JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(n.tenant_id,n.device) JOIN mdm_access.credentials k ON(k.tenant_id,k.id,k.device)=(n.tenant_id,n.previous_credential,n.device) WHERE n.tenant_id=$1::uuid AND n.fingerprint=$2 AND n.activated_at IS NULL AND k.purpose=$3")
+        .bind(&tenant).bind(leaf.fingerprint().as_slice()).bind(purpose.as_str()).fetch_optional(&mut *c).await.map_err(db)?;
+    let Some((internal_device, request)) = original else {
         return Ok(None);
     };
-    if crate::protocol_device::on(c, &tenant, registration, &internal_device).await? != device {
+    if crate::protocol_device::on(c, &tenant, request, &internal_device).await? != device {
         return Err(Error::Forbidden);
-    };
+    }
     let device = internal_device.as_str();
     crate::device::store::lock_channel(
         rss_mdm_install_support::StorageProfile::Mdm,
@@ -468,21 +467,18 @@ async fn activate_on(
         rss_mdm_inventory::Channel::Mdm,
     )
     .await?;
-    let row=sqlx::query("SELECT id,registration,generation,previous_credential,configuration FROM mdm_windows.renewals WHERE tenant_id=$1::uuid AND fingerprint=$2 AND activated_at IS NULL FOR UPDATE")
+    let row=sqlx::query("SELECT id, device, previous_credential, configuration FROM mdm_windows.renewals WHERE tenant_id = CAST($1 AS uuid) AND fingerprint = $2 AND activated_at IS NULL FOR UPDATE")
         .bind(&tenant).bind(leaf.fingerprint().as_slice()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     if row.try_get::<String, _>("configuration").map_err(db)? != app.windows()?.configuration {
         return Err(Error::Unauthorized);
     }
-    let registration: Uuid = row.try_get("registration").map_err(db)?;
     let id: Uuid = row.try_get("id").map_err(db)?;
     crate::device::store::activate_renewed_mdm_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &tenant,
         device,
-        registration,
-        row.try_get("generation").map_err(db)?,
         row.try_get("previous_credential").map_err(db)?,
         &crate::device::ChannelMount::new(
             rss_mdm_install_support::StorageProfile::Mdm,
@@ -506,8 +502,7 @@ async fn activate_on(
     .execute(c)
     .await
     .map_err(db)?;
-    audit.identify_device(registration);
-    audit.registration(registration);
+    audit.identify_device(device);
     audit.target_device(device);
     Ok(Some(id))
 }

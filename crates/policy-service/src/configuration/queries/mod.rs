@@ -53,11 +53,11 @@ impl Transactions {
                 purpose,
             )
             .await?;
-            for (device, id, generation) in rows {
+            for device in rows {
                 registrations
-                    .entry((device, purpose.as_str()))
+                    .entry((device.clone(), purpose.as_str()))
                     .and_modify(|v| *v = None)
-                    .or_insert(Some((id, generation)));
+                    .or_insert(Some(device));
             }
         }
         let mut results = BTreeMap::new();
@@ -67,12 +67,12 @@ impl Transactions {
             grant.require(proof, Permission::OperationRead, Some(&op.device))?;
             let current = registrations
                 .get(&(op.device.clone(), op.request.task.purpose()?.as_str()))
-                .copied()
+                .cloned()
                 .flatten();
             let reason = if lifecycle.get(&op.id) != Some(&true) {
                 Some(BlockReason::LifecycleBlocked)
-            } else if current != Some((op.registration, op.registration_generation)) {
-                Some(BlockReason::RegistrationChanged)
+            } else if current != Some(op.device.clone()) {
+                Some(BlockReason::DeviceInactive)
             } else {
                 pending.push(op.id);
                 authorities.push((op.authority.clone(), op.request.task.permissions()?));
@@ -181,16 +181,13 @@ impl Transactions {
         ids: Vec<Uuid>,
     ) -> Result<BTreeMap<Uuid, Declaration>> {
         let device = target.device.as_str();
-        let registration = target.registration_id;
-        let generation = target.generation;
+        let registration = &target.device;
+
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let operations = storage::load_many_on(c, self.tenant, &self.protection, ids).await?;
         let mut result = BTreeMap::new();
         for (id, op) in operations {
-            if op.device != device
-                || op.registration != registration
-                || op.registration_generation != generation
-            {
+            if op.device != device {
                 return Err(Error::Conflict.into());
             }
             let allowed = native_values(grant, proof, &op)?;
@@ -203,8 +200,8 @@ impl Transactions {
             result.insert(
                 id,
                 Declaration {
-                    registration,
-                    generation,
+                    device: registration.to_string(),
+
                     redacted: !allowed,
                     observation,
                 },

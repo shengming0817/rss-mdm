@@ -129,7 +129,7 @@ impl Devices {
         .await?;
         let binding = if let Some(registration) = &agent {
             super::agent_facts::AgentFacts
-                .binding(c, tenant, registration.registration_id)
+                .binding(c, tenant, registration.device.clone())
                 .await?
         } else {
             None
@@ -237,14 +237,13 @@ impl Devices {
         use rss_mdm_inventory::ReportSource;
         let kinds = [Kind::Restart, Kind::Lock, Kind::Wipe];
         let (source, states) = if let Some(registration) = registration {
-            let source =
-                device_control::source_on(c, self.tasks.tenant, registration.registration_id)
-                    .await
-                    .map_err(super::task_reads::history::execution_fault)?;
+            let source = device_control::source_on(c, self.tasks.tenant, &registration.device)
+                .await
+                .map_err(super::task_reads::history::execution_fault)?;
             if let Some(source) = source {
                 let checks = kinds.map(|action| Check {
-                    registration: registration.registration_id,
-                    generation: registration.generation,
+                    device: registration.device.clone(),
+
                     source,
                     action,
                 });

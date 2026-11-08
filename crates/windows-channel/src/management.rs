@@ -100,11 +100,10 @@ pub(crate) async fn manage(
         }
         Err(error) => return Err(error),
     };
-    if let Some((parent, _)) = principal.parent() {
-        linked::current_parent(&app, parent).await?;
+    if principal.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
+        linked::current_parent(&app, principal.device()).await?;
     }
-    audit.identify_device(principal.registration());
-    audit.registration(principal.registration());
+    audit.identify_device(principal.device());
     audit.target_device(principal.device());
     let protocol_device = crate::protocol_device::read(&app.access, &principal).await?;
     if message.header.source != protocol_device
@@ -171,6 +170,7 @@ async fn lock_sessions(
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     registration: &str,
+    protocol_epoch: Uuid,
 ) -> Result<(), Error> {
     // One registration lock orders nonce changes across sessions and restarts.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2351))")
@@ -179,8 +179,8 @@ async fn lock_sessions(
         .await
         .map_err(db)?;
     // Session rows precede their collection row, including supersession and retention.
-    sqlx::query("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting') FOR UPDATE")
-            .bind(tenant).bind(registration).fetch_all(&mut *tx).await.map_err(db)?;
+    sqlx::query("SELECT session_id FROM mdm_access.management_sessions WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND state IN ('challenge', 'collecting')) AND management_sessions.protocol_epoch = $3 FOR UPDATE")
+            .bind(tenant).bind(registration).bind(protocol_epoch).fetch_all(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 
@@ -190,24 +190,25 @@ async fn supersede_sessions(
     principal: &DevicePrincipal,
 ) -> Result<(), Error> {
     let tenant = principal.tenant().to_string();
-    let registration = principal.registration().to_string();
+    let registration = principal.device().to_string();
     if principal.purpose() == crate::device::Purpose::Primary {
-        let sessions: Vec<String> = sqlx::query_scalar("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
-            .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
+        let sessions: Vec<String> = sqlx::query_scalar("SELECT session_id FROM mdm_access.management_sessions WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND state IN ('challenge', 'collecting')) AND management_sessions.protocol_epoch = $3")
+            .bind(&tenant).bind(&registration).bind(principal.epoch()).fetch_all(&mut *tx).await.map_err(db)?;
         for session in sessions {
             crate::collection::terminate_session(
                 tx,
                 facts,
                 &tenant,
                 &registration,
+                principal.epoch(),
                 &session,
                 "superseded",
             )
             .await?;
         }
     }
-    sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
-        .bind(&tenant).bind(&registration).execute(tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_access.management_sessions SET state = 'superseded' WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND state IN ('challenge', 'collecting')) AND management_sessions.protocol_epoch = $3")
+        .bind(&tenant).bind(&registration).bind(principal.epoch()).execute(tx).await.map_err(db)?;
     Ok(())
 }
 
@@ -476,7 +477,7 @@ fn verify_session_identity(
     principal: &DevicePrincipal,
 ) -> Result<(), Error> {
     if !row.try_get::<bool, _>("live").map_err(db)?
-        || row.try_get::<i64, _>("generation").map_err(db)? != principal.generation()
+        || row.try_get::<Uuid, _>("protocol_epoch").map_err(db)? != principal.epoch()
         || row.try_get::<String, _>("credential").map_err(db)? != principal.credential().to_string()
     {
         return Err(Error::Unauthorized);
@@ -499,21 +500,21 @@ async fn session_decision(
     ingress: &dyn crate::protocol_types::ManagementIngress,
 ) -> Result<SessionDecision, Error> {
     let tenant = principal.tenant().to_string();
-    let registration = principal.registration().to_string();
+    let registration = principal.device().to_string();
     let session = message.header.session_id.to_string();
     let message_id = i64::from(message.header.message_id);
-    let stored=sqlx::query("SELECT generation,credential::text,run_id::text,state,last_message,client_authenticated,login_user,nonce,expires_at>clock_timestamp() AS live FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 FOR UPDATE")
-        .bind(&tenant).bind(&registration).bind(&session).fetch_optional(&mut *tx).await.map_err(db)?;
+    let stored=sqlx::query("SELECT protocol_epoch, CAST(credential AS text), CAST(run_id AS text), state, last_message, client_authenticated, login_user, nonce, expires_at > clock_timestamp() AS live FROM mdm_access.management_sessions WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND session_id = $3) AND management_sessions.protocol_epoch = $4 FOR UPDATE")
+        .bind(&tenant).bind(&registration).bind(&session).bind(principal.epoch()).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = &stored {
         verify_session_identity(row, principal)?;
         if message_id <= row.try_get::<i64,_>("last_message").map_err(db)?
-            && let Some(old)=sqlx::query("SELECT digest,response,package_state,authenticated FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
-            .bind(&tenant).bind(&registration).bind(&session).bind(message_id).fetch_optional(&mut *tx).await.map_err(db)? {
+            && let Some(old)=sqlx::query("SELECT digest, response, package_state, authenticated FROM mdm_access.management_messages WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND session_id = $3 AND message_id = $4) AND management_messages.protocol_epoch = $5")
+            .bind(&tenant).bind(&registration).bind(&session).bind(message_id).bind(principal.epoch()).fetch_optional(&mut *tx).await.map_err(db)? {
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
-            audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management", rss_mdm_audit_integration::AuditIntent::Management);
+            audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{}:{session}:{message_id}", principal.epoch())).as_slice()[..16].try_into().expect("digest width")),"windows_management", rss_mdm_audit_integration::AuditIntent::Management);
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             let sealed: Vec<u8> = old.try_get("response").map_err(db)?;
-            let aad = crate::protection::native_aad(principal.tenant(), "windows.management.response", &(principal.registration(), principal.generation(), principal.credential(), &session, message_id))?;
+            let aad = crate::protection::native_aad(principal.tenant(), "windows.management.response", &(principal.device(), principal.epoch(), principal.credential(), &session, message_id))?;
             let plain = protection.open_bytes(&sealed, &aad).map_err(|_| Error::Unavailable(Failure::Protocol))?;
             let package = match old.try_get::<String,_>("package_state").map_err(db)?.as_str() {
                 "complete" => PackageState::Complete, "partial" => PackageState::Partial, "aborted" => PackageState::Aborted,

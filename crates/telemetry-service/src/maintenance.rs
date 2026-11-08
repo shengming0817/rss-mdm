@@ -92,25 +92,24 @@ impl Target {
 #[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StreamTarget {
-    pub registration: uuid::Uuid,
     pub source: rss_mdm_inventory::Source,
     pub epoch: uuid::Uuid,
 }
 impl StreamTarget {
-    fn stream(&self, tenant: rss_request_context::TenantId) -> Result<Stream, Error> {
+    fn stream(&self, tenant: rss_request_context::TenantId, device: &str) -> Result<Stream, Error> {
         if !matches!(
             self.source,
             rss_mdm_inventory::Source::AgentNative
                 | rss_mdm_inventory::Source::AgentScript
                 | rss_mdm_inventory::Source::AgentOsquery
-        ) || self.registration.is_nil()
+        ) || device.is_empty()
             || self.epoch.is_nil()
         {
             return Err(Error::Invalid);
         }
         Ok(Stream::new(
             Scope::new(tenant, Id::new("mdm.telemetry")?),
-            Id::new(format!("{}:{}", self.registration, self.source.as_str()))?,
+            Id::new(format!("{}:{}", device, self.source.as_str()))?,
             Id::new(self.epoch.to_string())?,
         ))
     }
@@ -143,16 +142,16 @@ fn operation(
     )?;
     let action = match &input.action {
         Action::CloseStream { target } => MaintenanceAction::CloseStream {
-            stream: target.stream(tenant)?,
+            stream: target.stream(tenant, &input.device)?,
         },
         Action::Reclaim { target } => MaintenanceAction::Reclaim {
-            stream: target.stream(tenant)?,
+            stream: target.stream(tenant, &input.device)?,
         },
         Action::ExpireReceipts {
             target,
             before_micros,
         } => MaintenanceAction::ExpireReceipts {
-            stream: target.stream(tenant)?,
+            stream: target.stream(tenant, &input.device)?,
             before: Timestamp::new(*before_micros)?,
         },
         Action::Delete {
@@ -259,8 +258,8 @@ async fn authorize(
         Action::CloseStream { target }
         | Action::Reclaim { target }
         | Action::ExpireReceipts { target, .. } => {
-            let fields:Vec<String>=sqlx::query_scalar("SELECT DISTINCT unnest(fields) FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2 AND registration=$3 AND source=$4 AND epoch=$5 LIMIT 1025")
-                .bind(tenant.to_string()).bind(&input.device).bind(target.registration).bind(target.source.as_str()).bind(target.epoch).fetch_all(&mut *c).await?;
+            let fields:Vec<String>=sqlx::query_scalar("SELECT DISTINCT unnest(fields) FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3 AND epoch = $4 LIMIT 1025")
+                .bind(tenant.to_string()).bind(&input.device).bind(target.source.as_str()).bind(target.epoch).fetch_all(&mut *c).await?;
             if fields.is_empty() || !fields.contains(&input.field) || fields.len() > 1024 {
                 return Err(Error::Denied);
             }
@@ -289,7 +288,6 @@ async fn authorize(
                     c,
                     tenant,
                     &input.device,
-                    target.registration,
                     target.source,
                     target.epoch,
                 )
@@ -298,8 +296,8 @@ async fn authorize(
                 {
                     return Err(Error::Denied);
                 }
-                let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3 AND epoch=$4 AND delivery<>'published')")
-                    .bind(tenant.to_string()).bind(target.registration).bind(target.source.as_str()).bind(target.epoch).fetch_one(c).await?;
+                let pending:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3 AND epoch = $4 AND delivery <> 'published')")
+                    .bind(tenant.to_string()).bind(&input.device).bind(target.source.as_str()).bind(target.epoch).fetch_one(c).await?;
                 if pending {
                     return Err(Error::Conflict);
                 }
@@ -562,7 +560,7 @@ async fn step_on(
         && let Action::Reclaim { target } = &input.action
     {
         sqlx::query("UPDATE mdm_telemetry.retention_targets SET phase=2,result=$3 WHERE tenant_id=$1::uuid AND stream=$2")
-                .bind(service.tenant.to_string()).bind(serde_json::to_value(target.stream(service.tenant)?)?).bind(sqlx::types::Json(&result)).execute(&mut *c).await?;
+                .bind(service.tenant.to_string()).bind(serde_json::to_value(target.stream(service.tenant, &input.device)?)?).bind(sqlx::types::Json(&result)).execute(&mut *c).await?;
     }
     sqlx::query(
         "UPDATE mdm_telemetry.maintenance SET result=$3 WHERE tenant_id=$1::uuid AND id=$2",

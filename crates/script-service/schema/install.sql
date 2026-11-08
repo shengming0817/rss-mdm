@@ -10,8 +10,6 @@ CREATE TABLE mdm_script.runs (
     origin jsonb NOT NULL CHECK(origin IN ('"system"','"policy"','"human"','"ai"')),
     source_objects jsonb NOT NULL,
     device text NOT NULL,
-    registration uuid NOT NULL,
-    generation bigint NOT NULL CHECK(generation>0),
     occurrence text NOT NULL CHECK(octet_length(occurrence) BETWEEN 1 AND 256),
     created_at bigint NOT NULL CHECK(created_at>=0),
     available_at bigint NOT NULL CHECK(available_at>=0),
@@ -33,8 +31,6 @@ CREATE POLICY tenant ON mdm_script.runs
 
 CREATE TABLE mdm_script.receipts (
     device text NOT NULL,
-    registration uuid NOT NULL,
-    generation bigint NOT NULL CHECK(generation > 0),
     tenant_id uuid NOT NULL,
     actor text NOT NULL,
     id uuid NOT NULL,
@@ -64,9 +60,9 @@ CREATE POLICY tenant ON mdm_script.output_chunks
 
 CREATE TABLE mdm_script.agent_admission (
     tenant_id uuid NOT NULL,
-    registration uuid NOT NULL,
+    device text NOT NULL,
     policy_after uuid,
-    PRIMARY KEY(tenant_id,registration)
+    PRIMARY KEY(tenant_id,device)
 );
 ALTER TABLE mdm_script.agent_admission ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_script.agent_admission FORCE ROW LEVEL SECURITY;
@@ -93,7 +89,7 @@ CREATE POLICY tenant ON mdm_script.policy_recovery
 
 CREATE INDEX script_unknown_resource ON mdm_script.runs(tenant_id,device,resource_id)
  WHERE state->>'execution'='unknown';
-CREATE INDEX script_offer ON mdm_script.runs(tenant_id,registration,available_at,id)
+CREATE INDEX script_offer ON mdm_script.runs(tenant_id,device,available_at,id)
  WHERE state->>'execution'='not_started' AND state->>'cancellation'='none';
 CREATE INDEX script_history ON mdm_script.runs(tenant_id,policy_version,available_at,id);
 COMMIT;

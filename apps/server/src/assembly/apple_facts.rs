@@ -72,10 +72,8 @@ impl AppleProfiles for AppleFacts {
             let target = protocol::AppleRegistration {
                 tenant: target.tenant,
                 device: target.device,
-                registration: target.registration,
-                generation: target.generation,
             };
-            let command = super::apple_business::command(command);
+            let command = super::apple_business::command(command).map_err(error)?;
             self.0
                 .reserve_profile(c, target, command)
                 .await
@@ -150,8 +148,8 @@ impl AppleResults for AppleFacts {
                 .iter()
                 .map(|r| protocol::AppleControlCheck {
                     id: r.id,
-                    registration: r.registration,
-                    generation: r.generation,
+                    device: r.device.clone(),
+
                     action: match r.action {
                         rss_mdm_device_service::control::device_control::Kind::Restart => {
                             protocol::ControlKind::Restart

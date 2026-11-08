@@ -53,10 +53,7 @@ pub struct Registration {
     pub tenant: Uuid,
     /// Registration-owner allocated endpoint identity.
     pub device: String,
-    /// Registration identity; renewed credentials retain the same generation.
-    pub registration: Uuid,
-    /// Positive registration generation, checked against the current mapping.
-    pub generation: u64,
+
     /// Exact current credential identity.
     pub credential: Uuid,
     /// Original persisted certificate signing attempt.
@@ -70,14 +67,10 @@ pub struct Registration {
 pub enum Audience {
     /// Any current DA device in this tenant.
     Tenant,
-    /// One exact endpoint registration generation.
+    /// One exact endpoint device identity.
     Device {
         /// Registration-owner allocated endpoint identity.
         device: String,
-        /// Registration identity; renewed credentials retain the same generation.
-        registration: Uuid,
-        /// Positive registration generation, checked against the current mapping.
-        generation: u64,
     },
 }
 /// Permission to transport content is separate from proof of its actual delivery channel.
@@ -141,6 +134,6 @@ pub struct Progress {
 
 /// Fingerprint of the generated Device Access protocol schema.
 pub const SCHEMA_FINGERPRINT: &str =
-    "3553c8ce7ad12d794d8239e9dd42d472b063b80289b8dfc407eb4fbf2568f05c";
+    "e274a0ce4d22fa701d96ced27aa703deb7e5521b396667638a71aa2cadf5659c";
 /// Canonical current Device Access schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/da/manifest.json");

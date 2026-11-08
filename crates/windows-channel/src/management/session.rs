@@ -66,10 +66,10 @@ async fn prepare(
     )
     .await?;
     let tenant = p.tenant().to_string();
-    let registration = p.registration().to_string();
+    let registration = p.device().to_string();
     let binding = (
-        p.registration(),
-        p.generation(),
+        p.device(),
+        p.epoch(),
         p.credential(),
         raw.header.session_id.to_string(),
         i64::from(raw.header.message_id),
@@ -85,7 +85,7 @@ async fn prepare(
         .collect::<String>();
     crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c, p)
         .await?;
-    lock_sessions(c, &tenant, &registration).await?;
+    lock_sessions(c, &tenant, &registration, p.epoch()).await?;
     let stored = match session_decision(c, key, p, raw, &digest, audit, ingress).await? {
         SessionDecision::Limited(delay) => return Ok(WindowsReception::Limited(delay)),
         SessionDecision::Replay(reply, package) => {
@@ -93,7 +93,7 @@ async fn prepare(
         }
         SessionDecision::Continue(stored) => stored,
     };
-    let registration_data = crate::enrollment_store::registration(c, &tenant, &registration)
+    let registration_data = crate::enrollment_store::protocol_context(c, p)
         .await
         .map_err(db)?;
     let enrollment = crate::enrollment::store::uuid(&registration_data, "request_id")?;
@@ -398,7 +398,7 @@ impl WindowsSession for Session {
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &p.tenant().to_string(),
-                    p.registration(),
+                    p.device(),
                     rss_mdm_inventory::ReportSource::MdmWindows,
                 )
                 .await?
@@ -499,7 +499,7 @@ impl WindowsSession for Session {
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &p.tenant().to_string(),
-                    p.registration(),
+                    p.device(),
                     rss_mdm_inventory::ReportSource::MdmWindows,
                 )
                 .await?
@@ -558,10 +558,10 @@ async fn save(
     pending: bool,
 ) -> Result<Reply, Error> {
     let tenant = p.tenant().to_string();
-    let registration = p.registration().to_string();
+    let registration = p.device().to_string();
     let sid = session.raw.header.session_id.to_string();
     let mid = i64::from(session.raw.header.message_id);
-    let binding = (p.registration(), p.generation(), p.credential(), &sid, mid);
+    let binding = (p.device(), p.epoch(), p.credential(), &sid, mid);
     let bytes = response;
     let seal = |bytes: &[u8], part: &str| -> Result<Vec<u8>, Error> {
         key.seal_bytes(
@@ -578,6 +578,7 @@ async fn save(
             &mut session.facts,
             &tenant,
             &registration,
+            p.epoch(),
             &sid,
             "aborted",
         )
@@ -609,14 +610,14 @@ async fn save(
         "challenge"
     };
     if session.stored.is_none() {
-        sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,nonce,expires_at,run_id,login_user) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,clock_timestamp()+interval '15 minutes',$10,$11)")
-            .bind(&tenant).bind(&registration).bind(&sid).bind(p.generation()).bind(p.credential()).bind(state).bind(mid)
-            .bind(session.client_authenticated).bind(&session.server.nonce).bind(session.run_id).bind(session.login_user).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_access.management_sessions (tenant_id, device, session_id, credential, state, last_message, client_authenticated, nonce, expires_at, run_id, login_user, protocol_epoch) VALUES (CAST($1 AS uuid), CAST($2 AS text), $3, $4, $5, $6, $7, $8, clock_timestamp() + CAST('15 minutes' AS interval), $9, $10, $11)")
+            .bind(&tenant).bind(&registration).bind(&sid).bind(p.credential()).bind(state).bind(mid)
+            .bind(session.client_authenticated).bind(&session.server.nonce).bind(session.run_id).bind(session.login_user).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         notify(c).await.map_err(db)?;
     } else {
-        sqlx::query("UPDATE mdm_access.management_sessions SET state=$4,last_message=$5,client_authenticated=$6,nonce=$7,run_id=$8 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
+        sqlx::query("UPDATE mdm_access.management_sessions SET state = $4, last_message = $5, client_authenticated = $6, nonce = $7, run_id = $8 WHERE (tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND session_id = $3) AND management_sessions.protocol_epoch = $9")
             .bind(&tenant).bind(&registration).bind(&sid).bind(state).bind(mid).bind(session.client_authenticated)
-            .bind(&session.server.nonce).bind(session.run_id).execute(&mut *c).await.map_err(db)?;
+            .bind(&session.server.nonce).bind(session.run_id).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
     }
     session
         .server
@@ -627,8 +628,8 @@ async fn save(
         PackageState::Complete => "complete",
         PackageState::Aborted => "aborted",
     };
-    sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response,request,package_state,authenticated) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9)")
-        .bind(&tenant).bind(&registration).bind(&sid).bind(mid).bind(session.digest).bind(reply).bind(incoming).bind(status).bind(session.authenticated)
+    sqlx::query("INSERT INTO mdm_access.management_messages (tenant_id, device, session_id, message_id, digest, response, request, package_state, authenticated, protocol_epoch) VALUES (CAST($1 AS uuid), CAST($2 AS text), $3, $4, $5, $6, $7, $8, $9, $10)")
+        .bind(&tenant).bind(&registration).bind(&sid).bind(mid).bind(session.digest).bind(reply).bind(incoming).bind(status).bind(session.authenticated).bind(p.epoch())
         .execute(c).await.map_err(db)?;
     Ok(Reply {
         bytes,

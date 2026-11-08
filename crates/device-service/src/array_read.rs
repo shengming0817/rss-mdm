@@ -171,9 +171,7 @@ async fn validate(
                     member.channel,
                 )
                 .await?;
-                if !current.is_some_and(|r| {
-                    r.registration_id == member.registration_id && r.generation == member.generation
-                }) {
+                if current.is_none_or(|r| r.device != member.device) {
                     return Err(Error::CursorInvalidated);
                 }
             }
@@ -202,12 +200,11 @@ async fn validate(
         return Err(Error::CursorInvalidated);
     }
     if cursor.evidence.source != Source::Manual {
-        let generation = cursor
-            .evidence
-            .registration_generation
-            .ok_or(Error::CursorInvalidated)? as i64;
-        let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.id::text=$3 AND r.generation=$4 AND r.state='active' AND s.source=$5 AND s.epoch::text=$6 AND s.enabled AND EXISTS(SELECT FROM mdm_access.credentials k WHERE(k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active'))")
-            .bind(proof.tenant_id()).bind(&cursor.endpoint).bind(&cursor.evidence.registration).bind(generation).bind(cursor.evidence.source.as_str()).bind(&cursor.evidence.epoch).fetch_one(c).await?;
+        if cursor.evidence.device_id.as_deref() != Some(cursor.endpoint.as_str()) {
+            return Err(Error::CursorInvalidated);
+        }
+        let live:bool=sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_access.devices AS r INNER JOIN mdm_access.report_sources AS s ON (s.tenant_id, s.device) = (r.tenant_id, r.id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.state = 'active' AND s.source = $3 AND CAST(s.epoch AS text) = $4 AND s.enabled AND EXISTS (SELECT FROM mdm_access.credentials AS k WHERE (k.tenant_id, k.device) = (r.tenant_id, r.id) AND k.state = 'active'))")
+            .bind(proof.tenant_id()).bind(&cursor.endpoint).bind(cursor.evidence.source.as_str()).bind(&cursor.evidence.epoch).fetch_one(c).await?;
         if !live {
             return Err(Error::CursorInvalidated);
         }

@@ -10,7 +10,7 @@ pub enum Error {
     CertificateRequest,
     #[error("operation conflict")]
     Conflict,
-    #[error("new registration admission paused")]
+    #[error("new device admission paused")]
     EnrollmentPaused,
     #[error("commit outcome unknown")]
     CommitUnknown,

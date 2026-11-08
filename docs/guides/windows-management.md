@@ -2,7 +2,7 @@
 
 原生采集在设备请求中持久记录签入，由后台逐项准备和恢复；新触发的采集可在后续签入下发。
 积压期间保留进行中的策略扫描，并合并为一个最新待处理签入，不补跑全部历史签入。
-重启从已提交进度继续；当前回执和实际投递仍即时校验授权与注册世代。
+重启从已提交进度继续；当前回执和实际投递仍即时校验授权与注册身份。
 
 部署网关终止注册 HTTPS 与管理 mTLS，后端只接受受信网关覆盖的 TLS 证据并独立验证设备身份。先按 [注册指南](device-enrollment.md) 创建 mdm.windows 授权并分发口令。Discovery、Policy、Enrollment.svc 与 MDM.svc 使用配置的精确 origin，Host/To 必须一致；设备须预先信任服务 TLS 根。首注 enrollment origin 不请求客户端证书；management、Agent 和 Apple 的证书入口必须使用其它 origin，可共用主机名并分离端口。配置拒绝这两类入口重叠。
 
@@ -12,7 +12,7 @@ Windows 使用固定版本 step-ca，宿主只加载公开 `trust_file` 与受�
 
 Windows UsernameToken 只接受 `<enrollmentId>@<注册 origin 的主机名>` 与一次性口令，主机名不含端口；纯 UUID、错误域和非规范 UUID 均拒绝。从注册详情的 `instructions.username` 复制该值。用户以本机管理员身份打开“设置 → 账户 → 访问工作或学校 → 连接 → 仅注册到设备管理”，输入用户名、口令及详情提供的注册服务器；Full／Device 必须与授权一致。Discovery 支持无响应体的 GET／HEAD 连通性探测和原生 SOAP POST。签发期间持续核对原管理员授权，最终绑定提交后证书才可准入。响应丢失沿原意图恢复；重启后由原管理员重新登录、resume。证书安装位置及 Full/Device 注册须在对应 Windows 版本上单独验收，EntDMID 不能替代 mTLS 身份。
 
-管理会话同时校验证书链、用途、当前凭据映射与 SyncML 认证。采用 APPSRV BASIC / CLIENT DIGEST；会话绑定注册世代、证书与消息关联，精确重传返回原响应，异内容冲突。被替代会话不能继续推进。撤销后，每次请求立即通过当前凭据映射拒绝，包括保留连接上的后续请求。缺少、回滚或过期的签名 CRL 同样拒绝认证。Full 用户任务的 `NativeTarget.User.userId` 必须等于当前注册的 `userContextId`，创建、投递和回执都重新核对。会话初始 LoginStatus.User 只表示该已认证会话的用户可用；None、Others 或缺失时用户任务等待，设备任务仍可执行。续期保持注册与用户上下文，重新注册生成新的上下文，旧标识不能沿用。
+管理会话同时校验证书链、用途、当前凭据映射与 SyncML 认证。采用 APPSRV BASIC / CLIENT DIGEST；会话绑定设备、协议 epoch、证书与消息关联，精确重传返回原响应，异内容冲突。被替代会话不能继续推进。撤销后，每次请求立即通过当前凭据映射拒绝，包括保留连接上的后续请求。缺少、回滚或过期的签名 CRL 同样拒绝认证。Full 用户任务使用 `target.kind="enrolled_user"`，创建、投递和回执均重新核对当前设备的 `enrolledUser` 资格。会话初始 LoginStatus.User 只表示该已认证会话的用户可用；None、Others 或缺失时用户任务等待，设备任务仍可执行。续证保留设备身份及原协议上下文；新注册分配新的 deviceId。WinDC 在主设备下使用独立协议上下文。
 
 会话以加密的原始请求和实际响应记录为唯一关联来源，重启后按 MsgID 从原始请求和响应连续重建，跳过无历史可查的查询，不重编码历史响应；Expected 增量维护预算和关联索引，没有另存的关联缓存。当前预算为最多 128 条消息、每条 XML 512 KiB、编码对象 16 MiB、解码对象 12 MiB；响应还受设备声明的 MaxMsgSize / MaxObjSize 限制。非 Final 包仅积累回执，完整 Final 与当前授权共同决定成功结算。
 
@@ -28,17 +28,17 @@ Windows 的两条管理精确路径分别持有认证前 IP、已认证设备及
 
 ## 用户任务与配置输入
 
-用户配置通过 Resource 的 NativeConfiguration 内容和 Policy 消费。有权管理员从 `GET /api/v1/devices/{device}/registrations` 的 Full 活动注册读取 `userContextId`，将其用于配置的 `target.kind="user"`；`apply` / `remove` 属于当前注册的用户 scope。Policy 冻结资源版本，配置示例如下：
+用户配置通过 Resource 的 NativeConfiguration 内容和 Policy 消费。有权管理员从 `GET /api/v1/devices/{device}/registration` 的 Full 活动注册读取 `enrolledUser`，配置使用 `target.kind="enrolled_user"`；`apply` / `remove` 属于当前注册的用户 scope。Policy 冻结资源版本，配置示例如下：
 
 ```json
-{"target":{"kind":"user","userId":"<当前 Full 注册的 userContextId>"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
+{"target":{"kind":"enrolled_user"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
 ```
 
 ## 通道配置与维护
 
 `windows.poll` 是必填的八字段配置，分钟单位；完整示例见 [配置样本](../../fixtures/mdm-config.example.json)。样本先每 15 分钟尝试 10 次，禁用第二阶段，然后每天无限轮询；两项登录触发均为 false。配置必须有可到达的无限阶段，不能依赖 Windows 对无效配置的自动修正。注册 provisioning 消费这个完整类型。内部原生编译器 `rss_mdm_windows_mdm::native::Request::poll_schedule(provider_id, &poll)` 保留完整 Poll Replace Sequence 与 readback 规则，部分写入、删除和类型错误被拒绝。设备控制入口不提供 Poll 维护，也不接受任意 SyncML Sequence；不存在可提交的旧 operation envelope。
 
-WNS 可选。配置 `push.package_family_name`、`sid` 和受保护的 `client_secret_file`；通道向当前已认证设备读取并关联 PFN / ChannelURI。只接受配置 PFN 与 HTTPS notify.windows.com 路由，不跟随重定向。URL 加密保存，token 仅内存缓存。worker 在审计事务内按当前注册世代、来源、凭据及任务授权获取租约，提交后发送空的 wns/raw 唤醒，再按世代、路由版本和租约结算。Accepted 仅为 WNS 接收，Unknown 表示网络结果不确定，两者均不能证明设备签入、命令交付或效果；Poll 独立继续工作。worker 从已提交待办发现候选，以独立通知及固定 60 秒对账推进。重复观察同一 URL 不延长首次观察起的本地 30 天尝试截止；该截止不表示已知 WNS 的实际到期时间。同 URI 重新绑定配置或世代时仍保留截止、退避、未到期租约及已确认的 404/410，绑定变化增加路由版本。迟到的 404/410 仅在 URI 仍相同时合并失效事实；其他旧结果不覆盖新绑定。退管由注册状态阻止领取，不制造 WNS 失效回执。
+WNS 可选。配置 `push.package_family_name`、`sid` 和受保护的 `client_secret_file`；通道向当前已认证设备读取并关联 PFN / ChannelURI。只接受配置 PFN 与 HTTPS notify.windows.com 路由，不跟随重定向。URL 加密保存，token 仅内存缓存。worker 在审计事务内按当前 deviceId、来源、凭据及任务授权获取租约，提交后发送空的 wns/raw 唤醒，再按 deviceId、路由版本和租约结算。Accepted 仅为 WNS 接收，Unknown 表示网络结果不确定，两者均不能证明设备签入、命令交付或效果；Poll 独立继续工作。worker 从已提交待办发现候选，以独立通知及固定 60 秒对账推进。重复观察同一 URL 不延长首次观察起的本地 30 天尝试截止；该截止不表示已知 WNS 的实际到期时间。同 URI 重新绑定配置时仍保留截止、退避、未到期租约及已确认的 404/410，绑定变化增加路由版本。迟到的 404/410 仅在 URI 仍相同时合并失效事实；其他旧结果不覆盖新绑定。退管由注册状态阻止领取，不制造 WNS 失效回执。
 
 内部原生 DMClient / DMAcc 维护规则保留在通道 owner 中，设备控制入口不提供这些维护操作。DMClient 维护限定当前 provider。DMAcc 先读取所选 account 的 ServerID，证实当前 provider 后才执行账户操作。管理地址修改只能指向配置的主地址或 `additional_management` 中真实启用的独立监听地址；Host、绝对 HTTP URI authority 与 SyncML Target 必须对应实际 listener。效果需另一个会话连接到所需实际地址，并提供关联 readback，客户端自报 Source 不能替代重连证据。
 

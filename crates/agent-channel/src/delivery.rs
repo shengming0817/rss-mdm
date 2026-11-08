@@ -65,7 +65,7 @@ pub trait Tasks: Send + Sync {
     fn cancellations<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        registration: Uuid,
+        device: String,
         after: Option<Uuid>,
     ) -> Pending<'a, Vec<wire::TaskCancellation>>;
     fn content<'a>(
@@ -177,7 +177,7 @@ impl Delivery {
                                 .update_context(
                                     c,
                                     principal.tenant().to_string(),
-                                    principal.registration(),
+                                    principal.device().to_string(),
                                     claim.execution_context(),
                                 )
                                 .await?;
@@ -185,7 +185,7 @@ impl Delivery {
                                 .announce(
                                     c,
                                     principal.tenant().to_string(),
-                                    principal.registration(),
+                                    principal.device().to_string(),
                                     &claim,
                                 )
                                 .await?;
@@ -201,8 +201,14 @@ impl Delivery {
                 .await
                 .map_err(storage)??;
                 let hash = fingerprint(input)?;
-                if let Some(value) =
-                    replay(profile, tx, p.registration(), input.operation_id(), &hash).await?
+                if let Some(value) = replay(
+                    profile,
+                    tx,
+                    p.device().to_owned(),
+                    input.operation_id(),
+                    &hash,
+                )
+                .await?
                 {
                     let response: wire::TaskClaimResponse = serde_json::from_value(value)
                         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
@@ -224,17 +230,20 @@ impl Delivery {
                 } else {
                     (None, None)
                 };
-                let after = cancellation_after(profile, tx, p.registration()).await?;
-                let cancellations = s.tasks.cancellations(tx, p.registration(), after).await?;
+                let after = cancellation_after(profile, tx, p.device().to_string()).await?;
+                let cancellations = s
+                    .tasks
+                    .cancellations(tx, p.device().to_owned(), after)
+                    .await?;
                 let next = cancellations.last().map(|c| c.task_id());
-                save_cancellation_after(profile, tx, p.registration(), next).await?;
+                save_cancellation_after(profile, tx, p.device().to_owned(), next).await?;
                 let response = wire::TaskClaimResponse::new(signed, cancellations)
                     .map_err(|_| Error::Malformed)?;
                 if let Some(fact) = fact {
                     receipt(
                         profile,
                         tx,
-                        p.registration(),
+                        p.device().to_owned(),
                         input.operation_id(),
                         hash,
                         &response,
@@ -279,7 +288,7 @@ impl Delivery {
                                 .update_context(
                                     c,
                                     principal.tenant().to_string(),
-                                    principal.registration(),
+                                    principal.device().to_string(),
                                     &context,
                                 )
                                 .await)
@@ -289,8 +298,14 @@ impl Delivery {
                     .map_err(storage)??;
                 }
                 let hash = fingerprint(&(task, input))?;
-                if let Some(value) =
-                    replay(profile, tx, p.registration(), input.operation_id(), &hash).await?
+                if let Some(value) = replay(
+                    profile,
+                    tx,
+                    p.device().to_owned(),
+                    input.operation_id(),
+                    &hash,
+                )
+                .await?
                 {
                     s.tasks.replay_event(tx, p, task, input, audit).await?;
                     audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -324,7 +339,7 @@ impl Delivery {
                 receipt(
                     profile,
                     tx,
-                    p.registration(),
+                    p.device().to_owned(),
                     input.operation_id(),
                     hash,
                     &response,
@@ -474,7 +489,7 @@ pub async fn payload(
 async fn replay(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    device: String,
     operation: Uuid,
     hash: &[u8],
 ) -> Result<Option<serde_json::Value>, Error> {
@@ -484,16 +499,13 @@ async fn replay(
         Box::pin(async move {
             Ok(async {
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3116))")
-                    .bind(format!(
-                        "{}:{tenant}:{registration}:{operation}",
-                        profile.name()
-                    ))
+                    .bind(format!("{}:{tenant}:{device}:{operation}", profile.name()))
                     .execute(&mut *c)
                     .await
                     .map_err(db)?;
                 let row = sqlx::query(crate::storage_profile::sql(profile).delivery_replay_1)
                     .bind(tenant)
-                    .bind(registration)
+                    .bind(&device)
                     .bind(operation)
                     .fetch_optional(c)
                     .await
@@ -515,7 +527,7 @@ async fn replay(
 async fn receipt(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    device: String,
     operation: Uuid,
     hash: Vec<u8>,
     response: &impl serde::Serialize,
@@ -526,7 +538,7 @@ async fn receipt(
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).delivery_receipt_1)
                 .bind(tenant)
-                .bind(registration)
+                .bind(&device)
                 .bind(operation)
                 .bind(hash)
                 .bind(value)
@@ -546,7 +558,7 @@ async fn persist_offer(
     deadline: i64,
 ) -> Result<(), Error> {
     let tenant = tx.tenant_id().to_string();
-    let registration = p.registration();
+    let device = p.device().to_owned();
     let run = signed.payload.task_id();
     let attempt = signed.payload.attempt_id();
     let value = serde_json::to_value(signed).map_err(|_| Error::Malformed)?;
@@ -556,7 +568,7 @@ async fn persist_offer(
                 .bind(tenant)
                 .bind(attempt)
                 .bind(run)
-                .bind(registration)
+                .bind(&device)
                 .bind(value)
                 .bind(deadline)
                 .execute(c)
@@ -601,19 +613,19 @@ async fn persist_permit(
 async fn cancellation_after(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    device: String,
 ) -> Result<Option<Uuid>, Error> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).delivery_cancellation_after_1)
                 .bind(&tenant)
-                .bind(registration)
+                .bind(&device)
                 .execute(&mut *c)
                 .await?;
             sqlx::query_scalar(crate::storage_profile::sql(profile).delivery_cancellation_after_2)
                 .bind(tenant)
-                .bind(registration)
+                .bind(&device)
                 .fetch_one(c)
                 .await
         })
@@ -624,7 +636,7 @@ async fn cancellation_after(
 async fn save_cancellation_after(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    device: String,
     after: Option<Uuid>,
 ) -> Result<(), Error> {
     let tenant = tx.tenant_id().to_string();
@@ -632,7 +644,7 @@ async fn save_cancellation_after(
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).delivery_save_cancellation_after_1)
                 .bind(tenant)
-                .bind(registration)
+                .bind(&device)
                 .bind(after)
                 .execute(c)
                 .await?;
@@ -664,7 +676,7 @@ fn start_permit(payload: &mut wire::TaskPayload, expiry: i64) {
 pub async fn offer_after_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    device: String,
 ) -> Result<Option<(i64, Uuid)>, Error> {
     let tenant = tx.tenant_id().to_string();
     let (at, id) = tx
@@ -672,14 +684,14 @@ pub async fn offer_after_in(
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).delivery_offer_after_in_1)
                     .bind(&tenant)
-                    .bind(registration)
+                    .bind(&device)
                     .execute(&mut *c)
                     .await?;
                 sqlx::query_as::<_, (Option<i64>, Option<Uuid>)>(
                     crate::storage_profile::sql(profile).delivery_offer_after_in_2,
                 )
                 .bind(tenant)
-                .bind(registration)
+                .bind(&device)
                 .fetch_one(c)
                 .await
             })
@@ -695,7 +707,7 @@ pub async fn offer_after_in(
 pub async fn offer_through_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    device: String,
     after: Option<(i64, Uuid)>,
 ) -> Result<(), Error> {
     let tenant = tx.tenant_id().to_string();
@@ -703,7 +715,7 @@ pub async fn offer_through_in(
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).delivery_offer_through_in_1)
                 .bind(tenant)
-                .bind(registration)
+                .bind(&device)
                 .bind(after.map(|v| v.0))
                 .bind(after.map(|v| v.1))
                 .execute(c)

@@ -78,7 +78,7 @@ BEGIN
  AND (p_flow IS NULL OR f.id=p_flow) AND (p_hash IS NULL OR f.token_hash=p_hash)
  AND NOT f.revoked AND o.enabled AND b.enabled AND b.principal::text=g.actor AND b.instance::text=g.instance
  AND q.authority_kind='apple_account' AND q.state<>'cancelled'
- AND (q.state='pending' OR EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=q.tenant_id AND r.request_id=q.id AND r.state='active'))
+ AND (q.state='pending' OR EXISTS(SELECT 1 FROM mdm_access.devices r WHERE r.tenant_id=q.tenant_id AND r.request_id=q.id AND r.state='active'))
  FOR SHARE OF f,o,b,q;
  RETURN FOUND;
 END;

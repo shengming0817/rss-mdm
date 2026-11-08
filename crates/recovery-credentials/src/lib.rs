@@ -3,9 +3,7 @@
 pub mod directory;
 pub mod filevault;
 mod filevault_service;
-pub use filevault_service::{
-    FilevaultSelection, FilevaultService, Link as FilevaultLink, filevault_operation_receipt,
-};
+pub use filevault_service::{FilevaultService, Link as FilevaultLink, filevault_operation_receipt};
 mod model;
 mod protection;
 mod service;

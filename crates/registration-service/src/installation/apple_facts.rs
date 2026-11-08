@@ -7,8 +7,6 @@ pub type Pending<'a, T> =
 pub struct AppleRegistration {
     pub tenant: String,
     pub device: String,
-    pub registration: uuid::Uuid,
-    pub generation: i64,
 }
 pub trait AppleProfiles: Send + Sync {
     fn operation_permissions<'a>(

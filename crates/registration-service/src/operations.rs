@@ -318,7 +318,7 @@ pub async fn diagnostic_receipt(
                             rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
                         summary.object = raw
                             .get("enrollmentId")
-                            .or_else(|| raw.get("registrationId"))
+                            .or_else(|| raw.get("deviceId"))
                             .or_else(|| raw.get("grantId"))
                             .and_then(serde_json::Value::as_str)
                             .map(str::to_owned)

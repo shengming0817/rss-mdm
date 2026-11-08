@@ -37,7 +37,7 @@ pub(crate) struct Statements {
     pub access_contract: &'static str,
 }
 macro_rules! define_storage {
-    ($module:ident, $usage:literal, $schema:literal, $exports:literal, $contract_exports:literal, $heads:literal, $keys:literal, $versions:literal, $acknowledgements:literal, $observations:literal, $registrations:literal, $installation:literal, $access:literal, $command:literal, $policy:literal, $telemetry:literal, $contract_table_12:literal, $contract_table_13:literal, $contract_table_14:literal, $contract_table_15:literal, $contract_table_16:literal) => {
+    ($module:ident, $usage:literal, $schema:literal, $exports:literal, $contract_exports:literal, $heads:literal, $keys:literal, $versions:literal, $acknowledgements:literal, $observations:literal, $installation:literal, $access:literal, $command:literal, $policy:literal, $telemetry:literal, $contract_table_12:literal, $contract_table_13:literal, $contract_table_14:literal, $contract_table_15:literal, $contract_table_16:literal) => {
         mod $module {
             pub(super) const SQL: super::Statements = super::Statements {
                 configuration_save: concat!("INSERT INTO ",$exports,"(tenant_id,operation,actor,instance,request,configuration,revision,trust_revision,result,issued_at,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"),
@@ -75,8 +75,8 @@ CREATE TABLE "###, $versions, r###" (
  PRIMARY KEY(tenant_id,usage,revision), UNIQUE(tenant_id,usage,operation_id)
 );
 CREATE TABLE "###, $acknowledgements, r###" (
- tenant_id uuid NOT NULL, usage text NOT NULL CHECK(usage IN('agent_task','da_configuration')), operation_id uuid NOT NULL, registration uuid NOT NULL,
- generation bigint NOT NULL CHECK(generation>0), revision bigint NOT NULL CHECK(revision>0),
+ tenant_id uuid NOT NULL, usage text NOT NULL CHECK(usage IN('agent_task','da_configuration')), operation_id uuid NOT NULL, device text NOT NULL,
+ revision bigint NOT NULL CHECK(revision>0),
  digest text NOT NULL, PRIMARY KEY(tenant_id,usage,operation_id),
  FOREIGN KEY(tenant_id,usage,revision) REFERENCES "###, $versions, r###"(tenant_id,usage,revision)
 );
@@ -109,15 +109,15 @@ GRANT SELECT ON "###, $heads, ",", $versions, ",", $acknowledgements, " TO ", $p
 GRANT USAGE ON SCHEMA "###, $schema, " TO ", $telemetry, r###";
 GRANT SELECT(usage,tenant_id,revision) ON "###, $heads, " TO ", $telemetry, r###";
 GRANT SELECT(usage,tenant_id,revision,body,digest) ON "###, $versions, " TO ", $telemetry, r###";
-GRANT SELECT(usage,tenant_id,registration,generation,revision,digest) ON "###, $acknowledgements, " TO ", $telemetry, r###";
+GRANT SELECT(usage,tenant_id,device,revision,digest) ON "###, $acknowledgements, " TO ", $telemetry, r###";
 "###),
                 observations_install: concat!(r###"BEGIN;
 CREATE TABLE "###, $observations, r###" (
- tenant_id uuid NOT NULL, usage text NOT NULL CHECK(usage IN('agent_task','da_configuration')), registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
+ tenant_id uuid NOT NULL, usage text NOT NULL CHECK(usage IN('agent_task','da_configuration')), device text NOT NULL,
  sequence bigint NOT NULL CHECK(sequence>0), operation uuid NOT NULL,
  body jsonb NOT NULL CHECK(jsonb_typeof(body)='object'),
  received_at bigint NOT NULL DEFAULT floor(extract(epoch FROM clock_timestamp()))::bigint,
- PRIMARY KEY(tenant_id,usage,registration,generation,sequence), UNIQUE(tenant_id,usage,operation)
+ PRIMARY KEY(tenant_id,usage,device,sequence), UNIQUE(tenant_id,usage,operation)
 );
 ALTER TABLE "###, $observations, r###" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $observations, r###" FORCE ROW LEVEL SECURITY;
@@ -136,18 +136,18 @@ COMMIT;
                 trust_prepare_2: concat!("SELECT instance_id FROM ", $installation),
                 trust_prepare_3: concat!("INSERT INTO ", $keys, "(usage,tenant_id,key_id,private_key) VALUES('", $usage, "',$1::uuid,$2,$3)"),
                 trust_acknowledge_2: concat!("SELECT digest FROM ", $versions, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND revision=$2"),
-                trust_acknowledge_3: concat!("INSERT INTO ", $acknowledgements, "(usage,tenant_id,operation_id,registration,generation,revision,digest) VALUES('", $usage, "',$1::uuid,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING"),
-                trust_acknowledge_4: concat!("SELECT registration=$3 AND generation=$4 AND revision=$5 AND digest=$6 FROM ", $acknowledgements, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND operation_id=$2"),
-                trust_require_issue_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $acknowledgements, " a JOIN ", $versions, " v USING(tenant_id,usage,revision) WHERE a.usage='", $usage, "' AND a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.digest=v.digest AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.body->'keys') k WHERE k->>'id'=$4 AND (k->>'state' IN('prepared','active') OR ($5 AND k->>'state'='verify_only'))))"),
+                trust_acknowledge_3: concat!("INSERT INTO ", $acknowledgements, "(usage,tenant_id,operation_id,device,revision,digest) VALUES('", $usage, "',$1::uuid,$2,$3,$4,$5) ON CONFLICT DO NOTHING"),
+                trust_acknowledge_4: concat!("SELECT device=$3 AND revision=$4 AND digest=$5 FROM ", $acknowledgements, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND operation_id=$2"),
+                trust_require_issue_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $acknowledgements, " a JOIN ", $versions, " v USING(tenant_id,usage,revision) WHERE a.usage='", $usage, "' AND a.tenant_id=$1::uuid AND a.device=$2 AND a.digest=v.digest AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.body->'keys') k WHERE k->>'id'=$3 AND (k->>'state' IN('prepared','active') OR ($4 AND k->>'state'='verify_only'))))"),
                 trust_load_1: concat!("SELECT private_key FROM ", $keys, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND key_id=$2"),
                 trust_selected_trust_1: concat!("SELECT body,revision,digest FROM ", $versions, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND revision=$2"),
                 trust_operation_1: concat!("SELECT body FROM ", $versions, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND operation_id=$2"),
-                trust_retire_1: concat!("SELECT EXISTS(SELECT 1 FROM unnest($3::uuid[],$4::bigint[]) r(id,generation) WHERE NOT EXISTS(SELECT 1 FROM ", $acknowledgements, " a JOIN ", $versions, " v USING(tenant_id,usage,revision) WHERE a.tenant_id=$1::uuid AND a.usage='", $usage, "' AND a.registration=r.id AND a.generation=r.generation AND a.digest=v.digest AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.body->'keys') k WHERE k->>'id'=$2 AND k->>'state'='verify_only')))") ,
+                trust_retire_1: concat!("SELECT EXISTS(SELECT 1 FROM unnest($3::text[]) r(id) WHERE NOT EXISTS(SELECT 1 FROM ", $acknowledgements, " a JOIN ", $versions, " v USING(tenant_id,usage,revision) WHERE a.tenant_id=$1::uuid AND a.usage='", $usage, "' AND a.device=r.id AND a.digest=v.digest AND EXISTS(SELECT 1 FROM jsonb_array_elements(v.body->'keys') k WHERE k->>'id'=$2 AND k->>'state'='verify_only')))") ,
                 trust_rewrap_1: concat!("SELECT key_id,private_key FROM ", $keys, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND substring(private_key FROM 1 FOR $2)<>$3 ORDER BY key_id LIMIT 64 FOR UPDATE"),
                 trust_rewrap_2: concat!("UPDATE ", $keys, " SET private_key=$3 WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND key_id=$2"),
-                observations_record_in_1: concat!("INSERT INTO ", $observations, "(usage,tenant_id,registration,generation,sequence,operation,body) VALUES('", $usage, "',$1::uuid,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING"),
+                observations_record_in_1: concat!("INSERT INTO ", $observations, "(usage,tenant_id,device,sequence,operation,body) VALUES('", $usage, "',$1::uuid,$2,$3,$4,$5) ON CONFLICT DO NOTHING"),
                 observations_record_in_2: concat!("SELECT body FROM ", $observations, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND operation=$2"),
-                observations_latest_in_1: concat!("SELECT body,received_at FROM ", $observations, " WHERE usage='",$usage,"' AND tenant_id=$1::uuid AND registration=$2 AND generation=$3 ORDER BY sequence DESC LIMIT 1"),
+                observations_latest_in_1: concat!("SELECT body,received_at FROM ", $observations, " WHERE usage='",$usage,"' AND tenant_id=$1::uuid AND device=$2 ORDER BY sequence DESC LIMIT 1"),
                 service_change_task_trust_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $versions, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND operation_id=$2)"),
                 service_acknowledge_task_trust_1: concat!("SELECT EXISTS(SELECT 1 FROM ", $acknowledgements, " WHERE usage='", $usage, "' AND tenant_id=$1::uuid AND operation_id=$2)"),
                 object_manifest: concat!(r###"{"tables":[""###,$exports,r###"",""###, $acknowledgements, r###"",""###, $heads, r###"",""###, $keys, r###"",""###, $observations, r###"",""###, $versions, r###""],"functions":[],"views":[]}"###),
@@ -167,7 +167,6 @@ define_storage!(
     "mdm_task_signing.versions",
     "mdm_task_signing.acknowledgements",
     "mdm_task_signing.trust_observations",
-    "mdm_access.registrations",
     "public.mdm_installation",
     "mdm_access",
     "mdm_command_runtime",
@@ -190,7 +189,6 @@ define_storage!(
     "mdm_task_signing.versions",
     "mdm_task_signing.acknowledgements",
     "mdm_task_signing.trust_observations",
-    "mdm_access.registrations",
     "public.mdm_installation",
     "mdm_access",
     "mdm_command_runtime",
@@ -213,7 +211,6 @@ define_storage!(
     "rss_da.signing_versions",
     "rss_da.signing_acknowledgements",
     "rss_da.signing_observations",
-    "rss_da.registrations",
     "rss_da.installation_binding",
     "da_access",
     "da_command_runtime",
@@ -236,7 +233,6 @@ define_storage!(
     "rss_da.signing_versions",
     "rss_da.signing_acknowledgements",
     "rss_da.signing_observations",
-    "rss_da.registrations",
     "rss_da.installation_binding",
     "da_access",
     "da_command_runtime",

@@ -21,7 +21,7 @@ impl Store for AgentFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        registration: String,
         context: &'a rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
@@ -35,8 +35,8 @@ impl Store for AgentFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registrations: Vec<Uuid>,
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, Binding>> {
+        registrations: Vec<String>,
+    ) -> Pending<'a, std::collections::BTreeMap<String, Binding>> {
         Box::pin(async move {
             Ok(
                 rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)
@@ -82,7 +82,7 @@ impl Store for AgentFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        registration: String,
     ) -> Pending<'a, Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>> {
         Box::pin(async move {
             rss_mdm_agent_channel::Bindings::new(rss_mdm_install_support::StorageProfile::Mdm)

@@ -278,34 +278,28 @@ impl crate::deployment::transactions::Transactions {
                 return Err(Error::Unsupported.into());
             }
         }
-        let (registration, registration_generation) =
-            storage::current_registration(tx, device, input.task.purpose()?).await?;
+        let registration = storage::current_registration(tx, device, input.task.purpose()?).await?;
 
         if input.task.purpose()? == rss_mdm_registration_service::Purpose::Primary {
-            storage::require_source(tx, registration, input.task.source()).await?;
+            storage::require_source(tx, registration.clone(), input.task.source()).await?;
         }
         if matches!(input.task, Task::Windows { .. })
-            && matches!(input.target, NativeTarget::User { .. })
+            && matches!(input.target, NativeTarget::EnrolledUser)
         {
             let tenant = self.tenant.to_string();
             let target = input.target.clone();
+            let registration = registration.clone();
             let allowed = tx.with_connection(move |c| Box::pin(async move {
-                let (profile, context): (Option<String>, Uuid) = sqlx::query_as("SELECT q.windows_profile,coalesce(r.parent_id,r.id) FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.state='active'")
-                    .bind(tenant).bind(registration).bind(registration_generation).fetch_one(c).await?;
-                Ok(target.matches_windows_context((profile.as_deref()==Some("Full")).then_some(context)))
+                let profile: Option<String> = sqlx::query_scalar("SELECT q.windows_profile FROM mdm_access.devices d JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(d.tenant_id,d.request_id) WHERE d.tenant_id=$1::uuid AND d.id=$2 AND d.state='active'").bind(tenant).bind(&registration).fetch_one(c).await?;
+                Ok(target.matches_windows_context(profile.as_deref() == Some("Full")))
             })).await?;
             if !allowed {
                 return Err(Error::Forbidden.into());
             }
         }
-        let command_authority = rss_mdm_registration_service::command_authority::resolve_in(
-            &self.store,
-            tx,
-            device,
-            registration,
-            registration_generation,
-        )
-        .await?;
+        let command_authority =
+            rss_mdm_registration_service::command_authority::resolve_in(&self.store, tx, device)
+                .await?;
         let (scope, coordinate) = (command_authority.scope, command_authority.coordinate);
         let spec = dc::CommandSpec::new(
             scope,
@@ -319,8 +313,7 @@ impl crate::deployment::transactions::Transactions {
         self.store.queue(tx, spec, message).await?;
         let binding = rss_mdm_registration_service::command_authority::CommandBinding {
             operation: input.operation_id,
-            registration,
-            generation: registration_generation,
+            device: registration.to_string(),
         };
         let tenant = self.tenant;
         if matches!(input.task, Task::Windows { .. }) {
@@ -346,8 +339,6 @@ impl crate::deployment::transactions::Transactions {
             &crate::deployment::input_storage::Identity {
                 operation: input.operation_id,
                 device,
-                registration,
-                generation: registration_generation,
             },
             input,
         )?;
@@ -386,16 +377,8 @@ impl crate::deployment::transactions::Transactions {
         };
         let authority = checked_input(serde_json::to_string(&authority))?;
         let digest = fingerprint.clone();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_software_deployment.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,source_kind,policy_version,input_context) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11,$12,$13,$14)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(input_context).execute(c).await?;Ok(())})).await?;
-        apple::own(
-            tx,
-            self.apple_profiles.clone(),
-            device,
-            registration,
-            registration_generation,
-            input,
-        )
-        .await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_software_deployment.operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, source_kind, policy_version, input_context) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, $7, CAST($8 AS jsonb), $9, $10, $11, $12)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(input_context).execute(c).await?;Ok(())})).await?;
+        apple::own(tx, self.apple_profiles.clone(), device, input).await?;
         let response = created(tx, self, audit, input.operation_id, fingerprint).await?;
         crate::deployment::worker_wake::notify_in(
             tx,

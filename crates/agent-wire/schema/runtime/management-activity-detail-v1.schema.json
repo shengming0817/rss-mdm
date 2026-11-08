@@ -439,22 +439,10 @@
         "device": {
           "description": "Authorized endpoint identity, which can differ between paired channels.",
           "type": "string"
-        },
-        "generation": {
-          "description": "Exact registration generation.",
-          "format": "int64",
-          "type": "integer"
-        },
-        "registration": {
-          "description": "Exact registration identity.",
-          "format": "uuid",
-          "type": "string"
         }
       },
       "required": [
-        "device",
-        "registration",
-        "generation"
+        "device"
       ],
       "type": "object"
     },

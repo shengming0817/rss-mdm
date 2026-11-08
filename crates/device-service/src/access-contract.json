@@ -22,8 +22,6 @@
       "table": "members",
       "read_write": true,
       "updates": [
-        "registration_id",
-        "generation",
         "released"
       ],
       "delete_policy": null

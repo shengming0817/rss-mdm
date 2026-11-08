@@ -86,7 +86,7 @@ async fn post(
 async fn register(
     peer: &reqwest::Client,
     base: &str,
-    registration: Uuid,
+    device: &str,
     kind: wire::Kind,
     binding: Option<&pg::device_access::Binding>,
     key: &Key,
@@ -106,7 +106,7 @@ async fn register(
     let proof = key.signer.sign(
         wire::REGISTRATION_TYPE,
         &serde_json::to_value(wire::RegistrationClaims {
-            iss: registration,
+            iss: device.to_owned(),
             aud: format!("{}/register", challenge.endpoints.base),
             challenge_id: challenge.id,
             source_id: challenge.source_id,
@@ -425,8 +425,7 @@ pub async fn verify(
         tenant: Uuid::parse_str(&c.tenant.to_string())?,
         installation: registration.service_id,
         device: registration.device.clone(),
-        registration: registration.registration,
-        generation: registration.generation as i64,
+
         authority: business::authority_id(),
         sequence: 10,
         issued_at: now() - 1,
@@ -521,7 +520,7 @@ pub async fn verify(
     register(
         peer,
         base,
-        registration.registration,
+        &registration.device,
         wire::Kind::Device,
         None,
         &device,
@@ -530,7 +529,7 @@ pub async fn verify(
     let source = register(
         peer,
         base,
-        registration.registration,
+        &registration.device,
         wire::Kind::User,
         Some(&binding),
         &user,

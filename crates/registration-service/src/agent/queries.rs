@@ -16,7 +16,6 @@ pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| S
         Field::scalar("id", Kind::Uuid),
         Field::scalar("source", Kind::Text),
         Field::scalar("state", Kind::Text),
-        Field::scalar("registration", Kind::Uuid),
         Field::scalar("createdAt", Kind::Integer),
         Field::output("device"),
         Field::output("operationId"),
@@ -24,7 +23,6 @@ pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| S
         Field::output("instance"),
         Field::output("expiresAt"),
         Field::output("predecessor"),
-        Field::output("generation"),
         Field::output("registrationState"),
         Field::output("issuance"),
         Field::output("issuanceState"),
@@ -114,8 +112,6 @@ pub struct Request {
     pub instance: Option<String>,
     pub created_at: i64,
     pub expires_at: i64,
-    pub registration: Option<Uuid>,
-    pub generation: Option<i64>,
     pub registration_state: Option<crate::enrollment::read::RegistrationState>,
     pub predecessor: Option<Uuid>,
     pub issuance: Option<Uuid>,
@@ -131,19 +127,19 @@ pub struct Request {
 const REQUEST_SQL: &str = r#"SELECT jsonb_build_object(
 'id',g.id,'device',g.device,'source',g.source,'state',CASE WHEN g.state='revoked' THEN 'revoked' WHEN g.expires_at<=statement_timestamp() THEN 'expired' ELSE g.state END,
 'operationId',g.operation_id,'actor',g.actor,'instance',g.instance,'createdAt',floor(extract(epoch FROM g.created_at))::bigint,'expiresAt',floor(extract(epoch FROM g.expires_at))::bigint,
-'registration',r.id,'generation',r.generation,'registrationState',r.state,'predecessor',g.predecessor,
+'registrationState',r.state,'predecessor',g.predecessor,
 'issuance',i.id,'issuanceState',i.state,'issuanceOperation',i.operation_id,'issuer',i.signing_issuer,'notBefore',i.not_before,'notAfter',i.not_after,
 'activationOperation',i.activation_operation,'activated',i.activation_result IS NOT NULL,'requirements',to_jsonb(array_remove(ARRAY[
  CASE WHEN g.state='pending' THEN 'awaiting_authorization' END,
  CASE WHEN g.state='revoked' THEN 'revoked' END,
  CASE WHEN g.expires_at<=statement_timestamp() THEN 'expired' END,
- CASE WHEN g.target_registration IS NOT NULL AND (r.state<>'active' OR NOT EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=g.tenant_id AND k.id=g.predecessor AND k.registration=r.id AND k.state='active')) AND i.activation_result IS NULL THEN 'predecessor_unavailable' END,
+ CASE WHEN g.predecessor IS NOT NULL AND (r.state<>'active' OR NOT EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=g.tenant_id AND k.id=g.predecessor AND k.device=r.id AND k.state='active')) AND i.activation_result IS NULL THEN 'predecessor_unavailable' END,
  CASE WHEN i.id IS NULL AND g.state='available' THEN 'original_client_material' END,
  CASE WHEN i.state IN ('signing','unknown') THEN 'original_ca_response' END,
  CASE WHEN i.state='issued' AND i.activation_result IS NULL THEN 'awaiting_device_activation' END
  ],NULL)))
  FROM mdm_access.certificate_grants g LEFT JOIN mdm_access.certificate_issuances i ON(i.tenant_id,i.grant_id)=(g.tenant_id,g.id)
- LEFT JOIN mdm_access.registrations r ON r.tenant_id=g.tenant_id AND (r.id=g.target_registration OR (g.target_registration IS NULL AND r.certificate_grant_id=g.id))
+ LEFT JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(g.tenant_id,g.device)
  WHERE g.tenant_id="#;
 fn request_column(name: &str) -> &'static str {
     match name {
@@ -152,7 +148,6 @@ fn request_column(name: &str) -> &'static str {
         "state" => {
             "(CASE WHEN g.state='revoked' THEN 'revoked' WHEN g.expires_at<=statement_timestamp() THEN 'expired' ELSE g.state END) COLLATE \"C\""
         }
-        "registration" => "r.id::text COLLATE \"C\"",
         "createdAt" => "floor(extract(epoch FROM g.created_at))::bigint",
         _ => unreachable!("checked Agent request field"),
     }
@@ -306,13 +301,12 @@ impl Service {
     pub async fn registration_recovery_operation(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
-        registration: Uuid,
+        device_id: &str,
         operation: Uuid,
         identity: &ReceiptIdentity,
     ) -> Result<Option<wire::GrantReceipt>, Error> {
         self.query_tenant(&request.proof)?;
-        registration_recovery_operation(&self.store, request, registration, operation, identity)
-            .await
+        registration_recovery_operation(&self.store, request, device_id, operation, identity).await
     }
     pub async fn issuance_recovery_operations(
         &self,
@@ -447,7 +441,7 @@ impl Service {
 pub async fn registration_recovery_operation(
     store: &crate::database::Store,
     request: &rss_mdm_authorization_service::context::RequestAuth,
-    registration: Uuid,
+    device_id: &str,
     operation: Uuid,
     identity: &ReceiptIdentity,
 ) -> Result<Option<wire::GrantReceipt>, Error> {
@@ -464,7 +458,7 @@ pub async fn registration_recovery_operation(
         crate::storage_profile::sql(profile).agent_queries_registration_recovery_operation_1,
     )
     .bind(p.tenant_id())
-    .bind(registration)
+    .bind(device_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(db)?
@@ -477,14 +471,14 @@ pub async fn registration_recovery_operation(
     )
     .bind(p.tenant_id())
     .bind(operation)
-    .bind(registration)
+    .bind(device_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(db)?;
     let value = if let Some(row) = row {
         if row.try_get::<String, _>("actor").map_err(db)? != identity.actor
             || row.try_get::<String, _>("instance").map_err(db)? != identity.instance
-            || row.try_get::<Uuid, _>("target_registration").map_err(db)? != registration
+            || row.try_get::<String, _>("device").map_err(db)? != device_id
         {
             return Err(Error::Conflict);
         }

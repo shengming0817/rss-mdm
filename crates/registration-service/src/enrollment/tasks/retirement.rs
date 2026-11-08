@@ -1,6 +1,6 @@
-//! Cancel exact registration work without a second transaction or terminal-result mirror.
+//! Cancel exact device work without a second transaction or terminal-result mirror.
 use crate::enrollment::tasks::{Error, transaction::Result};
-use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit};
+use rss_mdm_audit_integration::{AuditIntent, Fact, RequestAudit, operation::OperationOwner};
 use sqlx::Row;
 use uuid::Uuid;
 pub async fn retire_in(
@@ -8,7 +8,7 @@ pub async fn retire_in(
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<Fact>,
     tenant: &str,
-    registration: Uuid,
+    device: String,
 ) -> Result<()> {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
@@ -17,15 +17,15 @@ pub async fn retire_in(
         "credential_revoke",
         AuditIntent::Management,
     );
-    audit.identify_service("registration-retirement");
-    audit.registration(registration);
+    audit.identify_service("device-retirement");
+    audit.target_device(&device);
     let mut after = Uuid::nil();
     loop {
         let rows = sqlx::query(
             crate::storage_profile::sql(profile).enrollment_tasks_retirement_retire_in_1,
         )
         .bind(tenant)
-        .bind(registration)
+        .bind(&device)
         .bind(after)
         .fetch_all(&mut *c)
         .await?;
@@ -41,7 +41,7 @@ pub async fn retire_in(
                 sqlx::query_scalar::<_, bool>(
                     crate::storage_profile::sql(profile).enrollment_tasks_retirement_retire_in_2,
                 )
-                .bind(registration)
+                .bind(&device)
                 .bind(id)
                 .bind(previous)
                 .bind(serde_json::to_value(state).map_err(|_| Error::Malformed)?)
@@ -53,11 +53,16 @@ pub async fn retire_in(
             if !changed {
                 return Err(Error::Conflict.into());
             }
-            audit.target(&id.to_string());
+            audit.owned_operation(
+                OperationOwner::EnrollmentTask,
+                id,
+                "credential_revoke",
+                AuditIntent::Management,
+            );
             facts.push(Fact::business(
                 &audit,
-                rss_mdm_audit_integration::operation::OperationOwner::EnrollmentTask,
-                &format!("registration-retirement:{registration}:task:{id}"),
+                OperationOwner::EnrollmentTask,
+                &format!("device-retirement:{device}:task:{id}"),
                 200,
                 "success",
                 None,
@@ -71,18 +76,18 @@ pub async fn retire_in(
     Ok(())
 }
 
-/// Pending execution and the first unconfirmed task across every retirement registration.
+/// Pending execution and the first unconfirmed task across every retirement device.
 pub async fn progress_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registrations: &[Uuid],
+    devices: &[String],
 ) -> Result<(bool, Option<Uuid>)> {
     let row: (bool, Option<Uuid>) = sqlx::query_as(
         crate::storage_profile::sql(profile).enrollment_tasks_retirement_progress_on_1,
     )
     .bind(tenant)
-    .bind(registrations)
+    .bind(devices)
     .fetch_one(c)
     .await?;
     Ok(row)

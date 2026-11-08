@@ -100,9 +100,8 @@ impl Source {
 #[serde(deny_unknown_fields)]
 struct Stored {
     installation: Uuid,
-    registration: Uuid,
+    device: String,
     credential: Uuid,
-    generation: i64,
     source: rss_mdm_inventory::ReportSource,
     runtime: Option<wire::RuntimeProfile>,
     bootstrap: Uuid,
@@ -122,9 +121,8 @@ pub(crate) async fn source(
             .bind(tenant.to_string())
             .bind(s.bootstrap)
             .bind(s.installation)
-            .bind(s.registration.to_string())
+            .bind(&s.device)
             .bind(s.credential.to_string())
-            .bind(s.generation.to_string())
             .fetch_one(&mut *c)
             .await
             .map_err(db)?;
@@ -135,7 +133,7 @@ pub(crate) async fn source(
         sqlx::query_scalar(crate::storage_profile::sql(profile).agent_native_source_2)
             .bind(tenant.to_string())
             .bind(s.credential)
-            .bind(s.registration)
+            .bind(&s.device)
             .fetch_optional(&mut *c)
             .await
             .map_err(db)?
@@ -166,10 +164,7 @@ pub(crate) async fn source(
     );
     let principal =
         crate::device::store::management_in(profile, c, &mount.credential(bytes)?).await?;
-    if principal.registration() != s.registration
-        || principal.generation() != s.generation
-        || principal.credential() != s.credential
-    {
+    if principal.device() != s.device || principal.credential() != s.credential {
         return Err(Error::Forbidden);
     }
     Ok(Source {

@@ -2,9 +2,9 @@
 
 Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 Action；Operation、Run、Attempt 持有实际设备执行。管理员会话、岗位或权限变化不撤销已经发布的 Policy；当前管理员可显式停用或修改分配。
 
-执行型 Policy 在 Agent 签入时按当前 Scope、触发、频率、窗口和历史原子受理。发布不展开全部设备 Run，没有 Policy×设备×周期任务矩阵。每次签入分页查询，持久游标循环访问后续策略。Offer、内容下载、Start permit 和事件回执复用原通道，签名绑定 tenant/device/registration/generation/task/attempt、内容摘要与预算。
+执行型 Policy 在 Agent 签入时按当前 Scope、触发、频率、窗口和历史原子受理。发布不展开全部设备 Run，没有 Policy×设备×周期任务矩阵。每次签入分页查询，持久游标循环访问后续策略。Offer、内容下载、Start permit 和事件回执复用原通道，签名绑定 tenant/device/task/attempt、内容摘要与预算。
 
-频率区分每执行版本一次、每次入组一次、每次触发；直接设备分配只记录目标定义变化，不预生成设备任务。显式重执行是一条有期限的持久触发，仍由设备主动领取。定时触发在签入时计算，迟到按 Skip 的明确容忍秒数或 CoalesceOne 处理。窗口支持跨午夜，归属开始日；DST gap 跳过，fold 取较早时刻。已经开始而结果未知的脚本按 tenant、device 和逻辑 Resource 身份阻断后续执行；新 Policy、版本、注册世代和取消请求均不能绕过，原 attempt 的迟到结果可以结算 Unknown。
+频率区分每执行版本一次、每次入组一次、每次触发；直接设备分配只记录目标定义变化，不预生成设备任务。显式重执行是一条有期限的持久触发，仍由设备主动领取。定时触发在签入时计算，迟到按 Skip 的明确容忍秒数或 CoalesceOne 处理。窗口支持跨午夜，归属开始日；DST gap 跳过，fold 取较早时刻。已经开始而结果未知的脚本按 tenant、device 和逻辑 Resource 身份阻断后续执行；同一 deviceId 下的新 Policy、版本、续证和取消请求均不能绕过，原 attempt 的迟到结果可以结算 Unknown。新注册使用新 deviceId，不继承原执行或其屏障；旧身份的撤销独立处理。
 
 配置型 Policy 由成员、内容、注册与能力变化驱动。持久批次分页找出必要设备，比较期望配置和已知状态，再复用现有 MDM 队列。Windows 在管理会话交付；Apple 使用已有 APNs 通知及 MDM Profile 协议。同一效果由多个分配共享，不因一个分配退出而移除。冲突单独报告，Windows 防火墙退出不能声称回滚；Apple 仅移除本分配持有且受支持的 Profile。
 
@@ -12,7 +12,7 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 `policy` 持有定义、状态、CAS 与执行语义版本；`policy-service` 持有管理、发布、重跑、分配、事件批次和所属 worker，`policy-postgres` 持有对应存储、锁及权限准入。Inventory 编排 Group，`scope-service` 独立拥有 Scope，资源目录由 `resource-service` 持有。各业务 owner 独立拥有其设备来源变化扫描和推进。
 
-`script-service` 持有脚本冻结输入、参数、Run、自助服务回执、输出及恢复；Inventory 持有 Agent/native collection task 和逐 attempt 的 collection report。原生采集只保存投递进度，报告是采集终态的唯一来源。`software-service` 持有软件冻结输入、安装和移除、跨渠道效果去重、rollout 统计及 Agent 安装派发；`registration-service` 持有 Enrollment 任务、Bootstrap/SCEP 和身份世代。Software 通过原事务中的窄参与接口消费 Registration，Registration 不依赖 Software。Device 持有固定 restart/lock/wipe 的确认、授权、操作和完整退管阶段；Registration 持有访问控制、登记和凭据退休围栏，Recovery Credentials 持有凭据任务。Agent、Windows、Apple 通道持有协议交付与持久状态，App 按实际存储归属装配具体参与者；重复或缺失 owner 属于完整性错误。
+`script-service` 持有脚本冻结输入、参数、Run、自助服务回执、输出及恢复；Inventory 持有 Agent/native collection task 和逐 attempt 的 collection report。原生采集只保存投递进度，报告是采集终态的唯一来源。`software-service` 持有软件冻结输入、安装和移除、跨渠道效果去重、rollout 统计及 Agent 安装派发；`registration-service` 持有 Enrollment 任务、Bootstrap/SCEP 和注册身份。Software 通过原事务中的窄参与接口消费 Registration，Registration 不依赖 Software。Device 持有固定 restart/lock/wipe 的确认、授权、操作和完整退管阶段；Registration 持有访问控制、登记和凭据退休围栏，Recovery Credentials 持有凭据任务。Agent、Windows、Apple 通道持有协议交付与持久状态，App 按实际存储归属装配具体参与者；重复或缺失 owner 属于完整性错误。
 
 Policy 发布分别消费各 owner 的 `Inputs`，事件批次通过 App 定向受理并读取原操作事实。参与者借入发起方 runtime 的同一事务，成员决定、执行意图、审计和持久 wake 在原 claim 保护事务内提交。各业务 owner 共用设备 fence、128 个活动任务上限、原连接池及恢复并发预算；一个宿主 relay 循环调度所属 outbox。各 owner 持有自己的持久恢复检查点，通知丢失与进程重启不会丢掉工作。
 
@@ -32,20 +32,20 @@ Script 和 Inventory 的资源准备分别核对参数、采集字段、平台�
 
 当前软件定义要求持久化显式 channel；仅管理输入省略 channel 时规范化为 Agent。Action 自身持有指纹材料；软件指纹包含 channel 和完整变体选择而排除 rollout，Scope 变化也不产生新执行版本。固定的六类身份 fixture 验证此约束，不保留旧 ResourceBinding 或冻结接口。
 
-各业务 owner 不依赖 Flow。App 为各业务装配所需的 Scope 准入、Device 关联事实与 Policy 候选读取；查询消费方组合预览和分配设备页。读取借用调用方原事务，不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、世代和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。
+各业务 owner 不依赖 Flow。App 为各业务装配所需的 Scope 准入、Device 关联事实与 Policy 候选读取；查询消费方组合预览和分配设备页。读取借用调用方原事务，不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、凭据和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。
 
 `Queries` 独立持有所需读依赖，不持有完整执行服务、outbox、reconcile 或签名私钥。目录、统计、复合游标、摘要、详情、能力及观察以类型化事实返回。摘要结果与完整详情分离，摘要移除输出和诊断流；详情与能力在事务内检查当前授权。目录先过滤可见设备，再统计和分页。HTTP 装配读写入口统一使用 `/api/v1`，实际路由由 [Management HTTP 装配](../../crates/management-http/src/router.rs) 单源定义。
 
 当前安装按对象 owner 建立最终结构，业务身份和保护 AAD 保持原有语义。Script 持有 `mdm_script`；Inventory 持有 `mdm_inventory.collection_tasks` 及原有逐 attempt 报告；Device 持有 `mdm_devices.control_operations`、`unmanage_runs`、退管进度和恢复检查点；配置操作归 Policy；Scope 持有 `mdm_scope`；各通道持有所属协议投影；Policy 持有 `mdm_policy` 中的定义、版本、回执、触发、事件批次与成员、分配及工作记录。共用操作响应回执由 Audit Integration 单源持有，并借用调用方原事务；业务审计事实仍由实际业务 owner 生成。提交未知与回滚失败不会被转换为成功。
 
 
-Scope 是目标计算的唯一 owner。成员三值结果与定义版本决定集合准入；Unknown 排除依据不能放行。首次结果尚未完成或定义已变时阻止新执行；完整冻结结果可在普通资产切面消费推进期间继续使用，操作仍重验设备与注册身份。暂时等待不能据此移除已有配置。已受理执行绑定注册世代，注册替换阻止旧任务继续启动。
+Scope 是目标计算的唯一 owner。成员三值结果与定义版本决定集合准入；Unknown 排除依据不能放行。首次结果尚未完成或定义已变时阻止新执行；完整冻结结果可在普通资产切面消费推进期间继续使用，操作仍重验设备与注册身份。暂时等待不能据此移除已有配置。已受理执行绑定原 deviceId，新注册不接续旧任务；撤销原设备身份后阻止其任务继续启动。
 
 配置持续分配和单次命令期限独立。临时缺少注册或能力时保留分配及诊断，相关事实到达后自动核对。脚本成功只表示退出结果；MDM 收到回执也不等于效果已经核实。采集输出仍通过 CollectionRun → Observation → Inventory，非法、部分、截断和迟到结果保留最后可信值。
 
 Content 持有内容流及其锁、permit 与截止时间；Agent 通道持有 Offer、Start permit 签名、领取、事件去重、取消分页与内容交付资格。各业务 owner 持有自己的命令提交、准入与结果归档。事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
 
-通道交付借入宿主现有的 `mdm_command_runtime` 与同一 PostgreSQL 事务，业务参与端口只接收原事务或原连接。通道通过自身定义的业务参与端口调用具体 owner，也不新增池、角色或统一交付框架。Registration 是注册身份与世代的唯一权威；原业务 command/outbox/audit 原子性、当前来源授权、fencing、提交未知和回滚失败均保持。
+通道交付借入宿主现有的 `mdm_command_runtime` 与同一 PostgreSQL 事务，业务参与端口只接收原事务或原连接。通道通过自身定义的业务参与端口调用具体 owner，也不新增池、角色或统一交付框架。Registration 是注册身份的唯一权威；原业务 command/outbox/audit 原子性、当前来源授权、fencing、提交未知和回滚失败均保持。
 
 Agent 的原始 Offer/permit 是唯一已交付材料，不另存 execution material；历史读取只解码并核对任务身份，当前下载、启动和事件仍重验当前授权。绑定的原始能力公告单源存储，缺失表示 Unknown。Windows 持有会话、attempt/item/frame、能力查询与逐字节重放；Apple 持有命令、DDM publication、资产交付、用户通道和 APNs。业务查询可读取通道事实，协议写入仅由所属通道完成。当前安装直接建立最终 owner 结构，不提供旧结构兼容层。
 

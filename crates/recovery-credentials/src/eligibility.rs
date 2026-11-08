@@ -75,8 +75,6 @@ impl<'a> Custody<'a> {
 pub struct Unbound {
     pub tenant: Uuid,
     pub device: String,
-    pub registration: Uuid,
-    pub registration_generation: i64,
     pub binding: Uuid,
     pub generation: i64,
 }

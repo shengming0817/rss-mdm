@@ -80,7 +80,6 @@ pub(super) async fn seed(
         .bind(c.tenant.to_string()).bind(id).bind(vec![17_u8;32]).bind(json!({"id":Uuid::new_v4(),"revision":12,"enabled":false})).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_certificate_archive.operations(tenant_id,actor,instance,id,action,digest,result,created_at) VALUES($1::uuid,$2,$3::uuid,$4,'settings',$5,$6,1700000000)")
         .bind(c.tenant.to_string()).bind(p.principal_id()).bind(p.instance_id()).bind(id).bind(vec![17_u8;32]).bind(json!({"operationId":id,"action":"settings","entryId":null,"version":null,"revision":13})).execute(&mut *tx).await?;
-    let registration = Uuid::new_v4();
     let mut invocations = Vec::new();
     for (owner, table, revision) in [
         ("script_invocation", "mdm_script.receipts", 14),
@@ -96,13 +95,13 @@ pub(super) async fn seed(
         ),
     ] {
         let actor = format!(
-            "self-service:{}:{}:{registration}:1",
+            "self-service:{}:{}:original-device",
             p.instance_id(),
             Uuid::new_v4()
         );
         let response = json!({"requestId":id,"runId":Uuid::new_v4(),"policyId":Uuid::new_v4(),"policyRevision":revision,"policyVersion":Uuid::new_v4()});
         let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("INSERT INTO ");
-        query.push(table).push("(tenant_id,actor,id,fingerprint,response,device,registration,generation) VALUES($1::uuid,$2,$3,$4,$5,'original-device',$6,1)");
+        query.push(table).push("(tenant_id,actor,id,fingerprint,response,device) VALUES($1::uuid,$2,$3,$4,$5,'original-device')");
         query
             .build()
             .bind(c.tenant.to_string())
@@ -110,14 +109,11 @@ pub(super) async fn seed(
             .bind(id)
             .bind(vec![17_u8; 32])
             .bind(response)
-            .bind(registration)
             .execute(&mut *tx)
             .await?;
         let query = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("actor", &actor)
             .append_pair("device", "original-device")
-            .append_pair("registration", &registration.to_string())
-            .append_pair("generation", "1")
             .finish();
         invocations.push((
             owner,

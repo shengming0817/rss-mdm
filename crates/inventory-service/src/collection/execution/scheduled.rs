@@ -52,10 +52,9 @@ impl<'a> VerifiedNativeCollectionVersion<'a> {
         }
         let work = Work {
             version: self.version,
-            registration: target.registration_id,
-            generation: target.generation,
+            device: target.device.clone(),
         };
-        if let Some(device) = device_in(self.reader, tx, work).await?
+        if let Some(device) = device_in(self.reader, tx, &work).await?
             && device != target.device
         {
             return Err(Error::Unavailable(crate::Failure::PlanningStorage).into());
@@ -64,37 +63,31 @@ impl<'a> VerifiedNativeCollectionVersion<'a> {
             reconcile,
             tx,
             self,
-            Work {
+            &Work {
                 version: self.version,
-                registration: target.registration_id,
-                generation: target.generation,
+                device: target.device.clone(),
             },
         )
         .await
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct Work {
     pub version: Uuid,
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
 }
 impl Work {
     pub(crate) fn parse(entity: &str) -> Option<Self> {
         let mut fields = entity.strip_prefix("scheduled:")?.split(':');
         let value = Self {
             version: fields.next()?.parse().ok()?,
-            registration: fields.next()?.parse().ok()?,
-            generation: fields.next()?.parse().ok()?,
+            device: fields.next()?.to_owned(),
         };
-        (fields.next().is_none() && value.generation > 0).then_some(value)
+        (fields.next().is_none() && !value.device.is_empty()).then_some(value)
     }
-    fn entity(self) -> String {
-        format!(
-            "scheduled:{}:{}:{}",
-            self.version, self.registration, self.generation
-        )
+    fn entity(&self) -> String {
+        format!("scheduled:{}:{}", self.version, self.device)
     }
 }
 
@@ -102,7 +95,7 @@ pub(crate) async fn wake_in(
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     verified: &VerifiedNativeCollectionVersion<'_>,
-    work: Work,
+    work: &Work,
 ) -> Result<()> {
     if verified.version != work.version {
         return Err((crate::Error::Unavailable(crate::Failure::PlanningStorage)).into());
@@ -127,7 +120,7 @@ pub(crate) async fn wake_in(
 pub(crate) async fn device_in(
     reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
-    work: Work,
+    work: &Work,
 ) -> Result<Option<String>> {
     if VerifiedNativeCollectionVersion::verify_in(reader, tx, work.version)
         .await?
@@ -135,31 +128,28 @@ pub(crate) async fn device_in(
     {
         return Ok(None);
     }
-    if work.generation <= 0 || work.registration.is_nil() {
+    if work.device.is_empty() {
         return Err((crate::Error::Unavailable(crate::Failure::PlanningStorage)).into());
     }
     let tenant = tx.tenant_id().to_string();
+    let device = work.device.clone();
     Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active' AND purpose='primary' AND channel='mdm'")
-            .bind(tenant).bind(work.registration).bind(work.generation).fetch_optional(c).await
+        sqlx::query_scalar("SELECT id AS device FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active' AND purpose = 'primary' AND channel = 'mdm'")
+            .bind(tenant).bind(device).fetch_optional(c).await
     })).await?)
 }
 
 pub(crate) async fn advance_in(
     service: &CollectionService,
     tx: &mut PgTransaction<'_>,
-    work: Work,
+    work: &Work,
     run: Uuid,
 ) -> Result<()> {
     let Some(device) = device_in(&service.transactions.policy_reader, tx, work).await? else {
         return Ok(());
     };
     let plan = policy::read_in(&service.transactions, tx, work.version).await?;
-    let target = Target {
-        device,
-        registration: work.registration,
-        generation: work.generation,
-    };
+    let target = Target { device };
     let now = storage::now(tx).await?;
     production::accept_for_device(
         &service.transactions,
@@ -173,11 +163,11 @@ pub(crate) async fn advance_in(
     .await
 }
 
-/// Calendar work sleeps until useful again; a retired version/registration converges.
+/// Calendar work sleeps until useful again; a retired version/device converges.
 pub(crate) async fn delay_in(
     service: &CollectionService,
     tx: &mut PgTransaction<'_>,
-    work: Work,
+    work: &Work,
 ) -> Result<Option<std::time::Duration>> {
     let Some(device) = device_in(&service.transactions.policy_reader, tx, work).await? else {
         return Ok(None);
@@ -186,11 +176,7 @@ pub(crate) async fn delay_in(
     let now = storage::now(tx).await?;
     let seconds = match plan.frozen {
         super::frozen::Published::NativeCollection { action: native, .. } => {
-            let target = Target {
-                device,
-                registration: work.registration,
-                generation: work.generation,
-            };
+            let target = Target { device };
             let last = storage::last_started_in(tx, work.version, &target).await?;
             if now >= native.input.schedule.ends_at() {
                 return Ok(None);

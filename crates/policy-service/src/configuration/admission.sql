@@ -26,9 +26,7 @@ WITH reachable AS (
  ('mdm_planning.configuration_operations','observed_command_version'),
  ('mdm_planning.configuration_recovery','authority_epoch'),
  ('mdm_planning.configuration_recovery','recovery_after'),
- ('mdm_access.command_authorities','epoch'),
- ('mdm_access.command_authorities','registration'),
- ('mdm_access.command_authorities','registration_generation')
+ ('mdm_access.command_authorities','epoch')
 )
 SELECT current_setting('transaction_isolation')='read committed'
  AND current_user IN('mdm_policy_runtime','mdm_command_runtime') AND session_user=current_user

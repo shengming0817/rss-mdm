@@ -34,7 +34,7 @@ fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let tenant = Uuid::new_v4();
-    let base = json!({"wireVersion":1,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","registrationId":Uuid::new_v4(),"generation":1,"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"authorization":{"kind":"policy","policyId":Uuid::new_v4(),"policyVersion":Uuid::new_v4()},"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
+    let base = json!({"wireVersion":1,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"authorization":{"kind":"policy","policyId":Uuid::new_v4(),"policyVersion":Uuid::new_v4()},"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
     for (field, value, expected) in [
         ("expiresAt", json!(0), false),
         ("expiresAt", json!(1), true),

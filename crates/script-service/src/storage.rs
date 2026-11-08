@@ -28,8 +28,6 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         target: crate::Target {
             device: row.try_get("device")?,
-            registration: row.try_get("registration")?,
-            generation: row.try_get("generation")?,
         },
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
@@ -104,8 +102,8 @@ pub async fn save_run(
                     data: EventData::Policy {
                         run_id: run.id,
                         policy_version: run.policy_version,
-                        registration_id: run.target.registration,
-                        generation: run.target.generation,
+                        device_id: run.target.device.to_string(),
+
                         status: status.into(),
                     },
                 },
@@ -118,7 +116,7 @@ pub async fn save_run(
 }
 
 /// The caller holds the device fence across this check and admission. Unknown is
-/// intentionally independent of Policy, version, registration, deadline and cancellation.
+/// intentionally independent of Policy, version, device, deadline and cancellation.
 pub struct Pending {
     pub unknown: Option<Uuid>,
     pub active: Option<Uuid>,
@@ -139,9 +137,9 @@ pub async fn pending_on(
     resource_id: &str,
     now: i64,
 ) -> Result<Pending> {
-    let (unknown, active, last) = sqlx::query_as("WITH candidates AS (SELECT r.id,(r.resource_id=$3 AND (r.state->>'execution'='unknown' OR (r.state->>'execution'='running' AND r.deadline<=$7))) AS unknown,(v.policy=$4 AND r.registration=$6 AND r.state->>'cancellation'<>'confirmed' AND (r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$7))) AS active FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND r.device=$2) SELECT (SELECT id FROM candidates WHERE unknown ORDER BY id LIMIT 1),(SELECT id FROM candidates WHERE active ORDER BY id LIMIT 1),(SELECT max(created_at) FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND policy_version=$5 AND registration=$6)")
+    let (unknown, active, last) = sqlx::query_as("WITH candidates AS (SELECT r.id,(r.resource_id=$3 AND (r.state->>'execution'='unknown' OR (r.state->>'execution'='running' AND r.deadline<=$6))) AS unknown,(v.policy=$4 AND r.state->>'cancellation'<>'confirmed' AND (r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$6))) AS active FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND r.device=$2) SELECT (SELECT id FROM candidates WHERE unknown ORDER BY id LIMIT 1),(SELECT id FROM candidates WHERE active ORDER BY id LIMIT 1),(SELECT max(created_at) FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND policy_version=$5)")
         .bind(tenant.to_string()).bind(&target.device).bind(resource_id).bind(policy).bind(version)
-        .bind(target.registration).bind(now).fetch_one(c).await?;
+        .bind(now).fetch_one(c).await?;
     Ok(Pending {
         unknown,
         active,
@@ -239,8 +237,8 @@ pub async fn receipt(
     let response = response.clone();
     let target = target.clone();
     tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_script.receipts(tenant_id,actor,id,fingerprint,response,device,registration,generation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
-            .bind(tenant).bind(actor).bind(id).bind(fingerprint).bind(response).bind(target.device).bind(target.registration).bind(target.generation).execute(c).await?;
+        sqlx::query("INSERT INTO mdm_script.receipts(tenant_id,actor,id,fingerprint,response,device) VALUES($1::uuid,$2,$3,$4,$5,$6)")
+            .bind(tenant).bind(actor).bind(id).bind(fingerprint).bind(response).bind(target.device.clone()).execute(c).await?;
         Ok(())
     })).await?;
     Ok(())
@@ -319,7 +317,7 @@ pub async fn unknown_conflict_in(tx: &mut PgTransaction<'_>, run: &Run) -> Resul
     let device = run.target.device.clone();
     let resource = run.resource_id.clone();
     let id = run.id;
-    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND resource_id=$3 AND id<>$4 AND (state->>'execution'='unknown' OR (state->>'execution'='running' AND deadline<=floor(extract(epoch FROM clock_timestamp())))))").bind(tenant).bind(device).bind(resource).bind(id).fetch_one(c).await})).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND resource_id=$3 AND id<>$4 AND (state->>'execution'='unknown' OR (state->>'execution'='running' AND deadline<=floor(extract(epoch FROM clock_timestamp())))))").bind(tenant).bind(&device).bind(resource).bind(id).fetch_one(c).await})).await?)
 }
 /// Resolve only this owner's immutable task identity for Timeline correlation.
 pub async fn association_on(

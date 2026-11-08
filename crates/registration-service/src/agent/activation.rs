@@ -97,7 +97,7 @@ impl Service {
                             serde_json::from_value(result).map_err(|_| Error::Corrupt)?;
                         let p = device::authenticate_endpoint_in(profile, c, service.tenant, proof)
                             .await?;
-                        a.registration(p.registration());
+                        a.target(p.device());
                         return Ok(Change {
                             value: out,
                             replay: true,
@@ -106,7 +106,7 @@ impl Service {
                     crate::lifecycle::require_work_in(profile, c, &tenant, &device).await?;
                     service.grant_live(c, &g).await?;
                     if service.issuer.purpose() == rss_mdm_agent_wire::pki::Purpose::Agent
-                        && g.try_get::<Option<Uuid>, _>("target_registration")
+                        && g.try_get::<Option<Uuid>, _>("predecessor")
                             .map_err(db)?
                             .is_none()
                     {
@@ -122,16 +122,13 @@ impl Service {
                         serde_json::from_value(row.try_get("profile").map_err(db)?)
                             .map_err(|_| Error::Corrupt)?;
                     let credential = Uuid::new_v4();
-                    let (registration, generation, epoch, runtime) = if let Some(registration) = g
-                        .try_get::<Option<Uuid>, _>("target_registration")
-                        .map_err(db)?
+                    let runtime = if let Some(predecessor) =
+                        g.try_get::<Option<Uuid>, _>("predecessor").map_err(db)?
                     {
-                        let predecessor: Uuid = g.try_get("predecessor").map_err(db)?;
                         let old = sqlx::query(
                             crate::storage_profile::sql(profile).agent_activation_activate_5,
                         )
                         .bind(&tenant)
-                        .bind(registration)
                         .bind(&device)
                         .bind(predecessor)
                         .bind(service.registration_channel())
@@ -191,65 +188,26 @@ impl Service {
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
-                        (
-                            registration,
-                            old.try_get::<i64, _>("generation").map_err(db)?,
-                            old.try_get::<Uuid, _>("epoch").map_err(db)?,
-                            runtime,
-                        )
+                        runtime
                     } else {
-                        let registration = Uuid::new_v4();
                         let epoch = Uuid::new_v4();
-                        let active: bool = sqlx::query_scalar(
-                            crate::storage_profile::sql(profile).agent_activation_activate_1,
-                        )
-                        .bind(&tenant)
-                        .bind(&device)
-                        .bind(service.registration_channel())
-                        .fetch_one(&mut *c)
-                        .await
-                        .map_err(db)?;
-                        if active {
-                            return Err(Error::Conflict);
-                        }
-                        let generation: i64 = sqlx::query_scalar(
-                            crate::storage_profile::sql(profile).agent_activation_activate_2,
-                        )
-                        .bind(&tenant)
-                        .bind(&device)
-                        .bind(service.registration_channel())
-                        .fetch_one(&mut *c)
-                        .await
-                        .map_err(db)?;
-                        sqlx::query(
-                            crate::storage_profile::sql(profile).agent_activation_activate_9,
-                        )
-                        .bind(&tenant)
-                        .bind(&device)
-                        .execute(&mut *c)
-                        .await
-                        .map_err(db)?;
                         sqlx::query(
                             crate::storage_profile::sql(profile).agent_activation_activate_10,
                         )
                         .bind(&tenant)
-                        .bind(registration)
                         .bind(&device)
                         .bind(grant)
                         .bind(epoch)
-                        .bind(generation)
                         .bind(service.registration_channel())
                         .bind(service.registration_purpose().as_str())
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
-                        crate::webhook::registration(
+                        crate::webhook::device(
                             service.store.retirement.events(),
                             c,
                             &tenant,
                             &device,
-                            registration,
-                            generation,
                             rss_mdm_pki_service::registry::purpose(service.issuer.purpose()),
                             "active",
                         )
@@ -270,14 +228,15 @@ impl Service {
                                 crate::storage_profile::sql(profile).agent_activation_activate_11,
                             )
                             .bind(&tenant)
-                            .bind(registration)
+                            .bind(&device)
                             .bind(source)
                             .bind(epoch)
                             .execute(&mut *c)
                             .await
                             .map_err(db)?;
                         }
-                        let runtime = if let (Some(binding), Some(runtime_profile)) =
+
+                        if let (Some(binding), Some(runtime_profile)) =
                             (&service.binding, &runtime_profile)
                         {
                             Some(
@@ -288,8 +247,6 @@ impl Service {
                                             profile,
                                             tenant: service.tenant,
                                             device: device.clone(),
-                                            registration,
-                                            generation,
                                             epoch,
                                             operation: input.operation_id,
                                         },
@@ -303,17 +260,15 @@ impl Service {
                             None
                         } else {
                             return Err(Error::Forbidden);
-                        };
-                        (registration, generation, epoch, runtime)
+                        }
                     };
-                    let _ = (generation, epoch);
-                    a.registration(registration);
                     sqlx::query(crate::storage_profile::sql(profile).agent_activation_activate_12)
                         .bind(&tenant)
                         .bind(credential)
-                        .bind(registration)
+                        .bind(&device)
                         .bind(&*fingerprint)
                         .bind(service.registration_channel())
+                        .bind(service.registration_purpose().as_str())
                         .execute(&mut *c)
                         .await
                         .map_err(db)?;
@@ -329,7 +284,7 @@ impl Service {
                         c,
                         &tenant,
                         rss_mdm_pki_service::registry::purpose(service.issuer.purpose()),
-                        registration,
+                        &device,
                         &issuer,
                         &leaf,
                     )
@@ -346,8 +301,6 @@ impl Service {
                             service_id: service.service_id()?,
                             tenant: Uuid::parse_str(&tenant).map_err(|_| Error::Corrupt)?,
                             device,
-                            registration,
-                            generation: u64::try_from(generation).map_err(|_| Error::Corrupt)?,
                             credential,
                             issuance_id: input.issuance_id,
                             operation_id: input.operation_id,
