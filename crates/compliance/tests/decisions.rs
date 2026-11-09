@@ -61,8 +61,7 @@ fn assessment_preserves_all_platform_sources_and_field_datasets() {
             .map(|dataset| FactReference {
                 source: "mdm.windows".into(),
                 dataset: Some(dataset.into()),
-                registration: Some("registration".into()),
-                registration_generation: Some(1),
+                device_id: Some("device".into()),
                 epoch: Some("epoch".into()),
                 snapshot_id: format!("{dataset}-snapshot"),
                 observed_at: 1,
