@@ -170,18 +170,20 @@ mod tests;
 /// Dedicated managed CA profile. Replacing it also removes certificates from retired generations.
 pub fn trust(
     authorities: &[CertificatePayload],
-    registration: Uuid,
+    device: &str,
     profile_uuid: Uuid,
 ) -> Result<(Vec<u8>, Vec<crate::native::profiles::ProfileObject>), Error> {
     use crate::native::profiles::ProfileObject;
     if authorities.is_empty()
         || authorities.len() > 32
-        || registration.is_nil()
+        || device.is_empty()
+        || device.len() > 256
+        || device.chars().any(char::is_control)
         || profile_uuid.is_nil()
     {
         return Err(Error::Malformed);
     }
-    let identifier = format!("com.rss-mdm.pki.{registration}");
+    let identifier = format!("com.rss-mdm.pki.{device}");
     let mut profile = payload("Configuration", &identifier, profile_uuid);
     profile.insert("PayloadDisplayName".into(), "RSS Device Trust".into());
     let mut contents = Vec::new();

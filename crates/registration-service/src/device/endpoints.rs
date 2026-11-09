@@ -4,15 +4,12 @@ use crate::{Error, database::db};
 use rss_mdm_inventory::Channel;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
-use uuid::Uuid;
 
 #[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PrimaryRegistration {
     pub device: String,
     pub channel: Channel,
-    pub registration_id: Uuid,
-    pub generation: i64,
 }
 /// Current active primary and credential. Renewal leaves registration identity unchanged.
 pub async fn current_in(
@@ -29,12 +26,10 @@ pub async fn current_in(
         .fetch_optional(c)
         .await
         .map_err(db)?;
-    row.map(|r| {
+    row.map(|_| {
         Ok(PrimaryRegistration {
             device: device.into(),
             channel,
-            registration_id: r.try_get("id").map_err(db)?,
-            generation: r.try_get("generation").map_err(db)?,
         })
     })
     .transpose()
@@ -64,8 +59,6 @@ pub async fn current_page_in(
                     "agent" => Channel::Agent,
                     _ => return Err(Error::Corrupt),
                 },
-                registration_id: row.try_get("id").map_err(db)?,
-                generation: row.try_get("generation").map_err(db)?,
             })
         })
         .collect()
@@ -97,8 +90,6 @@ pub async fn page_at(
                     "agent" => Channel::Agent,
                     _ => return Err(Error::Corrupt),
                 },
-                registration_id: row.try_get("id").map_err(db)?,
-                generation: row.try_get("generation").map_err(db)?,
             })
         })
         .collect()
@@ -263,8 +254,6 @@ pub async fn current_members_on(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DaRegistration {
     pub device: String,
-    pub registration_id: Uuid,
-    pub generation: i64,
 }
 /// Uses the registrar's lifecycle fence; callers retain it until their transaction settles.
 pub async fn lock_da_in(
@@ -303,11 +292,11 @@ pub async fn current_da_in(
 pub const DA_INSTALL_SQL: &str = r#"
 CREATE FUNCTION rss_da.current_da_registration(p_device text) RETURNS jsonb
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
- SELECT jsonb_build_object('device',r.device,'registrationId',r.id,'generation',r.generation)
- FROM rss_da.registrations r JOIN rss_da.devices d ON(d.tenant_id,d.id)=(r.tenant_id,r.device)
- WHERE r.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND r.device=p_device AND r.channel IS NULL AND r.purpose='da_device' AND r.state='active' AND d.retirement IS NULL
+ SELECT jsonb_build_object('device',r.id)
+ FROM rss_da.devices r
+ WHERE r.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND r.id=p_device AND r.channel IS NULL AND r.purpose='da_device' AND r.state='active' AND r.retirement IS NULL
  AND EXISTS(SELECT FROM rss_da.credentials k JOIN rss_da.certificate_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id)
-  WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active' AND i.not_before<=extract(epoch FROM statement_timestamp()) AND i.not_after>extract(epoch FROM statement_timestamp()))
+  WHERE (k.tenant_id,k.device)=(r.tenant_id,r.id) AND k.state='active' AND i.not_before<=extract(epoch FROM statement_timestamp()) AND i.not_after>extract(epoch FROM statement_timestamp()))
 $$;
 REVOKE ALL ON FUNCTION rss_da.current_da_registration(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rss_da.current_da_registration(text) TO da_access,da_command_runtime,da_policy_runtime,da_identity_runtime;

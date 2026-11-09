@@ -232,8 +232,8 @@ pub(crate) fn envelope(r: &crate::snapshot_record::Record) -> Result<Envelope> {
         scope: definition.field_scope(field)?.clone(),
         source: rss_mdm_inventory::Source::parse(r.try_get("source")?)?,
         dataset: Some(definition.dataset().to_owned()),
-        registration: Some(r.try_get("registration")?),
-        registration_generation: None,
+        device_id: Some(r.try_get("registration")?),
+
         epoch: Some(r.try_get("epoch")?),
         snapshot_id: r.try_get("batch_id")?,
         observed_at: r.try_get("observed_at")?,
@@ -247,7 +247,7 @@ pub(crate) fn envelope(r: &crate::snapshot_record::Record) -> Result<Envelope> {
         "inventory coverage mismatch"
     );
     ensure!(
-        scope.registration().as_str() == evidence.registration.as_deref().unwrap_or_default()
+        scope.registration().as_str() == evidence.device_id.as_deref().unwrap_or_default()
             && scope.source().as_str() == evidence.source.as_str()
             && scope.epoch().as_str() == evidence.epoch.as_deref().unwrap_or_default(),
         "inventory provenance mismatch"

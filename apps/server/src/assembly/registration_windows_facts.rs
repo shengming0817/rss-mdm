@@ -47,8 +47,8 @@ impl Store for WindowsResults {
                 .into_iter()
                 .map(|r| rss_mdm_windows_channel::results::Read {
                     id: r.id,
-                    registration: r.registration,
-                    registration_generation: r.registration_generation,
+                    device: r.device.clone(),
+
                     request: r.request,
                     values: r.values,
                 })

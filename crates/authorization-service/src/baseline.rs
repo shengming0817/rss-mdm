@@ -19,8 +19,6 @@ const PERMISSIONS: &[Permission] = &[
     Permission::GroupRead,
     Permission::GroupWrite,
     Permission::GroupRecompute,
-    Permission::ScopeRead,
-    Permission::ScopeWrite,
     Permission::PolicyRead,
     Permission::PolicyWrite,
     Permission::ResourceRead,

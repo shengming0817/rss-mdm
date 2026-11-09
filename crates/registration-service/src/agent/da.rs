@@ -84,7 +84,7 @@ impl RegistrationService {
     pub async fn recover(
         &self,
         p: &AuthorizedPrincipal,
-        registration: Uuid,
+        registration: String,
         input: &da::GrantRequest,
         a: &RequestAudit,
     ) -> Result<da::Grant, Failure> {
@@ -143,7 +143,7 @@ impl RegistrationService {
                         },
                     ),
                     Authority::Device(p) => (
-                        p.registration().to_string(),
+                        p.device().to_string(),
                         p.installation().to_string(),
                         "renewal",
                     ),
@@ -267,7 +267,6 @@ impl RegistrationService {
                     .bind(&*d)
                     .bind(&*bound)
                     .bind(f64::from(input.expires_in_seconds))
-                    .bind(authority.target())
                     .bind(predecessor)
                     .execute(&mut *c)
                     .await
@@ -373,7 +372,7 @@ impl RegistrationService {
     pub async fn revoke(
         &self,
         p: &AuthorizedPrincipal,
-        registration: Uuid,
+        registration: String,
         operation: Uuid,
         a: &RequestAudit,
     ) -> Result<crate::device::RevocationReceipt, Failure> {
@@ -392,7 +391,7 @@ impl RegistrationService {
                 let tenant = s.tenant.to_string();
                 let row = sqlx::query(crate::storage_profile::sql(profile).da_registration)
                     .bind(&tenant)
-                    .bind(*registration)
+                    .bind(&*registration)
                     .fetch_optional(&mut *c)
                     .await
                     .map_err(db)?
@@ -414,7 +413,7 @@ impl RegistrationService {
                 .await?
                 .require(p, Permission::Credentials, Some(&device))
                 .map_err(|_| Error::Forbidden)?;
-                let d = digest(&("da_revoke", *registration))?;
+                let d = digest(&("da_revoke", &*registration))?;
                 let op = crate::operations::Operation {
                     actor: crate::operations::Actor::from_authorized(p),
                     key: *operation,
@@ -435,12 +434,11 @@ impl RegistrationService {
                 )
                 .await?;
                 a.target_device(&device);
-                a.registration(*registration);
                 rss_mdm_pki_service::certificates::revoke_registration_in(
                     profile,
                     c,
                     &tenant,
-                    *registration,
+                    &*registration,
                 )
                 .await
                 .map_err(|_| Error::Storage)?;
@@ -448,14 +446,14 @@ impl RegistrationService {
                     profile,
                     c,
                     &tenant,
-                    *registration,
+                    &*registration,
                     "revoked",
                     s.store.retirement.events(),
                 )
                 .await?;
                 let value = crate::device::RevocationReceipt {
                     operation_id: *operation,
-                    registration: *registration,
+                    device: registration.clone(),
                 };
                 crate::operations::save(
                     profile,
@@ -477,14 +475,14 @@ impl RegistrationService {
     }
 }
 enum Authority<'a> {
-    Administrator(&'a AuthorizedPrincipal, Option<Uuid>),
+    Administrator(&'a AuthorizedPrincipal, Option<String>),
     Device(&'a DevicePrincipal),
 }
 impl Authority<'_> {
-    fn target(&self) -> Option<Uuid> {
+    fn target(&self) -> Option<&str> {
         match self {
-            Self::Administrator(_, v) => *v,
-            Self::Device(p) => Some(p.registration()),
+            Self::Administrator(_, v) => v.as_deref(),
+            Self::Device(p) => Some(p.device()),
         }
     }
 }

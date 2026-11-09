@@ -52,8 +52,6 @@ pub struct ExecutionMetadata {
     pub id: Uuid,
     pub kind: ExecutionKind,
     pub device: String,
-    registration_id: Uuid,
-    generation: i64,
     origin: Origin,
     pub policy: Option<Uuid>,
     deadline: i64,
@@ -104,8 +102,6 @@ pub struct RunSummary {
     attempt_id: Option<Uuid>,
     pub task_id: Uuid,
     device: String,
-    registration_id: Uuid,
-    generation: i64,
     occurrence: String,
     pub available_at: i64,
     deadline: i64,
@@ -132,8 +128,6 @@ pub struct RunDetail {
     attempt_id: Option<Uuid>,
     task_id: Uuid,
     device: String,
-    registration_id: Uuid,
-    generation: i64,
     available_at: i64,
     deadline: i64,
     state: RunState,
@@ -238,7 +232,6 @@ pub struct InstallationObservation {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRegistration {
     pub device_id: String,
-    pub registration_id: Uuid,
     pub state: String,
     pub capabilities: Option<Vec<String>>,
 }

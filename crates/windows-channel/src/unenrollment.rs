@@ -72,8 +72,8 @@ pub(crate) async fn requested(
                 principal.tenant(),
                 "windows.unenrollment",
                 &(
-                    principal.registration(),
-                    principal.generation(),
+                    principal.device(),
+                    principal.epoch(),
                     principal.credential(),
                     message.header.session_id,
                 ),
@@ -88,8 +88,8 @@ pub(crate) async fn requested(
                 principal.tenant(),
                 "windows.unenrollment.response",
                 &(
-                    principal.registration(),
-                    principal.generation(),
+                    principal.device(),
+                    principal.epoch(),
                     principal.credential(),
                     message.header.session_id,
                     &digest,
@@ -107,21 +107,27 @@ pub(crate) async fn requested(
                 |(app,p,facts,digest,sealed,session),c| Box::pin(async move {
                     let tenant = p.tenant().to_string();
                     crate::device::store::lock_channel(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant,p.device(),p.require_channel()?).await?;
-                    if let Some(row) = sqlx::query("SELECT digest,response FROM mdm_windows.unenrollment_receipts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND credential=$4 AND session=$5")
-                        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(*session)).fetch_optional(&mut *c).await.map_err(db)? {
+                    if let Some(row) = sqlx::query("SELECT digest, response FROM mdm_windows.unenrollment_receipts WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND credential = $3 AND session = $4) AND unenrollment_receipts.protocol_epoch = $5")
+                        .bind(&tenant).bind(p.device()).bind(p.credential()).bind(i64::from(*session)).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)? {
                         if row.try_get::<Vec<u8>,_>("digest").map_err(db)? != **digest { return Err(Error::Conflict); }
                         return Ok::<_,Error>(Some(row.try_get::<Vec<u8>,_>("response").map_err(db)?));
                     }
                     crate::device::store::revalidate_management(rss_mdm_install_support::StorageProfile::Mdm, c,p).await?;
-                    app.departure.departed(c,&tenant,p.registration()).await.map_err(|_|Error::Conflict)?;
-                    rss_mdm_registration_service::retire(rss_mdm_install_support::StorageProfile::Mdm, c,facts,&tenant,p.registration(),"revoked",app.devices.retirement()).await?;
-                    sqlx::query("INSERT INTO mdm_windows.unenrollment_receipts(tenant_id,registration,generation,credential,session,digest,response) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
-                        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(*session))
-                        .bind(digest.as_slice()).bind(sealed.as_slice()).execute(c).await.map_err(db)?;
+                    if p.purpose()==crate::device::Purpose::WindowsDeclared {
+                        crate::device::linked::revoke_in(rss_mdm_install_support::StorageProfile::Mdm,c,p).await?;
+                        sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND device=$2 AND protocol_epoch=$3 AND state IN('challenge','collecting')")
+                            .bind(&tenant).bind(p.device()).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
+                    } else {
+                        app.departure.departed(c,&tenant,p.device().to_string()).await.map_err(|_|Error::Conflict)?;
+                        rss_mdm_registration_service::retire(rss_mdm_install_support::StorageProfile::Mdm,c,facts,&tenant,p.device(),"revoked",app.devices.retirement()).await?;
+                    }
+                    sqlx::query("INSERT INTO mdm_windows.unenrollment_receipts (tenant_id, device, credential, session, digest, response, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7)")
+                        .bind(&tenant).bind(p.device()).bind(p.credential()).bind(i64::from(*session))
+                        .bind(digest.as_slice()).bind(sealed.as_slice()).bind(p.epoch()).execute(c).await.map_err(db)?;
                     Ok::<_,Error>(None)
                 })).await?;
             if replay.is_none() {
-            let fact = rss_mdm_audit_integration::Fact::observation(audit, &format!("windows-unenrollment:{}:{}",p.registration(),p.generation()), 200, "success", None)
+            let fact = rss_mdm_audit_integration::Fact::observation(audit, &format!("windows-unenrollment:{}:{}",p.device(),p.epoch()), 200, "success", None)
                 .and_then(|f|f.with_details(serde_json::json!({"nativeType":"com.microsoft:mdm.unenrollment.userrequest","registrationState":"revoked","deviceCleanup":"unverified"}))).map_err(Error::from)?;
             facts.push(fact);
             } else { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
@@ -139,8 +145,8 @@ pub(crate) async fn requested(
                     principal.tenant(),
                     "windows.unenrollment.response",
                     &(
-                        principal.registration(),
-                        principal.generation(),
+                        principal.device(),
+                        principal.epoch(),
                         principal.credential(),
                         message.header.session_id,
                         &digest,
@@ -168,16 +174,23 @@ pub(crate) async fn replay(
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let mut tx = app.access.begin_read(&tenant.to_string()).await?;
-    let row = sqlx::query("SELECT u.registration,u.generation,u.credential,u.session,u.digest,u.response,r.device FROM mdm_windows.unenrollment_receipts u JOIN mdm_access.credentials c ON (c.tenant_id,c.registration,c.id)=(u.tenant_id,u.registration,u.credential) JOIN mdm_access.registrations r ON (r.tenant_id,r.id,r.generation)=(u.tenant_id,u.registration,u.generation) WHERE u.tenant_id=$1::uuid AND c.channel='mdm' AND c.locator=$2 AND c.state='revoked' AND r.state='revoked'")
+    let row=sqlx::query("SELECT u.device,u.protocol_epoch,u.credential,u.session,u.digest,u.response,c.protocol_request FROM mdm_windows.unenrollment_receipts u JOIN mdm_access.credentials c ON(c.tenant_id,c.device,c.id)=(u.tenant_id,u.device,u.credential) JOIN mdm_access.devices d ON(d.tenant_id,d.id)=(u.tenant_id,u.device) LEFT JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(c.tenant_id,c.protocol_request) WHERE u.tenant_id=$1::uuid AND c.channel='mdm' AND c.locator=$2 AND c.state='revoked' AND (d.state='revoked' OR (c.purpose='windows_declared' AND q.state='cancelled'))")
         .bind(tenant.to_string()).bind(locator).fetch_optional(&mut *tx).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
-    let registration: Uuid = row.try_get("registration").map_err(db)?;
-    let generation: i64 = row.try_get("generation").map_err(db)?;
+    let device: String = row.try_get("device").map_err(db)?;
+    let protocol_epoch: Uuid = row.try_get("protocol_epoch").map_err(db)?;
     let credential: Uuid = row.try_get("credential").map_err(db)?;
     let session: i64 = row.try_get("session").map_err(db)?;
-    let device: String = row.try_get("device").map_err(db)?;
+    let request = crate::enrollment_store::native_request(
+        &mut tx,
+        &tenant.to_string(),
+        &device,
+        row.try_get("protocol_request").map_err(db)?,
+    )
+    .await
+    .map_err(db)?;
     let protocol_device =
-        crate::protocol_device::on(&mut tx, &tenant.to_string(), registration, &device).await?;
+        crate::protocol_device::on(&mut tx, &tenant.to_string(), request, &device).await?;
     tx.rollback().await.map_err(db)?;
     if protocol_device != message.header.source
         || session != i64::from(message.header.session_id)
@@ -193,8 +206,8 @@ pub(crate) async fn replay(
                 tenant,
                 "windows.unenrollment",
                 &(
-                    registration,
-                    generation,
+                    &device,
+                    protocol_epoch,
                     credential,
                     message.header.session_id,
                 ),
@@ -213,8 +226,8 @@ pub(crate) async fn replay(
                 tenant,
                 "windows.unenrollment.response",
                 &(
-                    registration,
-                    generation,
+                    &device,
+                    protocol_epoch,
                     credential,
                     message.header.session_id,
                     &digest,
@@ -222,8 +235,7 @@ pub(crate) async fn replay(
             )?,
         )
         .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?;
-    audit.identify_device(registration);
-    audit.registration(registration);
+    audit.identify_device(&(device).to_string());
     audit.target_device(&device);
     audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
     Ok(Some(response.expose().to_vec()))

@@ -74,8 +74,6 @@ impl AppleProfiles for AppleFacts {
             let target = protocol::AppleRegistration {
                 tenant: target.tenant,
                 device: target.device,
-                registration: target.registration,
-                generation: target.generation,
             };
             let command = super::apple_business::recovery_command(command);
             self.0

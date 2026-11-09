@@ -460,9 +460,7 @@ pub(crate) fn endpoint_facts(
                     let e = &fact.evidence;
                     if e.source == Source::Manual
                         || e.source.channel() != Some(channel)
-                        || e.registration.as_deref()
-                            != Some(member.registration_id.to_string().as_str())
-                        || e.registration_generation != Some(member.generation as u64)
+                        || e.device_id.as_deref() != Some(member.device.as_str())
                     {
                         continue;
                     }
@@ -517,8 +515,6 @@ mod tests {
             member: Member {
                 device: device.into(),
                 channel,
-                registration_id: uuid::Uuid::new_v4(),
-                generation: 1,
             },
             hardware,
         };

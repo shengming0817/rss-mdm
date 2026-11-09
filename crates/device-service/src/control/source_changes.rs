@@ -65,9 +65,9 @@ pub async fn advance_in(
     let tenant = tx.tenant_id().to_string();
     let devices=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query_scalar::<_,String>(r#"WITH changed AS (
-            SELECT DISTINCT coalesce(a.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=a.tenant_id AND h.kind='registration' AND h.identity=a.identity->>'registration' ORDER BY h.revision DESC LIMIT 1)) COLLATE "C" AS device
+            SELECT DISTINCT a.identity->>'device' COLLATE "C" AS device
             FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND a.revision>$4 AND a.revision<=$5
-            AND (a.kind IN('device','registration','source','credential') OR 'channel.agent.installation'=ANY(a.fields))
+            AND (a.kind IN('device','source','credential') OR 'channel.agent.installation'=ANY(a.fields))
         ) SELECT device FROM changed WHERE device IS NOT NULL AND ($6::text IS NULL OR device>$6 COLLATE "C") ORDER BY device COLLATE "C" LIMIT 33"#)
             .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(cursor).fetch_all(c).await
     })).await?;

@@ -35,9 +35,14 @@ GRANT SELECT ON rss_da.relying_parties,rss_da.subjects,rss_da.subject_versions,r
 GRANT INSERT ON rss_da.relying_parties,rss_da.subjects,rss_da.subject_versions,rss_da.subject_owners TO da_identity_runtime;
 GRANT UPDATE(revision,document) ON rss_da.relying_parties,rss_da.subjects TO da_identity_runtime;
 CREATE TABLE rss_da.windows_sources (
- tenant_id uuid NOT NULL,binding uuid NOT NULL,id uuid NOT NULL,version bigint NOT NULL CHECK(version>0),
- document jsonb NOT NULL CHECK(octet_length(document::text)<=4096),PRIMARY KEY(tenant_id,binding),UNIQUE(tenant_id,id),
- FOREIGN KEY(tenant_id,binding) REFERENCES rss_da.bindings(tenant_id,id)
+    tenant_id uuid NOT NULL
+  , binding uuid NOT NULL
+  , id uuid NOT NULL
+  , version bigint NOT NULL CHECK (version > 0)
+  , document jsonb NOT NULL CHECK (octet_length(CAST(document AS text)) <= 4096)
+  , PRIMARY KEY (tenant_id, binding)
+  , UNIQUE (tenant_id, id)
+  , FOREIGN KEY (tenant_id, binding) REFERENCES rss_da.bindings (tenant_id, id)
 );
 ALTER TABLE rss_da.windows_sources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rss_da.windows_sources FORCE ROW LEVEL SECURITY;

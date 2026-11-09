@@ -6,8 +6,7 @@ fn task() -> UnmanageTaskSpec {
         wire_version: WIRE_VERSION,
         tenant_id: Uuid::from_u128(1),
         device_id: "managed-device".into(),
-        registration_id: Uuid::from_u128(2),
-        generation: 3,
+
         retirement_id: Uuid::from_u128(4),
         task_id: Uuid::from_u128(5),
         attempt_id: Uuid::from_u128(6),
@@ -28,8 +27,8 @@ fn retirement_signature_binds_installation_authority_and_attempt() {
     let bytes = original.signing_bytes("key").unwrap();
     assert!(bytes.starts_with(b"rss-mdm-agent-unmanage-v1-ed25519\0"));
     let changes: [fn(&mut UnmanageTaskSpec); 6] = [
-        |s| s.registration_id = Uuid::from_u128(9),
-        |s| s.generation += 1,
+        |s| s.device_id.push_str("-other"),
+        |s| s.tenant_id = Uuid::from_u128(9),
         |s| s.retirement_id = Uuid::from_u128(9),
         |s| s.attempt_id = Uuid::from_u128(9),
         |s| s.permit = TaskPermit::Offer,
@@ -42,7 +41,7 @@ fn retirement_signature_binds_installation_authority_and_attempt() {
     }
     assert_ne!(bytes, original.signing_bytes("other-key").unwrap());
     let mut invalid = original.clone();
-    invalid.generation = 0;
+    invalid.device_id.clear();
     assert!(invalid.signing_bytes("key").is_err());
     let mut invalid = original.clone();
     invalid.retirement_id = Uuid::nil();

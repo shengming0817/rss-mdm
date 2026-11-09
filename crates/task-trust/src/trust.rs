@@ -336,7 +336,7 @@ pub(crate) async fn acknowledge(
     input: &Acknowledgement,
 ) -> Result<(), Error> {
     input.validate().map_err(|_| Error::Malformed)?;
-    if input.registration != p.registration() || input.generation != p.generation() as u64 {
+    if input.device_id != p.device() {
         return Err(Error::Forbidden);
     }
     rss_mdm_registration_service::device::require_use_in(c, p, usage).await?;
@@ -354,8 +354,7 @@ pub(crate) async fn acknowledge(
     sqlx::query(crate::storage_profile::sql(profile, usage).trust_acknowledge_3)
         .bind(p.tenant().to_string())
         .bind(input.operation)
-        .bind(p.registration())
-        .bind(p.generation())
+        .bind(p.device())
         .bind(input.revision as i64)
         .bind(&input.digest)
         .execute(&mut *c)
@@ -365,8 +364,7 @@ pub(crate) async fn acknowledge(
         sqlx::query_scalar(crate::storage_profile::sql(profile, usage).trust_acknowledge_4)
             .bind(p.tenant().to_string())
             .bind(input.operation)
-            .bind(p.registration())
-            .bind(p.generation())
+            .bind(p.device())
             .bind(input.revision as i64)
             .bind(&input.digest)
             .fetch_one(c)
@@ -416,8 +414,7 @@ async fn require_installed_key(
     let installed: bool =
         sqlx::query_scalar(crate::storage_profile::sql(profile, usage).trust_require_issue_1)
             .bind(p.tenant().to_string())
-            .bind(p.registration())
-            .bind(p.generation())
+            .bind(p.device())
             .bind(key_id)
             .bind(verification)
             .fetch_one(c)
@@ -621,13 +618,12 @@ pub(crate) async fn retire(
         }
         let consumers =
             rss_mdm_registration_service::device::consumers_in(profile, c, tenant, usage).await?;
-        let (ids, generations): (Vec<_>, Vec<_>) = consumers.into_iter().unzip();
+        let ids = consumers;
         let missing: bool =
             sqlx::query_scalar(crate::storage_profile::sql(profile, usage).trust_retire_1)
                 .bind(tenant.to_string())
                 .bind(key_id)
                 .bind(ids)
-                .bind(generations)
                 .fetch_one(&mut *c)
                 .await
                 .map_err(db)?;

@@ -206,7 +206,13 @@ def collection_projection(document):
         'FieldReferences': carrier('GET', '/api/v1/asset-fields/{field}/references', 'response'),
         'ResourceReferences': carrier('GET', '/api/v1/resources/{id}/versions/{version}/references', 'response'),
         'GroupReferences': carrier('GET', '/api/v1/groups/{id}/references', 'response'),
-        'ScopeReferences': carrier('GET', '/api/v1/scopes/{id}/references', 'response'),
+        'PolicyWrite': carrier('POST', '/api/v1/policies/{policy}', 'request'),
+        'PolicyView': carrier('GET', '/api/v1/policies/{policy}', 'response'),
+        'PolicyScopeRead': carrier('GET', '/api/v1/policies/{policy}/scope', 'response'),
+        'PolicyScopePreview': carrier('POST', '/api/v1/policies/{policy}/scope/previews', 'request'),
+        'PolicyScopePreviewResult': carrier('POST', '/api/v1/policies/{policy}/scope/previews', 'response'),
+        'PolicyScopeRecompute': carrier('POST', '/api/v1/policies/{policy}/scope/recomputations', 'request'),
+        'PolicyScopeReceipt': carrier('POST', '/api/v1/policies/{policy}/scope/recomputations', 'response'),
         'GroupImpacts': carrier('GET', '/api/v1/groups/{id}/impacts', 'response'),
     }
 

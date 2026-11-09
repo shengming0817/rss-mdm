@@ -220,13 +220,11 @@ impl Service {
                         Target::TenantDefault => da::Audience::Tenant,
                         Target::Device { device } => {
                             endpoints::lock_da_in(c, p.tenant_id(), device).await?;
-                            let r = endpoints::current_da_in(c, p.tenant_id(), device)
+                            endpoints::current_da_in(c, p.tenant_id(), device)
                                 .await?
                                 .ok_or(Error::NotFound)?;
                             da::Audience::Device {
                                 device: device.clone(),
-                                registration: r.registration_id,
-                                generation: r.generation as u64,
                             }
                         }
                     };
@@ -319,7 +317,7 @@ impl Service {
         id: Option<Uuid>,
         a: &RequestAudit,
     ) -> Result<CurrentConfiguration, Error> {
-        a.identify_device(p.registration());
+        a.identify_device(p.device());
         self.write(a, (self, signing, p, id), |ctx, c| {
             Box::pin(async move {
                 let (service, signing, p, id) = *ctx;

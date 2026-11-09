@@ -81,8 +81,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                     (self.0, work),
                     |(service, work), tx| {
                         Box::pin(async move {
-                            crate::deployment::actions::scheduled::delay_in(service, tx, *work)
-                                .await
+                            crate::deployment::actions::scheduled::delay_in(service, tx, work).await
                         })
                     },
                 )

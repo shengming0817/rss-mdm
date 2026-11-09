@@ -41,8 +41,9 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
     let c = Context::open("shared", &[]).await?;
     let account = c
         .account(&[
-            P::ScopeRead,
-            P::ScopeWrite,
+            P::PolicyRead,
+            P::PolicyWrite,
+            P::DeviceUnmanage,
             P::InventoryRead,
             P::GroupRead,
             P::GroupWrite,
@@ -63,6 +64,10 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
     )
     .await?;
     let mut request = Request {
+        owner: rss_mdm_scope::ScopeOwner {
+            policy: Uuid::new_v4(),
+            stage: None,
+        },
         definition: ScopeDefinition {
             targets: BTreeSet::from([Reference::Group(id)]),
             limitations: None,
@@ -93,7 +98,7 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
     let result = scopes.preview(&p, &request, &c.request(&p)?).await?;
     assert!(result.scan_complete && result.items.is_empty());
     request.channel = Channel::Mdm;
-    let reader = c.account(&[P::ScopeRead, P::InventoryRead]).await?;
+    let reader = c.account(&[P::PolicyRead, P::InventoryRead]).await?;
     let reader = c.authenticate(&reader).await?;
     assert!(matches!(
         scopes
@@ -101,7 +106,7 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
             .await,
         Err(rss_mdm_scope_service::Error::Forbidden)
     ));
-    let no_inventory = c.account(&[P::ScopeRead, P::GroupRead]).await?;
+    let no_inventory = c.account(&[P::PolicyRead, P::GroupRead]).await?;
     let no_inventory = c.authenticate(&no_inventory).await?;
     assert!(matches!(
         scopes
@@ -118,7 +123,7 @@ async fn draft_algebra_is_read_only_and_enforces_live_permissions() -> Result<()
     )
     .authenticate(&da_access, account.credential()?)
     .await?;
-    da.manage(P::ScopeRead)?;
+    da.manage(P::PolicyRead)?;
     let da_audit = rss_mdm_audit_integration::RequestAudit::new(
         rss_mdm_audit_integration::Origin::Request,
         rss_mdm_audit_integration::StorageProfile::Da,
@@ -147,21 +152,23 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
     use rss_mdm_authorization_service::context::RequestAuth;
     let c = Context::open("shared", &[]).await?;
     let account = c
-        .account(&[P::ScopeRead, P::ScopeWrite, P::InventoryRead, P::GroupRead])
+        .account(&[
+            P::PolicyRead,
+            P::PolicyWrite,
+            P::DeviceUnmanage,
+            P::InventoryRead,
+            P::GroupRead,
+        ])
         .await?;
     let p = Arc::new(c.authenticate(&account).await?);
     let scopes = crate::scope_t2::open(&c).await?;
     let owners = Owners::open(&c).await?;
     let object = planning::endpoint(&c).await?;
-    let old = planning::published(&c, &object).await?;
-    let app = rss_mdm_management_http::planning::routes()
+    let policies = crate::policy_management_t2_support::Fixture::open(&c).await?;
+    let saved = policies.create(&c,&p,serde_json::from_value(json!({"targets":[{"kind":"device","id":object.members[0].device}],"limitations":null,"exclusions":[]}))?).await?;
+    let app = rss_mdm_management_http::planning::policies::scope_http::routes()
         .into_axum()
-        .with_state(Arc::new(
-            rss_mdm_management_http::planning::http::HttpState {
-                scopes: scopes.clone(),
-                groups: owners.groups.clone(),
-            },
-        ))
+        .with_state(policies.policies.clone())
         .layer(axum::Extension(RequestAuth {
             proof: p.clone(),
             sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
@@ -195,9 +202,9 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
     let base = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = reqwest::Client::new();
-    let body = json!({"definition":old.input.definition,"channel":"mdm","editing":{"scopeId":old.scope,"expectedRevision":1}});
+    let body = json!({"definition":saved.definition.scope,"channel":"mdm","expectedRevision":1});
     let response = client
-        .post(format!("{base}/scopes/previews"))
+        .post(format!("{base}/policies/{}/scope/previews", saved.id))
         .json(&body)
         .send()
         .await?;
@@ -207,10 +214,10 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
     assert_eq!(response["scanComplete"], true);
     assert!(response.get("total").is_none() && response.get("task").is_none());
     let mut stale = body.clone();
-    stale["editing"]["expectedRevision"] = json!(2);
+    stale["expectedRevision"] = json!(2);
     assert_eq!(
         client
-            .post(format!("{base}/scopes/previews"))
+            .post(format!("{base}/policies/{}/scope/previews", saved.id))
             .json(&stale)
             .send()
             .await?
@@ -221,17 +228,16 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
     missing["definition"]["targets"] = json!([{"kind":"group","id":Uuid::new_v4()}]);
     assert_eq!(
         client
-            .post(format!("{base}/scopes/previews"))
+            .post(format!("{base}/policies/{}/scope/previews", saved.id))
             .json(&missing)
             .send()
             .await?
             .status(),
         404
     );
-    let change =
-        json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"recompute"}});
+    let change = json!({"operationId":Uuid::new_v4(),"expectedRevision":1});
     let response = client
-        .post(format!("{base}/scopes/{}", old.scope))
+        .post(format!("{base}/policies/{}/scope/recomputations", saved.id))
         .json(&change)
         .send()
         .await?;
@@ -240,7 +246,7 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
     assert_eq!(receipt["revision"], 1);
     assert!(receipt["task"].is_string());
     let replay: serde_json::Value = client
-        .post(format!("{base}/scopes/{}", old.scope))
+        .post(format!("{base}/policies/{}/scope/recomputations", saved.id))
         .json(&change)
         .send()
         .await?
@@ -249,6 +255,7 @@ async fn http_preview_and_recompute_use_the_formal_contract() -> Result<()> {
     assert_eq!(replay, receipt);
     server.abort();
     let _ = server.await;
+    policies.close().await?;
     drop(scopes);
     drop(owners);
     c.close().await;
@@ -261,7 +268,7 @@ async fn unknown_and_unfinished_sources_are_distinct_from_empty() -> Result<()> 
     let c = Context::open("shared", &[]).await?;
     let account = c
         .account(&[
-            P::ScopeRead,
+            P::PolicyRead,
             P::InventoryRead,
             P::GroupRead,
             P::GroupWrite,
@@ -290,6 +297,10 @@ async fn unknown_and_unfinished_sources_are_distinct_from_empty() -> Result<()> 
     let group = owners.create(&c, &p, Some(condition)).await?;
     let run = super::preview::publish(&owners, &c, &p, group).await?;
     let mut request = Request {
+        owner: rss_mdm_scope::ScopeOwner {
+            policy: Uuid::new_v4(),
+            stage: None,
+        },
         definition: ScopeDefinition {
             targets: BTreeSet::from([Reference::Device(object.members[0].device.clone())]),
             limitations: None,
@@ -403,12 +414,13 @@ async fn frozen_membership_does_not_follow_current_heads() -> Result<()> {
 #[tokio::test]
 #[ignore = "T2: draft and publication agree on absence in a complete frozen Group set"]
 async fn frozen_set_absence_matches_formal_scope_publication() -> Result<()> {
-    use rss_mdm_scope_service::{Command, ScopeChange, operation::Operation, pages};
+    use rss_mdm_scope_service::pages;
     let c = Context::open("shared", &[]).await?;
     let account = c
         .account(&[
-            P::ScopeRead,
-            P::ScopeWrite,
+            P::PolicyRead,
+            P::PolicyWrite,
+            P::DeviceUnmanage,
             P::InventoryRead,
             P::GroupRead,
             P::GroupWrite,
@@ -427,6 +439,10 @@ async fn frozen_set_absence_matches_formal_scope_publication() -> Result<()> {
     super::preview::publish(&owners, &c, &p, group).await?;
     let new = planning::endpoint(&c).await?;
     let draft = Request {
+        owner: rss_mdm_scope::ScopeOwner {
+            policy: Uuid::new_v4(),
+            stage: None,
+        },
         definition: ScopeDefinition {
             targets: BTreeSet::from([Reference::Device(new.members[0].device.clone())]),
             limitations: None,
@@ -438,24 +454,10 @@ async fn frozen_set_absence_matches_formal_scope_publication() -> Result<()> {
     let preview = scopes.preview(&p, &draft, &c.request(&p)?).await?;
     assert_eq!(preview.items, vec![new.object.clone()]);
     assert!(preview.scan_complete && !preview.has_unknown);
-    let id = Uuid::new_v4();
-    let receipt = scopes
-        .execute(
-            &Command::Scope {
-                id,
-                change: Operation {
-                    operation_id: Uuid::new_v4(),
-                    expected_revision: 0,
-                    input: ScopeChange::Put {
-                        definition: draft.definition.clone(),
-                    },
-                },
-            },
-            &c.request(&p)?,
-            &p,
-        )
-        .await?;
-    let task = Uuid::parse_str(receipt["task"].as_str().unwrap())?;
+    let policies = crate::policy_management_t2_support::Fixture::open(&c).await?;
+    let saved = policies.create(&c, &p, draft.definition.clone()).await?;
+    let id = saved.scopes[0].id;
+    let task = saved.scopes[0].task.unwrap();
     for _ in 0..20 {
         crate::scope_t2::advance(&scopes, task, &preview.asset_cut, false).await?;
     }
@@ -475,8 +477,118 @@ async fn frozen_set_absence_matches_formal_scope_publication() -> Result<()> {
         page["page"]["items"],
         json!([{"object":new.object,"available":true}])
     );
+    policies.close().await?;
     drop(scopes);
     drop(owners);
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: historical Policy lifecycle receipts recheck current permissions for the original Scope response"]
+async fn lifecycle_replay_rechecks_historical_group_authority() -> Result<()> {
+    use rss_mdm_policy_service::{management::Change, operation::Operation};
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[
+            P::PolicyRead,
+            P::PolicyWrite,
+            P::InventoryRead,
+            P::DeviceUnmanage,
+            P::GroupRead,
+            P::GroupWrite,
+        ])
+        .await?;
+    let p = c.authenticate(&account).await?;
+    let groups = Owners::open(&c).await?;
+    let group = groups.create(&c, &p, None).await?;
+    let f = crate::policy_management_t2_support::Fixture::open(&c).await?;
+    let first = f
+        .create(
+            &c,
+            &p,
+            ScopeDefinition {
+                targets: BTreeSet::from([Reference::Group(group)]),
+                limitations: None,
+                exclusions: Default::default(),
+            },
+        )
+        .await?;
+    let enable = Operation {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 1,
+        input: Change::Enable,
+    };
+    let original = f
+        .policies
+        .change(&p, first.id, &enable, &c.request(&p)?)
+        .await?;
+    assert_eq!(
+        original.definition.scope.targets,
+        BTreeSet::from([Reference::Group(group)])
+    );
+    let disabled = f
+        .policies
+        .change(
+            &p,
+            first.id,
+            &Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 2,
+                input: Change::Disable,
+            },
+            &c.request(&p)?,
+        )
+        .await?;
+    let mut definition = disabled.definition;
+    definition.scope.targets.clear();
+    f.policies
+        .change(
+            &p,
+            first.id,
+            &Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 3,
+                input: Change::Put {
+                    definition: Box::new(definition),
+                    enabled: false,
+                },
+            },
+            &c.request(&p)?,
+        )
+        .await?;
+    assert_eq!(
+        serde_json::to_value(
+            f.policies
+                .change(&p, first.id, &enable, &c.request(&p)?)
+                .await?
+        )?,
+        serde_json::to_value(original)?
+    );
+    sqlx::query("UPDATE mdm_access.authorization_rules SET document=jsonb_set(document,'{grants}',(SELECT jsonb_agg(g) FROM jsonb_array_elements(document->'grants') g WHERE g->>'operation'<>'group_read')),revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(account.rule).execute(&c.operator).await?;
+    let current = f
+        .policies
+        .scope_read(
+            &p,
+            &c.request(&p)?,
+            rss_mdm_scope::ScopeOwner {
+                policy: first.id,
+                stage: None,
+            },
+        )
+        .await?;
+    assert!(
+        current.definition.targets.is_empty(),
+        "current Policy permissions remain usable"
+    );
+    assert!(matches!(
+        f.policies
+            .change(&p, first.id, &enable, &c.request(&p)?)
+            .await,
+        Err(rss_mdm_policy_service::Error::Forbidden)
+    ));
+    f.close().await?;
+    drop(groups);
     c.close().await;
     Ok(())
 }

@@ -74,20 +74,20 @@ pub(crate) enum Gate {
 pub(crate) async fn gate_on(
     c: &mut PgConnection,
     tenant: &str,
-    target: (Uuid, i64, Uuid),
+    target: (String, Uuid),
     snapshot: Uuid,
     last_contact: Option<i64>,
     now: i64,
 ) -> Result<Gate, Error> {
-    let (registration, generation, version) = target;
+    let (device, version) = target;
     // A probe begun before an old attempt ended cannot establish recovery readiness.
-    let started: i64 = sqlx::query_scalar("SELECT started_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND sealed_at IS NOT NULL")
-        .bind(tenant).bind(snapshot).bind(registration).fetch_one(&mut *c).await.map_err(db)?;
+    let started: i64 = sqlx::query_scalar("SELECT started_at FROM mdm_access.collection_runs WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3 AND sealed_at IS NOT NULL")
+        .bind(tenant).bind(snapshot).bind(&device).fetch_one(&mut *c).await.map_err(db)?;
     let (pending, deadline, attempts) = sqlx::query_as::<_, (Option<Uuid>, Option<i64>, i64)>(
-        "SELECT (array_agg(o.id ORDER BY d.queued_at DESC,o.id DESC) FILTER(WHERE d.terminal_at IS NULL AND d.deadline>$6::bigint*1000000))[1],max(d.deadline/1000000),count(*) FILTER(WHERE o.policy_version=$4 AND d.queued_at>greatest($5::bigint,coalesce((SELECT max(t.created_at) FROM mdm_policy.triggers t WHERE t.tenant_id=o.tenant_id AND t.version=$4 AND t.deadline>$6::bigint),0))*1000000) FROM mdm_software_deployment.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.authority->>'kind'='agent_install'",
-    ).bind(tenant).bind(registration).bind(generation).bind(version)
+        "SELECT ((array_agg(o.id ORDER BY d.queued_at DESC, o.id DESC) FILTER (WHERE d.terminal_at IS NULL AND d.deadline > CAST($5 AS bigint) * 1000000)))[1], max(d.deadline / 1000000), count(*) FILTER (WHERE o.policy_version = $3 AND d.queued_at > GREATEST(CAST($4 AS bigint), COALESCE((SELECT max(t.created_at) FROM mdm_policy.triggers AS t WHERE t.tenant_id = o.tenant_id AND t.version = $3 AND t.deadline > CAST($5 AS bigint)), 0)) * 1000000) FROM mdm_software_deployment.operations AS o INNER JOIN rss_device_command.commands AS d ON (d.tenant_id, d.command_id) = (o.tenant_id, CAST(o.id AS text)) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.authority ->> 'kind' = 'agent_install'",
+    ).bind(tenant).bind(&device).bind(version)
         .bind(last_contact.unwrap_or(0)).bind(now).fetch_one(&mut *c).await.map_err(db)?;
-    let cleanup = cleanup_pending_on(c, tenant, registration, generation).await?;
+    let cleanup = cleanup_pending_on(c, tenant, &device).await?;
     Ok(decide(pending, deadline, attempts, cleanup, started))
 }
 

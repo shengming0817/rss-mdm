@@ -289,12 +289,6 @@
           "format": "int64",
           "type": "integer"
         },
-        "generation": {
-          "description": "Registration generation, not binding revision.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
         "instanceId": {
           "description": "Identity authority instance selected by the server.",
           "format": "uuid",
@@ -310,11 +304,6 @@
         },
         "principalId": {
           "description": "RSS person selected by the authenticated ceremony or authorized administrator.",
-          "format": "uuid",
-          "type": "string"
-        },
-        "registrationId": {
-          "description": "Current registration.",
           "format": "uuid",
           "type": "string"
         },
@@ -356,8 +345,6 @@
         "wireVersion",
         "tenantId",
         "deviceId",
-        "registrationId",
-        "generation",
         "platform",
         "architecture",
         "taskId",
@@ -940,13 +927,6 @@
           },
           "type": "array"
         },
-        "generation": {
-          "description": "Registration generation.",
-          "format": "uint64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": "integer"
-        },
         "mappings": {
           "additionalProperties": {
             "$ref": "#/$defs/AgentCollectionMapping"
@@ -977,15 +957,6 @@
         "platform": {
           "$ref": "#/$defs/TaskPlatform",
           "description": "Selected artifact operating system."
-        },
-        "registrationId": {
-          "description": "Current registration at approval/claim.",
-          "format": "uuid",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          },
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "type": "string"
         },
         "resource": {
           "$ref": "#/$defs/TaskResource",
@@ -1038,8 +1009,6 @@
         "deviceId",
         "platform",
         "architecture",
-        "registrationId",
-        "generation",
         "taskId",
         "attemptId",
         "permit",
@@ -1592,12 +1561,6 @@
           "format": "int64",
           "type": "integer"
         },
-        "generation": {
-          "description": "Current registration generation.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
         "operation": {
           "$ref": "#/$defs/CredentialOperation",
           "description": "Closed platform intent."
@@ -1625,11 +1588,6 @@
           ],
           "description": "Original unresolved operation, present only on a matching verification task."
         },
-        "registrationId": {
-          "description": "Current registration.",
-          "format": "uuid",
-          "type": "string"
-        },
         "taskId": {
           "description": "Persistent run identity and credential operation identity.",
           "format": "uuid",
@@ -1654,8 +1612,6 @@
         "deviceId",
         "platform",
         "architecture",
-        "registrationId",
-        "generation",
         "taskId",
         "attemptId",
         "permit",
@@ -1775,13 +1731,6 @@
           "minimum": 1,
           "type": "integer"
         },
-        "generation": {
-          "description": "Current Agent generation.",
-          "format": "uint64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": "integer"
-        },
         "organization": {
           "description": "Target organization, fixed by server configuration and Policy publication.",
           "format": "uuid",
@@ -1798,15 +1747,6 @@
         "platform": {
           "$ref": "#/$defs/TaskPlatform",
           "description": "Actual local operating system."
-        },
-        "registrationId": {
-          "description": "Current Agent registration.",
-          "format": "uuid",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          },
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "type": "string"
         },
         "taskId": {
           "description": "Durable action run.",
@@ -1837,8 +1777,6 @@
         "deviceId",
         "platform",
         "architecture",
-        "registrationId",
-        "generation",
         "taskId",
         "attemptId",
         "permit",
@@ -5751,13 +5689,6 @@
           "minimum": 0,
           "type": "integer"
         },
-        "generation": {
-          "description": "Registration generation.",
-          "format": "uint64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": "integer"
-        },
         "intent": {
           "$ref": "#/$defs/SoftwareTaskIntent",
           "description": "Requested local operation."
@@ -5769,15 +5700,6 @@
         "platform": {
           "$ref": "#/$defs/TaskPlatform",
           "description": "Target platform."
-        },
-        "registrationId": {
-          "description": "Current registration.",
-          "format": "uuid",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          },
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "type": "string"
         },
         "steps": {
           "description": "Ordered prerequisites followed by the requested action.",
@@ -5817,8 +5739,6 @@
         "deviceId",
         "platform",
         "architecture",
-        "registrationId",
-        "generation",
         "taskId",
         "attemptId",
         "permit",
@@ -6333,13 +6253,6 @@
           "minimum": 0,
           "type": "integer"
         },
-        "generation": {
-          "description": "Registration generation.",
-          "format": "uint64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": "integer"
-        },
         "maxRows": {
           "description": "Maximum output rows.",
           "format": "uint16",
@@ -6396,15 +6309,6 @@
         "projection": {
           "$ref": "#/$defs/ScriptProjection",
           "description": "Explicit frozen collection projection, or a non-collection purpose."
-        },
-        "registrationId": {
-          "description": "Current registration at approval/claim.",
-          "format": "uuid",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          },
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "type": "string"
         },
         "resource": {
           "$ref": "#/$defs/TaskResource",
@@ -6494,8 +6398,6 @@
         "deviceId",
         "platform",
         "architecture",
-        "registrationId",
-        "generation",
         "taskId",
         "attemptId",
         "permit",
@@ -6719,12 +6621,6 @@
           "format": "int64",
           "type": "integer"
         },
-        "generation": {
-          "description": "Original registration revision; never adopt a replacement identity.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
         "permit": {
           "$ref": "#/$defs/TaskPermit",
           "description": "Offer or freshly authorized start."
@@ -6732,15 +6628,6 @@
         "platform": {
           "$ref": "#/$defs/TaskPlatform",
           "description": "Exact target platform."
-        },
-        "registrationId": {
-          "description": "Registration which the local installation must still hold.",
-          "format": "uuid",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          },
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "type": "string"
         },
         "retirementId": {
           "description": "Product retirement operation.",
@@ -6778,8 +6665,6 @@
         "wireVersion",
         "tenantId",
         "deviceId",
-        "registrationId",
-        "generation",
         "retirementId",
         "taskId",
         "attemptId",

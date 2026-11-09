@@ -199,7 +199,7 @@ async fn create_self(
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     headers: crate::api::WriteHeaders,
     input: Result<Json<super::SelfCreate>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<super::SelfReceipt>, Error> {
+) -> Result<Json<super::Receipt>, Error> {
     let key = write_key(&headers, &audit, "enrollment_create")?;
     let input = input.map_err(Error::from)?.0;
     match input.source {

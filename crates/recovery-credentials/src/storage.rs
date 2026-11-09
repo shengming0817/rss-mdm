@@ -45,8 +45,6 @@ pub async fn rss_use_in(
         .ok_or(Error::NotFound)?;
     let material = decode(&row)?;
     if material.binding.device != device.device
-        || material.binding.registration != device.registration_id
-        || material.binding.generation != device.generation
         || !matches!(material.binding.subject, Subject::RssLogin { .. })
     {
         return Err(Error::Forbidden);
@@ -117,8 +115,6 @@ pub async fn active_in(
         .await?;
         let expected = rss_mdm_registration_service::device::endpoints::DaRegistration {
             device: binding.device.clone(),
-            registration_id: binding.registration,
-            generation: binding.generation,
         };
         return if rss_mdm_registration_service::device::endpoints::current_da_in(
             c,
@@ -166,11 +162,7 @@ pub async fn active_in(
         rss_mdm_registration_service::Purpose::Primary,
     )
     .await?;
-    if rows.iter().any(|(device, id, generation)| {
-        device == &binding.device
-            && *id == binding.registration
-            && *generation == binding.generation
-    }) {
+    if rows.contains(&binding.device) {
         Ok(())
     } else {
         Err(Error::Conflict)
@@ -197,16 +189,12 @@ pub async fn reserve_in(
         .bind(tenant)
         .bind(Uuid::new_v4())
         .bind(&binding.device)
-        .bind(binding.registration)
-        .bind(binding.generation)
         .bind(&subject)
         .execute(&mut *c)
         .await?;
     let row = sqlx::query(crate::storage_profile::sql(profile).storage_reserve_in_2)
         .bind(tenant)
         .bind(&binding.device)
-        .bind(binding.registration)
-        .bind(binding.generation)
         .bind(&subject)
         .fetch_one(&mut *c)
         .await?;
@@ -420,18 +408,18 @@ pub async fn retire_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: &str,
-    registration: Uuid,
+    registration: String,
 ) -> Result<(), Error> {
     let profile = custody.profile();
 
     sqlx::query(crate::storage_profile::sql(profile).storage_retire_in_1)
         .bind(tenant)
-        .bind(registration)
+        .bind(&registration)
         .execute(&mut *c)
         .await?;
     sqlx::query(crate::storage_profile::sql(profile).storage_retire_in_2)
         .bind(tenant)
-        .bind(registration)
+        .bind(&registration)
         .execute(&mut *c)
         .await?;
     crate::filevault::retire_source(c, tenant, registration).await?;
@@ -444,8 +432,7 @@ pub(crate) fn decode(row: &sqlx::postgres::PgRow) -> Result<Material, Error> {
         id: row.try_get("id")?,
         binding: Binding {
             device: row.try_get("device")?,
-            registration: row.try_get("registration")?,
-            generation: row.try_get("generation")?,
+
             subject: serde_json::from_value(row.try_get("subject")?)
                 .map_err(|_| Error::Integrity)?,
         },
@@ -474,8 +461,6 @@ pub async fn native_action_in(
     tenant: Uuid,
     operation: Uuid,
     device: &str,
-    registration: Uuid,
-    generation: i64,
 ) -> Result<Option<NativeAction>, Error> {
     let profile = custody.profile();
     if profile != rss_mdm_install_support::StorageProfile::Mdm {
@@ -486,8 +471,6 @@ pub async fn native_action_in(
         .bind(tenant)
         .bind(operation)
         .bind(device)
-        .bind(registration)
-        .bind(generation)
         .fetch_optional(c)
         .await?
         .map(|r| {
@@ -523,8 +506,6 @@ pub async fn link_native_in(
         .bind(tenant)
         .bind(operation)
         .bind(&binding.device)
-        .bind(binding.registration)
-        .bind(binding.generation)
         .bind(&action.action)
         .bind(
             action
@@ -803,8 +784,6 @@ pub async fn verify_existing_secret_in(
     )
     .bind(tenant)
     .bind(&binding.device)
-    .bind(binding.registration)
-    .bind(binding.generation)
     .bind(subject)
     .bind(revision)
     .fetch_optional(&mut *c)
@@ -890,8 +869,6 @@ pub async fn supersede_in(
     let row = sqlx::query(crate::storage_profile::sql(profile).storage_supersede_in_1)
         .bind(tenant)
         .bind(&binding.device)
-        .bind(binding.registration)
-        .bind(binding.generation)
         .bind(subject)
         .fetch_optional(&mut *c)
         .await?;
@@ -924,8 +901,7 @@ pub async fn start_agent_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    registration: Uuid,
-    generation: i64,
+    registration: String,
     task: Uuid,
     attempt: Uuid,
 ) -> Result<(), Error> {
@@ -933,19 +909,17 @@ pub async fn start_agent_in(
 
     sqlx::query(crate::storage_profile::sql(profile).storage_start_agent_in_1)
         .bind(tenant)
-        .bind(registration)
+        .bind(&registration)
         .bind(task)
         .bind(attempt)
-        .bind(generation)
         .execute(&mut *c)
         .await?;
     let matches: bool =
         sqlx::query_scalar(crate::storage_profile::sql(profile).storage_start_agent_in_2)
             .bind(tenant)
-            .bind(registration)
+            .bind(&registration)
             .bind(task)
             .bind(attempt)
-            .bind(generation)
             .fetch_one(c)
             .await?;
     if matches {
@@ -1028,16 +1002,12 @@ pub async fn revisions_in(
     c: &mut PgConnection,
     tenant: Uuid,
     device: &str,
-    registration: Uuid,
-    generation: i64,
 ) -> Result<Vec<(Subject, i64)>, Error> {
     let profile = custody.profile();
 
     let rows = sqlx::query(crate::storage_profile::sql(profile).storage_revisions_in_1)
         .bind(tenant)
         .bind(device)
-        .bind(registration)
-        .bind(generation)
         .fetch_all(c)
         .await?;
     rows.into_iter()
@@ -1075,7 +1045,7 @@ pub async fn input_copies_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    registration: Uuid,
+    registration: String,
 ) -> Result<Vec<Uuid>, Error> {
     let profile = custody.profile();
     if profile != rss_mdm_install_support::StorageProfile::Mdm {
@@ -1085,7 +1055,7 @@ pub async fn input_copies_in(
     Ok(
         sqlx::query_scalar(crate::storage_profile::sql(profile).storage_input_copies_in_1)
             .bind(tenant)
-            .bind(registration)
+            .bind(&registration)
             .fetch_all(c)
             .await?,
     )
@@ -1112,7 +1082,7 @@ pub async fn inputs_remain_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    registration: Uuid,
+    registration: String,
 ) -> Result<bool, Error> {
     let profile = custody.profile();
     if profile != rss_mdm_install_support::StorageProfile::Mdm {
@@ -1122,7 +1092,7 @@ pub async fn inputs_remain_in(
     Ok(
         sqlx::query_scalar(crate::storage_profile::sql(profile).storage_inputs_remain_in_1)
             .bind(tenant)
-            .bind(registration)
+            .bind(&registration)
             .fetch_one(c)
             .await?,
     )
@@ -1133,15 +1103,13 @@ pub async fn agent_guard_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    registration: Uuid,
-    generation: i64,
+    registration: String,
 ) -> Result<Option<(Uuid, Uuid)>, Error> {
     let profile = custody.profile();
 
     sqlx::query(crate::storage_profile::sql(profile).storage_agent_guard_in_1)
         .bind(tenant)
-        .bind(registration)
-        .bind(generation)
+        .bind(&registration)
         .fetch_optional(c)
         .await?
         .map(|r| Ok((r.try_get("task")?, r.try_get("attempt")?)))
@@ -1213,15 +1181,7 @@ pub async fn recovery_secret_in(
     let profile = custody.profile();
 
     active_in(custody, c, tenant, binding).await?;
-    let revisions = revisions_in(
-        custody,
-        c,
-        tenant,
-        &binding.device,
-        binding.registration,
-        binding.generation,
-    )
-    .await?;
+    let revisions = revisions_in(custody, c, tenant, &binding.device).await?;
     if revisions
         .iter()
         .find(|(s, _)| s == &binding.subject)
@@ -1235,8 +1195,6 @@ pub async fn recovery_secret_in(
     let rows = sqlx::query(crate::storage_profile::sql(profile).storage_recovery_secret_in_1)
         .bind(tenant)
         .bind(&binding.device)
-        .bind(binding.registration)
-        .bind(binding.generation)
         .bind(subject)
         .fetch_all(&mut *c)
         .await?;
@@ -1297,8 +1255,6 @@ pub async fn current_in(
     sqlx::query(crate::storage_profile::sql(profile).storage_current_in_1)
         .bind(tenant)
         .bind(&binding.device)
-        .bind(binding.registration)
-        .bind(binding.generation)
         .bind(serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?)
         .fetch_optional(c)
         .await?
@@ -1320,25 +1276,16 @@ pub async fn access_unbound_in(
     let crate::eligibility::Unbound {
         tenant,
         device,
-        registration,
-        registration_generation,
         binding: id,
         generation,
     } = unbound;
-    if tenant.is_nil()
-        || registration.is_nil()
-        || id.is_nil()
-        || *registration_generation < 1
-        || *generation < 1
-    {
+    if tenant.is_nil() || id.is_nil() || *generation < 1 {
         return Err(Error::Malformed);
     }
     let entries: Vec<Uuid> =
         sqlx::query_scalar(crate::storage_profile::sql(profile).storage_access_unbound_in_1)
             .bind(tenant)
             .bind(device)
-            .bind(registration)
-            .bind(registration_generation)
             .bind(id.to_string())
             .bind(generation)
             .fetch_all(&mut *c)

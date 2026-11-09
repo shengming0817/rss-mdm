@@ -6,12 +6,15 @@ use serde::{Deserialize, Serialize};
 macro_rules! view {
     ($name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
         #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-        #[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
         pub struct $name { $(pub $field: $ty),* }
     };
 }
 view!(ScopeRead {
     id: Uuid,
+    stage:Option<Uuid>,
+    retired:bool,
+    task:Option<Uuid>,
     revision: u64,
     definition: ScopeDefinition,
     resolution:Option<Uuid>,
@@ -22,22 +25,3 @@ view!(ScopeReceipt {
     revision: u64,
     task:Option<Uuid>
 });
-use rss_mdm_inventory_service::tasks::{JobAccepted, TaskRead};
-#[derive(Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(untagged)]
-pub enum Response {
-    JobAccepted(JobAccepted),
-    TaskRead(Box<TaskRead>),
-    ScopePage(pages::ScopePage),
-    ScopeRead(ScopeRead),
-    ScopeReceipt(ScopeReceipt),
-}
-impl Response {
-    pub fn decode(value: Value) -> std::result::Result<Self, Error> {
-        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::Storage))
-    }
-}
-
-#[cfg(test)]
-#[path = "../tests/wire_unit.rs"]
-mod tests;

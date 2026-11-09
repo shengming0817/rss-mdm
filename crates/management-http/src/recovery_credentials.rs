@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
 };
@@ -206,18 +206,13 @@ async fn read_filevault_configuration(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    selection: Result<
-        Query<rss_mdm_recovery_credentials::FilevaultSelection>,
-        axum::extract::rejection::QueryRejection,
-    >,
 ) -> Result<Json<rss_mdm_agent_wire::filevault::Configuration>, Error> {
-    let Query(selection) = selection.map_err(|_| Error::Malformed)?;
     audit.set_action(
         "filevault_configuration_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     audit.target_device(&device);
-    s.management_configuration(&auth.proof, &device, &selection)
+    s.management_configuration(&auth.proof, &device)
         .await
         .map(Json)
         .map_err(Into::into)

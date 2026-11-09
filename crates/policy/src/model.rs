@@ -33,7 +33,7 @@ pub enum Change {
     Put {
         /// Replacement definition.
         #[serde(deserialize_with = "definition_input")]
-        #[schemars(schema_with = "definition_input_schema")]
+        #[schemars(schema_with = "definition_input_schema::<Uuid>")]
         definition: Box<Definition>,
         /// Requested enabled state.
         enabled: bool,
@@ -286,9 +286,9 @@ impl State {
 }
 
 /// Normalize the current request default only; persisted Definition remains strict.
-pub fn definition_input<'de, D: serde::Deserializer<'de>>(
+pub fn definition_input<'de, D: serde::Deserializer<'de>, S: serde::de::DeserializeOwned>(
     d: D,
-) -> Result<Box<Definition>, D::Error> {
+) -> Result<Box<Definition<S>>, D::Error> {
     let mut value = serde_json::Value::deserialize(d)?;
     if let Some(action) = value
         .get_mut("action")
@@ -303,10 +303,12 @@ pub fn definition_input<'de, D: serde::Deserializer<'de>>(
 }
 
 /// Management input schema shares the strict domain shape, with its one input default.
-fn definition_input_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
+pub fn definition_input_schema<S: schemars::JsonSchema>(
+    g: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
     use schemars::JsonSchema;
-    let mut definition = Definition::json_schema(g);
-    let mut action = crate::Action::json_schema(g);
+    let mut definition = Definition::<S>::json_schema(g);
+    let mut action = crate::Action::<S>::json_schema(g);
     if let Some(branches) = action
         .get_mut("oneOf")
         .and_then(serde_json::Value::as_array_mut)

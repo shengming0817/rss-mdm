@@ -373,8 +373,7 @@ fn signed_macos_collection_binds_identity_plan_and_permit() {
         device_id: "mac".into(),
         platform: TaskPlatform::Macos,
         architecture: TaskArchitecture::Aarch64,
-        registration_id: id,
-        generation: 1,
+
         task_id: id,
         attempt_id: id,
         permit: TaskPermit::Offer,

@@ -1,5 +1,5 @@
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
-('mdm_script.save_retired_run(uuid,uuid,jsonb,jsonb)','sql','boolean',true,false,'v',ARRAY['p_registration','p_run','p_previous','p_state']::text[],ARRAY['search_path=pg_catalog']::text[],$1::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner']::text[])
+('mdm_script.save_retired_run(text,uuid,jsonb,jsonb)','sql','boolean',true,false,'v',ARRAY['p_device','p_run','p_previous','p_state']::text[],ARRAY['search_path=pg_catalog']::text[],$1::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

@@ -5,8 +5,7 @@ use sqlx::Row;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunView {
     pub id: Uuid,
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub source: rss_mdm_inventory::Source,
     pub epoch: Uuid,
     pub delivery: crate::inventory_runtime::DeliveryStatus,
@@ -33,8 +32,6 @@ impl AssetService {
         p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
         device: &str,
         id: Uuid,
-        registration: Option<Uuid>,
-        generation: Option<i64>,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,device),|ctx,tx|Box::pin(async move{
@@ -42,8 +39,8 @@ impl AssetService {
             query_authority(tx,p).await?.require(p,rss_mdm_authorization_service::Permission::InventoryRead,Some(device))?;
             let tenant=s.tenant.to_string();let device_key=device.to_string();
             let row=tx.with_connection(move|c|Box::pin(async move{
-                sqlx::query("SELECT c.started_at,c.sealed_at,c.result FROM mdm_access.collection_runs c JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND r.device=$3 AND ($4::uuid IS NULL OR r.id=$4) AND ($5::bigint IS NULL OR r.generation=$5)")
-                    .bind(tenant).bind(id).bind(device_key).bind(registration).bind(generation).fetch_optional(c).await
+                sqlx::query("SELECT c.started_at, c.sealed_at, c.result FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
+                    .bind(tenant).bind(id).bind(device_key).fetch_optional(c).await
             })).await?;
             p.check_live()?;
             row.map(|row|{
@@ -69,7 +66,7 @@ impl AssetService {
         let tenant = self.tenant;
         let device = device.to_owned();
         let row=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("SELECT c.registration,r.generation,c.source,c.sequence,c.started_at,c.sealed_at,c.result,c.reason,c.delivery_pending,c.scope,c.batch,c.digest,c.progress_version,CASE WHEN v.metadata_bytes<=67108864 THEN v.metadata::text END AS metadata FROM mdm_access.collection_runs c JOIN mdm_access.collection_versions v ON (v.tenant_id,v.version)=(c.tenant_id,c.progress_version) JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND r.device=$3")
+            sqlx::query("SELECT c.device, c.source, c.sequence, c.started_at, c.sealed_at, c.result, c.reason, c.delivery_pending, c.scope, c.batch, c.digest, c.progress_version, CASE WHEN v.metadata_bytes <= 67108864 THEN CAST(v.metadata AS text) END AS metadata FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.collection_versions AS v ON (v.tenant_id, v.version) = (c.tenant_id, c.progress_version) INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
                 .bind(tenant.to_string()).bind(id).bind(device).fetch_optional(c).await
         })).await?.ok_or(Error::NotFound)?;
         let progress: crate::collection::summary::Summary = stored(
@@ -132,8 +129,8 @@ impl AssetService {
             coverage: stored(definition.coverage())?,
             complete: progress.coverage_complete(),
             id,
-            registration: row.try_get("registration")?,
-            generation: row.try_get("generation")?,
+            device: row.try_get("device")?,
+
             source: stored(rss_mdm_inventory::Source::parse(row.try_get("source")?))?,
             dataset: definition.dataset().into(),
             template_version: definition.version().into(),

@@ -185,18 +185,13 @@ fn actors(p: &DevicePrincipal, proof: Option<&AuthorizedPrincipal>) -> Result<Ve
     let mut actors = Vec::new();
     if let Some(proof) = proof {
         actors.push(format!(
-            "self-service:{}:{}:{}:{}",
+            "self-service:{}:{}:{}",
             Uuid::parse_str(proof.instance_id()).map_err(|_| Error::Unauthorized)?,
             Uuid::parse_str(proof.principal_id()).map_err(|_| Error::Unauthorized)?,
-            p.registration(),
-            p.generation()
+            p.device()
         ));
     }
-    actors.push(format!(
-        "self-service:device:{}:{}",
-        p.registration(),
-        p.generation()
-    ));
+    actors.push(format!("self-service:device:{}", p.device()));
     Ok(actors)
 }
 async fn policy_owner(
@@ -331,7 +326,7 @@ impl AgentTasks {
             let subject = if let Some(proof) = proof {
                 Some(current(tx, proof).await?.query_binding(proof)?)
             } else { None };
-            let binding = query.binding(&(service.requests.instance.as_str(), p.tenant().to_string(), p.device(), p.registration(), p.generation(), source, subject)).map_err(|_| Error::Malformed)?;
+            let binding = query.binding(&(service.requests.instance.as_str(), p.tenant().to_string(), p.device(), source, subject)).map_err(|_| Error::Malformed)?;
             let after = query.after(&service.requests.cursor, &binding).map_err(|_| Error::Conflict)?;
             let mut sql = sqlx::QueryBuilder::new("SELECT jsonb_build_object('id',id,'toolName','policy_' || replace(id::text,'-',''),'alias',definition->>'alias','displayName',definition->'selfService'->'presentation'->>'displayName','category',definition->'selfService'->'presentation'->>'category') FROM mdm_policy.policies WHERE tenant_id=");
             sql.push_bind(tx.tenant_id().to_string()).push("::uuid AND state='enabled' AND definition->'selfService'->>'published'='true'");
@@ -472,7 +467,7 @@ impl AgentTasks {
                                 rss_mdm_audit_integration::AuditIntent::Management,
                             );
                             audit.receipt_actor(actor);
-                            audit.registration_at(p.registration(), p.generation());
+                            audit.target_device(p.device());
                             audit.management_result(
                                 rss_mdm_audit_integration::ManagementResult::Replayed,
                             );

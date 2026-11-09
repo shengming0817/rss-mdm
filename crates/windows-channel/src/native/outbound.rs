@@ -7,8 +7,8 @@ pub async fn outgoing_on(
     p: &DevicePrincipal,
     session: u32,
 ) -> Result<bool, Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.attempt_frames f JOIN mdm_windows.attempts a ON(a.tenant_id,a.id)=(f.tenant_id,f.attempt) JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt,i.command)=(f.tenant_id,f.attempt,f.command) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.credential=$4 AND a.session=$5 AND NOT coalesce(i.receipt_accepted,false))")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).fetch_one(c).await.map_err(db)
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_windows.attempt_frames AS f INNER JOIN mdm_windows.attempts AS a ON (a.tenant_id, a.id) = (f.tenant_id, f.attempt) INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt, i.command) = (f.tenant_id, f.attempt, f.command) WHERE (a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.credential = $3 AND a.session = $4 AND NOT COALESCE(i.receipt_accepted, FALSE)) AND a.protocol_epoch = $5)")
+        .bind(p.tenant().to_string()).bind(p.device()).bind(p.credential()).bind(i64::from(session)).bind(p.epoch()).fetch_one(c).await.map_err(db)
 }
 
 pub enum Continuation {
@@ -103,8 +103,8 @@ pub async fn continue_on(
     response: &mut Message,
     peer_limits: &CodecLimits,
 ) -> Result<Continuation, Error> {
-    let row=sqlx::query("SELECT a.id,a.operation,a.phase AS receipt_phase,a.platform,a.ordinal=(SELECT max(b.ordinal) FROM mdm_windows.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest,f.command,f.end_byte,f.total_bytes,f.status,f.accepted FROM mdm_windows.attempts a JOIN LATERAL (SELECT * FROM mdm_windows.attempt_frames WHERE tenant_id=a.tenant_id AND attempt=a.id ORDER BY message DESC LIMIT 1) f ON true JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt,i.command)=(a.tenant_id,a.id,f.command) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.credential=$4 AND a.session=$5 AND NOT coalesce(i.receipt_accepted,false) ORDER BY a.ordinal LIMIT 1")
- .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(response.header.session_id)).fetch_optional(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT a.id, a.operation, a.phase AS receipt_phase, a.platform, a.ordinal = (SELECT max(b.ordinal) FROM mdm_windows.attempts AS b WHERE b.tenant_id = a.tenant_id AND b.operation = a.operation AND b.phase = a.phase) AS latest, f.command, f.end_byte, f.total_bytes, f.status, f.accepted FROM mdm_windows.attempts AS a INNER JOIN LATERAL (SELECT * FROM mdm_windows.attempt_frames WHERE tenant_id = a.tenant_id AND attempt = a.id ORDER BY message DESC LIMIT 1) AS f ON TRUE INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt, i.command) = (a.tenant_id, a.id, f.command) WHERE (a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.credential = $3 AND a.session = $4 AND NOT COALESCE(i.receipt_accepted, FALSE)) AND a.protocol_epoch = $5 ORDER BY a.ordinal LIMIT 1")
+ .bind(p.tenant().to_string()).bind(p.device()).bind(p.credential()).bind(i64::from(response.header.session_id)).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(Continuation::None);
     };

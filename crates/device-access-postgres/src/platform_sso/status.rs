@@ -41,13 +41,11 @@ pub async fn read(
     store::fence(&mut tx, &tenant).await?;
     let object = rss_mdm_registration_service::device::endpoints::DaRegistration {
         device: resolved.device().into(),
-        registration_id: resolved.registration(),
-        generation: resolved.generation(),
     };
     if user.as_ref().is_some_and(|u| u.object != object) {
         return Err(Error::Unauthorized);
     }
-    store::current_object(app, &mut tx, &object, object.registration_id).await?;
+    store::current_object(app, &mut tx, &object).await?;
     if let Some(previous) = &user {
         let current = store::read(&mut tx, &tenant, previous.id).await?;
         if current.version != previous.version || current.revoked != previous.revoked {
@@ -59,8 +57,8 @@ pub async fn read(
     let qualified = admitted(deployment::ready(app, &mut tx, &object, now).await)?;
     let application_observed = qualified;
     let profile_observed = qualified;
-    let device_id:Option<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.psso_sources WHERE tenant_id=$1::uuid AND registration=$2 AND kind='device'")
-        .bind(&tenant).bind(object.registration_id).fetch_optional(&mut *tx).await.map_err(db)?;
+    let device_id:Option<Uuid>=sqlx::query_scalar("SELECT id FROM rss_da.psso_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND kind = 'device'")
+        .bind(&tenant).bind(&object.device).fetch_optional(&mut *tx).await.map_err(db)?;
     let device = match device_id {
         Some(id) => Some(store::source(&mut tx, &tenant, id).await?),
         None => None,

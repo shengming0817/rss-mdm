@@ -121,7 +121,7 @@ impl AdmissionPort for Admission {
             if p.kind() == rss_mdm_registration_service::device::RegistrationKind::Agent {
                 let store = self.agent.as_ref().ok_or(Error::Unsupported)?;
                 let native = store
-                    .binding(c, self.tenant.to_string(), p.registration())
+                    .binding(c, self.tenant.to_string(), p.device().to_string())
                     .await?
                     .ok_or(Error::Forbidden)?;
                 return device_access::execution::admission::native_local_session(native);
@@ -130,8 +130,6 @@ impl AdmissionPort for Admission {
                 c,
                 &rss_mdm_registration_service::device::endpoints::DaRegistration {
                     device: target.device().into(),
-                    registration_id: target.registration(),
-                    generation: target.generation(),
                 },
             )
             .await
@@ -147,19 +145,12 @@ impl AdmissionPort for Admission {
             if tenant.to_string() != self.tenant.to_string() || tenant != b.tenant {
                 return Err(Error::Forbidden);
             }
-            device_access::storage::lock_registration(
-                c,
-                tenant,
-                &b.device,
-                b.registration,
-                b.registration_generation,
-            )
-            .await?;
+            device_access::storage::lock_registration(c, tenant, &b.device).await?;
             let session = if let Some(store) = &self.agent
                 && let Some(delivery) = crate::delivery::for_binding_on(c, b).await?
             {
                 let native = store
-                    .binding(c, self.tenant.to_string(), delivery.registration)
+                    .binding(c, self.tenant.to_string(), delivery.device)
                     .await?
                     .ok_or(Error::Forbidden)?;
                 device_access::execution::admission::native_local_session(native)?
@@ -168,8 +159,6 @@ impl AdmissionPort for Admission {
                     c,
                     &rss_mdm_registration_service::device::endpoints::DaRegistration {
                         device: b.device.clone(),
-                        registration_id: b.registration,
-                        generation: b.registration_generation,
                     },
                 )
                 .await?

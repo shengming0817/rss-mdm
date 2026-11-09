@@ -234,8 +234,7 @@ pub async fn verify(
         &audit(c),
     ))
     .await?;
-    assert_eq!(accepted.registration, receipt.registration);
-    assert_eq!(accepted.registration_generation, receipt.generation as i64);
+    assert_eq!(accepted.device, receipt.device);
     let settled = counts(c).await?;
     assert_eq!(settled.0, before.0 + 1);
     assert_eq!(settled.1, before.1 + 1);
@@ -302,15 +301,12 @@ pub async fn verify(
     );
     let anchor = registration::device::endpoints::DaRegistration {
         device: receipt.device.clone(),
-        registration_id: receipt.registration,
-        generation: receipt.generation as i64,
     };
     let observation = Observation {
         tenant: Uuid::parse_str(&c.tenant.to_string())?,
         installation: Uuid::parse_str(&c.inputs.installation.instance_id)?,
         device: receipt.device.clone(),
-        registration: receipt.registration,
-        generation: receipt.generation as i64,
+
         authority: authority_id(),
         sequence: 1,
         issued_at: now() - 1,
@@ -382,10 +378,10 @@ pub async fn verify(
     v.tenant = Uuid::new_v4();
     invalid.push(v);
     let mut v = observation.clone();
-    v.registration = Uuid::new_v4();
+    v.device = Uuid::new_v4().to_string();
     invalid.push(v);
     let mut v = observation.clone();
-    v.generation += 1;
+    v.device.push_str("-different");
     invalid.push(v);
     let mut v = observation.clone();
     v.authority = Uuid::new_v4();

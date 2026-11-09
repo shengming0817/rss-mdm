@@ -45,8 +45,7 @@ fn column(name: &str) -> &'static str {
         "device" => "device COLLATE \"C\"",
         "policy" => "policy::text COLLATE \"C\"",
         "status" => "status COLLATE \"C\"",
-        "registrationId" => "registration::text COLLATE \"C\"",
-        "generation" => "generation",
+
         "origin" => "source_kind COLLATE \"C\"",
         "deadline" => "deadline",
         "authorization.state" => "authorization_summary->>'state'",
@@ -56,7 +55,7 @@ fn column(name: &str) -> &'static str {
     }
 }
 const PAGE_SOURCES: i64 = 1_048_576;
-const CONFIGURATION_RELATION: &str = "SELECT id,device,kind,registration,generation,source_kind,policy_version,policy,deadline,status,input_bytes FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid";
+const CONFIGURATION_RELATION: &str = "SELECT id,device,kind,source_kind,policy_version,policy,deadline,status,input_bytes FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid";
 const STATISTICS_SOURCES: i64 = 4_194_304;
 fn check_sources(rows: i64, limit: i64, stage: &'static str) -> Result<(), Error> {
     if rows < 0 {
@@ -337,7 +336,7 @@ fn configuration_authorization(
         A::Blocked { reason } => Authorization::Blocked {
             reason: match reason {
                 B::LifecycleBlocked => BlockReason::LifecycleBlocked,
-                B::RegistrationChanged => BlockReason::RegistrationChanged,
+                B::DeviceInactive => BlockReason::DeviceInactive,
                 B::InputMismatch => BlockReason::InputMismatch,
                 B::SourceInvalid => BlockReason::SourceInvalid,
             },
@@ -356,7 +355,8 @@ fn execution_authorization(
         A::Blocked { reason } => Authorization::Blocked {
             reason: match reason {
                 R::LifecycleBlocked => BlockReason::LifecycleBlocked,
-                R::RegistrationChanged => BlockReason::RegistrationChanged,
+                R::DeviceInactive => BlockReason::DeviceInactive,
+
                 R::InputMismatch => BlockReason::InputMismatch,
                 R::SourceInvalid => BlockReason::SourceInvalid,
             },
@@ -382,7 +382,8 @@ fn execution_reauthorization(
                 R::Terminal => ReauthorizationReason::Terminal,
                 R::AlreadyReceived => ReauthorizationReason::AlreadyReceived,
                 R::Expired => ReauthorizationReason::Expired,
-                R::RegistrationChanged => ReauthorizationReason::RegistrationChanged,
+                R::DeviceInactive => ReauthorizationReason::DeviceInactive,
+
                 R::InputMismatch => ReauthorizationReason::InputMismatch,
                 R::Unsupported => ReauthorizationReason::Unsupported,
             },
@@ -402,7 +403,8 @@ fn software_authorization(
         A::Blocked { reason } => Authorization::Blocked {
             reason: match reason {
                 R::LifecycleBlocked => BlockReason::LifecycleBlocked,
-                R::RegistrationChanged => BlockReason::RegistrationChanged,
+                R::DeviceInactive => BlockReason::DeviceInactive,
+
                 R::InputMismatch => BlockReason::InputMismatch,
                 R::SourceInvalid => BlockReason::SourceInvalid,
             },
@@ -428,7 +430,8 @@ fn software_reauthorization(
                 R::Terminal => ReauthorizationReason::Terminal,
                 R::AlreadyReceived => ReauthorizationReason::AlreadyReceived,
                 R::Expired => ReauthorizationReason::Expired,
-                R::RegistrationChanged => ReauthorizationReason::RegistrationChanged,
+                R::DeviceInactive => ReauthorizationReason::DeviceInactive,
+
                 R::InputMismatch => ReauthorizationReason::InputMismatch,
                 R::Unsupported => ReauthorizationReason::Unsupported,
             },

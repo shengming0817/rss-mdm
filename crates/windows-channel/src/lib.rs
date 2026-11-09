@@ -687,7 +687,6 @@ async fn enrollment(
                 .unix_seconds()
                 .ok_or(Error::Unavailable(Failure::Clock))?,
             &app.mount,
-            app.devices.retirement(),
         )
         .await?;
         response(
@@ -770,11 +769,11 @@ fn validate_timestamp(security: Option<&soap::Security>, now: i64) -> Result<(),
 pub async fn retire_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registration: Uuid,
+    registration: &str,
 ) -> Result<(), Error> {
-    sqlx::query("UPDATE mdm_windows.push_channels SET lease_id=NULL,lease_until=NULL WHERE tenant_id=$1::uuid AND registration=$2")
+    sqlx::query("UPDATE mdm_windows.push_channels SET lease_id = NULL, lease_until = NULL WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
         .bind(tenant).bind(registration).execute(&mut *c).await.map_err(database::db)?;
-    sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2 AND state IN ('challenge','collecting')")
+    sqlx::query("UPDATE mdm_access.management_sessions SET state = 'superseded' WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state IN ('challenge', 'collecting')")
         .bind(tenant).bind(registration).execute(c).await.map_err(database::db)?;
     Ok(())
 }

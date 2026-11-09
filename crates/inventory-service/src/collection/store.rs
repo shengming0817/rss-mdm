@@ -24,7 +24,7 @@ fn restored_scope(row: &PgRow) -> Result<Scope, Error> {
     let scope = serde_json::from_str::<Scope>(&row.try_get::<String, _>("scope").map_err(db)?)
         .map_err(|_| corrupt())?;
     if scope.tenant().to_string() != row.try_get::<String, _>("tenant_id").map_err(db)?
-        || scope.registration().as_str() != row.try_get::<String, _>("registration").map_err(db)?
+        || scope.registration().as_str() != row.try_get::<String, _>("device").map_err(db)?
         || scope.source().as_str() != row.try_get::<String, _>("source").map_err(db)?
         || scope.epoch().as_str() != row.try_get::<String, _>("epoch").map_err(db)?
         || rss_mdm_inventory::Source::parse(scope.source().as_str()).is_err()
@@ -243,7 +243,7 @@ pub async fn seal(
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.registration(Uuid::parse_str(run.scope.registration().as_str()).map_err(|_| corrupt())?);
+    audit.target_device(run.scope.registration().as_str());
     audit.identify_service("service:collection-finalizer");
     let details = serde_json::json!({"collectionResult":result,"reason":reason,"batchDigest":digest,"sealedAt":now});
 

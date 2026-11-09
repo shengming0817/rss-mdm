@@ -495,7 +495,7 @@ impl Departure for WindowsBusiness {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        registration: Uuid,
+        registration: String,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             rss_mdm_device_service::control::unmanage::native_departure_in(
@@ -510,7 +510,11 @@ impl Departure for WindowsBusiness {
     }
 }
 impl WakeDemand for WindowsBusiness {
-    fn candidates<'a>(&'a self, c: &'a mut PgConnection, after: Uuid) -> Pending<'a, Vec<Uuid>> {
+    fn candidates<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        after: &'a str,
+    ) -> Pending<'a, Vec<String>> {
         Box::pin(async move {
             let mut candidates = self
                 .0
@@ -547,37 +551,31 @@ impl WakeDemand for WindowsBusiness {
             Ok(candidates)
         })
     }
-    fn pending<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        device: &'a str,
-        registration: Uuid,
-        generation: i64,
-    ) -> Pending<'a, bool> {
+    fn pending<'a>(&'a self, c: &'a mut PgConnection, device: &'a str) -> Pending<'a, bool> {
         Box::pin(async move {
             let execution = self
                 .0
-                .windows_wake_pending_in(c, device, registration, generation)
+                .windows_wake_pending_in(c, device)
                 .await
                 .map_err(error)?;
             let configuration = self
                 .1
-                .windows_wake_pending_in(c, device, registration, generation)
+                .windows_wake_pending_in(c, device)
                 .await
                 .map_err(policy_error)?;
             let collection = self
                 .2
-                .windows_wake_pending_on(c, device, registration, generation)
+                .windows_wake_pending_on(c, device)
                 .await
                 .map_err(collection_fault)?;
             let software = self
                 .3
-                .windows_wake_pending_in(c, device, registration, generation)
+                .windows_wake_pending_in(c, device)
                 .await
                 .map_err(software_error)?;
             let bootstrap = self
                 .4
-                .windows_wake_pending_in(c, device, registration, generation)
+                .windows_wake_pending_in(c, device)
                 .await
                 .map_err(registration_error)?;
             Ok(execution || configuration || collection || software || bootstrap)

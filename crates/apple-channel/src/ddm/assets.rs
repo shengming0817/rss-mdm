@@ -24,14 +24,14 @@ pub async fn asset_binding(
         rss_mdm_inventory::ReportSource::MdmApple,
     )
     .await?;
-    let row=sqlx::query("SELECT user_key,snapshot FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND retired_at IS NULL")
-        .bind(p.tenant().to_string()).bind(operation).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT user_key, snapshot FROM mdm_apple.declarations WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3 AND retired_at IS NULL")
+        .bind(p.tenant().to_string()).bind(operation).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(None);
     };
     let user: String = row.try_get("user_key").map_err(db)?;
-    let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND state='active')")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(&user).fetch_one(c).await.map_err(db)?;
+    let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND state = 'active')")
+        .bind(p.tenant().to_string()).bind(p.device()).bind(&user).fetch_one(c).await.map_err(db)?;
     if !active {
         return Err(Error::Unauthorized);
     }
@@ -66,12 +66,11 @@ pub async fn asset(
         .devices
         .management_principal(&app.mount.credential(leaf.fingerprint())?)
         .await?;
-    audit.identify_device(p.registration());
+    audit.identify_device(p.device());
     audit.target_device(p.device());
-    audit.registration(p.registration());
     let mut tx = app.access.begin_read(&p.tenant().to_string()).await?;
-    let user:Option<String>=sqlx::query_scalar("SELECT user_key FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND retired_at IS NULL")
-        .bind(p.tenant().to_string()).bind(operation).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *tx).await.map_err(db)?;
+    let user:Option<String>=sqlx::query_scalar("SELECT user_key FROM mdm_apple.declarations WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3 AND retired_at IS NULL")
+        .bind(p.tenant().to_string()).bind(operation).bind(p.device()).fetch_optional(&mut *tx).await.map_err(db)?;
     tx.rollback().await.map_err(db)?;
     let user_access = if user.as_deref().is_some_and(|u| !u.is_empty()) {
         match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {

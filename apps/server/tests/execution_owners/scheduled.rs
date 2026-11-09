@@ -138,7 +138,7 @@ async fn published_owner_proofs_are_not_interchangeable_or_cached_authority() ->
     assert_eq!(before.len(), 2);
     assert_ne!(before[0].0, before[1].0);
     let mut stale = agent.clone();
-    stale.generation += 1;
+    stale.device = Uuid::new_v4().to_string();
     wake(&h, software_version, &stale, false).await?;
     assert_eq!(scheduled(&h).await?, before);
     let mut tx = command::seed_transaction(&h.c).await?;

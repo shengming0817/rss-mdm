@@ -79,8 +79,8 @@ async fn state(h: &Harness, id: Uuid) -> Result<(String, String, Option<Uuid>)> 
 // The issuance fixture already contains a verified real certificate. Seed its
 // retained PKI mapping so retirement must enqueue physical revocation, not an empty set.
 async fn certificate(h: &Harness) -> Result<()> {
-    let (leaf, metadata): (Vec<u8>, Value) = sqlx::query_as("SELECT decode(i.certificate_chain->>0,'base64'),i.metadata FROM mdm_access.certificate_issuances i JOIN mdm_access.credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) WHERE k.tenant_id=$1::uuid AND k.registration=$2")
-        .bind(h.c.tenant.to_string()).bind(h.p.registration()).fetch_one(&h.c.operator).await?;
+    let (leaf, metadata): (Vec<u8>, Value) = sqlx::query_as("SELECT decode(i.certificate_chain ->> 0, 'base64'), i.metadata FROM mdm_access.certificate_issuances AS i INNER JOIN mdm_access.credentials AS k ON (k.tenant_id, k.id) = (i.tenant_id, i.credential) WHERE k.tenant_id = CAST($1 AS uuid) AND k.device = $2")
+        .bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
     let issuer: Vec<u8> = serde_json::from_value(metadata["issuer"].clone())?;
     let serial: Vec<u8> = serde_json::from_value(metadata["serial"].clone())?;
     let root = crate::native_identity_t2_support::der(
@@ -96,10 +96,10 @@ async fn certificate(h: &Harness) -> Result<()> {
     sqlx::query("INSERT INTO mdm_pki.issuers(tenant_id,purpose,digest,revision,state,chain,provider,not_after) VALUES($1::uuid,'agent',$2,1,'active',$3,'step_ca',$4)")
         .bind(h.c.tenant.to_string()).bind(&issuer).bind(root)
         .bind(metadata["not_after"].as_i64().unwrap()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_pki.certificates(tenant_id,purpose,fingerprint,issuer,serial,registration,not_after,certificate,verification_version,verification_trust) VALUES($1::uuid,'agent',sha256($2),$3,$4,$5,$6,$2,1,sha256($2))")
+    sqlx::query("INSERT INTO mdm_pki.certificates (tenant_id, purpose, fingerprint, issuer, serial, device, not_after, certificate, verification_version, verification_trust) VALUES (CAST($1 AS uuid), 'agent', sha256($2), $3, $4, $5, $6, $2, 1, sha256($2))")
         .bind(h.c.tenant.to_string()).bind(leaf)
         .bind(issuer)
-        .bind(rss_mdm_device_trust::serial(&serial)).bind(h.p.registration())
+        .bind(rss_mdm_device_trust::serial(&serial)).bind(h.p.device())
         .bind(metadata["not_after"].as_i64().unwrap()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
@@ -135,6 +135,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     assert_eq!(h.state(script).await?["cancellation"], "requested");
     let cancelled:String=sqlx::query_scalar("SELECT agent_state->>'cancellation' FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(collection).fetch_one(&h.c.operator).await?;
     assert_eq!(cancelled, "confirmed");
+    cancellation_audit(&h, script, collection, credential).await?;
     running.expire(at + 301);
     running.cancel();
     let mut tx = command::seed_transaction(&h.c).await?;
@@ -231,8 +232,8 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     .await?;
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "complete");
-    let revoked: (String, bool, bool, i64) = sqlx::query_as("SELECT r.state,NOT EXISTS(SELECT FROM mdm_access.credentials k WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND k.state='active'),NOT EXISTS(SELECT FROM mdm_access.report_sources s WHERE s.tenant_id=r.tenant_id AND s.registration=r.id AND s.enabled),(SELECT count(*) FROM mdm_pki.revocations v JOIN mdm_pki.certificates k USING(tenant_id,purpose,issuer,serial) WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND v.state='pending') FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2")
-        .bind(h.c.tenant.to_string()).bind(h.p.registration()).fetch_one(&h.c.operator).await?;
+    let revoked: (String, bool, bool, i64) = sqlx::query_as("SELECT r.state, NOT EXISTS (SELECT FROM mdm_access.credentials AS k WHERE k.tenant_id = r.tenant_id AND k.device = r.id AND k.state = 'active'), NOT EXISTS (SELECT FROM mdm_access.report_sources AS s WHERE s.tenant_id = r.tenant_id AND s.device = r.id AND s.enabled), (SELECT count(*) FROM mdm_pki.revocations AS v INNER JOIN mdm_pki.certificates AS k USING (tenant_id, purpose, issuer, serial) WHERE k.tenant_id = r.tenant_id AND k.device = r.id AND v.state = 'pending') FROM mdm_access.devices AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2")
+        .bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
     assert_eq!(revoked, ("revoked".into(), true, true, 1));
     let before: serde_json::Value = sqlx::query_scalar(
         "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
@@ -273,6 +274,95 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     tx.rollback().await?;
     h.close().await
 }
+// Exercise the durable facts and real timeline projection, including task and device lookup.
+async fn cancellation_audit(
+    h: &Harness,
+    script: Uuid,
+    collection: Uuid,
+    credential: Uuid,
+) -> Result<()> {
+    use rss_mdm_audit_integration::operation::OperationOwner;
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_timeline_service::Query;
+    let account = h.c.account(&[Permission::AuditRead]).await?;
+    let proof = h.c.authenticate(&account).await?;
+    let timeline =
+        h.c.database
+            .timeline(h.c.audit.clone(), h.c.tenant, &[7; 32])?;
+    let query = Query {
+        device: Some(h.p.device().into()),
+        action: Some("credential_revoke".into()),
+        limit: Some(200),
+        ..Default::default()
+    };
+    let mut page = timeline
+        .diagnostics(&proof, "device_timeline", &query)
+        .await?;
+    for _ in 0..4 {
+        if page.coverage.complete {
+            break;
+        }
+        page = timeline
+            .diagnostics(&proof, "device_timeline", &query)
+            .await?;
+    }
+    assert!(page.coverage.complete);
+    for (owner, id) in [
+        (OperationOwner::Script, script),
+        (OperationOwner::CollectionExecution, collection),
+        (OperationOwner::CredentialTask, credential),
+    ] {
+        let facts: Vec<_> = page
+            .items
+            .iter()
+            .filter(|item| item.fact.operation_id == Some(id))
+            .collect();
+        assert_eq!(
+            facts.len(),
+            1,
+            "each cancelled task appears once in its device timeline"
+        );
+        let item = facts[0];
+        assert_eq!(
+            (
+                item.fact.device_id.as_deref(),
+                item.fact.target.kind.as_str(),
+                item.fact.target.id.as_str(),
+                item.fact.audit_outcome.as_str(),
+                item.operation_confirmed,
+            ),
+            (
+                Some(h.p.device()),
+                "device",
+                h.p.device(),
+                "succeeded",
+                true
+            )
+        );
+        let locator = item.operation.as_ref().expect("cancelled task locator");
+        assert_eq!(
+            (
+                locator.owner,
+                locator.operation_id,
+                locator.device.as_deref()
+            ),
+            (owner, id, Some(h.p.device()))
+        );
+    }
+    let other = Query {
+        device: Some(Uuid::new_v4().to_string()),
+        ..query
+    };
+    assert!(
+        timeline
+            .diagnostics(&proof, "device_timeline", &other)
+            .await?
+            .items
+            .is_empty()
+    );
+    Ok(())
+}
+
 pub(super) async fn native(
     h: &Harness,
     reason: Option<&str>,
@@ -333,19 +423,19 @@ pub(super) async fn native(
     let report = Uuid::new_v4();
     let at = now();
     let mut tx = command::seed_transaction(&h.c).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(h.c.tenant.to_string()).bind(target.registration_id).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(h.c.tenant.to_string()).bind(target.device.clone()).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         h.c.tenant,
-        target.registration_id,
+        &target.device,
         "mdm.windows",
         epoch,
         "cleanup-native",
     )?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, h.c.tenant, progress.definition())
         .await?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,evidence,result,reason,sealed_at,deadline) VALUES($1::uuid,$2,$3,'mdm.windows',$4,$5,0,$6,$7,$8,$9,$10,$11,to_timestamp($6+300))").bind(h.c.tenant.to_string()).bind(report).bind(target.registration_id).bind(epoch).bind(scope.encode()?).bind(at).bind(serde_json::to_string(&progress)?).bind(json!({"nativeTemplate":template})).bind(if reason.is_some() {"failed"} else {"pending"}).bind(reason).bind(reason.map(|_|at)).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_inventory.collection_tasks(tenant_id,id,policy_version,channel,origin,source_objects,device,registration,generation,occurrence,created_at,available_at,deadline,native_delivery,collection_run,started_at,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'mdm','\"policy\"',$4,$5,$6,1,$7,$8,$8,$8+300,'sent',$9,$8,$10,true)").bind(h.c.tenant.to_string()).bind(task).bind(version).bind(json!([object])).bind(&target.device).bind(target.registration_id).bind(task.to_string()).bind(at).bind(report).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, evidence, result, reason, sealed_at, deadline) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.windows', $4, $5, 0, $6, $7, $8, $9, $10, $11, to_timestamp($6 + 300))").bind(h.c.tenant.to_string()).bind(report).bind(target.device.clone()).bind(epoch).bind(scope.encode()?).bind(at).bind(serde_json::to_string(&progress)?).bind(json!({"nativeTemplate":template})).bind(if reason.is_some() {"failed"} else {"pending"}).bind(reason).bind(reason.map(|_|at)).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_inventory.collection_tasks (tenant_id, id, policy_version, channel, origin, source_objects, device, occurrence, created_at, available_at, deadline, native_delivery, collection_run, started_at, dispatch_fingerprint, gateway_accepted) VALUES (CAST($1 AS uuid), $2, $3, 'mdm', '\"policy\"', $4, $5, $6, $7, $7, $7 + 300, 'sent', $8, $7, $9, TRUE)").bind(h.c.tenant.to_string()).bind(task).bind(version).bind(json!([object])).bind(&target.device).bind(task.to_string()).bind(at).bind(report).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((policy, task, object))
 }
@@ -393,8 +483,8 @@ async fn credential_run(h: &Harness, state: &rss_mdm_task_state::RunState) -> Re
     .await?;
     let id = Uuid::new_v4();
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("INSERT INTO mdm_recovery_tasks.runs(tenant_id,id,policy_version,origin,source_objects,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'\"policy\"',$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,true)")
-        .bind(h.c.tenant.to_string()).bind(id).bind(version).bind(json!([h.object])).bind(h.p.device()).bind(h.p.registration()).bind(h.p.generation()).bind(id.to_string()).bind(now()).bind(now()+300).bind(serde_json::to_value(state)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_recovery_tasks.runs(tenant_id,id,policy_version,origin,source_objects,device,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'\"policy\"',$4,$5,$6,$7,$7,$8,$9,$10,true)")
+        .bind(h.c.tenant.to_string()).bind(id).bind(version).bind(json!([h.object])).bind(h.p.device()).bind(id.to_string()).bind(now()).bind(now()+300).bind(serde_json::to_value(state)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(id)
 }
@@ -407,10 +497,10 @@ async fn cleanup_history_is_bounded_and_resumes() -> Result<()> {
     // Legal terminal history: cancellation alone does not confirm remote stop.
     let blocked = Uuid::from_u128(65);
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("UPDATE rss_device_command.commands d SET status='cancelled',version=d.version+1,terminal_at=d.queued_at+1 FROM mdm_devices.control_operations o WHERE (o.tenant_id,o.id::text)=(d.tenant_id,d.command_id) AND o.tenant_id=$1::uuid AND o.registration=$2")
-        .bind(h.c.tenant.to_string()).bind(native.registration).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_windows.attempts(tenant_id,id,operation,registration,generation,ordinal,credential,session,message,phase,request) VALUES($1::uuid,$2,$3,$4,1,1,$5,1,1,'execute',$6)")
-        .bind(h.c.tenant.to_string()).bind(Uuid::new_v4()).bind(blocked).bind(native.registration).bind(native.credential).bind(vec![0u8;68]).execute(&mut *tx).await?;
+    sqlx::query("UPDATE rss_device_command.commands AS d SET status = 'cancelled', version = d.version + 1, terminal_at = d.queued_at + 1 FROM mdm_devices.control_operations AS o WHERE (o.tenant_id, CAST(o.id AS text)) = (d.tenant_id, d.command_id) AND o.tenant_id = CAST($1 AS uuid) AND o.device = $2")
+        .bind(h.c.tenant.to_string()).bind(native.device.clone()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.attempts (tenant_id, id, operation, device, ordinal, credential, session, message, phase, request, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, 1, $5, 1, 1, 'execute', $6, $7)")
+        .bind(h.c.tenant.to_string()).bind(Uuid::new_v4()).bind(blocked).bind(native.device.clone()).bind(native.credential).bind(vec![0u8;68]).bind(native.epoch).execute(&mut *tx).await?;
     tx.commit().await?;
     let retirement = accept(&h, &h.object).await?;
     step(&h, retirement).await?;
@@ -450,14 +540,14 @@ pub(super) async fn native_controls(
     use rss_mdm_device_service::control::device_control::{Action, Input};
     let native = crate::native_identity_t2_support::seed(&h.c, "windows").await?;
     h.object = serde_json::from_value(
-        json!({"object":{"kind":"endpoint","id":native.device},"associationVersion":null,"verified":true,"members":[{"device":native.device,"channel":"mdm","registrationId":native.registration,"generation":1}]}),
+        json!({"object":{"kind":"endpoint","id":native.device},"associationVersion":null,"verified":true,"members":[{"device":native.device,"channel":"mdm"}]}),
     )?;
     h.scope = planning::published(&h.c, &h.object).await?.scope;
     let account = h.c.account(&[Permission::DeviceWipe]).await?;
     let proof = h.c.authenticate(&account).await?;
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) VALUES($1::uuid,$2,1,'10.0.22631.0',4,1,extract(epoch FROM clock_timestamp())::bigint)")
-        .bind(h.c.tenant.to_string()).bind(native.registration).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.capabilities (tenant_id, device, protocol_epoch, os_version, edition, session, observed_at) VALUES (CAST($1 AS uuid), $2, $3, '10.0.22631.0', 4, 1, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint))")
+        .bind(h.c.tenant.to_string()).bind(native.device.clone()).bind(native.epoch).execute(&mut *tx).await?;
     tx.commit().await?;
     for n in 1..=count {
         h.a.service
@@ -467,11 +557,7 @@ pub(super) async fn native_controls(
                 &Input {
                     operation_id: Uuid::from_u128(n),
                     deadline: now() + 300,
-                    action: Action::Wipe {
-                        confirmed: true,
-                        expected_registration_id: native.registration,
-                        expected_generation: 1,
-                    },
+                    action: Action::Wipe { confirmed: true },
                 },
                 &h.c.request(&proof)?,
             )

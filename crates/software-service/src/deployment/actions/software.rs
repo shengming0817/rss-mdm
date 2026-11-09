@@ -85,11 +85,7 @@ pub(crate) async fn slot_in(
         .await?
     {
         Some((stage, _)) => stage,
-        None if matches!(request, Some(Invocation::SelfService(_)))
-            && !policy.assignment.stages().is_empty() =>
-        {
-            0
-        }
+        None if matches!(request, Some(Invocation::SelfService(_))) => 0,
         None => return Ok(Preparation::NotEligible),
     };
     let mut prepared = Vec::new();
@@ -112,8 +108,7 @@ pub(crate) async fn slot_in(
         else {
             return Ok(Preparation::NotEligible);
         };
-        if current.registration != target.registration
-            || current.generation != target.generation
+        if current.device != target.device
             || policy
                 .assignment
                 .admitted_in(&service.admission(), tx, p, a)
@@ -128,12 +123,12 @@ pub(crate) async fn slot_in(
             .native_packages
             .get(&rss_mdm_policy::SoftwareTarget::new(p, a))
             .ok_or(Error::Unsupported)?;
-        serde_json::json!({"channel":"mdm","generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":"install","target":{"kind":"device"},"packages":[package.effect_identity()],"packageVersions":{(package.effect_identity()):package.effect_version()}})
+        serde_json::json!({"channel":"mdm","resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":"install","target":{"kind":"device"},"packages":[package.effect_identity()],"packageVersions":{(package.effect_identity()):package.effect_version()}})
     } else {
         let Some(binding) = crate::deployment::agent_facts::agent_binding_in(
             tx,
             service.agent_store.clone(),
-            target.registration,
+            target.device.clone(),
         )
         .await?
         else {
@@ -148,7 +143,7 @@ pub(crate) async fn slot_in(
             return Ok(Preparation::NotEligible);
         }
         let Some((platform, architecture)) =
-            db::agent_profile_in(service, tx, target.registration).await?
+            db::agent_profile_in(service, tx, target.device.clone()).await?
         else {
             return Ok(Preparation::NotEligible);
         };
@@ -171,7 +166,7 @@ pub(crate) async fn slot_in(
             )
             .await?
             .ok_or(Error::Forbidden)?;
-        let effect = effect_key(policy, target, &steps)?;
+        let effect = effect_key(policy, &steps)?;
         prepared = steps;
         effect
     };
@@ -207,11 +202,14 @@ pub(crate) async fn slot_in(
     let device = devices;
 
     let version = policy.id;
-    let stage_scope = policy.assignment.stages()[stage].scope;
+    let stage_scope = policy
+        .assignment
+        .stage_scope(stage)
+        .ok_or(Error::Malformed)?;
     let prefix = format!("software:stage:{stage_scope}:%");
     let key = effect.clone();
     let (pending, last, satisfied, failures, attempts): (bool, Option<i64>, bool, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
-        // Unresolved effects conflict across intent, version, digest and registration generations.
+        // Unresolved effects conflict across intent, version, digest and device generations.
         // Only the latest precisely ordered completion can satisfy the requested effect;
         // a later removal, replacement or known failure invalidates earlier success.
         sqlx::query_as(r#"
@@ -236,7 +234,7 @@ pub(crate) async fn slot_in(
                    count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6)
             FROM effects
         "#)
-            .bind(tenant).bind(key).bind(device).bind(version).bind(now).bind(prefix).bind(existing).fetch_one(c).await
+            .bind(tenant).bind(key).bind(&device).bind(version).bind(now).bind(prefix).bind(existing).fetch_one(c).await
     })).await?;
     if satisfied && !pending {
         return Ok(Preparation::Satisfied);
@@ -294,7 +292,7 @@ pub(crate) async fn slot_in(
         Some(Invocation::Event(request)) => format!("software:stage:{stage_scope}:event:{request}"),
         None => format!(
             "software:stage:{stage_scope}:desired:{}:{attempts}",
-            target.registration
+            target.device
         ),
     };
     let tenant = tx.tenant_id().to_string();
@@ -303,7 +301,7 @@ pub(crate) async fn slot_in(
     let key = occurrence.clone();
     let (exists, active): (bool, i64) = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4 AND ($6::uuid IS NULL OR id<>$6)), (SELECT count(*) FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5 AND ($6::uuid IS NULL OR id<>$6))")
-            .bind(tenant).bind(version).bind(device).bind(key).bind(now).bind(existing).fetch_one(c).await
+            .bind(tenant).bind(version).bind(&device).bind(key).bind(now).bind(existing).fetch_one(c).await
     })).await?;
     if active >= 128 {
         return Ok(Preparation::Waiting(std::time::Duration::from_secs(5)));
@@ -321,7 +319,6 @@ pub(crate) async fn slot_in(
 }
 pub(crate) fn effect_key(
     policy: &crate::deployment::sources::software::SoftwareExecutionPolicy,
-    target: &Target,
     steps: &[rss_mdm_agent_wire::runtime::SoftwareTaskStep],
 ) -> Result<serde_json::Value> {
     let root = steps.last().ok_or(Error::Malformed)?;
@@ -367,7 +364,7 @@ pub(crate) fn effect_key(
         .collect();
     let packages: Vec<_> = versions.keys().collect();
     Ok(
-        serde_json::json!({"packages":packages,"packageVersions":versions,"channel":"agent","generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":if policy.assignment.intent()==rss_mdm_policy::SoftwareIntent::ExplicitUninstall {"uninstall"} else {"install"},"target":effect_target}),
+        serde_json::json!({"packages":packages,"packageVersions":versions,"channel":"agent","resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":if policy.assignment.intent()==rss_mdm_policy::SoftwareIntent::ExplicitUninstall {"uninstall"} else {"install"},"target":effect_target}),
     )
 }
 pub async fn persist_effect_in(

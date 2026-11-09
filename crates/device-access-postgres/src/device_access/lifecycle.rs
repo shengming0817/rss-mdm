@@ -28,8 +28,8 @@ pub(crate) async fn emit_on(
         data: EventData::DeviceAccess {
             operation_id: binding.operation_id,
             binding_id: binding.id,
-            registration_id: binding.registration,
-            registration_generation: binding.registration_generation,
+            device_id: binding.device.to_string(),
+
             instance_id: binding.person.instance,
             principal_id: binding.person.principal,
             previous_principal,
@@ -559,8 +559,6 @@ pub(super) async fn load_on(
 pub struct TargetProgress {
     pub binding_id: Uuid,
     pub device: String,
-    pub registration: Uuid,
-    pub registration_generation: i64,
     pub revision: i64,
     pub phase: ExternalPhase,
 }
@@ -652,8 +650,7 @@ impl crate::service::Service {
             .map(|b| TargetProgress {
                 binding_id: b.id,
                 device: b.device.clone(),
-                registration: b.registration,
-                registration_generation: b.registration_generation,
+
                 revision: b.revision,
                 phase: phases.get(&b.id).copied().unwrap_or(ExternalPhase::Unknown),
             })

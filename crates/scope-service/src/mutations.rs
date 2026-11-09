@@ -1,29 +1,8 @@
 use crate::*;
-use operation::Operation;
-use rss_contract::Timepoint;
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_scope::{Reference, ScopeDefinition};
+use rss_mdm_scope_postgres::{OwnedScope, ScopeOwner};
 impl Scopes {
-    pub async fn scope_definition(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-    ) -> transaction::Result<rss_mdm_scope_postgres::DefinitionSnapshot> {
-        let head = self.store.head_in(tx, id, false).await?;
-        Ok(rss_mdm_scope_postgres::DefinitionSnapshot {
-            revision: head.revision,
-            definition: head.definition,
-        })
-    }
-    pub async fn scope_read(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-    ) -> transaction::Result<Value> {
-        let h = self.store.head_in(tx, id, false).await?;
-        Ok(
-            serde_json::json!({"id":id,"revision":h.revision,"definition":h.definition,"resolution":h.resolution,"resolution_revision":h.resolution_revision}),
-        )
-    }
     pub(crate) async fn validate_references_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -64,62 +43,208 @@ impl Scopes {
         }
         Ok(())
     }
-    pub async fn scope_change(
+
+    pub async fn owned_in(
         &self,
         tx: &mut PgTransaction<'_>,
+        owner: ScopeOwner,
+    ) -> transaction::Result<Option<OwnedScope>> {
+        Ok(self.store.owned_in(tx, owner).await?)
+    }
+    pub async fn lock_owned_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        ids: &[Uuid],
+    ) -> transaction::Result<()> {
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            self.store.lock_scope_in(tx, id).await?;
+        }
+        Ok(())
+    }
+    pub async fn authorize_definition_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        proof: &AuthorizedPrincipal,
+        definition: &ScopeDefinition,
+    ) -> transaction::Result<()> {
+        let grant = crate::action_admission::current(tx, proof).await?;
+        grant.require_all_devices(proof, Permission::InventoryRead)?;
+        if definition
+            .references()
+            .iter()
+            .any(|r| matches!(r, Reference::Group(_)))
+        {
+            grant.require(proof, Permission::GroupRead, None)?;
+        }
+        Ok(())
+    }
+    /// Participate in the Policy save; the caller owns CAS, audit and settlement.
+    pub async fn save_owned_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        proof: &AuthorizedPrincipal,
+        owner: ScopeOwner,
         id: Uuid,
-        op: &Operation<ScopeChange>,
-        _: Timepoint,
-    ) -> transaction::Result<Value> {
+        definition: &ScopeDefinition,
+    ) -> transaction::Result<wire::ScopeRead> {
         self.store.lock_scope_in(tx, id).await?;
-        self.store.admit_in(tx).await?;
-        if id.is_nil() {
+        self.store.admit_configuration_in(tx).await?;
+        self.authorize_definition_in(tx, proof, definition).await?;
+        self.validate_references_in(tx, definition).await?;
+        let previous = self.store.owned_in(tx, owner).await?;
+        if previous.as_ref().is_some_and(|s| s.retired || s.id != id) {
+            return Err(Error::Conflict.into());
+        }
+        let expected = previous.as_ref().map_or(0, |s| s.head.revision);
+        let task = if previous
+            .as_ref()
+            .is_none_or(|s| s.head.definition != *definition)
+        {
+            self.store
+                .put_in(tx, id, expected, owner, definition)
+                .await?;
+            Some(self.enqueue_in(tx, Uuid::new_v4(), id).await?)
+        } else {
+            self.store.pending_task_in(tx, id).await?
+        };
+        let child = self
+            .store
+            .owned_in(tx, owner)
+            .await?
+            .ok_or(Error::NotFound)?;
+        Ok(child_view(owner, child, task))
+    }
+    pub async fn read_owned_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        owner: ScopeOwner,
+    ) -> transaction::Result<wire::ScopeRead> {
+        let child = self
+            .store
+            .owned_in(tx, owner)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let task = if child.retired {
+            None
+        } else {
+            self.store.pending_task_in(tx, child.id).await?
+        };
+        Ok(child_view(owner, child, task))
+    }
+    pub async fn retire_owned_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        owner: ScopeOwner,
+    ) -> transaction::Result<()> {
+        let child = self
+            .store
+            .owned_in(tx, owner)
+            .await?
+            .ok_or(Error::NotFound)?;
+        self.store
+            .retire_in(tx, child.id, child.head.revision, owner)
+            .await?;
+        Ok(())
+    }
+    /// Explicit recomputation keeps its original actor-bound Scope receipt.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "borrowed Policy transaction keeps authority, audit and both CAS revisions explicit"
+    )]
+    pub async fn recompute_owned_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        proof: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        owner: ScopeOwner,
+        operation: Uuid,
+        expected_policy_revision: u64,
+        current_policy_revision: u64,
+    ) -> transaction::Result<wire::ScopeReceipt> {
+        if operation.is_nil() {
             return Err(Error::Malformed.into());
         }
-        let (revision, task) = match &op.input {
-            ScopeChange::Put { definition } => {
-                self.validate_references_in(tx, definition).await?;
-                let revision = self
-                    .store
-                    .put_in(tx, id, op.expected_revision, definition)
-                    .await?;
-                let task = self.enqueue_in(tx, Uuid::new_v4(), id).await?;
-                (revision, Some(task))
+        self.store.admit_configuration_in(tx).await?;
+        let child = self
+            .store
+            .owned_in(tx, owner)
+            .await?
+            .ok_or(Error::NotFound)?;
+        self.authorize_definition_in(tx, proof, &child.head.definition)
+            .await?;
+        let fingerprint =
+            transaction::fingerprint(&(owner, operation, expected_policy_revision, proof.actor()))?;
+        if let Some(value) = self
+            .store
+            .replay_operation_in(
+                tx,
+                proof.principal_id(),
+                proof.instance_id(),
+                operation,
+                &fingerprint,
+            )
+            .await?
+        {
+            audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+            return stored(serde_json::from_value(value));
+        }
+        if child.retired || expected_policy_revision != current_policy_revision {
+            return Err(Error::Conflict.into());
+        }
+        self.store.lock_scope_in(tx, child.id).await?;
+        self.validate_references_in(tx, &child.head.definition)
+            .await?;
+        let old = self.store.pending_task_in(tx, child.id).await?;
+        if let Some(old) = old {
+            if self.store.run_in(tx, old).await?.is_some() {
+                self.store.phase_in(tx, old, "superseded").await?;
             }
-            ScopeChange::Recompute => {
-                let head = self.store.head_in(tx, id, true).await?;
-                if head.revision != op.expected_revision {
-                    return Err(Error::Conflict.into());
-                }
-                self.validate_references_in(tx, &head.definition).await?;
-                let old = self.store.pending_task_in(tx, id).await?;
-                if let Some(old) = old {
-                    if self.store.run_in(tx, old).await?.is_some() {
-                        self.store.phase_in(tx, old, "superseded").await?;
-                    }
-                    self.finish_in(tx, old, Some("superseded")).await?;
-                }
-                let new = self.enqueue_in(tx, Uuid::new_v4(), id).await?;
-                if let Some(old) = old {
-                    self.store.replace_task_in(tx, old, new).await?;
-                }
-                (head.revision, Some(new))
-            }
-            ScopeChange::Delete => {
-                let head = self.store.head_in(tx, id, true).await?;
-                if head.revision != op.expected_revision {
-                    return Err(Error::Conflict.into());
-                }
-                if self.dependents.used_in(tx, id).await? {
-                    return Err(Error::Referenced.into());
-                }
-                (
-                    self.store.delete_in(tx, id, op.expected_revision).await?,
-                    None,
-                )
-            }
+            self.finish_in(tx, old, Some("superseded")).await?;
+        }
+        let new = self.enqueue_in(tx, Uuid::new_v4(), child.id).await?;
+        if let Some(old) = old {
+            self.store.replace_task_in(tx, old, new).await?;
+        }
+        let value = wire::ScopeReceipt {
+            id: child.id,
+            revision: child.head.revision,
+            task: Some(new),
         };
-        Ok(serde_json::json!({"id":id,"revision":revision,"task":task}))
+        self.store
+            .record_operation_in(
+                tx,
+                proof.principal_id(),
+                proof.instance_id(),
+                operation,
+                &fingerprint,
+                &json(&value)?,
+            )
+            .await?;
+        let fact = rss_mdm_audit_integration::Fact::business(
+            audit,
+            rss_mdm_audit_integration::operation::OperationOwner::Scope,
+            &format!("scope:{}:{operation}", proof.principal_id()),
+            200,
+            "success",
+            None,
+        )?;
+        self.audit_store.append_in(tx, &fact).await?;
+        Ok(value)
+    }
+}
+fn child_view(owner: ScopeOwner, child: OwnedScope, task: Option<Uuid>) -> wire::ScopeRead {
+    wire::ScopeRead {
+        id: child.id,
+        stage: owner.stage,
+        revision: child.head.revision,
+        definition: child.head.definition,
+        retired: child.retired,
+        resolution: child.head.resolution,
+        resolution_revision: child.head.resolution_revision,
+        task,
     }
 }
 
@@ -132,12 +257,12 @@ impl Scopes {
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
         use rss_mdm_authorization_service::Permission;
-        p.manage(Permission::ScopeRead)?;
+        p.manage(Permission::PolicyRead)?;
         crate::transaction::inspect(&self.runtime, self.tenant, (self, p), |(s, p), tx| {
             Box::pin(async move {
                 crate::action_admission::current(tx, p).await?.require(
                     p,
-                    Permission::ScopeRead,
+                    Permission::PolicyRead,
                     None,
                 )?;
                 let value = s

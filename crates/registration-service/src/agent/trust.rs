@@ -25,7 +25,7 @@ impl Service {
 
         input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
-        a.identify_device(p.registration());
+        a.identify_device(p.device());
         a.target(p.device());
         a.operation(
             input.operation,
@@ -33,13 +33,13 @@ impl Service {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let trust = self.trust().trust.public().map_err(|_| Error::Corrupt)?;
-        let d = digest(&(p.registration(), input))?;
+        let d = digest(&(p.device(), input))?;
         self.write(a, (self, p, input, trust, d, a), |ctx, c| {
             Box::pin(async move {
                 let (service, p, input, trust, d, a) = ctx;
                 crate::device::require_use_in(c, p, service.consumer_use()).await?;
                 let tenant = service.tenant.to_string();
-                let actor = p.registration().to_string();
+                let actor = p.device().to_string();
                 let hash = Sha256::digest(d.as_bytes()).to_vec();
                 let replay = rss_mdm_pki_service::mutation::replay(
                     profile,
@@ -64,7 +64,7 @@ impl Service {
                     profile,
                     c,
                     &service.tenant.to_string(),
-                    p.registration(),
+                    p.device(),
                     trust,
                     input,
                 )
@@ -107,10 +107,10 @@ impl Service {
 
         input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
-        if input.registration != p.registration() || input.generation != p.generation() as u64 {
+        if input.device_id != p.device() {
             return Err(Error::Forbidden.into());
         }
-        a.identify_device(p.registration());
+        a.identify_device(p.device());
         a.target(p.device());
         a.operation(
             input.operation,

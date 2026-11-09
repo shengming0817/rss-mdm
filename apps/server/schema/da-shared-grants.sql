@@ -1,7 +1,7 @@
 BEGIN;
 GRANT SELECT(instance_id,management_tenant_id) ON public.mdm_installation TO da_owner,da_access;
 GRANT USAGE ON SCHEMA mdm_access,mdm_agent TO da_access;
-GRANT SELECT ON mdm_access.devices,mdm_access.registrations,mdm_access.credentials,mdm_access.certificate_issuances,mdm_access.report_sources,mdm_agent.bindings TO da_access;
+GRANT SELECT ON mdm_access.devices,mdm_access.credentials,mdm_access.certificate_issuances,mdm_access.report_sources,mdm_agent.bindings TO da_access;
 GRANT USAGE ON SCHEMA mdm TO da_access;
 GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO da_access;
 GRANT USAGE ON SCHEMA rss_audit TO da_access;
@@ -12,7 +12,7 @@ GRANT SELECT ON rss_transactional_messaging.policy,rss_transactional_messaging.o
 GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution(),rss_transactional_messaging.prepare_outbox_partitions(jsonb),rss_transactional_messaging.append_outbox(bytea,jsonb),rss_transactional_messaging.consumer_scope_domain(),rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text),rss_transactional_messaging.projection_scope_matches(text,text) TO da_access;
 -- Agent fact verification on the shared Identity transaction never authenticates a DA registration as Agent.
 GRANT USAGE ON SCHEMA mdm_access,mdm_agent TO mdm_identity_runtime;
-GRANT SELECT ON mdm_access.devices,mdm_access.registrations,mdm_access.credentials,mdm_access.certificate_issuances,mdm_access.report_sources,mdm_agent.bindings TO mdm_identity_runtime;
+GRANT SELECT ON mdm_access.devices,mdm_access.credentials,mdm_access.certificate_issuances,mdm_access.report_sources,mdm_agent.bindings TO mdm_identity_runtime;
 GRANT USAGE ON SCHEMA mdm TO da_owner;
 GRANT REFERENCES(tenant_id,revision) ON mdm.asset_changes TO da_owner;
 GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO da_owner;

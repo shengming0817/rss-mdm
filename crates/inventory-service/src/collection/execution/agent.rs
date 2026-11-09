@@ -22,10 +22,7 @@ pub struct EventEffects {
     pub fact: Fact,
 }
 pub(crate) fn belongs(run: &Run, p: &DevicePrincipal) -> Result<()> {
-    if run.target.device != p.device()
-        || run.target.registration != p.registration()
-        || run.target.generation != p.generation()
-    {
+    if run.target.device != p.device() {
         return Err(Error::Unauthorized.into());
     }
     Ok(())
@@ -59,7 +56,7 @@ impl CollectionService {
         if !super::agent_facts::agent_binding_in(
             tx,
             self.transactions.agent_store.clone(),
-            p.registration(),
+            p.device().to_string(),
         )
         .await?
         .is_some_and(|b| b.inventory() && b.task())
@@ -78,20 +75,18 @@ impl CollectionService {
     ) -> Result<()> {
         self.agent_prepare_in(tx, p).await?;
         let tenant = tx.tenant_id().to_string();
-        let registration = p.registration();
+        let device = p.device().to_owned();
         let versions = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_inventory.collection_admission(tenant_id,registration) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(registration).execute(&mut *c).await?;
-            let after: Option<Uuid> = sqlx::query_scalar("SELECT policy_after FROM mdm_inventory.collection_admission WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(registration).fetch_one(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_inventory.collection_admission(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(&device).execute(&mut *c).await?;
+            let after: Option<Uuid> = sqlx::query_scalar("SELECT policy_after FROM mdm_inventory.collection_admission WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE").bind(&tenant).bind(&device).fetch_one(&mut *c).await?;
             let rows = sqlx::query("SELECT id,current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND state='enabled' AND definition->'action'->>'kind'='agent_collection' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 64").bind(&tenant).bind(after).fetch_all(&mut *c).await?;
             let next = if rows.len()==64 { rows.last().map(|r|r.try_get::<Uuid,_>("id")).transpose()? } else { None };
-            sqlx::query("UPDATE mdm_inventory.collection_admission SET policy_after=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(next).execute(c).await?;
+            sqlx::query("UPDATE mdm_inventory.collection_admission SET policy_after = $3 WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(tenant).bind(&device).bind(next).execute(c).await?;
             rows.into_iter().map(|r|r.try_get::<Uuid,_>("current_version")).collect::<std::result::Result<Vec<_>,sqlx::Error>>()
         })).await?;
         let now = storage::now(tx).await?;
         let target = Target {
             device: p.device().into(),
-            registration: p.registration(),
-            generation: p.generation(),
         };
         for version in versions {
             let plan = policy::read_in(&self.transactions, tx, version).await?;

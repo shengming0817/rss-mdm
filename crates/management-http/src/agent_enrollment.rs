@@ -39,7 +39,7 @@ pub fn routes(
 }
 pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_request_directory, get_request_details, get_registration_recovery_operation, get_issuance_recovery_operations, get_connection_state, put_save_connections, post_publish_connections, get_unconfirmed_devices, get_download_connections, get_connection_operation, get_connection_observation, post_create_configuration, get_list_configurations, get_read_configuration, get_configuration_operation, post_revoke_configuration, post_authorize, post_reenroll, post_revoke, get_settings, put_update_settings, post_recovery, post_recover_issuance, get_issuance_recovery_operation } }
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_request_directory, get_request_details, get_registration_recovery_operation, get_issuance_recovery_operations, get_connection_state, put_save_connections, post_publish_connections, get_unconfirmed_devices, get_download_connections, get_connection_operation, get_connection_observation, post_create_configuration, get_list_configurations, get_read_configuration, get_configuration_operation, post_revoke_configuration, post_authorize, post_revoke, get_settings, put_update_settings, post_recovery, post_recover_issuance, get_issuance_recovery_operation } }
         RegisterModule1 {
             get_request_directory: rss_mdm_http_contract::module::Route::new(
                 "/devices/{device}/agent-requests",
@@ -58,7 +58,7 @@ pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Decl
                 ),
             ),
             get_registration_recovery_operation: rss_mdm_http_contract::module::Route::new(
-                "/agent-registrations/{id}/recovery-operations/{operation}",
+                "/devices/{id}/registration/recovery-operations/{operation}",
                 get(
                     registration_recovery_operation,
                     &contracts::AGENT_REGISTRATION_RECOVERY,
@@ -177,14 +177,6 @@ pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Decl
                     &[RouteOperation::Action, RouteOperation::Lifecycle],
                 ),
             ),
-            post_reenroll: rss_mdm_http_contract::module::Route::new(
-                "/agent-requests/{id}/reenroll/{device}",
-                post(
-                    reenroll,
-                    &contracts::AGENT_REQUEST_COMMANDS,
-                    &[RouteOperation::Action, RouteOperation::Lifecycle],
-                ),
-            ),
             post_revoke: rss_mdm_http_contract::module::Route::new(
                 "/agent-requests/{id}/cancel",
                 post(
@@ -210,7 +202,7 @@ pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Decl
                 ),
             ),
             post_recovery: rss_mdm_http_contract::module::Route::new(
-                "/agent-registrations/{id}/recovery",
+                "/devices/{id}/registration/recovery",
                 post(
                     recovery,
                     &contracts::AGENT_REGISTRATION_RECOVERY,
@@ -320,19 +312,6 @@ async fn authorize(
             .await?,
     ))
 }
-async fn reenroll(
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(a): Extension<RequestAudit>,
-    Path((id, device)): Path<(Uuid, String)>,
-    input: Body<Operation>,
-) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
-    Ok(Json(
-        service(&app)?
-            .authorize_reenrollment(&auth.proof, id, body(input)?.operation_id, &device, &a)
-            .await?,
-    ))
-}
 async fn revoke(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
@@ -350,12 +329,12 @@ async fn recovery(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
     input: Body<wire::GrantRequest>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
     Ok(Json(
         service(&app)?
-            .recovery(&auth.proof, id, &body(input)?, &a)
+            .recovery(&auth.proof, &id, &body(input)?, &a)
             .await?,
     ))
 }
@@ -653,7 +632,7 @@ async fn request_details(
 async fn registration_recovery_operation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path((id, operation)): Path<(Uuid, Uuid)>,
+    Path((id, operation)): Path<(String, Uuid)>,
     identity: Result<
         Query<rss_mdm_registration_service::agent::queries::ReceiptIdentity>,
         axum::extract::rejection::QueryRejection,
@@ -663,7 +642,7 @@ async fn registration_recovery_operation(
     app.as_ref()
         .as_deref()
         .ok_or(Error::Unsupported)?
-        .registration_recovery_operation(&auth, id, operation, &identity)
+        .registration_recovery_operation(&auth, &id, operation, &identity)
         .await
         .map(Json)
         .map_err(Into::into)

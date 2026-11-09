@@ -210,10 +210,7 @@ pub struct CredentialTaskSpec {
     pub platform: TaskPlatform,
     /// Native processor architecture.
     pub architecture: TaskArchitecture,
-    /// Current registration.
-    pub registration_id: Uuid,
-    /// Current registration generation.
-    pub generation: u64,
+
     /// Persistent run identity and credential operation identity.
     pub task_id: Uuid,
     /// Exact attempt.
@@ -277,16 +274,9 @@ impl CredentialTaskSpec {
         self.authorization.validate(self.tenant_id)?;
         if self.wire_version != WIRE_VERSION
             || self.platform != TaskPlatform::Windows
-            || [
-                self.tenant_id,
-                self.registration_id,
-                self.task_id,
-                self.attempt_id,
-            ]
-            .iter()
-            .any(Uuid::is_nil)
-            || self.generation == 0
-            || self.generation > i64::MAX as u64
+            || [self.tenant_id, self.task_id, self.attempt_id]
+                .iter()
+                .any(Uuid::is_nil)
             || self.device_id.is_empty()
             || self.device_id.len() > 1024
             || self.device_id.chars().any(char::is_control)
@@ -365,8 +355,6 @@ impl CredentialTaskSpec {
             "rss-mdm/credential-envelope/v1",
             self.tenant_id,
             &self.device_id,
-            self.registration_id,
-            self.generation,
             self.task_id,
             self.attempt_id,
             &self.operation,

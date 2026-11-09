@@ -41,7 +41,7 @@ pub struct Coordinates {
     pub actor: String,
     pub instance: String,
     pub version: i64,
-    pub expected_generation: i64,
+
     pub operation: Uuid,
     pub source: ReportSource,
 }
@@ -120,8 +120,8 @@ impl Admission {
         )
         .await?;
         authority.current(c, d).await?;
-        let same:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2 AND authority_kind='apple_account' AND account_version=$3 AND account_reference=$4 AND expected_generation=$5 AND issuance_operation=$6 AND state<>'cancelled')")
-            .bind(&d.tenant).bind(d.id).bind(d.version).bind(serde_json::to_value(reference).map_err(|_|Error::Corrupt)?).bind(d.expected_generation).bind(d.operation).fetch_one(c).await.map_err(db)?;
+        let same:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2 AND authority_kind='apple_account' AND account_version=$3 AND account_reference=$4 AND issuance_operation=$5 AND state<>'cancelled')")
+            .bind(&d.tenant).bind(d.id).bind(d.version).bind(serde_json::to_value(reference).map_err(|_|Error::Corrupt)?).bind(d.operation).fetch_one(c).await.map_err(db)?;
         if !same {
             return Err(Error::Unauthorized);
         }
@@ -145,7 +145,7 @@ impl Admission {
                 actor: auth.actor,
                 instance: auth.instance,
                 version: auth.version,
-                expected_generation: auth.expected_generation,
+
                 operation: auth.operation,
                 source: auth.source,
             },
@@ -241,7 +241,6 @@ impl Admission {
             || !row.try_get::<bool, _>("live").map_err(db)?
             || row.try_get::<String, _>("actor").map_err(db)? != d.actor
             || row.try_get::<String, _>("instance").map_err(db)? != d.instance
-            || row.try_get::<i64, _>("expected_generation").map_err(db)? != d.expected_generation
             || uuid(&row, "issuance_operation")? != d.operation
             || row.try_get::<String, _>("device").map_err(db)? != d.device
             || row.try_get::<String, _>("source").map_err(db)? != d.source.as_str()
@@ -328,7 +327,7 @@ pub async fn account(
         actor: row.try_get("actor").map_err(db)?,
         instance: row.try_get("instance").map_err(db)?,
         version: row.try_get("account_version").map_err(db)?,
-        expected_generation: row.try_get("expected_generation").map_err(db)?,
+
         operation: uuid(&row, "issuance_operation")?,
         source: ReportSource::MdmApple,
     };
@@ -439,9 +438,10 @@ pub async fn issue_in(
         crate::quotas::Channel::MacosMdm,
     )
     .await?;
-    let existing=sqlx::query("SELECT q.state,q.authority_kind,q.expires_at>clock_timestamp() AS live,g.actor,g.instance FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.id=$2 FOR UPDATE OF q")
+    let existing=sqlx::query("SELECT q.device,q.state,q.authority_kind,q.expires_at>clock_timestamp() AS live,g.actor,g.instance FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.id=$2 FOR UPDATE OF q")
         .bind(proof.tenant_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
-    let registration;
+    let device;
+    let state;
     if let Some(row) = existing {
         if row.try_get::<String, _>("authority_kind").map_err(db)? != "apple_account"
             || row.try_get::<String, _>("actor").map_err(db)? != proof.principal_id()
@@ -449,23 +449,11 @@ pub async fn issue_in(
         {
             return Err(Error::Unauthorized);
         }
-        let state: String = row.try_get("state").map_err(db)?;
+        state = row.try_get::<String, _>("state").map_err(db)?;
+        device = row.try_get::<String, _>("device").map_err(db)?;
         if state == "cancelled" {
             return Err(Error::Unauthorized);
         }
-        registration = if state == "bound" {
-            Some(
-                super::store::active_registration(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    c,
-                    proof.tenant_id(),
-                    id,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
         if state == "pending" && !row.try_get::<bool, _>("live").map_err(db)? {
             crate::quotas::admit_on(
                 rss_mdm_install_support::StorageProfile::Mdm,
@@ -489,18 +477,14 @@ pub async fn issue_in(
             crate::quotas::Channel::MacosMdm,
         )
         .await?;
-        let device = format!(
-            "self:{}:{}:{}",
-            proof.instance_id(),
-            proof.principal_id(),
-            id
-        );
-        proof.self_enrollment(&device)?;
+        device = Uuid::new_v4().to_string();
+        state = "pending".into();
+        proof.new_self_enrollment()?.check()?;
         let grant = Uuid::new_v4();
         sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
             .bind(proof.tenant_id()).bind(grant).bind(proof.principal_id()).bind(proof.instance_id()).bind(&device).execute(&mut *c).await.map_err(db)?;
-        sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,account_version,account_reference,account_challenge) VALUES($1::uuid,$2,'apple_account',$3,'pending','mdm.apple',0,$4,clock_timestamp()+interval '300 seconds',true,1,$5,$6)")
-            .bind(proof.tenant_id()).bind(id).bind(grant).bind(operation).bind(serde_json::to_value(&reference).map_err(|_|Error::Corrupt)?).bind(&hash).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,device,issuance_operation,expires_at,self_service,account_version,account_reference,account_challenge) VALUES($1::uuid,$2,'apple_account',$3,'pending','mdm.apple',$7,$4,clock_timestamp()+interval '300 seconds',true,1,$5,$6)")
+            .bind(proof.tenant_id()).bind(id).bind(grant).bind(operation).bind(serde_json::to_value(&reference).map_err(|_|Error::Corrupt)?).bind(&hash).bind(&device).execute(&mut *c).await.map_err(db)?;
         crate::device::registration_user::initialize_on(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -508,20 +492,14 @@ pub async fn issue_in(
             &proof.user()?,
         )
         .await?;
-        registration = None;
     }
     let expiry:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM expires_at))::bigint FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2").bind(proof.tenant_id()).bind(id).fetch_one(&mut *c).await.map_err(db)?;
     let receipt = Receipt {
         operation_id: operation,
         enrollment_id: id,
-        status: if registration.is_some() {
-            "bound"
-        } else {
-            "pending"
-        }
-        .into(),
+        status: state,
         expires_at: expiry,
-        registration,
+        device_id: device,
         source: ReportSource::MdmApple,
     };
     proof.check_live()?;
@@ -562,7 +540,7 @@ pub async fn issue_organization_in(
         crate::quotas::Channel::MacosMdm,
     )
     .await?;
-    let device = format!("ade:{organization}:{id}");
+    let device = Uuid::new_v4().to_string();
     crate::device::store::lock_channel(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -577,8 +555,8 @@ pub async fn issue_organization_in(
     let grant = Uuid::new_v4();
     sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,'service:apple-ade','service',$3,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
         .bind(tenant).bind(grant).bind(&device).execute(&mut *c).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,organization_version,organization_challenge) VALUES($1::uuid,$2,'apple_ade',$3,'pending','mdm.apple',0,$2,clock_timestamp()+interval '300 seconds',false,1,$4)")
-        .bind(tenant).bind(id).bind(grant).bind(organization_challenge(tenant,id,challenge)).execute(c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,device,issuance_operation,expires_at,self_service,organization_version,organization_challenge) VALUES($1::uuid,$2,'apple_ade',$3,'pending','mdm.apple',$5,$2,clock_timestamp()+interval '300 seconds',false,1,$4)")
+        .bind(tenant).bind(id).bind(grant).bind(organization_challenge(tenant,id,challenge)).bind(&device).execute(c).await.map_err(db)?;
     Ok(Admission {
         data: Coordinates {
             tenant: tenant.into(),
@@ -587,7 +565,7 @@ pub async fn issue_organization_in(
             actor: "service:apple-ade".into(),
             instance: "service".into(),
             version: 1,
-            expected_generation: 0,
+
             operation: id,
             source: ReportSource::MdmApple,
         },
@@ -631,7 +609,7 @@ pub async fn organization(
         actor: row.try_get("actor").map_err(db)?,
         instance: row.try_get("instance").map_err(db)?,
         version: row.try_get("organization_version").map_err(db)?,
-        expected_generation: row.try_get("expected_generation").map_err(db)?,
+
         operation: uuid(&row, "issuance_operation")?,
         source: ReportSource::MdmApple,
     };
@@ -653,8 +631,7 @@ pub async fn entra_in(
 ) -> Result<Admission, Error> {
     proof.check_live().map_err(|_| Error::Unauthorized)?;
     let claims = proof.claims().map_err(|_| Error::Unauthorized)?;
-    let device_id = claims.device.ok_or(Error::Unauthorized)?;
-    let device = format!("entra:{}:{}", claims.tenant, device_id);
+    claims.device.ok_or(Error::Unauthorized)?;
     let tenant = proof.account().tenant.to_string();
     let actor = proof.account().principal.as_uuid().to_string();
     let instance = proof.instance().to_string();
@@ -662,35 +639,18 @@ pub async fn entra_in(
         return Err(Error::Malformed);
     }
     crate::admission::lock_in(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant).await?;
-    // Organization authority uses the shared lifecycle without personal quota locks.
-    crate::device::store::lock_channel(
-        rss_mdm_install_support::StorageProfile::Mdm,
-        c,
-        &tenant,
-        &device,
-        rss_mdm_inventory::Channel::Mdm,
-    )
-    .await?;
-    let old = sqlx::query("SELECT q.id FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.authority_kind='windows_entra' AND g.device=$2 AND q.state<>'cancelled' AND ((q.state='bound' AND EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=q.tenant_id AND r.request_id=q.id AND r.state='active' AND r.purpose='primary')) OR (q.state='pending' AND q.expires_at>clock_timestamp())) FOR UPDATE OF q")
-        .bind(&tenant).bind(&device).fetch_optional(&mut *c).await.map_err(db)?;
-    let (id, generation) = if let Some(old) = old {
-        let id: Uuid = old.try_get("id").map_err(db)?;
-        let row = request(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, id).await?;
+    let existing = sqlx::query("SELECT q.device,q.state,q.organization_version,q.windows_profile,g.actor,g.instance FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.authority_kind='windows_entra' FOR UPDATE OF q")
+        .bind(&tenant).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
+    let device = if let Some(row) = existing {
         if row.try_get::<String, _>("actor").map_err(db)? != actor
             || row.try_get::<String, _>("instance").map_err(db)? != instance
             || row.try_get::<i64, _>("organization_version").map_err(db)? != policy_version
-            || row
-                .try_get::<Option<String>, _>("windows_profile")
-                .map_err(db)?
-                .as_deref()
-                != Some(profile.as_str())
+            || row.try_get::<String, _>("windows_profile").map_err(db)? != profile.as_str()
+            || row.try_get::<String, _>("state").map_err(db)? == "cancelled"
         {
             return Err(Error::Conflict);
         }
-        (
-            id,
-            row.try_get::<i64, _>("expected_generation").map_err(db)?,
-        )
+        row.try_get::<String, _>("device").map_err(db)?
     } else {
         crate::admission::require_new_in(
             rss_mdm_install_support::StorageProfile::Mdm,
@@ -699,14 +659,12 @@ pub async fn entra_in(
             crate::quotas::Channel::WindowsMdm,
         )
         .await?;
-        // Active enrollments use certificate renewal; a new native token cannot replace another owner.
-        let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND purpose='primary'")
-            .bind(&tenant).bind(&device).fetch_one(&mut *c).await.map_err(db)?;
+        let device = Uuid::new_v4().to_string();
         let grant = Uuid::new_v4();
         sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
             .bind(&tenant).bind(grant).bind(&actor).bind(&instance).bind(&device).execute(&mut *c).await.map_err(db)?;
-        sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,organization_version,windows_profile) VALUES($1::uuid,$2,'windows_entra',$3,'pending','mdm.windows',$4,$2,clock_timestamp()+interval '300 seconds',false,$5,$6)")
-            .bind(&tenant).bind(id).bind(grant).bind(generation).bind(policy_version).bind(profile.as_str()).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,device,issuance_operation,expires_at,self_service,organization_version,windows_profile) VALUES($1::uuid,$2,'windows_entra',$3,'pending','mdm.windows',$4,$2,clock_timestamp()+interval '300 seconds',false,$5,$6)")
+            .bind(&tenant).bind(id).bind(grant).bind(&device).bind(policy_version).bind(profile.as_str()).execute(&mut *c).await.map_err(db)?;
         crate::device::registration_user::initialize_on(
             rss_mdm_install_support::StorageProfile::Mdm,
             c,
@@ -718,7 +676,7 @@ pub async fn entra_in(
             },
         )
         .await?;
-        (id, generation)
+        device
     };
     let admission = Admission {
         data: Coordinates {
@@ -728,7 +686,7 @@ pub async fn entra_in(
             actor,
             instance,
             version: policy_version,
-            expected_generation: generation,
+
             operation: id,
             source: ReportSource::MdmWindows,
         },
@@ -795,7 +753,7 @@ pub async fn agent_policy(
             actor: row.try_get("actor").map_err(db)?,
             instance: row.try_get("instance").map_err(db)?,
             version: row.try_get("password_version").map_err(db)?,
-            expected_generation: row.try_get("expected_generation").map_err(db)?,
+
             operation: uuid(&row, "issuance_operation")?,
             source: ReportSource::parse(&row.try_get::<String, _>("source").map_err(db)?)
                 .map_err(|_| Error::Corrupt)?,

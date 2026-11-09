@@ -9,7 +9,7 @@ pub trait Retirement: Send + Sync {
         tx: &'a mut sqlx::PgConnection,
         facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
         tenant: &'a str,
-        registration: uuid::Uuid,
+        device: &'a str,
         state: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 }
@@ -18,58 +18,15 @@ pub async fn retire(
     tx: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
-    registration: uuid::Uuid,
+    device: &str,
     state: &str,
     participant: &dyn Retirement,
 ) -> Result<(), Error> {
-    // Close the complete parent/child set under its endpoint fence before invoking participants.
-    let device: String =
-        sqlx::query_scalar(crate::storage_profile::sql(profile).lifecycle_retire_1)
-            .bind(tenant)
-            .bind(registration)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(crate::database::db)?;
-    lock_device_in(profile, tx, tenant, &device).await?;
-    sqlx::query(crate::storage_profile::sql(profile).lifecycle_retire_2)
-        .bind(tenant)
-        .bind(registration)
-        .execute(&mut *tx)
-        .await
-        .map_err(crate::database::db)?;
-    // The caller owns the device/channel lock; parent before children is the common order.
-    let children = sqlx::query_scalar::<_, uuid::Uuid>(
-        crate::storage_profile::sql(profile).lifecycle_retire_3,
-    )
-    .bind(tenant)
-    .bind(registration)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(crate::database::db)?;
-    crate::device::store::retire_state_in(
-        profile,
-        tx,
-        tenant,
-        registration,
-        state,
-        participant.events(),
-    )
-    .await?;
-    for child in children {
-        crate::device::store::retire_state_in(
-            profile,
-            tx,
-            tenant,
-            child,
-            state,
-            participant.events(),
-        )
+    lock_device_in(profile, tx, tenant, device).await?;
+    // Credentials and protocol requests close with their device in this transaction.
+    crate::device::store::retire_state_in(profile, tx, tenant, device, state, participant.events())
         .await?;
-        participant.retire(tx, facts, tenant, child, state).await?;
-    }
-    participant
-        .retire(tx, facts, tenant, registration, state)
-        .await
+    participant.retire(tx, facts, tenant, device, state).await
 }
 
 /// The product's single endpoint fence: registration, execution and all channels,
@@ -196,81 +153,5 @@ pub async fn begin_retirement_in(
     if changed.rows_affected() != 1 {
         return Err(Error::Conflict);
     }
-    Ok(())
-}
-
-/// A new administrator enrollment may reopen a fully retired endpoint. Old
-/// enrollment authority is cancelled before clearing the fence in this transaction.
-pub(crate) async fn authorize_reenrollment_in(
-    profile: rss_mdm_install_support::StorageProfile,
-    c: &mut sqlx::PgConnection,
-    proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-    device: &str,
-) -> Result<(), Error> {
-    if profile != proof.profile() {
-        return Err(crate::Error::Forbidden);
-    }
-
-    use rss_mdm_authorization_service as auth;
-    proof.enrollment(device)?.check()?;
-    auth::lock_on(
-        proof.authority_profile(),
-        c,
-        proof.tenant_id(),
-        proof.instance_id(),
-    )
-    .await?;
-    auth::snapshot_on(
-        proof.authority_profile(),
-        c,
-        proof.tenant_id(),
-        proof.instance_id(),
-    )
-    .await?
-    .require(proof, auth::Permission::Enrollment, Some(device))
-    .map_err(|_| Error::Forbidden)?;
-    lock_device_in(profile, c, proof.tenant_id(), device).await?;
-    let retirement: Option<uuid::Uuid> = sqlx::query_scalar(
-        crate::storage_profile::sql(profile).lifecycle_authorize_reenrollment_in_1,
-    )
-    .bind(proof.tenant_id())
-    .bind(device)
-    .fetch_optional(&mut *c)
-    .await
-    .map_err(crate::database::db)?
-    .flatten();
-    let Some(retirement) = retirement else {
-        return Ok(());
-    };
-    let active: bool = sqlx::query_scalar(
-        crate::storage_profile::sql(profile).lifecycle_authorize_reenrollment_in_2,
-    )
-    .bind(proof.tenant_id())
-    .bind(retirement)
-    .fetch_one(&mut *c)
-    .await
-    .map_err(crate::database::db)?;
-    if active {
-        return Err(Error::Conflict);
-    }
-    sqlx::query(crate::storage_profile::sql(profile).lifecycle_authorize_reenrollment_in_3)
-        .bind(proof.tenant_id())
-        .bind(device)
-        .execute(&mut *c)
-        .await
-        .map_err(crate::database::db)?;
-    sqlx::query(crate::storage_profile::sql(profile).lifecycle_authorize_reenrollment_in_4)
-        .bind(proof.tenant_id())
-        .bind(device)
-        .execute(&mut *c)
-        .await
-        .map_err(crate::database::db)?;
-    sqlx::query(crate::storage_profile::sql(profile).lifecycle_authorize_reenrollment_in_5)
-        .bind(proof.tenant_id())
-        .bind(device)
-        .execute(c)
-        .await
-        .map_err(crate::database::db)?;
-    proof.check_live()?;
     Ok(())
 }

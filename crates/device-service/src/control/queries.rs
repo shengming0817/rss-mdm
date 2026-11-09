@@ -125,17 +125,15 @@ impl Queries {
         op: &storage::Operation,
     ) -> Result<bool> {
         let mut native_values = true;
-        if !op.authority.control_matches(
-            &op.request,
-            op.registration,
-            op.registration_generation,
-        )? && matches!(
-            op.request.task,
-            Task::Macos {
-                request: rss_mdm_apple_mdm::native::request::Request::Command { .. }
-                    | rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
-            }
-        ) {
+        if !op.authority.control_matches(&op.request)?
+            && matches!(
+                op.request.task,
+                Task::Macos {
+                    request: rss_mdm_apple_mdm::native::request::Request::Command { .. }
+                        | rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
+                }
+            )
+        {
             let mut required = op.request.task.permissions()?;
             required.extend_from_slice(op.authority.required());
             required.sort();

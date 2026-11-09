@@ -33,7 +33,6 @@ impl IssuanceAuthority<'_> {
                 actor: a.actor.clone(),
                 instance: a.instance.clone(),
                 version: a.version,
-                expected_generation: a.expected_generation,
                 operation: a.operation,
                 source: a.source,
             },
@@ -88,7 +87,7 @@ pub struct Intent {
     pub profile: Vec<u8>,
     pub issuer: Vec<u8>,
     pub configuration: String,
-    pub registration: Uuid,
+    pub device: String,
     pub credential: Uuid,
     pub epoch: Uuid,
     pub sealed: Vec<u8>,
@@ -110,7 +109,7 @@ pub(crate) fn intent(row: sqlx::postgres::PgRow) -> Result<Intent, Error> {
         profile: row.try_get("profile").map_err(db)?,
         issuer: row.try_get("issuer").map_err(db)?,
         configuration: row.try_get("configuration").map_err(db)?,
-        registration: uuid(&row, "registration")?,
+        device: row.try_get("device").map_err(db)?,
         credential: uuid(&row, "credential")?,
         epoch: uuid(&row, "epoch")?,
         sealed: row.try_get("secrets").map_err(db)?,
@@ -193,7 +192,7 @@ async fn issue_intent_on(
     input: (&[u8], EnrollmentType),
     protocol_device: Option<&str>,
     now: i64,
-) -> Result<(Intent, Option<(Uuid, Uuid, Uuid)>), Error> {
+) -> Result<(Intent, Option<(Uuid, Uuid, String)>), Error> {
     let d = authority.coordinates();
     let (csr, enrollment_type) = input;
     if let Some(device) = protocol_device {
@@ -215,8 +214,9 @@ async fn issue_intent_on(
         .map_err(db)?
     {
         let mut old = intent(old)?;
-        if protocol_device
-            .is_some_and(|value| old.protocol_device.as_deref().unwrap_or(&d.device) != value)
+        if old.device != d.device
+            || protocol_device
+                .is_some_and(|value| old.protocol_device.as_deref().unwrap_or(&d.device) != value)
             || old.enrollment_type != enrollment_type
             || old.csr != csr
             || old.configuration != windows.configuration
@@ -228,7 +228,7 @@ async fn issue_intent_on(
         let replacement = (previous != old.signing_attempt).then_some((
             previous,
             old.signing_attempt,
-            old.registration,
+            old.device.clone(),
         ));
         return Ok((old, replacement));
     }
@@ -246,16 +246,15 @@ async fn issue_intent_on(
     if row.try_get::<String, _>("state").map_err(db)? != "pending" {
         return Err(Error::Conflict);
     }
-    let registration = Uuid::new_v4();
     let intent = Intent {
         signing_attempt: Uuid::new_v4(),
         protocol_device: protocol_device.map(str::to_owned),
         enrollment_type,
         csr: csr.to_vec(),
-        profile: windows.ca.profile(&verified, registration, now)?.encode()?,
+        profile: windows.ca.profile(&verified, &d.device, now)?.encode()?,
         issuer: windows.ca.der()?,
         configuration: windows.configuration.clone(),
-        registration,
+        device: d.device.clone(),
         credential: Uuid::new_v4(),
         epoch: Uuid::new_v4(),
         sealed: windows
@@ -282,7 +281,7 @@ async fn issue_intent_on(
             profile: &intent.profile,
             issuer: &intent.issuer,
             configuration: &intent.configuration,
-            registration: intent.registration.to_string(),
+            device: intent.device.clone(),
             credential: intent.credential.to_string(),
             epoch: intent.epoch.to_string(),
             secrets: &intent.sealed,
@@ -305,7 +304,7 @@ pub(crate) async fn resume_profile(
     let profile = certificate::IssuanceProfile::decode(profile_bytes)?;
     let csr = Csr::verify(bytes)?;
     let pem = csr.pem()?;
-    let subject = profile.registration.to_string();
+    let subject = profile.device.to_string();
     let issuer = rss_mdm_device_trust::digest(&windows.ca.der()?);
     let old_issuer = profile
         .issuer
@@ -340,7 +339,7 @@ pub(crate) async fn resume_profile(
             .fetch_one(&mut *c)
             .await
             .map_err(db)?;
-    let fresh = windows.ca.profile(&csr, profile.registration, now)?;
+    let fresh = windows.ca.profile(&csr, &profile.device, now)?;
     if fresh
         .issuer
         .iter()
@@ -444,7 +443,6 @@ pub async fn complete_issuance(
     audit: &RequestAudit,
     now: i64,
     mount: &crate::device::ChannelMount,
-    retirement: &dyn rss_mdm_registration_service::Retirement,
 ) -> Result<(), Error> {
     complete(
         store,
@@ -455,7 +453,6 @@ pub async fn complete_issuance(
         audit,
         now,
         mount,
-        retirement,
     )
     .await
 }
@@ -472,7 +469,6 @@ pub(crate) async fn complete(
     audit: &RequestAudit,
     now: i64,
     mount: &crate::device::ChannelMount,
-    retirement: &dyn rss_mdm_registration_service::Retirement,
 ) -> Result<(), Error> {
     let d = authority.coordinates();
     let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
@@ -497,7 +493,6 @@ pub(crate) async fn complete(
             (
                 store,
                 CompletionInputs {
-                    retirement,
                     windows,
                     authority: &authority,
                     intent,
@@ -505,7 +500,6 @@ pub(crate) async fn complete(
                     credential: &credential,
                     operation: &operation,
                     audit,
-                    facts: Vec::new(),
                 },
             ),
             |(store, inputs), tx| {
@@ -515,9 +509,6 @@ pub(crate) async fn complete(
                             Box::pin(complete_on(c, inputs))
                         })
                         .await?;
-                    for fact in &inputs.facts {
-                        store.append(tx, fact).await.map_err(Error::from)?;
-                    }
                     let fact = rss_mdm_audit_integration::Fact::observation(
                         inputs.audit,
                         &format!(
@@ -550,7 +541,6 @@ pub(crate) async fn complete(
     crate::operations::settle(attempt, audit)
 }
 struct CompletionInputs<'a> {
-    retirement: &'a dyn rss_mdm_registration_service::Retirement,
     windows: &'a Windows,
     authority: &'a IssuanceAuthority<'a>,
     intent: &'a Intent,
@@ -558,14 +548,12 @@ struct CompletionInputs<'a> {
     credential: &'a VerifiedChannelCredential,
     operation: &'a Operation<'a>,
     audit: &'a RequestAudit,
-    facts: Vec<rss_mdm_audit_integration::Fact>,
 }
 async fn complete_on(
     tx: &mut sqlx::PgConnection,
     inputs: &mut CompletionInputs<'_>,
 ) -> Result<bool, Error> {
     let CompletionInputs {
-        retirement,
         windows,
         authority,
         intent,
@@ -573,7 +561,6 @@ async fn complete_on(
         credential,
         operation,
         audit,
-        facts,
     } = inputs;
     let windows = *windows;
     let authority = *authority;
@@ -595,7 +582,7 @@ async fn complete_on(
         if old != certificate {
             return Err(Error::Conflict);
         }
-        audit.registration(intent.registration);
+        audit.target_device(&intent.device);
         return Ok(true);
     }
     if row.try_get::<String, _>("state").map_err(db)? != "pending" {
@@ -611,13 +598,10 @@ async fn complete_on(
                 &BindRegistration {
                     operation_id: d.operation,
                     request_id: d.id,
-                    expected_generation: d.expected_generation,
                     source: ReportSource::MdmWindows,
                 },
                 d.device.clone(),
-                [intent.registration, intent.credential, intent.epoch],
-                facts,
-                *retirement,
+                [intent.credential, intent.epoch],
             )
             .await?
         }
@@ -627,9 +611,7 @@ async fn complete_on(
                 tx,
                 admission,
                 credential,
-                [intent.registration, intent.credential, intent.epoch],
-                facts,
-                *retirement,
+                [intent.credential, intent.epoch],
             )
             .await?
         }
@@ -649,7 +631,7 @@ async fn complete_on(
         tx,
         &d.tenant,
         "windows",
-        intent.registration,
+        &intent.device,
         &rss_mdm_device_trust::digest(&intent.issuer),
         certificate,
     )
@@ -668,7 +650,7 @@ async fn complete_on(
         }
         IssuanceAuthority::Native(p) => p.mark_bound_in(tx).await?,
     }
-    audit.registration(receipt.registration);
+    audit.target_device(&receipt.device);
     authority.check_live()?;
     windows_receipts::save(
         tx,
@@ -716,7 +698,7 @@ pub(crate) fn provision_request(
     tenant: &str,
 ) -> Result<Vec<u8>, Error> {
     let secrets = w.protection.open(tenant, request, &intent.sealed)?;
-    let subject = format!("CN={}", intent.registration);
+    let subject = format!("CN={}", intent.device);
     // SHA-1 is only the Windows certificate-store address; management authority uses SHA-256.
     let thumbprint = |bytes: &[u8]| -> String {
         ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, bytes)
@@ -732,7 +714,7 @@ pub(crate) fn provision_request(
             poll: &w.poll,
             push_pfn: w.push.as_ref().map(|p| p.pfn.as_str()),
             enrollment_type: intent.enrollment_type,
-            enterprise_device_id: &intent.registration.to_string(),
+            enterprise_device_id: &intent.device.to_string(),
             authorities: &w.trust_certificates()?,
             certificate,
             certificate_thumbprint: &thumbprint(certificate),
@@ -741,7 +723,7 @@ pub(crate) fn provision_request(
             renewal_discovery_url: &w
                 .renewal_discovery_url(rss_mdm_registration_service::Purpose::Primary),
             provider_id: &w.provider_id,
-            username: &intent.registration.to_string(),
+            username: &intent.device.to_string(),
             client_password: rss_mdm_windows_mdm::Secret(&secrets.client_password),
             server_password: rss_mdm_windows_mdm::Secret(&secrets.server_password),
             server_nonce: &secrets.server_nonce,
@@ -768,7 +750,7 @@ pub(crate) async fn authorize_profile(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    let subject = profile.registration.to_string();
+    let subject = profile.device.to_string();
     let provider = w
         .providers
         .get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)
@@ -804,7 +786,7 @@ pub async fn sign(
 ) -> Result<Vec<u8>, Error> {
     let w = app.windows()?;
     let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
-    if profile.registration != intent.registration
+    if profile.device != intent.device
         || profile.issuer != sha2::Sha256::digest(&intent.issuer).as_slice()
         || intent.configuration != w.configuration
     {
@@ -831,7 +813,7 @@ pub(crate) async fn sign_profile(
     let w = app.windows()?;
     let csr = Csr::verify(bytes)?;
     let pem = csr.pem()?;
-    let subject = profile.registration.to_string();
+    let subject = profile.device.to_string();
     let digest = csr.digest();
     let issuer = profile
         .issuer
@@ -889,7 +871,7 @@ pub(crate) async fn prepare_transaction<C: Send, R: Send>(
         &'a mut sqlx::PgConnection,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = Result<(R, Option<(Uuid, Uuid, Uuid)>), Error>>
+            dyn std::future::Future<Output = Result<(R, Option<(Uuid, Uuid, String)>), Error>>
                 + Send
                 + 'a,
         >,
@@ -919,7 +901,7 @@ pub(crate) async fn prepare_transaction<C: Send, R: Send>(
                         })
                         .await?;
                     if let Some((old, new, registration)) = result.1 {
-                        audit.registration(registration);
+                        audit.target_device(&registration);
                         audit.operation(
                             new,
                             "windows_signing_prepare",

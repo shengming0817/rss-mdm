@@ -1,6 +1,6 @@
 //! Static owner query composition keeps optional transport out of independent DA SQL.
-/// Supply an owner-installed SELECT with tenant_id, installation, device, registration,
-/// generation, platform, capabilities and execution_context columns. No request text is accepted.
+/// Supply an owner-installed SELECT with tenant_id, installation, device,
+/// platform, capabilities and execution_context columns. No request text is accepted.
 #[macro_export]
 macro_rules! broker_release_query {
     ($agent_sessions:expr) => { concat!("WITH da_agent_sessions AS (", $agent_sessions, ") ", r###"-- Only this joined snapshot authorizes a secret release/current RP session.
@@ -15,8 +15,8 @@ JOIN identity_session_references s ON s.tenant_id=x.tenant_id
  AND s.principal_id::text=x.document#>>'{reference,principal}'
  AND s.session_id::text=x.document#>>'{reference,session}'
  AND s.credential_kind=x.document#>>'{reference,credentialKind}'
-LEFT JOIN rss_da.agent_delivery delivery ON delivery.tenant_id=x.tenant_id AND delivery.da_registration=(x.document#>>'{binding,registration}')::uuid AND delivery.da_generation=(x.document#>>'{binding,registrationGeneration}')::bigint AND delivery.enabled
-LEFT JOIN da_agent_sessions native ON (native.tenant_id,native.installation,native.device,native.registration,native.generation)=(delivery.tenant_id,delivery.agent_installation,delivery.agent_device,delivery.agent_registration,delivery.agent_generation)
+LEFT JOIN rss_da.agent_delivery delivery ON delivery.tenant_id=x.tenant_id AND delivery.da_device=x.document#>>'{binding,device}' AND delivery.enabled
+LEFT JOIN da_agent_sessions native ON (native.tenant_id,native.installation,native.device)=(delivery.tenant_id,delivery.agent_installation,delivery.agent_device)
 CROSS JOIN LATERAL (SELECT floor(extract(epoch FROM statement_timestamp()))::bigint AS now) clock
 CROSS JOIN LATERAL (SELECT rss_da.active_access_binding((x.document#>>'{binding,id}')::uuid,(x.document#>>'{binding,generation}')::bigint,clock.now) AS value) active
 WHERE x.tenant_id=$1 AND x.id=$5 AND x.phase='consumed' AND x.document->>'phase'='consumed'
@@ -36,14 +36,12 @@ WHERE x.tenant_id=$1 AND x.id=$5 AND x.phase='consumed' AND x.document->>'phase'
   AND native.execution_context#>>'{interactiveUser,identity}'=x.document#>>'{localSession,account,sid}'
   AND native.execution_context#>'{interactiveUser,windowsAuthority}'=x.document#>'{localSession,account,authority}'
   ) OR EXISTS(SELECT FROM rss_da.deployment_evidence e
-    WHERE e.tenant_id=x.tenant_id AND e.registration=(x.document#>>'{binding,registration}')::uuid
-      AND e.generation=(x.document#>>'{binding,registrationGeneration}')::bigint
+    WHERE e.tenant_id=x.tenant_id AND e.device=x.document#>>'{binding,device}'
     HAVING count(*)>0 AND bool_and(coalesce(
       e.fingerprint=$6#>>ARRAY['authorities',e.authority::text]
       AND e.document->>'installation'=(SELECT instance_id::text FROM rss_da.installation_binding WHERE singleton)
-      AND e.document->>'tenant'=e.tenant_id::text AND e.document->>'registration'=e.registration::text
+      AND e.document->>'tenant'=e.tenant_id::text AND e.document->>'device'=e.device
       AND e.document->>'device'=x.document#>>'{binding,device}'
-      AND e.document->>'generation'=x.document#>>'{binding,registrationGeneration}'
       AND e.document->>'revoked'='false' AND e.document#>>'{deployment,platform}'='windows'
       AND e.document#>>'{deployment,interactiveBroker}'='true'
       AND e.document->'localSession'=x.document->'localSession'
@@ -64,11 +62,9 @@ WHERE x.tenant_id=$1 AND x.id=$5 AND x.phase='consumed' AND x.document->>'phase'
     =(s.tenant_id,s.instance_id,s.principal_id,s.platform_binding_id,s.platform_binding_epoch,s.platform_source_id,s.platform_source_version)
    AND q.valid_until>clock.now)
   AND EXISTS(SELECT FROM rss_da.deployment_evidence e WHERE e.tenant_id=x.tenant_id
-   AND e.registration=(x.document#>>'{binding,registration}')::uuid
-   AND e.generation=(x.document#>>'{binding,registrationGeneration}')::bigint)
+   AND e.device=x.document#>>'{binding,device}')
   AND NOT EXISTS(SELECT FROM rss_da.deployment_evidence e WHERE e.tenant_id=x.tenant_id
-   AND e.registration=(x.document#>>'{binding,registration}')::uuid
-   AND e.generation=(x.document#>>'{binding,registrationGeneration}')::bigint
+   AND e.device=x.document#>>'{binding,device}'
    AND e.document->'localSession' IS DISTINCT FROM x.document->'localSession')
  ELSE false END
  AND ($7::uuid IS NULL OR (x.document->>'consumeOperation'=$7::text AND x.expires_at>clock.now AND x.sealed IS NOT NULL

@@ -49,8 +49,7 @@ fn assessment_preserves_all_platform_sources_and_field_datasets() {
     let sources = ["agent.builtin", "agent.script", "agent.osquery"]
         .map(|source| SourceReference {
             source: source.into(),
-            registration: "registration".into(),
-            generation: "1".into(),
+            device_id: "device".into(),
             epoch: "epoch".into(),
         })
         .to_vec();

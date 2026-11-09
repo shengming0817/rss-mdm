@@ -12,12 +12,14 @@ use rss_mdm_http_contract::{
 use std::sync::Arc;
 
 pub fn previews(
+    policies: Arc<Policies>,
     configuration: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     tasks: Arc<dyn crate::execution::task_reads::Reads>,
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register_previews(Some(cursor)).with_state(Arc::new(super::http_preview::StateServices {
+        policies,
         tasks,
         configuration,
         telemetry,
@@ -33,7 +35,7 @@ pub(crate) fn register_previews(
         rss_mdm_http_contract::route_module! { struct RegisterPreviewsModule1 for [Browser] { post_preview } }
         RegisterPreviewsModule1 {
             post_preview: rss_mdm_http_contract::module::Route::new(
-                "/policies/previews",
+                "/policies/{policy}/previews",
                 post(
                     super::http_preview::preview,
                     &contracts::POLICY_PREVIEWS,
@@ -60,20 +62,20 @@ pub(crate) fn register(
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
 ) -> Router<Arc<Policies>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     let router = {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { post_resolve, router_new, get_capabilities, get_list, get_read, post_change, delete_delete, post_rerun } }
-        RegisterModule1 { post_resolve: rss_mdm_http_contract::module::Route::new("/policies/resolve", post(resolve, &contracts::POLICIES, &[RouteOperation::Action])),
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { post_resolve, router_new, get_capabilities, get_list, get_read, post_change, delete_delete, post_rerun, scope_routes } }
+        RegisterModule1 { scope_routes: super::scope_http::routes(), post_resolve: rss_mdm_http_contract::module::Route::new("/policies/resolve", post(resolve, &contracts::POLICIES, &[RouteOperation::Action])),
 router_new: {
  rss_mdm_http_contract::route_module! { struct RegisterModule2 for [Browser] { get_assignments } }
- RegisterModule2 { get_assignments: rss_mdm_http_contract::module::Route::new("/policies/{id}/assignments", get(assignments, &contracts::POLICY_ASSIGNMENTS, &[RouteOperation::List])) }.assemble()
+ RegisterModule2 { get_assignments: rss_mdm_http_contract::module::Route::new("/policies/{policy}/assignments", get(assignments, &contracts::POLICY_ASSIGNMENTS, &[RouteOperation::List])) }.assemble()
 }
                 .bind_with(queries.as_ref(), Clone::clone),
 get_capabilities: rss_mdm_http_contract::module::Route::new("/policies/capabilities", get(capabilities, &contracts::POLICIES, &[RouteOperation::Action])),
 get_list: rss_mdm_http_contract::module::Route::new("/policies", get(list, &contracts::POLICIES, &[RouteOperation::List])),
-get_read: rss_mdm_http_contract::module::Route::new("/policies/{id}", rss_mdm_http_contract::routing::get(read, &contracts::POLICIES, &[RouteOperation::Get])),
-post_change: rss_mdm_http_contract::module::Route::new("/policies/{id}", rss_mdm_http_contract::routing::post(change, &contracts::POLICIES,
+get_read: rss_mdm_http_contract::module::Route::new("/policies/{policy}", rss_mdm_http_contract::routing::get(read, &contracts::POLICIES, &[RouteOperation::Get])),
+post_change: rss_mdm_http_contract::module::Route::new("/policies/{policy}", rss_mdm_http_contract::routing::post(change, &contracts::POLICIES,
                     &[RouteOperation::Create, RouteOperation::Update])),
-delete_delete: rss_mdm_http_contract::module::Route::new("/policies/{id}", rss_mdm_http_contract::routing::delete(delete, &contracts::POLICIES, &[RouteOperation::Delete])),
-post_rerun: rss_mdm_http_contract::module::Route::new("/policies/{id}/reruns", post(rerun, &contracts::POLICIES,
+delete_delete: rss_mdm_http_contract::module::Route::new("/policies/{policy}", rss_mdm_http_contract::routing::delete(delete, &contracts::POLICIES, &[RouteOperation::Delete])),
+post_rerun: rss_mdm_http_contract::module::Route::new("/policies/{policy}/reruns", post(rerun, &contracts::POLICIES,
                 &[RouteOperation::Action, RouteOperation::Create])) }.assemble()
     };
     match cursor {
@@ -90,7 +92,7 @@ async fn change(
         Json<rss_mdm_policy_service::operation::Operation<Change>>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> std::result::Result<Json<rss_mdm_policy::View>, Error> {
+) -> std::result::Result<Json<rss_mdm_policy_service::management::View>, Error> {
     let Json(input) = input.map_err(Error::from)?;
     audit.owned_operation(
         rss_mdm_audit_integration::operation::OperationOwner::Policy,
@@ -113,7 +115,7 @@ async fn read(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-) -> std::result::Result<Json<rss_mdm_policy::View>, Error> {
+) -> std::result::Result<Json<rss_mdm_policy_service::management::View>, Error> {
     super::read::read(&service, &auth.proof, &audit, id)
         .await
         .map(Json)
@@ -211,7 +213,7 @@ async fn delete(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: Result<Json<Delete>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<rss_mdm_policy::View>, Error> {
+) -> Result<Json<rss_mdm_policy_service::management::View>, Error> {
     let Json(body) = body.map_err(Error::from)?;
     audit.owned_operation(
         rss_mdm_audit_integration::operation::OperationOwner::Policy,

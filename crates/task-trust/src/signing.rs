@@ -117,8 +117,6 @@ impl Signing {
             || p.purpose() != rss_mdm_registration_service::device::Purpose::Primary
             || configuration.tenant_id.to_string() != p.tenant().to_string()
             || configuration.device_id != p.device()
-            || configuration.registration_id != p.registration()
-            || configuration.generation != p.generation() as u64
         {
             return Err(Error::Forbidden);
         }
@@ -157,8 +155,6 @@ impl Signing {
             || p.tenant() != self.tenant
             || configuration.tenant_id.to_string() != p.tenant().to_string()
             || configuration.device_id != p.device()
-            || configuration.registration_id != p.registration()
-            || configuration.generation != p.generation() as u64
         {
             return Err(Error::Forbidden);
         }

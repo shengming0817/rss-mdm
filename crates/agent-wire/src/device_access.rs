@@ -45,10 +45,7 @@ pub struct AccessTaskSpec {
     pub tenant_id: Uuid,
     /// Exact endpoint.
     pub device_id: String,
-    /// Current registration.
-    pub registration_id: Uuid,
-    /// Registration generation, not binding revision.
-    pub generation: u64,
+
     /// Required operating system.
     pub platform: TaskPlatform,
     /// Required architecture.
@@ -91,7 +88,6 @@ impl AccessTaskSpec {
         if self.wire_version != super::WIRE_VERSION
             || [
                 self.tenant_id,
-                self.registration_id,
                 self.task_id,
                 self.attempt_id,
                 self.binding_id,
@@ -100,8 +96,6 @@ impl AccessTaskSpec {
             ]
             .iter()
             .any(Uuid::is_nil)
-            || self.generation == 0
-            || self.generation > i64::MAX as u64
             || self.binding_generation < 1
             || self.factor_generation < 1
             || self.revision < 1

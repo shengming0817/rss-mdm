@@ -85,7 +85,7 @@ impl Port for Reads {
             proof.manage(Permission::PolicyRead)?;
             proof.manage(Permission::ResourceRead)?;
             let grant = proof.authorization()?;
-            grant.require(proof, Permission::ScopeRead, None)?;
+            grant.require(proof, Permission::PolicyRead, None)?;
             grant.require_all_devices(proof, Permission::InventoryRead)?;
             audit.set_action(
                 "management_read",
@@ -135,7 +135,7 @@ impl Port for Reads {
                 let (proof,input,query,codec,verified,s)=*ctx;
                 grant.require(proof,Permission::PolicyRead,None)?;
                 grant.require(proof,Permission::ResourceRead,None)?;
-                grant.require(proof,Permission::ScopeRead,None)?;
+                grant.require(proof,Permission::PolicyRead,None)?;
                 grant.require_all_devices(proof,Permission::InventoryRead)?;
                 let script_preview=if let Action::Execution{resource,parameters,..}=&input.definition.action {Some(s.scripts.preview_on(c,resource,rss_mdm_script_service::Parameters::Sources(parameters),verified,proof,grant).await.map_err(script_fault)?)}else{None};
                 let collection_preview=match &input.definition.action {Action::AgentCollection{resource,..}|Action::NativeCollection{resource,..}=>Some(s.collections.preview_on(c,resource,channel,verified,proof,grant).await?),_=>None};
@@ -153,14 +153,14 @@ impl Port for Reads {
                 for mut object in objects {
                     let admission=if let Some(target)=&object.target {
                         let state=if let Some(preview)=&script_preview {
-                            let target=rss_mdm_script_service::Target{device:target.device.clone(),registration:target.registration_id,generation:target.generation};
+                            let target=rss_mdm_script_service::Target{device:target.device.clone(),};
                             match preview.eligibility_on(c,s.tenant,Arc::new(super::super::agent_facts::AgentFacts),&target).await.map_err(script_fault)? {
                                 rss_mdm_script_service::eligibility::Eligibility::Eligible=>"eligible",
                                 rss_mdm_script_service::eligibility::Eligibility::Ineligible=>"unsupported_capability",
                                 rss_mdm_script_service::eligibility::Eligibility::Unknown=>"channel_unknown",
                             }
                         }else if let Some(preview)=&collection_preview {
-                            let target=rss_mdm_inventory_service::collection::execution::model::Target{device:target.device.clone(),registration:target.registration_id,generation:target.generation};
+                            let target=rss_mdm_inventory_service::collection::execution::model::Target{device:target.device.clone(),};
                             if s.collections.eligible_on(c,preview,Arc::new(super::super::agent_facts::AgentFacts),&target).await? {"eligible"}else{"unsupported_capability"}
                         }else{unreachable!()};
                         if state!="eligible" {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
@@ -200,7 +200,7 @@ async fn enrollment(
             Box::pin(async move {
                 let (s, proof, input, query, codec) = *ctx;
                 grant.require(proof, Permission::PolicyRead, None)?;
-                grant.require(proof, Permission::ScopeRead, None)?;
+                grant.require(proof, Permission::PolicyRead, None)?;
                 grant.require_all_devices(proof, Permission::InventoryRead)?;
                 let Action::RequestMdmEnrollment {
                     organization,
@@ -331,7 +331,7 @@ async fn access_credentials(
             Box::pin(async move {
                 let (s, proof, input, query, codec) = *ctx;
                 grant.require(proof, Permission::PolicyRead, None)?;
-                grant.require(proof, Permission::ScopeRead, None)?;
+                grant.require(proof, Permission::PolicyRead, None)?;
                 grant.require_all_devices(proof, Permission::InventoryRead)?;
                 if !s.signing_enabled{return Err(Error::Unsupported)}
                 let permission=match &input.definition.action {Action::DeviceAccess{..}=>Permission::AccountWrite,Action::Credential{operation,..}=>{if !s.recovery_enabled{return Err(Error::Unsupported)}rss_mdm_recovery_credentials::tasks::credential_tasks::permission(operation)},_=>return Err(Error::Malformed)};
@@ -377,7 +377,7 @@ async fn access_credentials(
                 let mut items = Vec::new();
                 for mut object in objects {
                     let admission = if let Some(target) = &object.target {
-                        let binding=s.enrollment.agent_store.binding(c,s.tenant.to_string(),target.registration_id).await.map_err(|_|Error::Unavailable(Failure::Database))?;
+                        let binding=s.enrollment.agent_store.binding(c,s.tenant.to_string(),target.device.clone()).await.map_err(|_|Error::Unavailable(Failure::Database))?;
                         let allowed=binding.is_some_and(|b|match &input.definition.action {
                             Action::DeviceAccess{windows,..}=>rss_mdm_device_access_postgres::device_access::execution::admission::capable(&b,windows),
                             Action::Credential{architecture,..}=>rss_mdm_recovery_credentials::tasks::credential_tasks::capable(&b,*architecture),_=>false
@@ -441,7 +441,7 @@ async fn retirement(
             Box::pin(async move {
                 let (s, proof, input, query, codec) = *ctx;
                 grant.require(proof, Permission::PolicyRead, None)?;
-                grant.require(proof, Permission::ScopeRead, None)?;
+                grant.require(proof, Permission::PolicyRead, None)?;
                 grant.require_all_devices(proof, Permission::InventoryRead)?;
                 rss_mdm_device_service::control::authorize_action(
                     grant,

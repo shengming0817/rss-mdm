@@ -38,3 +38,6 @@ ipnet.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true

@@ -286,8 +286,7 @@ pub async fn require_windows_in(
     let authenticated: bool =
         sqlx::query_scalar(crate::storage_profile::sql(profile).admission_require_windows_in_1)
             .bind(&tenant)
-            .bind(p.registration())
-            .bind(p.generation())
+            .bind(p.device())
             .fetch_optional(&mut *c)
             .await
             .map_err(db)?

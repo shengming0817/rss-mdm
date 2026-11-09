@@ -46,8 +46,6 @@ pub struct Snapshot {
     pub operation_id: Option<Uuid>,
     pub operation_owner: Option<crate::operation::OperationOwner>,
     pub receipt_actor: Option<String>,
-    pub registration_id: Option<Uuid>,
-    pub registration_generation: Option<i64>,
     pub write_outcome: WriteOutcome,
     pub final_request: bool,
     pub intent: crate::AuditIntent,
@@ -141,8 +139,7 @@ impl RequestAudit {
                     operation_id: None,
                     operation_owner: None,
                     receipt_actor: None,
-                    registration_id: None,
-                    registration_generation: None,
+
                     write_outcome: WriteOutcome::CommitNotStarted,
                     final_request: false,
                     intent,
@@ -348,25 +345,11 @@ impl RequestAudit {
         state.snapshot.action = action;
     }
     /// Bind a device actor only after the producer validates the active registration credential.
-    pub fn identify_device(&self, registration: Uuid) {
+    pub fn identify_device(&self, device: &str) {
         let mut state = self.0.state.lock().expect("audit lock");
-        state.snapshot.actor = Some(format!("device:{registration}"));
+        state.snapshot.actor = Some(format!("device:{device}"));
         state.snapshot.actor_kind = "device";
         state.snapshot.instance = None;
-    }
-    /// Attach the registration coordinate for correlation, independently of the acting principal.
-    pub fn registration(&self, id: Uuid) {
-        let mut state = self.0.state.lock().expect("audit lock");
-        if state.snapshot.registration_id != Some(id) {
-            state.snapshot.registration_generation = None;
-        }
-        state.snapshot.registration_id = Some(id);
-    }
-    /// Frozen generation supplied by the registration or receipt owner.
-    pub fn registration_at(&self, id: Uuid, generation: i64) {
-        let mut state = self.0.state.lock().expect("audit lock");
-        state.snapshot.registration_id = Some(id);
-        state.snapshot.registration_generation = Some(generation);
     }
     /// Attach the product plan coordinate for execution and recovery correlation.
     pub fn plan(&self, plan: Uuid) {
@@ -444,7 +427,7 @@ impl RequestAudit {
 }
 impl Context {
     fn failure_event(&self, snapshot: &Snapshot, reason: FailureReason) -> serde_json::Value {
-        serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"operation_id":snapshot.operation_id,"registration_id":snapshot.registration_id,"action":snapshot.action,"reason":reason,"write_outcome":snapshot.write_outcome})
+        serde_json::json!({"event":"audit_failure","severity":"error","request_id":self.request_id,"operation_id":snapshot.operation_id,"device_id":snapshot.device_target,"action":snapshot.action,"reason":reason,"write_outcome":snapshot.write_outcome})
     }
 }
 impl Drop for Context {
@@ -495,8 +478,8 @@ mod tests {
         let key = Uuid::new_v4();
         let registration = Uuid::new_v4();
         a.operation(key, "enrollment_create", crate::AuditIntent::Management);
-        a.registration(registration);
         a.target("sensitive-target-not-for-logs");
+        a.target_device(&registration.to_string());
         a.set_principal("sensitive-actor", "sensitive-instance");
         let event = |reason| a.0.failure_event(&a.snapshot(), reason);
         assert_eq!(
@@ -517,7 +500,7 @@ mod tests {
             let event = event(reason);
             assert_eq!(event["write_outcome"], "committed");
             assert_eq!(event["action"], "enrollment_create");
-            assert_eq!(event["registration_id"], registration.to_string());
+            assert_eq!(event["device_id"], registration.to_string());
             assert!(!event.to_string().contains("sensitive-target"));
             assert!(!event.to_string().contains("sensitive-actor"));
             assert!(!event.to_string().contains("sensitive-instance"));

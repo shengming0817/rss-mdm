@@ -10,6 +10,23 @@ pub struct AuthorizedPrincipal {
     authorization: Option<crate::Snapshot>,
 }
 impl AuthorizedPrincipal {
+    /// Authorize a fresh server-allocated device; an existing device ID cannot select it.
+    pub fn new_enrollment(&self) -> Result<EnrollmentCreation<'_>, Error> {
+        self.require(Permission::Enrollment, None)?;
+        Ok(EnrollmentCreation {
+            proof: self,
+            self_service: false,
+        })
+    }
+    /// Self-service creates a new device under the live user's quota and ownership.
+    pub fn new_self_enrollment(&self) -> Result<EnrollmentCreation<'_>, Error> {
+        self.session()?;
+        self.check_live()?;
+        Ok(EnrollmentCreation {
+            proof: self,
+            self_service: true,
+        })
+    }
     /// Bind a verified identity to the host's product and authority before any purpose check.
     pub fn from_identity(access: &crate::Store, identity: Principal) -> Result<Self, Error> {
         if identity
@@ -195,6 +212,27 @@ impl AuthorizedPrincipal {
     pub fn dangerous(&self, device: &str) -> Result<DangerousAction<'_>, Error> {
         self.require(Permission::DeviceWipe, Some(device))?;
         Ok(DangerousAction { _proof: self })
+    }
+}
+/// Creation authority has no existing device locator. The registrar allocates it after replay.
+pub struct EnrollmentCreation<'a> {
+    proof: &'a AuthorizedPrincipal,
+    self_service: bool,
+}
+impl<'a> EnrollmentCreation<'a> {
+    pub fn proof(&self) -> &'a AuthorizedPrincipal {
+        self.proof
+    }
+    pub fn self_service(&self) -> bool {
+        self.self_service
+    }
+    pub fn check(&self) -> Result<(), Error> {
+        if self.self_service {
+            self.proof.session()?;
+            self.proof.check_live()
+        } else {
+            self.proof.require(Permission::Enrollment, None)
+        }
     }
 }
 pub struct EnrollmentPermission<'a> {

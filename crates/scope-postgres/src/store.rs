@@ -3,6 +3,11 @@ use crate::*;
 use serde_json::Value;
 use sqlx::Row;
 
+pub struct OwnedScope {
+    pub id: Uuid,
+    pub retired: bool,
+    pub head: Head,
+}
 pub struct Head {
     pub revision: u64,
     pub definition: ScopeDefinition,
@@ -101,6 +106,27 @@ impl ScopeBinding {
         }
         Ok(())
     }
+    /// Exact privileges for the Policy's configuration participant, without calculation writes.
+    pub async fn admit_configuration_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+    ) -> Result<(), BindingError> {
+        self.validate_in(tx)?;
+        let profile = self.profile();
+        let ok = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    crate::verify_authority(profile, c).await?;
+                    sqlx::query_scalar::<_, bool>(
+                        crate::storage_profile::sql(profile).configuration_admission,
+                    )
+                    .fetch_one(c)
+                    .await
+                })
+            })
+            .await?;
+        if ok { Ok(()) } else { Err(invariant()) }
+    }
     pub async fn head_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -140,48 +166,21 @@ impl ScopeBinding {
             calculation_revision: row.try_get::<i64, _>("calculation_revision")? as u64,
         })
     }
-    pub async fn lock_references_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        scopes: &[Uuid],
-    ) -> Result<(), BindingError> {
-        let profile = self.profile();
-
-        self.validate_in(tx)?;
-        let mut scopes = scopes.to_vec();
-        scopes.sort_unstable();
-        scopes.dedup();
-        for id in scopes {
-            let tenant = self.tenant.to_string();
-            let definition: Option<Value> = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        sqlx::query_scalar(
-                            crate::storage_profile::sql(profile).store_lock_references_in_1,
-                        )
-                        .bind(tenant)
-                        .bind(id)
-                        .fetch_optional(c)
-                        .await
-                    })
-                })
-                .await?;
-            serde_json::from_value::<ScopeDefinition>(definition.ok_or(BindingError::Missing)?)
-                .map_err(|_| invariant())?;
-        }
-        Ok(())
-    }
     pub async fn put_in(
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         expected: u64,
+        owner: ScopeOwner,
         definition: &ScopeDefinition,
     ) -> Result<u64, BindingError> {
         let profile = self.profile();
 
         self.lock_scope_in(tx, id).await?;
         self.validate_in(tx)?;
+        if !owner.is_valid() {
+            return Err(BindingError::Invalid);
+        }
         let revision = expected
             .checked_add(1)
             .filter(|v| *v <= i64::MAX as u64)
@@ -195,6 +194,8 @@ impl ScopeBinding {
                         sqlx::query(crate::storage_profile::sql(profile).store_put_in_1)
                             .bind(&tenant)
                             .bind(id)
+                            .bind(owner.policy)
+                            .bind(owner.stage)
                             .execute(&mut *c)
                             .await?
                             .rows_affected()
@@ -203,6 +204,8 @@ impl ScopeBinding {
                             .bind(&tenant)
                             .bind(id)
                             .bind(expected as i64)
+                            .bind(owner.policy)
+                            .bind(owner.stage)
                             .execute(&mut *c)
                             .await?
                             .rows_affected()
@@ -227,40 +230,110 @@ impl ScopeBinding {
             .await?;
         Ok(revision)
     }
-    pub async fn delete_in(
+    /// Close current dependencies while preserving definitions and result history.
+    pub async fn retire_in(
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         expected: u64,
-    ) -> Result<u64, BindingError> {
-        let profile = self.profile();
-
+        owner: ScopeOwner,
+    ) -> Result<(), BindingError> {
         self.lock_scope_in(tx, id).await?;
         self.validate_in(tx)?;
-        let revision = expected
-            .checked_add(1)
-            .filter(|v| *v <= i64::MAX as u64)
-            .ok_or(BindingError::Conflict)?;
+        if !owner.is_valid() {
+            return Err(BindingError::Invalid);
+        }
         let tenant = self.tenant.to_string();
-        let count = tx
+        let profile = self.profile();
+        let changed = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query(crate::storage_profile::sql(profile).store_delete_in_1)
-                        .bind(tenant)
-                        .bind(id)
-                        .bind(expected as i64)
-                        .bind(revision as i64)
-                        .execute(c)
-                        .await
-                        .map(|r| r.rows_affected())
+                    Ok(
+                        sqlx::query(crate::storage_profile::sql(profile).store_retire_in)
+                            .bind(tenant)
+                            .bind(id)
+                            .bind(expected as i64)
+                            .bind(owner.policy)
+                            .bind(owner.stage)
+                            .execute(c)
+                            .await?
+                            .rows_affected(),
+                    )
                 })
             })
             .await?;
-        if count != 1 {
+        if changed != 1 {
             return Err(BindingError::Conflict);
         }
-        self.replace_sources_in(tx, id, Default::default()).await?;
-        Ok(revision)
+        self.replace_sources_in(tx, id, Default::default()).await
+    }
+    /// Read a child's original owner, including retired children used by history.
+    pub async fn owner_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> Result<ScopeOwner, BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        let profile = self.profile();
+        let row = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
+                        crate::storage_profile::sql(profile).store_owner_in,
+                    )
+                    .bind(tenant)
+                    .bind(id)
+                    .fetch_optional(c)
+                    .await
+                })
+            })
+            .await?
+            .ok_or(BindingError::Missing)?;
+        Ok(ScopeOwner {
+            policy: row.0,
+            stage: row.1,
+        })
+    }
+    /// Resolve an owner without accepting an administrator-selected Scope UUID.
+    pub async fn owned_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        owner: ScopeOwner,
+    ) -> Result<Option<OwnedScope>, BindingError> {
+        self.validate_in(tx)?;
+        if !owner.is_valid() {
+            return Err(BindingError::Invalid);
+        }
+        let tenant = self.tenant.to_string();
+        let profile = self.profile();
+        let row = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query(crate::storage_profile::sql(profile).store_owned_in)
+                        .bind(tenant)
+                        .bind(owner.policy)
+                        .bind(owner.stage)
+                        .fetch_optional(c)
+                        .await
+                })
+            })
+            .await?;
+        row.map(|r| {
+            Ok(OwnedScope {
+                id: r.try_get("id")?,
+                retired: r.try_get("deleted")?,
+                head: Head {
+                    revision: r.try_get::<i64, _>("revision")? as u64,
+                    definition: serde_json::from_value(r.try_get("definition")?)
+                        .map_err(|_| invariant())?,
+                    resolution: r.try_get("resolution")?,
+                    resolution_revision: r.try_get::<i64, _>("resolution_revision")? as u64,
+                    calculation_revision: r.try_get::<i64, _>("calculation_revision")? as u64,
+                },
+            })
+        })
+        .transpose()
     }
     async fn replace_sources_in(
         &self,

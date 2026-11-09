@@ -90,13 +90,7 @@ pub struct EnrollmentTaskSpec {
     pub platform: TaskPlatform,
     /// Actual local processor architecture.
     pub architecture: TaskArchitecture,
-    /// Current Agent registration.
-    #[serde(with = "strict_uuid")]
-    #[schemars(schema_with = "crate::runtime::uuid_schema")]
-    pub registration_id: Uuid,
-    /// Current Agent generation.
-    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
-    pub generation: u64,
+
     /// Durable action run.
     #[serde(with = "strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
@@ -127,11 +121,8 @@ impl EnrollmentTaskSpec {
         if self.wire_version != crate::runtime::WIRE_VERSION
             || self.tenant_id.is_nil()
             || self.organization != self.tenant_id
-            || self.registration_id.is_nil()
             || self.task_id.is_nil()
             || self.attempt_id.is_nil()
-            || self.generation == 0
-            || self.generation > i64::MAX as u64
             || self.expires_at <= 0
             || self.device_id.is_empty()
             || self.device_id.chars().count() > 256

@@ -1,7 +1,6 @@
 //! Actual observed enrollment fact supplied to the registration task owner.
 use rss_request_context::TenantId;
 use sqlx::PgConnection;
-use uuid::Uuid;
 pub struct EnrollmentObservation {
     profile: rss_mdm_install_support::StorageProfile,
 }
@@ -18,8 +17,7 @@ impl rss_mdm_registration_service::enrollment::tasks::Inventory for EnrollmentOb
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        registration: Uuid,
-        generation: i64,
+        device: String,
     ) -> std::pin::Pin<
         Box<
             dyn Future<
@@ -36,8 +34,7 @@ impl rss_mdm_registration_service::enrollment::tasks::Inventory for EnrollmentOb
                 self.profile,
                 c,
                 tenant,
-                registration,
-                generation,
+                device,
                 rss_mdm_inventory::ReportSource::AgentBuiltin,
             )
             .await

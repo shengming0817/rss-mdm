@@ -34,7 +34,7 @@ pub(crate) async fn principal(
     let enabled = crate::deployment::agent_facts::agent_binding_in(
         tx,
         service.agent_store.clone(),
-        principal.registration(),
+        principal.device().to_string(),
     )
     .await?
     .is_some_and(|b| b.inventory() && b.task());
@@ -44,10 +44,7 @@ pub(crate) async fn principal(
     Ok(())
 }
 pub(crate) fn belongs(run: &db::Run, p: &DevicePrincipal) -> Result<()> {
-    if run.target.device != p.device()
-        || run.target.registration != p.registration()
-        || run.target.generation != p.generation()
-    {
+    if run.target.device != p.device() {
         return Err(Error::Unauthorized.into());
     }
     Ok(())
@@ -81,13 +78,13 @@ impl SoftwareService {
         let binding = crate::deployment::agent_facts::agent_binding_in(
             tx,
             service.transactions.agent_store.clone(),
-            p.registration(),
+            p.device().to_string(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
         let software_capable = binding.software();
         let versions =
-            crate::deployment::sources::admission::agent_versions_in(tx, p.registration())
+            crate::deployment::sources::admission::agent_versions_in(tx, p.device().to_string())
                 .await?
                 .into_iter()
                 .map(|version| (version, Uuid::new_v4()))
@@ -106,8 +103,6 @@ impl SoftwareService {
                 db::load_policy_version(&service.transactions.policy_reader, tx, id).await?;
             let target = crate::deployment::Target {
                 device: p.device().into(),
-                registration: p.registration(),
-                generation: p.generation(),
             };
             match &policy {
                 db::ScheduledPolicy::Software(software) if software_capable => {
@@ -128,7 +123,7 @@ impl SoftwareService {
     }
     #[expect(
         clippy::cognitive_complexity,
-        reason = "offer admission checks current registration, capability and original task state in one transaction"
+        reason = "offer admission checks current device, capability and original task state in one transaction"
     )]
     pub async fn agent_offer_one_in(
         &self,
@@ -142,11 +137,11 @@ impl SoftwareService {
         self.agent_prepare_in(tx, p).await?;
         let service = self;
         let now = storage::now(tx).await?;
-        let event_key = format!("agent:{}:offer:{}", p.registration(), input.operation_id());
+        let event_key = format!("agent:{}:offer:{}", p.device(), input.operation_id());
         let binding = crate::deployment::agent_facts::agent_binding_in(
             tx,
             self.transactions.agent_store.clone(),
-            p.registration(),
+            p.device().to_string(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -357,7 +352,7 @@ impl SoftwareService {
         let now = storage::now(tx).await?;
         let event_key = format!(
             "agent:{}:task:{id}:event:{}",
-            p.registration(),
+            p.device(),
             input.operation_id()
         );
         let requires_start_authority = matches!(
@@ -622,7 +617,7 @@ impl SoftwareService {
                 let (index, local_key) = key.split_once('/').ok_or(Error::Malformed)?;
                 let index: usize = index.parse().map_err(|_| Error::Malformed)?;
                 let (platform, architecture) =
-                    db::agent_profile_in(&service.transactions, tx, run.target.registration)
+                    db::agent_profile_in(&service.transactions, tx, run.target.device)
                         .await?
                         .ok_or(Error::Forbidden)?;
                 let artifact = software
@@ -659,11 +654,11 @@ impl SoftwareService {
     pub async fn agent_cancellations_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        registration: Uuid,
+        device: String,
         after: Option<Uuid>,
     ) -> Result<Vec<wire::TaskCancellation>> {
         self.transactions.runtime.validate_transaction(tx)?;
-        super::poll::cancellations(tx, registration, after).await
+        super::poll::cancellations(tx, device, after).await
     }
 }
 use rss_mdm_audit_integration::RequestAudit;

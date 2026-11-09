@@ -17,10 +17,7 @@ pub struct EventEffects {
     pub fact: Fact,
 }
 pub(crate) fn belongs(run: &Run, p: &DevicePrincipal) -> Result<()> {
-    if run.target.device != p.device()
-        || run.target.registration != p.registration()
-        || run.target.generation != p.generation()
-    {
+    if run.target.device != p.device() {
         return Err(Error::Unauthorized.into());
     }
     Ok(())
@@ -55,7 +52,7 @@ impl Service {
             profile,
             tx,
             self.transactions.agent_store.clone(),
-            p.registration(),
+            p.device().to_owned(),
         )
         .await?
         .is_some_and(|b| b.inventory() && b.enrollment())
@@ -76,7 +73,7 @@ impl Service {
 
         self.agent_prepare_in(tx, p).await?;
         let tenant = tx.tenant_id().to_string();
-        let registration = p.registration();
+        let device = p.device().to_owned();
         let versions = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -85,7 +82,7 @@ impl Service {
                             .enrollment_tasks_agent_agent_admit_in_1,
                     )
                     .bind(&tenant)
-                    .bind(registration)
+                    .bind(&device)
                     .execute(&mut *c)
                     .await?;
                     let after: Option<Uuid> = sqlx::query_scalar(
@@ -93,7 +90,7 @@ impl Service {
                             .enrollment_tasks_agent_agent_admit_in_2,
                     )
                     .bind(&tenant)
-                    .bind(registration)
+                    .bind(&device)
                     .fetch_one(&mut *c)
                     .await?;
                     let rows = sqlx::query(
@@ -116,7 +113,7 @@ impl Service {
                             .enrollment_tasks_agent_agent_admit_in_4,
                     )
                     .bind(tenant)
-                    .bind(registration)
+                    .bind(&device)
                     .bind(next)
                     .execute(c)
                     .await?;
@@ -129,8 +126,6 @@ impl Service {
         let now = storage::now(tx).await?;
         let target = Target {
             device: p.device().into(),
-            registration: p.registration(),
-            generation: p.generation(),
         };
         for version in versions {
             let plan = policy::read_in(&self.transactions, tx, version).await?;

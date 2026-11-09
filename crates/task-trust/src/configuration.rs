@@ -248,8 +248,7 @@ impl ConfigurationService {
         let identity = rss_mdm_agent_wire::da::ReportIdentity {
             service_id: p.installation(),
             tenant: Uuid::parse_str(&p.tenant().to_string()).map_err(|_| Error::Malformed)?,
-            registration: p.registration(),
-            generation: p.generation(),
+            device_id: p.device().to_string(),
         };
         if !config.permits(&identity, p.device())
             || config.issued_at > now

@@ -17,7 +17,7 @@ impl Kind {
     pub fn permission(self) -> Permission {
         match self {
             Self::Group => Permission::GroupRead,
-            Self::Scope => Permission::ScopeRead,
+            Self::Scope => Permission::PolicyRead,
             Self::Policy => Permission::PolicyRead,
             Self::ComplianceRule => Permission::ComplianceRuleRead,
         }
@@ -53,6 +53,8 @@ pub enum Lifecycle {
 pub struct Entry {
     pub source: Object,
     pub revision: i64,
+    pub policy: Option<Uuid>,
+    pub stage: Option<Uuid>,
     pub relation: Relation,
     pub roles: Vec<String>,
     pub via: Vec<Object>,

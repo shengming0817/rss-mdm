@@ -41,8 +41,8 @@ pub async fn audit_recovery(
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.plan(run.policy_version);
-        audit.target_device(&run.target.device);
-        audit.registration(run.target.registration);
+        audit.target_device(&run.target.device.clone());
+
         let bytes = crate::checked_input(serde_json::to_vec(&(&previous, &run.state)))?;
         use sha2::Digest;
         let fact = Fact::business(
@@ -131,16 +131,12 @@ pub async fn recover_one(
     let tenant = tx.tenant_id().to_string();
     let stale = tx
         .with_connection(move |c| {
-            Box::pin(
-                rss_mdm_registration_service::device::read::stale_registration_in(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    c,
-                    tenant,
-                    target.registration,
-                    target.device,
-                    target.generation,
-                ),
-            )
+            Box::pin(rss_mdm_registration_service::device::read::inactive_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                target.device.clone(),
+            ))
         })
         .await?;
     let previous = run.state.clone();

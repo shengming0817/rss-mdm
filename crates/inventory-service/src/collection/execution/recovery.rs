@@ -43,7 +43,6 @@ pub async fn audit_recovery(
         );
         audit.plan(run.policy_version);
         audit.target_device(&run.target.device);
-        audit.registration(run.target.registration);
         let bytes =
             crate::transaction::checked_input(serde_json::to_vec(&(&previous, &run.state)))?;
         use sha2::Digest;
@@ -184,8 +183,8 @@ pub async fn recover_one(
                     data: EventData::Policy {
                         run_id: run.id,
                         policy_version: run.policy_version,
-                        registration_id: run.target.registration,
-                        generation: run.target.generation,
+                        device_id: run.target.device.to_string(),
+
                         status: status.into(),
                     },
                 };
@@ -212,16 +211,12 @@ async fn stale_in(tx: &mut PgTransaction<'_>, target: &super::model::Target) -> 
     let target = target.clone();
     Ok(tx
         .with_connection(move |c| {
-            Box::pin(
-                rss_mdm_registration_service::device::read::stale_registration_in(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    c,
-                    tenant,
-                    target.registration,
-                    target.device,
-                    target.generation,
-                ),
-            )
+            Box::pin(rss_mdm_registration_service::device::read::inactive_in(
+                rss_mdm_install_support::StorageProfile::Mdm,
+                c,
+                tenant,
+                target.device,
+            ))
         })
         .await?)
 }

@@ -36,10 +36,11 @@ impl ConfigurationChannels {
         }
     }
 }
-pub(crate) fn target(v: cfg::NativeTarget) -> apple::Target {
+pub(crate) fn target(v: cfg::NativeTarget) -> Result<apple::Target, rss_mdm_apple_channel::Error> {
     match v {
-        cfg::NativeTarget::Device => apple::Target::Device,
-        cfg::NativeTarget::User { user_id } => apple::Target::User { user_id },
+        cfg::NativeTarget::Device => Ok(apple::Target::Device),
+        cfg::NativeTarget::EnrolledUser => Err(rss_mdm_apple_channel::Error::Unsupported),
+        cfg::NativeTarget::User { user_id } => Ok(apple::Target::User { user_id }),
     }
 }
 fn windows_receipt(
@@ -147,8 +148,8 @@ impl Channels for ConfigurationChannels {
                     cfg::Task::Windows { request } => {
                         windows.push(rss_mdm_windows_channel::results::Read {
                             id: r.id,
-                            registration: r.registration,
-                            registration_generation: r.generation,
+                            device: r.device.clone(),
+
                             request,
                             values: values && !sensitive,
                         })
@@ -280,8 +281,6 @@ impl Channels for ConfigurationChannels {
                     apple::AppleRegistration {
                         tenant: tenant.to_string(),
                         device: r.device,
-                        registration: r.binding.registration,
-                        generation: r.binding.generation,
                     },
                     apple::AppleCommand {
                         operation: r.binding.operation,
@@ -290,7 +289,7 @@ impl Channels for ConfigurationChannels {
                         assets: Vec::new(),
                         deadline: r.deadline,
                         input_version: r.input_version,
-                        target: target(r.target),
+                        target: target(r.target).map_err(apple_error)?,
                         request: r.request,
                     },
                 )
@@ -350,8 +349,7 @@ impl WindowsEvidence for ConfigurationChannels {
         c: &'a mut PgConnection,
         tenant: TenantId,
         id: Uuid,
-        registration: Uuid,
-        generation: i64,
+        registration: String,
         request: rss_mdm_windows_mdm::native::Execution,
     ) -> Pending<'a, rss_mdm_windows_mdm::native::verification::EffectAssessment> {
         Box::pin(async move {
@@ -361,8 +359,8 @@ impl WindowsEvidence for ConfigurationChannels {
                     tenant,
                     &[rss_mdm_windows_channel::results::Read {
                         id,
-                        registration,
-                        registration_generation: generation,
+                        device: registration.to_string(),
+
                         request,
                         values: false,
                     }],

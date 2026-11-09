@@ -310,15 +310,15 @@ pub(crate) async fn persist(
             return Err(Error::Conflict);
         }
         for m in &members {
-            sqlx::query("UPDATE mdm_devices.members SET registration_id=$4,generation=$5,released=false WHERE tenant_id=$1::uuid AND association_id=$2 AND channel=$3")
-            .bind(tenant).bind(id).bind(m.channel.as_str()).bind(m.registration_id).bind(m.generation).execute(&mut *c).await?;
+            sqlx::query("UPDATE mdm_devices.members SET released = FALSE WHERE tenant_id = CAST($1 AS uuid) AND association_id = $2 AND channel = $3")
+            .bind(tenant).bind(id).bind(m.channel.as_str()).execute(&mut *c).await?;
         }
     } else {
         sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1::uuid,$2,1,$3,$4,$5,$6,$7)")
             .bind(tenant).bind(id).bind(state).bind(&r.evidence).bind(&hardware).bind(actor).bind(now).execute(&mut *c).await?;
         for m in &members {
-            sqlx::query("INSERT INTO mdm_devices.members(tenant_id,association_id,device,channel,registration_id,generation) VALUES($1::uuid,$2,$3,$4,$5,$6)")
-            .bind(tenant).bind(id).bind(&m.device).bind(m.channel.as_str()).bind(m.registration_id).bind(m.generation).execute(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_devices.members (tenant_id, association_id, device, channel) VALUES (CAST($1 AS uuid), $2, $3, $4)")
+            .bind(tenant).bind(id).bind(&m.device).bind(m.channel.as_str()).execute(&mut *c).await?;
         }
     }
     let result = read::load(c, tenant, id).await?;
@@ -341,7 +341,7 @@ fn validate_confirm(request: &Confirm) -> Result<()> {
         || !model::text(&request.evidence)
         || [&request.mdm, &request.agent]
             .iter()
-            .any(|m| !model::text(&m.device) || m.registration_id.is_nil() || m.generation <= 0)
+            .any(|m| !model::text(&m.device))
     {
         return Err(Error::Malformed);
     }

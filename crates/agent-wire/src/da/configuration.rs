@@ -188,17 +188,8 @@ impl Configuration {
         {
             return Err(WireError::InvalidValue);
         }
-        if let Audience::Device {
-            device,
-            registration,
-            generation,
-        } = &self.audience
-            && (device.is_empty()
-                || device.len() > 256
-                || device.chars().any(char::is_control)
-                || registration.is_nil()
-                || *generation == 0
-                || *generation > i64::MAX as u64)
+        if let Audience::Device { device } = &self.audience
+            && !crate::runtime::valid_device_id(device)
         {
             return Err(WireError::InvalidValue);
         }
@@ -212,14 +203,8 @@ impl Configuration {
             && self.tenant == identity.tenant
             && match &self.audience {
                 Audience::Tenant => true,
-                Audience::Device {
-                    device: d,
-                    registration,
-                    generation,
-                } => {
-                    d == device
-                        && *registration == identity.registration
-                        && *generation == identity.generation as u64
+                Audience::Device { device: target } => {
+                    target == device && target == &identity.device_id
                 }
             }
     }

@@ -123,11 +123,11 @@ fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::D
             post(renew, &PROTOCOL, &[Operation::Action]),
         ),
         recover: Route::new(
-            "/api/v1/da/registrations/{id}/recovery-grants",
+            "/api/v1/da/devices/{id}/registration/recovery-grants",
             post(recover, &PROTOCOL, &[Operation::Action]),
         ),
         revoke: Route::new(
-            "/api/v1/da/registrations/{id}/revoke",
+            "/api/v1/da/devices/{device}/registration/revoke",
             post(revoke, &PROTOCOL, &[Operation::Action]),
         ),
         pki_trust: Route::new(
@@ -239,10 +239,14 @@ async fn recover(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
     v: Body<da::GrantRequest>,
 ) -> Result<Json<da::Grant>, Error> {
-    Ok(Json(s.registrations.recover(&p, id, &body(v)?, &a).await?))
+    Ok(Json(
+        s.registrations
+            .recover(&p, id.to_string(), &body(v)?, &a)
+            .await?,
+    ))
 }
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -253,7 +257,7 @@ async fn revoke(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
     v: Body<OperationRequest>,
 ) -> Result<Json<rss_mdm_registration_service::device::RevocationReceipt>, Error> {
     Ok(Json(

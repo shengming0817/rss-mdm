@@ -271,11 +271,9 @@ impl crate::application::Application {
         });
         activity.target = target.map(|t| ActivityTarget {
             device: t.device.clone(),
-            registration: t.registration_id,
-            generation: t.generation,
         });
         if let Some(t) = target {
-            audit.registration(t.registration_id);
+            audit.target_device(&t.device);
         }
         self.audit_store.prepare_in(tx, &audit, &[]).await?;
         let fact = Fact::business(

@@ -94,7 +94,11 @@ class HttpArtifactTests(unittest.TestCase):
                              ('GET', '/api/v1/asset-fields/{field}/references'),
                              ('GET', '/api/v1/resources/{id}/versions/{version}/references'),
                              ('GET', '/api/v1/groups/{id}/references'),
-                             ('GET', '/api/v1/scopes/{id}/references'),
+                             ('POST', '/api/v1/policies/{policy}'),
+                             ('GET', '/api/v1/policies/{policy}'),
+                             ('GET', '/api/v1/policies/{policy}/scope'),
+                             ('POST', '/api/v1/policies/{policy}/scope/previews'),
+                             ('POST', '/api/v1/policies/{policy}/scope/recomputations'),
                              ('GET', '/api/v1/groups/{id}/impacts')]:
             endpoint = copy.deepcopy(self.document['endpoints'][0])
             endpoint.update(listener='browser', method=method, path=path)

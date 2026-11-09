@@ -70,8 +70,7 @@ pub(crate) fn material(
     }
     Ok(Binding {
         device: task.device.clone(),
-        registration: task.registration,
-        generation: task.generation,
+
         subject,
     })
 }
@@ -83,8 +82,6 @@ mod tests {
     fn rss_material_identity_is_the_frozen_da_anchor() {
         let transport = crate::tasks::Target {
             device: "agent".into(),
-            registration: Uuid::new_v4(),
-            generation: 3,
         };
         let subject = crate::Subject::RssLogin {
             binding: Uuid::new_v4(),
@@ -93,15 +90,11 @@ mod tests {
         };
         let anchor = Binding {
             device: "da".into(),
-            registration: Uuid::new_v4(),
-            generation: 7,
+
             subject: subject.clone(),
         };
         let result = material(Some(&anchor), &transport, subject.clone()).unwrap();
-        assert_eq!(
-            (result.device, result.registration, result.generation),
-            (anchor.device.clone(), anchor.registration, 7)
-        );
+        assert_eq!(result.device, anchor.device);
         assert!(material(None, &transport, subject).is_err());
         assert!(
             material(

@@ -14,16 +14,17 @@ Agent 在签入时受理自己的 Run，配置型仅对必要差分入队；发�
 
 ## 引用阻断摘要
 
-Resource 版本、Group、Scope 与资产字段的 `/references` 返回直接阻断来源的 `Page`，
+Resource 版本、Group 与资产字段的 `/references` 返回直接阻断来源的 `Page`，
 只接受 `limit` 与 `cursor`，默认及最大页长为 1,000。它们分别要求目标侧的
-`ResourceRead`、`GroupRead`、`ScopeRead`、`InventoryFieldsWrite`，返回同租户最小身份、
+`ResourceRead`、`GroupRead`、`InventoryFieldsWrite`，返回同租户最小身份、
 角色和支持的解除方式；来源名称、配置与详情继续由来源自身权限保护。
 保存查询的身份包含 instance、owner、id，即使属于其他用户也只暴露该坐标。
 每页复验目标存在和当前权限，游标绑定目标、主体、权限及页长；不承诺跨页快照。
 
 摘要与写入门禁读取同一引用事实。历史 Policy 版本、软件发布主体及目录记录在停用、
 归档或撤回后仍可能保留引用；采集 Profile 归档后释放模板与字段引用。
-Scope 仅受当前 Policy 定义的主范围及分批范围阻断，归档 Policy 仍保留当前定义。
+Policy 独占主 Scope 与阶段 Scope；禁用保持计算和当前依赖，归档或移除阶段退役范围并保留历史。
+保存、权限及子路由见[组、范围与 Policy](../guides/groups-scopes-policies.md#policy-范围保存预览与重算)。
 Group 的递归影响另由 `/groups/{id}/impacts` 提供，保留全设备库存读取与来源类型权限检查。
 空摘要不构成删除或归档授权；写入仍在原锁和事务内复验，真正的引用阻断返回
 HTTP 409 `object_referenced`，其他版本、保护或生命周期冲突保持原有错误。

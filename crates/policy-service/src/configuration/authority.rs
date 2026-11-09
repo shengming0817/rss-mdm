@@ -25,7 +25,6 @@ pub enum Authority {
         retirement: Uuid,
         version: Uuid,
         device: String,
-        registration: Uuid,
         execution: Uuid,
         required: Vec<Permission>,
     },
@@ -143,7 +142,6 @@ impl Authority {
                 device,
                 execution,
                 retirement,
-                registration,
                 ..
             } => {
                 let allowed = rss_mdm_device_service::lifecycle::execution_allowed_in(
@@ -151,7 +149,7 @@ impl Authority {
                 )
                 .await
                 .map_err(Error::from)?;
-                let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(w.tenant_id,w.registration) WHERE w.tenant_id=$1::uuid AND w.operation=$2 AND w.registration=$3 AND w.execution=$4 AND r.device=$5 AND r.state='active')").bind(tenant).bind(retirement).bind(registration).bind(execution).bind(device).fetch_one(c).await.map_err(db)?;
+                let current:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (w.tenant_id, w.device) WHERE w.tenant_id = CAST($1 AS uuid) AND w.operation = $2 AND w.device = $3 AND w.execution = $4 AND r.state = 'active')").bind(tenant).bind(retirement).bind(device).bind(execution).fetch_one(c).await.map_err(db)?;
                 Ok(allowed && current)
             }
             Self::Policy {

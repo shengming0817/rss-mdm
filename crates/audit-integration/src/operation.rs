@@ -121,8 +121,6 @@ pub struct OperationLocator {
     pub instance: Option<Uuid>,
     pub target: Option<String>,
     pub device: Option<String>,
-    pub registration: Option<Uuid>,
-    pub generation: Option<i64>,
 }
 impl OperationLocator {
     pub(crate) fn from_snapshot(
@@ -163,8 +161,6 @@ impl OperationLocator {
                 .map_err(|_| crate::InvalidFact::Coordinates)?,
             target: snapshot.target.clone(),
             device: snapshot.device_target.clone(),
-            registration: snapshot.registration_id,
-            generation: snapshot.registration_generation,
         }))
     }
 }

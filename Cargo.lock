@@ -3812,7 +3812,6 @@ dependencies = [
 name = "rss-mdm-compliance-service"
 version = "0.1.0"
 dependencies = [
- "rss-mdm-query-postgres",
  "ring",
  "rss-contract",
  "rss-mdm-audit-integration",
@@ -3826,6 +3825,7 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-policy",
  "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-registration-service",
  "rss-mdm-task-state",
  "rss-mdm-webhook-service",
@@ -4208,7 +4208,6 @@ dependencies = [
 name = "rss-mdm-group-service"
 version = "0.1.0"
 dependencies = [
- "rss-mdm-query-postgres",
  "ring",
  "rss-contract",
  "rss-mdm-agent-wire",
@@ -4224,6 +4223,7 @@ dependencies = [
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
  "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-registration-service",
  "rss-mdm-scope-postgres",
  "rss-mdm-task-state",
@@ -4589,6 +4589,7 @@ dependencies = [
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
+ "rss-mdm-scope",
  "rss-mdm-scope-postgres",
  "rss-mdm-scope-service",
  "rss-mdm-script-service",
@@ -5159,6 +5160,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "ipnet",
+ "jsonschema",
  "ring",
  "rss-contract",
  "rss-mdm-audit-integration",

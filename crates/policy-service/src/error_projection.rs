@@ -179,3 +179,20 @@ impl From<rss_mdm_script_service::Error> for Error {
         }
     }
 }
+
+impl From<rss_mdm_scope_service::Error> for Error {
+    fn from(e: rss_mdm_scope_service::Error) -> Self {
+        use rss_mdm_scope_service::Error as S;
+        match e {
+            S::Malformed => Self::Malformed,
+            S::Unauthorized => Self::Unauthorized,
+            S::Forbidden => Self::Forbidden,
+            S::Conflict | S::Referenced => Self::Conflict,
+            S::NotFound => Self::NotFound,
+            S::Unsupported => Self::Unsupported,
+            S::CommitUnknown => Self::CommitUnknown,
+            S::RollbackFailed => Self::RollbackFailed,
+            S::Unavailable(_) => Self::Unavailable(Failure::PolicyStorage),
+        }
+    }
+}

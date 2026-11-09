@@ -369,14 +369,19 @@ impl PolicyWork {
                                             let prepared = prepared.take();
                                             Box::pin(async move {
                                                 let result: Result<()> = async {
-                                                    let (id, job, done, cursor, assignment) =
+                                                    let (id, job, done, _cursor, assignment) =
                                                         prepared.ok_or(Error::Malformed)?;
                                                     if done {
                                                         return Ok(());
                                                     }
                                                     match job {
-                                                        ref input @ Work::Lifecycle{..}=>ctx.0.advance_lifecycle_work_in(tx,id,input).await,
-                                                        Work::PolicyScope { scope, .. } => crate::management::scope_changes::advance_in(profile, tx,&ctx.0.audit_store,id,scope,cursor).await,
+                                                        ref input @ Work::Lifecycle { .. } => {
+                                                            ctx.0
+                                                                .advance_lifecycle_work_in(
+                                                                    tx, id, input,
+                                                                )
+                                                                .await
+                                                        }
                                                         Work::PolicyEvent { batch } => ctx
                                                             .0
                                                             .advance_event_in(
@@ -400,7 +405,9 @@ impl PolicyWork {
                                                     }
                                                 }
                                                 .await;
-                                                result.map(ProtectedStep::Ready).map_err(|e| fault(e, ctx.2))
+                                                result
+                                                    .map(ProtectedStep::Ready)
+                                                    .map_err(|e| fault(e, ctx.2))
                                             })
                                         },
                                     )

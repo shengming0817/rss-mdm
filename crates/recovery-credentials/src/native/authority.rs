@@ -7,8 +7,6 @@ use authorization::{
 #[serde(deny_unknown_fields)]
 pub struct Authority {
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
     pub operation: Uuid,
     pub required: Vec<Permission>,
     pub actor: Actor,
@@ -19,8 +17,6 @@ impl Authority {
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,
         device: &str,
-        registration: Uuid,
-        generation: i64,
         operation: Uuid,
         permissions: Vec<Permission>,
     ) -> std::result::Result<Self, Error> {
@@ -30,8 +26,6 @@ impl Authority {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Self {
             device: device.into(),
-            registration,
-            generation,
             operation,
             required: permissions,
             actor: proof.actor(),
@@ -60,7 +54,7 @@ impl Authority {
         if self.actor.tenant_id() != tenant.to_string() || self.required.is_empty() {
             return Ok(false);
         }
-        let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(tenant.to_string()).bind(self.registration).bind(&self.device).bind(self.generation).fetch_one(&mut *c).await.map_err(database::db)?;
+        let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant.to_string()).bind(&self.device).fetch_one(&mut *c).await.map_err(database::db)?;
         if !active
             || !rss_mdm_registration_service::lifecycle::work_allowed_in(
                 rss_mdm_install_support::StorageProfile::Mdm,

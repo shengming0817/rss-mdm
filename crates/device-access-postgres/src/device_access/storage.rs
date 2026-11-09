@@ -18,8 +18,6 @@ pub async fn lock_registration(
     c: &mut PgConnection,
     tenant: Uuid,
     device: &str,
-    registration: Uuid,
-    generation: i64,
 ) -> Result<(), Error> {
     let tenant = tenant.to_string();
     crate::delivery::lock_da_target(c, &tenant, device, None).await?;
@@ -35,7 +33,7 @@ pub async fn lock_registration(
         rss_mdm_registration_service::device::endpoints::current_da_in(c, &tenant, device)
             .await?
             .ok_or(Error::Conflict)?;
-    if current.registration_id != registration || current.generation != generation {
+    if current.device != device {
         return Err(Error::Conflict);
     }
     Ok(())
@@ -92,9 +90,7 @@ pub async fn locked_observation_in(
     )
     .await?
     .ok_or(Error::Conflict)?;
-    if current.registration_id != first.registration
-        || current.generation != first.registration_generation
-    {
+    if current.device != first.device {
         return Err(Error::Conflict);
     }
     sqlx::query("SELECT id FROM rss_da.bindings WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
@@ -111,40 +107,37 @@ pub async fn first_in(
     c: &mut PgConnection,
     tenant: Uuid,
     device: &str,
-    registration: Uuid,
     _person: &Person,
     _account: &AccessAccount,
 ) -> Result<bool, Error> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3)")
-        .bind(tenant).bind(device).bind(registration).fetch_one(c).await.map_err(db)?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2)",
+    )
+    .bind(tenant)
+    .bind(device)
+    .fetch_one(c)
+    .await
+    .map_err(db)?;
     Ok(!exists)
 }
 
 pub async fn insert_in(c: &mut PgConnection, b: &Binding) -> Result<(), Error> {
     b.validate()?;
-    lock_registration(
-        c,
-        b.tenant,
-        &b.device,
-        b.registration,
-        b.registration_generation,
-    )
-    .await?;
+    lock_registration(c, b.tenant, &b.device).await?;
     require_retired_in(c, b).await?;
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3",
+        "SELECT count(*) FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2",
     )
     .bind(b.tenant)
     .bind(&b.device)
-    .bind(b.registration)
     .fetch_one(&mut *c)
     .await
     .map_err(db)?;
     if count >= 128 {
         return Err(Error::Capacity);
     }
-    sqlx::query("INSERT INTO rss_da.bindings(tenant_id,id,device,registration,registration_generation,instance,principal,generation,revision,state,account,document) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)")
-        .bind(b.tenant).bind(b.id).bind(&b.device).bind(b.registration).bind(b.registration_generation)
+    sqlx::query("INSERT INTO rss_da.bindings (tenant_id, id, device, instance, principal, generation, revision, state, account, document) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
+        .bind(b.tenant).bind(b.id).bind(&b.device)
         .bind(b.person.instance).bind(b.person.principal).bind(b.generation).bind(b.revision).bind(state(b.state))
         .bind(b.account.as_ref().map(serde_json::to_value).transpose().map_err(|_| Error::Malformed)?)
         .bind(serde_json::to_value(b).map_err(|_| Error::Malformed)?).execute(c).await.map_err(write_error)?;
@@ -364,16 +357,11 @@ pub(crate) async fn deployment_result_in(
     // The envelope already holds its target fence; reject cross-device reports before
     // trying to acquire another target's optional Agent/DA lifecycle locks.
     let candidate = get_in(c, observation.tenant, report.binding_id).await?;
-    if candidate.device != observation.device
-        || candidate.registration != observation.registration
-        || candidate.registration_generation != observation.generation
-    {
+    if candidate.device != observation.device {
         return Err(Error::Conflict);
     }
     let mut b = locked_in(c, observation.tenant, report.binding_id).await?;
     if b.device != observation.device
-        || b.registration != observation.registration
-        || b.registration_generation != observation.generation
         || b.policy != observation.policy
         || b.policy_version != observation.policy_version
         || b.generation != report.binding_generation
@@ -427,7 +415,7 @@ pub(crate) async fn deployment_result_in(
     save_in(c, &b, b.revision).await?;
     let event = Uuid::new_v5(
         &observation.authority,
-        format!("{}:{}:{}", b.registration, observation.sequence, b.id).as_bytes(),
+        format!("{}:{}:{}", b.device, observation.sequence, b.id).as_bytes(),
     );
     super::lifecycle::emit_on(c, &b, None, event, "applied").await
 }
@@ -533,8 +521,8 @@ pub async fn require_retired_in(c: &mut PgConnection, b: &Binding) -> Result<(),
     };
     let configuration =
         serde_json::to_value(&b.configuration.windows).map_err(|_| Error::Malformed)?;
-    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_da.bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3 AND account=$4 AND state='revoked' AND (document->'appliedRevision' IS DISTINCT FROM document->'revision') AND (document#>>'{configuration,windows,kind}'='whfb' OR document#>>'{configuration,windows,kind}' IS DISTINCT FROM $5))")
-        .bind(b.tenant).bind(&b.device).bind(b.registration).bind(serde_json::to_value(account).map_err(|_| Error::Malformed)?).bind(configuration["kind"].as_str().ok_or(Error::Malformed)?)
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2 AND account = $3 AND state = 'revoked' AND document -> 'appliedRevision' IS DISTINCT FROM document -> 'revision' AND (document #>> '{configuration,windows,kind}' = 'whfb' OR document #>> '{configuration,windows,kind}' IS DISTINCT FROM $4))")
+        .bind(b.tenant).bind(&b.device).bind(serde_json::to_value(account).map_err(|_| Error::Malformed)?).bind(configuration["kind"].as_str().ok_or(Error::Malformed)?)
         .fetch_one(c).await.map_err(db)?;
     if pending {
         Err(Error::Conflict)

@@ -147,7 +147,7 @@ fn invalid_restored_aggregate_cannot_produce_checked_change() {
 #[test]
 fn native_delivery_target_is_execution_semantics() {
     let id = uuid::Uuid::new_v4();
-    let mut value = serde_json::json!({"scope":id,"action":{"kind":"software","channel":"agent","resource":{"kind":"software","id":"acme","version":"1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}}});
+    let mut value = serde_json::json!({"scope":id,"action":{"kind":"software","channel":"agent","resource":{"kind":"software","id":"acme","version":"1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"id":Uuid::from_u128(3151),"scope":id,"opensAt":0}]}}});
     let direct: rss_mdm_policy::Definition = serde_json::from_value(value.clone()).unwrap();
     value["action"]["delivery"] = serde_json::json!({"kind":"native","target":"internal"});
     let internal: rss_mdm_policy::Definition = serde_json::from_value(value.clone()).unwrap();
@@ -309,7 +309,7 @@ fn self_service_requires_explicit_bounded_access_and_supports_only_available_sof
         "explicit_uninstall",
     ] {
         let mut software = base.clone();
-        software["action"] = json!({"kind":"software","channel":"agent","resource":{"kind":"software","id":"acme","version":"1","variants":{"macos_aarch64":"default"}},"delivery":{"kind":"direct"},"intent":intent,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}});
+        software["action"] = json!({"kind":"software","channel":"agent","resource":{"kind":"software","id":"acme","version":"1","variants":{"macos_aarch64":"default"}},"delivery":{"kind":"direct"},"intent":intent,"runLifetimeSeconds":600,"rollout":{"stages":[{"id":Uuid::from_u128(3151),"scope":id,"opensAt":0}]}});
         assert_eq!(
             serde_json::from_value::<Definition>(software.clone())
                 .unwrap()
@@ -483,4 +483,57 @@ fn event_names_change_configuration_without_resetting_execution_frequency() {
         next.policy.definition.custom_event.unwrap().as_str(),
         "refresh"
     );
+}
+
+#[test]
+fn stable_stage_identity_survives_mapping_and_rollout_is_not_execution_content() {
+    let scope = Uuid::new_v4();
+    let stage = Uuid::new_v4();
+    let definition:Definition=serde_json::from_value(json!({"scope":scope,"action":{"kind":"software","channel":"agent","resource":{"kind":"software","id":"acme","version":"1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"id":stage,"scope":Uuid::new_v4(),"opensAt":0}]}}})).unwrap();
+    let mapped = definition
+        .clone()
+        .try_map_scopes(|owner, id| Ok::<_, ()>(format!("{owner:?}:{id}")))
+        .unwrap();
+    let Action::Software { rollout, .. } = &mapped.action else {
+        panic!()
+    };
+    assert_eq!(rollout.stages[0].id, stage);
+    assert!(rollout.stages[0].scope.contains(&stage.to_string()));
+    let first = Policy::apply(
+        Uuid::new_v4(),
+        None,
+        0,
+        &Change::Put {
+            definition: Box::new(definition.clone()),
+            enabled: true,
+        },
+        Uuid::new_v4(),
+        None,
+    )
+    .unwrap();
+    let mut invalid = definition.clone();
+    if let Action::Software { rollout, .. } = &mut invalid.action {
+        rollout.stages.push(rollout.stages[0].clone());
+    }
+    assert!(invalid.validate().is_err());
+    let mut unbatched = definition;
+    if let Action::Software { rollout, .. } = &mut unbatched.action {
+        rollout.stages.clear();
+    }
+    unbatched.validate().unwrap();
+    let next = Policy::apply(
+        first.policy.id,
+        Some(&first.policy),
+        1,
+        &Change::Put {
+            definition: Box::new(unbatched),
+            enabled: true,
+        },
+        Uuid::new_v4(),
+        None,
+    )
+    .unwrap();
+    assert!(!next.semantic_changed);
+    assert_eq!(next.policy.version, first.policy.version);
+    assert_eq!(next.policy.revision, 2);
 }

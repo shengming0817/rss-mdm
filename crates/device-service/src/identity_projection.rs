@@ -154,7 +154,7 @@ pub(crate) async fn advance(
         sqlx::query_scalar(r#"SELECT DISTINCT device COLLATE "C" FROM mdm_access.asset_authority_history WHERE tenant_id=$1::uuid AND kind='device' AND mdm.asset_visible($2::jsonb,revision) AND device COLLATE "C">coalesce($3,'') COLLATE "C" ORDER BY device COLLATE "C" LIMIT $4"#)
             .bind(&t).bind(&to).bind(rebuild_after).bind((PAGE+1) as i64).fetch_all(&mut *c).await?
     } else {
-        sqlx::query_scalar(r#"WITH changed AS (SELECT DISTINCT coalesce(a.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=a.tenant_id AND h.kind='registration' AND h.identity=a.identity->>'registration' AND mdm.asset_visible($4::jsonb,h.revision) ORDER BY h.revision DESC LIMIT 1)) COLLATE "C" device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND a.revision>$2 AND a.revision<=$3 AND mdm.asset_visible($4::jsonb,a.revision) AND NOT mdm.asset_visible($5::jsonb,a.revision)) SELECT device FROM changed WHERE device IS NOT NULL AND device>coalesce($6,'') COLLATE "C" ORDER BY device LIMIT $7"#)
+        sqlx::query_scalar(r#"WITH changed AS (SELECT DISTINCT a.identity->>'device' COLLATE "C" device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND a.revision>$2 AND a.revision<=$3 AND mdm.asset_visible($4::jsonb,a.revision) AND NOT mdm.asset_visible($5::jsonb,a.revision)) SELECT device FROM changed WHERE device IS NOT NULL AND device>coalesce($6,'') COLLATE "C" ORDER BY device LIMIT $7"#)
             .bind(&t).bind(after).bind(through).bind(&to).bind(&from).bind(cursor).bind((PAGE+1) as i64).fetch_all(&mut *c).await?
     };
     let more = ids.len() > PAGE;

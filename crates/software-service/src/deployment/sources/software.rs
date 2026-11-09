@@ -143,6 +143,14 @@ impl SoftwareAssignment {
             .as_ref()
             .map_or(&[], |rollout| rollout.stages.as_slice())
     }
+    /// Unbatched assignments use the main Scope without a duplicate child.
+    pub(crate) fn stage_scope(&self, index: usize) -> Option<Uuid> {
+        if self.stages().is_empty() {
+            (index == 0).then_some(self.scope)
+        } else {
+            self.stages().get(index).map(|s| s.scope)
+        }
+    }
     pub fn variant(&self, platform: Platform, architecture: Architecture) -> Option<&str> {
         self.frozen
             .variants
@@ -193,6 +201,9 @@ impl SoftwareAssignment {
         else {
             return Ok(None);
         };
+        if self.stages().is_empty() {
+            return Ok(Some((0, entry)));
+        }
         for (index, stage) in self.stages().iter().enumerate() {
             match source
                 .admission_on(c, tenant, stage.scope, self.channel(), device)
@@ -580,31 +591,33 @@ impl SoftwareAssignment {
                 crate::deployment::scope::ScopeAdmission::Excluded => (),
             }
         }
-        let Some(index) = stage_index else {
+        if stage_index.is_none() && !self.stages().is_empty() {
             return Ok(TaskAdmission::new(TaskAdmissionState::OutsideStage, None));
-        };
-        let stage = &self.stages()[index];
-        if now < stage.opens_at {
-            return Ok(TaskAdmission::new(
-                TaskAdmissionState::Scheduled,
-                Some(index),
-            ));
         }
-        if stage.minimum_verified_percent.is_some() {
-            let counts = self
-                .counts_on(
-                    service.source.as_ref(),
-                    c,
-                    tenant,
-                    index.checked_sub(1).ok_or(Error::Malformed)?,
-                )
-                .await?;
-            let (total, verified) = (counts.total, counts.verified);
-            if !stage.open(now, total, verified) {
+        if let Some(index) = stage_index {
+            let stage = &self.stages()[index];
+            if now < stage.opens_at {
                 return Ok(TaskAdmission::new(
-                    TaskAdmissionState::SuccessGate,
+                    TaskAdmissionState::Scheduled,
                     Some(index),
                 ));
+            }
+            if stage.minimum_verified_percent.is_some() {
+                let counts = self
+                    .counts_on(
+                        service.source.as_ref(),
+                        c,
+                        tenant,
+                        index.checked_sub(1).ok_or(Error::Malformed)?,
+                    )
+                    .await?;
+                let (total, verified) = (counts.total, counts.verified);
+                if !stage.open(now, total, verified) {
+                    return Ok(TaskAdmission::new(
+                        TaskAdmissionState::SuccessGate,
+                        Some(index),
+                    ));
+                }
             }
         }
         if self.channel() == rss_mdm_inventory::Channel::Mdm {
@@ -639,7 +652,7 @@ impl SoftwareAssignment {
                     }
                 }
             };
-            return Ok(TaskAdmission::new(state, Some(index)));
+            return Ok(TaskAdmission::new(state, stage_index));
         }
         let registrations = crate::deployment::agent_facts::agent_targets_on(
             c,
@@ -651,13 +664,13 @@ impl SoftwareAssignment {
         if registrations.is_empty() {
             return Ok(TaskAdmission::new(
                 TaskAdmissionState::MissingRegistration,
-                Some(index),
+                stage_index,
             ));
         }
         if registrations.len() != 1 {
             return Ok(TaskAdmission::new(
                 TaskAdmissionState::AmbiguousRegistration,
-                Some(index),
+                stage_index,
             ));
         }
         let binding = &registrations[0].binding;
@@ -675,7 +688,7 @@ impl SoftwareAssignment {
         if self.variant(platform, architecture).is_none() {
             return Ok(TaskAdmission::new(
                 TaskAdmissionState::MissingVariant,
-                Some(index),
+                stage_index,
             ));
         }
         if self
@@ -685,18 +698,18 @@ impl SoftwareAssignment {
         {
             return Ok(TaskAdmission::new(
                 TaskAdmissionState::AuthorizationWithdrawn,
-                Some(index),
+                stage_index,
             ));
         }
         if !self.supported_on(service, c, tenant, binding).await? {
             return Ok(TaskAdmission::new(
                 TaskAdmissionState::UnsupportedCapability,
-                Some(index),
+                stage_index,
             ));
         }
         Ok(TaskAdmission::new(
             TaskAdmissionState::Eligible,
-            Some(index),
+            stage_index,
         ))
     }
 }

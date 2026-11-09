@@ -45,8 +45,6 @@ pub struct Operation {
     pub dispatch_failure: Option<crate::installation::DispatchFailure>,
     pub scope: dc::Scope,
     pub coordinate: dc::Coordinate,
-    pub registration: Uuid,
-    pub registration_generation: i64,
 }
 impl Operation {
     pub fn command_id(&self) -> Result<dc::CommandId> {
@@ -72,7 +70,7 @@ pub async fn load_on(
     protection: &rss_mdm_native_protection::Protector,
     id: Uuid,
 ) -> Result<Operation> {
-    let row={ let c = &mut *c; sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_registration_tasks.operations o JOIN mdm_access.command_authorities d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await }?.ok_or(Error::Execution(crate::installation::missing::ExecutionError::MissingOperation))?;
+    let row={ let c = &mut *c; sqlx::query("SELECT o.device, o.dispatch_failure, o.request, o.input_context, CAST(o.authority AS text), o.revision, o.generation, o.epoch, o.gateway_accepted, CAST(d.command_device AS text) FROM mdm_registration_tasks.operations AS o INNER JOIN mdm_access.command_authorities AS d USING (tenant_id, device) WHERE o.tenant_id = CAST($1 AS uuid) AND o.id = CAST($2 AS uuid)").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await }?.ok_or(Error::Execution(crate::installation::missing::ExecutionError::MissingOperation))?;
     decode_operation(protection, tenant, id, &row)
 }
 fn decode_operation(
@@ -105,8 +103,6 @@ fn decode_operation(
             row.try_get("generation")?,
             row.try_get("epoch")?,
         ))?,
-        registration: row.try_get("registration")?,
-        registration_generation: row.try_get("registration_generation")?,
     })
 }
 
@@ -126,7 +122,7 @@ pub(crate) async fn load_many_on(
     let count = ids.len();
     let rows = {
         let c = &mut *c;
-        sqlx::query("WITH selected AS MATERIALIZED (SELECT o.id,o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_registration_tasks.operations o JOIN mdm_access.command_authorities d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=ANY($2)), budget AS (SELECT coalesce(sum(octet_length(request)+octet_length(authority)+octet_length(input_context::text)+coalesce(octet_length(dispatch_failure::text),0)+1024),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes AS input_bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216")
+        sqlx::query("WITH selected AS MATERIALIZED (SELECT o.id, o.device, o.dispatch_failure, o.request, o.input_context, CAST(o.authority AS text), o.revision, o.generation, o.epoch, o.gateway_accepted, CAST(d.command_device AS text) FROM mdm_registration_tasks.operations AS o INNER JOIN mdm_access.command_authorities AS d USING (tenant_id, device) WHERE o.tenant_id = CAST($1 AS uuid) AND o.id = ANY($2)), budget AS (SELECT CAST(COALESCE(sum(octet_length(request) + octet_length(authority) + octet_length(CAST(input_context AS text)) + COALESCE(octet_length(CAST(dispatch_failure AS text)), 0) + 1024), 0) AS bigint) AS bytes FROM selected) SELECT selected.*, budget.bytes AS input_bytes FROM budget LEFT JOIN selected ON budget.bytes <= 16777216")
   .bind(tenant.to_string()).bind(ids).fetch_all(c).await
     }?;
     rss_mdm_query_postgres::observe_rows("registration.installation.inputs", &rows)?;
@@ -171,7 +167,7 @@ pub async fn current_registration(
     tx: &mut PgTransaction<'_>,
     device: &str,
     purpose: crate::Purpose,
-) -> Result<(Uuid, i64)> {
+) -> Result<String> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let t = tenant.clone();
@@ -209,7 +205,7 @@ pub async fn current_registration(
         }
         .into());
     }
-    Ok((rows[0].1, rows[0].2))
+    Ok(rows.into_iter().next().ok_or(Error::Conflict)?)
 }
 
 pub async fn read_on(
@@ -231,7 +227,7 @@ pub async fn read_on(
 
 pub async fn require_source(
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    registration: String,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
@@ -316,7 +312,7 @@ pub async fn authority_valid(
 pub async fn receipt_valid(tx: &mut PgTransaction<'_>, op: &Operation) -> Result<bool> {
     Ok(
         match current_registration(tx, &op.device, op.request.task.purpose()?).await {
-            Ok(current) => current == (op.registration, op.registration_generation),
+            Ok(current) => current == op.device.clone(),
             Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => {
                 false
             }

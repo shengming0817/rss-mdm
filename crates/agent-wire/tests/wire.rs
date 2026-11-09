@@ -116,15 +116,13 @@ fn manifest_covers_and_fingerprints_every_public_shape() {
 #[test]
 fn response_and_error_schemas_match_strict_consumers() {
     let operation = Uuid::new_v4();
-    let registration = Uuid::new_v4();
     let epoch = Uuid::new_v4();
     let report = Uuid::new_v4();
     let receipt = BindingProfile {
         wire_version: 1,
         operation_id: operation,
         device_id: "device-1".into(),
-        registration_id: registration,
-        generation: 1,
+
         source: ReportSource::AgentBuiltin,
         epoch,
         capabilities: vec![Capability::InventoryCollectionV1],

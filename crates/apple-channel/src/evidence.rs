@@ -49,7 +49,7 @@ pub(crate) async fn observations_many(
     let profiles = profiles
         .into_iter()
         .collect::<std::collections::BTreeMap<_, _>>();
-    let rows=sqlx::query("WITH selected AS MATERIALIZED (SELECT operation,id,registration,generation,phase,state,response,received_at,accepted,native_outcome,ordinal FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2)),budget AS(SELECT count(*)<=8192 AND coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok ORDER BY operation,ordinal,phase")
+    let rows=sqlx::query("WITH selected AS MATERIALIZED (SELECT operation, id, device, phase, state, response, received_at, accepted, native_outcome, ordinal FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND operation = ANY($2)), budget AS (SELECT count(*) <= 8192 AND COALESCE(sum(pg_column_size(selected)), 0) <= 16777216 AS ok FROM selected) SELECT selected.*, budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok ORDER BY operation, ordinal, phase")
         .bind(tenant).bind(ids).fetch_all(&mut *c).await.map_err(db)?;
     rss_mdm_query_postgres::observe_rows("execution.apple", &rows).map_err(db)?;
     let mut grouped = std::collections::BTreeMap::<Uuid, Vec<_>>::new();
@@ -103,8 +103,7 @@ fn decode_observations(
                     let plain = crate::protection::open(
                         key,
                         tenant,
-                        r.try_get("registration").map_err(db)?,
-                        r.try_get("generation").map_err(db)?,
+                        r.try_get("device").map_err(db)?,
                         r.try_get("id").map_err(db)?,
                         crate::protection::Part::Response,
                         &sealed,

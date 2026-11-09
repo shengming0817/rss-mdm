@@ -171,13 +171,13 @@ async fn deliver_on(
     cutoff: Deadline,
 ) -> Result<(), Error> {
     use sqlx::Row;
-    let row = sqlx::query("SELECT input_digest,context_digest,delivery,registration,credential,epoch FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+    let row = sqlx::query("SELECT input_digest, context_digest, delivery, device, credential, epoch FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2 FOR UPDATE")
         .bind(service.tenant.to_string()).bind(input.input.batch_id).fetch_one(&mut *c).await?;
     if row.try_get::<Vec<u8>, _>("context_digest")?
         != Sha256::digest(serde_json::to_vec(input)?).to_vec()
         || row.try_get::<Vec<u8>, _>("input_digest")?
             != Sha256::digest(serde_json::to_vec(&input.input)?).to_vec()
-        || row.try_get::<uuid::Uuid, _>("registration")? != input.registration
+        || row.try_get::<String, _>("device")? != input.device
         || row.try_get::<uuid::Uuid, _>("credential")? != input.credential
         || row.try_get::<uuid::Uuid, _>("epoch")? != input.epoch
     {

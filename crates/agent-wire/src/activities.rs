@@ -210,10 +210,6 @@ pub struct ActivityLinks {
 pub struct ActivityTarget {
     /// Authorized endpoint identity, which can differ between paired channels.
     pub device: String,
-    /// Exact registration identity.
-    pub registration: Uuid,
-    /// Exact registration generation.
-    pub generation: i64,
 }
 /// Allowlisted device activity. Contains no principal, OS identity, names or raw output.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]

@@ -88,7 +88,7 @@ pub(super) async fn publish(
 pub(super) async fn run(h: &Harness, version: Uuid, at: i64) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let state = rss_mdm_task_state::RunState::new(at + 300, at)?;
-    let sql = "INSERT INTO mdm_inventory.collection_tasks(tenant_id,id,policy_version,channel,origin,source_objects,device,registration,generation,occurrence,created_at,available_at,deadline,agent_state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'agent','\"policy\"',$4,$5,$6,$7,$8,$9,$9,$10,$11,$12,true)";
+    let sql = "INSERT INTO mdm_inventory.collection_tasks(tenant_id,id,policy_version,channel,origin,source_objects,device,occurrence,created_at,available_at,deadline,agent_state,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'agent','\"policy\"',$4,$5,$6,$7,$7,$8,$9,$10,true)";
     let mut tx = command::seed_transaction(&h.c).await?;
     sqlx::query(sql)
         .bind(h.c.tenant.to_string())
@@ -96,8 +96,6 @@ pub(super) async fn run(h: &Harness, version: Uuid, at: i64) -> Result<Uuid> {
         .bind(version)
         .bind(json!([h.object]))
         .bind(h.p.device())
-        .bind(h.p.registration())
-        .bind(h.p.generation())
         .bind(id.to_string())
         .bind(at)
         .bind(at + 300)
@@ -166,8 +164,6 @@ async fn agent_collection_preview_requires_host_signing() -> Result<()> {
                 Arc::new(super::super::agent_facts::AgentFacts),
                 &collection::model::Target {
                     device: h.p.device().into(),
-                    registration: h.p.registration(),
-                    generation: h.p.generation(),
                 }
             )
             .await?
@@ -177,7 +173,6 @@ async fn agent_collection_preview_requires_host_signing() -> Result<()> {
         h.c.account(&[
             Permission::PolicyRead,
             Permission::ResourceRead,
-            Permission::ScopeRead,
             Permission::InventoryRead,
             Permission::InventoryCollect,
             Permission::InventorySensitiveRead,

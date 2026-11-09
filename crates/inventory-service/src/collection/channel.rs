@@ -22,7 +22,7 @@ pub async fn start_in(
         profile,
         c,
         &p.tenant().to_string(),
-        &p.registration().to_string(),
+        p.device(),
         source,
         live.epoch().as_str(),
         1,
@@ -34,7 +34,7 @@ pub async fn start_in(
     let scope = device::scope_dataset(
         profile,
         p.tenant(),
-        p.registration(),
+        p.device(),
         source.as_str(),
         Uuid::parse_str(live.epoch().as_str()).map_err(|_| Error::Malformed)?,
         rss_mdm_inventory::builtin::AGENT_INSTALLATION.as_str(),
@@ -56,7 +56,7 @@ pub async fn start_in(
     sqlx::query(crate::storage_profile::sql(profile).collection_channel_start_in_1)
         .bind(p.tenant().to_string())
         .bind(id)
-        .bind(p.registration())
+        .bind(p.device())
         .bind(source.as_str())
         .bind(scope.epoch().as_str())
         .bind(scope.encode().map_err(|_| Error::Malformed)?)
@@ -82,7 +82,7 @@ pub async fn finish_in(
     let row = sqlx::query(crate::storage_profile::sql(profile).collection_channel_finish_in_1)
         .bind(p.tenant().to_string())
         .bind(id)
-        .bind(p.registration())
+        .bind(p.device())
         .bind(source.as_str())
         .bind(live.epoch().as_str())
         .fetch_optional(&mut *c)
@@ -156,8 +156,8 @@ pub async fn finish_in(
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.identify_device(p.registration());
-    audit.registration(p.registration());
+    audit.identify_device(p.device());
+    audit.target_device(p.device());
     audit.owned_operation(
         rss_mdm_audit_integration::operation::OperationOwner::Collection,
         id,
@@ -198,7 +198,7 @@ pub async fn abandon_in(
             .map_err(db)?;
     let mut attempt: Attempts = serde_json::from_str(&body).map_err(|_| Error::Malformed)?;
     attempt.finish();
-    let registration = sqlx::query_scalar::<_, Uuid>(
+    let device = sqlx::query_scalar::<_, String>(
         crate::storage_profile::sql(profile).collection_channel_abandon_in_2,
     )
     .bind(tenant)
@@ -209,7 +209,7 @@ pub async fn abandon_in(
     .fetch_optional(&mut *c)
     .await
     .map_err(db)?;
-    let Some(registration) = registration else {
+    let Some(device) = device else {
         return Ok(None);
     };
     let audit = rss_mdm_audit_integration::RequestAudit::new(
@@ -226,7 +226,7 @@ pub async fn abandon_in(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.identify_service("service:collection-finalizer");
-    audit.registration(registration);
+    audit.target_device(&device);
     let details = serde_json::json!({"collectionResult":"failed","reason":reason,"sealedAt":at});
 
     let fact = rss_mdm_audit_integration::Fact::business(

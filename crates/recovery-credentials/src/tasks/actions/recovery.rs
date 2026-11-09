@@ -24,7 +24,6 @@ pub async fn audit_recovery(
         );
         audit.plan(run.policy_version);
         audit.target_device(&run.target.device);
-        audit.registration(run.target.registration);
         let bytes = checked_input(serde_json::to_vec(&(&previous, &run.state)))?;
         use sha2::Digest;
         let fact = Fact::business(
@@ -174,16 +173,12 @@ pub(super) async fn stale_registration(
     let target = target.clone();
     Ok(tx
         .with_connection(move |c| {
-            Box::pin(
-                rss_mdm_registration_service::device::read::stale_registration_in(
-                    profile,
-                    c,
-                    tenant,
-                    target.registration,
-                    target.device,
-                    target.generation,
-                ),
-            )
+            Box::pin(rss_mdm_registration_service::device::read::inactive_in(
+                profile,
+                c,
+                tenant,
+                target.device,
+            ))
         })
         .await?)
 }

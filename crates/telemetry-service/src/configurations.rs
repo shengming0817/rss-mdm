@@ -10,14 +10,6 @@ use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-/// Current telemetry-capable registration coordinates, not credential evidence.
-#[derive(schemars::JsonSchema, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Registration {
-    pub id: Uuid,
-    pub generation: i64,
-}
-
 /// Public configuration metadata; contains neither executable inputs nor device receipts.
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +31,6 @@ pub struct Configuration {
 #[serde(rename_all = "camelCase")]
 pub struct Configurations {
     pub device: String,
-    pub registration: Option<Registration>,
     pub evaluated_at_micros: i64,
     pub configurations: Vec<Configuration>,
 }
@@ -97,7 +88,7 @@ pub(crate) async fn eligible_on(
 pub(crate) async fn supported_on(
     service: &Service,
     c: &mut sqlx::PgConnection,
-    registration: Uuid,
+    registration: String,
     frozen: &FrozenProfile,
 ) -> Result<Option<bool>, Error> {
     let keys = frozen
@@ -255,7 +246,7 @@ async fn read_on(
     )
     .await
     .map_err(|_| Error::Storage)?;
-    let primary = primary.filter(|p| live.iter().any(|(id, _, _)| *id == p.registration_id));
+    let primary = primary.filter(|p| live.iter().any(|(id, _, _)| *id == p.device));
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint")
             .fetch_one(&mut *c)
@@ -264,12 +255,12 @@ async fn read_on(
     if let Some(primary) = &primary {
         for candidate in eligible {
             if !live.iter().any(|(id, source, _)| {
-                *id == primary.registration_id && *source == candidate.frozen.source.as_str()
+                *id == primary.device && *source == candidate.frozen.source.as_str()
             }) {
                 continue;
             }
             let Some(supported) =
-                supported_on(service, c, primary.registration_id, &candidate.frozen).await?
+                supported_on(service, c, primary.device.clone(), &candidate.frozen).await?
             else {
                 continue;
             };
@@ -295,10 +286,6 @@ async fn read_on(
     proof.check_live().map_err(|_| Error::Denied)?;
     Ok(Configurations {
         device: device.into(),
-        registration: primary.map(|p| Registration {
-            id: p.registration_id,
-            generation: p.generation,
-        }),
         evaluated_at_micros: now,
         configurations,
     })

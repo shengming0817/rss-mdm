@@ -53,13 +53,12 @@ async fn historical(c: &Context, key: &Protector, original: Uuid) -> Result<Vec<
     struct Identity<'a> {
         operation: Uuid,
         device: &'a str,
-        registration: Uuid,
-        generation: i64,
     }
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Metadata<'a> {
         platform: &'a str,
+        purpose: rss_mdm_registration_service::Purpose,
         deadline: i64,
         input_version: &'a str,
         target: &'a configuration::NativeTarget,
@@ -73,6 +72,7 @@ async fn historical(c: &Context, key: &Protector, original: Uuid) -> Result<Vec<
         input.operation_id = id;
         let meta = Metadata {
             platform: "windows",
+            purpose: input.task.purpose()?,
             deadline: input.deadline,
             input_version: &input.input_version,
             target: &input.target,
@@ -80,8 +80,6 @@ async fn historical(c: &Context, key: &Protector, original: Uuid) -> Result<Vec<
         let owner = serde_json::to_string(&Identity {
             operation: id,
             device: &operation.device,
-            registration: operation.registration,
-            generation: operation.registration_generation,
         })?;
         let field = serde_json::to_string(&("native.operation.input/v1", &meta))?;
         let sealed = key.seal_bytes(
@@ -94,9 +92,9 @@ async fn historical(c: &Context, key: &Protector, original: Uuid) -> Result<Vec<
             .to_vec();
         sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) SELECT tenant_id,$3,device_id,generation,authority_epoch,$4,deadline,queued_at,outbox_domain,$5,$4,'published',queued_at,2 FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2")
             .bind(c.tenant.to_string()).bind(original.to_string()).bind(id.to_string()).bind(&digest).bind(format!("dispatch.{id}")).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mdm_planning.configuration_operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) SELECT tenant_id,$3,device,$4,$5,$6,registration,registration_generation,generation,epoch,authority,$6,true,policy_version FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND id=$2")
+        sqlx::query("INSERT INTO mdm_planning.configuration_operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version) SELECT tenant_id, $3, device, $4, $5, $6, generation, epoch, authority, $6, TRUE, policy_version FROM mdm_planning.configuration_operations WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
             .bind(c.tenant.to_string()).bind(original).bind(id).bind(sealed).bind(serde_json::to_value(meta)?).bind(digest).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mdm_windows.native_commands(tenant_id,id,registration,registration_generation) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(id).bind(operation.registration).bind(operation.registration_generation).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_windows.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(operation.device.clone()).execute(&mut *tx).await?;
         ids.push(id);
     }
     tx.commit().await?;

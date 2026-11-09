@@ -169,7 +169,7 @@ impl Maintenance {
                         if remaining == 0 {
                             break;
                         }
-                        let registration = material.binding.registration;
+                        let registration = material.binding.device;
                         let id = material.id;
                         let version = material.version;
                         tx.with_connection(move |c| {
@@ -187,6 +187,7 @@ impl Maintenance {
                         .await??;
                         changed = true;
                         if let Some(copy_owner) = &service.copies {
+                            let value = registration.clone();
                             let copies = tx
                                 .with_connection(move |c| {
                                     Box::pin(async move {
@@ -194,7 +195,7 @@ impl Maintenance {
                                             crate::Custody::new(profile, None),
                                             c,
                                             tenant,
-                                            registration,
+                                            value,
                                         )
                                         .await)
                                     })

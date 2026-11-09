@@ -147,21 +147,15 @@ fn state(definition: &FieldDefinition, sources: &[&ArrayFact]) -> Result<ArraySt
             crate::assets::validate_evidence(definition, &old.evidence)?;
             let e = &fact.evidence;
             let previous = &old.evidence;
-            if (
-                &e.scope,
-                e.source,
-                &e.registration,
-                e.registration_generation,
-                &e.epoch,
-                &e.dataset,
-            ) != (
-                &previous.scope,
-                previous.source,
-                &previous.registration,
-                previous.registration_generation,
-                &previous.epoch,
-                &previous.dataset,
-            ) {
+            if (&e.scope, e.source, &e.device_id, &e.epoch, &e.dataset)
+                != (
+                    &previous.scope,
+                    previous.source,
+                    &previous.device_id,
+                    &previous.epoch,
+                    &previous.dataset,
+                )
+            {
                 return Err(Invalid::Evidence);
             }
         }

@@ -118,8 +118,8 @@ impl Operations {
                 })
                 .await;
         }
-        self.tasks.snapshot(request,(self,p,q),|ctx,c,grant,now|Box::pin(async move{
-            let(s,p,q)=*ctx;
+        self.tasks.snapshot(request,(self,p),|ctx,c,grant,now|Box::pin(async move{
+            let(s,p)=*ctx;
             grant.require(p,Permission::OperationRead,Some(device))?;
             let native=match owner {
                 O::DeviceControl=>Some(super::super::native_ownership::Owner::Device),
@@ -146,10 +146,9 @@ impl Operations {
                 _=>return Err(Error::Malformed),
             };
             let mut query=sqlx::QueryBuilder::new("WITH tenant_context AS (SELECT ");
-            query.push_bind(p.tenant_id()).push("::uuid),owned AS (").push(relation).push(") SELECT policy,registration,generation FROM owned WHERE id=").push_bind(id).push(" AND device=").push_bind(device).push(" AND kind=").push_bind(kind);
-            let row:Option<(Option<Uuid>,Uuid,i64)>=query.build_query_as().fetch_optional(&mut *c).await.map_err(sql)?;
-            let Some((policy,registration,generation))=row else {return Ok(Diagnostic { original: None, execution: Ok(None) });};
-            if q.registration.is_some_and(|v|v!=registration) || q.generation.is_some_and(|v|v!=generation){return Err(Error::NotFound);}
+            query.push_bind(p.tenant_id()).push("::uuid),owned AS (").push(relation).push(") SELECT policy FROM owned WHERE id=").push_bind(id).push(" AND device=").push_bind(device).push(" AND kind=").push_bind(kind);
+            let row:Option<(Option<Uuid>,)>=query.build_query_as().fetch_optional(&mut *c).await.map_err(sql)?;
+            let Some((policy,))=row else {return Ok(Diagnostic { original: None, execution: Ok(None) });};
             let tenant=s.tasks.tenant.to_string();
             let original=match owner {
                 O::DeviceControl=>rss_mdm_device_service::control::storage::read_on(c,&tenant,id,p.principal_id()).await.map_err(sql)?.filter(|r|r.instance.is_some_and(|v|v.to_string()==p.instance_id())).map(|r|(r.fingerprint,r.response)),

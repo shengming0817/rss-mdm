@@ -235,3 +235,24 @@ fn request_replay_remains_a_request_observation_not_a_second_business_fact() {
     );
     audit.finalize(None);
 }
+
+#[test]
+fn push_observations_retain_the_producer_device_without_an_operation_locator() {
+    let audit = RequestAudit::new(
+        rss_mdm_audit_integration::Origin::Background,
+        rss_mdm_audit_integration::StorageProfile::Mdm,
+        TENANT.into(),
+        "windows_push",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.identify_service("service:windows-push");
+    audit.target_device("device-a");
+    let event = Fact::observation(&audit, "wake:lease", 200, "success", None)
+        .unwrap()
+        .event(rss_contract::Timepoint::try_from(5i64).unwrap())
+        .unwrap();
+    let view = project(&event).unwrap();
+    assert_eq!(view.device_id.as_deref(), Some("device-a"));
+    assert!(view.operation_id.is_none());
+    audit.finalize(None);
+}

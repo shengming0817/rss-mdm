@@ -82,7 +82,6 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             P::InventoryRead,
             P::InventorySensitiveRead,
             P::PolicyRead,
-            P::ScopeRead,
             P::ComplianceRuleRead,
             P::CertificateArchiveRead,
             P::WebhookRead,

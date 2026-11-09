@@ -1,5 +1,5 @@
 #[path = "fixture.rs"]
-mod fixture;
+pub(crate) mod fixture;
 use crate::{authority_t2_support::Context, planning_t2_support as planning};
 use anyhow::Result;
 use fixture::Fixture;
@@ -54,7 +54,7 @@ async fn seed(
     Ok(policy)
 }
 async fn counts(c: &Context, device: &str) -> Result<(i64, i64, i64, i64, i64, i64, i64, i64)> {
-    Ok(sqlx::query_as("SELECT input_revision,observed_revision,(SELECT count(*) FROM mdm_planning.configuration_claims x WHERE x.tenant_id=d.tenant_id AND x.device=d.device),(SELECT count(*) FROM mdm_planning.configuration_objects x WHERE x.tenant_id=d.tenant_id AND x.device=d.device),(SELECT count(*) FROM mdm_planning.configuration_operations x WHERE x.tenant_id=d.tenant_id AND x.device=d.device),(SELECT count(*) FROM rss_device_command.commands x JOIN mdm_access.command_authorities a ON(a.tenant_id,a.command_device)=(x.tenant_id,x.device_id) WHERE a.tenant_id=d.tenant_id AND a.device=d.device),(SELECT count(*) FROM mdm_windows.native_commands x JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(x.tenant_id,x.registration) WHERE r.tenant_id=d.tenant_id AND r.device=d.device),(SELECT count(*) FROM mdm_planning.configuration_receipts r JOIN mdm_planning.configuration_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.id) WHERE o.tenant_id=d.tenant_id AND o.device=d.device) FROM mdm_planning.configuration_devices d WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?)
+    Ok(sqlx::query_as("SELECT input_revision, observed_revision, (SELECT count(*) FROM mdm_planning.configuration_claims AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM mdm_planning.configuration_objects AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM mdm_planning.configuration_operations AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM rss_device_command.commands AS x INNER JOIN mdm_access.command_authorities AS a ON (a.tenant_id, a.command_device) = (x.tenant_id, x.device_id) WHERE a.tenant_id = d.tenant_id AND a.device = d.device), (SELECT count(*) FROM mdm_windows.native_commands AS x INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (x.tenant_id, x.device) WHERE r.tenant_id = d.tenant_id AND r.id = d.device), (SELECT count(*) FROM mdm_planning.configuration_receipts AS r INNER JOIN mdm_planning.configuration_operations AS o ON (o.tenant_id, o.id) = (r.tenant_id, r.id) WHERE o.tenant_id = d.tenant_id AND o.device = d.device) FROM mdm_planning.configuration_devices AS d WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?)
 }
 async fn wake(app: &rss_mdm_policy_service::application::Application, device: &str) -> Result<()> {
     transaction::inspect(
@@ -210,7 +210,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     assert_eq!(configuration.relay_once(&control).await?, 0);
     let committed = counts(&c, device).await?;
     assert_eq!(committed, (2, 2, 1, 1, 1, 1, 1, 1));
-    let identity:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id,o.authority,r.actor FROM mdm_planning.configuration_operations o JOIN mdm_planning.configuration_receipts r USING(tenant_id,id) WHERE o.tenant_id=$1::uuid AND o.device=$2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?;
+    let identity:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id, o.authority, r.actor FROM mdm_planning.configuration_operations AS o INNER JOIN mdm_planning.configuration_receipts AS r USING (tenant_id, id) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?;
     assert_eq!(identity.1["policy"], json!(policy));
     drop(worker);
     drop(app);
@@ -242,7 +242,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     step(&worker, c.tenant, device).await?;
     let replay = counts(&c, device).await?;
     assert_eq!(replay, (3, 3, 1, 1, 1, 1, 1, 1));
-    let after:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id,o.authority,r.actor FROM mdm_planning.configuration_operations o JOIN mdm_planning.configuration_receipts r USING(tenant_id,id) WHERE o.tenant_id=$1::uuid AND o.device=$2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?;
+    let after:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id, o.authority, r.actor FROM mdm_planning.configuration_operations AS o INNER JOIN mdm_planning.configuration_receipts AS r USING (tenant_id, id) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?;
     assert_eq!(after, identity);
     let foreign:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(&sentinel.members[0].device).fetch_one(&c.operator).await?;
     assert_eq!(foreign, 0);
@@ -305,3 +305,5 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     c.close().await;
     Ok(())
 }
+
+mod owned_scopes;

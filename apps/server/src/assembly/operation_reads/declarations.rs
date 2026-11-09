@@ -83,14 +83,7 @@ impl Operations {
                         let keys = {
                             let c = &mut *c;
                             apple
-                                .declaration_page(
-                                    c,
-                                    tenant,
-                                    selected.registration_id,
-                                    selected.generation,
-                                    after,
-                                    limit + 1,
-                                )
+                                .declaration_page(c, tenant, selected.device, after, limit + 1)
                                 .await
                                 .map_err(|_| Error::Unavailable(Failure::Database))
                         }?;
@@ -111,12 +104,8 @@ impl Operations {
                         let mut more = keys.len() > q.limit();
                         for (id, user) in keys.into_iter().take(q.limit()) {
                             let value = configuration.remove(&id).ok_or(Error::Conflict)?;
-                            let (registration, generation, native_values, observation) = (
-                                value.registration,
-                                value.generation,
-                                !value.redacted,
-                                value.observation,
-                            );
+                            let (device, native_values, observation) =
+                                (value.device, !value.redacted, value.observation);
                             let records::NativeObservation::Declarations { facts, .. } =
                                 &observation
                             else {
@@ -132,8 +121,8 @@ impl Operations {
                             };
                             let item = Item {
                                 operation: id,
-                                registration,
-                                generation,
+                                device,
+
                                 user,
                                 redacted: !native_values,
                                 observation,

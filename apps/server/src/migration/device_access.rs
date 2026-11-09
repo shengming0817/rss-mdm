@@ -76,7 +76,6 @@ pub async fn verify_access(
     }
     for table in [
         "mdm_access.devices",
-        "mdm_access.registrations",
         "mdm_access.credentials",
         "mdm_access.certificate_issuances",
         "mdm_access.report_sources",

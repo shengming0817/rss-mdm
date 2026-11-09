@@ -19,10 +19,11 @@ use uuid::Uuid;
 mod support;
 
 #[tokio::test]
-#[ignore = "T2: real bootstrap identity and dispatched Software installation authorize one generation-bound native grant"]
-async fn native_grant_binds_original_installation_and_generation_and_replays_once() -> Result<()> {
+#[ignore = "T2: real bootstrap identity and dispatched Software installation authorize one device-bound native grant"]
+async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let n = identity::seed(&c, "windows").await?;
+    let other = identity::seed(&c, "windows").await?;
     let installation = Uuid::new_v4();
     let bootstrap = Uuid::new_v4();
     let materials = support::materials(&c, &n, installation, bootstrap).await?;
@@ -83,13 +84,14 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
     assert_eq!(support::bootstrap(&c, bootstrap).await?, before);
     assert_eq!(support::counts(&c).await?, (1, 0));
     input.installation_operation = installation;
-    // A bootstrap bound to a different generation cannot authorize the current native source.
+    // A bootstrap bound to a different device cannot authorize the current native source.
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query(
-        "UPDATE mdm_access.agent_bootstraps SET source=jsonb_set(source,'{generation}','2') WHERE tenant_id=$1::uuid AND id=$2",
+        "UPDATE mdm_access.agent_bootstraps SET source=jsonb_set(source,'{device}',to_jsonb($3::text)) WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(c.tenant.to_string())
     .bind(bootstrap)
+    .bind(&other.device)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -103,10 +105,11 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
     assert_eq!(support::counts(&c).await?, (1, 0));
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query(
-        "UPDATE mdm_access.agent_bootstraps SET source=jsonb_set(source,'{generation}','1') WHERE tenant_id=$1::uuid AND id=$2",
+        "UPDATE mdm_access.agent_bootstraps SET source=jsonb_set(source,'{device}',to_jsonb($3::text)) WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(c.tenant.to_string())
     .bind(bootstrap)
+    .bind(&n.device)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -123,8 +126,9 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
     assert!(bounded);
     let source:Value=sqlx::query_scalar("SELECT native_authority FROM mdm_access.certificate_grants WHERE tenant_id=$1::uuid AND source='native'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(source["installation"], json!(installation));
-    assert_eq!(source["registration"], json!(n.registration));
-    assert_eq!(source["generation"], 1);
+    assert_eq!(source["device"], json!(n.device.clone()));
+    assert!(source.get("generation").is_none());
+    assert!(source.get("registration").is_none());
     assert_eq!(source["bootstrap"], json!(bootstrap));
     // Registration projects its own state on the caller's real role/tenant snapshot.
     // Issuing a grant does not itself invent an authenticated Agent registration.
@@ -148,16 +152,14 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
         observations::BootstrapState::Consumed
     ));
     assert!(
-        observations::cleanup_pending_on(&mut snapshot, &c.tenant.to_string(), n.registration, 1)
-            .await?
+        observations::cleanup_pending_on(&mut snapshot, &c.tenant.to_string(), &n.device).await?
     );
     assert!(
-        !observations::cleanup_pending_on(&mut snapshot, &c.tenant.to_string(), n.registration, 2)
+        !observations::cleanup_pending_on(&mut snapshot, &c.tenant.to_string(), &other.device)
             .await?
     );
     let contact =
-        observations::native_contact_on(&mut snapshot, &c.tenant.to_string(), n.registration, 1)
-            .await?;
+        observations::native_contact_on(&mut snapshot, &c.tenant.to_string(), &n.device).await?;
     assert_eq!(
         (contact.active, contact.bindings, contact.last),
         (0, 0, None)

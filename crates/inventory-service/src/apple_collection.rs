@@ -4,12 +4,12 @@ use rss_mdm_inventory::ReportSource;
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub async fn current(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<bool, Error> {
-    let row=sqlx::query("SELECT registration,epoch,attempts,deadline>clock_timestamp() AND sealed_at IS NULL AS live,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND source='mdm.apple' FOR UPDATE").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT device, epoch, attempts, deadline > clock_timestamp() AND sealed_at IS NULL AS live, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint) AS now FROM mdm_access.collection_runs WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND source = 'mdm.apple' FOR UPDATE").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
     let current = crate::device::store::source_current_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         tenant,
-        row.try_get("registration").map_err(db)?,
+        row.try_get("device").map_err(db)?,
         ReportSource::MdmApple,
         row.try_get("epoch").map_err(db)?,
     )
@@ -34,7 +34,7 @@ pub async fn current(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<boo
         rss_mdm_inventory::CollectionScope::AppleUser { identity } => identity.as_str(),
         _ => return Ok(false),
     };
-    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels ch JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(ch.tenant_id,ch.registration,ch.generation) WHERE ch.tenant_id=$1::uuid AND ch.registration=$2 AND ch.user_key=$3 AND ch.state='active' AND r.state='active')")
-        .bind(tenant).bind(row.try_get::<Uuid,_>("registration").map_err(db)?).bind(user).fetch_one(c).await.map_err(db)?;
+    let active: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.channels AS ch INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (ch.tenant_id, ch.device) WHERE ch.tenant_id = CAST($1 AS uuid) AND ch.device = $2 AND ch.user_key = $3 AND ch.state = 'active' AND r.state = 'active')")
+        .bind(tenant).bind(row.try_get::<String,_>("device").map_err(db)?).bind(user).fetch_one(c).await.map_err(db)?;
     Ok(current && active && row.try_get::<bool, _>("live").map_err(db)?)
 }

@@ -72,12 +72,7 @@ pub(crate) async fn load_page(
     if ids.len() > 100 {
         return Err(Error::Malformed);
     }
-    let rows:Vec<String>=sqlx::query_scalar(r#"SELECT jsonb_build_object(
-        'id',a.id,'version',a.version,'state',a.state,'evidence',a.evidence,
-        'hardware',a.hardware,'confirmedBy',a.confirmed_by,'confirmedAt',a.confirmed_at,
-        'revokedBy',a.revoked_by,'revokedAt',a.revoked_at,'reason',a.reason,
-        'members',(SELECT jsonb_agg(jsonb_build_object('device',m.device,'channel',m.channel,'registrationId',m.registration_id,'generation',m.generation) ORDER BY m.channel) FROM mdm_devices.members m WHERE (m.tenant_id,m.association_id)=(a.tenant_id,a.id)))::text
-        FROM mdm_devices.associations a WHERE a.tenant_id=$1::uuid AND a.id=ANY($2)"#)
+    let rows:Vec<String>=sqlx::query_scalar("SELECT CAST(jsonb_build_object('id', a.id, 'version', a.version, 'state', a.state, 'evidence', a.evidence, 'hardware', a.hardware, 'confirmedBy', a.confirmed_by, 'confirmedAt', a.confirmed_at, 'revokedBy', a.revoked_by, 'revokedAt', a.revoked_at, 'reason', a.reason, 'members', (SELECT jsonb_agg(jsonb_build_object('device', m.device, 'channel', m.channel) ORDER BY m.channel) FROM mdm_devices.members AS m WHERE (m.tenant_id, m.association_id) = (a.tenant_id, a.id))) AS text) FROM mdm_devices.associations AS a WHERE a.tenant_id = CAST($1 AS uuid) AND a.id = ANY($2)")
         .bind(tenant).bind(ids).fetch_all(c).await?;
     rows.into_iter()
         .map(|value| {
@@ -168,10 +163,10 @@ impl Associations {
                 let channel=if *selected==Channel::Mdm{Channel::Agent}else{Channel::Mdm};
                 let allowed=snapshot.inventory_devices(proof)?.map(|s|s.into_iter().collect::<Vec<_>>());
                 let writable=snapshot.devices_for(proof,Permission::DeviceAssociationWrite)?.map(|s|s.into_iter().collect::<Vec<_>>());
-                let rows=sqlx::query("SELECT r.device,r.id,r.generation FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.channel=$2 AND r.purpose='primary' AND r.state='active' AND r.device<>$3 AND ($4::text IS NULL OR r.device COLLATE \"C\">$4 COLLATE \"C\") AND ($5::text[] IS NULL OR r.device=ANY($5)) AND ($6::text[] IS NULL OR r.device=ANY($6)) AND EXISTS(SELECT FROM mdm_access.credentials k WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active') AND NOT EXISTS(SELECT FROM mdm_devices.members m WHERE (m.tenant_id,m.device)=(r.tenant_id,r.device) AND NOT m.released) ORDER BY r.device COLLATE \"C\" LIMIT $7")
+                let rows=sqlx::query("SELECT r.id AS device, r.id FROM mdm_access.devices AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.channel = $2 AND r.purpose = 'primary' AND r.state = 'active' AND r.id <> $3 AND (CAST($4 AS text) IS NULL OR r.id COLLATE \"C\" > $4 COLLATE \"C\") AND (CAST($5 AS text[]) IS NULL OR r.id = ANY($5)) AND (CAST($6 AS text[]) IS NULL OR r.id = ANY($6)) AND EXISTS (SELECT FROM mdm_access.credentials AS k WHERE (k.tenant_id, k.device) = (r.tenant_id, r.id) AND k.state = 'active') AND NOT EXISTS (SELECT FROM mdm_devices.members AS m WHERE (m.tenant_id, m.device) = (r.tenant_id, r.id) AND NOT m.released) ORDER BY r.id COLLATE \"C\" LIMIT $7")
                     .bind(proof.tenant_id()).bind(channel.as_str()).bind(*device).bind(after).bind(allowed).bind(writable).bind((limit+1) as i64).fetch_all(c).await?;
                 let mut items=rows.into_iter().map(|row|Ok(Member {
-                    device:row.try_get("device")?,channel,registration_id:row.try_get("id")?,generation:row.try_get("generation")?,
+                    device:row.try_get("device")?,channel,
                 })).collect::<Result<Vec<_>>>()?;
                 let more=items.len()>limit;items.truncate(limit);
                 let next_cursor=if more{Some(codec.encode(&binding,&items.last().ok_or(Error::Storage)?.device).map_err(|_|Error::Malformed)?.as_str().to_owned())}else{None};

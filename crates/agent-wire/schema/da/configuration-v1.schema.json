@@ -155,33 +155,20 @@
         },
         {
           "additionalProperties": false,
-          "description": "One exact endpoint registration generation.",
+          "description": "One exact endpoint device identity.",
           "properties": {
             "device": {
               "description": "Registration-owner allocated endpoint identity.",
               "type": "string"
             },
-            "generation": {
-              "description": "Positive registration generation, checked against the current mapping.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
             "kind": {
               "const": "device",
-              "type": "string"
-            },
-            "registration": {
-              "description": "Registration identity; renewed credentials retain the same generation.",
-              "format": "uuid",
               "type": "string"
             }
           },
           "required": [
             "kind",
-            "device",
-            "registration",
-            "generation"
+            "device"
           ],
           "type": "object"
         }

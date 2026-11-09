@@ -4,7 +4,7 @@ use rss_observation::Body;
 use sqlx::Row;
 use uuid::Uuid;
 pub struct Report {
-    pub registration: Uuid,
+    pub device: String,
     pub task: Uuid,
     pub attempt: Uuid,
     pub progress: CollectionProgress,
@@ -19,7 +19,7 @@ pub async fn accept_in(
     report: Report,
 ) -> Result<(), sqlx::Error> {
     let Report {
-        registration,
+        device: registration,
         task,
         attempt,
         progress,
@@ -47,7 +47,7 @@ pub async fn accept_in(
     rss_mdm_inventory_postgres::register_collection_in(c, tenant, definition)
         .await
         .map_err(|_| sqlx::Error::Protocol("invalid task collector".into()))?;
-    let row = sqlx::query("SELECT scope,sequence,attempts,sealed_at,reason,batch,evidence FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 FOR UPDATE")
+    let row = sqlx::query("SELECT scope, sequence, attempts, sealed_at, reason, batch, evidence FROM mdm_access.collection_runs WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3 FOR UPDATE")
         .bind(tenant.to_string()).bind(attempt).bind(registration).fetch_one(&mut *c).await?;
     let frozen: CollectionProgress = serde_json::from_str(row.try_get("attempts")?)
         .map_err(|_| sqlx::Error::Protocol("invalid reserved collection".into()))?;
@@ -111,7 +111,7 @@ pub async fn accept_in(
 pub async fn start_in(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    registration: Uuid,
+    registration: String,
     task: Uuid,
     attempt: Uuid,
     definition: CollectionDefinition,
@@ -125,7 +125,7 @@ pub async fn start_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         &tenant.to_string(),
-        registration,
+        &registration,
         source,
     )
     .await?;
@@ -133,14 +133,14 @@ pub async fn start_in(
     let scope = crate::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         tenant,
-        registration,
+        &registration,
         source.as_str(),
         Uuid::parse_str(&epoch).map_err(|_| sqlx::Error::Protocol("invalid epoch".into()))?,
         definition.dataset(),
     )
     .map_err(encode_error)?;
     let progress = CollectionProgress::new(definition);
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,evidence) VALUES($1::uuid,$2,$3,$4,$5::uuid,$6,$7,$8,$9,'pending',$10)")
+    sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, evidence) VALUES (CAST($1 AS uuid), $2, $3, $4, CAST($5 AS uuid), $6, $7, $8, $9, 'pending', $10)")
         .bind(tenant.to_string()).bind(attempt).bind(registration).bind(source.as_str()).bind(epoch)
         .bind(scope.encode().map_err(|_| sqlx::Error::Protocol("invalid scope".into()))?).bind(sequence).bind(now)
         .bind(serde_json::to_string(&progress).expect("closed progress"))

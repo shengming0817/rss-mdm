@@ -98,8 +98,6 @@ impl Copies {
             &input_storage::Identity {
                 operation: id,
                 device: &op.device,
-                registration: op.registration,
-                generation: op.registration_generation,
             },
             &op.request,
         )?;

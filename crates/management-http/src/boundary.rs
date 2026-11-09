@@ -322,10 +322,10 @@ fn route_action(route: &str) -> &'static str {
         | "/api/v1/registration-quotas/users/{instance}/{principal}" => "registration_quota_change",
         "/api/v1/devices/{device}/registration-user" => "registration_user_change",
         "/api/v1/enrollments/{id}" => "enrollment_read",
-        "/api/v1/devices/{device}/registrations" => "registration_read",
+        "/api/v1/devices/{device}/registration" => "registration_read",
         "/api/v1/enrollments/{id}/resume" => "enrollment_resume",
         "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
-        "/api/v1/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
+        "/api/v1/devices/{device}/registration/revoke" => "credential_revoke",
         "/api/v1/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collections/{run}"
         | "/api/v1/devices/{id}/collections/{run}/fields/{field}/items" => "collection_read",
@@ -462,11 +462,11 @@ mod tests {
     #[test]
     fn route_templates_select_audit_actions() {
         assert_eq!(
-            route_action("/api/v1/devices/{device}/registrations"),
+            route_action("/api/v1/devices/{device}/registration"),
             "registration_read"
         );
         assert_eq!(
-            route_action("/api/v1/devices/{device}/registrations/{registration}/revoke"),
+            route_action("/api/v1/devices/{device}/registration/revoke"),
             "credential_revoke"
         );
         assert_eq!(

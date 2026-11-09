@@ -6,7 +6,7 @@ use rss_mdm_query::directory::Position;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 const BATCH: usize = 1000;
-const DOCUMENT: &str = "jsonb_build_object('id',id,'kind',kind,'device',device,'registrationId',registration,'generation',generation,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status)";
+const DOCUMENT: &str = "jsonb_build_object('id',id,'kind',kind,'device',device,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status)";
 fn metadata(name: &str) -> bool {
     !matches!(
         name,
@@ -110,7 +110,7 @@ async fn matching(
     let mut sql = sqlx::QueryBuilder::new(
         "WITH batch AS(SELECT value AS document FROM jsonb_array_elements(",
     );
-    sql.push_bind(Value::Array(rows)).push("::jsonb)), classified AS(SELECT document,(document->>'id')::uuid AS id,document->>'kind' AS kind,document->>'device' AS device,(document->>'policy')::uuid AS policy,(document->>'registrationId')::uuid AS registration,(document->>'generation')::bigint AS generation,document->>'origin' AS source_kind,(document->>'deadline')::bigint AS deadline,document->>'status' AS status,document->'authorization' AS authorization_summary,document->'reauthorization' AS reauthorization_summary FROM batch) SELECT document FROM classified WHERE true");
+    sql.push_bind(Value::Array(rows)).push("::jsonb)), classified AS(SELECT document,(document->>'id')::uuid AS id,document->>'kind' AS kind,document->>'device' AS device,(document->>'policy')::uuid AS policy,document->>'origin' AS source_kind,(document->>'deadline')::bigint AS deadline,document->>'status' AS status,document->'authorization' AS authorization_summary,document->'reauthorization' AS reauthorization_summary FROM batch) SELECT document FROM classified WHERE true");
     rss_mdm_query_postgres::filter(&mut sql, q, column).map_err(query_error)?;
     rss_mdm_query_postgres::order(&mut sql, q, column).map_err(query_error)?;
     {

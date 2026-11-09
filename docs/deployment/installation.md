@@ -588,7 +588,7 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 当前宿主的 DA 复用原授权规则，现有 Web/API 的授权和撤销立即作用于 DA；DA 业务和审计归属仍为 DA。独立 DA 以自己的授权来源装配，不镜像权限规则。DA 最小配置支持租户默认与单设备覆盖；禁用覆盖会阻断默认回退。Agent 作为可选投递通道，须通过当前 DA 管理员的 step-up 显式授权到具体安装、注册和代际。DA 业务与 RSS 恢复材料保持 DA 锚点，任务签名、wire、ACK 和密文投递 AAD 继续使用真实 Agent 身份。可信 managed-mandatory 配置优先级与诊断由 DA 配置闭环持有，MDM 不成为 DA 业务数据权威。
 
 `device_access.reports` 可配置 `historySeconds`、`historyCount`、`staleSeconds`、`bodyBytes`、`reportsPerMinute` 与 `bytesPerMinute`。
-默认每注册代次/报告类别保留 30 天、最多 10000 条，900 秒后 stale，正文上限 64 KiB；每租户每分钟最多 10000 条/64 MiB。
+默认每注册身份/报告类别保留 30 天、最多 10000 条，900 秒后 stale，正文上限 64 KiB；每租户每分钟最多 10000 条/64 MiB。
 历史按服务端接收时间读取和清理；最新快照与序号水位独立保留，清理不会重新接受旧报告。请求重放不刷新 freshness、不重复消耗限额。实际 OS 强制安装仍需独立可信部署观测，普通状态与应用回执不会授予此资格。
 
 ### 独立 Device Access 宿主

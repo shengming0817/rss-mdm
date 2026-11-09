@@ -54,7 +54,7 @@ impl Service {
                         return Err(Error::Forbidden.into());
                     }
                     let policy=plan;
-                    let (platform, _) = agent_facts::profile_in(rss_mdm_install_support::StorageProfile::Mdm, &s.transactions, tx, p.registration())
+                    let (platform, _) = agent_facts::profile_in(rss_mdm_install_support::StorageProfile::Mdm, &s.transactions, tx, p.device().to_owned())
                         .await?
                         .ok_or(Error::Forbidden)?;
                     let entry = policy
@@ -159,7 +159,7 @@ impl AgentPolicyAuthority for Service {
                 d.id,
             )
             .await?;
-            let row=sqlx::query("SELECT l.authority,r.invocation,r.device,r.policy_version,p.id AS policy,p.definition,r.state AS task_state,r.deadline,(p.state='enabled') AS live FROM mdm_access.agent_native_enrollments l JOIN mdm_registration_tasks.runs r ON(r.tenant_id,r.id,r.registration,r.generation)=(l.tenant_id,l.task,l.source_registration,l.source_generation) JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations g ON(g.tenant_id,g.id,g.generation)=(l.tenant_id,l.source_registration,l.source_generation) WHERE l.tenant_id=$1::uuid AND l.request=$2 AND g.state='active' AND g.channel='agent' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=g.tenant_id AND k.registration=g.id AND k.state='active')")
+            let row=sqlx::query("SELECT l.authority, r.invocation, r.device, r.policy_version, p.id AS policy, p.definition, r.state AS task_state, r.deadline, p.state = 'enabled' AS live FROM mdm_access.agent_native_enrollments AS l INNER JOIN mdm_registration_tasks.runs AS r ON (r.tenant_id, r.id, r.device) = (l.tenant_id, l.task, l.source_device) INNER JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (r.tenant_id, r.policy_version) INNER JOIN mdm_policy.policies AS p ON (p.tenant_id, p.id) = (v.tenant_id, v.policy) INNER JOIN mdm_access.devices AS g ON (g.tenant_id, g.id) = (l.tenant_id, l.source_device) WHERE l.tenant_id = CAST($1 AS uuid) AND l.request = $2 AND g.state = 'active' AND g.channel = 'agent' AND EXISTS (SELECT 1 FROM mdm_access.credentials AS k WHERE k.tenant_id = g.tenant_id AND k.device = g.id AND k.state = 'active')")
                 .bind(&d.tenant).bind(d.id).fetch_optional(&mut *c).await.map_err(|_|E::Storage)?.ok_or(E::Forbidden)?;
             let state: serde_json::Value = row.try_get("task_state").map_err(|_| E::Storage)?;
             let now: i64 =

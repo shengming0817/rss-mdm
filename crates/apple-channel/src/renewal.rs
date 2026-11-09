@@ -20,15 +20,15 @@ pub async fn maintain(
     now: i64,
 ) -> Result<usize, Error> {
     let mut tx = access.begin(tenant).await?;
-    let health = sqlx::query("WITH due AS (SELECT a.registration,s.not_after,CASE WHEN s.not_after<=$2 THEN 2 WHEN s.not_after-least((s.not_after-s.not_before)/3,604800)<=$2 THEN 1 ELSE 0 END AS level FROM mdm_apple.devices a JOIN mdm_apple.scep_attempts s ON (s.tenant_id,s.registration)=(a.tenant_id,a.registration) WHERE a.tenant_id=$1::uuid AND a.state='active' AND s.state='bound' AND a.identity_health<>CASE WHEN s.not_after<=$2 THEN 2 WHEN s.not_after-least((s.not_after-s.not_before)/3,604800)<=$2 THEN 1 ELSE 0 END ORDER BY s.not_after,a.registration LIMIT 32) UPDATE mdm_apple.devices a SET identity_health=due.level FROM due WHERE a.tenant_id=$1::uuid AND a.registration=due.registration RETURNING a.registration::text,due.not_after,due.level")
+    let health = sqlx::query("WITH due AS (SELECT a.device, s.not_after, CASE WHEN s.not_after <= $2 THEN 2 WHEN s.not_after - LEAST((s.not_after - s.not_before) / 3, 604800) <= $2 THEN 1 ELSE 0 END AS level FROM mdm_apple.devices AS a INNER JOIN mdm_apple.scep_attempts AS s ON (s.tenant_id, s.device) = (a.tenant_id, a.device) WHERE a.tenant_id = CAST($1 AS uuid) AND a.state = 'active' AND s.state = 'bound' AND a.identity_health <> CASE WHEN s.not_after <= $2 THEN 2 WHEN s.not_after - LEAST((s.not_after - s.not_before) / 3, 604800) <= $2 THEN 1 ELSE 0 END ORDER BY s.not_after, a.device LIMIT 32) UPDATE mdm_apple.devices AS a SET identity_health = due.level FROM due WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = due.device RETURNING CAST(a.device AS text), due.not_after, due.level")
         .bind(tenant).bind(now).fetch_all(&mut *tx).await.map_err(db)?;
     let mut candidates = Vec::new();
     let mut offset = 0i64;
     while candidates.len() < 32 {
-        let rows=sqlx::query("SELECT s.id,s.registration FROM mdm_apple.scep_attempts s JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.state='bound' AND a.state='active' AND s.configuration=$3 AND s.not_after>$2 AND s.not_after-least((s.not_after-s.not_before)/3,604800)<=$2 AND NOT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts pending WHERE pending.tenant_id=s.tenant_id AND pending.renewal_of=s.id AND pending.state IN ('prepared','consumed') AND pending.expires_at>clock_timestamp()) ORDER BY s.not_after,s.id LIMIT 64 OFFSET $4").bind(tenant).bind(now).bind(apple.configuration.as_slice()).bind(offset).fetch_all(&mut *tx).await.map_err(db)?;
+        let rows=sqlx::query("SELECT s.id, s.device FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_apple.devices AS a ON (a.tenant_id, a.device) = (s.tenant_id, s.device) WHERE s.tenant_id = CAST($1 AS uuid) AND s.state = 'bound' AND a.state = 'active' AND s.configuration = $3 AND s.not_after > $2 AND s.not_after - LEAST((s.not_after - s.not_before) / 3, 604800) <= $2 AND NOT EXISTS (SELECT 1 FROM mdm_apple.scep_attempts AS pending WHERE pending.tenant_id = s.tenant_id AND pending.renewal_of = s.id AND pending.state IN ('prepared', 'consumed') AND pending.expires_at > clock_timestamp()) ORDER BY s.not_after, s.id LIMIT 64 OFFSET $4").bind(tenant).bind(now).bind(apple.configuration.as_slice()).bind(offset).fetch_all(&mut *tx).await.map_err(db)?;
         let ids = rows
             .iter()
-            .map(|r| r.try_get::<Uuid, _>("registration"))
+            .map(|r| r.try_get::<String, _>("device"))
             .collect::<Result<Vec<_>, _>>()
             .map_err(db)?;
         let active = crate::device::read::active_sources_in(
@@ -40,11 +40,11 @@ pub async fn maintain(
         )
         .await?;
         for row in &rows {
-            let registration = row.try_get("registration").map_err(db)?;
-            if active.contains_key(&registration) {
+            let device: String = row.try_get("device").map_err(db)?;
+            if active.contains(&device) {
                 candidates.push(Candidate {
                     id: row.try_get("id").map_err(db)?,
-                    registration,
+                    device: device.to_string(),
                 });
                 if candidates.len() == 32 {
                     break;
@@ -62,7 +62,7 @@ pub async fn maintain(
         let level: i32 = row.try_get("level").map_err(db)?;
         eprintln!(
             "{}",
-            serde_json::json!({"event":"apple_identity_health","registration":row.try_get::<String,_>("registration").map_err(db)?,"expires_at":row.try_get::<i64,_>("not_after").map_err(db)?,"state":match level {0=>"valid",1=>"renewal_due",_=>"expired"}})
+            serde_json::json!({"event":"apple_identity_health","device":row.try_get::<String,_>("device").map_err(db)?,"expires_at":row.try_get::<i64,_>("not_after").map_err(db)?,"state":match level {0=>"valid",1=>"renewal_due",_=>"expired"}})
         );
     }
     for candidate in candidates {
@@ -72,7 +72,7 @@ pub async fn maintain(
 }
 struct Candidate {
     id: Uuid,
-    registration: Uuid,
+    device: String,
 }
 async fn prepare(
     apple: &Apple,
@@ -154,8 +154,7 @@ async fn prepare(
 struct PreparedRenewal {
     attempt: Uuid,
     enrollment: Uuid,
-    registration: Uuid,
-    generation: i64,
+    device: String,
     deadline: i64,
     renewal_of: String,
 }
@@ -167,18 +166,19 @@ async fn prepare_on(
     candidate: &Candidate,
     audit: &RequestAudit,
 ) -> Result<Option<(PreparedRenewal, bool)>, Error> {
-    let Some((device, generation)) = crate::device::read::lock_active_source_in(
+    let device = &candidate.device;
+    if !crate::device::read::lock_active_source_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
         tenant,
-        candidate.registration,
+        &candidate.device,
         rss_mdm_inventory::ReportSource::MdmApple,
     )
     .await?
-    else {
+    {
         return Ok(None);
-    };
-    let old=sqlx::query("SELECT s.id::text,s.enrollment::text,s.registration::text,s.not_before,s.not_after FROM mdm_apple.scep_attempts s JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND s.registration=$4::uuid AND s.state='bound' AND a.state='active' AND s.configuration=$3 FOR UPDATE OF s,a").bind(tenant).bind(candidate.id).bind(apple.configuration.as_slice()).bind(candidate.registration).fetch_optional(&mut *c).await.map_err(db)?;
+    }
+    let old=sqlx::query("SELECT CAST(s.id AS text), CAST(s.enrollment AS text), CAST(s.device AS text), s.not_before, s.not_after FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_apple.devices AS a ON (a.tenant_id, a.device) = (s.tenant_id, s.device) WHERE s.tenant_id = CAST($1 AS uuid) AND s.id = CAST($2 AS uuid) AND s.device = CAST($4 AS text) AND s.state = 'bound' AND a.state = 'active' AND s.configuration = $3 FOR UPDATE OF s, a").bind(tenant).bind(candidate.id).bind(apple.configuration.as_slice()).bind(&candidate.device).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(old) = old else { return Ok(None) };
     let before = old.try_get("not_before").map_err(db)?;
     let after = old.try_get("not_after").map_err(db)?;
@@ -196,16 +196,13 @@ async fn prepare_on(
                     &old,
                     "enrollment",
                 )?,
-                registration: rss_mdm_registration_service::enrollment::store::uuid(
-                    &old,
-                    "registration",
-                )?,
-                generation,
+                device: old.try_get("device").map_err(db)?,
+
                 deadline: pending.try_get("deadline").map_err(db)?,
                 renewal_of: old_id,
             };
-            audit.target_device(&device);
-            audit.registration(prepared.registration);
+            audit.target_device(device);
+            audit.target_device(&prepared.device);
             return Ok(Some((prepared, true)));
         }
         let expired: String = pending.try_get("id").map_err(db)?;
@@ -265,33 +262,29 @@ async fn prepare_on(
             ("Payload", plist::Value::Data(signed)),
         ]),
     )?;
-    let registration: String = old.try_get("registration").map_err(db)?;
+    let device: String = old.try_get("device").map_err(db)?;
     let deadline = after.min(now + 3600);
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,authorization_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash,access_rights,scep_url,scep_provisioner) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(authorization_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10,$11,$12,$13 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
-        .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(deadline as f64).bind(&registration).bind(&old_id).bind(generation).bind(Sha256::digest(secret.as_bytes()).as_slice()).bind(apple.access_rights()).bind(scep_url).bind(scep_provisioner).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts (tenant_id, id, enrollment, authorization_version, configuration, state, issuer, expires_at, device, renewal_of, challenge_hash, access_rights, scep_url, scep_provisioner) SELECT CAST($1 AS uuid), CAST($2 AS uuid), CAST($3 AS uuid), COALESCE(max(authorization_version), 0) + 1, $4, 'prepared', $5, to_timestamp($6), CAST($7 AS text), CAST($8 AS uuid), $9, $10, $11, $12 FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND enrollment = CAST($3 AS uuid)")
+        .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(deadline as f64).bind(&device).bind(&old_id).bind(Sha256::digest(secret.as_bytes()).as_slice()).bind(apple.access_rights()).bind(scep_url).bind(scep_provisioner).execute(&mut *c).await.map_err(db)?;
     let request = crate::protection::seal(
         &apple.protection,
         tenant,
-        Uuid::parse_str(&registration).map_err(|_| Error::Malformed)?,
-        generation,
+        &device,
         id,
         crate::protection::Part::Request,
         &request,
     )?;
-    sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,certificate,phase,request,state,deadline) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$2::uuid,'renew',$5,'pending',to_timestamp($6))")
-        .bind(tenant).bind(id.to_string()).bind(&registration).bind(generation).bind(request).bind(deadline as f64).execute(&mut *c).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(&registration).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, certificate, phase, request, state, deadline) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), CAST($3 AS text), CAST($2 AS uuid), 'renew', $4, 'pending', to_timestamp($5))")
+        .bind(tenant).bind(id.to_string()).bind(&device).bind(request).bind(deadline as f64).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.channels SET next_push = clock_timestamp() WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text)").bind(tenant).bind(&device).execute(&mut *c).await.map_err(db)?;
     crate::notify(c, "apple").await.map_err(db)?;
-    let registration = Uuid::parse_str(&registration)
-        .map_err(|_| Error::Unavailable(crate::Failure::AppleInvariant))?;
     audit.target_device(&device);
-    audit.registration(registration);
     Ok(Some((
         PreparedRenewal {
             attempt: id,
             enrollment,
-            registration,
-            generation,
+            device: device.to_string(),
+
             deadline,
             renewal_of: old_id,
         },
@@ -305,20 +298,22 @@ async fn current(
     tenant: &str,
     id: Uuid,
 ) -> Result<Option<PgRow>, Error> {
-    let registration=sqlx::query_scalar::<_,Uuid>("SELECT registration FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND renewal_of IS NOT NULL").bind(tenant).bind(id).fetch_optional(&mut *tx).await.map_err(db)?;
-    let Some(registration) = registration else {
+    let device=sqlx::query_scalar::<_,String>("SELECT device FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND renewal_of IS NOT NULL").bind(tenant).bind(id).fetch_optional(&mut *tx).await.map_err(db)?;
+    let Some(device) = device else {
         return Ok(None);
     };
-    let (device, generation) = crate::device::read::lock_active_source_in(
+    if !crate::device::read::lock_active_source_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         tx,
         tenant,
-        registration,
+        &device,
         rss_mdm_inventory::ReportSource::MdmApple,
     )
     .await?
-    .ok_or(Error::Unauthorized)?;
-    let row=sqlx::query("SELECT s.state,s.issuer,s.scep_provisioner,s.enrollment::text,s.registration::text,s.renewal_of::text,s.configuration,s.challenge_hash,s.transaction_id,s.csr_digest,s.spki,s.fingerprint,s.generation,a.udid,$3::text AS device,old.spki AS old_spki FROM mdm_apple.scep_attempts s JOIN mdm_apple.scep_attempts old ON (old.tenant_id,old.id)=(s.tenant_id,s.renewal_of) JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND s.state IN ('prepared','consumed') AND s.expires_at>clock_timestamp() AND old.state='bound' AND old.not_after>extract(epoch FROM clock_timestamp()) AND s.generation=$4 AND a.state='active' AND EXISTS(SELECT 1 FROM mdm_apple.attempts delivery WHERE (delivery.tenant_id,delivery.certificate)=(s.tenant_id,s.id) AND delivery.phase='renew' AND delivery.state IN ('sent','not_now','acknowledged') AND delivery.deadline>clock_timestamp()) FOR UPDATE OF s,old,a").bind(tenant).bind(id).bind(device).bind(generation).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    {
+        return Err(Error::Unauthorized);
+    }
+    let row=sqlx::query("SELECT s.state, s.issuer, s.scep_provisioner, CAST(s.enrollment AS text), CAST(s.device AS text), CAST(s.renewal_of AS text), s.configuration, s.challenge_hash, s.transaction_id, s.csr_digest, s.spki, s.fingerprint, a.udid, old.spki AS old_spki FROM mdm_apple.scep_attempts AS s INNER JOIN mdm_apple.scep_attempts AS old ON (old.tenant_id, old.id) = (s.tenant_id, s.renewal_of) INNER JOIN mdm_apple.devices AS a ON (a.tenant_id, a.device) = (s.tenant_id, s.device) WHERE s.tenant_id = CAST($1 AS uuid) AND s.id = CAST($2 AS uuid) AND s.device=$3 AND s.state IN ('prepared', 'consumed') AND s.expires_at > clock_timestamp() AND old.state = 'bound' AND old.not_after > EXTRACT(EPOCH FROM clock_timestamp()) AND a.state = 'active' AND EXISTS (SELECT 1 FROM mdm_apple.attempts AS delivery WHERE (delivery.tenant_id, delivery.certificate) = (s.tenant_id, s.id) AND delivery.phase = 'renew' AND delivery.state IN ('sent', 'not_now', 'acknowledged') AND delivery.deadline > clock_timestamp()) FOR UPDATE OF s, old, a").bind(tenant).bind(id).bind(&device).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     Ok(Some(row))
 }
 pub async fn challenge(
@@ -358,7 +353,7 @@ pub async fn challenge(
     }
     audit.identify_service("service:scep-renewal");
     audit.target_device(&row.try_get::<String, _>("device").map_err(db)?);
-    audit.registration(rss_mdm_registration_service::enrollment::store::uuid(&row, "registration")?);
+
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$3,csr_digest=$4,spki=$5 WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(&tenant).bind(csr.attempt().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).execute(&mut *c).await.map_err(db)?;
     Ok::<_, Error>(Some(false))
@@ -419,12 +414,6 @@ pub async fn notify(
                                     audit.identify_service("service:scep-renewal");
                                     audit.target_device(
                                         &row.try_get::<String, _>("device").map_err(db)?,
-                                    );
-                                    audit.registration(
-                                        rss_mdm_registration_service::enrollment::store::uuid(
-                                            &row,
-                                            "registration",
-                                        )?,
                                     );
                                     let replayed = row
                                         .try_get::<Option<Vec<u8>>, _>("fingerprint")
@@ -521,21 +510,22 @@ pub async fn activate(
     if row.try_get::<String, _>("udid").map_err(db)? != udid {
         return Err(Error::Unauthorized);
     }
-    let registration: String = row.try_get("registration").map_err(db)?;
+    let device: String = row.try_get("device").map_err(db)?;
     let old: String = row.try_get("renewal_of").map_err(db)?;
+    let predecessor: Uuid = sqlx::query_scalar("SELECT k.id FROM mdm_apple.scep_attempts s JOIN mdm_access.credentials k ON(k.tenant_id,k.device)=(s.tenant_id,s.device) AND k.locator=encode(s.fingerprint,'hex') WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND k.purpose='primary' AND k.state='active'")
+        .bind(&tenant).bind(&old).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     // New credential ID fences principals authenticated before this transaction.
     let locator = leaf
         .fingerprint()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    crate::device::store::replace_mdm_credential_in(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, &registration, &locator)
+    crate::device::store::replace_mdm_credential_in(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, &device, predecessor, &locator)
         .await?;
     enrollment::persist_leaf(c, &tenant, leaf).await?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state=CASE WHEN id=$2::uuid THEN 'bound' ELSE 'superseded' END WHERE tenant_id=$1::uuid AND id IN ($2::uuid,$3::uuid)").bind(&tenant).bind(leaf.attempt().to_string()).bind(old).execute(&mut *c).await.map_err(db)?;
-    audit.identify_device(Uuid::parse_str(&registration).map_err(|_| Error::Unauthorized)?);
+    audit.identify_device(&device);
     audit.target_device(&row.try_get::<String, _>("device").map_err(db)?);
-    audit.registration(Uuid::parse_str(&registration).map_err(|_| Error::Unauthorized)?);
     Ok::<_, Error>(true)
 
                 })).await?;
@@ -576,7 +566,7 @@ pub async fn management(
     let tenant = p.tenant().to_string();
     crate::device::store::lock_channel(rss_mdm_install_support::StorageProfile::Mdm, c, &tenant, p.device(), p.require_channel()?).await?;
     crate::device::store::revalidate_source(rss_mdm_install_support::StorageProfile::Mdm, c,p,rss_mdm_inventory::ReportSource::MdmApple).await?;
-    let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active' AND udid=$3)").bind(&tenant).bind(p.registration()).bind(message.udid).fetch_one(&mut *c).await.map_err(db)?;
+    let live:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND state = 'active' AND udid = $3)").bind(&tenant).bind(p.device()).bind(message.udid).fetch_one(&mut *c).await.map_err(db)?;
     if !live {
         return Err(Error::Unauthorized);
     }
@@ -587,14 +577,14 @@ pub async fn management(
             Some(attempt::Reception::Ready(a)) => a.settle(c, message.status, true).await?,
         }
     }
-    let next=sqlx::query("SELECT a.id::text,a.request FROM mdm_apple.attempts a JOIN mdm_apple.scep_attempts s ON (s.tenant_id,s.id)=(a.tenant_id,a.certificate) WHERE a.tenant_id=$1::uuid AND a.registration=$2::uuid AND a.generation=$3 AND a.phase='renew' AND a.state IN ('pending','sent','not_now') AND s.state IN ('prepared','consumed') AND a.next_attempt<=clock_timestamp() AND a.deadline>clock_timestamp() ORDER BY a.id LIMIT 1 FOR UPDATE OF a")
-        .bind(&tenant).bind(p.registration().to_string()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+    let next=sqlx::query("SELECT CAST(a.id AS text), a.request FROM mdm_apple.attempts AS a INNER JOIN mdm_apple.scep_attempts AS s ON (s.tenant_id, s.id) = (a.tenant_id, a.certificate) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = CAST($2 AS text) AND a.phase = 'renew' AND a.state IN ('pending', 'sent', 'not_now') AND s.state IN ('prepared', 'consumed') AND a.next_attempt <= clock_timestamp() AND a.deadline > clock_timestamp() ORDER BY a.id LIMIT 1 FOR UPDATE OF a")
+        .bind(&tenant).bind(p.device().to_string()).fetch_optional(&mut *c).await.map_err(db)?;
     let result = if let Some(row) = next {
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(row.try_get::<String,_>("id").map_err(db)?).execute(&mut *c).await.map_err(db)?;
         crate::notify(c, "apple").await.map_err(db)?;
         let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
         let id = Uuid::parse_str(&row.try_get::<String,_>("id").map_err(db)?).map_err(|_| Error::Malformed)?;
-        Some(crate::protection::open(protection,&tenant,p.registration(),p.generation(),id,crate::protection::Part::Request,&sealed)?.expose().to_vec())
+        Some(crate::protection::open(protection,&tenant,p.device(),id,crate::protection::Part::Request,&sealed)?.expose().to_vec())
     } else {
         message.command.map(|_| Vec::new())
     };

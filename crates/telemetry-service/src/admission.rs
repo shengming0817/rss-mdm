@@ -14,9 +14,7 @@ use uuid::Uuid;
 pub(crate) struct Accepted {
     pub tenant: String,
     pub device: String,
-    pub registration: Uuid,
     pub credential: Uuid,
-    pub generation: i64,
     #[schemars(with = "rss_mdm_agent_wire::runtime::Source")]
     pub source: rss_mdm_inventory::Source,
     pub epoch: Uuid,
@@ -33,7 +31,7 @@ impl Accepted {
                 TenantId::parse(&self.tenant).map_err(|_| Error::Storage)?,
                 Id::new("mdm.telemetry")?,
             ),
-            Id::new(format!("{}:{}", self.registration, self.source.as_str()))?,
+            Id::new(format!("{}:{}", self.device, self.source.as_str()))?,
             Id::new(self.epoch.to_string())?,
         ))
     }
@@ -90,11 +88,9 @@ pub(crate) async fn receive_on(
         .bind(format!("{}:{}", service.tenant, input.batch_id))
         .execute(&mut *c)
         .await?;
-    if let Some(row) = sqlx::query("SELECT registration,generation,device,input_digest,received_at,delivery FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2")
+    if let Some(row) = sqlx::query("SELECT device, input_digest, received_at, delivery FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
         .bind(service.tenant.to_string()).bind(input.batch_id).fetch_optional(&mut *c).await? {
-        if row.try_get::<Uuid,_>("registration")? != principal.registration()
-            || row.try_get::<i64,_>("generation")? != principal.generation()
-            || row.try_get::<String,_>("device")? != principal.device()
+        if row.try_get::<String,_>("device")? != principal.device()
             || row.try_get::<Vec<u8>,_>("input_digest")? != digest { return Err(Error::Conflict); }
         return Ok(TelemetryReceipt { batch_id: input.batch_id, received_at: row.try_get("received_at")?, replayed: true, delivery: delivery(row.try_get("delivery")?)? });
     }
@@ -197,9 +193,9 @@ pub(crate) async fn receive_on(
     let accepted = Accepted {
         tenant: service.tenant.to_string(),
         device: principal.device().into(),
-        registration: principal.registration(),
+
         credential: principal.credential(),
-        generation: principal.generation(),
+
         source: frozen.source,
         epoch,
         received_at: now,
@@ -227,8 +223,8 @@ pub(crate) async fn receive_on(
         admit_resources_on(c, service.tenant, &accepted, history).await?;
         crate::retention::register(c, service.tenant, history, now).await?;
     }
-    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND registration=$2 AND delivery<>'published'")
-        .bind(service.tenant.to_string()).bind(principal.registration()).fetch_one(&mut *c).await?;
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND delivery <> 'published'")
+        .bind(service.tenant.to_string()).bind(principal.device()).fetch_one(&mut *c).await?;
     if pending >= i64::from(service.limits.pending_batches) {
         return Err(Error::Capacity);
     }
@@ -268,8 +264,8 @@ pub(crate) async fn receive_on(
             quality.entry(field.as_str().into()).or_default()[index] += 1;
         }
     }
-    sqlx::query("INSERT INTO mdm_telemetry.batches VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15,$16,$17,$18,$19)")
-        .bind(service.tenant.to_string()).bind(input.batch_id).bind(principal.device()).bind(principal.registration()).bind(principal.credential()).bind(principal.generation())
+    sqlx::query("INSERT INTO mdm_telemetry.batches (tenant_id,id,device,credential,source,epoch,policy,policy_version,input_digest,context_digest,fields,received_at,delivery,first_observed,last_observed,quality,observations,current_assets) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16,$17)")
+        .bind(service.tenant.to_string()).bind(input.batch_id).bind(principal.device()).bind(principal.credential())
         .bind(accepted.source.as_str()).bind(epoch).bind(input.configuration().policy).bind(input.configuration().policy_version).bind(digest).bind(Sha256::digest(serde_json::to_vec(&accepted)?).to_vec()).bind(fields).bind(now).bind(first).bind(last).bind(serde_json::to_value(quality)?).bind(input.observations.iter().map(|v|v.id).collect::<Vec<_>>()).bind(accepted.profile.spec().projection!=rss_mdm_resource::TelemetryProjection::History).execute(&mut *c).await?;
     crate::delivery::append_on(c, &accepted).await?;
     Ok(TelemetryReceipt {
@@ -310,8 +306,8 @@ pub(crate) async fn status_on(
     if principal.tenant() != service.tenant {
         return Err(Error::Denied);
     }
-    let row = sqlx::query("SELECT received_at,delivery FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND device=$4")
-        .bind(service.tenant.to_string()).bind(batch).bind(principal.registration()).bind(principal.device()).fetch_optional(c).await?.ok_or(Error::NotFound)?;
+    let row = sqlx::query("SELECT received_at, delivery FROM mdm_telemetry.batches WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3")
+        .bind(service.tenant.to_string()).bind(batch).bind(principal.device()).fetch_optional(c).await?.ok_or(Error::NotFound)?;
     Ok(TelemetryReceipt {
         batch_id: batch,
         received_at: row.try_get("received_at")?,
@@ -325,7 +321,7 @@ pub(crate) async fn capable_on(
     store: &dyn rss_mdm_script_service::agent_facts::Store,
     c: &mut PgConnection,
     tenant: TenantId,
-    registration: Uuid,
+    registration: String,
     frozen: &rss_mdm_policy_service::telemetry::FrozenProfile,
 ) -> Result<(), Error> {
     use rss_mdm_agent_wire::runtime as w;
@@ -333,7 +329,7 @@ pub(crate) async fn capable_on(
     use rss_mdm_resource as r;
     let target = &frozen.profile.spec().template;
     let binding = store
-        .binding(c, tenant.to_string(), registration)
+        .binding(c, tenant.to_string(), registration.clone())
         .await
         .map_err(|_| Error::Storage)?
         .ok_or(Error::Unsupported)?;
@@ -438,7 +434,7 @@ async fn admit_resources_on(
             .or_default()
             .insert(series.resource().as_str().into());
     }
-    // A stable sorted lock order covers different profiles and registration generations.
+    // A stable sorted lock order covers different profiles and devices.
     let catalog = rss_mdm_inventory_postgres::catalog_in(c, tenant)
         .await
         .map_err(|_| Error::Storage)?;
@@ -490,7 +486,7 @@ pub(crate) async fn current_on(
     let expected = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         service.tenant,
-        principal.registration(),
+        principal.device(),
         &source,
         epoch,
         &format!("telemetry.{policy}"),
@@ -524,8 +520,6 @@ pub(crate) fn binding(
         Sha256::digest(serde_json::to_vec(&(
             principal.tenant().to_string(),
             principal.device(),
-            principal.registration(),
-            principal.generation(),
             source.as_str(),
             epoch,
             policy,

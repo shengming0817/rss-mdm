@@ -3,8 +3,7 @@ use crate::{Error, Timeline};
 use rss_mdm_audit_integration::activity::ActivityUser;
 use rss_mdm_authorization_service::Permission;
 use rss_mdm_device_service::planning::{ActivityPair, PlanningObjects};
-use rss_mdm_inventory::Channel;
-use rss_mdm_registration_service::device::{endpoints, store};
+use rss_mdm_registration_service::device::store;
 use sqlx::PgConnection;
 use uuid::Uuid;
 impl Timeline {
@@ -71,7 +70,7 @@ impl Timeline {
                 )
                 .await
                 .map_err(registration_error)?;
-                let context:Option<serde_json::Value>=sqlx::query_scalar("SELECT execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2").bind(self.tenant.to_string()).bind(p.registration()).fetch_optional(&mut *c).await?;
+                let context:Option<serde_json::Value>=sqlx::query_scalar("SELECT execution_context FROM mdm_agent.bindings WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(self.tenant.to_string()).bind(p.device()).fetch_optional(&mut *c).await?;
                 let os = context
                     .as_ref()
                     .and_then(|v| v.get("interactiveUser"))
@@ -110,8 +109,7 @@ impl Timeline {
                     p.device().to_owned(),
                     serde_json::json!([
                         "agent",
-                        p.registration(),
-                        p.generation(),
+                        p.device(),
                         binding.revision,
                         binding.registration_valid,
                         os,
@@ -119,8 +117,6 @@ impl Timeline {
                     ]),
                     Some(Member {
                         device: p.device().into(),
-                        registration: p.registration(),
-                        generation: p.generation(),
                     }),
                 )
             }
@@ -133,8 +129,6 @@ impl Timeline {
                     .iter()
                     .map(|m| Member {
                         device: m.device.clone(),
-                        registration: m.registration_id,
-                        generation: m.generation,
                     })
                     .collect::<Vec<_>>();
                 if let Some(anchor) = &anchor
@@ -155,26 +149,9 @@ impl Timeline {
                 let members = if let Some(anchor) = anchor {
                     vec![anchor]
                 } else {
-                    let mut members = Vec::new();
-                    for channel in [Channel::Agent, Channel::Mdm] {
-                        if let Some(m) = endpoints::current_in(
-                            rss_mdm_install_support::StorageProfile::Mdm,
-                            c,
-                            &self.tenant.to_string(),
-                            &device,
-                            channel,
-                        )
-                        .await
-                        .map_err(registration_error)?
-                        {
-                            members.push(Member {
-                                device: m.device,
-                                registration: m.registration_id,
-                                generation: m.generation,
-                            });
-                        }
-                    }
-                    members
+                    vec![Member {
+                        device: device.clone(),
+                    }]
                 };
                 (members, serde_json::Value::Null)
             }
@@ -194,28 +171,7 @@ impl Timeline {
                     .is_ok()
             });
         }
-        // Freeze the exact authorized registration set once. Child changes must
-        // invalidate cached history just like changes to a primary registration.
-        for parent in members.clone() {
-            let children:Vec<(Uuid,i64)>=sqlx::query_as("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND parent_id=$3 AND parent_generation=$4 AND purpose='windows_declared' AND state='active' ORDER BY id,generation")
-                .bind(self.tenant.to_string()).bind(&parent.device).bind(parent.registration).bind(parent.generation).fetch_all(&mut *c).await?;
-            members.extend(
-                children
-                    .into_iter()
-                    .map(|(registration, generation)| Member {
-                        device: parent.device.clone(),
-                        registration,
-                        generation,
-                    }),
-            );
-        }
-        members.sort_by(|a, b| {
-            (&a.device, a.registration, a.generation).cmp(&(
-                &b.device,
-                b.registration,
-                b.generation,
-            ))
-        });
+        members.sort_by(|a, b| a.device.cmp(&b.device));
         members.dedup();
         let binding = rss_mdm_query::cursor::fingerprint(&(
             self.tenant.to_string(),

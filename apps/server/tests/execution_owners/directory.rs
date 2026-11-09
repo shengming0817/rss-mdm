@@ -91,13 +91,7 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             let read = operations.directory(&request, &query, &codec, &audit);
             let write = async {
                 h.c.wait_blocked(pid).await?;
-                let mut tx = command::seed_transaction(&h.c).await?;
-                sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)")
-                    .bind(h.c.tenant.to_string())
-                    .bind(format!("unrelated-{}", Uuid::new_v4()))
-                    .execute(&mut *tx)
-                    .await?;
-                tx.commit().await?;
+                crate::planning_t2_support::endpoint(&h.c).await?;
                 fence.rollback().await?;
                 Ok::<_, anyhow::Error>(())
             };
@@ -166,8 +160,9 @@ async fn recurring_owners_share_http_pagination_statistics_and_redacted_evidence
             let evidence=serde_json::to_value(result.execution?.unwrap())?;
             assert_eq!(evidence["owner"],if owner==rss_mdm_audit_integration::operation::OperationOwner::Script{"script"}else{"collection"});
             assert!(!evidence.to_string().contains("stdout"));
-            let wrong=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(device.into()),registration:Some(Uuid::new_v4()),..Default::default()};
-            assert!(operations.diagnostic(&h.c.read_auth(proof.clone()),owner,id,&wrong).await.is_err());
+            let wrong=rss_mdm_management_http::operation_diagnostics::LocatorQuery{device:Some(Uuid::new_v4().to_string()),..Default::default()};
+            let missing=operations.diagnostic(&h.c.read_auth(proof.clone()),owner,id,&wrong).await?;
+            assert!(missing.original.is_none() && missing.execution?.is_none());
         }
         // A damaged execution projection must not discard independently confirmed admission.
         let mut tx=command::seed_transaction(&h.c).await?;
@@ -293,10 +288,7 @@ async fn request_snapshot_is_stable_and_revalidates_identity() -> Result<()> {
         let (committed, wait_committed) = tokio::sync::oneshot::channel();
         let writer = async {
             wait_observed.await?;
-            let mut tx = command::seed_transaction(&h.c).await?;
-            sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)")
-                .bind(&tenant).bind(format!("unrelated-{}", Uuid::new_v4())).execute(&mut *tx).await?;
-            tx.commit().await?;
+                crate::planning_t2_support::endpoint(&h.c).await?;
             committed.send(()).unwrap();
             Ok::<_, anyhow::Error>(())
         };
@@ -344,13 +336,13 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
         assert!(rss_mdm_inventory_postgres::publish_field_in(&mut seed,h.c.tenant,0,&definition_field).await?);
         let definition = rss_mdm_inventory::CollectionDefinition::new("presence", "1", rss_mdm_inventory::Source::MdmWindows, vec![rss_mdm_inventory::CollectionField{definition:definition_field,scope:rss_mdm_inventory::CollectionScope::Device}])?;
         rss_mdm_inventory_postgres::register_collection_in(&mut seed,h.c.tenant,&definition).await?;
-        let registration = endpoint.members[0].registration_id;
-        let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(h.c.tenant.to_string()).bind(registration).fetch_one(&mut *seed).await?;
+        let registration = &endpoint.members[0].device;
+        let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(h.c.tenant.to_string()).bind(registration).fetch_one(&mut *seed).await?;
         let scope=rss_mdm_registration_service::device::scope_dataset(rss_mdm_install_support::StorageProfile::Mdm,h.c.tenant,registration,"mdm.windows",epoch,"presence")?.encode()?;
         let projection=rss_mdm_inventory_postgres::projection_scope(h.c.tenant);
         sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,'mdm.windows',$10,1,'{\"kind\":\"device\"}')")
             .bind(h.c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field.as_str()).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String("observed".into()))?).bind(Uuid::new_v4().to_string()).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *seed).await?;
-        let evidence=rss_mdm_inventory::Evidence{scope:rss_mdm_inventory::CollectionScope::Device,source:rss_mdm_inventory::Source::Manual,dataset:None,registration:None,registration_generation:None,epoch:None,snapshot_id:Uuid::new_v4().to_string(),observed_at:1,received_at:2,actor:Some("presence-fixture".into())};
+        let evidence=rss_mdm_inventory::Evidence{scope:rss_mdm_inventory::CollectionScope::Device,source:rss_mdm_inventory::Source::Manual,dataset:None,device_id:None,epoch:None,snapshot_id:Uuid::new_v4().to_string(),observed_at:1,received_at:2,actor:Some("presence-fixture".into())};
         assert_eq!(rss_mdm_inventory_postgres::assign_in(&mut seed,h.c.tenant,&manual,field,0,&rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("manual".into())),&evidence).await?,Some(1));
         seed.commit().await?;
         let expected=std::collections::BTreeMap::from([(device.clone(),true),(manual.clone(),true),(empty.clone(),false)]);
@@ -412,7 +404,7 @@ async fn raw_devices_use_authorized_presence_and_detail_connections() -> Result<
             }
         }
         let mut seed=command::seed_transaction(&h.c).await?;
-        sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2").bind(h.c.tenant.to_string()).bind(registration).execute(&mut *seed).await?;
+        sqlx::query("UPDATE mdm_access.report_sources SET enabled = FALSE WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(h.c.tenant.to_string()).bind(registration).execute(&mut *seed).await?;
         seed.commit().await?;
         let response=app.oneshot(axum::http::Request::builder().uri(format!("/devices/{device}")).body(axum::body::Body::empty())?).await?;
         assert_eq!(response.status(),axum::http::StatusCode::OK);

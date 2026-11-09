@@ -108,24 +108,24 @@ pub async fn apple(
     .management_principal(&credential)
     .await?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state,access_rights) VALUES($1::uuid,$2,$3,'active',8191)").bind(c.tenant.to_string()).bind(n.registration).bind(&n.device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) VALUES (CAST($1 AS uuid), $2, $3, 'active', 8191)").bind(c.tenant.to_string()).bind(n.device.clone()).bind(&n.device).execute(&mut *tx).await?;
     for user in std::iter::once("").chain(users.iter().map(String::as_str)) {
         let aad = ProtectionContext::new(
             c.tenant,
-            &serde_json::to_string(&(n.registration, 1i64, user, 1i64))?,
+            &serde_json::to_string(&(n.device.clone(), user, 1i64))?,
             "apple.push.material",
             1,
         )?
         .derive();
         let compare = ProtectionContext::new(
             c.tenant,
-            &serde_json::to_string(&(n.registration, 1i64, user, 0i64))?,
+            &serde_json::to_string(&(n.device.clone(), user, 0i64))?,
             "apple.push.compare",
             1,
         )?
         .derive();
         let bytes = serde_json::to_vec(&json!({"token":[1,2,3],"magic":"native-t2"}))?;
-        sqlx::query("INSERT INTO mdm_apple.channels(tenant_id,registration,generation,user_key,state,material,material_digest,token_revision) VALUES($1::uuid,$2,1,$3,'active',$4,$5,1)").bind(c.tenant.to_string()).bind(n.registration).bind(user).bind(key.seal_bytes(&bytes,&aad)?).bind(key.mac(&bytes,&compare)?.to_vec()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_apple.channels (tenant_id, device, user_key, state, material, material_digest, token_revision) VALUES (CAST($1 AS uuid), $2, $3, 'active', $4, $5, 1)").bind(c.tenant.to_string()).bind(n.device.clone()).bind(user).bind(key.seal_bytes(&bytes,&aad)?).bind(key.mac(&bytes,&compare)?.to_vec()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     let push = rss_mdm_apple_channel::push::Push::from_bytes(
@@ -213,19 +213,19 @@ async fn seed_operation(
     struct Identity<'a> {
         operation: Uuid,
         device: &'a str,
-        registration: Uuid,
-        generation: i64,
     }
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Metadata<'a> {
         platform: &'a str,
+        purpose: rss_mdm_registration_service::Purpose,
         deadline: i64,
         input_version: &'a str,
         target: &'a serde_json::Value,
     }
     let meta = Metadata {
         platform: "macos",
+        purpose: rss_mdm_registration_service::Purpose::Primary,
         deadline: input["deadline"].as_i64().unwrap(),
         input_version: input["inputVersion"].as_str().unwrap(),
         target: &input["target"],
@@ -233,8 +233,6 @@ async fn seed_operation(
     let owner = serde_json::to_string(&Identity {
         operation: id,
         device: &n.device,
-        registration: n.registration,
-        generation: 1,
     })?;
     let field = serde_json::to_string(&("native.operation.input/v1", &meta))?;
     let sealed = key.seal_bytes(
@@ -244,14 +242,14 @@ async fn seed_operation(
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let command_device = Uuid::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    let device:Uuid=sqlx::query_scalar("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch,registration,registration_generation) VALUES($1::uuid,$2,$3,1,1,$4,1) ON CONFLICT(tenant_id,device) DO UPDATE SET device=excluded.device RETURNING command_device").bind(c.tenant.to_string()).bind(&n.device).bind(command_device).bind(n.registration).fetch_one(&mut *tx).await?;
+    let device:Uuid=sqlx::query_scalar("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES (CAST($1 AS uuid), $2, $3, 1, 1) ON CONFLICT (tenant_id, device) DO UPDATE SET device = excluded.device RETURNING command_device").bind(c.tenant.to_string()).bind(&n.device).bind(command_device).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,$5,$6,'mdm.commands.v1',$2,$4,'published',$6,2)").bind(c.tenant.to_string()).bind(id.to_string()).bind(device).bind(digest).bind(input["deadline"].as_i64().unwrap()*1_000_000).bind(now*1_000_000).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_apple.native_commands(tenant_id,id,registration,registration_generation) VALUES($1::uuid,$2,$3,1)").bind(c.tenant.to_string()).bind(id).bind(n.registration).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_apple.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(n.device.clone()).execute(&mut *tx).await?;
     if configuration {
-        sqlx::query("INSERT INTO mdm_planning.configuration_operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,1,1,$8,$6,true,$9)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(n.registration).bind(authority).bind(policy).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_planning.configuration_operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(authority).bind(policy).execute(&mut *tx).await?;
     } else {
-        sqlx::query("INSERT INTO mdm_devices.control_operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,source_kind,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,1,1,$8,$6,true,$9,$10)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(n.registration).bind(authority).bind(if policy.is_some(){"policy"}else{"direct"}).bind(policy).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_devices.control_operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, source_kind, policy_version) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 1, 1, $7, $6, TRUE, $8, $9)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(authority).bind(if policy.is_some(){"policy"}else{"direct"}).bind(policy).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())
@@ -269,13 +267,13 @@ pub async fn dispatched(c: &Context, n: &Native, key: &Protector, operation: Uui
     .encode(id)?;
     let aad = ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(n.registration, 1i64, id))?,
+        &serde_json::to_string(&(n.device.clone(), id))?,
         "apple.attempt.request",
         1,
     )?
     .derive();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,ordinal,request,state,deadline,context,user_key) VALUES($1::uuid,$2,$3,1,$4,'execute',0,$5,'sent',clock_timestamp()+interval '5 minutes',$6,'')").bind(c.tenant.to_string()).bind(id).bind(n.registration).bind(operation).bind(key.seal_bytes(&request,&aad)?).bind(serde_json::to_value(context(false))?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, operation, phase, ordinal, request, state, deadline, context, user_key) VALUES (CAST($1 AS uuid), $2, $3, $4, 'execute', 0, $5, 'sent', clock_timestamp() + CAST('5 minutes' AS interval), $6, '')").bind(c.tenant.to_string()).bind(id).bind(n.device.clone()).bind(operation).bind(key.seal_bytes(&request,&aad)?).bind(serde_json::to_value(context(false))?).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(id)
 }
@@ -360,13 +358,13 @@ pub async fn publication(
     let publication = json!({"input_version":version.to_string(),"version":id.to_string(),"owner":owner,"inputs":[declaration],"assets":[],"context":context(true),"legacy":[]});
     let aad = ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(n.registration, 1i64, user, id))?,
+        &serde_json::to_string(&(n.device.clone(), user, id))?,
         "apple.ddm.publication",
         1,
     )?
     .derive();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_apple.declarations(tenant_id,operation,registration,generation,user_key,owner,snapshot) VALUES($1::uuid,$2,$3,1,$4,$5,$6)").bind(c.tenant.to_string()).bind(id).bind(n.registration).bind(user).bind(owner).bind(key.seal_bytes(&serde_json::to_vec(&publication)?,&aad)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_apple.declarations (tenant_id, operation, device, user_key, owner, snapshot) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6)").bind(c.tenant.to_string()).bind(id).bind(n.device.clone()).bind(user).bind(owner).bind(key.seal_bytes(&serde_json::to_vec(&publication)?,&aad)?).execute(&mut *tx).await?;
     tx.commit().await?;
     let token = declaration
         .compile(

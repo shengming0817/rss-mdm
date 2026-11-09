@@ -28,8 +28,6 @@ impl NativeReceipts {
         tenant: Uuid,
         operation: Uuid,
         device: &str,
-        registration: Uuid,
-        generation: i64,
         report: &plist::Dictionary,
         status: ReceiptStatus,
     ) -> Result<(), Error> {
@@ -39,8 +37,6 @@ impl NativeReceipts {
             tenant,
             operation,
             device,
-            registration,
-            generation,
         )
         .await?
         else {

@@ -796,14 +796,10 @@ mod lifecycle_mapping_tests {
                 rss_mdm_registration_service::device::endpoints::PrimaryRegistration {
                     device: "native".into(),
                     channel: Channel::Mdm,
-                    registration_id: Uuid::from_u128(2),
-                    generation: 1,
                 },
                 rss_mdm_registration_service::device::endpoints::PrimaryRegistration {
                     device: "agent".into(),
                     channel: Channel::Agent,
-                    registration_id: Uuid::from_u128(3),
-                    generation: 4,
                 },
             ],
         };

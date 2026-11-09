@@ -25,8 +25,6 @@ use uuid::Uuid;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Target {
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 pub const INSTALL_SQL: &str = include_str!("../../../schema/device-access-tasks.sql");
 

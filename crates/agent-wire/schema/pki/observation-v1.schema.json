@@ -85,12 +85,12 @@
         "null"
       ]
     },
-    "generation": {
-      "description": "Authenticated registration generation.",
-      "format": "uint64",
-      "maximum": 9223372036854775807,
-      "minimum": 1,
-      "type": "integer"
+    "deviceId": {
+      "description": "Original device identity, checked against the authenticated transport.",
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+      "type": "string"
     },
     "observed_at": {
       "description": "Device observation time in Unix seconds; not ordering authority.",
@@ -118,17 +118,8 @@
       ],
       "description": "Closed, non-secret failure category."
     },
-    "registration": {
-      "description": "Authenticated registration identity.",
-      "format": "uuid",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      },
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "type": "string"
-    },
     "sequence": {
-      "description": "Monotonic sequence within this registration generation and domain.",
+      "description": "Monotonic sequence within this device identity and domain.",
       "format": "uint64",
       "maximum": 9223372036854775807,
       "minimum": 1,
@@ -170,8 +161,7 @@
   "required": [
     "operation",
     "version",
-    "registration",
-    "generation",
+    "deviceId",
     "sequence",
     "state",
     "observed_at"

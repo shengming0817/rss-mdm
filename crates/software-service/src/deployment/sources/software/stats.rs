@@ -262,10 +262,8 @@ impl SoftwareAssignment {
         };
         let tenant = tx.tenant_id().to_string();
         let device = target.device.clone();
-        let registration = target.registration_id;
-        let epoch = target.generation;
         let prefix = format!("software:stage:{}:%", self.stages()[index].scope);
-        let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>("SELECT state,result FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND registration=$4 AND generation=$5 AND occurrence LIKE $6 ORDER BY created_at DESC,id DESC LIMIT 1").bind(tenant).bind(version).bind(device).bind(registration).bind(epoch).bind(prefix).fetch_optional(c).await})).await?;
+        let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>("SELECT state, result FROM mdm_software_deployment.action_runs WHERE tenant_id = CAST($1 AS uuid) AND policy_version = $2 AND device = $3 AND occurrence LIKE $4 ORDER BY created_at DESC, id DESC LIMIT 1").bind(tenant).bind(version).bind(device).bind(prefix).fetch_optional(c).await})).await?;
         let mut waiting_until = None;
         if let Some((state, result)) = result {
             count.reported = u64::from(result.is_some());
@@ -302,8 +300,7 @@ impl SoftwareAssignment {
                 &target.device,
             )
             .await?
-                && current.registration == target.registration_id
-                && current.generation == target.generation
+                && current.device == target.device
                 && self.variant(platform, architecture).is_some()
                 && self
                     .admitted_in(service, tx, platform, architecture)
@@ -320,8 +317,7 @@ impl SoftwareAssignment {
             )
             .await?
             {
-                if binding.registration == target.registration_id
-                    && binding.generation == target.generation
+                if binding.device == target.device
                     && self.supported_in(service, tx, &binding.binding).await?
                 {
                     count.unsupported_capability = 0;
@@ -380,22 +376,19 @@ async fn save(
 
 impl SoftwareAssignment {
     /// A stage transition wakes discovery once; closed stages need no per-device polling.
-    pub(crate) async fn release_gates_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
+    pub(crate) async fn release_gates_in(
+        &self,
+        source: &std::sync::Arc<dyn crate::deployment::scope::Sources>,
+        tx: &mut PgTransaction<'_>,
+    ) -> Result<bool> {
         let Some(version) = self.version else {
             return Ok(false);
         };
         let now = crate::deployment::storage::now(tx).await?;
-        let tenant = tx.tenant_id().to_string();
-        let rows:Vec<(i32,serde_json::Value)>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as("SELECT stage,counts FROM mdm_software_deployment.software_stage_stats WHERE tenant_id=$1::uuid AND version=$2 ORDER BY stage").bind(tenant).bind(version).fetch_all(c).await})).await?;
-        let counts = rows
-            .into_iter()
-            .map(|(stage, value)| {
-                Ok((
-                    stage as usize,
-                    crate::deployment::stored(serde_json::from_value::<StageCounts>(value))?,
-                ))
-            })
-            .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+        let mut counts = std::collections::BTreeMap::new();
+        for index in 0..self.stages().len() {
+            counts.insert(index, self.counts_in(source, tx, index).await?);
+        }
         let mut released = false;
         for (index, stage) in self.stages().iter().enumerate() {
             let previous = index.checked_sub(1).and_then(|i| counts.get(&i));

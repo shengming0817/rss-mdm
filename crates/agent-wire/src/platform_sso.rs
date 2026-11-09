@@ -10,7 +10,7 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/platform_sso/manifest.json");
 /// SHA-256 of the ordered generated schema bytes.
 pub const SCHEMA_FINGERPRINT: &str =
-    "ddd4e68061e9716ffbc89d6d1a12ba70f0ba9ee7e78c7bccc059f0cf8c60a12d";
+    "91d6d8d635817a45f033d916a1707ffb5e906268e5314cc5be1d69b1f1206e5a";
 
 /// One-use nonce lifetime in seconds.
 pub const NONCE_SECONDS: i64 = 120;
@@ -206,8 +206,10 @@ pub struct BootstrapResponse {
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegistrationClaims {
-    /// Current Agent registration UUID.
-    pub iss: Uuid,
+    /// Current Agent device identity.
+    #[serde(deserialize_with = "crate::runtime::profile_device")]
+    #[schemars(schema_with = "crate::runtime::device_schema")]
+    pub iss: String,
     /// Tenant registration audience.
     pub aud: String,
     /// Exact bootstrap challenge.
@@ -433,7 +435,7 @@ mod tests {
         invalid.x.push('=');
         assert!(invalid.key_id().is_err());
         let claims = RegistrationClaims {
-            iss: Uuid::new_v4(),
+            iss: Uuid::new_v4().to_string(),
             aud: "https://mdm.example/register".into(),
             challenge_id: Uuid::new_v4(),
             source_id: Uuid::new_v4(),

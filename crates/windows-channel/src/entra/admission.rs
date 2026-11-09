@@ -54,7 +54,6 @@ pub(super) async fn admit(
     // No MDM locks held while Identity may create/revalidate the canonical account.
     let proof = identity::resolve(&entra.authority, subject).await?;
     rss_mdm_authorization_service::context::bind_native_audit(&proof, a)?;
-    a.target(&format!("entra:{external_tenant}:{device}"));
     let proposed = Uuid::new_v4();
     let digest = crate::enrollment::digest(&(
         "windows-entra-admit",
@@ -76,8 +75,17 @@ pub(super) async fn admit(
         let (admission,replayed)=tx.with_connection_context(&mut (proof,policy,settings,opaque,digest),|(proof,policy,settings,opaque,digest),c|Box::pin(async move {
             let (settings,opaque,digest)=(*settings,*opaque,*digest);
             let proof:RevalidatedAccount=proof.take().ok_or(Error::Conflict)?;
-            let admission=rss_mdm_registration_service::enrollment::native::entra_in(c,proof,policy.clone(),proposed,settings.revision,profile).await?;
+            // Protocol retries are keyed by their accepted request, never by hardware identity.
+            let tenant=proof.account().tenant.to_string();
+            rss_mdm_registration_service::admission::lock_in(rss_mdm_install_support::StorageProfile::Mdm,c,&tenant).await?;
+            let accepted:Option<Uuid>=if let Some(opaque)=opaque {
+                sqlx::query_scalar("SELECT request_id FROM mdm_windows.entra_consents WHERE tenant_id=$1::uuid AND digest=$2").bind(&tenant).bind(hash(opaque)).fetch_optional(&mut *c).await.map_err(db)?.flatten()
+            } else {
+                sqlx::query_scalar("SELECT request_id FROM mdm_windows.entra_admissions WHERE tenant_id=$1::uuid AND request_digest=$2").bind(&tenant).bind(digest.as_str()).fetch_optional(&mut *c).await.map_err(db)?
+            };
+            let admission=rss_mdm_registration_service::enrollment::native::entra_in(c,proof,policy.clone(),accepted.unwrap_or(proposed),settings.revision,profile).await?;
             let d=admission.coordinates();
+            a.target(&d.device);
             if let Some(opaque)=opaque {
                 let changed=sqlx::query("UPDATE mdm_windows.entra_consents SET request_id=$3,request_digest=$4 WHERE tenant_id=$1::uuid AND digest=$2 AND revision=$5 AND expires_at>clock_timestamp() AND (request_id IS NULL OR (request_id=$3 AND request_digest=$4))")
                     .bind(&d.tenant).bind(hash(opaque)).bind(d.id).bind(digest.as_str()).bind(settings.revision).execute(&mut *c).await.map_err(db)?.rows_affected();

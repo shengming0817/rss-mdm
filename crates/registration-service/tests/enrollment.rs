@@ -31,7 +31,7 @@ fn enrollment_source_is_explicit_and_protocol_bound() {
     let password = random();
     assert!(
         serde_json::from_value::<Create>(serde_json::json!({
-            "deviceId":"device-a","password":password,"source":"mdm.apple"
+            "password":password,"source":"mdm.apple"
         }))
         .is_ok()
     );

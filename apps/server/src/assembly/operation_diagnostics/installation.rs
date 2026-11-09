@@ -123,8 +123,6 @@ impl Reads for Installation {
                         .transpose()?,
                     target: None,
                     device: None,
-                    registration: None,
-                    generation: None,
                 },
                 original_result: value,
                 audit_evidence,

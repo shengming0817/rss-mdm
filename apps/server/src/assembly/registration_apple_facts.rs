@@ -74,10 +74,8 @@ impl AppleProfiles for AppleFacts {
             let target = protocol::AppleRegistration {
                 tenant: target.tenant,
                 device: target.device,
-                registration: target.registration,
-                generation: target.generation,
             };
-            let command = super::apple_business::registration_command(command);
+            let command = super::apple_business::registration_command(command).map_err(error)?;
             self.0
                 .reserve_profile(c, target, command)
                 .await

@@ -48,7 +48,6 @@ pub const fn access_admission_sql(
 }
 
 /// Policy references to Scope definitions.
-pub mod scope;
 /// Durable Policy work persistence.
 pub mod work;
 

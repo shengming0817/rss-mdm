@@ -248,7 +248,7 @@ pub(super) async fn publish(
     Ok(published)
 }
 
-async fn os_fact(c: &Context, registration: Uuid) -> Result<()> {
+async fn os_fact(c: &Context, registration: String) -> Result<()> {
     use rss_mdm_inventory::*;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     let field = builtin::fields()
@@ -267,11 +267,11 @@ async fn os_fact(c: &Context, registration: Uuid) -> Result<()> {
         }],
     )?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &definition).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.windows'").bind(c.tenant.to_string()).bind(registration).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(c.tenant.to_string()).bind(&registration).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
-        registration,
+        &registration,
         "mdm.windows",
         epoch,
         "preview-os",
@@ -311,7 +311,7 @@ async fn positive_facts_and_associated_cut_share_formal_evaluation() -> Result<(
     let proof = c.authenticate(&account).await?;
     let owners = Owners::open(&c).await?;
     let object = planning::endpoint(&c).await?;
-    os_fact(&c, object.members[0].registration_id).await?;
+    os_fact(&c, object.members[0].device.clone()).await?;
     let condition: group::criteria::Condition = serde_json::from_value(
         json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.os.name","op":"eq","value":{"kind":"string","value":"Windows"}}}),
     )?;

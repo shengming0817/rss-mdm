@@ -43,8 +43,6 @@ pub async fn own(
     tx: &mut PgTransaction<'_>,
     owner: Arc<dyn super::apple_facts::AppleProfiles>,
     device: &str,
-    registration: Uuid,
-    generation: i64,
     input: &Create,
 ) -> Result<()> {
     if input.profile_target().is_none() {
@@ -54,8 +52,6 @@ pub async fn own(
     let target = super::apple_facts::AppleRegistration {
         tenant: tx.tenant_id().to_string(),
         device: device.into(),
-        registration,
-        generation,
     };
     let command = super::apple_facts::AppleCommand {
         operation: input.operation_id,

@@ -349,9 +349,7 @@ pub(super) fn associated_page(
                 let allowed = |device: &DeviceSummary, e: &rss_mdm_inventory::Evidence| {
                     input.members.iter().any(|m| {
                         m.device == device.scalars.device
-                            && e.registration.as_deref()
-                                == Some(m.registration_id.to_string().as_str())
-                            && e.registration_generation == Some(m.generation as u64)
+                            && e.device_id.as_deref() == Some(m.device.as_str())
                     })
                 };
                 if matches!(definition.value_type, ValueType::Array { .. }) {

@@ -57,11 +57,7 @@ pub async fn target_in(
             })
         })
         .await??;
-    Ok(current.map(|p| Target {
-        device: p.device,
-        registration: p.registration_id,
-        generation: p.generation,
-    }))
+    Ok(current.map(|p| Target { device: p.device }))
 }
 
 /// The actual operation owner's progress, retaining the established untagged HTTP shape.
@@ -111,8 +107,8 @@ impl crate::deployment::transactions::Transactions {
         self.validate_policy_transaction_in(tx)?;
         let channel = if matches!(policy.definition.action, Action::UnmanageDevice { .. }) {
             let tenant = tx.tenant_id().to_string();
-            let registration = target.registration;
-            let channel:String=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(registration).fetch_one(c).await})).await?;
+            let registration = target.device.clone();
+            let channel:String=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT channel FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(tenant).bind(&registration).fetch_one(c).await})).await?;
             if channel == "mdm" {
                 crate::deployment::scope::Channel::Mdm
             } else {
@@ -273,7 +269,7 @@ impl crate::deployment::transactions::Transactions {
         crate::deployment::agent_facts::agent_context_in(
             tx,
             self.agent_store.clone(),
-            target.registration,
+            target.device.clone(),
             context,
         )
         .await
@@ -289,8 +285,6 @@ impl crate::deployment::transactions::Transactions {
         if let rss_mdm_agent_wire::runtime::PolicyEventSource::Policy { run_id } = source {
             let run = runs::load_run(tx, *run_id).await?;
             Ok(run.target.device == target.device
-                && run.target.registration == target.registration
-                && run.target.generation == target.generation
                 && run.state.execution == rss_mdm_task_state::Execution::Running
                 && run.state.started_at.is_some())
         } else {
@@ -305,7 +299,7 @@ impl crate::deployment::transactions::Transactions {
         self.validate_policy_transaction_in(tx)?;
         let tenant = tx.tenant_id().to_string();
         let target = target.clone();
-        Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(tenant).bind(target.registration).bind(target.device).bind(target.generation).fetch_one(c).await})).await?)
+        Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant).bind(&target.device).fetch_one(c).await})).await?)
     }
     /// Return only operation progress, never script output or protected request inputs.
     pub async fn policy_event_operation_in(

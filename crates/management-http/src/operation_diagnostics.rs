@@ -26,8 +26,6 @@ pub struct LocatorQuery {
     pub instance: Option<Uuid>,
     pub device: Option<String>,
     pub target: Option<String>,
-    pub registration: Option<Uuid>,
-    pub generation: Option<i64>,
     /// Continue both evidence sections with the unchanged locator and includeAudit=true.
     pub cursor: Option<String>,
 }
@@ -37,9 +35,7 @@ impl LocatorQuery {
             .cursor
             .as_ref()
             .is_some_and(|v| !self.include_audit || v.is_empty() || v.len() > 4096)
-            || self.generation.is_some_and(|v| v < 1)
             || self.instance.is_some_and(|v| v.is_nil())
-            || self.registration.is_some_and(|v| v.is_nil())
             || [&self.actor, &self.device, &self.target]
                 .into_iter()
                 .flatten()
@@ -312,7 +308,7 @@ mod tests {
         assert!(LocatorParameters::parse("tenant=another").is_err());
         assert!(LocatorParameters::parse("owner=policy").is_err());
         assert!(
-            LocatorParameters::parse("includeAudit=true&generation=2&device=one")
+            LocatorParameters::parse("includeAudit=true&device=one")
                 .unwrap()
                 .include_audit
         );

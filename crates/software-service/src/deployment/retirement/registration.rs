@@ -9,7 +9,7 @@ pub async fn retire_in(
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<Fact>,
     tenant: &str,
-    registration: Uuid,
+    registration: String,
 ) -> Result<(), Error> {
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
     let audit = RequestAudit::new(
@@ -20,12 +20,11 @@ pub async fn retire_in(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.identify_service("registration-retirement");
-    audit.registration(registration);
-    audit.target(&registration.to_string());
+    audit.target_device(&registration);
     let mut after = String::new();
     loop {
         let rows = sqlx::query("SELECT * FROM mdm_software_deployment.retirement_commands($1,$2)")
-            .bind(registration)
+            .bind(&registration)
             .bind(&after)
             .fetch_all(&mut *c)
             .await
@@ -84,7 +83,7 @@ pub async fn retire_in(
             let changed: bool = sqlx::query_scalar(
                 "SELECT mdm_software_deployment.save_retired_command($1,$2::uuid,$3,$4)",
             )
-            .bind(registration)
+            .bind(&registration)
             .bind(&id)
             .bind(previous)
             .bind(record.terminal_at)
@@ -112,7 +111,7 @@ pub async fn retire_in(
     }
     let mut after = Uuid::nil();
     loop {
-        let rows = sqlx::query("SELECT id,state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND id>$3 AND state->>'execution' IN ('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none' AND (NOT EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.state='active') OR NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE w.tenant_id=$1::uuid AND w.execution=mdm_software_deployment.action_runs.id)) ORDER BY id LIMIT 64").bind(tenant).bind(registration).bind(after).fetch_all(&mut *c).await.map_err(db)?;
+        let rows = sqlx::query("SELECT id, state FROM mdm_software_deployment.action_runs WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND id > $3 AND state ->> 'execution' IN ('not_started', 'running', 'waiting_reboot', 'unknown') AND state ->> 'cancellation' = 'none' AND (NOT EXISTS (SELECT 1 FROM mdm_access.devices AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2 AND r.state = 'active') OR NOT EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w WHERE w.tenant_id = CAST($1 AS uuid) AND w.execution = mdm_software_deployment.action_runs.id)) ORDER BY id LIMIT 64").bind(tenant).bind(&registration).bind(after).fetch_all(&mut *c).await.map_err(db)?;
         let count = rows.len();
         for row in rows {
             let id: Uuid = row.try_get("id").map_err(db)?;
@@ -128,7 +127,7 @@ pub async fn retire_in(
             let changed: bool = sqlx::query_scalar(
                 "SELECT mdm_software_deployment.save_retired_action($1,$2,$3,$4)",
             )
-            .bind(registration)
+            .bind(&registration)
             .bind(id)
             .bind(serde_json::to_value(previous).map_err(|_| Error::Malformed)?)
             .bind(serde_json::to_value(state).map_err(|_| Error::Malformed)?)

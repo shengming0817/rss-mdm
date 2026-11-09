@@ -233,8 +233,7 @@ pub async fn advance_run(
     else {
         return Ok(());
     };
-    if target.registration != run.target.registration
-        || target.generation != run.target.generation
+    if target.device != run.target.device
         || !policy
             .assignment
             .authorized_run_in(

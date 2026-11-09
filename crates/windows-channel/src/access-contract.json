@@ -25,7 +25,7 @@
       "table": "management_messages",
       "read_write": true,
       "updates": [],
-      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=management_messages.tenant_idands.registration=management_messages.registrationands.session_id=management_messages.session_idands.expires_at<clock_timestamp"
+      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=management_messages.tenant_idands.device=management_messages.deviceands.protocol_epoch=management_messages.protocol_epochands.session_id=management_messages.session_idands.expires_at<clock_timestamp"
     },
     {
       "schema": "mdm_access",
@@ -64,7 +64,6 @@
       "table": "push_channels",
       "read_write": true,
       "updates": [
-        "generation",
         "revision",
         "configuration",
         "uri",
@@ -85,7 +84,7 @@
       "table": "push_queries",
       "read_write": true,
       "updates": [],
-      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=push_queries.tenant_idands.registration=push_queries.registrationands.session_id=push_queries.session::textands.expires_at<clock_timestamp"
+      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=push_queries.tenant_idands.device=push_queries.deviceands.protocol_epoch=push_queries.protocol_epochands.session_id=push_queries.session::textands.expires_at<clock_timestamp"
     },
     {
       "schema": "mdm_windows",
@@ -119,7 +118,7 @@
         "results",
         "confirmed"
       ],
-      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=trust_deliveries.tenant_idands.registration=trust_deliveries.registrationands.session_id=trust_deliveries.session::textands.expires_at<clock_timestamp"
+      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=trust_deliveries.tenant_idands.device=trust_deliveries.deviceands.protocol_epoch=trust_deliveries.protocol_epochands.session_id=trust_deliveries.session::textands.expires_at<clock_timestamp"
     },
     {
       "schema": "mdm_windows",

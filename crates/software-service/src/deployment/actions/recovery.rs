@@ -21,7 +21,7 @@ pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
 pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, policy: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND (input_revision>input_consumed OR dispatch_revision>dispatch_consumed)) OR EXISTS(SELECT FROM mdm_software_deployment.software_stage_stats s JOIN mdm_policy.policies p ON(p.tenant_id,p.current_version)=(s.tenant_id,s.version) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.state='enabled' AND (NOT s.membership_complete OR NOT s.ready))").bind(tenant).bind(policy).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND (input_revision>input_consumed OR dispatch_revision>dispatch_consumed)) OR EXISTS(SELECT FROM mdm_policy.policies p CROSS JOIN LATERAL generate_series(0,jsonb_array_length(coalesce(p.definition#>'{action,rollout,stages}','[]'::jsonb))-1) stage(index) LEFT JOIN mdm_software_deployment.software_stage_stats s ON(s.tenant_id,s.version,s.stage)=(p.tenant_id,p.current_version,stage.index) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.state='enabled' AND (s.version IS NULL OR NOT s.membership_complete OR NOT s.ready))").bind(tenant).bind(policy).fetch_one(c).await
     })).await?)
 }
 
@@ -46,7 +46,11 @@ pub(crate) async fn discover_in(
             .assignment
             .advance_stats_in(&service.transactions.admission(), tx, id)
             .await?;
-        if software.assignment.release_gates_in(tx).await? {
+        if software
+            .assignment
+            .release_gates_in(&service.transactions.admission().source, tx)
+            .await?
+        {
             crate::deployment::sources::storage::wake_dispatch_in(
                 &service.transactions.reconcile_messaging,
                 tx,
@@ -118,7 +122,6 @@ pub async fn audit_recovery(
         );
         run.source.audit(&audit);
         audit.target_device(&run.target.device);
-        audit.registration(run.target.registration);
         let bytes = crate::deployment::checked_input(serde_json::to_vec(&(&previous, &run.state)))?;
         use sha2::Digest;
         let fact = Fact::business(
@@ -201,13 +204,11 @@ pub(super) async fn stale_registration(
     let target = target.clone();
     Ok(tx
         .with_connection(move |c| {
-            Box::pin(crate::deployment::device::read::stale_registration_in(
+            Box::pin(crate::deployment::device::read::inactive_in(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 c,
                 tenant,
-                target.registration,
                 target.device,
-                target.generation,
             ))
         })
         .await?)

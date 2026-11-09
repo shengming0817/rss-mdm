@@ -144,8 +144,6 @@ impl Events {
         };
         let target = principal.map(|p| Target {
             device: p.device().into(),
-            registration: p.registration(),
-            generation: p.generation(),
         });
         let agent = target.as_ref();
         let schema = if members { &MEMBERS } else { &BATCHES };
@@ -206,11 +204,7 @@ impl Events {
                         tx,
                         q,
                         after.as_ref(),
-                        rss_mdm_policy_postgres::directory::EventTarget {
-                            device,
-                            batch,
-                            registration: agent.map(|t| t.registration),
-                        },
+                        rss_mdm_policy_postgres::directory::EventTarget { device, batch },
                         members,
                     )
                     .await?;

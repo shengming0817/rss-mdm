@@ -22,7 +22,7 @@ fn dispatch(
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
     let payload = checked_input(serde_json::to_vec(
-        &json!({"version":1,"policyVersion":version,"taskId":id,"device":target.device,"registrationId":target.registration,"generation":target.generation}),
+        &json!({"version":1,"policyVersion":version,"taskId":id,"device":target.device}),
     ))?;
     Ok(PendingMessage::new(MessageEnvelope::new(
         checked_input(MessageId::parse(&format!("credential.{id}")))?,
@@ -37,7 +37,7 @@ fn dispatch(
                     ContractVersion::from_static_major(1),
                     checked_input(SchemaDigest::parse(&format!(
                         "sha256:{:x}",
-                        Sha256::digest(b"mdm.credential-dispatch/v1:policyVersion,taskId,device,registrationId,generation")
+                        Sha256::digest(b"mdm.credential-dispatch/v1:policyVersion,taskId,device")
                     )))?,
                 ),
             ),
@@ -139,9 +139,7 @@ pub(crate) async fn accept_for_device(
                 }
             }
             Trigger::Registration => match trigger {
-                AdmissionTrigger::Agent(_) => {
-                    (now, format!("registration:{}", target.registration))
-                }
+                AdmissionTrigger::Agent(_) => (now, format!("registration:{}", target.device)),
                 _ => return Ok(()),
             },
             Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. } => {
@@ -271,7 +269,7 @@ pub(crate) async fn queue_run_in(
         return Err(Error::Conflict.into());
     }
     let tenant = tx.tenant_id().to_string();
-    let registration = target.registration;
+    let registration = target.device.clone();
     let target = target.clone();
     let digest = fingerprint.clone();
     let origin = checked_input(serde_json::to_value(origin))?;
@@ -285,8 +283,6 @@ pub(crate) async fn queue_run_in(
             .bind(id)
             .bind(version)
             .bind(target.device)
-            .bind(target.registration)
-            .bind(target.generation)
             .bind(occurrence)
             .bind(available)
             .bind(deadline)
@@ -320,7 +316,7 @@ pub(crate) async fn queue_run_in(
     audit.identify_service("execution-admission");
     audit.plan(version);
     audit.target(&id.to_string());
-    audit.registration(registration);
+    audit.target_device(&registration);
     let result: Result<()> = async {
         let run = super::storage::read_run(profile, tx, id).await?;
         let fact = Fact::business(
@@ -360,7 +356,7 @@ pub async fn policy_pending_in(
 ) -> Result<(bool, Option<i64>)> {
     let tenant = tx.tenant_id().to_string();
     let device = target.device.clone();
-    let registration = target.registration.to_string();
+    let registration = target.device.to_string();
     let value = tx
         .with_connection(move |c| {
             Box::pin(async move {
@@ -399,11 +395,11 @@ pub fn policy_occurrence(
     event: &str,
 ) -> String {
     match frequency {
-        rss_mdm_policy::Frequency::OncePerVersion => format!("version:{}", target.registration),
+        rss_mdm_policy::Frequency::OncePerVersion => format!("version:{}", target.device),
         rss_mdm_policy::Frequency::OncePerEntry => {
-            format!("entry:{entry_source}:{entry}:{}", target.registration)
+            format!("entry:{entry_source}:{entry}:{}", target.device)
         }
-        rss_mdm_policy::Frequency::EveryTrigger => format!("{event}:{}", target.registration),
+        rss_mdm_policy::Frequency::EveryTrigger => format!("{event}:{}", target.device),
     }
 }
 pub(crate) async fn occurrence_available_in(

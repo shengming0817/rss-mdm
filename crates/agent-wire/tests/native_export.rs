@@ -125,8 +125,7 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
             device_id: "device".into(),
             platform: TaskPlatform::Windows,
             architecture: TaskArchitecture::X86_64,
-            registration_id: id,
-            generation: 1,
+
             task_id: id,
             attempt_id: id,
             permit: TaskPermit::Offer,

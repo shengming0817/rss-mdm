@@ -112,8 +112,8 @@ fn read(
     });
     Ok(crate::installation::windows_results::Read {
         id: op.id,
-        registration: op.registration,
-        registration_generation: op.registration_generation,
+        device: op.device.to_string(),
+
         request: request.clone(),
         values: values && !sensitive,
     })
@@ -144,11 +144,11 @@ pub(super) async fn settle_dispatch_failures(
 ) -> Result<()> {
     use rss_mdm_audit_integration::Fact;
     let tenant = tx.tenant_id().to_string();
-    let registration = principal.registration();
-    let generation = principal.generation();
+    let registration = principal.device().to_owned();
+
     let ids = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar::<_, Uuid>("SELECT o.id FROM mdm_registration_tasks.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.dispatch_failure IS NOT NULL AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64")
-            .bind(tenant).bind(registration).bind(generation).fetch_all(c).await
+        sqlx::query_scalar::<_, Uuid>("SELECT o.id FROM mdm_registration_tasks.operations AS o INNER JOIN rss_device_command.commands AS d ON d.tenant_id = o.tenant_id AND d.command_id = CAST(o.id AS text) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2 AND o.dispatch_failure IS NOT NULL AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64")
+            .bind(tenant).bind(&registration).fetch_all(c).await
     })).await?;
     for id in ids {
         let op = storage::load(tx, &service.transactions.protection, id).await?;

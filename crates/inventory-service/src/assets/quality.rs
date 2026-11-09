@@ -10,7 +10,7 @@ pub(super) struct Record {
     result: String,
     delivery_pending: bool,
 }
-pub(super) fn decode_record(row: &Record, generation: u64) -> Result<QualityRun> {
+pub(super) fn decode_record(row: &Record) -> Result<QualityRun> {
     let coordinate: rss_observation::Scope = stored(serde_json::from_str(&row.scope))?;
     let source = stored(rss_mdm_inventory::Source::parse(
         coordinate.source().as_str(),
@@ -44,9 +44,9 @@ pub(super) fn decode_record(row: &Record, generation: u64) -> Result<QualityRun>
         complete: attempts.coverage_complete(),
         source,
         channel: source.channel().ok_or(Error::Malformed)?,
-        registration: stored(Uuid::parse_str(coordinate.registration().as_str()))?,
+        device: coordinate.registration().as_str().to_owned(),
         epoch: stored(Uuid::parse_str(coordinate.epoch().as_str()))?,
-        registration_generation: generation,
+
         run_id: stored(Uuid::parse_str(&row.id))?,
         sequence: row.sequence,
         result: crate::collection::RunResult::parse(&row.result)?,

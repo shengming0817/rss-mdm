@@ -63,7 +63,7 @@ impl Authority {
         tenant: TenantId,
     ) -> std::result::Result<bool, Error> {
         let i = self.installation();
-        let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(tenant.to_string()).bind(i.registration).bind(&i.device).bind(i.generation).fetch_one(&mut *c).await.map_err(database::db)?;
+        let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant.to_string()).bind(&i.device).fetch_one(&mut *c).await.map_err(database::db)?;
         if !active {
             return Ok(false);
         }

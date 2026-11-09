@@ -110,8 +110,6 @@ impl Query {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Member {
     pub device: String,
-    pub registration: Uuid,
-    pub generation: i64,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Scope {

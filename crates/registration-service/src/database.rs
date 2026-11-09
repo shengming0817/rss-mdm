@@ -104,7 +104,7 @@ impl crate::Retirement for CertificateRetirement {
         c: &'a mut sqlx::PgConnection,
         _facts: &'a mut Vec<rss_mdm_audit_integration::Fact>,
         tenant: &'a str,
-        registration: uuid::Uuid,
+        registration: &'a str,
         _state: &'a str,
     ) -> crate::agent::Pending<'a, ()> {
         Box::pin(async move {

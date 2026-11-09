@@ -46,8 +46,6 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, lock: bool) -> Result<Run>
         policy_version: row.try_get("policy_version")?,
         target: Target {
             device: row.try_get("device")?,
-            registration: row.try_get("registration")?,
-            generation: row.try_get("generation")?,
         },
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         available_at: row.try_get("available_at")?,
@@ -84,10 +82,10 @@ pub async fn save_run(
 pub async fn agent_profile_in(
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
-    registration: Uuid,
+    device: String,
 ) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
     Ok(
-        agent_facts::agent_binding_in(tx, service.agent_store.clone(), registration)
+        agent_facts::agent_binding_in(tx, service.agent_store.clone(), device)
             .await?
             .and_then(|b| {
                 let platform = match b.platform.as_str() {

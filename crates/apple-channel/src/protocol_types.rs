@@ -33,8 +33,6 @@ use uuid::Uuid;
 pub struct AppleRegistration {
     pub tenant: String,
     pub device: String,
-    pub registration: uuid::Uuid,
-    pub generation: i64,
 }
 pub trait AppleProfiles: Send + Sync {
     fn declaration_candidates<'a>(
@@ -79,7 +77,7 @@ pub trait AppleCollections: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
         user_key: String,
         limit: usize,
     ) -> Pending<'a, Vec<PendingCollection>>;
@@ -107,7 +105,7 @@ pub trait ApplePush: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
         user_key: String,
         revision: i64,
         scope: String,
@@ -116,7 +114,7 @@ pub trait ApplePush: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
         user_key: String,
     ) -> Pending<'a, ()>;
     fn lease_push<'a>(
@@ -124,7 +122,7 @@ pub trait ApplePush: Send + Sync {
         c: &'a mut PgConnection,
         tenant: String,
         wake: Uuid,
-        registration: Uuid,
+        device: String,
         user_key: String,
         configuration: [u8; 32],
     ) -> Pending<'a, ()>;
@@ -141,7 +139,7 @@ pub trait ApplePush: Send + Sync {
         source: &'a dyn crate::participants::Business,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
+        device: String,
     ) -> Pending<'a, bool>;
 }
 pub enum AppleEvidence {
@@ -161,13 +159,13 @@ pub trait AppleResults: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registration: Uuid,
-        generation: i64,
+        device: String,
+
         after: Option<Uuid>,
         limit: usize,
     ) -> Pending<'a, Vec<(Uuid, String)>>;
 
-    /// Check current-registration platform evidence without issuing a command.
+    /// Check current-device platform evidence without issuing a command.
     fn control_applicability<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -290,15 +288,13 @@ pub trait Apple: Send + Sync {
 #[derive(Clone)]
 pub struct Wake {
     pub id: Uuid,
-    pub registration: Uuid,
+    pub device: String,
     pub revision: i64,
     pub user_key: String,
     pub token: Vec<u8>,
     pub magic: String,
 }
 pub struct PushCandidate {
-    pub generation: i64,
-    pub registration: Uuid,
     pub device: String,
     pub revision: i64,
     pub user_key: String,
@@ -362,12 +358,11 @@ pub trait AppleAssetRead: Send + Sync {
     ) -> Pending<'a, Option<rss_mdm_apple_mdm::native::ddm::AssetBinding>>;
 }
 
-/// Capability facts are read once for the requested current registration generations.
+/// Capability facts are read once for the requested current device generations.
 #[derive(Clone)]
 pub struct AppleControlCheck {
     pub id: usize,
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub action: ControlKind,
     pub command: rss_mdm_apple_mdm::native::input::CommandInput,
 }
@@ -375,8 +370,7 @@ pub struct AppleControlCheck {
 /// Committed publication identity carried by a validated native status report.
 pub struct Synchronized {
     pub operation: Uuid,
-    pub registration: Uuid,
-    pub generation: i64,
+    pub device: String,
     pub user: String,
     pub input_version: String,
     pub publication_version: String,

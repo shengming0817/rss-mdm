@@ -65,7 +65,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
     let scope = registration::device::scope_dataset(
         DA,
         c.tenant,
-        p.registration(),
+        p.device(),
         "agent.builtin",
         p.epoch(),
         builtin::MDM_ENROLLMENT.as_str(),
@@ -180,8 +180,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
         DA,
         &mut tx,
         c.tenant,
-        p.registration(),
-        p.generation(),
+        p.device().to_string(),
         rss_mdm_inventory::ReportSource::AgentBuiltin,
     )
     .await?;

@@ -13,15 +13,7 @@ impl rss_mdm_device_service::control::lock_pin::LockPins for Pins {
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
         Box::pin(async move {
             self.0
-                .hold_in(
-                    c,
-                    tenant,
-                    &target.device,
-                    target.registration,
-                    target.generation,
-                    operation,
-                    pin,
-                )
+                .hold_in(c, tenant, &target.device, operation, pin)
                 .await
                 .map_err(|e| match e {
                     rss_mdm_recovery_credentials::Error::CommitUnknown => Error::CommitUnknown,

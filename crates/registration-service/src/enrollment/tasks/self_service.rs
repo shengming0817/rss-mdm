@@ -63,7 +63,7 @@ async fn prepare_in(
     }
 
     let entry = match enrollment
-        .entry_in(&service.transactions, tx, &target.device, now)
+        .entry_in(&service.transactions, tx, &target.device.clone(), now)
         .await?
     {
         Some(entry) => entry,
@@ -91,7 +91,7 @@ async fn prepare_in(
         profile,
         &service.transactions,
         tx,
-        target.registration,
+        target.device.clone(),
     )
     .await?
     .ok_or(Error::Forbidden)?;
@@ -111,8 +111,6 @@ async fn prepare_in(
 fn target(p: &DevicePrincipal) -> Target {
     Target {
         device: p.device().into(),
-        registration: p.registration(),
-        generation: p.generation(),
     }
 }
 fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
@@ -122,11 +120,7 @@ fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
             format!("{}:{}", user.instance_id, user.principal_id)
         }
     };
-    format!(
-        "self-service:{subject}:{}:{}",
-        p.registration(),
-        p.generation()
-    )
+    format!("self-service:{subject}:{}", p.device())
 }
 fn owns(subject: &wire::SelfServiceSubject, proof: Option<&AuthorizedPrincipal>) -> bool {
     match subject {
@@ -196,7 +190,6 @@ impl Service {
         );
         audit.receipt_actor(&actor);
         audit.target_device(p.device());
-        audit.registration_at(p.registration(), p.generation());
         let event_key = format!("{actor}:{}", input.operation_id);
         let plan =
             crate::enrollment::tasks::policy::read_in(&service.transactions, tx, policy.version)
@@ -245,7 +238,7 @@ impl Service {
             profile,
             tx,
             service.transactions.agent_store.clone(),
-            p.registration(),
+            p.device().to_owned(),
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -435,7 +428,7 @@ struct InvocationSlot {
 // A directory probe only reads the same facts rechecked atomically by invocation.
 #[allow(
     clippy::too_many_arguments,
-    reason = "invocation admission keeps product, registration, request and capacity facts explicit"
+    reason = "invocation admission keeps product, device, request and capacity facts explicit"
 )]
 async fn invocation_slot_in(
     profile: rss_mdm_install_support::StorageProfile,
@@ -624,8 +617,6 @@ pub async fn diagnostic_on(
     }
     let actor = locator.actor.as_deref().ok_or(Error::Malformed)?;
     let device = locator.device.as_deref().ok_or(Error::Malformed)?;
-    let registration = locator.registration.ok_or(Error::Malformed)?;
-    let generation = locator.generation.ok_or(Error::Malformed)?;
     grant.require(p, Permission::OperationRead, Some(device))?;
     let raw: Option<Value> = sqlx::query_scalar(
         crate::storage_profile::sql(p.profile()).enrollment_tasks_diagnostic_receipt,
@@ -634,8 +625,7 @@ pub async fn diagnostic_on(
     .bind(actor)
     .bind(locator.operation_id)
     .bind(device)
-    .bind(registration)
-    .bind(generation)
+    .bind(device)
     .fetch_optional(c)
     .await?;
     let Some(raw) = raw else { return Ok(None) };

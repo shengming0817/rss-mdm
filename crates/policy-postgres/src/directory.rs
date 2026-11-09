@@ -123,8 +123,6 @@ pub struct EventTarget<'a> {
     pub device: &'a str,
     /// Optional accepted batch identity.
     pub batch: Option<Uuid>,
-    /// Optional caller registration restriction.
-    pub registration: Option<Uuid>,
 }
 /// Read a bounded device-specific batch or member page. Authorization remains with the caller.
 pub async fn events_in(
@@ -135,11 +133,7 @@ pub async fn events_in(
     target: EventTarget<'_>,
     members: bool,
 ) -> Result<Vec<Value>, Error> {
-    let EventTarget {
-        device,
-        batch,
-        registration,
-    } = target;
+    let EventTarget { device, batch } = target;
     q.require_schema(if members { &MEMBERS } else { &BATCHES })?;
     let prefix = if members {
         crate::storage_profile::sql(profile).directory_events_in_1
@@ -152,10 +146,6 @@ pub async fn events_in(
         .push_bind(device.to_owned());
     if let Some(batch) = batch {
         sql.push(" AND b.id=").push_bind(batch);
-    }
-    if let Some(registration) = registration {
-        sql.push(" AND b.caller->'target'->>'registration'=")
-            .push_bind(registration.to_string());
     }
     rss_mdm_query_postgres::append(
         &mut sql,

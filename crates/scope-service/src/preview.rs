@@ -23,6 +23,7 @@ pub struct Editing {
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
+    pub owner: rss_mdm_scope_postgres::ScopeOwner,
     pub definition: ScopeDefinition,
     pub channel: Channel,
     pub editing: Option<Editing>,
@@ -70,7 +71,7 @@ impl Scopes {
             return Err(Error::Forbidden);
         }
         proof.bind_audit(audit)?;
-        proof.manage(Permission::ScopeRead)?;
+        proof.manage(Permission::PolicyRead)?;
         proof.require_all_devices(Permission::InventoryRead)?;
         let grouped = request
             .definition
@@ -108,7 +109,7 @@ impl Scopes {
                 Box::pin(async move {
                     let (s, proof, request, budget, cut, grouped) = *ctx;
                     let authority = crate::action_admission::current(tx, proof).await?;
-                    authority.require(proof, Permission::ScopeRead, None)?;
+                    authority.require(proof, Permission::PolicyRead, None)?;
                     authority.require_all_devices(proof, Permission::InventoryRead)?;
                     if grouped {
                         authority.require(proof, Permission::GroupRead, None)?;
