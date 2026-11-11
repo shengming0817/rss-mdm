@@ -33,7 +33,9 @@ impl Source {
             nullable: false,
         }
     }
-    /// Empty field binds a complete JSON row; a named field binds its typed subtree.
+    /// Bind a subtree serialized by its actual owner type. Synthesized SQL rows bind their
+    /// individual leaves instead, so a newly returned scalar cannot silently map to SQL NULL.
+    /// Empty field is reserved for a complete, typed serialized row.
     pub const fn json(field: &'static str, sql: &'static str) -> Self {
         Self::Json { field, sql }
     }
@@ -51,11 +53,21 @@ pub struct Bindings {
 impl Bindings {
     /// Compile a closed domain dispatch over every executable model selector.
     /// Unlike a request-time closure, missing fields fail before the directory is exported.
-    pub fn mapped(schema: &'static Schema, resolve: fn(&str) -> Result<&'static str>) -> Result<Self> {
-        let columns = schema.fields().iter().filter(|f| f.filter || f.sort)
+    pub fn mapped(
+        schema: &'static Schema,
+        resolve: fn(&str) -> Result<&'static str>,
+    ) -> Result<Self> {
+        let columns = schema
+            .fields()
+            .iter()
+            .filter(|f| f.filter || f.sort)
             .map(|field| Ok((field.name.clone(), resolve(&field.name)?.to_owned())))
-            .collect::<Result<BTreeMap<_,_>>>()?;
-        Ok(Self { execution: Execution::bind(schema, columns.keys().map(String::as_str))?, columns, non_null: BTreeSet::new() })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        Ok(Self {
+            execution: Execution::bind(schema, columns.keys().map(String::as_str))?,
+            columns,
+            non_null: BTreeSet::new(),
+        })
     }
     pub fn new(schema: &'static Schema, sources: &[Source]) -> Result<Self> {
         let mut names = BTreeSet::new();
@@ -123,11 +135,18 @@ impl Bindings {
     pub fn schema(&self) -> &'static Schema {
         self.execution.schema()
     }
-    pub fn execution(&self) -> &Execution { &self.execution }
+    pub fn execution(&self) -> &Execution {
+        &self.execution
+    }
 }
-pub trait Columns: Copy {
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for &super::Bindings {}
+}
+/// Checked directory execution; only validated bindings implement this sealed interface.
+pub trait Columns: Copy + sealed::Sealed {
     fn column(&self, name: &str) -> Result<&str>;
-    /// Manual catalogs and JSON paths are conservative unless storage proves otherwise.
+    /// Expressions are conservative unless storage proves they are non-null.
     fn nullable(&self, _name: &str) -> bool {
         true
     }

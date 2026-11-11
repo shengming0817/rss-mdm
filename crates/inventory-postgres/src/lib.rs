@@ -24,20 +24,6 @@ pub const MIGRATION_SQL: &str = concat!(
 
 mod reader;
 pub use reader::{InventoryFacts, InventoryField, InventoryReader, read_in};
-/// Return only presence for selected current scopes and manual device facts.
-/// The product caller supplies the authoritative registration/source mapping.
-pub async fn directory_presence_in(
-    c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
-    scopes: Vec<String>,
-    devices: Vec<String>,
-) -> Result<(Vec<String>, Vec<String>), sqlx::Error> {
-    let projection = projection_scope(tenant);
-    let row: (Vec<String>, Vec<String>) = sqlx::query_as("SELECT ARRAY(SELECT DISTINCT scope FROM mdm.inventory_presence WHERE tenant_id=$1::uuid AND journal=$4 AND generation=$5 AND scope=ANY($2)), ARRAY(SELECT DISTINCT device FROM mdm.manual_assignments WHERE tenant_id=$1::uuid AND device=ANY($3))")
-        .bind(tenant.to_string()).bind(scopes).bind(devices)
-        .bind(projection.source().source()).bind(projection.generation()).fetch_one(c).await?;
-    Ok(row)
-}
 /// Owner-executed migration defining the restricted Inventory API reader role.
 pub const READER_MIGRATION_SQL: &str = include_str!("../migrations/reader.sql");
 

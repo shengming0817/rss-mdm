@@ -46,6 +46,8 @@ pub static RUNS_SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::S
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "available_at DESC, task_id DESC",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Runs retain creation/task coordinates and are navigated as Policy execution history",
     context: &[],
 };
 #[derive(serde::Serialize, schemars::JsonSchema)]

@@ -299,6 +299,8 @@ pub static DISCOVERY: rss_mdm_query::window::Schema = rss_mdm_query::window::Sch
     default_limit: 64,
     max_limit: 100,
     order: "policy UUID ascending (bounded live eligibility scan)",
+    purpose: rss_mdm_query::window::Purpose::Qualification,
+    reason: "The device-scoped discovery scan advances over examined Policy candidates, including ineligible entries",
     context: &[],
 };
 

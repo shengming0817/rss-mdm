@@ -9,7 +9,9 @@ use rss_mdm_query::{
 
 use std::time::Duration;
 use uuid::Uuid;
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<AssociationRow>("device_associations", &["id"], 64, 100, &[rss_mdm_query::directory::Exclusion { path: "association.members", reason: "Member object arrays require device and channel to match the same member" }, rss_mdm_query::directory::Exclusion { path: "association.state", reason: "Effective state is recomputed from current hardware evidence and competitor qualification; the stored association state is not this public value" }]).expect("Public directory model"));
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<AssociationRow>("device_associations", &["id"], 64, 100, &[rss_mdm_query::directory::Exclusion { path: "association.members", reason: "Member object arrays require device and channel to match the same member" }, rss_mdm_query::directory::Exclusion { path: "association.state", reason: "Effective state is recomputed from current hardware evidence and competitor qualification; the stored association state is not this public value" }]).expect("Public directory model")
+});
 impl Associations {
     pub async fn directory(
         &self,
@@ -57,6 +59,8 @@ pub static CANDIDATES: rss_mdm_query::window::Schema = rss_mdm_query::window::Sc
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "candidate device identity",
+    purpose: rss_mdm_query::window::Purpose::Qualification,
+    reason: "Candidates require live endpoint and association-write qualification within a bounded scan",
     context: &["channel"],
 };
 pub static SOURCE_ITEMS: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
@@ -64,6 +68,8 @@ pub static SOURCE_ITEMS: rss_mdm_query::window::Schema = rss_mdm_query::window::
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "immutable source array ordinal",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Items preserve an immutable source array ordinal",
     context: &[],
 };
 
@@ -76,7 +82,38 @@ pub struct AssociationRow {
     pub association: Association,
 }
 
-pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::required_column("id", "a.id::text COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("version", "a.version"),
-rss_mdm_query_postgres::Source::column("confirmedAt", "a.confirmed_at"),
-rss_mdm_query_postgres::Source::json("association", "jsonb_build_object('id',a.id,'version',a.version,'evidence',a.evidence,'confirmedBy',a.confirmed_by,'confirmedAt',a.confirmed_at,'revokedBy',a.revoked_by,'revokedAt',a.revoked_at,'reason',a.reason)")]).expect("Complete public model storage binding"));
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::required_column("id", "a.id::text COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("version", "a.version"),
+                rss_mdm_query_postgres::Source::column("confirmedAt", "a.confirmed_at"),
+                rss_mdm_query_postgres::Source::column(
+                    "association.id",
+                    "a.id::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("association.version", "a.version"),
+                rss_mdm_query_postgres::Source::column(
+                    "association.evidence",
+                    "a.evidence COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "association.confirmedBy",
+                    "a.confirmed_by COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("association.confirmedAt", "a.confirmed_at"),
+                rss_mdm_query_postgres::Source::column(
+                    "association.revokedBy",
+                    "a.revoked_by COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("association.revokedAt", "a.revoked_at"),
+                rss_mdm_query_postgres::Source::column(
+                    "association.reason",
+                    "a.reason COLLATE \"C\"",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

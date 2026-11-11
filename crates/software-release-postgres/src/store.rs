@@ -207,7 +207,10 @@ impl ReleaseStore {
                 c.snapshot().id.value(),
                 None,
                 0,
-                rss_mdm_backend_postgres_support::AggregateDocument::SoftwareRelease { document, directory: codec::directory(c) },
+                rss_mdm_backend_postgres_support::AggregateDocument::SoftwareRelease {
+                    document,
+                    directory: codec::directory(c),
+                },
             )
             .await?;
         freeze_material(tx, &c.snapshot().content).await?;
@@ -314,7 +317,10 @@ impl ReleaseStore {
                 id.value(),
                 Some(c.snapshot().revision),
                 next.snapshot().revision,
-                rss_mdm_backend_postgres_support::AggregateDocument::SoftwareRelease { document: codec::snapshot(next)?, directory: codec::directory(next) },
+                rss_mdm_backend_postgres_support::AggregateDocument::SoftwareRelease {
+                    document: codec::snapshot(next)?,
+                    directory: codec::directory(next),
+                },
             )
             .await?;
         freeze_material(tx, &next.snapshot().content).await?;

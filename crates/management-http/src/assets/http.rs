@@ -363,16 +363,19 @@ async fn fields(
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<FieldsQuery>,
     >,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
+) -> std::result::Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<AssetEnvelope<rss_mdm_inventory_service::assets::field_directory::DirectoryResponse>>,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "inventory_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         let q = query.parse().map_err(|_| Error::Malformed)?;
-        Ok(HttpResponse::new(
-            app.assets.fields(&auth.proof, &q, &audit).await?,
-        ))
+        Ok(Json(app.assets.fields(&auth.proof, &q, &audit).await?))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -455,10 +458,15 @@ async fn saved_list(
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<SavedDirectoryQuery>,
     >,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
+) -> std::result::Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<AssetEnvelope<rss_mdm_inventory_service::assets::saved_directory::DirectoryResponse>>,
+    >,
+    Error,
+> {
     (async {
         let q = query.parse().map_err(|_| Error::Malformed)?;
-        Ok(HttpResponse::new(
+        Ok(Json(
             app.assets.saved_directory(&auth.proof, &q, &audit).await?,
         ))
     })
@@ -808,7 +816,9 @@ async fn retention_read(
 
 struct FieldsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for FieldsQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_inventory_service::assets::field_directory::BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_inventory_service::assets::field_directory::BINDINGS.execution()
+    }
 }
 
 struct QueryItemsQuery;
@@ -936,7 +946,9 @@ impl rss_mdm_http_contract::signature::Output for HttpResponse {
 
 struct SavedDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for SavedDirectoryQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_inventory_service::assets::saved_directory::execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_inventory_service::assets::saved_directory::execution()
+    }
 }
 
 struct SearchBody(Operation<rss_mdm_inventory_service::assets::rsql::QueryInput>);

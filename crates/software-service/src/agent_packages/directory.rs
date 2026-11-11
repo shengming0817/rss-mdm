@@ -2,7 +2,10 @@
 use super::*;
 use rss_mdm_query::directory::{Query, Schema};
 use serde_json::{Value, json};
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Row>("agent_packages", &["releaseId"], 64, 1000, &[]).expect("Public directory model"));
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Row>("agent_packages", &["releaseId"], 64, 1000, &[])
+        .expect("Public directory model")
+});
 fn validate(row: &Value, tenant: TenantId) -> Result<(), Error> {
     let p: w::Package = serde_json::from_value(row["_package"].clone()).map_err(|_| storage())?;
     if p.tenant_id.to_string() != tenant.to_string() || row["_id"] != json!(p.release_id) {
@@ -77,7 +80,29 @@ pub async fn list<C: ManagementContentPort>(
         .map_err(management::query_error)
 }
 
-pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::json("", "document"),
-rss_mdm_query_postgres::Source::column("state", "state COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("platform", "platform COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("architecture", "architecture COLLATE \"C\"")]).expect("Complete public model storage binding"));
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::json("releaseId", "document#>'{releaseId}'"),
+                rss_mdm_query_postgres::Source::json("tenantId", "document#>'{tenantId}'"),
+                rss_mdm_query_postgres::Source::json("target", "document#>'{target}'"),
+                rss_mdm_query_postgres::Source::json("version", "document#>'{version}'"),
+                rss_mdm_query_postgres::Source::json("format", "document#>'{format}'"),
+                rss_mdm_query_postgres::Source::json("filename", "document#>'{filename}'"),
+                rss_mdm_query_postgres::Source::json("length", "document#>'{length}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "installerSha256",
+                    "document#>'{installerSha256}'",
+                ),
+                rss_mdm_query_postgres::Source::column("state", "state COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("platform", "platform COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column(
+                    "architecture",
+                    "architecture COLLATE \"C\"",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

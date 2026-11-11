@@ -28,7 +28,9 @@ class HttpArtifactTests(unittest.TestCase):
     def test_directory_capabilities_require_unique_fields_and_executable_operators(self):
         field = dict(name='id', kind='Uuid', filter=True, sort=True, output=True,
                      nullable=False, operators=['Eq', 'In'], limitation=None)
-        owner = {'kind': 'directory', 'schema': {'id': 'rows', 'keys': ['id'], 'fields': [field]}}
+        owner = {'kind': 'directory', 'schema': {'id': 'rows', 'keys': ['id'], 'fields': [field],
+            'role': 'list', 'modelIdentity': 'Row', 'model': {'direction': 'response', 'schemaId': 'sha256-' + 'a'*64},
+            'selectors': []}}
         self.document['endpoints'][0]['request']['query_owner'] = owner
         artifact.validate_document(json.dumps(self.document))
         field['operators'] = []
@@ -38,6 +40,39 @@ class HttpArtifactTests(unittest.TestCase):
         artifact.validate_document(json.dumps(self.document))
         owner['schema']['fields'].append(dict(field))
         with self.assertRaisesRegex(ValueError, 'duplicate'):
+            artifact.validate_document(json.dumps(self.document))
+
+    def test_directory_binding_statistics_and_fixed_window_metadata(self):
+        import copy
+        field = dict(name='id', kind='Uuid', filter=True, sort=True, output=True,
+                     nullable=False, operators=['Eq', 'In'], limitation=None)
+        owner = dict(id='rows', keys=['id'], fields=[field], role='list', modelIdentity='Row',
+                     model={'direction': 'response', 'schemaId': 'sha256-'+'a'*64}, selectors=[])
+        endpoint = self.document['endpoints'][0]
+        endpoint['request']['query_owner'] = dict(kind='directory', schema=owner)
+        owner['keys']=['missing']
+        with self.assertRaisesRegex(ValueError, 'ordering key'):
+            artifact.validate_document(json.dumps(self.document))
+        owner['keys']=['id']
+        stats = copy.deepcopy(endpoint)
+        stats.update(path='/statistics', operationId='statistics')
+        stats['request']['query_owner']['schema']['role'] = 'statistics'
+        self.document['endpoints'].append(stats)
+        artifact.validate_document(json.dumps(self.document))
+        stats['request']['query_owner']['schema']['modelIdentity'] = 'Drift'
+        with self.assertRaisesRegex(ValueError, 'statistics'):
+            artifact.validate_document(json.dumps(self.document))
+        self.document['endpoints'].pop()
+        endpoint['request']['query_owner'] = dict(kind='window', schema=dict(id='history'))
+        with self.assertRaisesRegex(ValueError, 'classification'):
+            artifact.validate_document(json.dumps(self.document))
+        endpoint['request']['query_owner']['schema'].update(purpose='history', reason='Immutable event chronology')
+        artifact.validate_document(json.dumps(self.document))
+
+    def test_projection_model_marker_references_are_checked(self):
+        self.document['schemas']['sha256-' + 'a'*64] = {
+            'x-rss-directory-model': {'identity': 'Row', 'schema': {'$ref': '#/$defs/Missing'}}}
+        with self.assertRaisesRegex(ValueError, 'unresolved'):
             artifact.validate_document(json.dumps(self.document))
 
     def test_authentication_schema_references_are_validated(self):

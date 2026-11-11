@@ -179,10 +179,15 @@ pub struct HttpState {
 
 struct ListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_software_service::management::publication::directory::PUBLICATION_BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_software_service::management::publication::directory::PUBLICATION_BINDINGS
+            .execution()
+    }
 }
 
 struct TargetsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for TargetsQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_software_service::management::publication::directory::TARGET_BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_software_service::management::publication::directory::TARGET_BINDINGS.execution()
+    }
 }

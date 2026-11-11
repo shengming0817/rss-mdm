@@ -321,6 +321,7 @@ async fn administrator_for(c: &Context, device: Option<&str>) -> Result<String> 
         } else {
             [
                 access::Permission::AccountWrite,
+                access::Permission::EnterpriseApplicationsRead,
                 access::Permission::OperationRead,
                 access::Permission::Enrollment,
                 access::Permission::Credentials,

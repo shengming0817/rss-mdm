@@ -7,8 +7,26 @@ use rss_mdm_query::{
     directory::{Projection, Query, Schema},
 };
 
-pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Request>("agent_requests", &["id"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
-pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Operation>("agent_issuance_recovery_operations", &["actor", "operationId"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
+pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Request>(
+        "agent_requests",
+        &["id"],
+        rss_mdm_query::DEFAULT_PAGE_LIMIT,
+        rss_mdm_query::MAX_PAGE_LIMIT,
+        &[],
+    )
+    .expect("Public directory model")
+});
+pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Operation>(
+        "agent_issuance_recovery_operations",
+        &["actor", "operationId"],
+        rss_mdm_query::DEFAULT_PAGE_LIMIT,
+        rss_mdm_query::MAX_PAGE_LIMIT,
+        &[],
+    )
+    .expect("Public directory model")
+});
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReceiptIdentity {
@@ -50,6 +68,7 @@ pub enum Requirement {
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
+    Administrator,
     Download,
     Browser,
     Native,
@@ -439,8 +458,57 @@ pub async fn registration_recovery_operation(
     Ok(value)
 }
 
-pub static REQUEST_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&REQUESTS, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));
+pub static REQUEST_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &REQUESTS,
+            &[
+                rss_mdm_query_postgres::Source::json("id", "row#>'{id}'"),
+                rss_mdm_query_postgres::Source::json("device", "row#>'{device}'"),
+                rss_mdm_query_postgres::Source::json("source", "row#>'{source}'"),
+                rss_mdm_query_postgres::Source::json("state", "row#>'{state}'"),
+                rss_mdm_query_postgres::Source::json("operationId", "row#>'{operationId}'"),
+                rss_mdm_query_postgres::Source::json("actor", "row#>'{actor}'"),
+                rss_mdm_query_postgres::Source::json("instance", "row#>'{instance}'"),
+                rss_mdm_query_postgres::Source::json("createdAt", "row#>'{createdAt}'"),
+                rss_mdm_query_postgres::Source::json("expiresAt", "row#>'{expiresAt}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "registrationState",
+                    "row#>'{registrationState}'",
+                ),
+                rss_mdm_query_postgres::Source::json("predecessor", "row#>'{predecessor}'"),
+                rss_mdm_query_postgres::Source::json("issuance", "row#>'{issuance}'"),
+                rss_mdm_query_postgres::Source::json("issuanceState", "row#>'{issuanceState}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "issuanceOperation",
+                    "row#>'{issuanceOperation}'",
+                ),
+                rss_mdm_query_postgres::Source::json("issuer", "row#>'{issuer}'"),
+                rss_mdm_query_postgres::Source::json("notBefore", "row#>'{notBefore}'"),
+                rss_mdm_query_postgres::Source::json("notAfter", "row#>'{notAfter}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "activationOperation",
+                    "row#>'{activationOperation}'",
+                ),
+                rss_mdm_query_postgres::Source::json("activated", "row#>'{activated}'"),
+                rss_mdm_query_postgres::Source::json("requirements", "row#>'{requirements}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });
 
-pub static OPERATION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&OPERATIONS, &[rss_mdm_query_postgres::Source::required_column("actor", "actor COLLATE \"C\""),
-rss_mdm_query_postgres::Source::required_column("operationId", "operation_id::text COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("instance", "instance COLLATE \"C\"")]).expect("Complete public model storage binding"));
+pub static OPERATION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &OPERATIONS,
+            &[
+                rss_mdm_query_postgres::Source::required_column("actor", "actor COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::required_column(
+                    "operationId",
+                    "operation_id::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("instance", "instance COLLATE \"C\""),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

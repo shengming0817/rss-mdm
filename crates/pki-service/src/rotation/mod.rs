@@ -17,7 +17,16 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
 
-pub static BLOCKERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Blocker>("pki_rotation_blockers", &["kind", "id"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
+pub static BLOCKERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Blocker>(
+        "pki_rotation_blockers",
+        &["kind", "id"],
+        rss_mdm_query::DEFAULT_PAGE_LIMIT,
+        rss_mdm_query::MAX_PAGE_LIMIT,
+        &[],
+    )
+    .expect("Public directory model")
+});
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockerKind {
@@ -348,9 +357,21 @@ impl Registry {
     }
 }
 
-pub static BLOCKER_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&BLOCKERS, &[rss_mdm_query_postgres::Source::column("kind", "kind COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("id", "id COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("device", "device COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("state", "state COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("deadline", "deadline"),
-rss_mdm_query_postgres::Source::column("revocationState", "revocation_state COLLATE \"C\"")]).expect("Complete public model storage binding"));
+pub static BLOCKER_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &BLOCKERS,
+            &[
+                rss_mdm_query_postgres::Source::column("kind", "kind COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("id", "id COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("device", "device COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("state", "state COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("deadline", "deadline"),
+                rss_mdm_query_postgres::Source::column(
+                    "revocationState",
+                    "revocation_state COLLATE \"C\"",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

@@ -41,7 +41,7 @@ impl AssetService {
         p: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<AssetEnvelope, Error> {
+    ) -> std::result::Result<AssetEnvelope<DirectoryResponse>, Error> {
         q.require_schema(schema()).map_err(crate::query_error)?;
         ReadScope::from_proof(p)?;
         audit.set_action(
@@ -69,7 +69,7 @@ impl AssetService {
    }
    let rows=stored(rows.into_iter().map(serde_json::from_value::<Row>).collect::<std::result::Result<Vec<_>,_>>())?;
    let page=q.page_typed(rows,&codec,&binding).map_err(crate::query_error)?;
-   p.check_live()?;Ok(AssetEnvelope{tenant_id:p.tenant_id().into(),asset:Response::SavedList{items:page.items,next_cursor:page.next_cursor}})
+   p.check_live()?;Ok(AssetEnvelope{tenant_id:p.tenant_id().into(),asset:DirectoryResponse::SavedList{page}})
   }),crate::transaction::TransactionOwner::Assets).await
     }
 }
@@ -87,4 +87,20 @@ pub struct Row {
 }
 
 /// Public model with every executable selector checked by this storage owner.
-pub fn execution() -> &'static rss_mdm_query::directory::Execution { BINDINGS.execution() }
+pub fn execution() -> &'static rss_mdm_query::directory::Execution {
+    BINDINGS.execution()
+}
+
+/// The exact successful response of this directory; other Asset variants cannot be returned.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum DirectoryResponse {
+    SavedList {
+        #[serde(flatten)]
+        page: rss_mdm_query::Page<rss_mdm_query::directory::Projection<Row>>,
+    },
+}

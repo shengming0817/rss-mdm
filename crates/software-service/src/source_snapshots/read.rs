@@ -5,8 +5,14 @@ use rss_mdm_query::{
 };
 use sqlx::Row;
 use uuid::Uuid;
-pub static SOURCES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Snapshot>("software_source_snapshots", &["source"], 20, 100, &[]).expect("Public directory model"));
-pub static ENTRIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Entry>("software_source_entries", &["entryId"], 20, 100, &[]).expect("Public directory model"));
+pub static SOURCES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Snapshot>("software_source_snapshots", &["source"], 20, 100, &[])
+        .expect("Public directory model")
+});
+pub static ENTRIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Entry>("software_source_entries", &["entryId"], 20, 100, &[])
+        .expect("Public directory model")
+});
 fn read_audit(proof: &AuthorizedPrincipal, audit: &RequestAudit) -> Result<(), Error> {
     proof.require(Permission::SoftwareRead, None)?;
     audit.set_action(
@@ -176,16 +182,31 @@ pub async fn operation<C: ManagementContentPort>(
     .await
 }
 
-pub static SOURCE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SOURCES, &[rss_mdm_query_postgres::Source::required_column("source", "source COLLATE \"C\""),
+pub static SOURCE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(&SOURCES, &[rss_mdm_query_postgres::Source::required_column("source", "source COLLATE \"C\""),
 rss_mdm_query_postgres::Source::column("revision", "revision"),
 rss_mdm_query_postgres::Source::column("entryCount", "entry_count"),
 rss_mdm_query_postgres::Source::column("importedAt", "imported_at"),
 rss_mdm_query_postgres::Source::column("documentSha256", "ARRAY(SELECT get_byte(document_sha256,n)::bigint FROM generate_series(0,octet_length(document_sha256)-1) n)"),
-rss_mdm_query_postgres::Source::json("extraction", "extraction")]).expect("Complete public model storage binding"));
+rss_mdm_query_postgres::Source::json("extraction", "extraction")]).expect("Complete public model storage binding")
+    });
 
-pub static ENTRY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&ENTRIES, &[rss_mdm_query_postgres::Source::required_column("entryId", "e.id::text COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("source", "e.source COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("revision", "s.revision"),
-rss_mdm_query_postgres::Source::column("packageId", "e.package_id COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("name", "e.name COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("version", "e.version COLLATE \"C\"")]).expect("Complete public model storage binding"));
+pub static ENTRY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &ENTRIES,
+            &[
+                rss_mdm_query_postgres::Source::required_column(
+                    "entryId",
+                    "e.id::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("source", "e.source COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("revision", "s.revision"),
+                rss_mdm_query_postgres::Source::column("packageId", "e.package_id COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("name", "e.name COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("version", "e.version COLLATE \"C\""),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

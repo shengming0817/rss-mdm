@@ -1,5 +1,5 @@
 //! User profile HTTP inputs and the product-owned service port.
-use super::directory::DIRECTORY;
+use super::directory::BINDINGS;
 use super::{Backend, model::*};
 use axum::{
     Extension, Json,
@@ -10,7 +10,6 @@ use rss_mdm_authorization_service::context::RequestAuth;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_management_http::Error;
-use rss_mdm_query::directory::Schema;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -147,5 +146,7 @@ async fn person(
 
 struct DefinitionDirectory;
 impl rss_mdm_http_contract::query::DirectoryOwner for DefinitionDirectory {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        BINDINGS.execution()
+    }
 }

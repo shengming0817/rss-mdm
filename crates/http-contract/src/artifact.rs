@@ -43,6 +43,9 @@ pub fn document(
             mounted.push((listener, endpoint));
         }
     }
+    errors.extend(crate::directory_validation::pairs(
+        mounted.iter().map(|(_, endpoint)| endpoint),
+    ));
     let mut overrides = BTreeMap::new();
     for (listener, endpoint) in &mounted {
         if let Some(binding) = &endpoint.configured_path {
@@ -100,6 +103,12 @@ pub fn document(
         for name in ["path", "query"] { intern(&mut request[name], &mut schemas); }
         if request["body"].is_object() { intern(&mut request["body"]["schema"], &mut schemas); }
         if let Some(headers) = request["headers"].as_object_mut() { for schema in headers.values_mut() { intern(schema, &mut schemas); } }
+        if request["query_owner"]["kind"]=="directory" {
+            let model=request["query_owner"]["schema"]["model"].take();
+            let mut description=json!({"direction":"response","value":model});
+            intern(&mut description,&mut schemas);
+            request["query_owner"]["schema"]["model"]=description;
+        }
         // Rejections are already included in responses; keep one consumer-facing response set.
         request.as_object_mut().expect("request object").remove("rejections");
         let mut responses = serde_json::to_value(&signature.responses).expect("closed response description");

@@ -318,7 +318,7 @@ fn next(n: &identity::Native, id: u32, code: u16, final_message: bool) -> s::Mes
         final_message,
     }
 }
-async fn windows(
+pub(crate) async fn windows(
     c: &Context,
     n: &identity::Native,
 ) -> Result<Arc<rss_mdm_windows_channel::Windows>> {

@@ -238,81 +238,98 @@
         }
       ]
     },
-    "SelfServiceDirectoryProjection": {
+    "SelfServiceDirectoryItem": {
       "additionalProperties": false,
-      "description": "Selected directory fields; resolve returns the complete required descriptor instead.",
+      "description": "One currently authorized capability and its Resource-owned interface.",
       "properties": {
         "capability": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CapabilityDescriptor"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Selected capability interface."
+          "$ref": "#/$defs/CapabilityDescriptor",
+          "description": "Stable capability identity and current callable interface."
         },
         "policyId": {
-          "description": "Selected Policy identity.",
+          "description": "Logical Policy identity.",
           "format": "uuid",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "policyRevision": {
-          "description": "Selected informational configuration revision.",
+          "description": "Informational configuration revision.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "policyVersion": {
-          "description": "Selected informational material version.",
+          "description": "Immutable execution version.",
           "format": "uuid",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "selfService": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SelfServiceMetadata"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Selected presentation and invocation settings."
+          "$ref": "#/$defs/SelfServiceMetadata",
+          "description": "Presentation and invocation settings."
         },
         "subject": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SelfServiceSubject"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Selected qualified subject."
+          "$ref": "#/$defs/SelfServiceSubject",
+          "description": "Qualified subject, rechecked on invocation and execution."
         },
         "task": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SelfServiceTask"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Selected operation-specific interface."
+          "$ref": "#/$defs/SelfServiceTask",
+          "description": "Closed task kind and exact invocation interface."
         }
       },
+      "required": [
+        "capability",
+        "policyId",
+        "policyRevision",
+        "policyVersion",
+        "subject",
+        "selfService",
+        "task"
+      ],
       "type": "object"
+    },
+    "SelfServiceDirectoryProjection": {
+      "additionalProperties": false,
+      "description": "One currently authorized capability and its Resource-owned interface.",
+      "properties": {
+        "capability": {
+          "$ref": "#/$defs/CapabilityDescriptor",
+          "description": "Stable capability identity and current callable interface."
+        },
+        "policyId": {
+          "description": "Logical Policy identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "policyRevision": {
+          "description": "Informational configuration revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "policyVersion": {
+          "description": "Immutable execution version.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "selfService": {
+          "$ref": "#/$defs/SelfServiceMetadata",
+          "description": "Presentation and invocation settings."
+        },
+        "subject": {
+          "$ref": "#/$defs/SelfServiceSubject",
+          "description": "Qualified subject, rechecked on invocation and execution."
+        },
+        "task": {
+          "$ref": "#/$defs/SelfServiceTask",
+          "description": "Closed task kind and exact invocation interface."
+        }
+      },
+      "type": "object",
+      "x-rss-directory-model": {
+        "identity": "rss_mdm_agent_wire::self_service::SelfServiceDirectoryItem",
+        "schema": {
+          "$ref": "#/$defs/SelfServiceDirectoryItem"
+        }
+      }
     },
     "SelfServiceMetadata": {
       "additionalProperties": false,

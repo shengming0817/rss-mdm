@@ -16,7 +16,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
-mod support;
+mod activation;
+pub(super) mod support;
 
 #[tokio::test]
 #[ignore = "T2: real bootstrap identity and dispatched Software installation authorize one device-bound native grant"]
@@ -117,8 +118,9 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
         service.native_grant(&peer, &input, &request),
         service.native_grant(&peer, &input, &request)
     );
+    let first = first?;
     assert_eq!(
-        serde_json::to_value(first?)?,
+        serde_json::to_value(&first)?,
         serde_json::to_value(replay?)?
     );
     assert_eq!(support::counts(&c).await?, (1, 1));
@@ -172,6 +174,7 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     assert!(hidden.bootstrap.is_none() && hidden.registration.is_none());
     snapshot.rollback().await?;
     pool.close().await;
+    activation::prove(&c, &n, &service, &input, first.grant_id).await?;
     resources.close().await?;
     c.close().await;
     Ok(())

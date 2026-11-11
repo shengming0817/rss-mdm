@@ -138,9 +138,13 @@ async fn members(
 
 struct Batches;
 impl rss_mdm_http_contract::query::DirectoryOwner for Batches {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { queries::BATCH_BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        queries::BATCH_BINDINGS.execution()
+    }
 }
 struct Members;
 impl rss_mdm_http_contract::query::DirectoryOwner for Members {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { queries::MEMBER_BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        queries::MEMBER_BINDINGS.execution()
+    }
 }

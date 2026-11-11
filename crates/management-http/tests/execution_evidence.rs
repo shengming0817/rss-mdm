@@ -172,7 +172,7 @@ fn validator(document: &Value, path: &str) -> jsonschema::Validator {
     jsonschema::validator_for(response_schema(document, path)).unwrap()
 }
 
-fn page(evidence: Option<Evidence>, kind: KindOfOperation) -> Page {
+fn page(evidence: Option<Evidence>, kind: KindOfOperation) -> Page<Item> {
     Page {
         items: vec![Item {
             metadata: Metadata {

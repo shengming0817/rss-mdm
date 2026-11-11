@@ -9,7 +9,10 @@ use rss_mdm_query::{
 };
 use serde_json::Value;
 use sqlx::PgConnection;
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<BindingView>("device_access", &["id"], 64, 100, &[]).expect("Public directory model"));
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<BindingView>("device_access", &["id"], 64, 100, &[])
+        .expect("Public directory model")
+});
 pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
@@ -173,10 +176,55 @@ impl Service {
     }
 }
 
-pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::json("", "b.document"),
-rss_mdm_query_postgres::Source::column("instance", "(b.document->'person'->>'instance') COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("principal", "b.principal::text COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("bindingGeneration", "b.generation"),
-rss_mdm_query_postgres::Source::column("serverState", "b.state COLLATE \"C\""),
-rss_mdm_query_postgres::Source::json("accountIntent", "b.document->'intent'"),
-rss_mdm_query_postgres::Source::json("desired", "b.document->'configuration'")]).expect("Complete public model storage binding"));
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::json("id", "b.document#>'{id}'"),
+                rss_mdm_query_postgres::Source::json("operationId", "b.document#>'{operationId}'"),
+                rss_mdm_query_postgres::Source::json("device", "b.document#>'{device}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "factorGeneration",
+                    "b.document#>'{factorGeneration}'",
+                ),
+                rss_mdm_query_postgres::Source::json("revision", "b.document#>'{revision}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "accountDisposition",
+                    "b.document#>'{accountDisposition}'",
+                ),
+                rss_mdm_query_postgres::Source::json("account", "b.document#>'{account}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "createdByRss",
+                    "b.document#>'{createdByRss}'",
+                ),
+                rss_mdm_query_postgres::Source::json("policy", "b.document#>'{policy}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "policyVersion",
+                    "b.document#>'{policyVersion}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "receivedRevision",
+                    "b.document#>'{receivedRevision}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "appliedRevision",
+                    "b.document#>'{appliedRevision}'",
+                ),
+                rss_mdm_query_postgres::Source::json("effect", "b.document#>'{effect}'"),
+                rss_mdm_query_postgres::Source::column(
+                    "instance",
+                    "(b.document->'person'->>'instance') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "principal",
+                    "b.principal::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("bindingGeneration", "b.generation"),
+                rss_mdm_query_postgres::Source::column("serverState", "b.state COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::json("accountIntent", "b.document->'intent'"),
+                rss_mdm_query_postgres::Source::json("desired", "b.document->'configuration'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

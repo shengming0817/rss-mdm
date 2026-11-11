@@ -60,6 +60,8 @@ pub static AUDIT: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema 
     default_limit: 50,
     max_limit: 200,
     order: "recordedAt DESC, position DESC",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
     context: &[
         "targetId",
         "targetType",
@@ -79,6 +81,8 @@ pub static DEVICE_TIMELINE: rss_mdm_query::window::Schema = rss_mdm_query::windo
     default_limit: 50,
     max_limit: 200,
     order: "recordedAt DESC, position DESC",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
     context: &[
         "targetId",
         "targetType",
@@ -94,6 +98,8 @@ pub static DEVICE_TIMELINE: rss_mdm_query::window::Schema = rss_mdm_query::windo
 };
 /// Diagnostics shares the exact Audit window algorithm and filters, with its own HTTP owner.
 pub static OPERATION_DIAGNOSTICS: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Original operation evidence follows immutable audit and request chronology",
     id: "operation_diagnostics",
     default_limit: AUDIT.default_limit,
     max_limit: AUDIT.max_limit,

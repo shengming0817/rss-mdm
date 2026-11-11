@@ -4,6 +4,7 @@ pub mod artifact;
 pub mod authentication;
 pub mod catalog;
 pub mod collections;
+mod directory_validation;
 pub mod download;
 pub mod module;
 pub mod query;
@@ -81,7 +82,10 @@ pub enum QueryDeclaration {
 }
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum DirectoryRole { List, Statistics }
+pub enum DirectoryRole {
+    List,
+    Statistics,
+}
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct DirectoryDeclaration {
     #[serde(flatten)]
@@ -89,8 +93,18 @@ pub struct DirectoryDeclaration {
     pub role: DirectoryRole,
 }
 impl DirectoryDeclaration {
-    pub fn list(execution: &'static rss_mdm_query::directory::Execution) -> Self { Self { execution, role: DirectoryRole::List } }
-    pub fn statistics(execution: &'static rss_mdm_query::directory::Execution) -> Self { Self { execution, role: DirectoryRole::Statistics } }
+    pub fn list(execution: &'static rss_mdm_query::directory::Execution) -> Self {
+        Self {
+            execution,
+            role: DirectoryRole::List,
+        }
+    }
+    pub fn statistics(execution: &'static rss_mdm_query::directory::Execution) -> Self {
+        Self {
+            execution,
+            role: DirectoryRole::Statistics,
+        }
+    }
 }
 impl QueryDeclaration {
     pub fn id(self) -> &'static str {
@@ -176,12 +190,20 @@ pub enum Violation {
     MissingQuery(String),
     InvalidQueryDescription(String),
     MisclassifiedCollection(String),
+    InvalidDirectory(String),
 }
 /// The expected resource set is independent from the endpoints; deleting both a list and
 /// its descriptor cannot erase its resource's required operation.
 pub fn validate(endpoints: &[Endpoint], expected: &[&Resource]) -> Vec<Violation> {
     let mut violations = validate_ownership(endpoints, expected);
     for endpoint in endpoints {
+        if let EndpointContract::Product(signature) = &endpoint.contract {
+            violations.extend(
+                directory_validation::signature(signature)
+                    .into_iter()
+                    .map(Violation::InvalidDirectory),
+            );
+        }
         if let EndpointContract::Product(signature) = &endpoint.contract
             && signature.collection != endpoint.operations.contains(&Operation::List)
         {
@@ -198,6 +220,11 @@ pub fn validate(endpoints: &[Endpoint], expected: &[&Resource]) -> Vec<Violation
             violations.push(Violation::MissingQuery(endpoint.resource.id.into()));
         }
     }
+    violations.extend(
+        directory_validation::pairs(endpoints)
+            .into_iter()
+            .map(Violation::InvalidDirectory),
+    );
     violations
 }
 /// Static registration proves ownership; mounted descriptors additionally prove field binding.

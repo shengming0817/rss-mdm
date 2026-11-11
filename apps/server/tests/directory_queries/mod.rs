@@ -1,4 +1,10 @@
 //! Real management routes and PostgreSQL owners. This proof does not exercise device effects.
+mod certificates;
+mod coverage;
+pub(super) mod history;
+mod materials;
+mod metadata;
+mod owners;
 mod seed;
 use crate::authority_t2_support::Context;
 use anyhow::{Context as _, Result};
@@ -77,13 +83,19 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let manager = c
         .account(&[
             P::ResourceRead,
+            P::SoftwareRead,
+            P::ReleaseRead,
+            P::AgentEnrollmentRead,
+            P::UserAttributeDefinitionsRead,
             P::GroupRead,
             P::GroupWrite,
             P::InventoryRead,
             P::InventorySensitiveRead,
             P::PolicyRead,
+            P::OperationRead,
             P::ComplianceRuleRead,
             P::CertificateArchiveRead,
+            P::Credentials,
             P::WebhookRead,
             P::RegistrationConfigurationRead,
             P::UserGroupRead,
@@ -91,17 +103,25 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         ])
         .await?;
     let proof = c.authenticate(&manager).await?;
-    let fixtures = seed::all(&c, &proof).await?;
+    let mut fixtures = seed::all(&c, &proof).await?;
+    metadata::seed(&c, &proof, &mut fixtures.cases).await?;
+    owners::seed(&c, &proof, &mut fixtures.cases).await?;
+    certificates::seed(&c, &proof, &mut fixtures.cases).await?;
+    let recovery = materials::seed(&c, &mut fixtures.cases).await?;
+    let history = history::seed(&c, &proof).await?;
     let ordinary = c.account(&[P::InventoryRead]).await?;
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
-    let config = serde_json::from_value(crate::host_t2_support::configuration(
+    let mut config = crate::host_t2_support::configuration(
         &c.inputs,
         "shared",
         c.tenant,
         address,
         Uuid::new_v4(),
-    )?)?;
+    )?;
+    config["recovery_credentials"] = recovery;
+    config["publication"]["sources"] = json!([{"name":"private","credentials":{},"target":{"Winget":{"base":"https://mdm.example.test/api/v1/software/native/sources/private/","artifacts_base":"https://mdm.example.test/api/v1/software/native/sources/private/artifacts/"}}}]);
+    let config = serde_json::from_value(config)?;
     let access::credential::RequestCredential::Cookie(cookie) = manager.credential()? else {
         anyhow::bail!("cookie fixture required")
     };
@@ -145,7 +165,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         let mut failures = Vec::new();
         for (path, filter, expected) in &fixtures.cases {
             match http.selected(path, filter).await {
-                Ok(item) if item["id"] == *expected || item["key"] == *expected => (),
+                Ok(item) if ["id","key","configurationId","source","entryId","account","serial","fieldId","version","principalId", "attempt", "operationId", "releaseId"].iter().any(|key|item[*key]==*expected) => (),
                 Ok(item) => failures.push(format!("{path}: wrong result {item}")),
                 Err(error) => failures.push(error.to_string()),
             }
@@ -165,6 +185,16 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
                 assert_eq!(ordinary_http.selected(path,filter).await?["key"],*expected);
             }
         }
+        let (status,cross_target)=http.get("/api/v1/agent-configurations",&[("filter","createdBy==DirectoryTarget;platform==windows;architecture==aarch64")]).await?;
+        assert_eq!(status,200,"{cross_target}");assert_eq!(cross_target["items"],json!([]));
+        history::exercise(&c,&http,&ordinary_http,&history).await?;
+        coverage::check(&fixtures.cases)?;
+        let mut tx=crate::command_runtime_t2_support::seed_transaction(&c).await?;
+        sqlx::query("UPDATE mdm_software_release.aggregates SET directory=jsonb_set(directory,'{outcome}','\"corrupt\"') WHERE tenant_id=$1::uuid AND id='retained-publication'").bind(c.tenant.to_string()).execute(&mut *tx).await?;tx.commit().await?;
+        let (status,_)=http.get("/api/v1/software/publications",&[("filter","id==retained-publication")]).await?;
+        assert!(status>=500,"a corrupt publication projection cannot be returned");
+        let mut tx=crate::command_runtime_t2_support::seed_transaction(&c).await?;
+        sqlx::query("UPDATE mdm_software_release.aggregates SET directory=jsonb_set(directory,'{outcome}','\"pending\"') WHERE tenant_id=$1::uuid AND id='retained-publication'").bind(c.tenant.to_string()).execute(&mut *tx).await?;tx.commit().await?;
         bounded_sort_pages(&http).await?;
         text_range_boundaries(&http).await?;
         for filter in ["presentation.name=icontains=σ", "presentation.name=icontains=ς", "presentation.name=icontains='.'", "presentation.name=icontains='[*]'", "id=icontains='/'"] {
@@ -295,7 +325,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         assert_eq!(status,200,"{body}");
         seed::saved_projection(&c,saved,None,3).await?;
         let (_,nulls)=http.get("/api/v1/resources", &[("filter","activeVersion=isnull=true"),("limit","100")]).await?;
-        assert_eq!(nulls["items"].as_array().unwrap().len(),19);
+        assert_eq!(nulls["items"].as_array().unwrap().len(),20);
         assert!(nulls["items"].as_array().unwrap().iter().all(|v|v["activeVersion"].is_null()));
         assert!(nulls["items"].as_array().unwrap().iter().any(|v|v["id"]=="a-directory-script"));
         assert_eq!(http.get("/api/v1/resources",&[("sort","presentation.description")]).await?.0,400);

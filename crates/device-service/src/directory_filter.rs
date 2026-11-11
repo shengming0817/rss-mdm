@@ -15,7 +15,7 @@ pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
       .expect("Public device-view model")
 });
 #[derive(schemars::JsonSchema)]
-#[serde(rename_all="camelCase")]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct Selectors {
     status: rss_mdm_registration_service::device::directory::Status,
@@ -26,16 +26,55 @@ struct Selectors {
     search: String,
 }
 fn source_field(name: &str) -> rss_mdm_query::Result<()> {
-    if matches!(name,"key"|"reference.kind"|"reference.id"|"association.id"|"association.version"|"association.evidence"|"association.confirmedBy"|"association.confirmedAt"|"association.revokedBy"|"association.revokedAt"|"association.reason"|"status"|"assetState"|"channel"|"source"|"platform"|"search") { Ok(()) } else { Err(rss_mdm_query::Error::Invalid) }
+    if matches!(
+        name,
+        "key"
+            | "reference.kind"
+            | "reference.id"
+            | "association.id"
+            | "association.version"
+            | "association.evidence"
+            | "association.confirmedBy"
+            | "association.confirmedAt"
+            | "association.revokedBy"
+            | "association.revokedAt"
+            | "association.reason"
+            | "status"
+            | "assetState"
+            | "channel"
+            | "source"
+            | "platform"
+            | "search"
+    ) {
+        Ok(())
+    } else {
+        Err(rss_mdm_query::Error::Invalid)
+    }
 }
-pub static EXECUTION: std::sync::LazyLock<rss_mdm_query::directory::Execution> = std::sync::LazyLock::new(|| rss_mdm_query::directory::Execution::bind(&SCHEMA,SCHEMA.fields().iter().filter(|f|f.filter || f.sort).map(|f| { source_field(&f.name).expect("Complete device view relation dispatch"); f.name.as_str() })).expect("Device view binding"));
+pub static EXECUTION: std::sync::LazyLock<rss_mdm_query::directory::Execution> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query::directory::Execution::bind(
+            &SCHEMA,
+            SCHEMA
+                .fields()
+                .iter()
+                .filter(|f| f.filter || f.sort)
+                .map(|f| {
+                    source_field(&f.name).expect("Complete device view relation dispatch");
+                    f.name.as_str()
+                }),
+        )
+        .expect("Device view binding")
+    });
 pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
     let mut q = SCHEMA.parse(raw)?;
     q.default_filter("assetState", "active")?;
     Ok(q)
 }
 pub(super) fn predicate(q: &Query) -> crate::Result<String> {
-    EXECUTION.require(q.schema()).map_err(|_|crate::Error::Malformed)?;
+    EXECUTION
+        .require(q.schema())
+        .map_err(|_| crate::Error::Malformed)?;
     fn expr(e: &Expression<String, serde_json::Value>) -> crate::Result<String> {
         Ok(match e {
             Expression::And(v) | Expression::Or(v) => format!(
@@ -61,15 +100,29 @@ pub(super) fn predicate(q: &Query) -> crate::Result<String> {
                 {
                     return Err(crate::Error::Malformed);
                 }
-                source_field(field).map_err(|_|crate::Error::Malformed)?;
-                let array = field=="search" || SCHEMA.field(field).map_err(|_|crate::Error::Malformed)?.kind.collection();
+                source_field(field).map_err(|_| crate::Error::Malformed)?;
+                let array = field == "search"
+                    || SCHEMA
+                        .field(field)
+                        .map_err(|_| crate::Error::Malformed)?
+                        .kind
+                        .collection();
                 let path = format!(
                     "$.{}{}",
-                    field.split('.').map(serde_json::to_string).collect::<std::result::Result<Vec<_>,_>>().map_err(|_|crate::Error::Malformed)?.join("."),
+                    field
+                        .split('.')
+                        .map(serde_json::to_string)
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(|_| crate::Error::Malformed)?
+                        .join("."),
                     if array { "[*]" } else { "" }
                 );
-                if matches!(operator,Operator::IsNull|Operator::IsNotNull) {
-                    return Ok(if *operator==Operator::IsNull { format!("(!exists({path}) || {path} == null)") } else { format!("(exists({path}) && {path} != null)") });
+                if matches!(operator, Operator::IsNull | Operator::IsNotNull) {
+                    return Ok(if *operator == Operator::IsNull {
+                        format!("(!exists({path}) || {path} == null)")
+                    } else {
+                        format!("(exists({path}) && {path} != null)")
+                    });
                 }
                 let mut terms = Vec::new();
                 for v in values {

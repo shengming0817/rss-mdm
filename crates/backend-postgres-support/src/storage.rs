@@ -188,9 +188,16 @@ impl BackendStorage {
                     directory,
                 },
             ) => (document, Some(directory)),
-            (crate::BackendKind::SoftwareRelease, AggregateDocument::SoftwareRelease { document, directory }) => (document, Some(directory)),
+            (
+                crate::BackendKind::SoftwareRelease,
+                AggregateDocument::SoftwareRelease {
+                    document,
+                    directory,
+                },
+            ) => (document, Some(directory)),
             (crate::BackendKind::Resource | crate::BackendKind::SoftwareRelease, _)
-            | (_, AggregateDocument::Resource { .. } | AggregateDocument::SoftwareRelease { .. }) => {
+            | (_, AggregateDocument::Resource { .. } | AggregateDocument::SoftwareRelease { .. }) =>
+            {
                 return Err(self.fault("db::write-payload"));
             }
             (_, AggregateDocument::Canonical(document)) => (document, None),

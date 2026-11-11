@@ -44,7 +44,16 @@ pub struct Operation {
     pub instance: String,
     pub operation_id: Uuid,
 }
-pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Operation>("windows_signing_recovery_operations", &["actor", "operationId"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
+pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Operation>(
+        "windows_signing_recovery_operations",
+        &["actor", "operationId"],
+        rss_mdm_query::DEFAULT_PAGE_LIMIT,
+        rss_mdm_query::MAX_PAGE_LIMIT,
+        &[],
+    )
+    .expect("Public directory model")
+});
 fn db(_: sqlx::Error) -> Error {
     Error::Storage
 }
@@ -131,7 +140,8 @@ pub async fn operations_in(
         .push("::uuid AND signing_recovery_attempt=")
         .push_bind(attempt)
         .push(" AND phase='signing_recover'");
-    rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*OPERATION_BINDINGS).map_err(query_error)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*OPERATION_BINDINGS)
+        .map_err(query_error)?;
     let rows: Vec<serde_json::Value> = sql.build_query_scalar().fetch_all(c).await.map_err(db)?;
     let rows = rows
         .into_iter()
@@ -186,6 +196,18 @@ pub async fn operation_in(
     .transpose()
 }
 
-pub static OPERATION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&OPERATIONS, &[rss_mdm_query_postgres::Source::required_column("actor", "actor COLLATE \"C\""),
-rss_mdm_query_postgres::Source::required_column("operationId", "operation::text COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("instance", "instance COLLATE \"C\"")]).expect("Complete public model storage binding"));
+pub static OPERATION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &OPERATIONS,
+            &[
+                rss_mdm_query_postgres::Source::required_column("actor", "actor COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::required_column(
+                    "operationId",
+                    "operation::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("instance", "instance COLLATE \"C\""),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

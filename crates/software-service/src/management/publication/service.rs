@@ -119,29 +119,33 @@ pub(super) fn view(
         }
         .to_owned()
     });
-    Ok(wire::Publication { summary: wire::PublicationSummary {
-        id,
-        revision: snapshot.revision,
-        target,
-        resource,
-        version,
-        publication: p.id().digest().bytes(),
-        content_digest: snapshot.content.digest().bytes(),
-        manifest_digest: snapshot.content.manifest().bytes(),
-        target_digest: p.binding.target_digest.bytes(),
-        attempt: p.attempt,
-        outcome: match p.outcome {
-            rel::PublicationOutcome::Pending => "pending",
-            rel::PublicationOutcome::Reported(rel::PublicationResult::Unknown(_)) => "unknown",
-            rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_)) => {
-                "not_applied"
+    Ok(wire::Publication {
+        summary: wire::PublicationSummary {
+            id,
+            revision: snapshot.revision,
+            target,
+            resource,
+            version,
+            publication: p.id().digest().bytes(),
+            content_digest: snapshot.content.digest().bytes(),
+            manifest_digest: snapshot.content.manifest().bytes(),
+            target_digest: p.binding.target_digest.bytes(),
+            attempt: p.attempt,
+            outcome: match p.outcome {
+                rel::PublicationOutcome::Pending => "pending",
+                rel::PublicationOutcome::Reported(rel::PublicationResult::Unknown(_)) => "unknown",
+                rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_)) => {
+                    "not_applied"
+                }
+                rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_)) => {
+                    "published"
+                }
             }
-            rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_)) => "published",
-        }
-        .into(),
-        withdrawn: snapshot.withdrawn || withdrawal.is_some(),
-        withdrawal,
-        }, document,
+            .into(),
+            withdrawn: snapshot.withdrawn || withdrawal.is_some(),
+            withdrawal,
+        },
+        document,
     })
 }
 

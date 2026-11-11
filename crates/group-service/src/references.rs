@@ -13,6 +13,8 @@ pub static SCHEMA: window::Schema = window::Schema {
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "kind, id",
+    purpose: rss_mdm_query::window::Purpose::References,
+    reason: "Authorized reference traversal retains owner identity and version coordinates",
     context: &[],
 };
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, schemars::JsonSchema)]

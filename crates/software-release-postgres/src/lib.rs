@@ -39,3 +39,12 @@ pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
 
 /// Current installation permissions and objects of this owner.
 pub const RELATIONS_SQL: &str = include_str!("../migrations/relations.sql");
+
+/// Confirm a selected directory projection still represents the restored publication facts.
+/// Consumers check this before returning selected rows or issuing a continuation.
+pub fn directory_matches(
+    publication: &rss_mdm_software_release::Publication,
+    projection: &serde_json::Value,
+) -> bool {
+    codec::directory(publication) == *projection
+}

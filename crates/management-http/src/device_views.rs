@@ -194,17 +194,14 @@ async fn statistics(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     query: rss_mdm_http_contract::query::OwnedQuery<
-        rss_mdm_http_contract::query::Statistics<DeviceStatisticsQuery>,
+        rss_mdm_http_contract::query::Statistics<DeviceDirectoryQuery>,
     >,
 ) -> Result<Json<rss_mdm_device_service::view_response::StatisticsResponse>, Error> {
     audit.set_action(
         "device_view_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    let mut query = query.parse().map_err(|_| Error::Malformed)?;
-    query
-        .default_filter("assetState", "active")
-        .map_err(|_| Error::Malformed)?;
+    let query = query.parse().map_err(|_| Error::Malformed)?;
     Ok(Json(
         s.statistics(
             &a.proof,
@@ -496,18 +493,17 @@ impl rss_mdm_http_contract::query::WindowOwner for ChangesQuery {
 
 struct AssociationListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for AssociationListQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_device_service::association_directory::BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_device_service::association_directory::BINDINGS.execution()
+    }
 }
 
 struct DeviceDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for DeviceDirectoryQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { &rss_mdm_device_service::directory::EXECUTION }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        &rss_mdm_device_service::directory::EXECUTION
+    }
     fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
         rss_mdm_device_service::directory::parse(raw)
     }
-}
-
-struct DeviceStatisticsQuery;
-impl rss_mdm_http_contract::query::DirectoryOwner for DeviceStatisticsQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { &rss_mdm_device_service::directory::EXECUTION }
 }

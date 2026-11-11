@@ -5,7 +5,10 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::directory::{Query, Schema};
 
-pub static SOURCES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<SourceRow>("software_sources", &["id", "revision"], 20, 100, &[]).expect("Public directory model"));
+pub static SOURCES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<SourceRow>("software_sources", &["id", "revision"], 20, 100, &[])
+        .expect("Public directory model")
+});
 pub async fn sources<C: ManagementContentPort>(
     app: &Access<C>,
     p: &AuthorizedPrincipal,
@@ -85,7 +88,12 @@ pub async fn versions<C: ManagementContentPort>(
     audit: &RequestAudit,
     id: &str,
     q: Query,
-) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<rss_mdm_resource::directory::VersionRow>>, Error> {
+) -> Result<
+    rss_mdm_query::Page<
+        rss_mdm_query::directory::Projection<rss_mdm_resource::directory::VersionRow>,
+    >,
+    Error,
+> {
     q.require_schema(&rss_mdm_resource::directory::VERSION_SCHEMA)
         .map_err(query_error)?;
     rss_mdm_resource::Id::new(id).map_err(|_| Error::Malformed)?;
@@ -147,3 +155,34 @@ pub enum ProtocolKind {
     WingetCommunity,
     BrewTap,
 }
+
+pub static SOURCE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SOURCES,
+            &[
+                rss_mdm_query_postgres::Source::required_column("id", "id COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::required_column(
+                    "revision",
+                    "revision COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "protocol",
+                    "(definition->'protocol'->>'kind') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "state",
+                    "(lifecycle->>'state') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("snapshot.id", "id COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column(
+                    "snapshot.revision",
+                    "revision COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::json("snapshot.sha256", "lifecycle->'digest'"),
+                rss_mdm_query_postgres::Source::json("source", "definition"),
+                rss_mdm_query_postgres::Source::json("lifecycle", "lifecycle"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

@@ -235,6 +235,71 @@ pub async fn verify(
     ))
     .await?;
     assert_eq!(accepted.device, receipt.device);
+    let page = material::success::<serde_json::Value>(
+        client
+            .get(format!(
+                "{base}/api/v1/devices/{}/device-access",
+                receipt.device
+            ))
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", session_secret.expose()),
+            )
+            .query(&[(
+                "filter",
+                format!("id=={binding};desired.windows.kind==whfb"),
+            )])
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .context("DA binding directory")?
+            .len(),
+        1
+    );
+    assert_eq!(page["items"][0]["id"], binding.to_string());
+    let mut tx = c.seed().await?;
+    for name in ["directory-target", "directory-sentinel"] {
+        let rp = pg::enterprise::RelyingParty {
+            id: name.into(),
+            revision: 1,
+            enabled: true,
+            callback: format!("https://{name}.example.test/callback"),
+            target_fingerprint: "a".repeat(64),
+            capabilities: vec![],
+        };
+        sqlx::query("INSERT INTO rss_da.relying_parties(tenant_id,id,revision,document) VALUES($1::uuid,$2,1,$3)").bind(c.tenant.to_string()).bind(name).bind(serde_json::to_value(rp)?).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    let page = material::success::<serde_json::Value>(
+        client
+            .get(format!(
+                "{base}/api/v1/device-access/enterprise/configuration"
+            ))
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", session_secret.expose()),
+            )
+            .query(&[(
+                "filter",
+                "kind==relying_party;value.id==directory-target;value.enabled==true",
+            )])
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .context("enterprise directory")?
+            .len(),
+        1
+    );
+    assert_eq!(page["items"][0]["id"], "rp:directory-target");
+
     let settled = counts(c).await?;
     assert_eq!(settled.0, before.0 + 1);
     assert_eq!(settled.1, before.1 + 1);

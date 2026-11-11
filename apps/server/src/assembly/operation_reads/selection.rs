@@ -7,9 +7,14 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 const BATCH: usize = 1000;
 const DOCUMENT: &str = "jsonb_build_object('id',id,'kind',kind,'device',device,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status)";
-fn metadata(name: &str) -> bool { !name.starts_with("authorization.") && !name.starts_with("reauthorization.") }
+fn metadata(name: &str) -> bool {
+    !name.starts_with("authorization.") && !name.starts_with("reauthorization.")
+}
 pub(super) fn classified(q: &Query) -> bool {
-    q.schema().fields().iter().any(|f| !metadata(&f.name) && q.mentions(&f.name))
+    q.schema()
+        .fields()
+        .iter()
+        .any(|f| !metadata(&f.name) && q.mentions(&f.name))
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -30,7 +35,8 @@ async fn candidates(
     let mut sql = relation(tenant, allowed, limit, *source_rows);
     sql.push(",selected AS(SELECT * FROM visible WHERE true");
     rss_mdm_query_postgres::prefilter(&mut sql, q, &*BINDINGS, metadata).map_err(query_error)?;
-    rss_mdm_query_postgres::page_limit(&mut sql, q, after, &*BINDINGS, size).map_err(query_error)?;
+    rss_mdm_query_postgres::page_limit(&mut sql, q, after, &*BINDINGS, size)
+        .map_err(query_error)?;
     sql.push(") SELECT b.rows AS source_rows,CASE WHEN s.id IS NOT NULL THEN ").push(DOCUMENT).push(" END AS document,coalesce(s.input_bytes,0)::bigint AS input_bytes FROM source_budget b LEFT JOIN selected s ON true");
     rss_mdm_query_postgres::order(&mut sql, q, &*BINDINGS).map_err(query_error)?;
     let rows = {

@@ -16,6 +16,8 @@ pub static PREVIEW_SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "object key ASC",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Preview rows belong to one frozen Policy evaluation and retain its object-key continuation",
     context: &[],
 };
 /// Stable query identity for Policy's complete-object assignment pages.
@@ -24,6 +26,8 @@ pub static ASSIGNMENTS_SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::wi
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "object key ASC",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Assignments are the result of a fixed Policy scope evaluation",
     context: &[],
 };
 

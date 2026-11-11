@@ -72,6 +72,8 @@ pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "kind, id, relation",
+    purpose: rss_mdm_query::window::Purpose::References,
+    reason: "Authorized reference traversal retains owner identity and version coordinates",
     context: &["kind", "relation"],
 };
 #[derive(Clone, Debug)]

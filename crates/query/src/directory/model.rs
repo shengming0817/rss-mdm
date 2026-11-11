@@ -40,7 +40,7 @@ impl Schema {
         schema.model_identity = T::schema_id().into_owned();
         Ok(schema)
     }
-    pub fn from_model(
+    fn from_model(
         id: &'static str,
         keys: &'static [&'static str],
         default_limit: u16,
@@ -59,7 +59,7 @@ impl Schema {
         };
         compiler.walk(model, "", false, 0)?;
         for exclusion in exclusions {
-            if exclusion.reason.is_empty() || !compiler.used.contains(exclusion.path) {
+            if exclusion.reason.trim().is_empty() || !compiler.used.contains(exclusion.path) {
                 return Err(BuildError::Exclusion(exclusion.path.into()));
             }
         }
@@ -93,6 +93,20 @@ impl Schema {
         field.validator = Some(validate);
         Ok(self)
     }
+    /// Canonicalize an explicitly domain-owned operand before comparing it with stored facts.
+    pub fn normalize_with(
+        mut self,
+        name: &str,
+        normalize: fn(&Value) -> Option<Value>,
+    ) -> Result<Self> {
+        let field = self
+            .fields
+            .iter_mut()
+            .find(|f| f.name == name)
+            .ok_or_else(|| BuildError::Unsupported(name.into()))?;
+        field.normalizer = Some(normalize);
+        Ok(self)
+    }
     pub fn no_range(mut self, name: &str) -> Result<Self> {
         let field = self
             .fields
@@ -104,25 +118,40 @@ impl Schema {
     }
     /// Additional business selectors are typed independently of the response, never aliases.
     pub fn with_selectors<T: JsonSchema>(mut self, reason: &'static str) -> Result<Self> {
-        if reason.trim().is_empty() { return Err(BuildError::Configuration); }
-        let model = SchemaSettings::draft2020_12().for_serialize().into_generator()
-            .into_root_schema_for::<T>().to_value();
-        let mut compiler = Compiler { root: &model, fields: BTreeMap::new(), exclusions: &[], used: BTreeSet::new() };
+        if reason.trim().is_empty() {
+            return Err(BuildError::Configuration);
+        }
+        let model = SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator()
+            .into_root_schema_for::<T>()
+            .to_value();
+        let mut compiler = Compiler {
+            root: &model,
+            fields: BTreeMap::new(),
+            exclusions: &[],
+            used: BTreeSet::new(),
+        };
         compiler.walk(&model, "", false, 0)?;
         for (name, mut field) in compiler.fields {
-            if !field.filter || self.fields.iter().any(|f| f.name == name) { return Err(BuildError::Conflict(name)); }
+            if !field.filter || self.fields.iter().any(|f| f.name == name) {
+                return Err(BuildError::Conflict(name));
+            }
             field.output = false;
             field.sort = false;
             field.reason = Some(reason.into());
             self.selectors.push(name);
             self.fields.push(field);
         }
-        self.fields.sort_by(|a,b| a.name.cmp(&b.name));
+        self.fields.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(self)
     }
     /// Restrict a domain selector whose semantics support only exact membership.
     pub fn exact(mut self, name: &str) -> Result<Self> {
-        let field = self.fields.iter_mut().find(|f| f.name == name)
+        let field = self
+            .fields
+            .iter_mut()
+            .find(|f| f.name == name)
             .ok_or_else(|| BuildError::Unsupported(name.into()))?;
         field.exact = true;
         field.sort = false;
@@ -131,15 +160,24 @@ impl Schema {
     /// A computed subtree may filter after bounded qualification without a storage seek order.
     pub fn no_sort(mut self, path: &str, reason: &'static str) -> Result<Self> {
         let mut found = false;
-        if reason.trim().is_empty() { return Err(BuildError::Configuration); }
+        if reason.trim().is_empty() {
+            return Err(BuildError::Configuration);
+        }
         for field in &mut self.fields {
-            if field.name == path || field.name.strip_prefix(path).is_some_and(|s| s.starts_with('.')) {
+            if field.name == path
+                || field
+                    .name
+                    .strip_prefix(path)
+                    .is_some_and(|s| s.starts_with('.'))
+            {
                 found = true;
                 field.sort = false;
                 field.reason = Some(reason.into());
             }
         }
-        if !found { return Err(BuildError::Unsupported(path.into())); }
+        if !found {
+            return Err(BuildError::Unsupported(path.into()));
+        }
         Ok(self)
     }
 }
@@ -156,26 +194,23 @@ impl Compiler<'_> {
             return Err(BuildError::Unsupported(path.into()));
         }
         if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-            let target = reference.strip_prefix('#').and_then(|p| self.root.pointer(p))
+            let target = reference
+                .strip_prefix('#')
+                .and_then(|p| self.root.pointer(p))
                 .ok_or_else(|| BuildError::Unsupported(path.into()))?;
             self.walk(target, path, nullable, depth + 1)?;
-            if let Some(field) = self.fields.get_mut(path) { copy_constraints(&mut field.constraints, schema); }
+            if let Some(field) = self.fields.get_mut(path) {
+                copy_constraints(&mut field.constraints, schema);
+            }
             return Ok(());
         }
         if let Some(exclusion) = self.exclusions.iter().find(|e| e.path == path) {
             self.used.insert(exclusion.path);
-            let mut field = match scalar_kind(self.root, schema, path, depth + 1) {
-                Ok((kind, constraints)) => { let mut f = Field::scalar(path, kind); f.constraints = constraints; f },
-                Err(_) => Field::output(path),
-            }.excluded(exclusion.reason);
+            let (kind, constraints, optional) = excluded_shape(self.root, schema, path, depth + 1)?;
+            let mut field = Field::scalar(path, kind).excluded(exclusion.reason);
+            field.constraints = constraints;
             field.output = !path.contains('.');
-            field.nullable = nullable || schema.get("type").and_then(Value::as_array)
-                .is_some_and(|types| types.iter().any(|t| t == "null"))
-                || schema.get("anyOf").or_else(|| schema.get("oneOf")).and_then(Value::as_array)
-                    .is_some_and(|branches| branches.iter().any(|s| s["type"] == "null"));
-            if schema["type"] == "array" {
-                field.kind = Kind::ObjectSet;
-            }
+            field.nullable = nullable || optional;
             return self.insert(field);
         }
         let null = nullable
@@ -438,9 +473,127 @@ fn copy_constraints(target: &mut Value, schema: &Value) {
     if !target.is_object() {
         *target = Value::Object(Default::default());
     }
-    for key in ["enum", "minimum", "maximum", "minLength", "maxLength", "x-rss-maxUtf8Bytes"] {
+    for key in [
+        "enum",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+        "x-rss-maxUtf8Bytes",
+    ] {
         if let Some(value) = schema.get(key) {
             target[key] = value.clone();
         }
+    }
+}
+
+// Excluding an executable capability must not change its public type or optionality.
+fn excluded_shape(
+    root: &Value,
+    value: &Value,
+    path: &str,
+    depth: usize,
+) -> Result<(Kind, Value, bool)> {
+    if depth > 32 {
+        return Err(BuildError::Unsupported(path.into()));
+    }
+    if let Some(reference) = value.get("$ref").and_then(Value::as_str) {
+        return excluded_shape(
+            root,
+            reference
+                .strip_prefix('#')
+                .and_then(|p| root.pointer(p))
+                .ok_or_else(|| BuildError::Unsupported(path.into()))?,
+            path,
+            depth + 1,
+        );
+    }
+    let nullable = value
+        .get("type")
+        .and_then(Value::as_array)
+        .is_some_and(|v| v.iter().any(|t| t == "null"));
+    for keyword in ["anyOf", "oneOf"] {
+        if let Some(branches) = value.get(keyword).and_then(Value::as_array) {
+            let mut found: Option<(Kind, Value, bool)> = None;
+            let mut null = nullable;
+            for branch in branches {
+                if branch["type"] == "null" {
+                    null = true;
+                    continue;
+                }
+                let (kind, constraints, optional) = excluded_shape(root, branch, path, depth + 1)?;
+                null |= optional;
+                found = Some(match found {
+                    None => (kind, constraints, null),
+                    Some((old, _, _)) => (
+                        merge(&old, &kind).ok_or_else(|| BuildError::Conflict(path.into()))?,
+                        Value::Null,
+                        null,
+                    ),
+                });
+            }
+            return found
+                .map(|(k, c, _)| (k, c, null))
+                .ok_or_else(|| BuildError::Unsupported(path.into()));
+        }
+    }
+    if value["type"] == "array"
+        || value
+            .get("type")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().any(|t| t == "array"))
+    {
+        let (kind, constraints) = scalar_kind(root, &value["items"], path, depth + 1)
+            .unwrap_or((Kind::Object, Value::Null));
+        let kind = match kind {
+            Kind::Text => Kind::TextSet,
+            Kind::Uuid => Kind::UuidSet,
+            Kind::Integer => Kind::IntegerSet,
+            Kind::Number => Kind::NumberSet,
+            Kind::Boolean => Kind::BooleanSet,
+            Kind::Enum(v) => Kind::EnumSet(v),
+            _ => Kind::ObjectSet,
+        };
+        return Ok((kind, constraints, nullable));
+    }
+    let (kind, constraints) =
+        scalar_kind(root, value, path, depth + 1).unwrap_or((Kind::Object, Value::Null));
+    Ok((kind, constraints, nullable))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn directory_rejects_paths_outside_the_query_grammar_budget() {
+        let child = "c".repeat(100);
+        let parent = "p".repeat(50);
+        let model = serde_json::json!({"type":"object","required":["id"],"properties":{"id":{"type":"integer"},parent:{"type":"object","properties":{child:{"type":"string"}}}}});
+        assert!(Schema::from_model("long_path", &["id"], 1, 10, &model, &[]).is_err());
+    }
+
+    #[test]
+    fn documented_closed_map_keys_keep_their_declared_types() {
+        let model = serde_json::json!({"type":"object","required":["id"],"properties":{
+            "id":{"type":"string","format":"uuid"},
+            "packages":{"type":"object","propertyNames":{"oneOf":[
+                {"type":"string","const":"windows","description":"Windows"},
+                {"type":"string","const":"macos","description":"macOS"}
+            ]},"additionalProperties":{"type":"string","format":"uuid"}}
+        }});
+        let schema = Box::leak(Box::new(
+            Schema::from_model("closed_map", &["id"], 1, 10, &model, &[]).unwrap(),
+        ));
+        assert_eq!(schema.field("packages.windows").unwrap().kind, Kind::Uuid);
+        assert!(
+            schema
+                .parse("filter=packages.linux==00000000-0000-0000-0000-000000000001")
+                .is_err()
+        );
+        assert!(
+            schema
+                .parse("filter=id=gt=00000000-0000-0000-0000-000000000001")
+                .is_ok()
+        );
     }
 }

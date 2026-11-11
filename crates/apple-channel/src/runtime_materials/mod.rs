@@ -521,6 +521,8 @@ pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schem
     default_limit: 64,
     max_limit: 200,
     order: "revision DESC",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
     context: &[],
 };
 async fn history(

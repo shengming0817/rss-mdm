@@ -415,6 +415,8 @@ pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schem
     default_limit: 64,
     max_limit: 100,
     order: "revision desc",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
     context: &[],
 };
 impl Service {
@@ -452,21 +454,54 @@ impl Service {
         .await
     }
     pub async fn configurations(
-        &self, p: &AuthorizedPrincipal, device: Option<&str>, q: &rss_mdm_query::directory::Query,
+        &self,
+        p: &AuthorizedPrincipal,
+        device: Option<&str>,
+        q: &rss_mdm_query::directory::Query,
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Publication>>, Error> {
-        q.require_schema(&policy::DIRECTORY_SCHEMA).map_err(query_error)?;
-        self.read_with_session(p,(self,p,device,q),|ctx,c|Box::pin(async move {
-            let(service,p,device,q)=*ctx;
-            let target=device.map(|device|Target::Device{device:device.into()}).unwrap_or(Target::TenantDefault);
-            authorize(c,p,&target,false,false).await?;
-            let grants=rss_mdm_authorization_service::snapshot_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;
-            if device.is_none() { grants.require_all_devices(p,Permission::OperationRead)?; }
-            policy::lock_publications_on(c,tenant(p)?).await.map_err(fault)?;
-            let binding=q.binding(&("da.configuration.directory",p.tenant_id(),p.instance_id(),p.principal_id(),grants.query_binding(p)?,device)).map_err(query_error)?;
-            let after=q.after(&service.cursor,&binding).map_err(query_error)?;
-            let items=policy::directory_on(c,tenant(p)?,device,q,after.as_ref()).await.map_err(fault)?;
-            q.page_typed(items,&service.cursor,&binding).map_err(query_error)
-        })).await
+        q.require_schema(&policy::DIRECTORY_SCHEMA)
+            .map_err(query_error)?;
+        self.read_with_session(p, (self, p, device, q), |ctx, c| {
+            Box::pin(async move {
+                let (service, p, device, q) = *ctx;
+                let target = device
+                    .map(|device| Target::Device {
+                        device: device.into(),
+                    })
+                    .unwrap_or(Target::TenantDefault);
+                authorize(c, p, &target, false, false).await?;
+                let grants = rss_mdm_authorization_service::snapshot_on(
+                    p.authority_profile(),
+                    c,
+                    p.tenant_id(),
+                    p.instance_id(),
+                )
+                .await?;
+                if device.is_none() {
+                    grants.require_all_devices(p, Permission::OperationRead)?;
+                }
+                policy::lock_publications_on(c, tenant(p)?)
+                    .await
+                    .map_err(fault)?;
+                let binding = q
+                    .binding(&(
+                        "da.configuration.directory",
+                        p.tenant_id(),
+                        p.instance_id(),
+                        p.principal_id(),
+                        grants.query_binding(p)?,
+                        device,
+                    ))
+                    .map_err(query_error)?;
+                let after = q.after(&service.cursor, &binding).map_err(query_error)?;
+                let items = policy::directory_on(c, tenant(p)?, device, q, after.as_ref())
+                    .await
+                    .map_err(fault)?;
+                q.page_typed(items, &service.cursor, &binding)
+                    .map_err(query_error)
+            })
+        })
+        .await
     }
     pub async fn configuration_history(
         &self,

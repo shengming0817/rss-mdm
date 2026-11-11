@@ -4,8 +4,14 @@ use super::*;
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_query::directory::{Query, Schema};
 use serde_json::Value;
-pub static TENANTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Tenant>("tenants", &["tenantId"], 100, 1000, &[]).expect("Public directory model"));
-pub static PROVISIONINGS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Receipt>("provisionings", &["operationId"], 100, 1000, &[]).expect("Public directory model"));
+pub static TENANTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Tenant>("tenants", &["tenantId"], 100, 1000, &[])
+        .expect("Public directory model")
+});
+pub static PROVISIONINGS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Receipt>("provisionings", &["operationId"], 100, 1000, &[])
+        .expect("Public directory model")
+});
 fn error(e: rss_mdm_query::Error) -> Reason {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Reason::Conflict,
@@ -50,7 +56,8 @@ pub(super) async fn page(
         let mut sql = sqlx::QueryBuilder::new(
             "SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision'",
         );
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*PROVISIONING_BINDINGS).map_err(error)?;
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*PROVISIONING_BINDINGS)
+            .map_err(error)?;
         let values = sql
             .build_query_scalar::<Value>()
             .fetch_all(c)
@@ -67,7 +74,8 @@ pub(super) async fn page(
         let mut sql = sqlx::QueryBuilder::new(
             "SELECT t.tenant_id::text FROM public.mdm_tenants t JOIN rss_transactional_messaging.tenant_epoch e USING(tenant_id) CROSS JOIN public.mdm_installation i WHERE NOT t.deleted",
         );
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*TENANT_BINDINGS).map_err(error)?;
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*TENANT_BINDINGS)
+            .map_err(error)?;
         let ids: Vec<String> = sql
             .build_query_scalar()
             .fetch_all(&mut *c)
@@ -90,13 +98,38 @@ pub(super) async fn page(
     })
 }
 
-pub static PROVISIONING_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&PROVISIONINGS, &[rss_mdm_query_postgres::Source::json("", "receipt")]).expect("Complete public model storage binding"));
+pub static PROVISIONING_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &PROVISIONINGS,
+            &[rss_mdm_query_postgres::Source::json("", "receipt")],
+        )
+        .expect("Complete public model storage binding")
+    });
 
-pub static TENANT_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&TENANTS, &[rss_mdm_query_postgres::Source::required_column("tenantId", "t.tenant_id::text COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("name", "t.name COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("notes", "t.notes COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("revision", "t.revision"),
-rss_mdm_query_postgres::Source::column("initialEpoch", "t.initial_epoch"),
-rss_mdm_query_postgres::Source::column("currentEpoch", "e.epoch"),
-rss_mdm_query_postgres::Source::column("management", "(t.tenant_id=i.management_tenant_id)"),
-rss_mdm_query_postgres::Source::column("deletable", "NOT(t.used OR t.deleted OR t.tenant_id=i.management_tenant_id)")]).expect("Complete public model storage binding"));
+pub static TENANT_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &TENANTS,
+            &[
+                rss_mdm_query_postgres::Source::required_column(
+                    "tenantId",
+                    "t.tenant_id::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("name", "t.name COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("notes", "t.notes COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("revision", "t.revision"),
+                rss_mdm_query_postgres::Source::column("initialEpoch", "t.initial_epoch"),
+                rss_mdm_query_postgres::Source::column("currentEpoch", "e.epoch"),
+                rss_mdm_query_postgres::Source::column(
+                    "management",
+                    "(t.tenant_id=i.management_tenant_id)",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "deletable",
+                    "NOT(t.used OR t.deleted OR t.tenant_id=i.management_tenant_id)",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

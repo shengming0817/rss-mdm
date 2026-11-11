@@ -74,6 +74,7 @@ pub fn select(
     sql.push("SELECT id,revision,document,digest,directory FROM mdm_resource.aggregates WHERE tenant_id=").push_bind(tenant.to_string()).push("::uuid");
     rss_mdm_query_postgres::append(sql, q, after, &*BINDINGS)
 }
+/// The canonical aggregate projection binds every executable public field.
 pub static BINDINGS: std::sync::LazyLock<Bindings> = std::sync::LazyLock::new(|| {
     Bindings::new(
         &SCHEMA,
@@ -134,4 +135,16 @@ impl ResourceStore {
     }
 }
 
-pub static VERSION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&rss_mdm_resource::directory::VERSION_SCHEMA, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));
+/// Nested versions share one checked execution contract with their HTTP owner.
+pub static VERSION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &rss_mdm_resource::directory::VERSION_SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::json("resource", "row#>'{resource}'"),
+                rss_mdm_query_postgres::Source::json("version", "row#>'{version}'"),
+                rss_mdm_query_postgres::Source::json("state", "row#>'{state}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

@@ -1,7 +1,7 @@
 //! Direct blockers use real owner transactions and runtime roles. HTTP consumes the same
 //! authenticated principal as the service; these cases do not replace session/TLS proofs.
 mod fields;
-mod publication;
+pub(super) mod publication;
 use super::{
     owner_boundaries_t2::{Owners, scope},
     software_t2::support,

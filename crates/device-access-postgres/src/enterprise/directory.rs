@@ -7,7 +7,10 @@ use rss_mdm_query::{
     directory::{Query, Schema},
 };
 use serde_json::Value;
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<RecordView>("enterprise_configuration", &["id"], 64, 100, &[]).expect("Public directory model"));
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<RecordView>("enterprise_configuration", &["id"], 64, 100, &[])
+        .expect("Public directory model")
+});
 const SELECT: &str = "SELECT jsonb_build_object('id',q.id,'kind',q.kind,'value',q.document) FROM (SELECT tenant_id,'rp:'||id AS id,'relying_party'::text AS kind,document FROM rss_da.relying_parties UNION ALL SELECT tenant_id,'subject:'||provider::text||':'||principal::text,'subject',document FROM rss_da.subjects UNION ALL SELECT tenant_id,'windows:'||binding::text,'windows_key',document FROM rss_da.windows_sources) q WHERE q.tenant_id=";
 impl Service {
     pub async fn enterprise_configuration_record(
@@ -103,6 +106,15 @@ pub struct RecordView {
     pub record: Record,
 }
 
-pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::required_column("id", "q.id COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("kind", "q.kind COLLATE \"C\""),
-rss_mdm_query_postgres::Source::json("value", "q.document")]).expect("Complete public model storage binding"));
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::required_column("id", "q.id COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("kind", "q.kind COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::json("value", "q.document"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

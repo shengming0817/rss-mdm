@@ -19,19 +19,35 @@ use std::sync::Arc;
 use uuid::Uuid;
 struct Directory;
 impl rss_mdm_http_contract::query::QueryOwner for Directory {
-    type Parsed = (rss_mdm_query::directory::Query,std::collections::BTreeMap<String,String>);
+    type Parsed = (
+        rss_mdm_query::directory::Query,
+        std::collections::BTreeMap<String, String>,
+    );
     type Error = rss_mdm_query::Error;
     fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
-        Some(rss_mdm_http_contract::QueryDeclaration::Directory(rss_mdm_http_contract::DirectoryDeclaration::list(rss_mdm_policy_postgres::device_access::DIRECTORY_BINDINGS.execution())))
+        Some(rss_mdm_http_contract::QueryDeclaration::Directory(
+            rss_mdm_http_contract::DirectoryDeclaration::list(
+                rss_mdm_policy_postgres::device_access::DIRECTORY_BINDINGS.execution(),
+            ),
+        ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {
-        let s=&rss_mdm_policy_postgres::device_access::DIRECTORY_SCHEMA;
-        let mut shape=rss_mdm_http_contract::query::directory_parameters(s.default_limit,s.max_limit);
-        shape.value["properties"]["device"]=serde_json::json!({"type":"string"}); shape
+        let s = &rss_mdm_policy_postgres::device_access::DIRECTORY_SCHEMA;
+        let mut shape =
+            rss_mdm_http_contract::query::directory_parameters(s.default_limit, s.max_limit);
+        shape.value["properties"]["device"] = serde_json::json!({"type":"string"});
+        shape
     }
-    fn parse(raw:&str) -> rss_mdm_query::Result<Self::Parsed> {
-        let(parameters,context)=rss_mdm_query::Parameters::parse_with_context(raw,&["device"])?;
-        Ok((rss_mdm_query::directory::Query::new(&rss_mdm_policy_postgres::device_access::DIRECTORY_SCHEMA,parameters)?,context))
+    fn parse(raw: &str) -> rss_mdm_query::Result<Self::Parsed> {
+        let (parameters, context) =
+            rss_mdm_query::Parameters::parse_with_context(raw, &["device"])?;
+        Ok((
+            rss_mdm_query::directory::Query::new(
+                &rss_mdm_policy_postgres::device_access::DIRECTORY_SCHEMA,
+                parameters,
+            )?,
+            context,
+        ))
     }
 }
 struct Versions;
@@ -156,7 +172,18 @@ async fn list(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
     q: OwnedQuery<Directory>,
-) -> Result<CollectionResponse<Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<rss_mdm_policy_postgres::device_access::Publication>>>>, BusinessError> {
+) -> Result<
+    CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_policy_postgres::device_access::Publication,
+                >,
+            >,
+        >,
+    >,
+    BusinessError,
+> {
     let (q, extra) = q.parse()?;
     Ok(CollectionResponse(Json(
         service(&s)?

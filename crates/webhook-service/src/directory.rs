@@ -25,7 +25,16 @@ static SUBSCRIPTION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindin
         )
         .expect("Webhook storage binds every subscription field")
     });
-pub static DELIVERIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<crate::management::response::Delivery>("webhook_deliveries", &["id"], 32, 1000, &[]).expect("Public directory model"));
+pub static DELIVERIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<crate::management::response::Delivery>(
+        "webhook_deliveries",
+        &["id"],
+        32,
+        1000,
+        &[],
+    )
+    .expect("Public directory model")
+});
 pub fn query_error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
@@ -89,7 +98,9 @@ pub async fn deliveries(
 #[serde(transparent)]
 pub struct SubscriptionInput(String);
 impl SubscriptionInput {
-    pub fn execution() -> &'static rss_mdm_query::directory::Execution { SUBSCRIPTION_BINDINGS.execution() }
+    pub fn execution() -> &'static rss_mdm_query::directory::Execution {
+        SUBSCRIPTION_BINDINGS.execution()
+    }
     pub fn capture(raw: &str) -> Self {
         Self(raw.to_owned())
     }
@@ -105,7 +116,9 @@ impl SubscriptionInput {
 #[serde(transparent)]
 pub struct DeliveryInput(String);
 impl DeliveryInput {
-    pub fn execution() -> &'static rss_mdm_query::directory::Execution { DELIVERY_BINDINGS.execution() }
+    pub fn execution() -> &'static rss_mdm_query::directory::Execution {
+        DELIVERY_BINDINGS.execution()
+    }
     pub fn capture(raw: &str) -> Self {
         Self(raw.to_owned())
     }
@@ -117,4 +130,30 @@ impl DeliveryInput {
     }
 }
 
-pub static DELIVERY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&DELIVERIES, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));
+pub static DELIVERY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &DELIVERIES,
+            &[
+                rss_mdm_query_postgres::Source::json("id", "row#>'{id}'"),
+                rss_mdm_query_postgres::Source::json("eventId", "row#>'{eventId}'"),
+                rss_mdm_query_postgres::Source::json("subscriptionId", "row#>'{subscriptionId}'"),
+                rss_mdm_query_postgres::Source::json("targetVersion", "row#>'{targetVersion}'"),
+                rss_mdm_query_postgres::Source::json("sourceDelivery", "row#>'{sourceDelivery}'"),
+                rss_mdm_query_postgres::Source::json("recoveryVersion", "row#>'{recoveryVersion}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "redriveWindowOpen",
+                    "row#>'{redriveWindowOpen}'",
+                ),
+                rss_mdm_query_postgres::Source::json("attempts", "row#>'{attempts}'"),
+                rss_mdm_query_postgres::Source::json("status", "row#>'{status}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "transportObservation",
+                    "row#>'{transportObservation}'",
+                ),
+                rss_mdm_query_postgres::Source::json("failureStage", "row#>'{failureStage}'"),
+                rss_mdm_query_postgres::Source::json("failureReason", "row#>'{failureReason}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

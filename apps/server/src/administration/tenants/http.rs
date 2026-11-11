@@ -216,12 +216,16 @@ impl axum::response::IntoResponse for HttpFailure {
 
 struct TenantDirectory;
 impl rss_mdm_http_contract::query::DirectoryOwner for TenantDirectory {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { directory::TENANT_BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        directory::TENANT_BINDINGS.execution()
+    }
 }
 
 struct ProvisioningDirectory;
 impl rss_mdm_http_contract::query::DirectoryOwner for ProvisioningDirectory {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { directory::PROVISIONING_BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        directory::PROVISIONING_BINDINGS.execution()
+    }
 }
 
 impl rss_mdm_http_contract::signature::Output for HttpFailure {

@@ -2,7 +2,7 @@
 use super::*;
 use anyhow::Context as _;
 use rss_mdm_software_release as rel;
-pub(super) async fn withdrawn(c: &Context, resource: &r::Version) -> Result<()> {
+pub(in crate::assembly) async fn withdrawn(c: &Context, resource: &r::Version) -> Result<()> {
     let document = rss_mdm_software_service::publication::derive_document(
         resource,
         &[],

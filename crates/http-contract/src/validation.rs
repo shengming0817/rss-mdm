@@ -69,6 +69,12 @@ fn walk(
     {
         errors.insert(format!("{path}: unbound JSON structure; use the real owner type or an explicit extension subtree"));
     }
+    if let Some(model) = value
+        .get("x-rss-directory-model")
+        .and_then(|m| m.get("schema"))
+    {
+        walk(model, root, path, seen, errors);
+    }
     if let Some(reference) = value.get("$ref").and_then(Value::as_str)
         && seen.insert(reference.to_owned())
         && let Some(target) = reference.strip_prefix('#').and_then(|p| root.pointer(p))
@@ -135,6 +141,12 @@ fn references(value: &Value, root: &Value, errors: &mut BTreeSet<String>) {
             if let Some(reference) = schema.get("$ref") {
                 check_reference(reference, self.root, self.errors);
             }
+            if let Some(model) = schema
+                .get("x-rss-directory-model")
+                .and_then(|m| m.get("schema"))
+            {
+                references(model, self.root, self.errors);
+            }
             transform_subschemas(self, schema);
         }
     }
@@ -159,7 +171,7 @@ pub fn schema(schema: &Schema) -> Vec<String> {
 }
 
 pub fn signature(signature: &Signature, path: &str) -> Vec<String> {
-    let mut errors = Vec::new();
+    let mut errors = crate::directory_validation::signature(signature);
     let parameters = path
         .split('/')
         .filter(|s| s.starts_with('{') && s.ends_with('}'))

@@ -37,13 +37,19 @@ pub struct Record {
     pub presentation: Map<String, Value>,
 }
 /// Nested version metadata has its own query identity; the aggregate remains its sole owner.
-pub static VERSION_SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(||
-    Schema::derived::<VersionRow>("software_versions", &["version"], 64, 1000, &[]).expect("Resource version directory model")
-);
+pub static VERSION_SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<VersionRow>("software_versions", &["version"], 64, 1000, &[])
+        .expect("Resource version directory model")
+});
 /// Public version metadata; shared by the Resource store and software HTTP consumer.
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct VersionRow {
-    pub resource: Id,
-    pub version: Id,
+    /// Canonical owning Resource identity.
+    #[schemars(with = "Id")]
+    pub resource: String,
+    /// Canonical immutable version identity.
+    #[schemars(with = "Id")]
+    pub version: String,
+    /// Resource version lifecycle.
     pub state: crate::State,
 }

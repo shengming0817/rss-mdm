@@ -261,14 +261,18 @@ async fn describe_in(
         _ => Err(Error::Forbidden),
     }
 }
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<wire::SelfServiceDirectoryItem>("self_service", &["policyId"], 64, 64, &[rss_mdm_query::directory::Exclusion { path: "capability.inputSchema", reason: "Resource-owned parameter schema has its own schema language, not directory selectors" }, rss_mdm_query::directory::Exclusion { path: "capability.outputSchema", reason: "Resource-owned result schema has its own schema language, not directory selectors" }, rss_mdm_query::directory::Exclusion { path: "selfService.presentation", reason: "Open presentation keys are not typed; the displayName and category domain selectors read the published strings" }, rss_mdm_query::directory::Exclusion { path: "task.parameterSchema", reason: "Resource-owned script parameter schema is not a directory value model" }, rss_mdm_query::directory::Exclusion { path: "task.parameterSources", reason: "Dynamic parameter names and scalar variants are interpreted by the script owner" }]).and_then(|s|s.with_selectors::<PresentationSelectors>("Published display name and category from the open presentation metadata")).and_then(|s|s.no_sort("capability","Qualified capability properties are evaluated within the bounded candidate scan")).and_then(|s|s.no_sort("subject","Qualified subject is request-specific and has no persistent seek order")).and_then(|s|s.no_sort("task","The qualified task interface is evaluated within the bounded candidate scan")).and_then(|s|s.no_sort("selfService","Effective publication settings are qualified inside the bounded candidate scan")).expect("Public directory model"));
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<wire::SelfServiceDirectoryItem>("self_service", &["policyId"], 64, 64, &[rss_mdm_query::directory::Exclusion { path: "capability.inputSchema", reason: "Resource-owned parameter schema has its own schema language, not directory selectors" }, rss_mdm_query::directory::Exclusion { path: "capability.outputSchema", reason: "Resource-owned result schema has its own schema language, not directory selectors" }, rss_mdm_query::directory::Exclusion { path: "selfService.presentation", reason: "Open presentation keys are not typed; the displayName and category domain selectors read the published strings" }, rss_mdm_query::directory::Exclusion { path: "task.parameterSchema", reason: "Resource-owned script parameter schema is not a directory value model" }, rss_mdm_query::directory::Exclusion { path: "task.parameterSources", reason: "Dynamic parameter names and scalar variants are interpreted by the script owner" }]).and_then(|s|s.with_selectors::<PresentationSelectors>("Published display name and category from the open presentation metadata")).and_then(|s|s.no_sort("capability","Qualified capability properties are evaluated within the bounded candidate scan")).and_then(|s|s.no_sort("subject","Qualified subject is request-specific and has no persistent seek order")).and_then(|s|s.no_sort("task","The qualified task interface is evaluated within the bounded candidate scan")).and_then(|s|s.no_sort("selfService","Effective publication settings are qualified inside the bounded candidate scan")).expect("Public directory model")
+});
 /// Captured input keeps parsing after the service's existing identity binding.
 pub struct Input(String);
 impl Input {
     pub fn new(raw: &str) -> Self {
         Self(raw.to_owned())
     }
-    pub fn execution() -> &'static rss_mdm_query::directory::Execution { BINDINGS.execution() }
+    pub fn execution() -> &'static rss_mdm_query::directory::Execution {
+        BINDINGS.execution()
+    }
     pub fn schema() -> &'static Schema {
         &SCHEMA
     }
@@ -518,10 +522,28 @@ impl AgentTasks {
 }
 
 #[derive(schemars::JsonSchema)]
-#[serde(rename_all="camelCase")]
+#[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
-struct PresentationSelectors { display_name: Option<String>, category: Option<String> }
+struct PresentationSelectors {
+    display_name: Option<String>,
+    category: Option<String>,
+}
 
-pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::json("", "row"),
-rss_mdm_query_postgres::Source::column("displayName", "(row#>>'{selfService,presentation,displayName}') COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("category", "(row#>>'{selfService,presentation,category}') COLLATE \"C\"")]).expect("Complete public model storage binding"));
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::json("", "row"),
+                rss_mdm_query_postgres::Source::column(
+                    "displayName",
+                    "(row#>>'{selfService,presentation,displayName}') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "category",
+                    "(row#>>'{selfService,presentation,category}') COLLATE \"C\"",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

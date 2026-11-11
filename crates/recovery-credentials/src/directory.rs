@@ -8,7 +8,10 @@ use rss_mdm_query::{
 };
 use serde_json::Value;
 use sqlx::PgConnection;
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<crate::Material>("recovery_credentials", &["id", "version"], 64, 100, &[]).expect("Public directory model"));
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<crate::Material>("recovery_credentials", &["id", "version"], 64, 100, &[])
+        .expect("Public directory model")
+});
 pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
@@ -51,13 +54,28 @@ pub(crate) async fn read(
     q.page_typed(rows, codec, &binding).map_err(error)
 }
 
-pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::required_column("id", "e.id::text COLLATE \"C\""),
-rss_mdm_query_postgres::Source::required_column("version", "v.version"),
-rss_mdm_query_postgres::Source::column("current", "coalesce(e.current_version=v.version,false)"),
-rss_mdm_query_postgres::Source::column("validity", "v.validity COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("escrowed", "(v.sealed IS NOT NULL)"),
-rss_mdm_query_postgres::Source::column("operation", "v.operation::text COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("createdAt", "v.created_at"),
-rss_mdm_query_postgres::Source::column("invalidatedAt", "v.invalidated_at"),
-rss_mdm_query_postgres::Source::column("binding.device", "e.device COLLATE \"C\""),
-rss_mdm_query_postgres::Source::json("binding.subject", "e.subject")]).expect("Complete public model storage binding"));
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::required_column("id", "e.id::text COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::required_column("version", "v.version"),
+                rss_mdm_query_postgres::Source::column(
+                    "current",
+                    "coalesce(e.current_version=v.version,false)",
+                ),
+                rss_mdm_query_postgres::Source::column("validity", "v.validity COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("escrowed", "(v.sealed IS NOT NULL)"),
+                rss_mdm_query_postgres::Source::column(
+                    "operation",
+                    "v.operation::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("createdAt", "v.created_at"),
+                rss_mdm_query_postgres::Source::column("invalidatedAt", "v.invalidated_at"),
+                rss_mdm_query_postgres::Source::column("binding.device", "e.device COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::json("binding.subject", "e.subject"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

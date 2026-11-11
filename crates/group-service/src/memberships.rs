@@ -7,6 +7,8 @@ pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "group identity",
+    purpose: rss_mdm_query::window::Purpose::References,
+    reason: "Membership traversal is scoped to the authorized device and current group qualification",
     context: &[],
 };
 impl Groups {

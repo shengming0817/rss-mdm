@@ -8,7 +8,12 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
     let business = Context::open("shared", &[]).await?;
     let c = Context::management("shared").await?;
     let account = c
-        .account(&[Permission::TenantRead, Permission::AuditRead])
+        .account(&[
+            Permission::TenantRead,
+            Permission::AuditRead,
+            Permission::TenantCreate,
+            Permission::TenantAdministratorCreate,
+        ])
         .await?;
     let proof = Arc::new(c.authenticate(&account).await?);
     let mut config = crate::host_t2_support::configuration(
@@ -51,7 +56,7 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
         timeline: c.database.timeline(c.audit.clone(), c.tenant, &[41; 32])?,
         tenant: c.tenant,
     };
-    let auth = c.read_auth(proof);
+    let auth = c.read_auth(proof.clone());
     let query = LocatorQuery {
         include_audit: true,
         ..Default::default()
@@ -83,6 +88,36 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
             .await?;
         audit.finalize(None);
     }
+    // Consume the registered HTTP handlers with the actual installation realm proof.
+    let routes = crate::administration::tenants::http::routes(Some(service.clone()))
+        .into_checked_axum(rss_mdm_http_contract::module::Listener::Browser)
+        .layer(axum::Extension(c.read_auth(proof.clone())))
+        .layer(axum::Extension(c.request(&proof)?));
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base = format!("http://{}", socket.local_addr()?);
+    let server = tokio::spawn(async move { axum::serve(socket, routes).await });
+    let verify=async {
+        let client=reqwest::Client::new();
+        let response=client.get(format!("{base}/tenants")).query(&[("filter","name=='original tenant result';revision==2")]).send().await?;
+        assert_eq!(response.status(),200);
+        let page:serde_json::Value=response.json().await?;
+        assert_eq!(page["items"].as_array().unwrap().len(),1);
+        assert_eq!(page["items"][0]["tenantId"],business.tenant.to_string());
+        let provision=Uuid::new_v4();
+        let response=client.post(format!("{base}/provisionings")).header("Idempotency-Key",provision.to_string())
+            .json(&json!({"name":"directory provision","administratorLogin":format!("directory-{provision}"),"administratorPassword":"Directory-private-password!42"})).send().await?;
+        let status=response.status();let body:serde_json::Value=response.json().await?;
+        assert!(status.is_success(),"{status}: {body}");
+        let response=client.get(format!("{base}/provisionings")).query(&[("filter",format!("operationId=={provision};action==provision"))]).send().await?;
+        assert_eq!(response.status(),200);
+        let page:serde_json::Value=response.json().await?;
+        assert_eq!(page["items"].as_array().unwrap().len(),1);
+        assert_eq!(page["items"][0]["operationId"],provision.to_string());
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    server.abort();
+    let _ = server.await;
+    verify?;
     service.close().await;
     kdf.close();
     kdf.wait_closed().await;

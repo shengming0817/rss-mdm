@@ -9,7 +9,9 @@ use rss_mdm_query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-pub static RULES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<RuleRow>("authorization_rules", &["id"], 100, 1000, &[rss_mdm_query::directory::Exclusion { path: "value.grants", reason: "Each grant combines an operation with its own scope; use the authorization rule owner to evaluate grants" }]).expect("Public directory model"));
+pub static RULES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<RuleRow>("authorization_rules", &["id"], 100, 1000, &[rss_mdm_query::directory::Exclusion { path: "value.grants", reason: "Each grant combines an operation with its own scope; use the authorization rule owner to evaluate grants" }]).expect("Public directory model")
+});
 pub static GROUPS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
     Schema::derived::<GroupRow>("user_groups", &["id"], 100, 1000, &[])
         .expect("User group model is fully described")
@@ -99,7 +101,12 @@ impl Directory {
         }
     }
     pub fn execution(self) -> &'static rss_mdm_query::directory::Execution {
-        match self { Self::Rules => RULE_BINDINGS.execution(), Self::Groups => GROUP_BINDINGS.execution(), Self::Members(_) => MEMBER_BINDINGS.execution(), Self::Keys => KEY_BINDINGS.execution() }
+        match self {
+            Self::Rules => RULE_BINDINGS.execution(),
+            Self::Groups => GROUP_BINDINGS.execution(),
+            Self::Members(_) => MEMBER_BINDINGS.execution(),
+            Self::Keys => KEY_BINDINGS.execution(),
+        }
     }
     fn permission(self) -> Permission {
         match self {
@@ -350,4 +357,17 @@ impl Detail {
     }
 }
 
-pub static RULE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&RULES, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));
+pub static RULE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &RULES,
+            &[
+                rss_mdm_query_postgres::Source::json("id", "row#>'{id}'"),
+                rss_mdm_query_postgres::Source::json("revision", "row#>'{revision}'"),
+                rss_mdm_query_postgres::Source::json("deleted", "row#>'{deleted}'"),
+                rss_mdm_query_postgres::Source::json("subjectKind", "row#>'{subjectKind}'"),
+                rss_mdm_query_postgres::Source::json("value", "row#>'{value}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

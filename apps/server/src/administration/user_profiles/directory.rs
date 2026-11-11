@@ -1,5 +1,8 @@
-use rss_mdm_query::directory::{Schema};
-pub static DIRECTORY: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<DefinitionRow>("user_attributes", &["fieldId"], 128, 128, &[]).expect("Public directory model"));
+use rss_mdm_query::directory::Schema;
+pub static DIRECTORY: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<DefinitionRow>("user_attributes", &["fieldId"], 128, 128, &[])
+        .expect("Public directory model")
+});
 
 use self::DIRECTORY as SCHEMA;
 use super::*;
@@ -38,17 +41,53 @@ pub(super) async fn list(
     store::settle(result, audit, false)
 }
 
-pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&DIRECTORY, &[rss_mdm_query_postgres::Source::required_column("fieldId", "field_id::text COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("revision", "revision"),
-rss_mdm_query_postgres::Source::column("collectedAfterMicros", "collected_after_micros"),
-rss_mdm_query_postgres::Source::json("value", "value"),
-rss_mdm_query_postgres::Source::column("key", "(value->>'key') COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("displayName", "(value->>'displayName') COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("sourceKind", "(value->'source'->>'kind') COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("provider", "(value->'source'->>'provider') COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("valueType", "(value->>'valueType') COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("enabled", "(value->>'enabled')::boolean"),
-rss_mdm_query_postgres::Source::column("sensitive", "(value->>'sensitive')::boolean"),
-rss_mdm_query_postgres::Source::column("required", "(value->>'required')::boolean"),
-rss_mdm_query_postgres::Source::column("visibility", "(value->>'visibility') COLLATE \"C\""),
-rss_mdm_query_postgres::Source::column("displayUse", "(value->>'displayUse') COLLATE \"C\"")]).expect("Complete public model storage binding"));
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &DIRECTORY,
+            &[
+                rss_mdm_query_postgres::Source::required_column(
+                    "fieldId",
+                    "field_id::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("revision", "revision"),
+                rss_mdm_query_postgres::Source::column(
+                    "collectedAfterMicros",
+                    "collected_after_micros",
+                ),
+                rss_mdm_query_postgres::Source::json("value", "value"),
+                rss_mdm_query_postgres::Source::column("key", "(value->>'key') COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column(
+                    "displayName",
+                    "(value->>'displayName') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "sourceKind",
+                    "(value->'source'->>'kind') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "provider",
+                    "(value->'source'->>'provider') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "valueType",
+                    "(value->>'valueType') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("enabled", "(value->>'enabled')::boolean"),
+                rss_mdm_query_postgres::Source::column(
+                    "sensitive",
+                    "(value->>'sensitive')::boolean",
+                ),
+                rss_mdm_query_postgres::Source::column("required", "(value->>'required')::boolean"),
+                rss_mdm_query_postgres::Source::column(
+                    "visibility",
+                    "(value->>'visibility') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "displayUse",
+                    "(value->>'displayUse') COLLATE \"C\"",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

@@ -321,9 +321,11 @@ fn projected_directories_preserve_null_but_cannot_be_replayed_as_write_receipts(
         .unwrap();
     let envelope = AssetEnvelope {
         tenant_id: "tenant".into(),
-        asset: Response::SavedList {
-            items: vec![projected],
-            next_cursor: None,
+        asset: saved_directory::DirectoryResponse::SavedList {
+            page: rss_mdm_query::Page {
+                items: vec![projected],
+                next_cursor: None,
+            },
         },
     };
     let wire = serde_json::to_value(envelope).unwrap();

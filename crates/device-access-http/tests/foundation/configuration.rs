@@ -54,14 +54,28 @@ pub async fn concurrent_export(
     .await??;
     tx.rollback().await?;
     material::success::<da::SignedConfiguration>(export.await??).await?;
-    material::success::<serde_json::Value>(
+    let directory = material::success::<serde_json::Value>(
         client
             .get(format!("{base}/admin/configurations"))
+            .query(&[("filter", "enabled==true;configuration.windows.kind==whfb")])
             .bearer_auth(token)
             .send()
             .await?,
     )
     .await?;
+    assert!(
+        !directory["items"]
+            .as_array()
+            .context("configuration directory")?
+            .is_empty()
+    );
+    assert!(
+        directory["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v["enabled"] == true && v["configuration"]["windows"]["kind"] == "whfb")
+    );
     Ok(())
 }
 

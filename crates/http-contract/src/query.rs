@@ -18,9 +18,8 @@ pub trait QueryOwner {
 
 pub trait DirectoryOwner {
     fn execution() -> &'static rss_mdm_query::directory::Execution;
-    fn schema() -> &'static rss_mdm_query::directory::Schema { Self::execution().schema() }
     fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
-        Self::schema().parse(raw)
+        Self::execution().schema().parse(raw)
     }
 }
 pub trait WindowOwner {
@@ -41,15 +40,17 @@ impl<Q: DirectoryOwner> QueryOwner for Directory<Q> {
     type Parsed = rss_mdm_query::directory::Query;
     type Error = rss_mdm_query::Error;
     fn declaration() -> Option<QueryDeclaration> {
-        Some(QueryDeclaration::Directory(crate::DirectoryDeclaration::list(Q::execution())))
+        Some(QueryDeclaration::Directory(
+            crate::DirectoryDeclaration::list(Q::execution()),
+        ))
     }
     fn parameters() -> Schema {
-        let owner = Q::schema();
+        let owner = Q::execution().schema();
         directory_parameters(owner.default_limit, owner.max_limit)
     }
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
         let query = Q::parse(raw)?;
-        query.require_schema(Q::schema())?;
+        query.require_schema(Q::execution().schema())?;
         Ok(query)
     }
 }
@@ -119,7 +120,9 @@ impl<Q: DirectoryOwner> QueryOwner for Statistics<Q> {
     type Parsed = rss_mdm_query::directory::Query;
     type Error = rss_mdm_query::Error;
     fn declaration() -> Option<QueryDeclaration> {
-        Some(QueryDeclaration::Directory(crate::DirectoryDeclaration::statistics(Q::execution())))
+        Some(QueryDeclaration::Directory(
+            crate::DirectoryDeclaration::statistics(Q::execution()),
+        ))
     }
     fn parameters() -> Schema {
         Schema {
@@ -131,7 +134,10 @@ impl<Q: DirectoryOwner> QueryOwner for Statistics<Q> {
         }
     }
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
-        Q::schema().statistics(raw)
+        Q::execution().schema().statistics(raw)?;
+        let query = Q::parse(raw)?;
+        query.require_schema(Q::execution().schema())?;
+        Ok(query)
     }
 }
 

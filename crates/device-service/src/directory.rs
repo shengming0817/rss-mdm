@@ -1,5 +1,5 @@
 //! Live keyset selection and presentation share one authenticated SELECT snapshot.
-pub use crate::directory_filter::{SCHEMA, EXECUTION, parse};
+pub use crate::directory_filter::{EXECUTION, SCHEMA, parse};
 use crate::*;
 use rss_mdm_audit_integration::budget::AuditBudget;
 use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};

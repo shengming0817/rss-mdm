@@ -21,12 +21,6 @@ pub enum Kind {
     ObjectSet,
 }
 impl Kind {
-    pub fn enumeration(values: &[&str]) -> Self {
-        Self::Enum(values.iter().map(|v| (*v).into()).collect())
-    }
-    pub fn enum_set(values: &[&str]) -> Self {
-        Self::EnumSet(values.iter().map(|v| (*v).into()).collect())
-    }
     pub fn collection(&self) -> bool {
         matches!(
             self,
@@ -64,10 +58,11 @@ pub struct Field {
     pub(crate) constraints: Value,
     pub(crate) reason: Option<String>,
     pub(crate) validator: Option<fn(&Value) -> bool>,
+    pub(crate) normalizer: Option<fn(&Value) -> Option<Value>>,
     pub(crate) sort_bytes: Option<usize>,
 }
 impl Field {
-    pub fn scalar(name: &str, kind: Kind) -> Self {
+    pub(crate) fn scalar(name: &str, kind: Kind) -> Self {
         let sort = !kind.collection() && !matches!(kind, Kind::Object | Kind::ObjectSet);
         let sort_bytes = match &kind {
             Kind::Uuid => Some(38),
@@ -92,10 +87,11 @@ impl Field {
             constraints: Value::Null,
             reason: None,
             validator: None,
+            normalizer: None,
             sort_bytes,
         }
     }
-    pub fn output(name: &str) -> Self {
+    pub(crate) fn output(name: &str) -> Self {
         let mut field = Self::scalar(name, Kind::Object);
         field.filter = false;
         field.sort = false;
@@ -104,25 +100,13 @@ impl Field {
         );
         field
     }
-    pub fn filter_only(name: &str, kind: Kind) -> Self {
-        let mut field = Self::scalar(name, kind);
-        field.sort = false;
-        field.output = false;
-        field
-    }
-    pub fn nullable(mut self) -> Self {
-        self.nullable = true;
-        self
-    }
-    pub fn without_output(mut self) -> Self {
+
+    pub(crate) fn without_output(mut self) -> Self {
         self.output = false;
         self
     }
-    pub fn without_range(mut self) -> Self {
-        self.range = false;
-        self
-    }
-    pub fn excluded(mut self, reason: &str) -> Self {
+
+    pub(crate) fn excluded(mut self, reason: &str) -> Self {
         self.filter = false;
         self.sort = false;
         self.reason = Some(reason.into());
@@ -132,7 +116,9 @@ impl Field {
         if !self.filter {
             return Vec::new();
         }
-        if self.exact { return vec![Operator::Eq, Operator::In]; }
+        if self.exact {
+            return vec![Operator::Eq, Operator::In];
+        }
         let mut ops = vec![Operator::Eq, Operator::Ne, Operator::In, Operator::Out];
         if self.kind.collection() {
             ops.extend([Operator::ContainsAny, Operator::ContainsAll]);
@@ -169,7 +155,12 @@ impl Field {
                 .and_then(|n| usize::try_from(n).ok())
                 .and_then(|n| n.checked_mul(6))
                 .and_then(|n| n.checked_add(2));
-            if let Some(bytes) = self.constraints.get("x-rss-maxUtf8Bytes").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()) {
+            if let Some(bytes) = self
+                .constraints
+                .get("x-rss-maxUtf8Bytes")
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+            {
                 // Directory text rejects controls. Only quotes/backslashes can expand beyond UTF-8.
                 self.sort_bytes = bytes.checked_mul(2).and_then(|n| n.checked_add(2));
             }
@@ -181,9 +172,10 @@ impl Field {
     }
     pub(crate) fn valid_position(&self, value: &Value) -> bool {
         let valid = if matches!(self.kind, Kind::Text) {
-            text_operand(value)
+            value.is_string()
                 && self.validator.is_none_or(|validate| validate(value))
                 && self.constrained(value)
+                && (self.constraints.get("x-rss-maxUtf8Bytes").is_none() || text_operand(value))
         } else {
             self.valid(value)
         };
@@ -238,7 +230,12 @@ impl Field {
             return false;
         }
         if let Some(v) = value.as_str() {
-            if s.get("x-rss-maxUtf8Bytes").and_then(Value::as_u64).is_some_and(|n| v.len() as u64 > n) { return false; }
+            if s.get("x-rss-maxUtf8Bytes")
+                .and_then(Value::as_u64)
+                .is_some_and(|n| v.len() as u64 > n)
+            {
+                return false;
+            }
             let length = v.chars().count() as u64;
             if s.get("minLength")
                 .and_then(Value::as_u64)

@@ -12,11 +12,15 @@ use rss_mdm_http_contract::{
 use std::sync::Arc;
 struct Requests;
 impl DirectoryOwner for Requests {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { REQUEST_BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        REQUEST_BINDINGS.execution()
+    }
 }
 struct Operations;
 impl DirectoryOwner for Operations {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { pki::OPERATION_BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        pki::OPERATION_BINDINGS.execution()
+    }
 }
 pub fn mount(
     state: Option<Arc<crate::HttpState>>,

@@ -18,8 +18,8 @@ pub async fn verify(c: &Context) -> Result<()> {
         rss_mdm_policy_service::worker::queue_health(DA, &runtime, c.tenant, None, cutoff,).await?,
         [0; 5]
     );
-    let batch_query = directory::BATCHES.parse("")?;
-    let member_query = directory::MEMBERS.parse("")?;
+    let batch_query = rss_mdm_policy_service::events::queries::BATCHES.parse("")?;
+    let member_query = rss_mdm_policy_service::events::queries::MEMBERS.parse("")?;
     let batch = Uuid::new_v4();
     let member = Uuid::new_v4();
     let registration = Uuid::new_v4();
@@ -73,6 +73,11 @@ pub async fn verify(c: &Context) -> Result<()> {
                                 batch: Some(batch),
                             },
                             members,
+                            if members {
+                                &rss_mdm_policy_service::events::queries::MEMBER_BINDINGS
+                            } else {
+                                &rss_mdm_policy_service::events::queries::BATCH_BINDINGS
+                            },
                         )
                         .await
                         .map_err(|e| {

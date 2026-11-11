@@ -868,12 +868,16 @@ async fn material_disclose(
 
 struct ListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { access::directory::BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        access::directory::BINDINGS.execution()
+    }
 }
 
 struct EnterpriseListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for EnterpriseListQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_device_access_postgres::enterprise::directory::BINDINGS.execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_device_access_postgres::enterprise::directory::BINDINGS.execution()
+    }
 }
 
 struct OperationProofHeaders(pub axum::http::HeaderMap);

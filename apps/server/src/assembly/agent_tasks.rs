@@ -794,7 +794,9 @@ impl rss_mdm_http_contract::query::QueryOwner for SelfServiceQuery {
     type Error = std::convert::Infallible;
     fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
         Some(rss_mdm_http_contract::QueryDeclaration::Directory(
-            rss_mdm_http_contract::DirectoryDeclaration::list(super::self_service::Input::execution()),
+            rss_mdm_http_contract::DirectoryDeclaration::list(
+                super::self_service::Input::execution(),
+            ),
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {

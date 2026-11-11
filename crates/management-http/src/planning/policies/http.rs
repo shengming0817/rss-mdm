@@ -274,5 +274,7 @@ impl rss_mdm_http_contract::query::WindowOwner for AssignmentsQuery {
 
 struct PolicyDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for PolicyDirectoryQuery {
-    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_policy_service::management::read::execution() }
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_policy_service::management::read::execution()
+    }
 }

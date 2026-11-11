@@ -84,6 +84,7 @@ pub async fn accept_in(
     let batch = rss_mdm_inventory_postgres::seal_collection_in(
         c,
         rss_mdm_inventory_postgres::CollectionCompletion {
+            trusted: trusted,
             scope: &scope,
             run: &id.to_string(),
             sequence: sequence as u64,

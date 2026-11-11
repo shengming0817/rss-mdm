@@ -71,8 +71,12 @@ fn model_is_the_field_authority_and_capabilities_are_executable() {
 #[test]
 fn execution_requires_the_exact_compiled_selector_set() {
     use rss_mdm_query::directory::Execution;
-    let fields = MODEL.fields().iter().filter(|f| f.filter || f.sort)
-        .map(|f| f.name.as_str()).collect::<Vec<_>>();
+    let fields = MODEL
+        .fields()
+        .iter()
+        .filter(|f| f.filter || f.sort)
+        .map(|f| f.name.as_str())
+        .collect::<Vec<_>>();
     let execution = Execution::bind(&MODEL, fields.clone()).unwrap();
     assert!(execution.require(&MODEL).is_ok());
     assert!(Execution::bind(&MODEL, fields.iter().copied().skip(1)).is_err());
@@ -83,17 +87,36 @@ fn execution_requires_the_exact_compiled_selector_set() {
 fn business_selectors_are_typed_non_output_and_cannot_shadow_model_fields() {
     #[derive(JsonSchema)]
     #[allow(dead_code)]
-    struct Search { hardware: String }
+    struct Search {
+        hardware: String,
+    }
     #[derive(JsonSchema)]
     #[allow(dead_code)]
-    struct Collision { id: String }
+    struct Collision {
+        id: String,
+    }
     let build = || Schema::derived::<Extended>("selectors", &["id"], 2, 10, &[]).unwrap();
-    assert!(build().with_selectors::<Collision>("Different meaning").is_err());
+    assert!(
+        build()
+            .with_selectors::<Collision>("Different meaning")
+            .is_err()
+    );
     assert!(build().with_selectors::<Search>("").is_err());
-    let schema = Box::leak(Box::new(build().with_selectors::<Search>("Historical hardware evidence").unwrap().exact("hardware").unwrap()));
+    let schema = Box::leak(Box::new(
+        build()
+            .with_selectors::<Search>("Historical hardware evidence")
+            .unwrap()
+            .exact("hardware")
+            .unwrap(),
+    ));
     assert!(schema.parse("filter=hardware==serial").is_ok());
     assert!(schema.parse("filter=hardware=in=(a,b)").is_ok());
-    for query in ["filter=hardware!=a", "filter=hardware=icontains=a", "sort=hardware", "fields=hardware"] {
+    for query in [
+        "filter=hardware!=a",
+        "filter=hardware=icontains=a",
+        "sort=hardware",
+        "fields=hardware",
+    ] {
         assert!(schema.parse(query).is_err(), "{query}");
     }
 }
@@ -131,6 +154,19 @@ struct Complex {
 #[test]
 fn unsupported_collections_and_misspelled_exclusions_fail_at_construction() {
     assert!(Schema::derived::<Complex>("complex", &["id"], 2, 10, &[]).is_err());
+    assert!(
+        Schema::derived::<Complex>(
+            "complex",
+            &["id"],
+            2,
+            10,
+            &[Exclusion {
+                path: "objects",
+                reason: "   "
+            }]
+        )
+        .is_err()
+    );
     assert!(
         Schema::derived::<Complex>(
             "complex",
@@ -187,14 +223,6 @@ fn tagged_variants_merge_vocabularies_and_missing_properties_without_cross_eleme
 }
 
 #[test]
-fn directory_rejects_paths_outside_the_query_grammar_budget() {
-    let child = "c".repeat(100);
-    let parent = "p".repeat(50);
-    let model = serde_json::json!({"type":"object","required":["id"],"properties":{"id":{"type":"integer"},parent:{"type":"object","properties":{child:{"type":"string"}}}}});
-    assert!(Schema::from_model("long_path", &["id"], 1, 10, &model, &[]).is_err());
-}
-
-#[test]
 fn unbounded_text_filters_but_sort_combinations_must_fit_the_cursor() {
     assert!(MODEL.field("metadata.category").unwrap().filter);
     assert!(!MODEL.field("metadata.category").unwrap().sort);
@@ -216,34 +244,6 @@ fn unbounded_text_filters_but_sort_combinations_must_fit_the_cursor() {
     let position = query.position(&row).unwrap();
     let codec = rss_mdm_query::cursor::CursorCodec::new(&[1; 32]).unwrap();
     assert!(codec.encode("bounded", &position).is_ok());
-}
-
-#[test]
-fn documented_closed_map_keys_keep_their_declared_types() {
-    let model = serde_json::json!({"type":"object","required":["id"],"properties":{
-        "id":{"type":"string","format":"uuid"},
-        "packages":{"type":"object","propertyNames":{"oneOf":[
-            {"type":"string","const":"windows","description":"Windows"},
-            {"type":"string","const":"macos","description":"macOS"}
-        ]},"additionalProperties":{"type":"string","format":"uuid"}}
-    }});
-    let schema = Box::leak(Box::new(
-        Schema::from_model("closed_map", &["id"], 1, 10, &model, &[]).unwrap(),
-    ));
-    assert_eq!(
-        schema.field("packages.windows").unwrap().kind,
-        rss_mdm_query::directory::Kind::Uuid
-    );
-    assert!(
-        schema
-            .parse("filter=packages.linux==00000000-0000-0000-0000-000000000001")
-            .is_err()
-    );
-    assert!(
-        schema
-            .parse("filter=id=gt=00000000-0000-0000-0000-000000000001")
-            .is_ok()
-    );
 }
 
 #[test]

@@ -13,7 +13,16 @@ use rss_mdm_query::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Request>("windows_certificate_requests", &["attempt"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
+pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Request>(
+        "windows_certificate_requests",
+        &["attempt"],
+        rss_mdm_query::DEFAULT_PAGE_LIMIT,
+        rss_mdm_query::MAX_PAGE_LIMIT,
+        &[],
+    )
+    .expect("Public directory model")
+});
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestKind {
@@ -91,8 +100,12 @@ SELECT jsonb_build_object('attempt',attempt,'kind',kind,'device',device,'enrollm
 FROM candidates WHERE true
 "#;
 fn append_context(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, tenant: &str, device: &str) {
-    sql.push("WITH RECURSIVE params AS (SELECT ").push_bind(tenant.to_owned())
-        .push("::uuid AS tenant,").push_bind(device.to_owned()).push("::text AS device").push(HISTORY);
+    sql.push("WITH RECURSIVE params AS (SELECT ")
+        .push_bind(tenant.to_owned())
+        .push("::uuid AS tenant,")
+        .push_bind(device.to_owned())
+        .push("::text AS device")
+        .push(HISTORY);
 }
 fn sql(tenant: &str, device: &str) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut sql = sqlx::QueryBuilder::new("");
@@ -215,7 +228,8 @@ impl Store {
             .map_err(query_error)?;
         let after = q.after(codec, &binding).map_err(query_error)?;
         let mut sql = directory_sql(p.tenant_id(), device, now);
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*REQUEST_BINDINGS).map_err(query_error)?;
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*REQUEST_BINDINGS)
+            .map_err(query_error)?;
         let rows: Vec<serde_json::Value> = sql
             .build_query_scalar()
             .fetch_all(&mut *tx)
@@ -334,4 +348,49 @@ impl Store {
     }
 }
 
-pub static REQUEST_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&REQUESTS, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));
+pub static REQUEST_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &REQUESTS,
+            &[
+                rss_mdm_query_postgres::Source::json("attempt", "row#>'{attempt}'"),
+                rss_mdm_query_postgres::Source::json("kind", "row#>'{kind}'"),
+                rss_mdm_query_postgres::Source::json("device", "row#>'{device}'"),
+                rss_mdm_query_postgres::Source::json("enrollmentId", "row#>'{enrollmentId}'"),
+                rss_mdm_query_postgres::Source::json("operationId", "row#>'{operationId}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "registrationState",
+                    "row#>'{registrationState}'",
+                ),
+                rss_mdm_query_postgres::Source::json("enrollmentState", "row#>'{enrollmentState}'"),
+                rss_mdm_query_postgres::Source::json("predecessor", "row#>'{predecessor}'"),
+                rss_mdm_query_postgres::Source::json("linked", "row#>'{linked}'"),
+                rss_mdm_query_postgres::Source::json("activated", "row#>'{activated}'"),
+                rss_mdm_query_postgres::Source::json("signing.attempt", "row#>'{signing,attempt}'"),
+                rss_mdm_query_postgres::Source::json("signing.state", "row#>'{signing,state}'"),
+                rss_mdm_query_postgres::Source::json("signing.issuer", "row#>'{signing,issuer}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "signing.createdAt",
+                    "row#>'{signing,createdAt}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "signing.deadline",
+                    "row#>'{signing,deadline}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "signing.notBefore",
+                    "row#>'{signing,notBefore}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "signing.notAfter",
+                    "row#>'{signing,notAfter}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "signing.successor",
+                    "row#>'{signing,successor}'",
+                ),
+                rss_mdm_query_postgres::Source::json("requirements", "row#>'{requirements}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

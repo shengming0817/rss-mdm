@@ -5,7 +5,9 @@ use rss_mdm_query::{
     cursor::CursorCodec,
     directory::{Query, Schema},
 };
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<FieldView>("asset_fields", &["key"], 100, rss_mdm_query::MAX_PAGE_LIMIT, &[rss_mdm_query::directory::Exclusion { path: "valueType", reason: "Recursive asset value-type grammar is interpreted by the asset catalog, not arbitrary directory paths" }, rss_mdm_query::directory::Exclusion { path: "sources", reason: "Source-priority map keys contain literal dots; priorities require the source catalog semantics" }]).expect("Public directory model"));
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<FieldView>("asset_fields", &["key"], 100, rss_mdm_query::MAX_PAGE_LIMIT, &[rss_mdm_query::directory::Exclusion { path: "valueType", reason: "Recursive asset value-type grammar is interpreted by the asset catalog, not arbitrary directory paths" }, rss_mdm_query::directory::Exclusion { path: "sources", reason: "Source-priority map keys contain literal dots; priorities require the source catalog semantics" }]).expect("Public directory model")
+});
 fn entry(definition: &rss_mdm_inventory::FieldDefinition) -> Result<FieldView> {
     Ok(FieldView {
         definition: crate::collection::wire::to_wire_field(definition)?,
@@ -19,7 +21,7 @@ impl AssetService {
         p: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<AssetEnvelope, Error> {
+    ) -> std::result::Result<AssetEnvelope<DirectoryResponse>, Error> {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         crate::transaction::inspect(
             &self.runtime,
@@ -71,10 +73,9 @@ impl AssetService {
 
                     Ok(AssetEnvelope {
                         tenant_id: p.tenant_id().into(),
-                        asset: Response::FieldList {
+                        asset: DirectoryResponse::FieldList {
                             dictionary: rss_mdm_inventory::DICTIONARY.into(),
-                            items: page.items,
-                            next_cursor: page.next_cursor,
+                            page,
                         },
                     })
                 })
@@ -140,4 +141,26 @@ mod projection_tests {
     }
 }
 
-pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::json("", "document")]).expect("Complete public model storage binding"));
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[rss_mdm_query_postgres::Source::json("", "document")],
+        )
+        .expect("Complete public model storage binding")
+    });
+
+/// The exact successful response of this directory; other Asset variants cannot be returned.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum DirectoryResponse {
+    FieldList {
+        dictionary: String,
+        #[serde(flatten)]
+        page: rss_mdm_query::Page<rss_mdm_query::directory::Projection<super::FieldView>>,
+    },
+}

@@ -1,23 +1,9 @@
-use rss_mdm_query::directory::{Field, Kind, Position, Schema};
+use rss_mdm_query::directory::{Position, Schema};
 use serde_json::json;
 use sqlx::QueryBuilder;
-static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "test",
-    keys: &["id"],
-    default_limit: 2,
-    max_limit: 3,
-    fields: vec![
-        Field::scalar("id", Kind::Integer),
-        Field::scalar("name", Kind::Text),
-    ],
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Row>("test", &["id"], 2, 3, &[]).expect("Public directory model")
 });
-fn column(name: &str) -> &'static str {
-    match name {
-        "id" => "id",
-        "name" => "name COLLATE \"C\"",
-        _ => panic!("unexpected field"),
-    }
-}
 #[test]
 fn user_values_are_bound_and_null_seek_matches_nulls_last() {
     let q = SCHEMA
@@ -28,7 +14,7 @@ fn user_values_are_bound_and_null_seek_matches_nulls_last() {
         &mut sql,
         &q,
         Some(&Position(vec![json!(null), json!(4)])),
-        column,
+        &*BINDINGS,
     )
     .unwrap();
     let statement = sql.sql();
@@ -45,7 +31,7 @@ fn prefilter_preserves_mixed_or_and_binds_only_available_atoms() {
         .parse("filter=(id==1,name==blocked);id=gt=0")
         .unwrap();
     let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
-    rss_mdm_query_postgres::prefilter(&mut sql, &q, column, |name| name != "name").unwrap();
+    rss_mdm_query_postgres::prefilter(&mut sql, &q, &*BINDINGS, |name| name != "name").unwrap();
     let statement = sql.sql();
     assert!(
         statement
@@ -57,25 +43,58 @@ fn prefilter_preserves_mixed_or_and_binds_only_available_atoms() {
 
 #[test]
 fn sql_page_budget_uses_the_declared_query_owner() {
-    static FIELDS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-        id: "field_metadata",
-        keys: &["id"],
-        default_limit: 100,
-        max_limit: 1024,
-        fields: vec![Field::scalar("id", Kind::Integer)],
+    pub static FIELDS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+        Schema::derived::<IdRow>("field_metadata", &["id"], 100, 1024, &[])
+            .expect("Public directory model")
     });
+    let bindings = rss_mdm_query_postgres::Bindings::new(
+        &FIELDS,
+        &[rss_mdm_query_postgres::Source::column("id", "id")],
+    )
+    .unwrap();
     let query = FIELDS.parse("limit=1024").unwrap();
     let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
-    rss_mdm_query_postgres::append(&mut sql, &query, None, column).unwrap();
+    rss_mdm_query_postgres::append(&mut sql, &query, None, &bindings).unwrap();
     assert!(sql.sql().as_str().ends_with(" LIMIT $1"));
     let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
     assert_eq!(
-        rss_mdm_query_postgres::page_limit(&mut sql, &query, None, column, 1026),
+        rss_mdm_query_postgres::page_limit(&mut sql, &query, None, &bindings, 1026),
         Err(rss_mdm_query::Error::Budget)
     );
     let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
     assert_eq!(
-        rss_mdm_query_postgres::page_limit(&mut sql, &SCHEMA.parse("").unwrap(), None, column, 5),
+        rss_mdm_query_postgres::page_limit(
+            &mut sql,
+            &SCHEMA.parse("").unwrap(),
+            None,
+            &*BINDINGS,
+            5
+        ),
         Err(rss_mdm_query::Error::Budget)
     );
 }
+
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+struct Row {
+    id: i64,
+    #[schemars(length(max = 64))]
+    name: Option<String>,
+}
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+struct IdRow {
+    id: i64,
+}
+
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::column("id", "id"),
+                rss_mdm_query_postgres::Source::column("name", "name COLLATE \"C\""),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });
