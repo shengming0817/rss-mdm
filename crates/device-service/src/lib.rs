@@ -3,6 +3,7 @@
 mod array_read;
 pub mod association_directory;
 pub mod changes;
+pub mod object_changed;
 mod cursor;
 pub mod directory;
 mod directory_filter;
@@ -34,7 +35,9 @@ pub const INSTALL_SQL: &str = concat!(
     "\n",
     include_str!("../schema/identity.sql"),
     "\n",
-    include_str!("../schema/object-qualification.sql")
+    include_str!("../schema/object-qualification.sql"),
+    "\n",
+    include_str!("../schema/object-changes.sql")
 );
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 

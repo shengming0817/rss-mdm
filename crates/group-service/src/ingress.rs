@@ -76,7 +76,7 @@ impl Groups {
                 authority = true;
                 devices.insert(
                     change
-                        .device
+                        .identity.device
                         .ok_or(Error::Unavailable(Failure::GroupStorage))?,
                 );
             }

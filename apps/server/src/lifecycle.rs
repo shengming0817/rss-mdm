@@ -148,7 +148,7 @@ pub async fn serve(
                         };
                         let clock = Clock::new(monotonic.clone());
                         let runtime_options =
-                            compiled.config.runtime_database.options().map_err(|e| {
+                            compiled.config.runtime_options().map_err(|e| {
                                 ProcessError::at("startup.runtime_database_configuration", e)
                             })?;
                         let observation =

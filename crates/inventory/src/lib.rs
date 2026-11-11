@@ -8,6 +8,8 @@
 /// Observation dataset name selected by the Inventory projection.
 pub const DATASET: &str = "inventory";
 
+mod changes;
+pub use changes::{ASSET_CHANGED_SCHEMA, AssetChanged, AssetChangeKind, AssetChangeOperation, AssetFactIdentity};
 mod channels;
 mod cut;
 pub use cut::{AssetCut, InvalidAssetCut};

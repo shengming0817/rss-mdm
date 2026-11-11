@@ -445,33 +445,6 @@ impl SnapshotReader {
     }
 }
 
-/// One committed change in a fixed asset window. Interpretation belongs to the consuming owner.
-pub struct AssetChange {
-    pub revision: i64,
-    pub kind: ChangeKind,
-    pub device: Option<String>,
-    pub fields: Vec<String>,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChangeKind {
-    Inventory,
-    Manual,
-    Device,
-    Registration,
-    Source,
-    Credential,
-    Collection,
-    Catalog,
-}
-impl ChangeKind {
-    pub fn changes_authority(self) -> bool {
-        matches!(
-            self,
-            Self::Device | Self::Registration | Self::Source | Self::Credential
-        )
-    }
-}
 impl SnapshotReader {
     /// Read at most one page; both cuts are from this reader's tenant.
     pub async fn changes_page_in(
@@ -482,7 +455,7 @@ impl SnapshotReader {
         after: i64,
         through: Option<i64>,
         limit: usize,
-    ) -> Result<Vec<AssetChange>> {
+    ) -> Result<Vec<rss_mdm_inventory::AssetChanged>> {
         self.check_in(tx, to)?;
         if let Some(from) = from {
             self.check_in(tx, from)?;
@@ -494,17 +467,22 @@ impl SnapshotReader {
         let from = from.map(AssetCut::to_json);
         let to = to.to_json();
         let rows = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT revision,kind,identity->>'device' AS device,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible($2,revision) AND mdm.asset_visible($3,revision) AND revision>$4 AND ($5::bigint IS NULL OR revision<=$5) ORDER BY revision LIMIT $6")
+            sqlx::query("SELECT tenant_id,revision,source_epoch,kind,identity,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_cut_contains($2,source_epoch,writer_xid) AND mdm.asset_cut_contains($3,source_epoch,writer_xid) AND revision>$4 AND ($5::bigint IS NULL OR revision<=$5) ORDER BY revision LIMIT $6")
                 .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(limit as i64).fetch_all(c).await
         })).await?;
         rows.into_iter()
             .map(|r| {
-                Ok(AssetChange {
+                let event = rss_mdm_inventory::AssetChanged {
+                    v: 1,
+                    tenant: r.try_get("tenant_id")?,
                     revision: r.try_get("revision")?,
+                    history_epoch: r.try_get("source_epoch")?,
                     kind: stored(serde_json::from_value(Value::String(r.try_get("kind")?)))?,
-                    device: r.try_get("device")?,
+                    identity: stored(serde_json::from_value(r.try_get("identity")?))?,
                     fields: r.try_get("fields")?,
-                })
+                };
+                stored(event.validate())?;
+                Ok(event)
             })
             .collect()
     }

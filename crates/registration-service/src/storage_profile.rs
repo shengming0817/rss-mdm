@@ -621,7 +621,7 @@ CREATE FUNCTION "###, $access_schema, r###"capture_asset_authority() RETURNS tri
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO "###, $access_path, r###"
     AS $$
-DECLARE r jsonb; d jsonb; previous jsonb; k text; i text; dev text; v bigint; t uuid; platform text;
+DECLARE r jsonb; d jsonb; previous jsonb; k text; i text; dev text; v bigint; t uuid; platform text; registration_epoch uuid; previous_registration_epoch uuid;
 BEGIN
  IF TG_OP='DELETE' THEN r=to_jsonb(OLD); ELSE r=to_jsonb(NEW); END IF;
  IF TG_OP='UPDATE' THEN previous=to_jsonb(OLD); END IF;
@@ -632,8 +632,8 @@ BEGIN
   IF r->>'channel'='agent' THEN
    SELECT g.platform INTO platform FROM "###, $access_schema, r###"certificate_grants g WHERE g.tenant_id=t AND g.id=(r->>'certificate_grant_id')::uuid;
   END IF;
-  d=jsonb_build_object('id',i,'channel',r->>'channel','purpose',r->>'purpose','state',r->>'state','platform',platform);
-  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id','channel',previous->>'channel','purpose',previous->>'purpose','state',previous->>'state','platform',platform) THEN RETURN NULL; END IF;
+  d=jsonb_build_object('id',i,'channel',r->>'channel','purpose',r->>'purpose','state',r->>'state','platform',platform,'epoch',r->>'epoch');
+  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id','channel',previous->>'channel','purpose',previous->>'purpose','state',previous->>'state','platform',platform,'epoch',previous->>'epoch') THEN RETURN NULL; END IF;
  WHEN 'report_sources' THEN
   dev=r->>'device'; k='source'; i=jsonb_build_array(dev,r->>'source')::text;
   d=jsonb_build_object('device',dev,'source',r->>'source','epoch',r->>'epoch','enabled',r->'enabled');
@@ -646,7 +646,21 @@ BEGIN
  ELSE RAISE EXCEPTION 'unexpected asset authority';
  END CASE;
  IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NULL; END IF;
- v=mdm.record_asset_change(t,k,jsonb_build_object('device',dev,'identity',i),ARRAY[]::text[]);
+ IF TG_TABLE_NAME='devices' THEN
+  registration_epoch=(r->>'epoch')::uuid;
+  previous_registration_epoch=(previous->>'epoch')::uuid;
+ ELSE
+  SELECT epoch INTO registration_epoch FROM "###, $access_schema, r###"devices WHERE tenant_id=t AND id=dev;
+ END IF;
+ v=mdm.record_asset_change(t,k,jsonb_build_object('fact',i,'device',dev,
+  'registrationEpoch',registration_epoch,'previousRegistrationEpoch',previous_registration_epoch,
+  'source',CASE WHEN TG_TABLE_NAME='report_sources' THEN r->>'source' END,
+  'sourceEpoch',CASE WHEN TG_TABLE_NAME='report_sources' THEN r->>'epoch' END,
+  'previousSourceEpoch',CASE WHEN TG_TABLE_NAME='report_sources' THEN previous->>'epoch' END,
+  'operation',CASE WHEN TG_OP='DELETE' THEN 'deleted'
+    WHEN (TG_TABLE_NAME='report_sources' AND NOT (r->>'enabled')::boolean)
+      OR (TG_TABLE_NAME IN ('devices','credentials') AND r->>'state'<>'active') THEN 'revoked'
+    WHEN TG_OP='INSERT' THEN 'created' ELSE 'updated' END),ARRAY[]::text[]);
  IF TG_OP='DELETE' THEN d=NULL; END IF;
  INSERT INTO "###, $access_schema, r###"asset_authority_history VALUES(t,k,i,dev,v,d);
  RETURN NULL;
