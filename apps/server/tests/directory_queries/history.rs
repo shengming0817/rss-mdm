@@ -126,6 +126,10 @@ pub(in crate::assembly) async fn seal(
         .await
 }
 impl PreparedCollection {
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "One accepted collection proves replay, immutable trust, conflict and rollback on its original coordinates"
+    )]
     pub(in crate::assembly) async fn accept(&self, c: &Context, trusted: bool) -> Result<()> {
         let Self {
             scope,
@@ -145,7 +149,7 @@ impl PreparedCollection {
         let first = seal_collection_in(&mut tx, completion()).await?;
         let replay = seal_collection_in(&mut tx, completion()).await?;
         assert_eq!(first.encode(), replay.encode());
-        let present:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.device_hardware_evidence WHERE tenant_id=$1::uuid AND scope=$2 AND run=$3)").bind(c.tenant.to_string()).bind(scope.encode()?).bind(&run).fetch_one(&mut *tx).await?;
+        let present:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.device_hardware_evidence WHERE tenant_id=$1::uuid AND scope=$2 AND run=$3)").bind(c.tenant.to_string()).bind(scope.encode()?).bind(run).fetch_one(&mut *tx).await?;
         assert_eq!(present, trusted);
         // An altered acceptance cannot upgrade trust or replace immutable result coordinates.
         let mut changed = completion();
@@ -173,6 +177,10 @@ impl PreparedCollection {
     }
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "One real HTTP history consumer checks matching, permissions, retention and stable continuations against the same fixtures"
+)]
 pub(super) async fn exercise(
     c: &Context,
     http: &Http,
@@ -378,6 +386,10 @@ pub(super) async fn exercise(
     Ok(())
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "Both native sources exercise first commit, rollback, rejected replay and exact credential replacement"
+)]
 async fn native_registered_at(
     c: &Context,
     p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,

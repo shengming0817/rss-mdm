@@ -4,6 +4,10 @@ use rss_mdm_agent_channel as agent;
 use tower::ServiceExt;
 #[tokio::test]
 #[ignore = "T2: authenticated Agent HTTP directory derives the real public row and preserves eligibility/paging"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "The real Agent HTTP boundary receives its host monotonic clock"
+)]
 async fn authenticated_self_service_filters_typed_fields_and_business_search() -> Result<()> {
     let h = Harness::open().await?;
     let (policy, _) = h.policy("directory-self-service").await?;

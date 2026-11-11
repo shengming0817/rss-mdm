@@ -174,7 +174,7 @@ async fn native_grant_binds_original_device_and_replays_once() -> Result<()> {
     assert!(hidden.bootstrap.is_none() && hidden.registration.is_none());
     snapshot.rollback().await?;
     pool.close().await;
-    activation::prove(&c, &n, &service, &input, first.grant_id).await?;
+    activation::prove(&c, &n, &service, &input).await?;
     resources.close().await?;
     c.close().await;
     Ok(())

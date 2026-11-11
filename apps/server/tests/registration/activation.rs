@@ -1,19 +1,17 @@
 //! Real activation consumes a legal issued candidate and owns first-registration time atomically.
 use super::*;
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "The linear activation, rollback, replay and renewal proof retains original transaction coordinates"
+)]
 pub(super) async fn prove(
     c: &Context,
     n: &identity::Native,
     service: &agent::Service,
     input: &wire::NativeGrantRequest,
-    grant: Uuid,
 ) -> Result<()> {
-    let device: String = sqlx::query_scalar(
-        "SELECT device FROM mdm_access.certificate_grants WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(grant)
-    .fetch_one(&c.operator)
-    .await?;
+    let device = Uuid::new_v4().to_string();
+    let grant = Uuid::new_v4();
     let (peer, certificate, csr) = crate::device_material_support::peer_material(
         c,
         &device,
@@ -24,6 +22,8 @@ pub(super) async fn prove(
     let issuance = Uuid::new_v4();
     let issuer = format!("{:x}", Sha256::digest(&n.root));
     let mut tx = command::seed_transaction(c).await?;
+    sqlx::query("INSERT INTO mdm_access.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,expires_at) VALUES($1::uuid,$2,$2,'download','activation-time-proof',$3,$4,'windows',repeat('0',64),repeat('1',64),$5,'consumed',clock_timestamp()+interval '1 hour')")
+        .bind(c.tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(&device).bind(metadata.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.certificate_issuances(tenant_id,id,grant_id,operation_id,request_digest,authority_digest,csr,spki,identity,profile,not_before,not_after,state,certificate_chain,metadata,fingerprint,signing_issuer) VALUES($1::uuid,$2,$3,$4,repeat('1',64),repeat('2',64),$5,$6,$7,$8,$9,$10,'issued',$11,$12,$13,$14)")
         .bind(c.tenant.to_string()).bind(issuance).bind(grant).bind(Uuid::new_v4()).bind(csr)
         .bind(metadata.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).bind(&metadata.identity).bind(serde_json::to_value(&input.runtime)?).bind(metadata.not_before).bind(metadata.not_after).bind(json!([STANDARD.encode(&certificate)])).bind(serde_json::to_value(metadata)?).bind(format!("{:x}",Sha256::digest(&certificate))).bind(&issuer).execute(&mut *tx).await?;

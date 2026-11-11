@@ -1,6 +1,10 @@
 //! Legal metadata rows exercise the public owner and its actual SQL bindings through HTTP.
 use super::*;
 use crate::command_runtime_t2_support::seed_transaction;
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "One linear batch of legal metadata rows prepares independent directories without running mutation journeys"
+)]
 pub(super) async fn seed(
     c: &Context,
     p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,

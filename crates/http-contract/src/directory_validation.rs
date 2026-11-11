@@ -80,13 +80,13 @@ fn markers<'a>(
     active: &mut BTreeSet<String>,
     found: &mut Vec<&'a Value>,
 ) {
-    if let Some(reference) = value.get("$ref").and_then(Value::as_str) {
-        if active.insert(reference.into()) {
-            if let Some(next) = target(root, value) {
-                markers(next, root, row, active, found);
-            }
-            active.remove(reference);
+    if let Some(reference) = value.get("$ref").and_then(Value::as_str)
+        && active.insert(reference.into())
+    {
+        if let Some(next) = target(root, value) {
+            markers(next, root, row, active, found);
         }
+        active.remove(reference);
     }
     if row {
         if let Some(marker) = value.get(MARKER) {
