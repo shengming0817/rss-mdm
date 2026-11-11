@@ -15,7 +15,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 #[path = "query.rs"]
 mod query;
-async fn seed(
+pub(crate) async fn seed(
     c: &Context,
     scope: Uuid,
     object: &rss_mdm_inventory_service::objects::DeviceObject,

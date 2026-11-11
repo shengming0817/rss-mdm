@@ -115,3 +115,6 @@ REVOKE ALL ON FUNCTION mdm.advance_asset_epoch(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm.capture_asset_cut(uuid) TO mdm_api;
 GRANT EXECUTE ON FUNCTION mdm.capture_asset_cut(uuid),mdm.asset_cut_contains(jsonb,uuid,xid8),mdm.asset_visible(jsonb,bigint)
  TO mdm_runtime,mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_telemetry_runtime,mdm_command_runtime;
+
+-- Request coordinates use the active history epoch; Inventory retains write ownership.
+GRANT SELECT(id,active) ON mdm.asset_epochs TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime;

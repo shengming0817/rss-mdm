@@ -106,26 +106,34 @@ impl GroupStore {
     }
 }
 
-/// Exact published membership required by a consumer of current results.
-/// Unlike frozen source readability, this requires the current head to match.
+/// Frozen membership coordinates whose semantics must still be current.
 #[derive(Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CurrentMembership {
     /// Group identity in the bound tenant.
     pub id: uuid::Uuid,
-    /// Authored group revision.
+    /// Semantic definition revision; descriptive edits do not advance it.
     pub revision: i64,
     /// Exact immutable published membership run.
     pub member_set: Option<uuid::Uuid>,
     /// Published membership version.
     pub member_version: i64,
 }
+/// Current observation supporting a still-valid frozen membership result.
+#[derive(serde::Serialize)]
+pub struct CurrentMembershipState {
+    /// The exact requested immutable coordinates, after semantic validation.
+    #[serde(flatten)]
+    pub membership: CurrentMembership,
+    /// Latest complete dynamic input; static groups have no predicate input cut.
+    pub input_version: Option<String>,
+}
 impl GroupStore {
-    /// Return only exact current Endpoint coordinates, preserving each requested version.
+    /// Validate semantic Endpoint coordinates and return the latest complete input observation.
     pub async fn current_memberships_in(
         &self,
         tx: &mut PgTransaction<'_>,
         expected: &[CurrentMembership],
-    ) -> InTransaction<Vec<CurrentMembership>> {
+    ) -> InTransaction<Vec<CurrentMembershipState>> {
         input!(self.check_transaction(tx)?);
         if expected.len() > 1600 {
             return Ok(Err(Rejection::CapacityExceeded));
@@ -133,17 +141,22 @@ impl GroupStore {
         let tenant = self.tenant.to_string();
         let document = data(serde_json::to_string(expected))?;
         let ids=tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query_as::<_,(uuid::Uuid,i64,Option<uuid::Uuid>,i64)>("SELECT x.id,x.revision,x.member_set,x.member_version FROM jsonb_to_recordset($2::jsonb) x(id uuid,revision bigint,member_set uuid,member_version bigint) JOIN mdm_group.groups g ON g.tenant_id=$1::uuid AND g.id=x.id WHERE NOT g.deleted AND g.asset_context='endpoint' AND g.revision=x.revision AND g.member_set IS NOT DISTINCT FROM x.member_set AND g.member_version=x.member_version AND mdm_group.group_current(g.id)")
+            sqlx::query_as::<_,(uuid::Uuid,i64,Option<uuid::Uuid>,i64,Option<String>)>("SELECT x.id,x.revision,x.member_set,x.member_version,CASE WHEN g.kind<>'static' THEN head.input_version END FROM jsonb_to_recordset($2::jsonb) x(id uuid,revision bigint,member_set uuid,member_version bigint) JOIN mdm_group.groups g ON g.tenant_id=$1::uuid AND g.id=x.id JOIN mdm_group.source_state s ON(s.tenant_id,s.group_id)=(g.tenant_id,g.id) LEFT JOIN mdm_group.member_runs head ON(head.tenant_id,head.id)=(g.tenant_id,g.member_set) LEFT JOIN mdm_group.member_runs frozen ON(frozen.tenant_id,frozen.id)=(g.tenant_id,x.member_set) WHERE NOT g.deleted AND g.asset_context='endpoint' AND s.definition_version=x.revision AND g.member_version=x.member_version AND mdm_group.group_current(g.id) AND (x.member_set IS NULL AND g.kind='static' AND x.member_version=0 OR frozen.group_id=g.id AND frozen.phase='published' AND (convert_from(frozen.receipt,'UTF8')::jsonb->'group'->>'member_version')::bigint=x.member_version AND frozen.rule_version IS NOT DISTINCT FROM g.rule_version)")
                 .bind(tenant).bind(document).fetch_all(c).await
         })).await?;
         Ok(Ok(ids
             .into_iter()
             .map(
-                |(id, revision, member_set, member_version)| CurrentMembership {
-                    id,
-                    revision,
-                    member_set,
-                    member_version,
+                |(id, revision, member_set, member_version, input_version)| {
+                    CurrentMembershipState {
+                        membership: CurrentMembership {
+                            id,
+                            revision,
+                            member_set,
+                            member_version,
+                        },
+                        input_version,
+                    }
                 },
             )
             .collect()))

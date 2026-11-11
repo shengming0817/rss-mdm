@@ -88,6 +88,13 @@ async fn host_reports_its_binding_then_releases_listener_and_database_resources(
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
+    // An idle tenant has no configuration-input target until real work arrives.
+    sqlx::query(
+        "SELECT rss_reconcile.wake($1::uuid,'mdm.policy','configuration-inputs',ARRAY[]::text[])",
+    )
+    .bind(tenant.to_string())
+    .execute(&mut *tx)
+    .await?;
     let changed=sqlx::query("UPDATE rss_reconcile.targets SET token=NULL,lease_until=NULL,next_run=NULL,queue_ticket=NULL,result='suspended',epoch=epoch+1 WHERE tenant_id=$1::uuid AND reconciler='mdm.policy' AND entity='configuration-inputs'").bind(tenant.to_string()).execute(&mut *tx).await?;
     assert_eq!(changed.rows_affected(), 1);
     sqlx::query("INSERT INTO mdm_planning.configuration_source_dispatch(tenant_id,failure,failure_generation) VALUES($1::uuid,'automation_suspended',1) ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure,failure_generation=configuration_source_dispatch.failure_generation+1").bind(tenant.to_string()).execute(&mut *tx).await?;

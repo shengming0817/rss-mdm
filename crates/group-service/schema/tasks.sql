@@ -67,5 +67,3 @@ COMMIT;
 -- Live reverse membership uses the already admitted product read pool.
 GRANT USAGE ON SCHEMA mdm_group,mdm_assets TO mdm_access;
 GRANT SELECT ON mdm_group.groups,mdm_group.member_runs,mdm_group.member_changes,mdm_assets.group_fields TO mdm_access;
-
-GRANT SELECT(id,active) ON mdm.asset_epochs TO mdm_inventory_runtime;

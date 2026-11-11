@@ -1134,21 +1134,6 @@ pub struct RelationWindow {
     pub cursor: Option<Uuid>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn scope_page_budget_is_inclusive_and_rejects_overflow() {
-        assert!(check_page_count(1_000_000, 1).is_ok());
-        for (processed, added) in [(i64::MAX as usize, 1), (usize::MAX, 1)] {
-            assert!(matches!(
-                check_page_count(processed, added),
-                Err(BindingError::Invalid)
-            ));
-        }
-    }
-}
-
 impl ScopeBinding {
     /// Freeze the demand coordinate in the same snapshot as the original AssetCut.
     pub async fn covered_inputs_in(
@@ -1233,5 +1218,20 @@ impl ScopeBinding {
         })
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn scope_page_budget_is_inclusive_and_rejects_overflow() {
+        assert!(check_page_count(1_000_000, 1).is_ok());
+        for (processed, added) in [(i64::MAX as usize, 1), (usize::MAX, 1)] {
+            assert!(matches!(
+                check_page_count(processed, added),
+                Err(BindingError::Invalid)
+            ));
+        }
     }
 }

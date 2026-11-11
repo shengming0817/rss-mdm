@@ -54,7 +54,7 @@ async fn reconcile(c: &Context) -> Result<()> {
     use rss_mdm_policy_service::worker::jobs;
     use rss_mdm_scope_service::tasks;
     use rss_reconcile::{Completion, DurableStore, ResourceSet, Scope, Target};
-    let pool = c.inputs.database("da_command_runtime").pool().await?;
+    let pool = c.inputs.pool("da_command_runtime").await?;
     let result = async {
         let timer = rss_mdm_policy_service::clock::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -76,8 +76,11 @@ async fn reconcile(c: &Context) -> Result<()> {
                 tasks::target(DA, c.tenant, id),
             ),
             (
-                input(jobs::domain(StorageProfile::Mdm)),
-                input(jobs::domain(DA)),
+                Target::new(
+                    Scope::new(c.tenant, jobs::domain(StorageProfile::Mdm))?,
+                    "schedules",
+                )?,
+                Target::new(Scope::new(c.tenant, jobs::domain(DA))?, "schedules")?,
             ),
             (
                 input(tasks::domain(StorageProfile::Mdm)),
@@ -228,7 +231,7 @@ server.serve_forever()
             },&std::fs::read(tls.join("ca.crt"))?,&key.stdout,([127,0,0,1],port).into())?),
         }])?);
         for (profile,role) in [(StorageProfile::Mdm,"mdm_access"),(DA,"da_access")] {
-            let pool = c.inputs.database(role).pool().await?;
+            let pool = c.inputs.pool(role).await?;
             let runtime = c.inputs.runtime(role,c.tenant).await?;
             let result = async {
                 let budget = AuditBudget::new(Duration::from_secs(10));

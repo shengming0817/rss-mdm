@@ -114,10 +114,14 @@ impl RuntimeDiagnostics {
     )]
     async fn automation_component(&self, cutoff: Instant) -> Component {
         let status = self.planning.automation_state();
+        let group_scan = self.groups.runner_health().scan;
+        let scope_scan = self.scopes.runner_health().scan;
         let mut automation = component(
             ComponentName::Automation,
             status == Some(rss_runtime::TaskState::Running)
                 && self.devices.worker_ready()
+                && group_scan.is_some_and(|scan| scan.failure.is_none())
+                && scope_scan.is_some_and(|scan| scan.failure.is_none())
                 && self.groups.task_state() == Some(rss_runtime::TaskState::Running)
                 && self.scopes.task_state() == Some(rss_runtime::TaskState::Running)
                 && self.scope_group_health.state() == Some(rss_runtime::TaskState::Running)
@@ -142,11 +146,19 @@ impl RuntimeDiagnostics {
             automation.reasons.push(Reason::WorkerNotRunning);
             automation.health = Health::Unknown;
         }
-        if !self.scope_group_health.observed() || !self.asset_input_health.observed() {
+        if group_scan.is_none()
+            || scope_scan.is_none()
+            || !self.scope_group_health.observed()
+            || !self.asset_input_health.observed()
+        {
             automation.reasons.push(Reason::Unobserved);
             automation.health = Health::Unknown;
         }
-        if self.scope_group_health.failed() || self.asset_input_health.failed() {
+        if group_scan.is_some_and(|scan| scan.failure.is_some())
+            || scope_scan.is_some_and(|scan| scan.failure.is_some())
+            || self.scope_group_health.failed()
+            || self.asset_input_health.failed()
+        {
             automation.reasons.push(Reason::DependencyUnavailable);
             automation.health = Health::Degraded;
         }

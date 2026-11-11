@@ -397,7 +397,6 @@ GRANT EXECUTE ON FUNCTION "###, $schema, "scope_admission(uuid,text) TO ", $acce
 
 GRANT SELECT ON "###, $schema, "scopes,", $schema, "scope_runs,", $schema, "scope_source_members TO ", $access, r###";
 GRANT SELECT ON "###, $operations, " TO ", $scope_runtime, r###";
-GRANT SELECT(id,active) ON mdm.asset_epochs TO "###, $scope_runtime, ",", $policy_runtime, r###";
 -- Policy is the sole configuration writer; calculation stays on the Scope runtime.
 GRANT USAGE ON "###, $schema_decl, " TO ", $policy_runtime, r###";
 GRANT SELECT,INSERT ON "###, $schema, "scopes,", $schema, "scope_versions,", $schema, "scope_sources,", $tasks, ",", $operations, " TO ", $policy_runtime, r###";

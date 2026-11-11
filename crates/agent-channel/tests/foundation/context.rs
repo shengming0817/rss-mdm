@@ -23,12 +23,6 @@ impl Database {
             .ssl_mode(PgSslMode::VerifyFull)
             .ssl_root_cert(&self.ca_file))
     }
-    pub async fn pool(&self) -> Result<sqlx::PgPool> {
-        Ok(PgPoolOptions::new()
-            .max_connections(4)
-            .connect_with(self.options()?)
-            .await?)
-    }
 }
 #[derive(serde::Deserialize)]
 pub struct Identity {
@@ -45,6 +39,20 @@ pub struct Inputs {
 impl Inputs {
     pub fn database(&self, role: &str) -> &Database {
         &self.databases["agent_foundation"][role]
+    }
+    pub fn options(&self, role: &str) -> Result<PgConnectOptions> {
+        let hex = |bytes: &[u8; 16]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        Ok(self.database(role).options()?.options([
+            ("rss.storage_target", hex(&self.installation.target)),
+            ("rss.storage_lineage", hex(&self.installation.lineage)),
+            ("rss.execution_epoch", "1".to_owned()),
+        ]))
+    }
+    pub async fn pool(&self, role: &str) -> Result<sqlx::PgPool> {
+        Ok(PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(self.options(role)?)
+            .await?)
     }
     pub async fn runtime(
         &self,
@@ -107,7 +115,7 @@ impl Context {
     pub async fn open() -> Result<Self> {
         let inputs: Inputs =
             serde_json::from_slice(&std::fs::read(std::env::var("RSS_MDM_T2_ENV")?)?)?;
-        let operator = inputs.database("postgres").pool().await?;
+        let operator = inputs.pool("postgres").await?;
         let fail = installation::Installation {
             inputs: &inputs,
             fail_before: Some("agent"),
@@ -195,10 +203,10 @@ impl Context {
             .await?;
         rss_mdm_inventory_postgres::initialize_fields_in(&mut tx, tenant).await?;
         tx.commit().await?;
-        let access = inputs.database("da_access").pool().await?;
+        let access = inputs.pool("da_access").await?;
         let runtime = inputs.runtime("da_command_runtime", tenant).await?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
-        let audit_pool = inputs.database("da_command_runtime").pool().await?;
+        let audit_pool = inputs.pool("da_command_runtime").await?;
         let audit = Arc::new(
             rss_mdm_audit_integration::AuditStore::new(
                 audit_pool.clone(),

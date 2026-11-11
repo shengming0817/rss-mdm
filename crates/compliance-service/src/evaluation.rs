@@ -23,6 +23,8 @@ impl Compliance {
             if g.asset_context != rss_mdm_group::AssetContext::Endpoint {
                 return Err(Error::Malformed.into());
             }
+            let source = checked(self.groups.capture_source_in(tx, gid).await?)?;
+            let definition_revision = stored(i64::try_from(source.coordinates.definition_version))?;
             let set = checked(self.groups.current_member_set_in(tx, gid).await?)?;
             let mut ready = g.kind == group::GroupKind::Static;
             let mut asset_cut = None;
@@ -51,7 +53,7 @@ impl Compliance {
             }
             let expected = group::sources::CurrentMembership {
                 id,
-                revision: g.revision.get(),
+                revision: definition_revision,
                 member_set: set
                     .map(|v| stored(Uuid::parse_str(&v.to_string())))
                     .transpose()?,
@@ -62,10 +64,11 @@ impl Compliance {
                     .current_memberships_in(tx, std::slice::from_ref(&expected))
                     .await?,
             )?
-            .contains(&expected);
+            .iter()
+            .any(|current| current.membership == expected);
             groups.push(GroupInput {
                 id,
-                revision: g.revision.get(),
+                revision: definition_revision,
                 member_version: g.member_version as i64,
                 member_set: set
                     .map(|v| stored(Uuid::parse_str(&v.to_string())))

@@ -67,8 +67,9 @@ async fn wait_sql(c: &Context, sql: &'static str, object: Uuid) -> Result<()> {
             if sqlx::query_scalar::<_, bool>(sql)
                 .bind(c.tenant.to_string())
                 .bind(object)
-                .fetch_one(&c.operator)
+                .fetch_optional(&c.operator)
                 .await?
+                .unwrap_or(false)
             {
                 return Ok::<_, anyhow::Error>(());
             }
@@ -306,12 +307,21 @@ async fn late_commits_and_bounded_pages_do_not_use_sequence_as_commit_order() ->
 struct Workers {
     stack: rss_runtime::ShutdownStack,
     pool: sqlx::PgPool,
+    policy_owner: Option<crate::owner_storage::OwnerRuntime>,
 }
 impl Workers {
     async fn start(
         c: &Context,
         owners: &Owners,
         scopes: Arc<rss_mdm_scope_service::Scopes>,
+    ) -> Result<Self> {
+        Self::start_policy(c, owners, scopes, None).await
+    }
+    async fn start_policy(
+        c: &Context,
+        owners: &Owners,
+        scopes: Arc<rss_mdm_scope_service::Scopes>,
+        policy: Option<&crate::policy_configuration_t2::fixture::Fixture>,
     ) -> Result<Self> {
         let config: crate::config::Config =
             serde_json::from_value(crate::host_t2_support::configuration(
@@ -372,6 +382,33 @@ impl Workers {
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
         let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+        let mut policy_owner = None;
+        let policy_work = if let Some(fixture) = policy {
+            let owner = planning::owner(c, "mdm_policy_runtime").await?;
+            let app = crate::assembly::policy::application(
+                &owner,
+                c.tenant,
+                &[7; 32],
+                Arc::new(crate::clock::SystemClock),
+                fixture.resources.protection.clone(),
+                None,
+            )
+            .await?;
+            let events = crate::assembly::policy::events(
+                app.clone(),
+                fixture.materials.clone(),
+                fixture.software.materials.clone(),
+                fixture.registration.materials.clone(),
+                Vec::new(),
+            )
+            .await?;
+            let work =
+                rss_mdm_policy_service::worker::PolicyWork::new(app, events, schedule.clone());
+            policy_owner = Some(owner);
+            Some(rss_mdm_policy_service::worker::Automation::new(work, 2))
+        } else {
+            None
+        };
         let devices = Arc::new(
             rss_mdm_device_service::worker::DeviceWork::new(
                 Arc::new(rss_mdm_device_service::Associations::new(
@@ -438,8 +475,15 @@ impl Workers {
             .registration(signals.handle(worker_wake::Work::Scopes))
             .critical(),
         );
+        if let Some(work) = policy_work {
+            launch.stage_deferred_task_with_token(work.registration(signals.policy()).critical());
+        }
         launch.finish();
-        Ok(Self { stack, pool })
+        Ok(Self {
+            stack,
+            pool,
+            policy_owner,
+        })
     }
     async fn close(self) -> Result<()> {
         anyhow::ensure!(
@@ -447,6 +491,9 @@ impl Workers {
             "worker shutdown failed"
         );
         self.pool.close().await;
+        if let Some(owner) = self.policy_owner {
+            owner.runtime.close().await;
+        }
         Ok(())
     }
 }
@@ -539,7 +586,23 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     owners.groups.execute(&group::Command::Group{id,change:Box::new(group::operation::Operation{operation_id:Uuid::new_v4(),expected_revision:0,input:group::GroupChange::Create{presentation:serde_json::from_value(json!({"name":"asset-inputs","description":""}))?,criteria:Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.asset.ready","op":"eq","value":{"kind":"boolean","value":true}}}))?),asset_context:rss_mdm_group::AssetContext::Endpoint}})},&c.request(&proof)?,&proof).await?;
     let scope = super::scope(&c, &[id]).await?;
     let device = planning::endpoint(&c).await?;
-    let workers = Workers::start(&c, &owners, scopes.clone()).await?;
+    let policy_fixture = crate::policy_configuration_t2::fixture::Fixture::open(&c, false).await?;
+    let policy = crate::policy_configuration_t2::seed(
+        &c,
+        scope,
+        &device,
+        &policy_fixture.resources.protection,
+    )
+    .await?;
+    let mut policy_scope = crate::command_runtime_t2_support::seed_transaction(&c).await?;
+    sqlx::query("UPDATE mdm_scope.scopes SET policy_id=$3 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(c.tenant.to_string())
+        .bind(scope)
+        .bind(policy)
+        .execute(&mut *policy_scope)
+        .await?;
+    policy_scope.commit().await?;
+    let workers = Workers::start_policy(&c, &owners, scopes.clone(), Some(&policy_fixture)).await?;
     wait_sql(&c,"SELECT member_set IS NOT NULL AND member_count=0 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",id).await?;
     inventory(&c, &device.members[0].device, &definition, true).await?;
     wait_sql(
@@ -550,7 +613,8 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     .await?;
     wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.channel='mdm' AND r.matched)",scope).await?;
     let (run,entry):(Uuid,i64)=sqlx::query_as("SELECT s.resolution,r.entry_revision FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.channel='mdm'").bind(c.tenant.to_string()).bind(scope).bind(&device.members[0].device).fetch_one(&c.operator).await?;
-    let policy_scheduled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.work w JOIN rss_reconcile.targets t ON t.tenant_id=w.tenant_id AND t.entity='job:'||w.id::text AND t.reconciler='mdm.policy' WHERE w.tenant_id=$1::uuid AND w.id=$2 AND NOT w.started AND NOT w.completed)").bind(c.tenant.to_string()).bind(run).fetch_one(&c.operator).await?;
+    wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2 AND started AND completed AND failure IS NULL) AND EXISTS(SELECT FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND gateway_accepted)",run).await?;
+    let policy_scheduled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.work w JOIN rss_reconcile.targets t ON t.tenant_id=w.tenant_id AND t.entity='job:'||w.id::text AND t.reconciler='mdm.policy' WHERE w.tenant_id=$1::uuid AND w.id=$2 AND w.started AND w.completed)").bind(c.tenant.to_string()).bind(run).fetch_one(&c.operator).await?;
     assert!(policy_scheduled);
     wait_sql(&c,"SELECT NOT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler IN('mdm.groups','mdm.scopes','mdm.compliance') AND entity='inputs' AND next_run IS NOT NULL) AND EXISTS(SELECT FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 AND resolution IS NOT NULL)",scope).await?;
     let before:Vec<(String,i64)>=sqlx::query_as("SELECT reconciler,wake_version FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler IN('mdm.groups','mdm.scopes','mdm.compliance') AND entity='inputs' ORDER BY reconciler").bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
@@ -592,8 +656,24 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
             .bind(c.tenant.to_string())
             .fetch_one(&c.operator)
             .await?;
+    let commands_before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid",
+    )
+    .bind(c.tenant.to_string())
+    .fetch_one(&c.operator)
+    .await?;
     inventory(&c, &device.members[0].device, &definition, true).await?;
     settled(&c).await?;
+    let commands_after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid",
+    )
+    .bind(c.tenant.to_string())
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(
+        commands_before, commands_after,
+        "same facts do not repeat the actual configuration effect"
+    );
     let work_after: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mdm_policy.work WHERE tenant_id=$1::uuid")
             .bind(c.tenant.to_string())
@@ -605,10 +685,16 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     );
     let retained:i64=sqlx::query_scalar("SELECT r.entry_revision FROM mdm_scope.scopes s JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.device=$3 AND r.channel='mdm'").bind(c.tenant.to_string()).bind(scope).bind(&device.members[0].device).fetch_one(&c.operator).await?;
     assert_eq!(retained, entry, "continuous membership retains its entry");
-    for n in 0..33 {
-        let group = Uuid::new_v4();
-        owners.groups.execute(&group::Command::Group{id:group,change:Box::new(group::operation::Operation{operation_id:Uuid::new_v4(),expected_revision:0,input:group::GroupChange::Create{presentation:serde_json::from_value(json!({"name":format!("page-{n}"),"description":""}))?,criteria:Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.asset.ready","op":"eq","value":{"kind":"boolean","value":true}}}))?),asset_context:rss_mdm_group::AssetContext::Endpoint}})},&c.request(&proof)?,&proof).await?;
+    workers.close().await?;
+    for _ in 0..33 {
+        let proof = c.authenticate(&account).await?;
+        let candidate=owners.create(&c,&proof,Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.asset.ready","op":"eq","value":{"kind":"boolean","value":true}}}))?)).await?;
+        let task:Option<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND target=$2 AND NOT completed").bind(c.tenant.to_string()).bind(candidate).fetch_optional(&c.operator).await?;
+        if let Some(task) = task {
+            owners.settle(&c, task).await?;
+        }
     }
+    let workers = Workers::start_policy(&c, &owners, scopes.clone(), Some(&policy_fixture)).await?;
     wait_sql(&c,"SELECT count(*)=34 AND bool_and(member_count=1) AND bool_or(id=$2) FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted",id).await?;
     inventory(&c, &device.members[0].device, &definition, false).await?;
     wait_sql(&c,"SELECT count(*)=34 AND bool_and(member_count=0) AND bool_or(id=$2) FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted",id).await?;
@@ -631,7 +717,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     .execute(&mut *change)
     .await?;
     change.commit().await?;
-    let workers = Workers::start(&c, &owners, scopes).await?;
+    let workers = Workers::start_policy(&c, &owners, scopes, Some(&policy_fixture)).await?;
     settled(&c).await?;
     let (new_run, matched):(Uuid,bool)=sqlx::query_as("SELECT s.resolution,coalesce(bool_or(r.matched) FILTER(WHERE r.channel='mdm'),false) FROM mdm_scope.scopes s LEFT JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 GROUP BY s.resolution").bind(c.tenant.to_string()).bind(scope).fetch_one(&c.operator).await?;
     assert!(
@@ -640,11 +726,13 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     );
     assert_ne!(new_run, run);
     let publication:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.work w JOIN rss_reconcile.targets t ON t.tenant_id=w.tenant_id AND t.entity='job:'||w.id::text AND t.reconciler='mdm.policy' WHERE w.tenant_id=$1::uuid AND w.id=$2)").bind(c.tenant.to_string()).bind(new_run).fetch_one(&c.operator).await?;
+    wait_sql(&c,"SELECT completed AND failure IS NULL FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2",new_run).await?;
     assert!(
         publication,
         "recovered Scope publication must durably schedule its Policy work"
     );
     workers.close().await?;
+    policy_fixture.close().await?;
     drop(owners);
     c.close().await;
     Ok(())
@@ -663,11 +751,11 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
     let a = planning::endpoint(&c).await?;
     let b = planning::endpoint(&c).await?;
     let id = owners.create(&c, &proof, None).await?;
-    let edit = |device: String| group::Command::Group {
+    let edit = |device: String, expected_revision| group::Command::Group {
         id,
         change: Box::new(group::operation::Operation {
             operation_id: Uuid::new_v4(),
-            expected_revision: 1,
+            expected_revision,
             input: group::GroupChange::Members {
                 add: vec![rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
                     device,
@@ -679,7 +767,7 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
     let first = owners
         .groups
         .execute(
-            &edit(a.members[0].device.clone()),
+            &edit(a.members[0].device.clone(), 1),
             &c.request(&proof)?,
             &proof,
         )
@@ -693,7 +781,7 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
     let second = owners
         .groups
         .execute(
-            &edit(b.members[0].device.clone()),
+            &edit(b.members[0].device.clone(), 2),
             &c.request(&proof)?,
             &proof,
         )
@@ -867,6 +955,13 @@ async fn members(
     device: &str,
     add: bool,
 ) -> Result<()> {
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(group)
+    .fetch_one(&c.operator)
+    .await?;
     let object = rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device.into());
     owners
         .groups
@@ -875,7 +970,7 @@ async fn members(
                 id: group,
                 change: Box::new(group::operation::Operation {
                     operation_id: Uuid::new_v4(),
-                    expected_revision: 1,
+                    expected_revision: revision as u64,
                     input: group::GroupChange::Members {
                         add: if add { vec![object.clone()] } else { vec![] },
                         remove: if add { vec![] } else { vec![object] },
@@ -898,6 +993,7 @@ async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<
             P::InventoryRead,
             P::GroupRead,
             P::GroupWrite,
+            P::GroupRecompute,
             P::ComplianceRead,
             P::ComplianceWrite,
             P::ComplianceRuleRead,
@@ -917,9 +1013,10 @@ async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<
     members(&c, &owners, &proof, fixed, a, true).await?;
     let dynamic = Uuid::new_v4();
     owners.groups.execute(&group::Command::Group{id:dynamic,change:Box::new(group::operation::Operation{operation_id:Uuid::new_v4(),expected_revision:0,input:group::GroupChange::Create{presentation:serde_json::from_value(json!({"name":"unknown-input","description":""}))?,criteria:Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.asset.unrelated","op":"eq","value":{"kind":"boolean","value":true}}}))?),asset_context:rss_mdm_group::AssetContext::Endpoint}})},&c.request(&proof)?,&proof).await?;
+    let workers = Workers::start(&c, &owners, scopes).await?;
+    settled(&c).await?;
     let fixed_rule = put_rule(&c, &owners, &proof, fixed).await?;
     let unknown_rule = put_rule(&c, &owners, &proof, dynamic).await?;
-    let workers = Workers::start(&c, &owners, scopes).await?;
     settled(&c).await?;
     assert_eq!(
         rule_status(&c, &owners, &proof, a, fixed_rule).await?,
@@ -978,6 +1075,103 @@ async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<
     assert_eq!(
         rule_status(&c, &owners, &proof, a, fixed_rule).await?,
         Current::NonCompliant
+    );
+    // A rule revision is semantic even when the complete three-valued membership
+    // is unchanged. Dependent Groups must capture the new source definition.
+    let proof = c.authenticate(&account).await?;
+    let child = Uuid::new_v4();
+    owners.groups.execute(&group::Command::Group{id:child,change:Box::new(group::operation::Operation{operation_id:Uuid::new_v4(),expected_revision:0,input:group::GroupChange::Create{
+        presentation:serde_json::from_value(json!({"name":"dependent","description":""}))?,
+        criteria:Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"group","groupId":dynamic,"op":"member_of"}}))?),
+        asset_context:rss_mdm_group::AssetContext::Endpoint,
+    }})},&c.request(&proof)?,&proof).await?;
+    settled(&c).await?;
+    let before_member: i64 = sqlx::query_scalar(
+        "SELECT member_version FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(dynamic)
+    .fetch_one(&c.operator)
+    .await?;
+    let before_rule = desired(&c, unknown_rule).await?;
+    let proof = c.authenticate(&account).await?;
+    owners.groups.execute(&group::Command::Group{id:dynamic,change:Box::new(group::operation::Operation{operation_id:Uuid::new_v4(),expected_revision:1,input:group::GroupChange::Rule{
+        criteria:serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"and","children":[{"kind":"predicate","field":"custom.asset.unrelated","op":"eq","value":{"kind":"boolean","value":true}},{"kind":"predicate","field":"custom.asset.ready","op":"eq","value":{"kind":"boolean","value":false}}]}}))?,
+    }})},&c.request(&proof)?,&proof).await?;
+    settled(&c).await?;
+    let after_member: i64 = sqlx::query_scalar(
+        "SELECT member_version FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(dynamic)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(
+        before_member, after_member,
+        "definition changed without a three-valued membership change"
+    );
+    let sources:serde_json::Value=sqlx::query_scalar("SELECT convert_from(r.input,'UTF8')::jsonb->'sources' FROM mdm_group.groups g JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(g.tenant_id,g.member_set) WHERE g.tenant_id=$1::uuid AND g.id=$2").bind(c.tenant.to_string()).bind(child).fetch_one(&c.operator).await?;
+    let sources: Vec<rss_mdm_group::GroupSource> = serde_json::from_value(sources)?;
+    assert_eq!(
+        sources[0].coordinates.definition_version, 2,
+        "equal membership still propagates source definition demand"
+    );
+    assert_ne!(desired(&c, unknown_rule).await?, before_rule);
+    let stable = desired(&c, unknown_rule).await?;
+    let child_calculation: i64 = sqlx::query_scalar(
+        "SELECT calculation_revision FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(child)
+    .fetch_one(&c.operator)
+    .await?;
+    for input in [
+        group::GroupChange::Recompute {},
+        group::GroupChange::Edit {
+            presentation: serde_json::from_value(
+                json!({"name":"renamed","description":"presentation only"}),
+            )?,
+        },
+    ] {
+        let proof = c.authenticate(&account).await?;
+        owners
+            .groups
+            .execute(
+                &group::Command::Group {
+                    id: dynamic,
+                    change: Box::new(group::operation::Operation {
+                        operation_id: Uuid::new_v4(),
+                        expected_revision: 2,
+                        input,
+                    }),
+                },
+                &c.request(&proof)?,
+                &proof,
+            )
+            .await?;
+        settled(&c).await?;
+        let proof = c.authenticate(&account).await?;
+        assert_eq!(
+            desired(&c, unknown_rule).await?,
+            stable,
+            "no new semantic demand"
+        );
+        assert_eq!(
+            rule_status(&c, &owners, &proof, a, unknown_rule).await?,
+            Current::NonCompliant,
+            "a complete frozen assessment survives a new identical calculation and presentation edits"
+        );
+    }
+    let after_child: i64 = sqlx::query_scalar(
+        "SELECT calculation_revision FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(child)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(
+        after_child, child_calculation,
+        "presentation and observation alone do not propagate semantic work"
     );
     workers.close().await?;
     drop(owners);

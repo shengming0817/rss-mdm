@@ -57,90 +57,99 @@ where
     H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
     V: IngressValidator<Vec<u8>> + Send + Sync + 'static,
 {
-    pub(crate) async fn open(
-        config: &crate::config::Config,
+    pub(crate) fn open<'a>(
+        config: &'a crate::config::Config,
         protection: Arc<rss_mdm_native_protection::Protector>,
         health: Arc<Health>,
-        lane: Lane<'_>,
+        lane: Lane<'a>,
         bind: impl FnOnce(
             Arc<PgRuntime>,
             rss_request_context::TenantId,
             rss_reconcile_postgres::PgMessagingStore,
-        ) -> (H, V),
-    ) -> Result<Arc<Self>, Error> {
-        let db = lane.database;
-        if db.user != lane.role {
-            return Err(Error::Malformed);
-        }
-        let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
-            .map_err(|_| Error::Malformed)?;
-        let pg = PgConfig::new(
-            &db.host,
-            db.port,
-            &db.name,
-            &db.user,
-            PgPassword::new(crate::config::secret(&db.password_file)?.as_str()),
-            PgPrivateCa::from_pem(crate::config::read(&db.ca_file, 1024 * 1024, false)?.to_vec())
-                .map_err(|_| Error::Malformed)?,
-        )
-        .with_pool_limits(0, 2);
-        let binding = ExecutionBinding::new(
-            StorageIdentity::new(
-                config.storage_binding.target,
-                config.storage_binding.lineage,
-            )
-            .map_err(|_| Error::Malformed)?,
-            vec![(
-                tenant,
-                Epoch::new(config.storage_binding.epoch).map_err(|_| Error::Malformed)?,
-            )],
-        )
-        .map_err(|_| Error::Malformed)?;
-        let runtime = Arc::new(
-            PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, binding)
-                .await
-                .map_err(|_| unavailable())?,
-        );
-        let result = async {
-            let messaging =
-                rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
-                    .await
-                    .map_err(|_| unavailable())?;
-            let (effect, validator) = bind(runtime.clone(), tenant, messaging);
-            let capture = PgRecoveryCapture::new(runtime.clone(), protection, deadline())
-                .await
-                .map_err(|_| unavailable())?;
-            let projection = PgLocalProjection::new(
-                capture,
-                ConsumerGroup::parse(lane.consumer).expect("constant consumer"),
-                MessagingDomain::parse(lane.domain).expect("constant domain"),
-                effect,
-                DeliveryBudget::new(
-                    Duration::from_secs(30),
-                    Duration::from_secs(6),
-                    Duration::from_secs(6),
-                    Duration::from_secs(2),
+        ) -> (H, V)
+        + Send
+        + 'a,
+    ) -> futures::future::BoxFuture<'a, Result<Arc<Self>, Error>> {
+        Box::pin(async move {
+            let db = lane.database;
+            if db.user != lane.role {
+                return Err(Error::Malformed);
+            }
+            let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
+                .map_err(|_| Error::Malformed)?;
+            let pg = PgConfig::new(
+                &db.host,
+                db.port,
+                &db.name,
+                &db.user,
+                PgPassword::new(crate::config::secret(&db.password_file)?.as_str()),
+                PgPrivateCa::from_pem(
+                    crate::config::read(&db.ca_file, 1024 * 1024, false)?.to_vec(),
                 )
                 .map_err(|_| Error::Malformed)?,
-                LeaseRenewalPolicy::from_ttl(Duration::from_secs(30))
-                    .map_err(|_| Error::Malformed)?,
-                deadline(),
             )
-            .await
-            .map_err(|_| unavailable())?;
-            Ok(Arc::new(Self {
-                name: lane.name,
-                health,
-                runtime: runtime.clone(),
-                projection,
-                validator,
-            }))
-        }
-        .await;
-        if result.is_err() {
-            runtime.close().await;
-        }
-        result
+            .with_pool_limits(0, 2);
+            let binding = ExecutionBinding::new(
+                StorageIdentity::new(
+                    config.storage_binding.target,
+                    config.storage_binding.lineage,
+                )
+                .map_err(|_| Error::Malformed)?,
+                vec![(
+                    tenant,
+                    Epoch::new(config.storage_binding.epoch).map_err(|_| Error::Malformed)?,
+                )],
+            )
+            .map_err(|_| Error::Malformed)?;
+            let runtime = Arc::new(
+                PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, binding)
+                    .await
+                    .map_err(|_| unavailable())?,
+            );
+            let result = async {
+                let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+                    runtime.clone(),
+                    tenant,
+                    deadline(),
+                )
+                .await
+                .map_err(|_| unavailable())?;
+                let (effect, validator) = bind(runtime.clone(), tenant, messaging);
+                let capture = PgRecoveryCapture::new(runtime.clone(), protection, deadline())
+                    .await
+                    .map_err(|_| unavailable())?;
+                let projection = PgLocalProjection::new(
+                    capture,
+                    ConsumerGroup::parse(lane.consumer).expect("constant consumer"),
+                    MessagingDomain::parse(lane.domain).expect("constant domain"),
+                    effect,
+                    DeliveryBudget::new(
+                        Duration::from_secs(30),
+                        Duration::from_secs(6),
+                        Duration::from_secs(6),
+                        Duration::from_secs(2),
+                    )
+                    .map_err(|_| Error::Malformed)?,
+                    LeaseRenewalPolicy::from_ttl(Duration::from_secs(30))
+                        .map_err(|_| Error::Malformed)?,
+                    deadline(),
+                )
+                .await
+                .map_err(|_| unavailable())?;
+                Ok(Arc::new(Self {
+                    name: lane.name,
+                    health,
+                    runtime: runtime.clone(),
+                    projection,
+                    validator,
+                }))
+            }
+            .await;
+            if result.is_err() {
+                runtime.close().await;
+            }
+            result
+        })
     }
 
     async fn poll(
