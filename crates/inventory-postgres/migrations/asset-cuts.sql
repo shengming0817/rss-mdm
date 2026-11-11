@@ -44,6 +44,41 @@ BEGIN
 END $$;
 REVOKE ALL ON FUNCTION mdm.asset_cut_contains(jsonb,uuid,xid8) FROM PUBLIC;
 
+-- Decode and validate each distinct cut once per bounded statement. Callers materialize
+-- this one-row result and evaluate visibility from the outer event's epoch and XID.
+CREATE FUNCTION mdm.asset_cut_context(cut jsonb)
+RETURNS TABLE(epoch uuid,visibility pg_snapshot,ancestors uuid[])
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
+BEGIN
+ IF cut IS NULL THEN
+  RETURN QUERY SELECT NULL::uuid,NULL::pg_snapshot,ARRAY[]::uuid[];
+  RETURN;
+ END IF;
+ IF (cut->>'tenant')::uuid IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN
+  RAISE EXCEPTION 'asset cut tenant mismatch' USING ERRCODE='42501';
+ END IF;
+ IF jsonb_typeof(cut)<>'object' OR NOT (cut ?& ARRAY['tenant','epoch','snapshot'])
+    OR cut-ARRAY['tenant','epoch','snapshot']<>'{}'::jsonb
+    OR octet_length(cut->>'snapshot')>65536 THEN
+  RAISE EXCEPTION 'invalid asset cut' USING ERRCODE='23514';
+ END IF;
+ epoch=(cut->>'epoch')::uuid;
+ visibility=(cut->>'snapshot')::pg_snapshot;
+ IF NOT EXISTS(SELECT FROM mdm.asset_epochs e WHERE e.id=epoch) THEN
+  RAISE EXCEPTION 'unknown asset epoch' USING ERRCODE='23514';
+ END IF;
+ SELECT coalesce(array_agg(a.id),ARRAY[]::uuid[]) INTO ancestors FROM (
+  WITH RECURSIVE lineage(id) AS (
+   SELECT e.parent FROM mdm.asset_epochs e WHERE e.id=epoch
+   UNION ALL SELECT e.parent FROM mdm.asset_epochs e JOIN lineage l ON e.id=l.id
+  ) SELECT id FROM lineage WHERE id IS NOT NULL
+ ) a;
+ RETURN NEXT;
+END $$;
+REVOKE ALL ON FUNCTION mdm.asset_cut_context(jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm.asset_cut_context(jsonb)
+ TO mdm_runtime,mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_telemetry_runtime,mdm_command_runtime;
+
 CREATE FUNCTION mdm.asset_visible(cut jsonb, event bigint) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
  SELECT coalesce((SELECT mdm.asset_cut_contains(cut,e.source_epoch,e.writer_xid)

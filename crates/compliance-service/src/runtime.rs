@@ -313,6 +313,9 @@ impl DurableStore for ComplianceWork {
     ) -> std::result::Result<ClaimBatch<PgClaim>, ReconcileError> {
         self.check(scope)?;
         let result = self.schedule.claim_due(scope, limit, lease, control).await;
+        if result.is_ok() {
+            let _ = self.compliance.input_state.compare_exchange(0, 1, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire);
+        }
 
         self.compliance
             .worker_health
@@ -359,12 +362,7 @@ impl DurableStore for ComplianceWork {
         {
             return Err(ReconcileError::new(ErrorKind::BindingChanged));
         }
-        let scheduled = if id.is_none() && completion == Completion::Converged {
-            Completion::Reobserve(Duration::from_secs(5))
-        } else {
-            completion
-        };
-        let result = self.schedule.finish(claim, scheduled, &settlement).await;
+        let result = self.schedule.finish(claim, completion, &settlement).await;
         if id.is_none() && (result.is_err() || !matches!(completion, Completion::Deferred(_))) {
             let healthy = result.is_ok()
                 && matches!(completion, Completion::Converged | Completion::Reobserve(_));
@@ -419,7 +417,6 @@ impl ComplianceWork {
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.compliance.tenant,"mdm.compliance").expect("constant scope");
-            self.schedule.wake(&Target::new(scope.clone(), "inputs").expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
                          rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
                 if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
                     eprintln!("{}",serde_json::json!({"event":"mdm_compliance_task_failure","diagnostic":format!("{event:?}")}));

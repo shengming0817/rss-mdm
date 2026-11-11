@@ -35,7 +35,10 @@ impl Compliance {
         let document = checked_input(serde_json::to_string(inputs))?;
         let ids:Vec<String>=tx.with_connection(move|c|Box::pin(async move{
    sqlx::query_scalar(r#"
-    SELECT x.rule::text FROM jsonb_to_recordset($2::jsonb) x(rule uuid,revision bigint,"assetCut" jsonb,definition jsonb,groups jsonb)
+    WITH inputs AS MATERIALIZED(SELECT * FROM jsonb_to_recordset($2::jsonb) x(rule uuid,revision bigint,"assetCut" jsonb,definition jsonb,groups jsonb)),
+    cut_values AS MATERIALIZED(SELECT x."assetCut" AS cut FROM inputs x UNION SELECT g."assetCut" FROM inputs x CROSS JOIN LATERAL jsonb_to_recordset(x.groups) g("assetCut" jsonb) WHERE g."assetCut" IS NOT NULL),
+    cuts AS MATERIALIZED(SELECT c.cut,v.* FROM cut_values c CROSS JOIN LATERAL mdm.asset_cut_context(c.cut) v)
+    SELECT x.rule::text FROM inputs x
     JOIN mdm_compliance.rules r ON r.tenant_id=$1::uuid AND r.id=x.rule
     JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision)
     WHERE r.enabled AND r.revision=x.revision AND v.definition=x.definition
@@ -43,12 +46,12 @@ impl Compliance {
       SELECT 1 FROM jsonb_to_recordset(x.groups) g(id uuid,revision bigint,"memberSet" uuid,"memberVersion" bigint,"assetCut" jsonb,ready boolean)
       WHERE NOT g.ready OR NOT EXISTS(SELECT 1 FROM jsonb_to_recordset($3::jsonb) m(id uuid,revision bigint,member_set uuid,member_version bigint) WHERE m.id=g.id AND m.revision=g.revision AND m.member_set IS NOT DISTINCT FROM g."memberSet" AND m.member_version=g."memberVersion")
        OR (g."assetCut" IS NOT NULL AND EXISTS(
-         SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT mdm.asset_visible(g."assetCut",c.revision)
-         AND(c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=g.id AND f.field=ANY(c.fields)))
+         SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN c.source_epoch=epoch THEN pg_visible_in_snapshot(c.writer_xid,visibility) ELSE c.source_epoch=ANY(ancestors) END FROM cuts WHERE cut=g."assetCut"),false)
+         AND(c.kind IN('device','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=g.id AND f.field=ANY(c.fields)))
        ))
     )
-    AND NOT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT mdm.asset_visible(x."assetCut",c.revision)
-      AND(c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_compliance.fields f WHERE f.tenant_id=c.tenant_id AND f.rule_id=x.rule AND f.field=ANY(c.fields))))
+    AND NOT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN c.source_epoch=epoch THEN pg_visible_in_snapshot(c.writer_xid,visibility) ELSE c.source_epoch=ANY(ancestors) END FROM cuts WHERE cut=x."assetCut"),false)
+      AND(c.kind IN('device','source','credential') OR EXISTS(SELECT 1 FROM mdm_compliance.fields f WHERE f.tenant_id=c.tenant_id AND f.rule_id=x.rule AND f.field=ANY(c.fields))))
    "#).bind(tenant).bind(document).bind(current).fetch_all(c).await
   })).await?;
         ids.into_iter()

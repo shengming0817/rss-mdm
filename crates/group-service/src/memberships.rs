@@ -193,7 +193,7 @@ impl Groups {
                 )
             };
             let id = item["id"].as_str().ok_or(Error::Conflict)?;
-            let dirty:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=$1::uuid AND NOT mdm.asset_visible($2::jsonb,e.revision) AND (e.kind IN('device','registration','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=e.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(e.fields))))")
+            let dirty:bool=sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)) SELECT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN e.source_epoch=epoch THEN pg_visible_in_snapshot(e.writer_xid,visibility) ELSE e.source_epoch=ANY(ancestors) END FROM asset_cut_2),false) AND (e.kind IN('device','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=e.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(e.fields))))")
                 .bind(self.tenant.to_string()).bind(cut.to_json()).bind(id).fetch_one(&mut *c).await?;
             let input_current = complete && !dirty;
             item["associationCurrent"] = if associated {

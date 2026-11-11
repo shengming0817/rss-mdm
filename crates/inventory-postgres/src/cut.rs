@@ -48,6 +48,7 @@ pub(crate) async fn verify_asset_reader(c: &mut sqlx::PgConnection) -> Result<()
 async fn verify_history(c: &mut sqlx::PgConnection, reader: bool) -> Result<(), sqlx::Error> {
     for (name, signature, result) in [
         ("capture_asset_cut", "mdm.capture_asset_cut(uuid)", "jsonb"),
+        ("asset_cut_context", "mdm.asset_cut_context(jsonb)", "record"),
         (
             "asset_cut_contains",
             "mdm.asset_cut_contains(jsonb,uuid,xid8)",
