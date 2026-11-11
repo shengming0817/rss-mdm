@@ -60,6 +60,7 @@ pub struct Field {
     pub output: bool,
     pub nullable: bool,
     pub(crate) range: bool,
+    pub(crate) exact: bool,
     pub(crate) constraints: Value,
     pub(crate) reason: Option<String>,
     pub(crate) validator: Option<fn(&Value) -> bool>,
@@ -87,6 +88,7 @@ impl Field {
             output: true,
             nullable: false,
             range: true,
+            exact: false,
             constraints: Value::Null,
             reason: None,
             validator: None,
@@ -130,6 +132,7 @@ impl Field {
         if !self.filter {
             return Vec::new();
         }
+        if self.exact { return vec![Operator::Eq, Operator::In]; }
         let mut ops = vec![Operator::Eq, Operator::Ne, Operator::In, Operator::Out];
         if self.kind.collection() {
             ops.extend([Operator::ContainsAny, Operator::ContainsAll]);
@@ -166,6 +169,10 @@ impl Field {
                 .and_then(|n| usize::try_from(n).ok())
                 .and_then(|n| n.checked_mul(6))
                 .and_then(|n| n.checked_add(2));
+            if let Some(bytes) = self.constraints.get("x-rss-maxUtf8Bytes").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()) {
+                // Directory text rejects controls. Only quotes/backslashes can expand beyond UTF-8.
+                self.sort_bytes = bytes.checked_mul(2).and_then(|n| n.checked_add(2));
+            }
         }
         if self.sort && self.sort_bytes.is_none_or(|bytes| bytes > 2300) {
             self.sort = false;
@@ -174,7 +181,7 @@ impl Field {
     }
     pub(crate) fn valid_position(&self, value: &Value) -> bool {
         let valid = if matches!(self.kind, Kind::Text) {
-            value.is_string()
+            text_operand(value)
                 && self.validator.is_none_or(|validate| validate(value))
                 && self.constrained(value)
         } else {
@@ -231,6 +238,7 @@ impl Field {
             return false;
         }
         if let Some(v) = value.as_str() {
+            if s.get("x-rss-maxUtf8Bytes").and_then(Value::as_u64).is_some_and(|n| v.len() as u64 > n) { return false; }
             let length = v.chars().count() as u64;
             if s.get("minLength")
                 .and_then(Value::as_u64)

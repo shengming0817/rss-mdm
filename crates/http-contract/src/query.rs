@@ -17,7 +17,8 @@ pub trait QueryOwner {
 }
 
 pub trait DirectoryOwner {
-    fn schema() -> &'static rss_mdm_query::directory::Schema;
+    fn execution() -> &'static rss_mdm_query::directory::Execution;
+    fn schema() -> &'static rss_mdm_query::directory::Schema { Self::execution().schema() }
     fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
         Self::schema().parse(raw)
     }
@@ -40,7 +41,7 @@ impl<Q: DirectoryOwner> QueryOwner for Directory<Q> {
     type Parsed = rss_mdm_query::directory::Query;
     type Error = rss_mdm_query::Error;
     fn declaration() -> Option<QueryDeclaration> {
-        Some(QueryDeclaration::Directory(Q::schema()))
+        Some(QueryDeclaration::Directory(crate::DirectoryDeclaration::list(Q::execution())))
     }
     fn parameters() -> Schema {
         let owner = Q::schema();
@@ -118,7 +119,7 @@ impl<Q: DirectoryOwner> QueryOwner for Statistics<Q> {
     type Parsed = rss_mdm_query::directory::Query;
     type Error = rss_mdm_query::Error;
     fn declaration() -> Option<QueryDeclaration> {
-        Some(QueryDeclaration::Directory(Q::schema()))
+        Some(QueryDeclaration::Directory(crate::DirectoryDeclaration::statistics(Q::execution())))
     }
     fn parameters() -> Schema {
         Schema {

@@ -58,6 +58,7 @@ fn model_is_the_field_authority_and_capabilities_are_executable() {
         .iter()
         .find(|f| f["name"] == "secret")
         .unwrap();
+    assert_eq!(secret["kind"], serde_json::json!("Text"));
     assert_eq!(secret["operators"], serde_json::json!([]));
     assert!(
         secret["limitation"]
@@ -65,6 +66,36 @@ fn model_is_the_field_authority_and_capabilities_are_executable() {
             .unwrap()
             .contains("Credential")
     );
+}
+
+#[test]
+fn execution_requires_the_exact_compiled_selector_set() {
+    use rss_mdm_query::directory::Execution;
+    let fields = MODEL.fields().iter().filter(|f| f.filter || f.sort)
+        .map(|f| f.name.as_str()).collect::<Vec<_>>();
+    let execution = Execution::bind(&MODEL, fields.clone()).unwrap();
+    assert!(execution.require(&MODEL).is_ok());
+    assert!(Execution::bind(&MODEL, fields.iter().copied().skip(1)).is_err());
+    assert!(Execution::bind(&MODEL, fields.into_iter().chain(["secret"])).is_err());
+}
+
+#[test]
+fn business_selectors_are_typed_non_output_and_cannot_shadow_model_fields() {
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    struct Search { hardware: String }
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    struct Collision { id: String }
+    let build = || Schema::derived::<Extended>("selectors", &["id"], 2, 10, &[]).unwrap();
+    assert!(build().with_selectors::<Collision>("Different meaning").is_err());
+    assert!(build().with_selectors::<Search>("").is_err());
+    let schema = Box::leak(Box::new(build().with_selectors::<Search>("Historical hardware evidence").unwrap().exact("hardware").unwrap()));
+    assert!(schema.parse("filter=hardware==serial").is_ok());
+    assert!(schema.parse("filter=hardware=in=(a,b)").is_ok());
+    for query in ["filter=hardware!=a", "filter=hardware=icontains=a", "sort=hardware", "fields=hardware"] {
+        assert!(schema.parse(query).is_err(), "{query}");
+    }
 }
 
 #[derive(JsonSchema, serde::Serialize, serde::Deserialize)]

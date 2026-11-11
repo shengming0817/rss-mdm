@@ -36,7 +36,9 @@ impl Schema {
             .into_generator()
             .into_root_schema_for::<T>()
             .to_value();
-        Self::from_model(id, keys, default_limit, max_limit, &model, exclusions)
+        let mut schema = Self::from_model(id, keys, default_limit, max_limit, &model, exclusions)?;
+        schema.model_identity = T::schema_id().into_owned();
+        Ok(schema)
     }
     pub fn from_model(
         id: &'static str,
@@ -70,6 +72,9 @@ impl Schema {
             default_limit,
             max_limit,
             fields: compiler.fields.into_values().collect(),
+            model: model.clone(),
+            model_identity: id.to_owned(),
+            selectors: Vec::new(),
         };
         for key in keys {
             if !schema.field(key).is_ok_and(|f| f.sort && !f.nullable) {
@@ -97,6 +102,32 @@ impl Schema {
         field.range = false;
         Ok(self)
     }
+    /// Additional business selectors are typed independently of the response, never aliases.
+    pub fn with_selectors<T: JsonSchema>(mut self, reason: &'static str) -> Result<Self> {
+        if reason.trim().is_empty() { return Err(BuildError::Configuration); }
+        let model = SchemaSettings::draft2020_12().for_serialize().into_generator()
+            .into_root_schema_for::<T>().to_value();
+        let mut compiler = Compiler { root: &model, fields: BTreeMap::new(), exclusions: &[], used: BTreeSet::new() };
+        compiler.walk(&model, "", false, 0)?;
+        for (name, mut field) in compiler.fields {
+            if !field.filter || self.fields.iter().any(|f| f.name == name) { return Err(BuildError::Conflict(name)); }
+            field.output = false;
+            field.sort = false;
+            field.reason = Some(reason.into());
+            self.selectors.push(name);
+            self.fields.push(field);
+        }
+        self.fields.sort_by(|a,b| a.name.cmp(&b.name));
+        Ok(self)
+    }
+    /// Restrict a domain selector whose semantics support only exact membership.
+    pub fn exact(mut self, name: &str) -> Result<Self> {
+        let field = self.fields.iter_mut().find(|f| f.name == name)
+            .ok_or_else(|| BuildError::Unsupported(name.into()))?;
+        field.exact = true;
+        field.sort = false;
+        Ok(self)
+    }
 }
 
 struct Compiler<'a> {
@@ -110,27 +141,28 @@ impl Compiler<'_> {
         if depth > 32 || path.len() > crate::MAX_SELECTOR_BYTES {
             return Err(BuildError::Unsupported(path.into()));
         }
+        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+            let target = reference.strip_prefix('#').and_then(|p| self.root.pointer(p))
+                .ok_or_else(|| BuildError::Unsupported(path.into()))?;
+            self.walk(target, path, nullable, depth + 1)?;
+            if let Some(field) = self.fields.get_mut(path) { copy_constraints(&mut field.constraints, schema); }
+            return Ok(());
+        }
         if let Some(exclusion) = self.exclusions.iter().find(|e| e.path == path) {
             self.used.insert(exclusion.path);
-            let mut field = Field::output(path).excluded(exclusion.reason);
+            let mut field = match scalar_kind(self.root, schema, path, depth + 1) {
+                Ok((kind, constraints)) => { let mut f = Field::scalar(path, kind); f.constraints = constraints; f },
+                Err(_) => Field::output(path),
+            }.excluded(exclusion.reason);
             field.output = !path.contains('.');
-            field.nullable = nullable;
+            field.nullable = nullable || schema.get("type").and_then(Value::as_array)
+                .is_some_and(|types| types.iter().any(|t| t == "null"))
+                || schema.get("anyOf").or_else(|| schema.get("oneOf")).and_then(Value::as_array)
+                    .is_some_and(|branches| branches.iter().any(|s| s["type"] == "null"));
             if schema["type"] == "array" {
                 field.kind = Kind::ObjectSet;
             }
             return self.insert(field);
-        }
-        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-            let target = reference
-                .strip_prefix('#')
-                .and_then(|p| self.root.pointer(p))
-                .ok_or_else(|| BuildError::Unsupported(path.into()))?;
-            self.walk(target, path, nullable, depth + 1)?;
-            // Constraints alongside a reference belong to the same public field.
-            if let Some(field) = self.fields.get_mut(path) {
-                copy_constraints(&mut field.constraints, schema);
-            }
-            return Ok(());
         }
         let null = nullable
             || schema
@@ -392,7 +424,7 @@ fn copy_constraints(target: &mut Value, schema: &Value) {
     if !target.is_object() {
         *target = Value::Object(Default::default());
     }
-    for key in ["enum", "minimum", "maximum", "minLength", "maxLength"] {
+    for key in ["enum", "minimum", "maximum", "minLength", "maxLength", "x-rss-maxUtf8Bytes"] {
         if let Some(value) = schema.get(key) {
             target[key] = value.clone();
         }

@@ -73,23 +73,36 @@ pub enum QueryPolicy {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(tag = "kind", content = "schema", rename_all = "snake_case")]
 pub enum QueryDeclaration {
-    Directory(&'static rss_mdm_query::directory::Schema),
+    Directory(DirectoryDeclaration),
     Window(&'static rss_mdm_query::window::Schema),
     /// Fixed-order pagination transported in the request body, including its cursor.
     BodyWindow(&'static rss_mdm_query::window::Schema),
     Catalog(&'static rss_mdm_query::CatalogQuery),
 }
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectoryRole { List, Statistics }
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct DirectoryDeclaration {
+    #[serde(flatten)]
+    pub execution: &'static rss_mdm_query::directory::Execution,
+    pub role: DirectoryRole,
+}
+impl DirectoryDeclaration {
+    pub fn list(execution: &'static rss_mdm_query::directory::Execution) -> Self { Self { execution, role: DirectoryRole::List } }
+    pub fn statistics(execution: &'static rss_mdm_query::directory::Execution) -> Self { Self { execution, role: DirectoryRole::Statistics } }
+}
 impl QueryDeclaration {
     pub fn id(self) -> &'static str {
         match self {
-            Self::Directory(s) => s.id,
+            Self::Directory(s) => s.execution.id,
             Self::Window(s) | Self::BodyWindow(s) => s.id,
             Self::Catalog(s) => s.id,
         }
     }
     fn valid(self) -> bool {
         match self {
-            Self::Directory(s) => s.parse("").is_ok(),
+            Self::Directory(s) => s.execution.schema().parse("").is_ok(),
             Self::Window(s) | Self::BodyWindow(s) => s.parse("").is_ok(),
             Self::Catalog(s) => {
                 !s.catalog_resource.is_empty() && s.max_fields > 0 && s.max_sort > 0

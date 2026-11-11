@@ -1,7 +1,7 @@
 //! Bind the complete model before it can be advertised or executed. Requests never supply SQL paths.
 use rss_mdm_query::{
     Error, Result,
-    directory::{Kind, Schema},
+    directory::{Execution, Kind, Schema},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -44,7 +44,7 @@ impl Source {
     }
 }
 pub struct Bindings {
-    schema: &'static Schema,
+    execution: Execution,
     columns: BTreeMap<String, String>,
     non_null: BTreeSet<String>,
 }
@@ -57,7 +57,7 @@ impl Bindings {
         let mut used = BTreeSet::new();
         let mut columns = BTreeMap::new();
         let mut non_null = BTreeSet::new();
-        for field in schema.fields.iter().filter(|f| f.filter || f.sort) {
+        for field in schema.fields().iter().filter(|f| f.filter || f.sort) {
             let source = sources
                 .iter()
                 .filter(|source| match source {
@@ -106,15 +106,16 @@ impl Bindings {
             return Err(Error::Invalid);
         }
         Ok(Self {
-            schema,
+            execution: Execution::bind(schema, columns.keys().map(String::as_str))?,
             columns,
             non_null,
         })
     }
     /// Ingress exports this same checked schema, forcing storage completeness at composition time.
     pub fn schema(&self) -> &'static Schema {
-        self.schema
+        self.execution.schema()
     }
+    pub fn execution(&self) -> &Execution { &self.execution }
 }
 pub trait Columns: Copy {
     fn column(&self, name: &str) -> Result<&str>;
@@ -122,14 +123,7 @@ pub trait Columns: Copy {
     fn nullable(&self, _name: &str) -> bool {
         true
     }
-    fn require(&self, _schema: &Schema) -> Result<()> {
-        Ok(())
-    }
-}
-impl<F: Fn(&str) -> &'static str + Copy> Columns for F {
-    fn column(&self, name: &str) -> Result<&str> {
-        Ok(self(name))
-    }
+    fn require(&self, schema: &Schema) -> Result<()>;
 }
 impl Columns for &Bindings {
     fn nullable(&self, name: &str) -> bool {
@@ -142,11 +136,7 @@ impl Columns for &Bindings {
             .ok_or(Error::Invalid)
     }
     fn require(&self, schema: &Schema) -> Result<()> {
-        if std::ptr::eq(self.schema, schema) {
-            Ok(())
-        } else {
-            Err(Error::Invalid)
-        }
+        self.execution.require(schema)
     }
 }
 fn json_column(root: &str, path: &str, kind: &Kind) -> Result<String> {
