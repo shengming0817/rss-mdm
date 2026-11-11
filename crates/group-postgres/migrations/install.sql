@@ -133,6 +133,35 @@ $$;
 REVOKE ALL ON FUNCTION mdm_group.group_current(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_group.group_current(uuid) TO mdm_group_runtime;
 
+-- A negative candidate requires a complete current NoMatch proof. Unknown, an
+-- absent dynamic decision, or an unfinished definition must remain eligible.
+CREATE FUNCTION mdm_group.input_candidate_groups(p_groups uuid[], p_devices text[]) RETURNS SETOF uuid
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+ IF cardinality(p_groups)>16 OR cardinality(p_devices)>1000 THEN
+  RAISE EXCEPTION 'group input candidate capacity' USING ERRCODE='22023';
+ END IF;
+ RETURN QUERY
+ SELECT g.id FROM mdm_group.groups g
+ LEFT JOIN mdm_group.member_runs w ON(w.tenant_id,w.id)=(g.tenant_id,g.member_set)
+ WHERE g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+ AND g.id=ANY(p_groups) AND NOT g.deleted AND g.asset_context='endpoint'
+ AND (NOT mdm_group.group_current(g.id) OR EXISTS(
+  SELECT FROM unnest(p_devices) device WHERE CASE WHEN g.kind='static' THEN
+   coalesce((SELECT m.added FROM mdm_group.member_changes m
+    JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(m.tenant_id,m.run_id)
+    WHERE m.tenant_id=g.tenant_id AND m.group_id=g.id AND m.object_id=device
+     AND b.phase='published' AND m.revision<=g.calculation_revision
+    ORDER BY m.revision DESC LIMIT 1),false)
+  ELSE (SELECT convert_from(r.evidence,'UTF8')::jsonb->>'decision'
+    FROM mdm_group.member_rows r JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(r.tenant_id,r.run_id)
+    WHERE r.tenant_id=g.tenant_id AND r.object_id=device AND b.group_id=g.id
+     AND (b.id=w.id OR (b.phase='published' AND b.base_calculation>=w.floor_revision AND b.base_calculation<w.base_calculation))
+    ORDER BY b.base_calculation DESC LIMIT 1) IS DISTINCT FROM 'no_match' END));
+END $$;
+REVOKE ALL ON FUNCTION mdm_group.input_candidate_groups(uuid[],text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_group.input_candidate_groups(uuid[],text[]) TO mdm_group_runtime;
+
 CREATE INDEX rules_references ON mdm_group.rules USING gin(group_ids);
 
 -- Group graph validation; Inventory owns the task lifecycle.

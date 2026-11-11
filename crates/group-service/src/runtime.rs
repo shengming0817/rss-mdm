@@ -368,14 +368,6 @@ impl DurableStore for GroupWork {
     ) -> std::result::Result<ClaimBatch<PgClaim>, ReconcileError> {
         self.check(scope)?;
         let result = self.schedule.claim_due(scope, limit, lease, control).await;
-        if result.is_ok() {
-            let _ = self.groups.input_state.compare_exchange(
-                0,
-                1,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            );
-        }
         self.groups
             .record_scan(result.as_ref().err().map(|e| e.kind()));
         result
@@ -415,15 +407,16 @@ impl DurableStore for GroupWork {
         {
             return Err(ReconcileError::new(ErrorKind::BindingChanged));
         }
-        let result = self.schedule.finish(claim, completion, &settlement).await;
-        if id.is_none() {
-            let healthy = result.is_ok()
-                && matches!(completion, Completion::Converged | Completion::Reobserve(_));
-            self.groups.input_state.store(
-                if healthy { 1 } else { 2 },
-                std::sync::atomic::Ordering::Release,
-            );
+        if id.is_none() && !matches!(completion, Completion::Deferred(_)) {
+            let failed = !matches!(completion, Completion::Converged | Completion::Reobserve(_));
+            if matches!(
+                self.set_input_failure(claim, failed, &settlement).await?,
+                ReconcileStep::Deferred(_)
+            ) {
+                return Err(ReconcileError::new(ErrorKind::BindingChanged));
+            }
         }
+        let result = self.schedule.finish(claim, completion, &settlement).await;
         if result.is_ok() {
             self.groups.record_settled(claim.target(), completion);
         }
@@ -551,5 +544,24 @@ impl GroupWork {
                 |_| Err(unknown()),
                 |e| Err(storage(e)),
             )
+    }
+}
+
+impl GroupWork {
+    async fn set_input_failure<T: Timer>(
+        &self,
+        claim: &PgClaim,
+        failed: bool,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        self.groups.runtime.local_tx_with_context(self.groups.tenant,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),
+            (&self.groups,claim), |(owner,claim),tx|Box::pin(async move {
+                owner.reconcile_messaging.protect_in(tx,claim,owner, |_owner,tx|Box::pin(async move {
+                    let tenant=tx.tenant_id().to_string(); tx.with_connection(move |c|Box::pin(async move {sqlx::query("INSERT INTO mdm_assets.group_dispatch(tenant_id,input_failed) VALUES($1::uuid,$2) ON CONFLICT(tenant_id) DO UPDATE SET input_failed=excluded.input_failed").bind(tenant).bind(failed).execute(c).await?; Ok(())})).await?;
+                    Ok(ProtectedStep::Ready(()))
+                })).await
+            })).await.fold(Ok, |e|Err(storage(e)), |e|Err(storage(e)),
+                |_|Err(ReconcileError::new(ErrorKind::RollbackFailed)), |_|Err(unknown()), |e|Err(storage(e)))
     }
 }

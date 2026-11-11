@@ -54,6 +54,8 @@ pub(crate) struct Statements {
     pub store_asset_page_in_4: &'static str,
     pub store_asset_page_in_5: &'static str,
     pub store_complete_asset_page_in_1: &'static str,
+    pub store_input_failed: &'static str,
+    pub store_set_input_failed: &'static str,
     pub store_inputs_pending_in_1: &'static str,
     pub store_relation_window_in_1: &'static str,
     pub store_relation_window_in_2: &'static str,
@@ -282,6 +284,7 @@ ALTER TABLE "###, $tasks, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $tasks, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE TABLE "###, $asset_dispatch, r###" (
  tenant_id uuid PRIMARY KEY, from_cut jsonb, to_cut jsonb,
+ input_failed boolean NOT NULL DEFAULT false,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
  page_through bigint CHECK(page_through>event_after), cursor uuid,
  relation_consumed bigint NOT NULL DEFAULT 0 CHECK(relation_consumed>=0),
@@ -292,7 +295,7 @@ ALTER TABLE "###, $asset_dispatch, r###" FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $asset_dispatch, r###" USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON "###, $tasks, ",", $asset_dispatch, " TO ", $scope_runtime, r###";
 GRANT UPDATE(completed,failure,failure_detail,replacement_task) ON "###, $tasks, " TO ", $scope_runtime, r###";
-GRANT UPDATE(from_cut,to_cut,event_after,page_through,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON "###, $asset_dispatch, " TO ", $scope_runtime, r###";
+GRANT UPDATE(input_failed,from_cut,to_cut,event_after,page_through,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON "###, $asset_dispatch, " TO ", $scope_runtime, r###";
 CREATE TABLE "###, $operations, r###" (
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
@@ -646,7 +649,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute a ON a.attrelid=t.oid AND
  ((t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision','input_revision','input_epoch','input_xid'))
  OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
  OR (t.relname="###, $tasks_name, r###" AND a.attname IN('completed','failure','failure_detail','replacement_task'))
- OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor'))))
+ OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('input_failed','from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor'))))
 AND has_function_privilege(current_user,'"###, $schema, r###"scope_admission(uuid,text)','EXECUTE')
 AND has_function_privilege(current_user,'"###, $schema, r###"scope_state(uuid,text)','EXECUTE')
 
@@ -668,7 +671,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t CROSS JOIN reachable r WHERE
     (t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision','input_revision','input_epoch','input_xid'))
     OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
     OR (t.relname="###, $tasks_name, r###" AND a.attname IN('completed','failure','failure_detail','replacement_task'))
-    OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor')))))))
+    OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('input_failed','from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor')))))))
 AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute col ON col.attrelid=t.oid
  CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
 "###),
@@ -802,9 +805,11 @@ ORDER BY e.signature LIMIT 1
                 store_asset_page_in_2: concat!("SELECT from_cut,to_cut,event_after,page_through,cursor FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid FOR UPDATE"),
                 store_asset_page_in_3: concat!("UPDATE ", $asset_dispatch, " SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid"),
                 store_asset_page_in_4: concat!("UPDATE ", $asset_dispatch, " SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid"),
-                store_asset_page_in_5: concat!("WITH from_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($2)),to_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($3)),changed AS (SELECT DISTINCT a.identity ->> 'device' AS device FROM mdm.asset_changes AS a WHERE a.tenant_id = CAST($1 AS uuid) AND NOT coalesce((SELECT CASE WHEN a.source_epoch=epoch THEN pg_visible_in_snapshot(a.writer_xid,visibility) ELSE a.source_epoch=ANY(ancestors) END FROM from_cut),false) AND coalesce((SELECT CASE WHEN a.source_epoch=epoch THEN pg_visible_in_snapshot(a.writer_xid,visibility) ELSE a.source_epoch=ANY(ancestors) END FROM to_cut),false) AND a.revision > $4 AND a.revision <= $5 AND (a.kind IN ('device', 'source', 'credential') OR 'channel.agent.installation' = ANY(a.fields))) SELECT DISTINCT s.scope FROM changed INNER JOIN ", $schema, "scope_sources AS s ON s.tenant_id = CAST($1 AS uuid) AND s.kind = 'device' AND s.target = changed.device INNER JOIN ", $schema, "scopes AS h ON (h.tenant_id, h.id) = (s.tenant_id, s.scope) WHERE NOT h.deleted AND (CAST($6 AS uuid) IS NULL OR s.scope > $6) ORDER BY s.scope LIMIT 33"),
+                store_asset_page_in_5: concat!("WITH from_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($2)),to_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($3)),changed AS (SELECT DISTINCT a.identity ->> 'device' AS device FROM mdm.asset_changes AS a WHERE a.tenant_id = CAST($1 AS uuid) AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM from_cut),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM to_cut),false) AND a.revision > $4 AND a.revision <= $5 AND (a.kind IN ('device', 'source', 'credential') OR 'channel.agent.installation' = ANY(a.fields))) SELECT DISTINCT s.scope FROM changed INNER JOIN ", $schema, "scope_sources AS s ON s.tenant_id = CAST($1 AS uuid) AND s.kind = 'device' AND s.target = changed.device INNER JOIN ", $schema, "scopes AS h ON (h.tenant_id, h.id) = (s.tenant_id, s.scope) WHERE NOT h.deleted AND (CAST($6 AS uuid) IS NULL OR s.scope > $6) ORDER BY s.scope LIMIT 33"),
                 store_complete_asset_page_in_1: concat!("UPDATE ", $asset_dispatch, " SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid AND to_cut=$5"),
-                store_inputs_pending_in_1: concat!("WITH input_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid))) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM input_cut),false)) OR $2>coalesce((SELECT relation_consumed FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM ", $group_changes, " WHERE tenant_id=$1::uuid AND NOT completed)"),
+                store_input_failed: concat!("SELECT coalesce((SELECT input_failed FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid),false)"),
+                store_set_input_failed: concat!("INSERT INTO ", $asset_dispatch, "(tenant_id,input_failed) VALUES($1::uuid,$2) ON CONFLICT(tenant_id) DO UPDATE SET input_failed=excluded.input_failed"),
+                store_inputs_pending_in_1: concat!("WITH input_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid))) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM input_cut),false)) OR $2>coalesce((SELECT relation_consumed FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM ", $group_changes, " WHERE tenant_id=$1::uuid AND NOT completed)"),
                 store_relation_window_in_1: concat!("INSERT INTO ", $asset_dispatch, "(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING"),
                 store_relation_window_in_2: concat!("SELECT relation_consumed,relation_watermark,relation_position,relation_cursor FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid FOR UPDATE"),
                 store_relation_targets_in_1: concat!("SELECT DISTINCT s.scope FROM ", $schema, "scope_sources s JOIN ", $schema, "scopes h ON(h.tenant_id,h.id)=(s.tenant_id,s.scope) WHERE s.tenant_id=$1::uuid AND s.kind='device' AND s.target=ANY($2) AND NOT h.deleted AND ($3::uuid IS NULL OR s.scope>$3) ORDER BY s.scope LIMIT 33"),

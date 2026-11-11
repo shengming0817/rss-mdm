@@ -43,7 +43,7 @@ impl Compliance {
                     asset_cut = Some(at.clone());
                     let tenant = t.to_string();
                     let dirty:bool=tx.with_connection(move|c|Box::pin(async move{
-      sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)) SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN c.source_epoch=epoch THEN pg_visible_in_snapshot(c.writer_xid,visibility) ELSE c.source_epoch=ANY(ancestors) END FROM asset_cut_2),false) AND (c.kind IN('device','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields))))")
+      sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)) SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,c.source_epoch,c.writer_xid) FROM asset_cut_2),false) AND (c.kind IN('device','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields))))")
       .bind(tenant).bind(at.to_json()).bind(id.to_string()).fetch_one(c).await
      })).await?;
                     ready &= !dirty;

@@ -122,7 +122,7 @@ Scope、计划期限、当前授权和设备执行资格仍由各消费用例持
 
 本链 inputs 在检查点收敛后真正 Converged，不定期重新扫描资产历史。启动和监听重连检查
 RSS 持久待办，投影结合通知、next_wakeup 和最长 60 秒的恢复检查继续推进。
-正常空闲只扫描调度/投递待办，不以启动无条件 wake 制造业务输入；首次成功调度扫描建立健康观测，
+正常空闲只扫描调度/投递待办，不以启动无条件 wake 制造业务输入；首次成功调度扫描建立运行观测；输入健康另读 owner 检查点上的持久失败事实，
 不会清除已有持久失败。Policy schedules、配置 relay、命令恢复及 RSS 租约/失败重试保持各自职责。
 切面差集在单条语句内复用已校验的 AssetCut 上下文，并直接使用外层事件的 epoch/XID 判断可见性。
 
@@ -131,7 +131,7 @@ RSS 作出 Suspended 决定后，产品先在 `messaging::protect` 中保存任�
 `automation_suspended` 和审计，再由 RSS 完成调度状态。业务或审计事务失败时不暂停
 RSS 目标；提交未知沿原 claim/任务身份恢复，不把未知结果当作回滚。
 计算竞争由替代任务自动接续；依赖暂时不可用时保留诊断和持久检查点。
-Group、Scope、Query 和 Compliance runner 分别保留有界扫描与尝试失败观察，汇总到现有 Automation 诊断。成功扫描不清除尝试失败；只有同一目标的成功结算清除其记录。观察超过保留预算时显式标记截断，不以无记录冒充恢复。
+Group、Scope、Query 和 Compliance runner 分别保留有界扫描与尝试失败观察，汇总到现有 Automation 诊断。成功扫描不清除尝试失败；普通任务只有同一目标的成功结算清除其记录。Group、Scope、Compliance 的 inputs 失败在 RSS claim 保护下写入各自检查点；唤醒和重启均不清除，成功推进后的结算才清除。所有实例读取该持久状态，并清理已经恢复的本地 inputs 失败观察。观察超过保留预算时显式标记截断，不以无记录冒充恢复。
 
 资产 ingress 的终止尝试通过相同 claim 保护，在业务检查点保存唯一持久失败诊断和审计，
 输出 `mdm_automation_terminal_attempt`；所有实例的 readiness 都检查此诊断，不只依赖本地任务是否运行。

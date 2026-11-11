@@ -46,22 +46,36 @@ pub(crate) async fn verify_asset_reader(c: &mut sqlx::PgConnection) -> Result<()
     verify_history(c, true).await
 }
 async fn verify_history(c: &mut sqlx::PgConnection, reader: bool) -> Result<(), sqlx::Error> {
-    for (name, signature, result) in [
-        ("capture_asset_cut", "mdm.capture_asset_cut(uuid)", "jsonb"),
+    for (name, signature, result, volatility) in [
+        (
+            "capture_asset_cut",
+            "mdm.capture_asset_cut(uuid)",
+            "jsonb",
+            "s",
+        ),
         (
             "asset_cut_context",
             "mdm.asset_cut_context(jsonb)",
             "record",
+            "s",
+        ),
+        (
+            "asset_context_contains",
+            "mdm.asset_context_contains(uuid,pg_snapshot,uuid[],uuid,xid8)",
+            "boolean",
+            "i",
         ),
         (
             "asset_cut_contains",
             "mdm.asset_cut_contains(jsonb,uuid,xid8)",
             "boolean",
+            "s",
         ),
         (
             "asset_visible",
             "mdm.asset_visible(jsonb,bigint)",
             "boolean",
+            "s",
         ),
     ] {
         if reader && name != "capture_asset_cut" {
@@ -75,8 +89,8 @@ async fn verify_history(c: &mut sqlx::PgConnection, reader: bool) -> Result<(), 
             .split("$$")
             .nth(1)
             .expect("owned body");
-        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_proc p WHERE p.oid=to_regprocedure($1) AND p.prosecdef AND p.provolatile='s' AND NOT p.proleakproof AND p.prorettype=to_regtype($2) AND p.proconfig=ARRAY['search_path=pg_catalog, mdm'] AND p.prosrc=$3 AND p.proowner=(SELECT relowner FROM pg_class WHERE oid='mdm.asset_epochs'::regclass) AND NOT pg_has_role(current_user,p.proowner,'MEMBER') AND has_function_privilege(current_user,p.oid,'EXECUTE') AND NOT EXISTS(SELECT FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee<>p.proowner AND (a.grantee=0 OR a.is_grantable OR a.privilege_type<>'EXECUTE' OR NOT EXISTS(SELECT FROM pg_roles r WHERE r.oid=a.grantee AND r.rolname IN('mdm_api','mdm_runtime','mdm_access','mdm_identity_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_resource_runtime','mdm_telemetry_runtime','mdm_command_runtime','da_api','da_runtime','da_access','da_identity_runtime','da_inventory_runtime','da_scope_runtime','da_policy_runtime','da_resource_runtime','da_telemetry_runtime','da_command_runtime')))))")
-            .bind(signature).bind(result).bind(source).fetch_one(&mut *c).await?;
+        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_proc p WHERE p.oid=to_regprocedure($1) AND p.prosecdef AND p.provolatile::text=$4 AND NOT p.proleakproof AND p.prorettype=to_regtype($2) AND p.proconfig=ARRAY['search_path=pg_catalog, mdm'] AND p.prosrc=$3 AND p.proowner=(SELECT relowner FROM pg_class WHERE oid='mdm.asset_epochs'::regclass) AND NOT pg_has_role(current_user,p.proowner,'MEMBER') AND has_function_privilege(current_user,p.oid,'EXECUTE') AND NOT EXISTS(SELECT FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee<>p.proowner AND (a.grantee=0 OR a.is_grantable OR a.privilege_type<>'EXECUTE' OR NOT EXISTS(SELECT FROM pg_roles r WHERE r.oid=a.grantee AND r.rolname IN('mdm_api','mdm_runtime','mdm_access','mdm_identity_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_resource_runtime','mdm_telemetry_runtime','mdm_command_runtime','da_api','da_runtime','da_access','da_identity_runtime','da_inventory_runtime','da_scope_runtime','da_policy_runtime','da_resource_runtime','da_telemetry_runtime','da_command_runtime')))))")
+            .bind(signature).bind(result).bind(source).bind(volatility).fetch_one(&mut *c).await?;
         if !valid {
             return Err(sqlx::Error::Protocol("asset visibility contract".into()));
         }

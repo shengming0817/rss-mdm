@@ -467,7 +467,7 @@ impl SnapshotReader {
         let from = from.map(AssetCut::to_json);
         let to = to.to_json();
         let rows = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT tenant_id,revision,source_epoch,kind,identity,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM asset_cut_2),false) AND coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM asset_cut_3),false) AND revision>$4 AND ($5::bigint IS NULL OR revision<=$5) ORDER BY revision LIMIT $6")
+            sqlx::query("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT tenant_id,revision,source_epoch,kind,identity,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_3),false) AND revision>$4 AND ($5::bigint IS NULL OR revision<=$5) ORDER BY revision LIMIT $6")
                 .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(limit as i64).fetch_all(c).await
         })).await?;
         rows.into_iter()
@@ -504,7 +504,7 @@ impl SnapshotReader {
         let from = from.map(AssetCut::to_json);
         let to = to.map(AssetCut::to_json);
         Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM asset_cut_2),false) AND ($3::jsonb IS NULL OR coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM asset_cut_3),false)))")
+            sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_2),false) AND ($3::jsonb IS NULL OR coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_3),false)))")
                 .bind(tenant).bind(from).bind(to).fetch_one(c).await
         })).await?)
     }

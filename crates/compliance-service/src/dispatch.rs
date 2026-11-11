@@ -95,6 +95,7 @@ impl Compliance {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
+        let global = changes.iter().any(|c| c.identity.device.is_none());
         let devices = changes
             .iter()
             .filter_map(|c| c.identity.device.clone())
@@ -111,14 +112,25 @@ impl Compliance {
             .with_connection(move |c| {
                 Box::pin(async move {
                     pg::affected_rules::<rss_mdm_inventory_service::assets::InventoryCondition>(
-                        c, t, after, &fields, &devices, authority,
+                        c, t, after, &fields, authority,
                     )
                     .await
                 })
             })
             .await?;
         if let Some(rule) = rules.first() {
-            self.refresh_rule(tx, rule, &cut).await?;
+            let groups = rule.definition.groups();
+            if global
+                || groups.is_empty()
+                || !checked(
+                    self.groups
+                        .input_candidate_groups_in(tx, &groups, &devices)
+                        .await?,
+                )?
+                .is_empty()
+            {
+                self.refresh_rule(tx, rule, &cut).await?;
+            }
         }
         let next = (rules.len() > 1).then(|| rules[0].id.to_string());
         tx.with_connection(move |c| {

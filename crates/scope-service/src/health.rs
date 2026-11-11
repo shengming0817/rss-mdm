@@ -1,12 +1,6 @@
 //! Scope worker observations. App only combines the reported facts.
 use crate::*;
 impl Scopes {
-    pub fn input_observed(&self) -> bool {
-        self.input_state.load(std::sync::atomic::Ordering::Acquire) != 0
-    }
-    pub fn input_failed(&self) -> bool {
-        self.input_state.load(std::sync::atomic::Ordering::Acquire) == 2
-    }
     pub async fn queue_health(
         &self,
         budget: std::time::Duration,
@@ -133,5 +127,46 @@ impl Scopes {
                 .failures
                 .remove(target);
         }
+    }
+}
+
+impl crate::Scopes {
+    /// Read the retained owner outcome without discovering or waking business work.
+    pub async fn input_failed(
+        &self,
+        budget: std::time::Duration,
+    ) -> std::result::Result<bool, crate::Error> {
+        let failed = self
+            .runtime
+            .local_tx_with_context(
+                self.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),
+                self,
+                |owner, tx| {
+                    Box::pin(async move {
+                        owner.store.input_failed_in(tx).await.map_err(|e| match e {
+                            rss_mdm_scope_postgres::BindingError::Storage(e) => e,
+                            _ => sqlx::Error::Protocol("Scope input health".into()).into(),
+                        })
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |_| Err(crate::Error::Unavailable(crate::Failure::Storage)),
+                |_| Err(crate::Error::Unavailable(crate::Failure::Storage)),
+                |_| Err(crate::Error::RollbackFailed),
+                |_| Err(crate::Error::CommitUnknown),
+                |_| Err(crate::Error::Conflict),
+            )?;
+        if !failed {
+            self.runner_health
+                .lock()
+                .expect("runner observation")
+                .failures
+                .retain(|target, _| target.entity() != "inputs");
+        }
+        Ok(failed)
     }
 }

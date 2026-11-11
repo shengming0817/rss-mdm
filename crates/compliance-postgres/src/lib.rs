@@ -377,20 +377,16 @@ pub const GROUP_BLOCKER_FACTS_SQL: &str = "SELECT r.id,r.revision FROM mdm_compl
 /// Compliance's independently scheduled committed-input target.
 pub const INPUT_DOMAIN: &str = "mdm.compliance";
 
-/// Select only enabled rules which reference changed fields and affected current members.
+/// Select enabled exact-field candidates; the service asks Group about object relevance.
 /// Group publication supplies a separate durable invalidation when membership itself changes.
 pub async fn affected_rules<C: DeserializeOwned>(
     c: &mut PgConnection,
     t: TenantId,
     after: Option<Uuid>,
     fields: &[String],
-    devices: &[String],
     authority: bool,
 ) -> Result<Vec<Rule<C>>> {
     tenant(c, t).await?;
-    if devices.len() > 1000 {
-        return Err(corrupt());
-    }
-    sqlx::query("SELECT r.id::text,r.revision,r.enabled,r.desired::text,r.current_run::text,v.definition::text FROM mdm_compliance.rules r JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision) WHERE r.tenant_id=$1::uuid AND r.enabled AND NOT r.deleted AND ($2::uuid IS NULL OR r.id>$2) AND ($5 OR EXISTS(SELECT FROM mdm_compliance.fields f WHERE(f.tenant_id,f.rule_id)=(r.tenant_id,r.id) AND f.field=ANY($3))) AND (cardinality($4::text[])=0 OR NOT EXISTS(SELECT FROM mdm_compliance.groups g WHERE(g.tenant_id,g.rule_id)=(r.tenant_id,r.id)) OR EXISTS(SELECT FROM mdm_compliance.groups g JOIN mdm_group.groups h ON(h.tenant_id,h.id)=(g.tenant_id,g.group_id) WHERE(g.tenant_id,g.rule_id)=(r.tenant_id,r.id) AND NOT h.deleted AND EXISTS(SELECT FROM unnest($4::text[]) device WHERE (SELECT m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=h.tenant_id AND m.group_id=h.id AND m.object_id=device AND m.revision<=h.calculation_revision AND b.phase='published' ORDER BY m.revision DESC LIMIT 1)=true))) ORDER BY r.id LIMIT 2")
-        .bind(t.to_string()).bind(after).bind(fields).bind(devices).bind(authority).fetch_all(c).await?.into_iter().map(decode::<C>).collect()
+    sqlx::query("SELECT r.id::text,r.revision,r.enabled,r.desired::text,r.current_run::text,v.definition::text FROM mdm_compliance.rules r JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision) WHERE r.tenant_id=$1::uuid AND r.enabled AND NOT r.deleted AND ($2::uuid IS NULL OR r.id>$2) AND ($4 OR EXISTS(SELECT FROM mdm_compliance.fields f WHERE(f.tenant_id,f.rule_id)=(r.tenant_id,r.id) AND f.field=ANY($3))) ORDER BY r.id LIMIT 2")
+        .bind(t.to_string()).bind(after).bind(fields).bind(authority).fetch_all(c).await?.into_iter().map(decode::<C>).collect()
 }

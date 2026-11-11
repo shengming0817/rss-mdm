@@ -15,35 +15,6 @@ BEGIN
 END $$;
 REVOKE ALL ON FUNCTION mdm.capture_asset_cut(uuid) FROM PUBLIC;
 
-CREATE FUNCTION mdm.asset_cut_contains(cut jsonb, event_epoch uuid, event_xid xid8) RETURNS boolean
-LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
-DECLARE cut_epoch uuid; visibility pg_snapshot;
-BEGIN
- -- NULL is the empty starting coordinate, not a forged snapshot.
- IF cut IS NULL THEN RETURN false; END IF;
- IF (cut->>'tenant')::uuid IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN
-  RAISE EXCEPTION 'asset cut tenant mismatch' USING ERRCODE='42501';
- END IF;
- IF jsonb_typeof(cut)<>'object' OR NOT (cut ?& ARRAY['tenant','epoch','snapshot'])
-    OR cut-ARRAY['tenant','epoch','snapshot']<>'{}'::jsonb
-    OR octet_length(cut->>'snapshot')>65536 THEN
-  RAISE EXCEPTION 'invalid asset cut' USING ERRCODE='23514';
- END IF;
- cut_epoch=(cut->>'epoch')::uuid;
- visibility=(cut->>'snapshot')::pg_snapshot;
- IF NOT EXISTS(SELECT FROM mdm.asset_epochs WHERE id=cut_epoch) THEN
-  RAISE EXCEPTION 'unknown asset epoch' USING ERRCODE='23514';
- END IF;
- IF event_epoch=cut_epoch THEN
-  RETURN pg_visible_in_snapshot(event_xid,visibility);
- END IF;
- RETURN EXISTS(WITH RECURSIVE ancestors AS (
-   SELECT parent FROM mdm.asset_epochs WHERE id=cut_epoch
-   UNION ALL SELECT e.parent FROM mdm.asset_epochs e JOIN ancestors a ON e.id=a.parent
-  ) SELECT FROM ancestors WHERE parent=event_epoch);
-END $$;
-REVOKE ALL ON FUNCTION mdm.asset_cut_contains(jsonb,uuid,xid8) FROM PUBLIC;
-
 -- Decode and validate each distinct cut once per bounded statement. Callers materialize
 -- this one-row result and evaluate visibility from the outer event's epoch and XID.
 CREATE FUNCTION mdm.asset_cut_context(cut jsonb)
@@ -78,6 +49,23 @@ END $$;
 REVOKE ALL ON FUNCTION mdm.asset_cut_context(jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm.asset_cut_context(jsonb)
  TO mdm_runtime,mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_telemetry_runtime,mdm_command_runtime;
+
+-- One interpretation for decoded contexts and call sites with a JSON cut.
+CREATE FUNCTION mdm.asset_context_contains(epoch uuid, visibility pg_snapshot, ancestors uuid[], event_epoch uuid, event_xid xid8) RETURNS boolean
+LANGUAGE sql IMMUTABLE SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
+ SELECT coalesce(CASE WHEN event_epoch=epoch THEN pg_visible_in_snapshot(event_xid,visibility)
+  ELSE event_epoch=ANY(ancestors) END,false)
+$$;
+REVOKE ALL ON FUNCTION mdm.asset_context_contains(uuid,pg_snapshot,uuid[],uuid,xid8) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm.asset_context_contains(uuid,pg_snapshot,uuid[],uuid,xid8)
+ TO mdm_runtime,mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_telemetry_runtime,mdm_command_runtime;
+
+CREATE FUNCTION mdm.asset_cut_contains(cut jsonb, event_epoch uuid, event_xid xid8) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
+ SELECT mdm.asset_context_contains(c.epoch,c.visibility,c.ancestors,event_epoch,event_xid)
+ FROM mdm.asset_cut_context(cut) c
+$$;
+REVOKE ALL ON FUNCTION mdm.asset_cut_contains(jsonb,uuid,xid8) FROM PUBLIC;
 
 CREATE FUNCTION mdm.asset_visible(cut jsonb, event bigint) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$

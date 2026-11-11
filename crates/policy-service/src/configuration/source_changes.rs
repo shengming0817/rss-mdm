@@ -20,7 +20,7 @@ pub async fn pending_in(
         .await??;
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query_scalar("WITH input_cut AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid))) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM input_cut),false)) OR $2>coalesce((SELECT relation_consumed FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid),0)").bind(tenant).bind(revision).fetch_one(c).await
+        sqlx::query_scalar("WITH input_cut AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid))) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM input_cut),false)) OR $2>coalesce((SELECT relation_consumed FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid),0)").bind(tenant).bind(revision).fetch_one(c).await
     })).await?)
 }
 pub async fn advance_in(
@@ -48,7 +48,7 @@ pub async fn advance_in(
             let f = from.clone();
             let t = to.clone();
             tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar::<_,Option<i64>>("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM asset_cut_2),false) AND coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM asset_cut_3),false) AND revision>$4 ORDER BY revision LIMIT 1000) page")
+                sqlx::query_scalar::<_,Option<i64>>("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_3),false) AND revision>$4 ORDER BY revision LIMIT 1000) page")
                     .bind(tenant).bind(f).bind(t).bind(after).fetch_one(c).await
             })).await?
         }
@@ -69,7 +69,7 @@ pub async fn advance_in(
     let devices=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query_scalar::<_,String>(r#"WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)),changed AS (
             SELECT DISTINCT (a.identity->>'device') COLLATE "C" AS device
-            FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN a.source_epoch=epoch THEN pg_visible_in_snapshot(a.writer_xid,visibility) ELSE a.source_epoch=ANY(ancestors) END FROM asset_cut_2),false) AND coalesce((SELECT CASE WHEN a.source_epoch=epoch THEN pg_visible_in_snapshot(a.writer_xid,visibility) ELSE a.source_epoch=ANY(ancestors) END FROM asset_cut_3),false) AND a.revision>$4 AND a.revision<=$5
+            FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM asset_cut_3),false) AND a.revision>$4 AND a.revision<=$5
             AND (a.kind IN('device','source','credential'))
         ) SELECT device FROM changed WHERE device IS NOT NULL AND ($6::text IS NULL OR device>$6 COLLATE "C") ORDER BY device COLLATE "C" LIMIT 33"#)
             .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(cursor).fetch_all(c).await

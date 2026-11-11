@@ -223,3 +223,15 @@ pub async fn input_state(c: &mut PgConnection, t: TenantId) -> Result<InputState
         invalidated,
     })
 }
+
+/// Retained input failure, independent from scheduler wake or process lifetime.
+pub async fn input_failed(c: &mut PgConnection, t: TenantId) -> Result<bool> {
+    tenant(c, t).await?;
+    sqlx::query_scalar("SELECT coalesce((SELECT input_failed FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid),false)").bind(t.to_string()).fetch_one(c).await
+}
+/// Caller must hold the RSS input claim fence.
+pub async fn set_input_failed(c: &mut PgConnection, t: TenantId, failed: bool) -> Result<()> {
+    tenant(c, t).await?;
+    sqlx::query("INSERT INTO mdm_compliance.dispatch(tenant_id,input_failed) VALUES($1::uuid,$2) ON CONFLICT(tenant_id) DO UPDATE SET input_failed=excluded.input_failed").bind(t.to_string()).bind(failed).execute(c).await?;
+    Ok(())
+}

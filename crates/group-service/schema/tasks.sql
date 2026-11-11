@@ -50,6 +50,7 @@ GRANT UPDATE(state) ON mdm_assets.group_evaluation_arrays TO mdm_inventory_runti
 GRANT DELETE ON mdm_assets.group_evaluations,mdm_assets.group_evaluation_arrays TO mdm_inventory_runtime;
 CREATE TABLE mdm_assets.group_dispatch (
  tenant_id uuid PRIMARY KEY,from_cut jsonb, to_cut jsonb,
+ input_failed boolean NOT NULL DEFAULT false,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
  page_through bigint CHECK(page_through>event_after),cursor text COLLATE "C",
  relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0),
@@ -60,7 +61,7 @@ ALTER TABLE mdm_assets.group_dispatch FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_assets.group_dispatch USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_assets.group_dispatch FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
-GRANT UPDATE(from_cut,to_cut,event_after,page_through,cursor,relation_revision,relation_cursor,relation_pending_revision) ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
+GRANT UPDATE(input_failed,from_cut,to_cut,event_after,page_through,cursor,relation_revision,relation_cursor,relation_pending_revision) ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
 COMMIT;
 
 -- Live reverse membership uses the already admitted product read pool.

@@ -504,6 +504,8 @@ async fn reference_creation_serializes_with_group_delete_and_catalog_retirement(
         rss_mdm_inventory_postgres::retire_field_in(&mut retirement, c.tenant, field.key, 1)
             .await?
     );
+    let retired:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.field_versions v JOIN mdm.asset_changes a ON(a.tenant_id,a.revision)=(v.tenant_id,v.revision) JOIN rss_transactional_messaging.outbox o ON o.tenant_id=a.tenant_id AND o.domain='mdm-assets' AND o.envelope->>'id'='asset.changed.v1:'||a.source_epoch::text||':'||a.revision::text WHERE v.tenant_id=$1::uuid AND v.field=$2 AND v.version=2 AND v.definition IS NULL AND a.identity->>'operation'='deleted' AND a.identity->>'fact'=$2)").bind(c.tenant.to_string()).bind(field.key.as_str()).fetch_one(&mut *retirement).await?;
+    assert!(retired, "retirement and its canonical fact commit together");
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *retirement)
         .await?;

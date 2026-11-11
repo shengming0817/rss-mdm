@@ -149,3 +149,33 @@ impl GroupStore {
             .collect()))
     }
 }
+
+impl GroupStore {
+    /// Current candidate groups for bounded changed devices. Unknown is retained;
+    /// only an explicit current negative membership can suppress reevaluation.
+    pub async fn input_candidate_groups_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        groups: &[uuid::Uuid],
+        devices: &[String],
+    ) -> InTransaction<Vec<uuid::Uuid>> {
+        input!(self.check_transaction(tx)?);
+        if groups.len() > 16 || devices.len() > 1000 {
+            return Ok(Err(Rejection::CapacityExceeded));
+        }
+        let groups = groups.to_vec();
+        let devices = devices.to_vec();
+        let result = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar("SELECT mdm_group.input_candidate_groups($1,$2)")
+                        .bind(groups)
+                        .bind(devices)
+                        .fetch_all(c)
+                        .await
+                })
+            })
+            .await?;
+        Ok(Ok(result))
+    }
+}

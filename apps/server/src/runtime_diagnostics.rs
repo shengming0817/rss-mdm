@@ -120,11 +120,7 @@ impl RuntimeDiagnostics {
                 && self.devices.worker_ready()
                 && self.groups.task_state() == Some(rss_runtime::TaskState::Running)
                 && self.scopes.task_state() == Some(rss_runtime::TaskState::Running)
-                && self.scopes.input_observed()
-                && !self.scopes.input_failed()
                 && self.scope_group_health.state() == Some(rss_runtime::TaskState::Running)
-                && self.groups.input_observed()
-                && !self.groups.input_failed()
                 && self.scope_group_health.observed()
                 && !self.scope_group_health.failed()
                 && self.asset_input_health.state() == Some(rss_runtime::TaskState::Running)
@@ -146,21 +142,42 @@ impl RuntimeDiagnostics {
             automation.reasons.push(Reason::WorkerNotRunning);
             automation.health = Health::Unknown;
         }
-        if !self.scopes.input_observed()
-            || !self.groups.input_observed()
-            || !self.scope_group_health.observed()
-            || !self.asset_input_health.observed()
-        {
+        if !self.scope_group_health.observed() || !self.asset_input_health.observed() {
             automation.reasons.push(Reason::Unobserved);
             automation.health = Health::Unknown;
         }
-        if self.scopes.input_failed()
-            || self.groups.input_failed()
-            || self.scope_group_health.failed()
-            || self.asset_input_health.failed()
-        {
+        if self.scope_group_health.failed() || self.asset_input_health.failed() {
             automation.reasons.push(Reason::DependencyUnavailable);
             automation.health = Health::Degraded;
+        }
+        let remaining = || {
+            cutoff.saturating_duration_since(rss_request_context::Clock::now(
+                &crate::lifecycle::RuntimeTimer,
+            ))
+        };
+        let (group_inputs, scope_inputs, compliance_inputs) = tokio::join!(
+            self.groups.input_failed(remaining()),
+            self.scopes.input_failed(remaining()),
+            self.compliance.input_failed(remaining())
+        );
+        for outcome in [
+            group_inputs.map_err(|e| queue_failure(e.into())),
+            scope_inputs.map_err(|e| queue_failure(e.into())),
+            compliance_inputs.map_err(|e| queue_failure(e.into())),
+        ] {
+            match outcome {
+                Ok(false) => {}
+                Ok(true) => {
+                    automation.readiness = Readiness::NotReady;
+                    automation.health = Health::Degraded;
+                    automation.reasons.push(Reason::DependencyUnavailable);
+                }
+                Err(failure) => {
+                    automation.readiness = Readiness::NotReady;
+                    automation.health = Health::Degraded;
+                    automation.reasons.push(health_failure(failure));
+                }
+            }
         }
         let assets = self.assets.worker_status();
         let compliance = self.compliance.worker_status();

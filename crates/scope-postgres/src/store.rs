@@ -853,7 +853,7 @@ impl ScopeBinding {
                 let f = from.clone();
                 let t = to.clone();
                 tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM asset_cut_2),false) AND coalesce((SELECT CASE WHEN source_epoch=epoch THEN pg_visible_in_snapshot(writer_xid,visibility) ELSE source_epoch=ANY(ancestors) END FROM asset_cut_3),false) AND revision>$4 ORDER BY revision LIMIT 1000) page")
+                    sqlx::query_scalar("WITH asset_cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)),asset_cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM asset_cut_3),false) AND revision>$4 ORDER BY revision LIMIT 1000) page")
                         .bind(tenant).bind(f).bind(t).bind(event_after).fetch_one(c).await
                 })).await?
             }
@@ -1197,5 +1197,41 @@ impl ScopeBinding {
             })
             .await?
             .unwrap_or(false))
+    }
+}
+
+impl ScopeBinding {
+    /// Retained input failure, independent from scheduler wake or process lifetime.
+    pub async fn input_failed_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool, BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        let sql = crate::storage_profile::sql(self.profile()).store_input_failed;
+        Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move { sqlx::query_scalar(sql).bind(tenant).fetch_one(c).await })
+            })
+            .await?)
+    }
+    /// Caller must hold the RSS input claim fence.
+    pub async fn set_input_failed_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        failed: bool,
+    ) -> Result<(), BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        let sql = crate::storage_profile::sql(self.profile()).store_set_input_failed;
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(sql)
+                    .bind(tenant)
+                    .bind(failed)
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
+        Ok(())
     }
 }
