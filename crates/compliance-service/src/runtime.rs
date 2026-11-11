@@ -314,7 +314,12 @@ impl DurableStore for ComplianceWork {
         self.check(scope)?;
         let result = self.schedule.claim_due(scope, limit, lease, control).await;
         if result.is_ok() {
-            let _ = self.compliance.input_state.compare_exchange(0, 1, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire);
+            let _ = self.compliance.input_state.compare_exchange(
+                0,
+                1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            );
         }
 
         self.compliance

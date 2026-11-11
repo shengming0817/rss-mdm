@@ -2,13 +2,13 @@
 use crate::{Error, Failure};
 use futures::StreamExt;
 use rss_transactional_messaging::transaction::IngressValidator;
-use rss_transactional_messaging_postgres::PgConsumerEffect;
 use rss_transactional_messaging::{
     fence::{Epoch, ExecutionBinding, StorageIdentity},
     inbox::ConsumerGroup,
     message::MessagingDomain,
     policy::{DeliveryBudget, LeaseRenewalPolicy, OperationDeadline},
 };
+use rss_transactional_messaging_postgres::PgConsumerEffect;
 use rss_transactional_messaging_postgres::{
     PgConfig, PgLocalProjection, PgPassword, PgPrivateCa, PgProjectionOutcome, PgRecoveryCapture,
     PgRuntime,
@@ -53,15 +53,20 @@ fn unavailable() -> Error {
     Error::Unavailable(Failure::Database)
 }
 impl<H, V> Delivery<H, V>
-where H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
-      V: IngressValidator<Vec<u8>> + Send + Sync + 'static,
+where
+    H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
+    V: IngressValidator<Vec<u8>> + Send + Sync + 'static,
 {
     pub(crate) async fn open(
         config: &crate::config::Config,
         protection: Arc<rss_mdm_native_protection::Protector>,
         health: Arc<Health>,
         lane: Lane<'_>,
-        bind: impl FnOnce(Arc<PgRuntime>, rss_request_context::TenantId, rss_reconcile_postgres::PgMessagingStore) -> (H, V),
+        bind: impl FnOnce(
+            Arc<PgRuntime>,
+            rss_request_context::TenantId,
+            rss_reconcile_postgres::PgMessagingStore,
+        ) -> (H, V),
     ) -> Result<Arc<Self>, Error> {
         let db = lane.database;
         if db.user != lane.role {
@@ -97,8 +102,10 @@ where H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
                 .map_err(|_| unavailable())?,
         );
         let result = async {
-            let messaging = rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
-                .await.map_err(|_| unavailable())?;
+            let messaging =
+                rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
+                    .await
+                    .map_err(|_| unavailable())?;
             let (effect, validator) = bind(runtime.clone(), tenant, messaging);
             let capture = PgRecoveryCapture::new(runtime.clone(), protection, deadline())
                 .await
@@ -196,9 +203,11 @@ where H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
         }
         Ok(count)
     }
-    pub(crate) fn registration(self: Arc<Self>, notify: Arc<tokio::sync::Notify>) -> rss_runtime::ManagedTaskRegistration {
-        let (task, status) =
-            rss_runtime::ManagedTask::prepare(self.name, Duration::from_secs(8));
+    pub(crate) fn registration(
+        self: Arc<Self>,
+        notify: Arc<tokio::sync::Notify>,
+    ) -> rss_runtime::ManagedTaskRegistration {
+        let (task, status) = rss_runtime::ManagedTask::prepare(self.name, Duration::from_secs(8));
         let _ = self.health.task.set(status);
         task.into_registration(move |cancel|async move {
             loop {
@@ -235,8 +244,9 @@ enum PollFailure {
 
 pub(crate) struct Resource<H, V>(pub Arc<Delivery<H, V>>);
 impl<H, V> rss_runtime::ManagedResource for Resource<H, V>
-where H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
-      V: IngressValidator<Vec<u8>> + Send + Sync + 'static,
+where
+    H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
+    V: IngressValidator<Vec<u8>> + Send + Sync + 'static,
 {
     fn name(&self) -> &str {
         self.0.name

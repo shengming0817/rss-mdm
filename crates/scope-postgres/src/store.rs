@@ -644,7 +644,10 @@ impl ScopeBinding {
                     .await?;
                     if let Some(old) = old {
                         sqlx::query(crate::storage_profile::sql(profile).store_request_inputs)
-                            .bind(&tenant).bind(scope).execute(&mut *c).await?;
+                            .bind(&tenant)
+                            .bind(scope)
+                            .execute(&mut *c)
+                            .await?;
                         return Ok(old);
                     }
                     sqlx::query(crate::storage_profile::sql(profile).store_enqueue_in_2)
@@ -1148,24 +1151,51 @@ mod tests {
 
 impl ScopeBinding {
     /// Freeze the demand coordinate in the same snapshot as the original AssetCut.
-    pub async fn covered_inputs_in(&self, tx: &mut PgTransaction<'_>, scope: Uuid, cut: &rss_mdm_inventory::AssetCut) -> Result<i64, BindingError> {
+    pub async fn covered_inputs_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        scope: Uuid,
+        cut: &rss_mdm_inventory::AssetCut,
+    ) -> Result<i64, BindingError> {
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
         let profile = self.profile();
         let cut = cut.to_json();
-        Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar(crate::storage_profile::sql(profile).store_covered_inputs)
-                .bind(tenant).bind(scope).bind(cut).fetch_one(c).await
-        })).await?)
+        Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(crate::storage_profile::sql(profile).store_covered_inputs)
+                        .bind(tenant)
+                        .bind(scope)
+                        .bind(cut)
+                        .fetch_one(c)
+                        .await
+                })
+            })
+            .await?)
     }
     /// A coalesced request is not covered merely because an older task existed.
-    pub async fn inputs_uncovered_in(&self, tx: &mut PgTransaction<'_>, scope: Uuid, covered: i64) -> Result<bool, BindingError> {
+    pub async fn inputs_uncovered_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        scope: Uuid,
+        covered: i64,
+    ) -> Result<bool, BindingError> {
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
         let profile = self.profile();
-        Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar(crate::storage_profile::sql(profile).store_uncovered_inputs)
-                .bind(tenant).bind(scope).bind(covered).fetch_optional(c).await
-        })).await?.unwrap_or(false))
+        Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(crate::storage_profile::sql(profile).store_uncovered_inputs)
+                        .bind(tenant)
+                        .bind(scope)
+                        .bind(covered)
+                        .fetch_optional(c)
+                        .await
+                })
+            })
+            .await?
+            .unwrap_or(false))
     }
 }

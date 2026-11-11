@@ -128,7 +128,8 @@ impl RuntimeDiagnostics {
                 && self.scope_group_health.observed()
                 && !self.scope_group_health.failed()
                 && self.asset_input_health.state() == Some(rss_runtime::TaskState::Running)
-                && self.asset_input_health.observed() && !self.asset_input_health.failed(),
+                && self.asset_input_health.observed()
+                && !self.asset_input_health.failed(),
         );
         automation.task = Some(task(status));
         if matches!(status, None | Some(rss_runtime::TaskState::Pending)) {

@@ -158,8 +158,14 @@ impl crate::application::Application {
                     occurrence,
                     deadline: end.min(now.saturating_add(i64::from(run_lifetime_seconds))),
                 };
-                crate::worker::jobs::enqueue_job_in(profile, &self.reconcile_messaging, tx, id, &input).await?;
-
+                crate::worker::jobs::enqueue_job_in(
+                    profile,
+                    &self.reconcile_messaging,
+                    tx,
+                    id,
+                    &input,
+                )
+                .await?;
             }
         }
         if more {

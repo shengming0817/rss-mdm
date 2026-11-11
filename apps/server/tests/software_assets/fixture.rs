@@ -9,12 +9,12 @@ impl Fixture {
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_projection::Control::new(&clock, clock.cutoff(), &cancel);
         let observation = rt::ObservationResource::open(
-            c.inputs.database("shared", "mdm_runtime").options()?,
+            c.inputs.options("shared", "mdm_runtime")?,
             clock.clone(),
         )
         .await?;
         let projection = rt::ProjectionResource::open(
-            c.inputs.database("shared", "mdm_runtime").options()?,
+            c.inputs.options("shared", "mdm_runtime")?,
             clock.clone(),
             &control,
         )

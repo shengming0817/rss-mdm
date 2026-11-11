@@ -144,10 +144,19 @@ async fn apply_schema(
     }
     if name == "asset-inputs-v1" {
         rss_transactional_messaging_postgres::grant_local_projection(
-            tx, "mdm_asset_ingress_consumer",
-            &rss_transactional_messaging::message::MessagingDomain::parse(crate::asset_inputs::DOMAIN).expect("constant domain"),
-            &rss_transactional_messaging::inbox::ConsumerGroup::parse(crate::asset_inputs::CONSUMER).expect("constant consumer"),
-        ).await.map_err(|_| MigrationError::at(name, "asset consumer grant"))?;
+            tx,
+            "mdm_asset_ingress_consumer",
+            &rss_transactional_messaging::message::MessagingDomain::parse(
+                crate::asset_inputs::DOMAIN,
+            )
+            .expect("constant domain"),
+            &rss_transactional_messaging::inbox::ConsumerGroup::parse(
+                crate::asset_inputs::CONSUMER,
+            )
+            .expect("constant consumer"),
+        )
+        .await
+        .map_err(|_| MigrationError::at(name, "asset consumer grant"))?;
     }
     Ok(())
 }

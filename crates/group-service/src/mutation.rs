@@ -237,7 +237,8 @@ impl Groups {
             group_checked(self.groups.advance_graph_in(tx).await?)?;
         }
         if !matches!(op.input, GroupChange::Edit { .. }) {
-            rss_mdm_compliance_postgres::group_changed_in(tx, id, &self.reconcile_messaging).await?;
+            rss_mdm_compliance_postgres::group_changed_in(tx, id, &self.reconcile_messaging)
+                .await?;
         }
         if matches!(op.input, GroupChange::Delete) {
             self.register_fields_in(tx, id, None).await?;

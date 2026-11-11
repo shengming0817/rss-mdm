@@ -153,7 +153,11 @@ pub async fn wake_inputs_in(
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
     let tenant = tx.tenant_id();
-    let target = Target::new(Scope::new(tenant, domain(profile)).expect("constant scope"), "inputs").expect("constant target");
+    let target = Target::new(
+        Scope::new(tenant, domain(profile)).expect("constant scope"),
+        "inputs",
+    )
+    .expect("constant target");
     store.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(tenant), (), |_, tx| Box::pin(async move {
         tx.with_connection(|c| Box::pin(async move {
             sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'scopes')").execute(c).await?;

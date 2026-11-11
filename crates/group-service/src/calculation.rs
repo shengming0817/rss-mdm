@@ -26,7 +26,8 @@ impl Groups {
             Err(_) => return Err(Error::Conflict.into()),
         };
         if self.group_covers_in(tx, &current, &asset_cut).await?
-            && !self.inputs_uncovered_in(tx, id, covered_inputs).await? {
+            && !self.inputs_uncovered_in(tx, id, covered_inputs).await?
+        {
             return Ok(());
         }
         let tenant = self.tenant.to_string();
@@ -107,7 +108,8 @@ impl Groups {
             let current = group_checked(self.groups.capture_source_in(tx, source.group).await?)?;
             if current.coordinates.member_version != source.coordinates.member_version
                 || current.coordinates.authority_version != source.coordinates.authority_version
-                || current.coordinates.definition_version != source.coordinates.definition_version {
+                || current.coordinates.definition_version != source.coordinates.definition_version
+            {
                 return Ok(false);
             }
         }
@@ -586,8 +588,13 @@ impl Groups {
                 .await?,
         )?;
         let definition_changed = if let Some(previous) = previous {
-            checked(self.groups.build_in(tx, previous).await?)?.request.rule_version != build.request.rule_version
-        } else { true };
+            checked(self.groups.build_in(tx, previous).await?)?
+                .request
+                .rule_version
+                != build.request.rule_version
+        } else {
+            true
+        };
         let previous_cut = if let Some(previous) = previous {
             Some(
                 input_cut(
@@ -632,10 +639,12 @@ impl Groups {
                 .publish_build_in(tx, operation, authority)
                 .await?,
         )?;
-        let changed =
-            receipt.group.member_version > build.request.base_calculation || authority > old || definition_changed;
+        let changed = receipt.group.member_version > build.request.base_calculation
+            || authority > old
+            || definition_changed;
         if changed {
-            rss_mdm_compliance_postgres::group_changed_in(tx, id, &self.reconcile_messaging).await?;
+            rss_mdm_compliance_postgres::group_changed_in(tx, id, &self.reconcile_messaging)
+                .await?;
         }
         dirty |= self.inputs_uncovered_in(tx, id, *covered_inputs).await?;
         if dirty {

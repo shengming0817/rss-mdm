@@ -188,7 +188,10 @@ impl Scopes {
                     .publication_recorded_in(tx, owner, id)
                     .await?;
                 self.finish_in(tx, id, None).await?;
-                let mut successor = self.store.inputs_uncovered_in(tx, run.scope, run.covered_inputs).await?;
+                let mut successor = self
+                    .store
+                    .inputs_uncovered_in(tx, run.scope, run.covered_inputs)
+                    .await?;
                 for source in &input.sources {
                     match &source.reference {
                         Reference::Group(id) => {

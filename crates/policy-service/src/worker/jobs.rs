@@ -48,10 +48,32 @@ pub async fn enqueue_job_in(
     rss_mdm_policy_postgres::work::enqueue_in(profile, tx, id, input).await?;
     let event = matches!(input, Work::PolicyEvent { .. });
     let tenant = tx.tenant_id();
-    let target = if event { event_target(profile, tenant, id) } else { job_target(profile, tenant, id) };
-    reconcile.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(tenant), event, |event, tx| Box::pin(async move {
-        crate::worker_wake::notify_in(tx, if *event { crate::worker_wake::Work::Events } else { crate::worker_wake::Work::Automation }).await
-    })).await?;
+    let target = if event {
+        event_target(profile, tenant, id)
+    } else {
+        job_target(profile, tenant, id)
+    };
+    reconcile
+        .wake_in(
+            tx,
+            &target,
+            &rss_reconcile::ResourceSet::empty(tenant),
+            event,
+            |event, tx| {
+                Box::pin(async move {
+                    crate::worker_wake::notify_in(
+                        tx,
+                        if *event {
+                            crate::worker_wake::Work::Events
+                        } else {
+                            crate::worker_wake::Work::Automation
+                        },
+                    )
+                    .await
+                })
+            },
+        )
+        .await?;
     Ok(accepted(id, input))
 }
 pub fn accepted(id: Uuid, input: &Work) -> Value {

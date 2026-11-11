@@ -1,4 +1,5 @@
 //! Real independent Group and Compliance consumers of Inventory's bounded facts.
+mod asset_inputs;
 mod preview;
 mod scope_preview;
 use crate::{authority_t2_support::Context, planning_t2_support as planning};
@@ -12,7 +13,7 @@ use uuid::Uuid;
 pub(super) struct Owners {
     pub(super) storage: crate::owner_storage::OwnerRuntime,
     pub(super) groups: Arc<group::Groups>,
-    pub(super) compliance: compliance::Compliance,
+    pub(super) compliance: Arc<compliance::Compliance>,
 }
 impl Owners {
     pub(super) async fn open(c: &Context) -> Result<Self> {
@@ -58,7 +59,7 @@ impl Owners {
         Ok(Self {
             storage,
             groups: Arc::new(service),
-            compliance,
+            compliance: Arc::new(compliance),
         })
     }
     pub(super) async fn create(
@@ -119,6 +120,9 @@ impl Owners {
             .position(|claim| claim.target() == &target)
             .expect("accepted task has a durable target");
         let claim = batch.claims.swap_remove(index);
+        for other in batch.claims {
+            schedule.release(&other, &control).await?;
+        }
         for _ in 0..8 {
             let ReconcileStep::Ready(diff) = worker.observe(&claim, &control).await? else {
                 anyhow::bail!("Group observation deferred")
@@ -129,6 +133,9 @@ impl Owners {
             worker.apply(&claim, diff, &control).await?;
         }
         let (completed,failure):(bool,Option<String>)=sqlx::query_as("SELECT completed,failure FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(task).fetch_one(&c.operator).await?;
+        worker
+            .finish(&claim, rss_reconcile::Completion::Converged, &control)
+            .await?;
         pool.close().await;
         anyhow::ensure!(
             completed && failure.is_none(),
@@ -422,16 +429,12 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
                     .0
                     .changes_page_in(tx, Some(&ctx.4), &ctx.5, 0, None, 1000)
                     .await?;
-                assert!(
-                    changes
-                        .iter()
-                        .any(|e| e.device.as_deref() == Some(first.members[0].device.as_str()))
-                );
-                assert!(
-                    !changes
-                        .iter()
-                        .any(|e| e.device.as_deref() == Some(later.members[0].device.as_str()))
-                );
+                assert!(changes.iter().any(
+                    |e| e.identity.device.as_deref() == Some(first.members[0].device.as_str())
+                ));
+                assert!(!changes.iter().any(
+                    |e| e.identity.device.as_deref() == Some(later.members[0].device.as_str())
+                ));
                 assert!(changes.windows(2).all(|w| w[0].revision < w[1].revision));
                 Ok(())
             })

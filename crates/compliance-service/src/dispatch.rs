@@ -77,16 +77,50 @@ impl Compliance {
         if page.through.is_none() {
             return Ok(false);
         }
-        let changes = self.asset_reader.changes_page_in(tx, from.as_ref(), &cut, page.event_after, page.through, 1000).await?;
+        let changes = self
+            .asset_reader
+            .changes_page_in(
+                tx,
+                from.as_ref(),
+                &cut,
+                page.event_after,
+                page.through,
+                1000,
+            )
+            .await?;
         let authority = changes.iter().any(|c| c.kind.changes_authority());
-        let fields = changes.iter().flat_map(|c| c.fields.iter().cloned()).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
-        let devices = changes.iter().filter_map(|c| c.identity.device.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
-        let after = page.cursor.as_deref().map(Uuid::parse_str).transpose().map_err(|_| Error::Unavailable(Failure::ComplianceStorage))?;
-        let rules = tx.with_connection(move |c| Box::pin(async move {
-            pg::affected_rules::<rss_mdm_inventory_service::assets::InventoryCondition>(c, t, after, &fields, &devices, authority).await
-        })).await?;
-        if let Some(rule) = rules.first() { self.refresh_rule(tx, rule, &cut).await?; }
-        let next = (rules.len()>1).then(|| rules[0].id.to_string());
+        let fields = changes
+            .iter()
+            .flat_map(|c| c.fields.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let devices = changes
+            .iter()
+            .filter_map(|c| c.identity.device.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let after = page
+            .cursor
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()
+            .map_err(|_| Error::Unavailable(Failure::ComplianceStorage))?;
+        let rules = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    pg::affected_rules::<rss_mdm_inventory_service::assets::InventoryCondition>(
+                        c, t, after, &fields, &devices, authority,
+                    )
+                    .await
+                })
+            })
+            .await?;
+        if let Some(rule) = rules.first() {
+            self.refresh_rule(tx, rule, &cut).await?;
+        }
+        let next = (rules.len() > 1).then(|| rules[0].id.to_string());
         tx.with_connection(move |c| {
             Box::pin(async move { pg::tasks::save_dispatch(c, t, &page, next.as_deref()).await })
         })

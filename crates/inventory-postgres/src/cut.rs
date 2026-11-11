@@ -48,7 +48,11 @@ pub(crate) async fn verify_asset_reader(c: &mut sqlx::PgConnection) -> Result<()
 async fn verify_history(c: &mut sqlx::PgConnection, reader: bool) -> Result<(), sqlx::Error> {
     for (name, signature, result) in [
         ("capture_asset_cut", "mdm.capture_asset_cut(uuid)", "jsonb"),
-        ("asset_cut_context", "mdm.asset_cut_context(jsonb)", "record"),
+        (
+            "asset_cut_context",
+            "mdm.asset_cut_context(jsonb)",
+            "record",
+        ),
         (
             "asset_cut_contains",
             "mdm.asset_cut_contains(jsonb,uuid,xid8)",
@@ -98,16 +102,38 @@ async fn verify_history(c: &mut sqlx::PgConnection, reader: bool) -> Result<(), 
 /// Admit the one product SQL publisher, including its private public-wire encoder.
 async fn verify_input_publisher(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
     for (signature, name, definer, path) in [
-        ("mdm.input_frame(integer,bytea)", "input_frame", false, "search_path=pg_catalog"),
-        ("mdm.append_input_event(uuid,text,text,text,text,jsonb)", "append_input_event", true, "search_path=pg_catalog, mdm"),
-        ("mdm.record_asset_change(uuid,text,jsonb,text[])", "record_asset_change", true, "search_path=pg_catalog, mdm"),
+        (
+            "mdm.input_frame(integer,bytea)",
+            "input_frame",
+            false,
+            "search_path=pg_catalog",
+        ),
+        (
+            "mdm.append_input_event(uuid,text,text,text,text,jsonb)",
+            "append_input_event",
+            true,
+            "search_path=pg_catalog, mdm",
+        ),
+        (
+            "mdm.record_asset_change(uuid,text,jsonb,text[])",
+            "record_asset_change",
+            true,
+            "search_path=pg_catalog, mdm",
+        ),
     ] {
         let declaration = format!("CREATE FUNCTION mdm.{name}(");
-        let body = crate::MIGRATION_SQL.split_once(&declaration).expect("owned function").1
-            .split("$$").nth(1).expect("owned body");
+        let body = crate::MIGRATION_SQL
+            .split_once(&declaration)
+            .expect("owned function")
+            .1
+            .split("$$")
+            .nth(1)
+            .expect("owned body");
         let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_proc p WHERE p.oid=to_regprocedure($1) AND p.prosecdef=$2 AND p.proconfig=ARRAY[$3] AND p.prosrc=$4 AND p.proowner=(SELECT relowner FROM pg_class WHERE oid='mdm.asset_epochs'::regclass) AND NOT EXISTS(SELECT FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable OR (p.proname<>'record_asset_change' AND a.grantee<>p.proowner)))")
             .bind(signature).bind(definer).bind(path).bind(body).fetch_one(&mut *c).await?;
-        if !valid { return Err(sqlx::Error::Protocol("asset publisher contract".into())); }
+        if !valid {
+            return Err(sqlx::Error::Protocol("asset publisher contract".into()));
+        }
     }
     Ok(())
 }

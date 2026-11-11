@@ -103,7 +103,8 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
         }
         if !matches!(event.kind, GroupChangeKind::Edited) {
             crate::tasks::wake_inputs_in(self.binding.profile(), &self.messaging, tx)
-                .await.map_err(PgConsumerEffectFailure::infrastructure)?;
+                .await
+                .map_err(PgConsumerEffectFailure::infrastructure)?;
         }
         Ok(TerminalDisposition::Succeeded)
     }

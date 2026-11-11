@@ -121,7 +121,7 @@ CREATE TABLE "###, $schema, r###"scope_runs (
     id uuid NOT NULL,
     scope uuid NOT NULL,
     definition_revision bigint NOT NULL,
-    covered_inputs bigint NOT NULL CHECK(covered_inputs>=0),
+    covered_inputs bigint NOT NULL DEFAULT 0 CHECK(covered_inputs>=0),
     asset_cut jsonb NOT NULL,
     input jsonb NOT NULL,
     fingerprint bytea NOT NULL,

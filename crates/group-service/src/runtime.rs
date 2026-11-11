@@ -369,7 +369,12 @@ impl DurableStore for GroupWork {
         self.check(scope)?;
         let result = self.schedule.claim_due(scope, limit, lease, control).await;
         if result.is_ok() {
-            let _ = self.groups.input_state.compare_exchange(0, 1, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire);
+            let _ = self.groups.input_state.compare_exchange(
+                0,
+                1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            );
         }
         self.groups
             .record_scan(result.as_ref().err().map(|e| e.kind()));

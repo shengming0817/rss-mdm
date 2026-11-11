@@ -42,10 +42,31 @@ impl Inputs {
             lineage: self.installation.lineage,
         }
     }
+    pub fn options(&self, profile: &str, role: &str) -> Result<sqlx::postgres::PgConnectOptions> {
+        Ok(self.database(profile, role).options()?.options([
+            (
+                "rss.storage_target",
+                self.installation
+                    .target
+                    .iter()
+                    .map(|v| format!("{v:02x}"))
+                    .collect::<String>(),
+            ),
+            (
+                "rss.storage_lineage",
+                self.installation
+                    .lineage
+                    .iter()
+                    .map(|v| format!("{v:02x}"))
+                    .collect::<String>(),
+            ),
+            ("rss.execution_epoch", "1".to_owned()),
+        ]))
+    }
     pub async fn pool(&self, profile: &str, role: &str) -> Result<PgPool> {
         Ok(PgPoolOptions::new()
             .max_connections(2)
-            .connect_with(self.database(profile, role).options()?)
+            .connect_with(self.options(profile, role)?)
             .await?)
     }
 }
@@ -94,7 +115,7 @@ impl Context {
         identity_tenants: Vec<TenantId>,
     ) -> Result<Self> {
         let database = crate::Database::connect(
-            inputs.database(profile, "mdm_access").options()?,
+            inputs.options(profile, "mdm_access")?,
             &config::AuditConfig::Plain {},
         )
         .await

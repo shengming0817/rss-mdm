@@ -3,13 +3,13 @@
 mod array_read;
 pub mod association_directory;
 pub mod changes;
-pub mod object_changed;
 mod cursor;
 pub mod directory;
 mod directory_filter;
 pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
+pub mod object_changed;
 pub mod personnel;
 pub mod planning;
 mod presentation;

@@ -9,7 +9,9 @@
 pub const DATASET: &str = "inventory";
 
 mod changes;
-pub use changes::{ASSET_CHANGED_SCHEMA, AssetChanged, AssetChangeKind, AssetChangeOperation, AssetFactIdentity};
+pub use changes::{
+    ASSET_CHANGED_SCHEMA, AssetChangeKind, AssetChangeOperation, AssetChanged, AssetFactIdentity,
+};
 mod channels;
 mod cut;
 pub use cut::{AssetCut, InvalidAssetCut};

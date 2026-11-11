@@ -19,9 +19,18 @@ impl ObjectChanged {
         format!("object.changed.v1:{}:{}", self.history_epoch, self.revision)
     }
     pub fn valid(&self) -> bool {
-        self.v == 1 && !self.tenant.is_nil() && !self.history_epoch.is_nil() && self.revision > 0
-            && !self.object.is_empty() && self.object.len() <= 1024
-            && self.old_devices.len() <= 1000 && self.new_devices.len() <= 1000
-            && self.old_devices.iter().chain(&self.new_devices).all(|d| !d.is_empty() && d.len() <= 255 && !d.chars().any(char::is_control))
+        self.v == 1
+            && !self.tenant.is_nil()
+            && !self.history_epoch.is_nil()
+            && self.revision > 0
+            && !self.object.is_empty()
+            && self.object.len() <= 1024
+            && self.old_devices.len() <= 1000
+            && self.new_devices.len() <= 1000
+            && self
+                .old_devices
+                .iter()
+                .chain(&self.new_devices)
+                .all(|d| !d.is_empty() && d.len() <= 255 && !d.chars().any(char::is_control))
     }
 }

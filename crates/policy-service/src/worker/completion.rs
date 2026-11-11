@@ -202,11 +202,14 @@ impl DurableStore for PolicyWork {
                     return Err(ReconcileError::new(ErrorKind::BindingChanged));
                 }
             }
-            let scheduled = if matches!(claim.target().entity(), "schedules" | "configuration-relay") && completion == Completion::Converged {
-                Completion::Reobserve(crate::worker_wake::RECOVERY)
-            } else {
-                completion
-            };
+            let scheduled =
+                if matches!(claim.target().entity(), "schedules" | "configuration-relay")
+                    && completion == Completion::Converged
+                {
+                    Completion::Reobserve(crate::worker_wake::RECOVERY)
+                } else {
+                    completion
+                };
             self.store.finish(claim, scheduled, control).await?;
             self.service.record_settled(claim.target(), completion);
             if let Completion::Suspended { failures } = completion {

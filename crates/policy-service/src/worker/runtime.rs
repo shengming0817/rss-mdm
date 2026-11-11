@@ -374,7 +374,10 @@ impl PolicyWork {
                                                     if done {
                                                         return Ok(());
                                                     }
-                                                    rss_mdm_policy_postgres::work::started_in(profile, tx, id).await?;
+                                                    rss_mdm_policy_postgres::work::started_in(
+                                                        profile, tx, id,
+                                                    )
+                                                    .await?;
                                                     match job {
                                                         ref input @ Work::Lifecycle { .. } => {
                                                             ctx.0
@@ -622,19 +625,14 @@ impl PolicyWork {
                         s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
 
                         s.reconcile_messaging
-                            .protect_in(
-                                tx,
-                                claim,
-                                s,
-                                |s, tx| {
-                                    Box::pin(async move {
-                                        let result = s.advance_lifecycle_schedules_in(tx).await;
-                                        result
-                                            .map(ProtectedStep::Ready)
-                                            .map_err(|e| fault(e, &Mutex::new(None)))
-                                    })
-                                },
-                            )
+                            .protect_in(tx, claim, s, |s, tx| {
+                                Box::pin(async move {
+                                    let result = s.advance_lifecycle_schedules_in(tx).await;
+                                    result
+                                        .map(ProtectedStep::Ready)
+                                        .map_err(|e| fault(e, &Mutex::new(None)))
+                                })
+                            })
                             .await
                     })
                 },

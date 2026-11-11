@@ -100,20 +100,92 @@ impl AssetChanged {
     }
     /// Validate bounded coordinates without accessing current device state.
     pub fn validate(&self) -> Result<(), Invalid> {
-        let text = |s: &str, max| !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control);
-        if self.v != 1 || self.tenant.is_nil() || self.history_epoch.is_nil() || self.revision <= 0
+        let text =
+            |s: &str, max| !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control);
+        if self.v != 1
+            || self.tenant.is_nil()
+            || self.history_epoch.is_nil()
+            || self.revision <= 0
             || !text(&self.identity.fact, 4096)
             || self.identity.device.as_ref().is_some_and(|v| !text(v, 255))
             || self.identity.registration_epoch.is_some_and(|v| v.is_nil())
-            || self.identity.previous_registration_epoch.is_some_and(|v| v.is_nil())
-            || [&self.identity.source_epoch, &self.identity.previous_source_epoch].into_iter().flatten().any(|v| !text(v, 256))
+            || self
+                .identity
+                .previous_registration_epoch
+                .is_some_and(|v| v.is_nil())
+            || [
+                &self.identity.source_epoch,
+                &self.identity.previous_source_epoch,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|v| !text(v, 256))
             || self.identity.scope.as_ref().is_some_and(|v| !text(v, 4096))
-            || self.identity.field_scope.as_ref().is_some_and(|v| !text(v, 32768))
+            || self
+                .identity
+                .field_scope
+                .as_ref()
+                .is_some_and(|v| !text(v, 32768))
             || self.fields.len() > 128
-            || self.fields.iter().any(|f| crate::FieldKey::parse(f).is_err())
+            || self
+                .fields
+                .iter()
+                .any(|f| crate::FieldKey::parse(f).is_err())
             || (self.kind != AssetChangeKind::Catalog && self.identity.device.is_none())
             || (self.kind == AssetChangeKind::Catalog && self.identity.device.is_some())
-        { return Err(Invalid::Evidence); }
+        {
+            return Err(Invalid::Evidence);
+        }
+        match self.kind {
+            AssetChangeKind::Manual
+                if self.identity.source != Some(Source::Manual)
+                    || self.identity.source_epoch.is_some() =>
+            {
+                return Err(Invalid::Evidence);
+            }
+            AssetChangeKind::Inventory | AssetChangeKind::Collection | AssetChangeKind::Source
+                if self
+                    .identity
+                    .source
+                    .is_none_or(|source| source == Source::Manual)
+                    || self.identity.source_epoch.is_none() =>
+            {
+                return Err(Invalid::Evidence);
+            }
+            AssetChangeKind::Device if self.identity.registration_epoch.is_none() => {
+                return Err(Invalid::Evidence);
+            }
+            _ => {}
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fact_identity_separates_epochs_and_rejects_untrusted_or_legacy_shapes() {
+        let value = serde_json::json!({"v":1,"tenant":Uuid::from_u128(1),"revision":7,"historyEpoch":Uuid::from_u128(2),"kind":"source","identity":{
+            "fact":"device:source","device":"device","registrationEpoch":Uuid::from_u128(3),"previousRegistrationEpoch":null,"source":"mdm.windows","sourceEpoch":"source-epoch","previousSourceEpoch":"old-source-epoch","scope":null,"fieldScope":null,"operation":"revoked"},"fields":[]});
+        let event: AssetChanged = serde_json::from_value(value.clone()).unwrap();
+        event.validate().unwrap();
+        assert_ne!(
+            event.history_epoch,
+            event.identity.registration_epoch.unwrap()
+        );
+        assert_eq!(
+            event.identity.previous_source_epoch.as_deref(),
+            Some("old-source-epoch")
+        );
+        let mut secret = value.clone();
+        secret["identity"]["locator"] = "credential-secret".into();
+        assert!(serde_json::from_value::<AssetChanged>(secret).is_err());
+        let mut missing = event.clone();
+        missing.identity.source_epoch = None;
+        assert!(missing.validate().is_err());
+        let mut legacy = value;
+        legacy["kind"] = "registration".into();
+        assert!(serde_json::from_value::<AssetChanged>(legacy).is_err());
     }
 }

@@ -103,7 +103,11 @@ impl Groups {
 
 impl Groups {
     /// Record a demand which was merged into an already frozen calculation.
-    pub(crate) async fn request_followup_in(&self, tx: &mut PgTransaction<'_>, group: Uuid) -> Result<()> {
+    pub(crate) async fn request_followup_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        group: Uuid,
+    ) -> Result<()> {
         self.check_task_transaction(tx)?;
         let tenant = self.tenant.to_string();
         tx.with_connection(move |c| Box::pin(async move {
@@ -115,7 +119,12 @@ impl Groups {
     }
     /// Cover only demands visible in the very same snapshot as the frozen AssetCut.
     /// A newer request conservatively leaves coverage at zero; no numeric event frontier is inferred.
-    pub(crate) async fn covered_inputs_in(&self, tx: &mut PgTransaction<'_>, group: Uuid, cut: &rss_mdm_inventory::AssetCut) -> Result<i64> {
+    pub(crate) async fn covered_inputs_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        group: Uuid,
+        cut: &rss_mdm_inventory::AssetCut,
+    ) -> Result<i64> {
         self.check_task_transaction(tx)?;
         let tenant = self.tenant.to_string();
         let cut = cut.to_json();
@@ -124,7 +133,12 @@ impl Groups {
                 .bind(tenant).bind(group).bind(cut).fetch_one(c).await
         })).await?)
     }
-    pub(crate) async fn inputs_uncovered_in(&self, tx: &mut PgTransaction<'_>, group: Uuid, covered: i64) -> Result<bool> {
+    pub(crate) async fn inputs_uncovered_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        group: Uuid,
+        covered: i64,
+    ) -> Result<bool> {
         self.check_task_transaction(tx)?;
         let tenant = self.tenant.to_string();
         Ok(tx.with_connection(move |c| Box::pin(async move {
