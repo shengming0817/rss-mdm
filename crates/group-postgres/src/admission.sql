@@ -32,7 +32,7 @@ SELECT
   (t.relname='definition_walk' AND a.attname IN('graph_revision','visited')
   OR t.relname='source_state' AND a.attname IN('definition_version','authority_version')
   OR t.relname='graph_clock' AND a.attname='revision'
-  OR t.relname='groups' AND a.attname IN('presentation','revision','member_version','member_count','rule_version','deleted','member_set','calculation_revision')
+  OR t.relname='groups' AND a.attname IN('presentation','revision','member_version','member_count','rule_version','deleted','member_set','calculation_revision','input_revision','input_epoch','input_xid')
   OR t.relname='member_runs' AND a.attname IN('phase','cursor','diff_cursor','object_count','processed_count','member_count','added','removed','receipt','authority_version'))
  OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid,

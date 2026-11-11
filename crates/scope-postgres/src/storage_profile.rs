@@ -39,6 +39,9 @@ pub(crate) struct Statements {
     pub store_definition_at_1: &'static str,
     pub store_enqueue_in_1: &'static str,
     pub store_enqueue_in_2: &'static str,
+    pub store_request_inputs: &'static str,
+    pub store_covered_inputs: &'static str,
+    pub store_uncovered_inputs: &'static str,
     pub store_task_in_1: &'static str,
     pub store_finish_task_in_1: &'static str,
     pub store_replace_task_in_1: &'static str,
@@ -118,6 +121,7 @@ CREATE TABLE "###, $schema, r###"scope_runs (
     id uuid NOT NULL,
     scope uuid NOT NULL,
     definition_revision bigint NOT NULL,
+    covered_inputs bigint NOT NULL CHECK(covered_inputs>=0),
     asset_cut jsonb NOT NULL,
     input jsonb NOT NULL,
     fingerprint bytea NOT NULL,
@@ -180,6 +184,9 @@ CREATE TABLE "###, $schema, r###"scopes (
     revision bigint NOT NULL,
     deleted boolean DEFAULT false NOT NULL,
     calculation_revision bigint DEFAULT 0 NOT NULL,
+    input_revision bigint NOT NULL DEFAULT 0 CHECK(input_revision>=0),
+    input_epoch uuid,input_xid xid8,
+    CHECK((input_revision=0)=(input_epoch IS NULL AND input_xid IS NULL)),
     resolution uuid,
     resolution_revision bigint DEFAULT 0 NOT NULL,
     CONSTRAINT scopes_resolution_revision_check CHECK ((resolution_revision >= 0)),
@@ -374,7 +381,7 @@ GRANT SELECT ON TABLE "###, $schema, "scopes TO ", $command_runtime, r###";
 
 
 
-GRANT UPDATE(calculation_revision) ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r###";
+GRANT UPDATE(calculation_revision,input_revision,input_epoch,input_xid) ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r###";
 
 GRANT UPDATE(resolution) ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r###";
 
@@ -387,10 +394,11 @@ GRANT EXECUTE ON FUNCTION "###, $schema, "scope_admission(uuid,text) TO ", $acce
 
 GRANT SELECT ON "###, $schema, "scopes,", $schema, "scope_runs,", $schema, "scope_source_members TO ", $access, r###";
 GRANT SELECT ON "###, $operations, " TO ", $scope_runtime, r###";
+GRANT SELECT(id,active) ON mdm.asset_epochs TO "###, $scope_runtime, ",", $policy_runtime, r###";
 -- Policy is the sole configuration writer; calculation stays on the Scope runtime.
 GRANT USAGE ON "###, $schema_decl, " TO ", $policy_runtime, r###";
 GRANT SELECT,INSERT ON "###, $schema, "scopes,", $schema, "scope_versions,", $schema, "scope_sources,", $tasks, ",", $operations, " TO ", $policy_runtime, r###";
-GRANT UPDATE(revision,deleted) ON "###, $schema, "scopes TO ", $policy_runtime, r###";
+GRANT UPDATE(revision,deleted,input_revision,input_epoch,input_xid) ON "###, $schema, "scopes TO ", $policy_runtime, r###";
 GRANT DELETE ON "###, $schema, "scope_sources TO ", $policy_runtime, r###";
 GRANT SELECT ON "###, $schema, "scope_runs TO ", $policy_runtime, r###";
 GRANT UPDATE(phase) ON "###, $schema, "scope_runs TO ", $policy_runtime, r###";
@@ -635,7 +643,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT relrowsecurity OR NOT relforcerow
   AND pg_get_expr(p.polwithcheck,p.polrelid)=pg_get_expr(p.polqual,p.polrelid)))
 AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
  WHERE has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <>
- ((t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision'))
+ ((t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision','input_revision','input_epoch','input_xid'))
  OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
  OR (t.relname="###, $tasks_name, r###" AND a.attname IN('completed','failure','failure_detail','replacement_task'))
  OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor'))))
@@ -657,7 +665,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t CROSS JOIN reachable r WHERE
  OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
   AND (has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES')
    OR (has_column_privilege(r.oid,t.oid,a.attnum,'UPDATE') AND NOT (
-    (t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision'))
+    (t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision','input_revision','input_epoch','input_xid'))
     OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
     OR (t.relname="###, $tasks_name, r###" AND a.attname IN('completed','failure','failure_detail','replacement_task'))
     OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor')))))))
@@ -669,7 +677,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute col ON col.attrelid=t.oid
 ), reachable AS (
  SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))
 ), expected(relation,selectable,insertable,deletable,updates) AS (VALUES
- ('"###, $schema, r###"scopes',true,true,false,ARRAY['revision','deleted']),
+ ('"###, $schema, r###"scopes',true,true,false,ARRAY['revision','deleted','input_revision','input_epoch','input_xid']),
  ('"###, $schema, r###"scope_versions',true,true,false,ARRAY[]::text[]),
  ('"###, $schema, r###"scope_sources',true,true,true,ARRAY[]::text[]),
  ('"###, $schema, r###"scope_runs',true,false,false,ARRAY['phase']),
@@ -770,7 +778,7 @@ ORDER BY e.signature LIMIT 1
                 store_owner_in: concat!("SELECT policy_id,stage_id FROM ", $schema, "scopes WHERE tenant_id=$1::uuid AND id=$2"),
                 store_replace_sources_in_1: concat!("DELETE FROM ", $schema, "scope_sources WHERE tenant_id=$1::uuid AND scope=$2"),
                 store_replace_sources_in_2: concat!("INSERT INTO ", $schema, "scope_sources SELECT $1::uuid,$2,* FROM unnest($3::text[],$4::text[])"),
-                store_create_run_in_1: concat!("INSERT INTO ", $schema, "scope_runs(tenant_id,id,scope,definition_revision,asset_cut,input,fingerprint,phase) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sources')"),
+                store_create_run_in_1: concat!("INSERT INTO ", $schema, "scope_runs(tenant_id,id,scope,definition_revision,asset_cut,input,fingerprint,phase,covered_inputs) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sources',$8)"),
                 store_run_in_1: concat!("SELECT * FROM ", $schema, "scope_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE"),
                 store_stage_sources_in_1: concat!("INSERT INTO ", $schema, "scope_source_members(tenant_id,run,source,device,unknown,input) SELECT $1::uuid,$2,$3,d,u,i FROM unnest($4::text[],$5::boolean[],$6::jsonb[]) AS p(d,u,i)"),
                 store_stage_sources_in_2: concat!("UPDATE ", $schema, "scope_runs SET source_index=$3,source_cursor=$4 WHERE tenant_id=$1::uuid AND id=$2"),
@@ -781,6 +789,9 @@ ORDER BY e.signature LIMIT 1
                 store_definition_at_1: concat!("SELECT definition FROM ", $schema, "scope_versions WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3"),
                 store_enqueue_in_1: concat!("SELECT id FROM ", $tasks, " WHERE tenant_id=$1::uuid AND scope=$2 AND NOT completed"),
                 store_enqueue_in_2: concat!("INSERT INTO ", $tasks, "(tenant_id,id,scope) VALUES($1::uuid,$2,$3)"),
+                store_request_inputs: concat!("UPDATE ", $schema, "scopes SET input_revision=input_revision+1,input_epoch=(SELECT id FROM mdm.asset_epochs WHERE active),input_xid=pg_current_xact_id() WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted"),
+                store_covered_inputs: concat!("SELECT CASE WHEN input_revision=0 OR mdm.asset_cut_contains($3,input_epoch,input_xid) THEN input_revision ELSE 0 END FROM ", $schema, "scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted"),
+                store_uncovered_inputs: concat!("SELECT input_revision>$3 FROM ", $schema, "scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted"),
                 store_task_in_1: concat!("SELECT t.*,EXISTS(SELECT 1 FROM ", $schema, "scope_runs r WHERE r.tenant_id=t.tenant_id AND r.id=t.id) AS forwarded FROM ", $tasks, " t WHERE tenant_id=$1::uuid AND id=$2"),
                 store_finish_task_in_1: concat!("UPDATE ", $tasks, " SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed"),
                 store_replace_task_in_1: concat!("UPDATE ", $tasks, " SET replacement_task=$3 WHERE tenant_id=$1::uuid AND id=$2"),

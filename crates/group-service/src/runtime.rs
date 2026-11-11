@@ -104,7 +104,7 @@ impl GroupWork {
                                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                                         if *reason == "superseded" {
                                             groups
-                                                .retry_superseded_group_in(
+                                                .ensure_group_followup_in(
                                                     tx,
                                                     id,
                                                     candidate.ok_or_else(|| {

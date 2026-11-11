@@ -15,6 +15,7 @@ pub enum TaskInput {
         base_revision: i64,
         asset_cut: rss_mdm_inventory::AssetCut,
         automatic: bool,
+        covered_inputs: i64,
     },
 }
 

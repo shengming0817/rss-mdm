@@ -100,3 +100,36 @@ impl Groups {
         })
     }
 }
+
+impl Groups {
+    /// Record a demand which was merged into an already frozen calculation.
+    pub(crate) async fn request_followup_in(&self, tx: &mut PgTransaction<'_>, group: Uuid) -> Result<()> {
+        self.check_task_transaction(tx)?;
+        let tenant = self.tenant.to_string();
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("UPDATE mdm_group.groups SET input_revision=input_revision+1,input_epoch=(SELECT id FROM mdm.asset_epochs WHERE active),input_xid=pg_current_xact_id() WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
+                .bind(tenant).bind(group).execute(c).await?;
+            Ok(())
+        })).await?;
+        Ok(())
+    }
+    /// Cover only demands visible in the very same snapshot as the frozen AssetCut.
+    /// A newer request conservatively leaves coverage at zero; no numeric event frontier is inferred.
+    pub(crate) async fn covered_inputs_in(&self, tx: &mut PgTransaction<'_>, group: Uuid, cut: &rss_mdm_inventory::AssetCut) -> Result<i64> {
+        self.check_task_transaction(tx)?;
+        let tenant = self.tenant.to_string();
+        let cut = cut.to_json();
+        Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT CASE WHEN input_revision=0 OR mdm.asset_cut_contains($3,input_epoch,input_xid) THEN input_revision ELSE 0 END FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant).bind(group).bind(cut).fetch_one(c).await
+        })).await?)
+    }
+    pub(crate) async fn inputs_uncovered_in(&self, tx: &mut PgTransaction<'_>, group: Uuid, covered: i64) -> Result<bool> {
+        self.check_task_transaction(tx)?;
+        let tenant = self.tenant.to_string();
+        Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT input_revision>$3 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
+                .bind(tenant).bind(group).bind(covered).fetch_optional(c).await
+        })).await?.unwrap_or(false))
+    }
+}

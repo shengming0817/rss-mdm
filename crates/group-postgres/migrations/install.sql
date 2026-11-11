@@ -13,6 +13,9 @@ CREATE TABLE mdm_group.groups (
    AND jsonb_typeof(presentation->'description')='string' AND octet_length(presentation->>'description')<=4096),
  revision bigint NOT NULL CHECK(revision>0),
  calculation_revision bigint NOT NULL DEFAULT 0 CHECK(calculation_revision>=0),
+ input_revision bigint NOT NULL DEFAULT 0 CHECK(input_revision>=0),
+ input_epoch uuid,input_xid xid8,
+ CHECK((input_revision=0)=(input_epoch IS NULL AND input_xid IS NULL)),
  member_version bigint NOT NULL CHECK(member_version>=0 AND member_version<=calculation_revision),
  member_count bigint NOT NULL CHECK(member_count >= 0),
  member_set uuid,
@@ -44,7 +47,7 @@ DO $$ DECLARE t text; BEGIN
 END $$;
 GRANT USAGE ON SCHEMA mdm_group TO mdm_group_runtime;
 GRANT SELECT,INSERT ON mdm_group.groups,mdm_group.rules TO mdm_group_runtime;
-GRANT UPDATE(presentation,revision,member_version,member_count,rule_version,deleted,calculation_revision) ON mdm_group.groups TO mdm_group_runtime;
+GRANT UPDATE(presentation,revision,member_version,member_count,rule_version,deleted,calculation_revision,input_revision,input_epoch,input_xid) ON mdm_group.groups TO mdm_group_runtime;
 
 CREATE TABLE mdm_group.operations (
  tenant_id uuid NOT NULL,id uuid NOT NULL,group_id uuid NOT NULL,digest bytea NOT NULL CHECK(octet_length(digest)=32),

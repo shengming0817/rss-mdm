@@ -143,6 +143,7 @@ impl Groups {
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_assets.group_tasks j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) WHERE j.tenant_id=$1::uuid AND j.kind='group' AND b.group_id=$2::uuid AND NOT j.completed AND b.base_calculation=$3 AND b.rule_version IS NOT DISTINCT FROM $4)").bind(tenant).bind(id.to_string()).bind(calculation).bind(rule).fetch_one(c).await
         })).await?;
         if pending {
+            self.request_followup_in(tx, id).await?;
             return Ok(());
         }
         self.start_group_job_in(

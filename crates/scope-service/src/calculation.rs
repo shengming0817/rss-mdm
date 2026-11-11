@@ -20,10 +20,12 @@ impl Scopes {
             .capture_definition_in(tx, &head.definition, candidate)
             .await?;
         let digest = fingerprint(head.revision, &input)?;
+        let covered_inputs = self.store.covered_inputs_in(tx, scope, &asset_cut).await?;
         self.store
             .create_run_in(
                 tx,
                 &Run {
+                    covered_inputs,
                     id,
                     scope,
                     definition_revision: head.revision,
@@ -186,7 +188,7 @@ impl Scopes {
                     .publication_recorded_in(tx, owner, id)
                     .await?;
                 self.finish_in(tx, id, None).await?;
-                let mut successor = false;
+                let mut successor = self.store.inputs_uncovered_in(tx, run.scope, run.covered_inputs).await?;
                 for source in &input.sources {
                     match &source.reference {
                         Reference::Group(id) => {

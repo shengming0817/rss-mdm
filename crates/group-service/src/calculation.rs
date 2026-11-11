@@ -3,7 +3,7 @@ use super::*;
 use rss_mdm_group_postgres as g;
 
 impl Groups {
-    pub async fn retry_superseded_group_in(
+    pub async fn ensure_group_followup_in(
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
@@ -13,7 +13,7 @@ impl Groups {
         let TaskInput::Calculation {
             group: id,
             asset_cut,
-            automatic: true,
+            covered_inputs,
             ..
         } = job
         else {
@@ -25,7 +25,8 @@ impl Groups {
             Err(g::Rejection::NotFound | g::Rejection::Deleted) => return Ok(()),
             Err(_) => return Err(Error::Conflict.into()),
         };
-        if self.group_covers_in(tx, &current, &asset_cut).await? {
+        if self.group_covers_in(tx, &current, &asset_cut).await?
+            && !self.inputs_uncovered_in(tx, id, covered_inputs).await? {
             return Ok(());
         }
         let tenant = self.tenant.to_string();
@@ -101,6 +102,12 @@ impl Groups {
             };
         for source in &built.request.sources {
             if !self.source_current_in(tx, source).await? {
+                return Ok(false);
+            }
+            let current = group_checked(self.groups.capture_source_in(tx, source.group).await?)?;
+            if current.coordinates.member_version != source.coordinates.member_version
+                || current.coordinates.authority_version != source.coordinates.authority_version
+                || current.coordinates.definition_version != source.coordinates.definition_version {
                 return Ok(false);
             }
         }
@@ -216,7 +223,9 @@ impl Groups {
             Some(snapshot) => snapshot.group_input(),
             None => asset_cut.input_version(),
         };
+        let covered_inputs = self.covered_inputs_in(tx, id, &asset_cut).await?;
         let job = TaskInput::Calculation {
+            covered_inputs,
             authority,
             group: id,
             base_revision: current.revision.get(),
@@ -531,14 +540,13 @@ impl Groups {
         let TaskInput::Calculation {
             group: id,
             asset_cut,
-            automatic,
+            covered_inputs,
             ..
         } = job
         else {
             return Err(Error::Malformed.into());
         };
         let id = *id;
-        let automatic = *automatic;
         let operation = checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?;
         // The immutable old input remains historical evidence. Newer input cannot
         // be acknowledged by publishing this old result under its former asset_cut.
@@ -577,6 +585,9 @@ impl Groups {
                 .current_member_set_in(tx, build.request.group)
                 .await?,
         )?;
+        let definition_changed = if let Some(previous) = previous {
+            checked(self.groups.build_in(tx, previous).await?)?.request.rule_version != build.request.rule_version
+        } else { true };
         let previous_cut = if let Some(previous) = previous {
             Some(
                 input_cut(
@@ -622,11 +633,12 @@ impl Groups {
                 .await?,
         )?;
         let changed =
-            receipt.group.member_version > build.request.base_calculation || authority > old;
+            receipt.group.member_version > build.request.base_calculation || authority > old || definition_changed;
         if changed {
             rss_mdm_compliance_postgres::group_changed_in(tx, id).await?;
         }
-        if dirty && automatic {
+        dirty |= self.inputs_uncovered_in(tx, id, *covered_inputs).await?;
+        if dirty {
             let patch = build.request.patch.as_ref().map(|_| g::MemberPatch {
                 add: vec![],
                 remove: vec![],
@@ -674,28 +686,11 @@ impl Groups {
             let id = stored(Uuid::parse_str(id))?;
             if kind == "group" {
                 let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
-                let current = group_checked(self.groups.lock_reference_target_in(tx, gid).await?)?;
-                self.start_group_job_in(
-                    tx,
-                    GroupStart {
-                        asset_cut: candidate.clone(),
-                        authority: vec![],
-                        id,
-                        task: Uuid::new_v4(),
-                        expected: current.revision.get() as u64,
-                        patch: None,
-                        automatic: true,
-                        at: checked_input(Timepoint::try_from(
-                            self.clock
-                                .unix_seconds()
-                                .ok_or(Error::Unavailable(Failure::Clock))?,
-                        ))?,
-                    },
-                )
-                .await?;
+                self.dispatch_group_in(tx, gid, candidate).await?;
             }
         }
         if rows.len() <= 64 {
+            self.ensure_group_followup_in(tx, task, candidate).await?;
             return self.finish_task_in(tx, task, None).await;
         }
         let tenant = self.tenant.to_string();
