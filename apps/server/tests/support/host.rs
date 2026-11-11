@@ -27,6 +27,8 @@ pub(crate) fn configuration(
         serde_json::to_value(inputs.database(profile, "mdm_command_runtime"))?;
     configuration["scope_group_database"] =
         serde_json::to_value(inputs.database(profile, "mdm_scope_group_consumer"))?;
+    configuration["asset_input_database"] =
+        serde_json::to_value(inputs.database(profile, "mdm_asset_ingress_consumer"))?;
     configuration["webhooks"]["recovery_database"] =
         serde_json::to_value(inputs.database(profile, "mdm_webhook_operator"))?;
     configuration["publication"]["database"] =

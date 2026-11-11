@@ -93,3 +93,19 @@ impl Transactions {
         Ok(())
     }
 }
+
+/// Register committed asset/object inputs without interpreting any Policy business state.
+pub async fn inputs_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    store: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let tenant = tx.tenant_id();
+    let target = rss_reconcile::Target::new(rss_reconcile::Scope::new(tenant, crate::worker::jobs::domain(profile)).expect("constant scope"), "configuration-inputs").expect("constant target");
+    store.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(tenant), (), |_, tx| Box::pin(async move {
+        tx.with_connection(|c| Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'policy')").execute(c).await?;
+            Ok(())
+        })).await
+    })).await
+}

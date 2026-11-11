@@ -162,7 +162,8 @@ mod recovery_credentials;
 
 pub mod telemetry;
 
-mod scope_group_changes;
+mod local_delivery;
+mod asset_inputs;
 mod scopes;
 
 #[cfg(test)]

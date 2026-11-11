@@ -488,3 +488,5 @@ pub async fn admit_storage_in(
 ) -> std::result::Result<(), sqlx::Error> {
     rss_mdm_compliance_postgres::admit(c, tenant).await
 }
+
+pub mod input_wake;

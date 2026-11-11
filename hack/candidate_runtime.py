@@ -135,6 +135,7 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     for owner in ("inventory","scope","policy","resource","software","content","telemetry","scheduler"):
         config["business_databases"][owner]=database(runtime,"mdm_"+owner+"_runtime")
     config["scope_group_database"]=database(runtime,"mdm_scope_group_consumer")
+    config["asset_input_database"]=database(runtime,"mdm_asset_ingress_consumer")
     config["publication"]["database"]=database(runtime,"mdm_software_driver")
     write(operator,"authorization.json",dict(profile="mdm",audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),expectedEpoch=1,login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
     write(runtime,"config.json",config)

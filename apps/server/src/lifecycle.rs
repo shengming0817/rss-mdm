@@ -96,6 +96,7 @@ pub async fn serve(
                         query_work,
                         compliance_work,
                         scope_delivery,
+                        asset_delivery,
                         publications,
                         archive,
                         device_work,
@@ -254,7 +255,8 @@ let policy_application=crate::assembly::policy::application(&policy_owner,invent
 let publications=crate::assembly::publication::open(&compiled.config.publication,&compiled.config.storage_binding,&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone(),|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let resource_catalog=crate::assembly::resource::catalog(resource_owner.audit.clone(),resource_owner.runtime.clone(),inventory_tenant,application_clock.clone(),cursor_key.clone()).await.map_err(assembly_error)?;
 let software_catalog=crate::assembly::software::catalog(&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone()).await.map_err(assembly_error)?;
-let scope_group_health=Arc::new(crate::scope_group_changes::Health::default());
+let scope_group_health=Arc::new(crate::local_delivery::Health::default());
+let asset_input_health=Arc::new(crate::local_delivery::Health::default());
                         let identity = crate::identity::Identity::connect(
                             &compiled.config,
                             compiled.identity_management.clone(),
@@ -584,16 +586,24 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 scheduler.store.clone(),
                             ),
                         );
-                        let scope_delivery = crate::scope_group_changes::Delivery::open(
-                            &compiled.config,
-                            protection.clone(),
-                            scope_group_health.clone(),
-                        )
-                        .await
-                        .map_err(|e| ProcessError::at("startup.scope_group_delivery", e))?;
-                        startup.stage_resource(DynManagedResource::new_box(
-                            crate::scope_group_changes::Resource(scope_delivery.clone()),
-                        ));
+                        let scope_delivery = crate::local_delivery::Delivery::open(
+                            &compiled.config, protection.clone(), scope_group_health.clone(),
+                            crate::local_delivery::Lane { database: &compiled.config.scope_group_database,
+                                role: "mdm_scope_group_consumer", domain: rss_mdm_scope_service::group_changes::DOMAIN,
+                                consumer: rss_mdm_scope_service::group_changes::CONSUMER, name: "scope-group-delivery" },
+                            |runtime, tenant, messaging| (rss_mdm_scope_service::group_changes::Receiver::new(
+                                rss_mdm_install_support::StorageProfile::Mdm, runtime, tenant, messaging),
+                                rss_mdm_scope_service::group_changes::Validator { tenant }),
+                        ).await.map_err(|e| ProcessError::at("startup.scope_group_delivery", e))?;
+                        startup.stage_resource(DynManagedResource::new_box(crate::local_delivery::Resource(scope_delivery.clone())));
+                        let asset_delivery = crate::local_delivery::Delivery::open(
+                            &compiled.config, protection.clone(), asset_input_health.clone(),
+                            crate::local_delivery::Lane { database: &compiled.config.asset_input_database,
+                                role: "mdm_asset_ingress_consumer", domain: crate::asset_inputs::DOMAIN,
+                                consumer: crate::asset_inputs::CONSUMER, name: "asset-input-delivery" },
+                            |_, tenant, messaging| (crate::asset_inputs::Receiver { messaging }, crate::asset_inputs::Validator { tenant }),
+                        ).await.map_err(|e| ProcessError::at("startup.asset_input_delivery", e))?;
+                        startup.stage_resource(DynManagedResource::new_box(crate::local_delivery::Resource(asset_delivery.clone())));
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
                         let gateway = compiled.config.trusted_gateway;
@@ -717,7 +727,7 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                                 runtime: runtime.clone(),
 groups: inventory_services.groups.clone(), policy_application: policy_application.clone(), policies: policies.clone(),
 publications: publications.clone(), software_catalog: software_catalog.clone(), content_access: content_access.clone(),
-cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), resources: resource_catalog.clone(), events: events.clone(),
+cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), asset_input_health: asset_input_health.clone(), resources: resource_catalog.clone(), events: events.clone(),
                                 scopes: scopes.clone(),
                                 assets: inventory_services.assets,
                                 compliance: inventory_services.compliance,
@@ -792,6 +802,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             query_work,
                             compliance_work,
                             scope_delivery,
+                        asset_delivery,
                             publications.clone(),
                             archive,
                             device_work,
@@ -851,7 +862,8 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                     );
                     launch.stage_deferred_task_with_token(archive.registration().critical());
                     for task in task_registrations { launch.stage_deferred_task_with_token(task); }
-                    launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
+                    launch.stage_deferred_task_with_token(scope_delivery.registration(signals.handle(crate::worker_wake::Work::GroupEvents)).critical());
+                    launch.stage_deferred_task_with_token(asset_delivery.registration(signals.handle(crate::worker_wake::Work::AssetInputs)).critical());
                     launch.stage_deferred_task_with_token(
                         query_work
                             .registration(signals.handle(crate::worker_wake::Work::AssetQueries))

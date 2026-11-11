@@ -19,7 +19,8 @@ pub(crate) struct RuntimeDiagnostics {
     pub groups: Arc<rss_mdm_group_service::Groups>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub compliance: Arc<rss_mdm_compliance_service::Compliance>,
-    pub scope_group_health: Arc<crate::scope_group_changes::Health>,
+    pub scope_group_health: Arc<crate::local_delivery::Health>,
+    pub(crate) asset_input_health: Arc<crate::local_delivery::Health>,
     pub execution: Arc<rss_mdm_device_service::control::Service>,
     pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::native::Service>>,
@@ -125,7 +126,9 @@ impl RuntimeDiagnostics {
                 && self.groups.input_observed()
                 && !self.groups.input_failed()
                 && self.scope_group_health.observed()
-                && !self.scope_group_health.failed(),
+                && !self.scope_group_health.failed()
+                && self.asset_input_health.state() == Some(rss_runtime::TaskState::Running)
+                && self.asset_input_health.observed() && !self.asset_input_health.failed(),
         );
         automation.task = Some(task(status));
         if matches!(status, None | Some(rss_runtime::TaskState::Pending)) {
@@ -137,6 +140,7 @@ impl RuntimeDiagnostics {
         if self.scopes.task_state() != Some(rss_runtime::TaskState::Running)
             || self.groups.task_state() != Some(rss_runtime::TaskState::Running)
             || self.scope_group_health.state() != Some(rss_runtime::TaskState::Running)
+            || self.asset_input_health.state() != Some(rss_runtime::TaskState::Running)
         {
             automation.reasons.push(Reason::WorkerNotRunning);
             automation.health = Health::Unknown;
@@ -144,6 +148,7 @@ impl RuntimeDiagnostics {
         if !self.scopes.input_observed()
             || !self.groups.input_observed()
             || !self.scope_group_health.observed()
+            || !self.asset_input_health.observed()
         {
             automation.reasons.push(Reason::Unobserved);
             automation.health = Health::Unknown;
@@ -151,6 +156,7 @@ impl RuntimeDiagnostics {
         if self.scopes.input_failed()
             || self.groups.input_failed()
             || self.scope_group_health.failed()
+            || self.asset_input_health.failed()
         {
             automation.reasons.push(Reason::DependencyUnavailable);
             automation.health = Health::Degraded;

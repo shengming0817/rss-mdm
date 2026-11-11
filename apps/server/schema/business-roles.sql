@@ -20,3 +20,5 @@ ALTER ROLE mdm_scheduler_runtime SET default_transaction_isolation='read committ
 CREATE ROLE mdm_scope_group_consumer NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
 ALTER ROLE mdm_scope_group_consumer SET default_transaction_isolation='read committed';
 GRANT mdm_group_runtime TO mdm_inventory_runtime;
+CREATE ROLE mdm_asset_ingress_consumer NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_asset_ingress_consumer SET default_transaction_isolation='read committed';

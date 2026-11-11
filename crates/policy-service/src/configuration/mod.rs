@@ -96,7 +96,7 @@ mod events;
 mod binding;
 pub use binding::Dependencies;
 pub(crate) mod recovery;
-mod wake;
+pub mod wake;
 
 pub(crate) mod source_changes;
 pub const SOURCE_CHANGES_SQL: &str = include_str!("../../schema/configuration-source-changes.sql");

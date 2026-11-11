@@ -145,3 +145,19 @@ impl Scopes {
         .await
     }
 }
+
+/// Wake only this owner's input target in the caller's already-admitted runtime.
+pub async fn wake_inputs_in(
+    profile: rss_mdm_install_support::StorageProfile,
+    store: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let tenant = tx.tenant_id();
+    let target = Target::new(Scope::new(tenant, domain(profile)).expect("constant scope"), "inputs").expect("constant target");
+    store.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(tenant), (), |_, tx| Box::pin(async move {
+        tx.with_connection(|c| Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'scopes')").execute(c).await?;
+            Ok(())
+        })).await
+    })).await
+}

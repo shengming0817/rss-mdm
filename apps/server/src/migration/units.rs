@@ -343,6 +343,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "reconcile-runtime-v1",
             include_str!("../../schema/reconcile-runtime.sql"),
         ),
+        ("asset-inputs-v1", include_str!("../../schema/asset-inputs.sql")),
         ("group-relations-v1", rss_mdm_group_postgres::RELATIONS_SQL),
         (
             "scope-group-changes-v1",

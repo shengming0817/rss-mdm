@@ -1,7 +1,8 @@
-//! Fixed Group-to-Scope local delivery assembly and bounded lifecycle.
+//! Bounded lifecycle for the two fixed product local projection lanes.
 use crate::{Error, Failure};
 use futures::StreamExt;
-use rss_mdm_scope_service::group_changes::{CONSUMER, DOMAIN, Receiver, Validator};
+use rss_transactional_messaging::transaction::IngressValidator;
+use rss_transactional_messaging_postgres::PgConsumerEffect;
 use rss_transactional_messaging::{
     fence::{Epoch, ExecutionBinding, StorageIdentity},
     inbox::ConsumerGroup,
@@ -31,11 +32,19 @@ impl Health {
         self.failed.load(std::sync::atomic::Ordering::Acquire)
     }
 }
-pub(crate) struct Delivery {
+pub(crate) struct Lane<'a> {
+    pub database: &'a crate::config::Database,
+    pub role: &'static str,
+    pub domain: &'static str,
+    pub consumer: &'static str,
+    pub name: &'static str,
+}
+pub(crate) struct Delivery<H, V> {
+    name: &'static str,
     health: Arc<Health>,
     runtime: Arc<PgRuntime>,
-    projection: PgLocalProjection<Receiver, rss_mdm_native_protection::Protector>,
-    validator: Validator,
+    projection: PgLocalProjection<H, rss_mdm_native_protection::Protector>,
+    validator: V,
 }
 fn deadline() -> OperationDeadline {
     OperationDeadline::from_remaining(Duration::from_secs(6))
@@ -43,14 +52,19 @@ fn deadline() -> OperationDeadline {
 fn unavailable() -> Error {
     Error::Unavailable(Failure::Database)
 }
-impl Delivery {
+impl<H, V> Delivery<H, V>
+where H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
+      V: IngressValidator<Vec<u8>> + Send + Sync + 'static,
+{
     pub(crate) async fn open(
         config: &crate::config::Config,
         protection: Arc<rss_mdm_native_protection::Protector>,
         health: Arc<Health>,
+        lane: Lane<'_>,
+        bind: impl FnOnce(Arc<PgRuntime>, rss_request_context::TenantId, rss_reconcile_postgres::PgMessagingStore) -> (H, V),
     ) -> Result<Arc<Self>, Error> {
-        let db = &config.scope_group_database;
-        if db.user != "mdm_scope_group_consumer" {
+        let db = lane.database;
+        if db.user != lane.role {
             return Err(Error::Malformed);
         }
         let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
@@ -83,18 +97,17 @@ impl Delivery {
                 .map_err(|_| unavailable())?,
         );
         let result = async {
+            let messaging = rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
+                .await.map_err(|_| unavailable())?;
+            let (effect, validator) = bind(runtime.clone(), tenant, messaging);
             let capture = PgRecoveryCapture::new(runtime.clone(), protection, deadline())
                 .await
                 .map_err(|_| unavailable())?;
             let projection = PgLocalProjection::new(
                 capture,
-                ConsumerGroup::parse(CONSUMER).expect("constant consumer"),
-                MessagingDomain::parse(DOMAIN).expect("constant domain"),
-                Receiver::new(
-                    rss_mdm_install_support::StorageProfile::Mdm,
-                    runtime.clone(),
-                    tenant,
-                ),
+                ConsumerGroup::parse(lane.consumer).expect("constant consumer"),
+                MessagingDomain::parse(lane.domain).expect("constant domain"),
+                effect,
                 DeliveryBudget::new(
                     Duration::from_secs(30),
                     Duration::from_secs(6),
@@ -109,10 +122,11 @@ impl Delivery {
             .await
             .map_err(|_| unavailable())?;
             Ok(Arc::new(Self {
+                name: lane.name,
                 health,
                 runtime: runtime.clone(),
                 projection,
-                validator: Validator { tenant },
+                validator,
             }))
         }
         .await;
@@ -182,9 +196,9 @@ impl Delivery {
         }
         Ok(count)
     }
-    pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
+    pub(crate) fn registration(self: Arc<Self>, notify: Arc<tokio::sync::Notify>) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) =
-            rss_runtime::ManagedTask::prepare("scope-group-delivery", Duration::from_secs(8));
+            rss_runtime::ManagedTask::prepare(self.name, Duration::from_secs(8));
         let _ = self.health.task.set(status);
         task.into_registration(move |cancel|async move {
             loop {
@@ -195,13 +209,21 @@ impl Delivery {
                         self.health.observed.store(true,std::sync::atomic::Ordering::Release);
                         if count>0 {continue;}
                     }
-                    Err(PollFailure::RecoveryRequired)=>return Err(rss_runtime::ShutdownError::new(std::io::Error::other("Group event requires recovery"))),
+                    Err(PollFailure::RecoveryRequired)=>return Err(rss_runtime::ShutdownError::new(std::io::Error::other("Product input event requires recovery"))),
                     Err(PollFailure::Unavailable)=>{
                         self.health.failed.store(true,std::sync::atomic::Ordering::Release);
-                        eprintln!("{}",serde_json::json!({"event":"scope_group_delivery_unavailable"}));
+                        eprintln!("{}",serde_json::json!({"event":"local_delivery_unavailable","worker":self.name}));
                     }
                 }
-                tokio::select!{()=cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(1))=>{}}
+                let delay = match self.projection.next_wakeup(deadline()).await {
+                    Ok(wakeup) if wakeup.due_now() => Duration::from_millis(100),
+                    Ok(wakeup) => wakeup.next_deadline().map_or(Duration::from_secs(60), |at| {
+                        at.instant().saturating_duration_since(rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer))
+                            .min(Duration::from_secs(60)).max(Duration::from_millis(100))
+                    }),
+                    Err(_) => { self.health.failed.store(true,std::sync::atomic::Ordering::Release); Duration::from_secs(5) }
+                };
+                tokio::select!{()=cancel.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(delay)=>{}}
             }
         })
     }
@@ -211,10 +233,13 @@ enum PollFailure {
     RecoveryRequired,
 }
 
-pub(crate) struct Resource(pub Arc<Delivery>);
-impl rss_runtime::ManagedResource for Resource {
+pub(crate) struct Resource<H, V>(pub Arc<Delivery<H, V>>);
+impl<H, V> rss_runtime::ManagedResource for Resource<H, V>
+where H: PgConsumerEffect<Vec<u8>> + Send + Sync + 'static,
+      V: IngressValidator<Vec<u8>> + Send + Sync + 'static,
+{
     fn name(&self) -> &str {
-        "scope-group-consumer"
+        self.0.name
     }
     fn shutdown_timeout(&self) -> Duration {
         Duration::from_secs(8)

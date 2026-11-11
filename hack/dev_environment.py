@@ -399,6 +399,7 @@ class Environment:
             config['business_databases'][owner]=database(runtime,'mdm_'+owner+'_runtime')
         config['publication']['database']=database(runtime,'mdm_software_driver')
         config['scope_group_database']=database(runtime,'mdm_scope_group_consumer')
+        config['asset_input_database']=database(runtime,'mdm_asset_ingress_consumer')
         private(runtime/'runtime.json',config)
         password=self.root/'account-password'
         if not password.exists():private(password,secrets.token_urlsafe(32))

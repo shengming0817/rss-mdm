@@ -253,3 +253,5 @@ pub const TASKS_SQL: &str = include_str!("../schema/tasks.sql");
 
 /// Exact read capability of the Group application storage.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+pub mod input_wake;

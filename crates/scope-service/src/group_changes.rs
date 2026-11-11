@@ -63,14 +63,17 @@ impl IngressValidator<Vec<u8>> for Validator {
 }
 pub struct Receiver {
     binding: rss_mdm_scope_postgres::ScopeBinding,
+    messaging: rss_reconcile_postgres::PgMessagingStore,
 }
 impl Receiver {
     pub fn new(
         profile: rss_mdm_install_support::StorageProfile,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
+        messaging: rss_reconcile_postgres::PgMessagingStore,
     ) -> Self {
         Self {
+            messaging,
             binding: rss_mdm_scope_postgres::ScopeBinding::new(profile, runtime, tenant),
         }
     }
@@ -97,6 +100,10 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
                     }
                     e => PgConsumerEffectFailure::handler_transient(e),
                 })?;
+        }
+        if !matches!(event.kind, GroupChangeKind::Edited) {
+            crate::tasks::wake_inputs_in(self.binding.profile(), &self.messaging, tx)
+                .await.map_err(PgConsumerEffectFailure::infrastructure)?;
         }
         Ok(TerminalDisposition::Succeeded)
     }

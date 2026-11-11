@@ -1,6 +1,6 @@
 -- Explicit current Reconcile privileges; component DML and sequence access stay denied.
-GRANT USAGE ON SCHEMA rss_reconcile TO mdm_command_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_scheduler_runtime;
-GRANT SELECT ON TABLE rss_reconcile.targets,rss_reconcile.resources,rss_reconcile.target_resources,rss_reconcile.scans TO mdm_command_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_scheduler_runtime;
+GRANT USAGE ON SCHEMA rss_reconcile TO mdm_command_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_scheduler_runtime,mdm_scope_group_consumer,mdm_asset_ingress_consumer;
+GRANT SELECT ON TABLE rss_reconcile.targets,rss_reconcile.resources,rss_reconcile.target_resources,rss_reconcile.scans TO mdm_command_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_scheduler_runtime,mdm_scope_group_consumer,mdm_asset_ingress_consumer;
 GRANT EXECUTE ON FUNCTION
  rss_reconcile.assert_tenant(uuid),
  rss_reconcile.lock_resources(uuid,text,text,text[],boolean),
@@ -13,4 +13,4 @@ GRANT EXECUTE ON FUNCTION
  rss_reconcile.finish(uuid,text,text,uuid,bigint,bigint,bigint,text,bigint,bigint),
  rss_reconcile.release(uuid,text,text,uuid,bigint),
  rss_reconcile.mark_applied(uuid,text,text,uuid,bigint,bigint)
- TO mdm_command_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_scheduler_runtime;
+ TO mdm_command_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_scheduler_runtime,mdm_scope_group_consumer,mdm_asset_ingress_consumer;
