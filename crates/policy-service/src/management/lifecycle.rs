@@ -103,7 +103,6 @@ impl crate::application::Application {
             run_lifetime_seconds,
             actor: _,
         } = frozen;
-        let tenant = tx.tenant_id();
         let version = policy.version;
         for item in objects {
             if !matches!(item.admission, ScopeAdmission::Eligible { .. }) {

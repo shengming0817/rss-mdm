@@ -569,7 +569,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
 impl PolicyWork {
     async fn observe_schedules<T: rss_reconcile::Timer>(
         &self,
-        claim: &rss_reconcile_postgres::PgClaim,
+        _claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
         let profile = self.profile();
@@ -610,8 +610,6 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
-        let profile = self.profile();
-
         self.service
             .runtime
             .local_tx_with_context(

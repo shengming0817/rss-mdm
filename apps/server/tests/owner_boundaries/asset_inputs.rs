@@ -61,7 +61,7 @@ async fn message(c: &Context) -> Result<(MessageEnvelope<Vec<u8>>, Vec<u8>)> {
     );
     Ok((envelope, fingerprint))
 }
-async fn wait_sql(c: &Context, sql: &str, object: Uuid) -> Result<()> {
+async fn wait_sql(c: &Context, sql: &'static str, object: Uuid) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(45), async {
         loop {
             if sqlx::query_scalar::<_, bool>(sql)
@@ -435,7 +435,7 @@ impl Workers {
         launch.finish();
         Ok(Self { stack, pool })
     }
-    async fn close(mut self) -> Result<()> {
+    async fn close(self) -> Result<()> {
         anyhow::ensure!(
             self.stack.shutdown().join().await?.is_clean(),
             "worker shutdown failed"

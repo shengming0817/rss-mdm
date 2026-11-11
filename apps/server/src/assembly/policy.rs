@@ -160,6 +160,7 @@ pub(crate) async fn management(
     );
     Ok(Arc::new(rss_mdm_policy_service::management::Policies::new(
         rss_mdm_policy_service::management::Dependencies {
+            reconcile_messaging: application.reconcile_messaging.clone(),
             scopes,
             profile_validator: Arc::new(
                 rss_mdm_telemetry_service::profile_validation::ProfileValidator,

@@ -13,7 +13,7 @@ GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],byt
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO da_access,da_command_runtime,da_policy_runtime;
 GRANT SELECT ON rss_transactional_messaging.policy,rss_transactional_messaging.outbox TO da_access,da_command_runtime,da_policy_runtime;
 GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution(),rss_transactional_messaging.prepare_outbox_partitions(jsonb),rss_transactional_messaging.append_outbox(bytea,jsonb) TO da_access,da_command_runtime,da_policy_runtime;
-GRANT EXECUTE ON FUNCTION mdm.capture_asset_cut(uuid),mdm.asset_cut_contains(jsonb,uuid,xid8),mdm.asset_visible(jsonb,bigint) TO da_access,da_command_runtime,da_scope_runtime,da_policy_runtime,da_inventory_runtime;
+GRANT EXECUTE ON FUNCTION mdm.capture_asset_cut(uuid),mdm.asset_cut_contains(jsonb,uuid,xid8),mdm.asset_cut_context(jsonb),mdm.asset_visible(jsonb,bigint) TO da_access,da_command_runtime,da_scope_runtime,da_policy_runtime,da_inventory_runtime;
 GRANT USAGE ON SCHEMA mdm_group TO da_owner;
 
 

@@ -24,6 +24,7 @@ mod draft;
 pub mod scopes;
 pub use draft::{Change, View};
 pub struct Policies {
+    reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     scopes: std::sync::Arc<rss_mdm_scope_service::Scopes>,
     profile_validator: std::sync::Arc<dyn crate::inputs::ProfileValidator>,
     cursor_key: ring::hmac::Key,
@@ -42,6 +43,7 @@ pub struct Policies {
 }
 /// Dependencies for this Policy application, supplied by the host.
 pub struct Dependencies {
+    pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub scopes: std::sync::Arc<rss_mdm_scope_service::Scopes>,
     pub profile_validator: std::sync::Arc<dyn crate::inputs::ProfileValidator>,
     pub cursor_key: Vec<u8>,
@@ -65,6 +67,7 @@ impl Policies {
     }
     pub fn new(deps: Dependencies) -> Self {
         let Dependencies {
+            reconcile_messaging,
             scopes,
             profile_validator,
             cursor_key,
@@ -81,6 +84,7 @@ impl Policies {
             mdm_software_enabled,
         } = deps;
         Self {
+            reconcile_messaging,
             scopes,
             profile_validator,
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
