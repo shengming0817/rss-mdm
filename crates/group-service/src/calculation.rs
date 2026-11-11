@@ -635,7 +635,7 @@ impl Groups {
         let changed =
             receipt.group.member_version > build.request.base_calculation || authority > old || definition_changed;
         if changed {
-            rss_mdm_compliance_postgres::group_changed_in(tx, id).await?;
+            rss_mdm_compliance_postgres::group_changed_in(tx, id, &self.reconcile_messaging).await?;
         }
         dirty |= self.inputs_uncovered_in(tx, id, *covered_inputs).await?;
         if dirty {

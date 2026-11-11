@@ -280,7 +280,7 @@ impl Policies {
                             .await?;
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
-                    storage::enqueue_change_in(profile, s.changes.as_ref(), tx, &policy, old.as_ref()).await?;
+                    storage::enqueue_change_in(profile, &s.reconcile_messaging, s.changes.as_ref(), tx, &policy, old.as_ref()).await?;
                     s.retire_children_in(tx, old.as_ref(), &policy).await?;
                     let value = s.view_in(tx, p, &policy).await?;
                     checked(

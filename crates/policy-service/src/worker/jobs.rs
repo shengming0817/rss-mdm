@@ -22,47 +22,6 @@ pub fn job_target(
     )
     .expect("UUID entity")
 }
-pub(super) async fn forward_jobs_in(
-    profile: rss_mdm_install_support::StorageProfile,
-    reconcile: &rss_reconcile_postgres::PgMessagingStore,
-    tx: &mut PgTransaction<'_>,
-) -> Result<()> {
-    let tenant = tx.tenant_id();
-    for (id, kind) in rss_mdm_policy_postgres::work::pending_in(profile, tx).await? {
-        let id =
-            Uuid::parse_str(&id).map_err(|_| Error::Unavailable(Failure::AutomationStorage))?;
-        let event = kind == "policy_event";
-        let target = if event {
-            event_target(profile, tenant, id)
-        } else {
-            job_target(profile, tenant, id)
-        };
-        reconcile
-            .wake_in(
-                tx,
-                &target,
-                &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
-                event,
-                |event, tx| {
-                    Box::pin(async move {
-                        rss_mdm_policy_postgres::work::forwarded_in(profile, tx, id).await?;
-                        crate::worker_wake::notify_in(
-                            tx,
-                            if *event {
-                                crate::worker_wake::Work::Events
-                            } else {
-                                crate::worker_wake::Work::Automation
-                            },
-                        )
-                        .await
-                    })
-                },
-            )
-            .await?;
-    }
-    Ok(())
-}
-
 pub async fn read_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
@@ -76,16 +35,23 @@ pub async fn read_in(
         row.completed,
         row.failure,
         row.cursor,
-        row.forwarded,
+        row.started,
     ))
 }
 pub async fn enqueue_job_in(
     profile: rss_mdm_install_support::StorageProfile,
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     input: &Work,
 ) -> Result<Value> {
     rss_mdm_policy_postgres::work::enqueue_in(profile, tx, id, input).await?;
+    let event = matches!(input, Work::PolicyEvent { .. });
+    let tenant = tx.tenant_id();
+    let target = if event { event_target(profile, tenant, id) } else { job_target(profile, tenant, id) };
+    reconcile.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(tenant), event, |event, tx| Box::pin(async move {
+        crate::worker_wake::notify_in(tx, if *event { crate::worker_wake::Work::Events } else { crate::worker_wake::Work::Automation }).await
+    })).await?;
     Ok(accepted(id, input))
 }
 pub fn accepted(id: Uuid, input: &Work) -> Value {

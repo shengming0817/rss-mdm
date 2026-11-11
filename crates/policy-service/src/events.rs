@@ -391,6 +391,7 @@ impl Events {
                     }
                     crate::worker::jobs::enqueue_job_in(
                         profile,
+                        &s.application.reconcile_messaging,
                         tx,
                         batch,
                         &crate::worker::Work::PolicyEvent { batch },

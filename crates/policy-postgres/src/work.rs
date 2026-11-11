@@ -79,7 +79,7 @@ pub struct Record {
     /// Last committed page boundary.
     pub cursor: Option<String>,
     /// Whether its RSS wake was committed.
-    pub forwarded: bool,
+    pub started: bool,
 }
 /// Read one retained task in the initiating tenant.
 pub async fn read_in(
@@ -106,7 +106,7 @@ pub async fn read_in(
             completed: r.try_get("completed")?,
             failure: r.try_get("failure")?,
             cursor: r.try_get("cursor")?,
-            forwarded: r.try_get("forwarded")?,
+            started: r.try_get("started")?,
         })
     })
     .transpose()
@@ -133,24 +133,8 @@ pub async fn cursor_in(
     .await
 }
 
-/// Pending work whose wake has not yet committed.
-pub async fn pending_in(
-    profile: rss_mdm_install_support::StorageProfile,
-    tx: &mut PgTransaction<'_>,
-) -> Result<Vec<(String, String)>, PgError> {
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query_as(crate::storage_profile::sql(profile).work_pending_in_1)
-                .bind(tenant)
-                .fetch_all(c)
-                .await
-        })
-    })
-    .await
-}
-/// Mark forwarding inside the same transaction as the RSS wake.
-pub async fn forwarded_in(
+/// Record actual execution inside the claim-protected business transaction.
+pub async fn started_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
@@ -158,7 +142,7 @@ pub async fn forwarded_in(
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            sqlx::query(crate::storage_profile::sql(profile).work_forwarded_in_1)
+            sqlx::query(crate::storage_profile::sql(profile).work_started_in_1)
                 .bind(tenant)
                 .bind(id)
                 .execute(c)
@@ -249,23 +233,6 @@ pub async fn counts_in(
                 row.3 as u64,
                 row.4 as u64,
             ])
-        })
-    })
-    .await
-}
-
-/// Whether the owner has accepted work not yet registered with RSS.
-pub async fn inputs_pending_in(
-    profile: rss_mdm_install_support::StorageProfile,
-    tx: &mut PgTransaction<'_>,
-) -> Result<bool, PgError> {
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query_scalar(crate::storage_profile::sql(profile).work_inputs_pending_in_1)
-                .bind(tenant)
-                .fetch_one(c)
-                .await
         })
     })
     .await

@@ -53,6 +53,7 @@ async fn bind(
                 rss_mdm_install_support::StorageProfile::Mdm,
                 runtime.clone(),
                 tenant,
+                reconcile_messaging.clone(),
             ),
         )),
         reconcile_messaging,

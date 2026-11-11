@@ -198,7 +198,7 @@ pub async fn work_receipt(
         |(s, p), tx| {
             Box::pin(async move {
                 let grant = crate::action_admission::current(tx, p).await?;
-                let (work, complete, failure, _, forwarded) =
+                let (work, complete, failure, _, started) =
                     crate::worker::jobs::read_in(s.profile(), tx, id).await?;
                 grant.require(p, Permission::PolicyRead, None)?;
                 let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
@@ -210,7 +210,7 @@ pub async fn work_receipt(
                         "failed"
                     } else if complete {
                         "completed"
-                    } else if forwarded {
+                    } else if started {
                         "running"
                     } else {
                         "pending"
