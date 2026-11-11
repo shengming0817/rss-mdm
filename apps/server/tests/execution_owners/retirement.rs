@@ -262,7 +262,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
         .bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
     assert_eq!(revoked, ("revoked".into(), true, true, 1));
     late.accept(&h.c, true).await?;
-    let retained:i64=sqlx::query_scalar("SELECT count(*) FROM mdm.device_hardware_evidence WHERE tenant_id=$1::uuid AND device=$2 AND serial_number IN('retirement-serial','retirement-second','retirement-late')").bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
+    let retained:i64=sqlx::query_scalar("SELECT count(*) FROM mdm.device_hardware_evidence WHERE tenant_id=$1::uuid AND device=$2 AND serial_number IN('RETIREMENT-SERIAL','RETIREMENT-SECOND','RETIREMENT-LATE')").bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
     assert_eq!(retained, 3);
     let before: serde_json::Value = sqlx::query_scalar(
         "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",

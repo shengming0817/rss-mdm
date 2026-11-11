@@ -1,6 +1,6 @@
 //! Reuse the actual retained software and credential owners for ordinary directory consumption.
 use super::*;
-use crate::{command_runtime_t2_support::seed_transaction, planning_t2_support as planning};
+use crate::command_runtime_t2_support::seed_transaction;
 use rss_mdm_resource as r;
 pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) -> Result<Value> {
     let support = super::super::software_t2::support::software_with_export(
@@ -15,7 +15,8 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
         },
     )
     .await?;
-    super::super::reference_blockers_t2::publication::withdrawn(c, &support).await?;
+    let target = format!("directory-{}", c.tenant);
+    super::super::reference_blockers_t2::publication::withdrawn(c, &support, &target).await?;
     cases.push((
         "/api/v1/software/publications".into(),
         "id==retained-publication;withdrawn==true".into(),
@@ -23,8 +24,8 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
     ));
     cases.push((
         "/api/v1/software/publication-targets".into(),
-        "id==private;protocol==winget".into(),
-        json!("private"),
+        format!("id=={target};protocol==winget"),
+        json!(target),
     ));
     let r::Declaration::Software { definition } = support.variants()[0].declaration() else {
         anyhow::bail!("software")
@@ -78,8 +79,7 @@ pub(super) async fn seed(c: &Context, cases: &mut Vec<(String, String, Value)>) 
         format!("id=={association};confirmedAt=gt=0;association.evidence==operator-verified"),
         json!(association),
     ));
-    let object = planning::endpoint(c).await?;
-    let device = object.members[0].device.clone();
+    let device = agent.device().to_owned();
     use rss_mdm_recovery_credentials as recovery;
     let key_path = c.inputs.directory.join("native.key");
     let key = std::fs::read(&key_path)?;

@@ -98,7 +98,7 @@ async fn original_tenant_result_and_missing_result_have_independent_evidence() -
     let server = tokio::spawn(async move { axum::serve(socket, routes).await });
     let verify=async {
         let client=reqwest::Client::new();
-        let response=client.get(format!("{base}/tenants")).query(&[("filter","name=='original tenant result';revision==2")]).send().await?;
+        let response=client.get(format!("{base}/tenants")).query(&[("filter",format!("tenantId=={};name=='original tenant result';revision==2;currentEpoch==1",business.tenant))]).send().await?;
         assert_eq!(response.status(),200);
         let page:serde_json::Value=response.json().await?;
         assert_eq!(page["items"].as_array().unwrap().len(),1);

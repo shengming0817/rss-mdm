@@ -26,7 +26,7 @@ pub struct Templates {
     pub mac: Option<Mac>,
     pub windows: Option<rss_mdm_windows_mdm::da::Templates>,
     pub mutable_metadata: Vec<&'static str>,
-    pub status_mapping: serde_json::Value,
+    pub status_mapping: StatusMapping,
 }
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -113,21 +113,218 @@ pub fn render(
         status_mapping: status_mapping(),
     })
 }
+/// Fixed native-to-vendor mapping metadata; consumers must explicitly evaluate compliance.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusMapping {
+    pub version: u8,
+    pub fields: Vec<StatusField>,
+    pub vendor_mappings: Vec<VendorMapping>,
+    pub connectors: Connectors,
+    pub semantics: Semantics,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusField {
+    pub name: &'static str,
+    pub path: &'static str,
+    #[serde(rename = "type")]
+    pub kind: StatusType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nullable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub values: Option<&'static [&'static str]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meaning: Option<&'static str>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusType {
+    Integer,
+    String,
+    Array,
+    Boolean,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct VendorMapping {
+    pub source: &'static str,
+    pub jamf: JamfMapping,
+    pub intune: IntuneMapping,
+    pub conversion: Conversion,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct JamfMapping {
+    pub attribute: String,
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IntuneMapping {
+    pub setting_name: String,
+    pub data_type: &'static str,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct Conversion {
+    pub missing: &'static str,
+    pub boolean: &'static str,
+    pub integer: &'static str,
+    pub array: &'static str,
+    pub string: &'static str,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct Connectors {
+    pub rss: &'static str,
+    pub jamf: &'static str,
+    pub intune: &'static str,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct Semantics {
+    pub absent: &'static str,
+    pub stale: &'static str,
+    pub reported: &'static str,
+    pub verified: &'static str,
+    pub compliance: &'static str,
+}
 /// Declarative mappings only; unavailable vendor connectors are not represented as installed.
-pub fn status_mapping() -> serde_json::Value {
-    let fields = serde_json::json!([
- {"name":"contractVersion","path":"report.contractVersion","type":"integer","nullable":true},
- {"name":"clientVersion","path":"report.clientVersion","type":"string","nullable":true},
- {"name":"health","path":"report.health","type":"string","values":["unknown","ready","degraded","blocked"]},
- {"name":"binding","path":"report.binding","type":"string","values":["unknown","ready","degraded","blocked"]},
- {"name":"factor","path":"report.factor","type":"string","values":["unknown","ready","degraded","blocked"]},
- {"name":"configurationDigest","path":"report.configurationDigest","type":"string","nullable":true},
- {"name":"applicationState","path":"report.state","type":"string","values":["unknown","received","validated","applied","rejected"]},
- {"name":"sourceState","path":"report.sources[].state","type":"array","values":["missing","present","read_failed","invalid","expired","conflict","withdrawn"]},
- {"name":"delivery","path":"report.sources[].delivery","type":"array","values":["da","managed_mandatory"]},
- {"name":"receivedAt","path":"receipt.receivedAt","type":"integer","nullable":true},
- {"name":"reportedEvidence","path":"receipt.evidence","type":"string","values":["reported","verified"],"meaning":"receipt authority only"},
- {"name":"stale","path":"stale","type":"boolean"}]);
-    let mappings=fields.as_array().expect("fixed declaration").iter().map(|f|serde_json::json!({"source":f["name"],"jamf":{"attribute":format!("RSS DA {}",f["name"].as_str().expect("field")),"type":"String"},"intune":{"settingName":format!("RSSDA_{}",f["name"].as_str().expect("field")),"dataType":"String"},"conversion":{"missing":"unknown","boolean":"true or false","integer":"decimal string","array":"canonical JSON string","string":"unchanged"}})).collect::<Vec<_>>();
-    serde_json::json!({"version":1,"fields":fields,"vendorMappings":mappings,"connectors":{"rss":"native","jamf":"unavailable","intune":"unavailable"},"semantics":{"absent":"unknown","stale":"retain reported value with stale=true; never satisfy a compliance predicate implicitly","reported":"device observation","verified":"requires independent authority evidence; applied and ready never imply verified","compliance":"explicit consumer policy required"}})
+pub fn status_mapping() -> StatusMapping {
+    use StatusType::{Array, Boolean, Integer, String};
+    let health: &[&str] = &["unknown", "ready", "degraded", "blocked"];
+    let fields = vec![
+        (
+            "contractVersion",
+            "report.contractVersion",
+            Integer,
+            Some(true),
+            None,
+            None,
+        ),
+        (
+            "clientVersion",
+            "report.clientVersion",
+            String,
+            Some(true),
+            None,
+            None,
+        ),
+        ("health", "report.health", String, None, Some(health), None),
+        (
+            "binding",
+            "report.binding",
+            String,
+            None,
+            Some(health),
+            None,
+        ),
+        ("factor", "report.factor", String, None, Some(health), None),
+        (
+            "configurationDigest",
+            "report.configurationDigest",
+            String,
+            Some(true),
+            None,
+            None,
+        ),
+        (
+            "applicationState",
+            "report.state",
+            String,
+            None,
+            Some(&["unknown", "received", "validated", "applied", "rejected"][..]),
+            None,
+        ),
+        (
+            "sourceState",
+            "report.sources[].state",
+            Array,
+            None,
+            Some(
+                &[
+                    "missing",
+                    "present",
+                    "read_failed",
+                    "invalid",
+                    "expired",
+                    "conflict",
+                    "withdrawn",
+                ][..],
+            ),
+            None,
+        ),
+        (
+            "delivery",
+            "report.sources[].delivery",
+            Array,
+            None,
+            Some(&["da", "managed_mandatory"][..]),
+            None,
+        ),
+        (
+            "receivedAt",
+            "receipt.receivedAt",
+            Integer,
+            Some(true),
+            None,
+            None,
+        ),
+        (
+            "reportedEvidence",
+            "receipt.evidence",
+            String,
+            None,
+            Some(&["reported", "verified"][..]),
+            Some("receipt authority only"),
+        ),
+        ("stale", "stale", Boolean, None, None, None),
+    ]
+    .into_iter()
+    .map(
+        |(name, path, kind, nullable, values, meaning)| StatusField {
+            name,
+            path,
+            kind,
+            nullable,
+            values,
+            meaning,
+        },
+    )
+    .collect::<Vec<_>>();
+    let vendor_mappings = fields
+        .iter()
+        .map(|f| VendorMapping {
+            source: f.name,
+            jamf: JamfMapping {
+                attribute: format!("RSS DA {}", f.name),
+                kind: "String",
+            },
+            intune: IntuneMapping {
+                setting_name: format!("RSSDA_{}", f.name),
+                data_type: "String",
+            },
+            conversion: Conversion {
+                missing: "unknown",
+                boolean: "true or false",
+                integer: "decimal string",
+                array: "canonical JSON string",
+                string: "unchanged",
+            },
+        })
+        .collect();
+    StatusMapping {
+        version: 1,
+        fields,
+        vendor_mappings,
+        connectors: Connectors {
+            rss: "native",
+            jamf: "unavailable",
+            intune: "unavailable",
+        },
+        semantics: Semantics {
+            absent: "unknown",
+            stale: "retain reported value with stale=true; never satisfy a compliance predicate implicitly",
+            reported: "device observation",
+            verified: "requires independent authority evidence; applied and ready never imply verified",
+            compliance: "explicit consumer policy required",
+        },
+    }
 }

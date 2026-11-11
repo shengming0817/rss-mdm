@@ -46,7 +46,7 @@ pub fn registration(
         .with_client_cert_verifier(services.registrations.trust().enrollment_verifier())
         .with_single_cert(certificates, key)
         .map_err(std::io::Error::other)?;
-    let router = crate::router(services)
+    let router = crate::router(Some(services))
         .into_checked_axum(rss_mdm_http_contract::module::Listener::Da)
         .layer(axum::middleware::from_fn(
             |Extension(info): Extension<AcceptedConnectionInfo<Peer>>,

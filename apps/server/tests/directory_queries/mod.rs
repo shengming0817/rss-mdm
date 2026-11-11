@@ -143,7 +143,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let mut fixtures = seed::all(&c, &proof).await?;
     metadata::seed(&c, &proof, &mut fixtures.cases).await?;
     owners::seed(&c, &proof, &mut fixtures.cases).await?;
-    certificates::seed(&c, &proof, &mut fixtures.cases).await?;
+    let (pki, mut ca_server) = certificates::seed(&c, &proof, &mut fixtures.cases).await?;
     let recovery = materials::seed(&c, &mut fixtures.cases).await?;
     let history = history::seed(&c, &proof).await?;
     let ordinary = c.account(&[P::InventoryRead]).await?;
@@ -156,8 +156,17 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         address,
         Uuid::new_v4(),
     )?;
+    config["agent_pki"] = pki["agent_pki"].clone();
+    config["device_pki"] = pki["device_pki"].clone();
     config["recovery_credentials"] = recovery;
-    config["publication"]["sources"] = json!([{"name":"private","credentials":{},"target":{"Winget":{"base":"https://mdm.example.test/api/v1/software/native/sources/private/","artifacts_base":"https://mdm.example.test/api/v1/software/native/sources/private/artifacts/"}}}]);
+    let content = c
+        .inputs
+        .directory
+        .join(format!("directory-content-{}", c.tenant));
+    std::fs::create_dir(&content)?;
+    config["content"] = json!({"storage":{"kind":"volume","directory":content},"imports":{},"max_artifact_bytes":1048576,"max_temporary_bytes":4194304,"max_uploads":2,"transfer_seconds":30,"retention_seconds":60,"max_bundle_entries":16,"max_expansion_ratio":10});
+    let target = format!("directory-{}", c.tenant);
+    config["publication"]["sources"] = json!([{"name":target,"credentials":{},"target":{"Winget":{"base":format!("https://mdm.example.test/api/v1/software/native/sources/{target}/"),"artifacts_base":format!("https://mdm.example.test/api/v1/software/native/sources/{target}/artifacts/")}}}]);
     let config = serde_json::from_value(config)?;
     let access::credential::RequestCredential::Cookie(cookie) = manager.credential()? else {
         anyhow::bail!("cookie fixture required")
@@ -396,8 +405,10 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         Ok(result) => result.context("App task join")?.context("App stop"),
         Err(_) => Err(anyhow::anyhow!("App stop timed out")),
     };
+    ca_server.start_kill()?;
+    ca_server.wait().await?;
     c.close().await;
-    exercise?;
+    exercise.with_context(|| format!("App completion: {cleanup:?}"))?;
     cleanup
 }
 

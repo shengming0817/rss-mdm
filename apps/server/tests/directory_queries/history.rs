@@ -398,6 +398,7 @@ async fn native_registered_at(
     use rss_mdm_registration_service::device::{self, Purpose};
     for source in [ReportSource::MdmWindows, ReportSource::MdmApple] {
         let request = Uuid::new_v4();
+        let identities = [Uuid::new_v4(), Uuid::new_v4()];
         let grant = Uuid::new_v4();
         let device = Uuid::new_v4().to_string();
         let credential = device::ChannelMount::new(Mdm, c.tenant, source, Purpose::Primary)
@@ -412,8 +413,12 @@ async fn native_registered_at(
             source,
         };
         let mut tx = seed_transaction(c).await?;
+        // The borrowed native bind transaction also publishes its actual registration event.
+        // Supply the existing installation fence; append_outbox still verifies it in PostgreSQL.
+        sqlx::query("SELECT set_config('rss.storage_target',encode(target,'hex'),true),set_config('rss.storage_lineage',encode(lineage,'hex'),true),set_config('rss.execution_epoch',(SELECT epoch::text FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1::uuid),true) FROM rss_transactional_messaging.storage_lineage WHERE singleton")
+            .bind(c.tenant.to_string()).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES($1::uuid,$2,'directory-history',$3,$4,'enrollment','consumed',clock_timestamp()+interval '4 minutes')").bind(c.tenant.to_string()).bind(grant).bind(p.instance_id()).bind(&device).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,source,state,grant_id,device,expires_at,issuance_operation,password_digest,password_version,windows_profile) VALUES($1::uuid,$2,$3,'pending',$4,$5,clock_timestamp()+interval '4 minutes',$6,repeat('a',64),1,$7)").bind(c.tenant.to_string()).bind(request).bind(source.as_str()).bind(grant).bind(&device).bind(command.operation_id).bind(if source==ReportSource::MdmWindows{Some("Device")}else{None}).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,source,state,grant_id,device,expires_at,issuance_operation,password_digest,password_version,windows_profile,credential_ref) VALUES($1::uuid,$2,$3,'pending',$4,$5,clock_timestamp()+interval '4 minutes',$6,repeat('a',64),1,$7,$8)").bind(c.tenant.to_string()).bind(request).bind(source.as_str()).bind(grant).bind(&device).bind(command.operation_id).bind(if source==ReportSource::MdmWindows{Some("Device")}else{None}).bind(identities[0]).execute(&mut *tx).await?;
         // Bind then abort: successful acceptance and its timestamp have one transaction boundary.
         sqlx::query("SAVEPOINT registration")
             .execute(&mut *tx)
@@ -429,7 +434,7 @@ async fn native_registered_at(
             &credential,
             &command,
             device.clone(),
-            [Uuid::new_v4(), Uuid::new_v4()],
+            identities,
         )
         .await?;
         let timestamp: i64 = sqlx::query_scalar(
@@ -458,7 +463,7 @@ async fn native_registered_at(
             &credential,
             &command,
             device.clone(),
-            [Uuid::new_v4(), Uuid::new_v4()],
+            identities,
         )
         .await?;
         let timestamp: i64 = sqlx::query_scalar(
@@ -476,7 +481,7 @@ async fn native_registered_at(
                 &credential,
                 &command,
                 device.clone(),
-                [Uuid::new_v4(), Uuid::new_v4()]
+                identities
             )
             .await
             .is_err()

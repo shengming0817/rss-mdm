@@ -23,7 +23,7 @@ python3 hack/http_contract_artifact.py --output artifacts/http-contract/http-v1.
 - `endpoints` 按 listener、method、path 排序。`operationId` 为 `listener:METHOD:path`，`handler` 保留实际 Rust handler 来源。
 - `request` 包含 path、query、body 和 headers。body 同时声明媒体类型；`required_headers` 记录实际必需 header。响应按实际 HTTP status、媒体类型、body 和 header 描述，错误使用真实 HTTP 投影，不导出内部错误枚举作为回包。
 - 每个 schema 描述含 `direction` 与 `schemaId`。`schemas[schemaId]` 是独立的 schema 根；其中 `#/$defs/...` 必须相对于该根解析。请求按 deserialize、响应按 serialize 派生，省略字段与显式 null 不等同。二进制、范围下载、压缩入口、数值编码继续由原传输 owner 执行。
-- `conditions` 表示真实条件挂载。完整导出包含这些条件下的端点全集；条件名称不是部署能力探测或版本握手。`agent_listener` 要求产品实际启用 Agent listener；各服务条件仍由生产装配决定。
+- `conditions` 表示真实条件挂载。完整导出包含这些条件下的端点全集，包括 `device_access_registration` 条件下的 DA 独立 listener；条件名称不是部署能力探测或版本握手。`agent_listener` 要求产品实际启用 Agent listener；各服务条件仍由生产装配决定。
 - `configuredPath` 描述配置绑定的静态 UUID 路径段。例如 management tenant 路径保留生产中静态路由优先于普通捕获路由的语义，记录配置来源及被覆盖的 operation，不写入某个部署的 UUID。
 - `external` 标记已挂载的 Apple/Windows/软件仓库原生协议入口，`externalOwners` 记录 Identity SDK 边界。平台模块中的自有管理和 Agent 接口仍属于 `endpoints`。原生状态叶子等明确的外部协议数据由其原 owner 校验，不能据此放开核心身份、动作或状态结构。
 

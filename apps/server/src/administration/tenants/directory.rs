@@ -71,20 +71,35 @@ pub(super) async fn page(
                 .map_err(|_| Reason::Storage)?,
         )
     } else {
-        let mut sql = sqlx::QueryBuilder::new(
-            "SELECT t.tenant_id::text FROM public.mdm_tenants t JOIN rss_transactional_messaging.tenant_epoch e USING(tenant_id) CROSS JOIN public.mdm_installation i WHERE NOT t.deleted",
-        );
+        // Epoch is an RSS tenant-scoped fact. The installation registry is bounded to
+        // 1024 business tenants plus management; qualify each original row under its
+        // tenant scope before applying one complete public-model filter and page.
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT tenant_id::text FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id LIMIT 1026",
+        ).fetch_all(&mut *c).await.map_err(|_| Reason::Storage)?;
+        if ids.len() > 1025 {
+            return Err(Reason::Storage);
+        }
+        let mut candidates = Vec::with_capacity(ids.len());
+        for id in ids {
+            candidates.push(tenant_on(c, &id, false).await?);
+        }
+        scope(c, p.tenant_id()).await?;
+        let mut sql = sqlx::QueryBuilder::new("SELECT row FROM jsonb_array_elements(");
+        sql.push_bind(serde_json::to_value(candidates).map_err(|_| Reason::Storage)?)
+            .push("::jsonb) row WHERE true");
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*TENANT_BINDINGS)
             .map_err(error)?;
-        let ids: Vec<String> = sql
+        let values: Vec<Value> = sql
             .build_query_scalar()
-            .fetch_all(&mut *c)
+            .fetch_all(c)
             .await
             .map_err(|_| Reason::Storage)?;
-        let mut rows = Vec::with_capacity(ids.len());
-        for id in ids {
-            rows.push(tenant_on(c, &id, false).await?)
-        }
+        let rows = values
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<std::result::Result<Vec<Tenant>, _>>()
+            .map_err(|_| Reason::Storage)?;
         Rows::Tenants(rows)
     };
     p.check_live().map_err(|_| Reason::Forbidden)?;
@@ -111,25 +126,7 @@ pub static TENANT_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings
     std::sync::LazyLock::new(|| {
         rss_mdm_query_postgres::Bindings::new(
             &TENANTS,
-            &[
-                rss_mdm_query_postgres::Source::required_column(
-                    "tenantId",
-                    "t.tenant_id::text COLLATE \"C\"",
-                ),
-                rss_mdm_query_postgres::Source::column("name", "t.name COLLATE \"C\""),
-                rss_mdm_query_postgres::Source::column("notes", "t.notes COLLATE \"C\""),
-                rss_mdm_query_postgres::Source::column("revision", "t.revision"),
-                rss_mdm_query_postgres::Source::column("initialEpoch", "t.initial_epoch"),
-                rss_mdm_query_postgres::Source::column("currentEpoch", "e.epoch"),
-                rss_mdm_query_postgres::Source::column(
-                    "management",
-                    "(t.tenant_id=i.management_tenant_id)",
-                ),
-                rss_mdm_query_postgres::Source::column(
-                    "deletable",
-                    "NOT(t.used OR t.deleted OR t.tenant_id=i.management_tenant_id)",
-                ),
-            ],
+            &[rss_mdm_query_postgres::Source::json("", "row")],
         )
         .expect("Complete public model storage binding")
     });

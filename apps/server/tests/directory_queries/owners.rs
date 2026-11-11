@@ -1,6 +1,10 @@
 //! Owner-local accepted metadata, consumed by the assembled browser routes.
 use super::*;
 use crate::{command_runtime_t2_support::seed_transaction, planning_t2_support as planning};
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "One linear legal fixture batch preserves the original owner coordinates and collects real directory consumer proofs"
+)]
 pub(super) async fn seed(
     c: &Context,
     p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
@@ -28,6 +32,7 @@ pub(super) async fn seed(
         format!("principalId=={};tenantId=={tenant}", p.principal_id()),
         json!(p.principal_id()),
     ));
+    let mut deliveries = Vec::new();
     for index in 0..2 {
         let id = Uuid::new_v4();
         let policy = Uuid::new_v4();
@@ -39,7 +44,7 @@ pub(super) async fn seed(
         sqlx::query("INSERT INTO mdm_policy.requests(tenant_id,id,fingerprint,receipt) VALUES($1,$2,$3,$4)").bind(tenant).bind(id).bind(vec![17u8;32]).bind(json!({"operationId":id,"policyId":policy,"versionId":Uuid::new_v4(),"deadline":1700000010})).execute(&mut *tx).await?;
         let caller = rss_mdm_policy_service::events::Caller::Management { actor: p.actor() };
         sqlx::query("INSERT INTO mdm_policy.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1,$2,$2,$3,$4,$5,$6,$7,1700000000,1700000010)")
-            .bind(tenant).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?).bind(device).bind(json!({"operationId":id,"event":event,"source":"human","executionContext":null})).bind(vec![17u8;32]).execute(&mut *tx).await?;
+            .bind(tenant).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?).bind(device).bind(json!({"operationId":id,"event":event,"source":{"kind":"human"},"executionContext":null})).bind(vec![17u8;32]).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_policy.event_members(tenant_id,batch,id,policy,revision,version,target,authority,decision) VALUES($1,$2,$2,$3,1,$4,$5,$6,$7)")
             .bind(tenant).bind(id).bind(policy).bind(Uuid::new_v4()).bind(json!({"device":device})).bind(json!({"permissions":[],"retirement_target":null})).bind(json!({"state":"expired"})).execute(&mut *tx).await?;
         let subscription =
@@ -64,14 +69,15 @@ pub(super) async fn seed(
         .bind(serde_json::to_vec(&event)?)
         .execute(&mut *tx)
         .await?;
-        let delivery = rss_mdm_webhook_service::fanout::queue(
-            &mut tx,
-            &event,
-            &subscription,
-            Some(Uuid::new_v4()),
-            None,
-        )
-        .await?;
+        let operation = Uuid::new_v4();
+        let delivery = rss_mdm_webhook_service::events::identity(
+            event.event_id,
+            &format!(
+                "{}:{}:{}",
+                subscription.id, subscription.target_version, operation
+            ),
+        );
+        deliveries.push((event.clone(), subscription.clone(), operation));
         if index == 1 {
             cases.push((
                 format!("/api/v1/devices/{device}/policy-event-batches"),
@@ -94,5 +100,39 @@ pub(super) async fn seed(
         }
     }
     tx.commit().await?;
+    for (event, subscription, operation) in deliveries {
+        c.runtime
+            .local_tx(
+                c.tenant,
+                rss_mdm_inventory_service::transaction::deadline(),
+                move |tx| {
+                    Box::pin(async move {
+                        tx.with_connection(move |connection| {
+                            Box::pin(async move {
+                                Ok(rss_mdm_webhook_service::fanout::queue(
+                                    connection,
+                                    &event,
+                                    &subscription,
+                                    Some(operation),
+                                    None,
+                                )
+                                .await)
+                            })
+                        })
+                        .await?
+                        .map_err(rss_mdm_webhook_service::PgError::from)
+                    })
+                },
+            )
+            .await
+            .fold(
+                |_| Ok(()),
+                |e| Err(anyhow::anyhow!("{e:?}")),
+                |e| Err(anyhow::anyhow!("{e:?}")),
+                |_| Err(anyhow::anyhow!("queue rollback unknown")),
+                |_| Err(anyhow::anyhow!("queue commit unknown")),
+                |e| Err(anyhow::anyhow!("{e:?}")),
+            )?;
+    }
     Ok(())
 }

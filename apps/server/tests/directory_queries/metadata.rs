@@ -31,8 +31,31 @@ pub(super) async fn seed(
         } else {
             json!([{"platform":"macos","architecture":"x86_64"}])
         };
-        sqlx::query("INSERT INTO mdm_access.agent_configurations(tenant_id,id,operation_id,creator,instance,secret_digest,signature,request_digest,document,quantity,state,expires_at) VALUES($1,$2,$3,$4,$5,repeat('a',64),repeat('a',86),repeat('b',64),$6,3,'available',clock_timestamp()+interval '1 hour')")
-            .bind(tenant).bind(id).bind(Uuid::new_v4()).bind(name).bind(p.instance_id()).bind(json!({"targets":targets,"quantity":{"kind":"finite","count":3}})).execute(&mut *tx).await?;
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[29; 32]).unwrap();
+        let locations = rss_mdm_agent_wire::connections::Configuration {
+            wire_version: 1,
+            service_id: Uuid::parse_str(p.instance_id())?,
+            tenant_id: tenant,
+            revision: 1,
+            preferred_origin: "https://agent.example.test".into(),
+            origins: vec!["https://agent.example.test".into()],
+            key_id: "directory".into(),
+        };
+        let connections = rss_mdm_agent_wire::connections::SignedConfiguration {
+            signature: URL_SAFE_NO_PAD.encode(key.sign(&locations.signing_bytes()?).as_ref()),
+            configuration: locations,
+        };
+        let expiry = time::OffsetDateTime::now_utc().unix_timestamp() + 3600;
+        let document: rss_mdm_agent_wire::enroll::configuration::Configuration =
+            serde_json::from_value(
+                json!({"wireVersion":1,"configurationId":id,"tenantId":tenant,"connections":connections,"targets":targets,"quantity":{"kind":"finite","count":3},"expiresAt":expiry,"keyId":"directory"}),
+            )?;
+        let secret = rss_mdm_agent_wire::runtime::Secret::parse(&URL_SAFE_NO_PAD.encode([31; 32]))?;
+        let signature =
+            URL_SAFE_NO_PAD.encode(key.sign(&document.signing_bytes(&secret)?).as_ref());
+        sqlx::query("INSERT INTO mdm_access.agent_configurations(tenant_id,id,operation_id,creator,instance,secret_digest,signature,request_digest,document,quantity,state,expires_at) VALUES($1,$2,$3,$4,$5,repeat('a',64),$7,repeat('b',64),$6,3,'available',to_timestamp($8))")
+            .bind(tenant).bind(id).bind(Uuid::new_v4()).bind(name).bind(p.instance_id()).bind(serde_json::to_value(document)?).bind(signature).bind(expiry as f64).execute(&mut *tx).await?;
         let source = format!("directory-source-{i}");
         let document = format!("[{{\"name\":\"{name}\",\"version\":\"2.0\"}}]");
         use sha2::{Digest, Sha256};
@@ -86,7 +109,7 @@ pub(super) async fn seed(
     }
     cases.extend([
         ("/api/v1/apple/organizations".into(),"ade.orgId==directory-test;ade.enabled==false;accountEnrollment.signingKeyConfigured==false".into(),json!(organization)),
-        (format!("/api/v1/apple/organizations/{organization}/accounts"),"account==directory@example.test;enabled==true;revision==2".into(),json!("directory@example.test")),
+        (format!("/api/v1/apple/organizations/{organization}/account-enrollment/accounts"),"account==directory@example.test;enabled==true;revision==2".into(),json!("directory@example.test")),
         (format!("/api/v1/apple/organizations/{organization}/ade/devices"),"serial==DIRECTORY-TARGET;deleted==false;observedAt=gt=10".into(),json!("DIRECTORY-TARGET")),
         ("/api/v1/software/sources".into(),"id==private;state==enabled".into(),json!("private")),
         ("/api/v1/software/resources/z-directory-software/versions".into(),"version==1;resource==z-directory-software".into(),json!("1")),

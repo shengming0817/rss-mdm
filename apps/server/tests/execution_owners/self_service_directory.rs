@@ -18,6 +18,18 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
             .bind(json!({"access":{"kind":"device"},"published":true,"allowAi":false,"riskLevel":2,"presentation":{"displayName":name,"category":"Tools","description":"","prerequisites":"","sideEffects":"","keywords":[]}})).execute(&mut *tx).await?;
     }
     tx.commit().await?;
+    let announcement = w::TaskClaimRequest::new(
+        Uuid::new_v4(),
+        vec![w::ExecutorProfile::PowerShell7],
+        context(),
+    )?;
+    assert!(
+        h.delivery
+            .claim(&h.p, &announcement, &request(&h.c))
+            .await?
+            .task()
+            .is_none()
+    );
     let resources = &h.a.resources;
     let n = crate::native_identity_t2_support::seed(&h.c, "windows").await?;
     let materials = crate::assembly::registration_installation_t2::support::materials(
@@ -87,19 +99,28 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
         audit_store: h.audit.clone(),
         tenant: h.c.tenant.to_string(),
     };
+    let mut lifecycle = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(std::time::Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let (control, gate) = lifecycle
+        .startup()?
+        .commit()
+        .finish_with_admission("self-service-directory", std::time::Duration::from_secs(10));
+    control.open()?;
     let router =
         agent::task_router::<crate::assembly::agent_tasks::SelfServiceQuery>(state, envelope)
-            .into_checked_axum(rss_mdm_http_contract::module::Listener::Agent);
+            .into_checked_axum(rss_mdm_http_contract::module::Listener::Agent)
+            .layer(axum::Extension(gate));
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let _client = tokio::net::TcpStream::connect(socket.local_addr()?).await?;
     let (stream, _) = socket.accept().await?;
     let gateway =
         rss_mdm_certificate::GatewayConnection::from_stream(&stream, "127.0.0.1".parse()?)?;
-    let leaf =
-        h.c.inputs
-            .directory
-            .join(format!("task-trust-agent-{}/leaf.pem", h.c.tenant));
-    let evidence = gateway.client_certificate(&std::fs::read_to_string(leaf)?)?;
+    let certificate: String = sqlx::query_scalar("SELECT certificate_chain->>0 FROM mdm_access.certificate_issuances WHERE tenant_id=$1::uuid AND credential=$2")
+        .bind(h.c.tenant.to_string()).bind(h.p.credential()).fetch_one(&h.c.operator).await?;
+    let pem = format!("-----BEGIN CERTIFICATE-----\n{certificate}\n-----END CERTIFICATE-----\n");
+    let evidence = gateway.client_certificate(&pem)?;
     for fields in [None, Some("policyId,capability")] {
         let mut q = url::form_urlencoded::Serializer::new(String::new());
         q.append_pair("source", "human").append_pair(
@@ -140,5 +161,6 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
         )
         .await?;
     assert_eq!(response.status(), 401);
+    assert!(lifecycle.shutdown().join().await?.is_clean());
     h.close().await
 }
