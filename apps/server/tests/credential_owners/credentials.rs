@@ -348,11 +348,48 @@ async fn sensitive_disclosure_requires_confirmed_audit_commit() -> Result<()> {
             &c.request(&proof)?,
         )
         .await;
+
+    let rollback_audit = c.request(&proof)?;
+    c.runtime
+        .inject_next_transaction_fault(PgTransactionFault::RollbackFailedAfterAck);
+    let rollback_failed = service
+        .disclose(
+            &proof,
+            &coordinate.binding.device,
+            coordinate.material,
+            coordinate.version,
+            &rollback_audit,
+        )
+        .await;
     sqlx::raw_sql("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access").execute(&c.operator).await?;
     assert!(matches!(
         denied,
         Err(recovery::Error::Audit) | Err(recovery::Error::Storage)
     ));
+    assert!(matches!(
+        rollback_failed,
+        Err(recovery::Error::RollbackFailed)
+    ));
+    let failed_event = format!("recovery:read:{}", rollback_audit.request_id());
+    let failed_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1 AND source_id='mdm.business' AND event_id=$2",
+    )
+    .bind(coordinate.tenant)
+    .bind(&failed_event)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(failed_count, 0);
+
+    let recovered = service
+        .disclose(
+            &proof,
+            &coordinate.binding.device,
+            coordinate.material,
+            coordinate.version,
+            &c.request(&proof)?,
+        )
+        .await?;
+    assert_eq!(recovered.secret.as_str(), "Owner-test-Password!42");
     owner.close().await;
     c.close().await;
     Ok(())

@@ -23,9 +23,10 @@ fn complete_current_summary_distinguishes_missing_rules_and_unfinished_work() {
 }
 
 #[test]
-fn platform_evidence_preserves_all_valid_agent_sources() {
+fn assessment_preserves_all_platform_sources_and_field_datasets() {
     use rss_mdm_compliance::{
-        Applicability, Assessment, Definition, Input, Platform, Severity, SourceReference, Target,
+        Applicability, Assessment, Definition, FactReference, FieldEvidence, Input, Platform,
+        Severity, SourceReference, Target,
     };
     let input = Input {
         rule: uuid::Uuid::new_v4(),
@@ -52,6 +53,23 @@ fn platform_evidence_preserves_all_valid_agent_sources() {
             epoch: "epoch".into(),
         })
         .to_vec();
+    let datasets = ["device_identity", "hardware", "inventory"];
+    let evidence = FieldEvidence {
+        context: "device".into(),
+        field: "device.os.name".into(),
+        sources: datasets
+            .map(|dataset| FactReference {
+                source: "mdm.windows".into(),
+                dataset: Some(dataset.into()),
+                device_id: Some("device".into()),
+                epoch: Some("epoch".into()),
+                snapshot_id: format!("{dataset}-snapshot"),
+                observed_at: 1,
+                received_at: 1,
+                actor: None,
+            })
+            .to_vec(),
+    };
     let result = Assessment::evaluate(
         &input,
         "dictionary",
@@ -63,10 +81,18 @@ fn platform_evidence_preserves_all_valid_agent_sources() {
             groups: vec![],
         },
         vec![],
-        vec![],
+        vec![evidence],
     )
     .unwrap();
     assert_eq!(result.status, S::Compliant);
+    assert_eq!(
+        result.evidence[0]
+            .sources
+            .iter()
+            .map(|source| source.dataset.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        datasets,
+    );
     assert_eq!(
         result
             .applicability

@@ -317,8 +317,8 @@ impl<F> Assessment<F> {
                 return Err(Invalid::Assessment);
             }
         }
-        // Platform provenance includes every active registration/source, unlike a
-        // resolved field's two-source value limit. The host bounds its source page.
+        // Inventory bounds source pages and resolved fields. Keep each distinct
+        // dataset's provenance; the persisted assessment also has a byte budget.
         if self.explanations.len() > 1024 || self.evidence.len() > 256 {
             return Err(Invalid::Assessment);
         }
@@ -330,7 +330,6 @@ impl<F> Assessment<F> {
         }
         if self.evidence.iter().any(|e| {
             !text(&e.field, 256)
-                || e.sources.len() > 2
                 || e.sources
                     .iter()
                     .any(|s| !text(&s.source, 128) || !text(&s.snapshot_id, 1024))

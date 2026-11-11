@@ -187,16 +187,12 @@ impl Windows {
             })
             .collect()
     }
-    /// Certificate-authenticated discovery advertised by CertificateStore WSTEP renewal.
+    /// Windows starts ROBO with anonymous discovery, then authenticates at XCEP and WSTEP.
     pub fn renewal_discovery_url(&self, purpose: rss_mdm_registration_service::Purpose) -> String {
-        let prefix = if purpose == rss_mdm_registration_service::Purpose::WindowsDeclared {
-            "Linked"
-        } else {
-            ""
-        };
         format!(
-            "{}/EnrollmentServer/{prefix}Discovery.svc",
-            self.management_origin
+            "{}{}",
+            self.enrollment_origin,
+            certificate_enrollment::renewal_discovery_path(purpose),
         )
     }
     pub fn management_url(&self, purpose: rss_mdm_registration_service::Purpose) -> String {
@@ -232,8 +228,9 @@ pub fn mount_native(
     Router<(), impl rss_mdm_http_contract::module::Declaration + use<>>,
 ) {
     let enrollment = {
-        rss_mdm_http_contract::route_module! { struct RoutersModule1 for [WindowsEnrollment] { external_post_policy, external_post_issue } }
+        rss_mdm_http_contract::route_module! { struct RoutersModule1 for [WindowsEnrollment] { renewal_discovery, external_post_policy, external_post_issue } }
         RoutersModule1 {
+            renewal_discovery: certificate_enrollment::renewal_discovery_router(),
             external_post_policy: rss_mdm_http_contract::module::Route::new(
                 "/EnrollmentServer/Policy.svc",
                 rss_mdm_http_contract::routing::external_post(

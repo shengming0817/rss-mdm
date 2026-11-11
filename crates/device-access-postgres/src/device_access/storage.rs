@@ -436,23 +436,6 @@ pub async fn received_in(
     save_in(c, &b, revision).await
 }
 
-/// Retirement already holds the lifecycle locks; never reopen them after marking it retired.
-pub async fn retire_in(c: &mut PgConnection, tenant: &str, device_id: &str) -> Result<(), Error> {
-    let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT document FROM rss_da.bindings WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state <> 'revoked' ORDER BY id FOR UPDATE")
-        .bind(tenant).bind(device_id).fetch_all(&mut *c).await.map_err(db)?;
-    for row in rows {
-        let mut b: Binding = serde_json::from_value(row).map_err(|_| Error::Corrupt)?;
-        let expected = b.revision;
-        b.generation = b.generation.checked_add(1).ok_or(Error::Capacity)?;
-        b.revision = b.revision.checked_add(1).ok_or(Error::Capacity)?;
-        b.state = State::Revoked;
-        b.configuration.enabled = false;
-        save_in(c, &b, expected).await?;
-        super::lifecycle::emit_on(c, &b, None, b.id, "retired").await?;
-    }
-    Ok(())
-}
-
 fn state(value: State) -> &'static str {
     match value {
         State::Pending => "pending",

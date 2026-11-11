@@ -203,7 +203,9 @@ fn route_action(route: &str) -> &'static str {
     match route {
         "/EnrollmentConfiguration"
         | "/EnrollmentServer/Discovery.svc"
-        | "/EnrollmentServer/LinkedDiscovery.svc" => "windows_discovery",
+        | "/EnrollmentServer/LinkedDiscovery.svc"
+        | "/EnrollmentServer/RenewalDiscovery.svc"
+        | "/EnrollmentServer/LinkedRenewalDiscovery.svc" => "windows_discovery",
         "/EnrollmentServer/LinkedPolicy.svc" | "/EnrollmentServer/Policy.svc" => "windows_policy",
         "/EnrollmentServer/LinkedEnrollment.svc" | "/EnrollmentServer/Enrollment.svc" => {
             "enrollment_issue"

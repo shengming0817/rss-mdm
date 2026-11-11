@@ -86,6 +86,15 @@ def deployment_files(product):
     if product=="da":return DA_DEPLOYMENT_FILES
     raise ValueError("unknown product")
 
+def deployment_source(name):
+    if name == "deployment/device-access-roles.sql":
+        return Path("crates/device-access-runtime/schema/roles.sql")
+    if name == "mdm-config.example.json":
+        return Path("fixtures") / name
+    if name.endswith("-roles.sql"):
+        return Path("apps/server/schema") / Path(name).name
+    return Path(name)
+
 def source_inputs(root, header=None):
     """Git index admits paths; bytes always come from the current working tree."""
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
@@ -195,13 +204,9 @@ def build_staged(out, header, web_image=None, target_platform=None, product="mdm
         version = run(["docker", "run", "--rm", "--network", "none", image, "--version"])
         deployment = {}
         for name in deployment_files(product):
-            original = (source / "crates/device-access-runtime/schema/roles.sql" if name == "deployment/device-access-roles.sql"
-                        else source / "fixtures/mdm-config.example.json" if name == "mdm-config.example.json"
-                        else source / ("apps/server/schema/" + Path(name).name) if name.endswith("-roles.sql")
-                        else source / name)
             target = out / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(original, target)
+            shutil.copy(source / deployment_source(name), target)
             deployment[name] = sha(target)
         if product=="da":
             for command, filename in [("http-contract","http-contract.json"),("status-mapping","status-mapping.json")]:

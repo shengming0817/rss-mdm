@@ -14,7 +14,7 @@ services:
         install -d -o postgres -g postgres -m 700 /var/lib/postgresql/tls
         install -o postgres -g postgres -m 600 /inputs/postgres.key /var/lib/postgresql/tls/server.key
         install -o postgres -g postgres -m 644 /inputs/postgres.crt /var/lib/postgresql/tls/server.crt
-        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/var/lib/postgresql/tls/server.crt -c ssl_key_file=/var/lib/postgresql/tls/server.key
+        exec docker-entrypoint.sh postgres -c max_connections=${MDM_PG_MAX_CONNECTIONS:-160} -c ssl=on -c ssl_cert_file=/var/lib/postgresql/tls/server.crt -c ssl_key_file=/var/lib/postgresql/tls/server.key
     healthcheck:
       test: [CMD, pg_isready, -U, postgres]
       interval: 2s

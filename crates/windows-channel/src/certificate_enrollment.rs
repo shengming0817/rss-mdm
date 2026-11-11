@@ -1,7 +1,125 @@
-//! Certificate enrollment stays on the management TLS origin; bootstrap never grants renewal.
+//! Renewal discovery advertises public coordinates; XCEP and WSTEP require the current certificate.
 //! ref: Microsoft CertificateStore CSP MY/WSTEP/Renew/ServerURL; MS-MDE2 certificate authentication.
 use super::*;
 use rss_mdm_registration_service::{DevicePrincipal, Purpose};
+
+const RENEWAL_DISCOVERY: &str = "/EnrollmentServer/RenewalDiscovery.svc";
+const LINKED_RENEWAL_DISCOVERY: &str = "/EnrollmentServer/LinkedRenewalDiscovery.svc";
+
+pub(super) fn renewal_discovery_path(purpose: Purpose) -> &'static str {
+    if purpose == Purpose::WindowsDeclared {
+        LINKED_RENEWAL_DISCOVERY
+    } else {
+        RENEWAL_DISCOVERY
+    }
+}
+
+pub(super) fn renewal_discovery_router()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    use rss_mdm_http_contract::{ExternalProtocol::WindowsMdm, module::Route, routing};
+    rss_mdm_http_contract::route_module! { struct RenewalDiscoveryRoutes for [WindowsEnrollment] { get_primary, post_primary, get_linked, post_linked } }
+    RenewalDiscoveryRoutes {
+        get_primary: Route::new(
+            RENEWAL_DISCOVERY,
+            routing::external_get(
+                discovery_probe,
+                WindowsMdm,
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        ),
+        post_primary: Route::new(
+            RENEWAL_DISCOVERY,
+            routing::external_post(
+                renewal_discover,
+                WindowsMdm,
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        ),
+        get_linked: Route::new(
+            LINKED_RENEWAL_DISCOVERY,
+            routing::external_get(
+                discovery_probe,
+                WindowsMdm,
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        ),
+        post_linked: Route::new(
+            LINKED_RENEWAL_DISCOVERY,
+            routing::external_post(
+                linked_renewal_discover,
+                WindowsMdm,
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        ),
+    }
+    .assemble()
+}
+
+async fn renewal_discover(
+    State(app): State<Arc<HttpState>>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    anonymous_discovery(&app, &headers, &bytes, Purpose::Primary)
+}
+
+async fn linked_renewal_discover(
+    State(app): State<Arc<HttpState>>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    anonymous_discovery(&app, &headers, &bytes, Purpose::WindowsDeclared)
+}
+
+fn anonymous_discovery(
+    app: &HttpState,
+    headers: &HeaderMap,
+    bytes: &[u8],
+    purpose: Purpose,
+) -> Response {
+    let windows = match app.windows() {
+        Ok(windows) => windows,
+        Err(error) => return fault(None, error),
+    };
+    let message = match decode_at(
+        bytes,
+        headers,
+        Operation::Discover,
+        &windows.enrollment_origin,
+        renewal_discovery_path(purpose),
+    ) {
+        Ok(message) => message,
+        Err(error) => return fault(None, error),
+    };
+    discovery_response(&message, &windows.management_origin, purpose)
+        .unwrap_or_else(|error| fault(Some(&message), error))
+}
+
+fn discovery_response(
+    message: &soap::Message,
+    origin: &str,
+    purpose: Purpose,
+) -> Result<Response, Error> {
+    let prefix = if purpose == Purpose::WindowsDeclared {
+        "Linked"
+    } else {
+        ""
+    };
+    response(
+        Some(message),
+        Body::DiscoverResponse(soap::DiscoverResponse {
+            auth_policy: soap::AuthPolicy::Certificate,
+            enrollment_version: "4.0".into(),
+            policy_url: format!("{origin}/EnrollmentServer/{prefix}Policy.svc"),
+            enrollment_url: format!("{origin}/EnrollmentServer/{prefix}Enrollment.svc"),
+        }),
+        0,
+    )
+}
 
 // Same standard service paths as bootstrap, mounted under a different TLS origin.
 pub(super) fn router()
@@ -161,17 +279,7 @@ async fn discovery(
         let principal = principal(app, peer, purpose).await?;
         audit.identify_device(principal.device());
         audit.target_device(principal.device());
-        let prefix = if linked { "Linked" } else { "" };
-        response(
-            Some(&message),
-            Body::DiscoverResponse(soap::DiscoverResponse {
-                auth_policy: soap::AuthPolicy::Certificate,
-                enrollment_version: "4.0".into(),
-                policy_url: format!("{origin}/EnrollmentServer/{prefix}Policy.svc"),
-                enrollment_url: format!("{origin}/EnrollmentServer/{prefix}Enrollment.svc"),
-            }),
-            0,
-        )
+        discovery_response(&message, origin, purpose)
     }
     .await;
     result.unwrap_or_else(|error| fault(Some(&message), error))
