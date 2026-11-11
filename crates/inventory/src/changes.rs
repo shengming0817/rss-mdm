@@ -107,7 +107,7 @@ impl AssetChanged {
             || self.history_epoch.is_nil()
             || self.revision <= 0
             || !text(&self.identity.fact, 4096)
-            || self.identity.device.as_ref().is_some_and(|v| !text(v, 255))
+            || self.identity.device.as_ref().is_some_and(|v| !text(v, 256))
             || self.identity.registration_epoch.is_some_and(|v| v.is_nil())
             || self
                 .identity
@@ -184,6 +184,19 @@ mod tests {
         let mut missing = event.clone();
         missing.identity.source_epoch = None;
         assert!(missing.validate().is_err());
+        for device in ["x".repeat(256), "é".repeat(128)] {
+            let mut boundary = event.clone();
+            boundary.identity.device = Some(device.clone());
+            assert!(
+                boundary.validate().is_ok(),
+                "256 UTF-8 bytes are a legal device identity"
+            );
+            boundary.identity.device = Some(format!("{device}x"));
+            assert!(
+                boundary.validate().is_err(),
+                "257 UTF-8 bytes exceed the identity contract"
+            );
+        }
         let mut legacy = value;
         legacy["kind"] = "registration".into();
         assert!(serde_json::from_value::<AssetChanged>(legacy).is_err());
