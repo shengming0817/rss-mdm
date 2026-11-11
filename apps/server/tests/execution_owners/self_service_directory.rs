@@ -16,7 +16,7 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
     tx.commit().await?;
     let resources = &h.a.resources;
     let n = crate::native_identity_t2_support::seed(&h.c, "windows").await?;
-    let materials = super::super::registration_installation_t2::support::materials(
+    let materials = crate::assembly::registration_installation_t2::support::materials(
         &h.c,
         &n,
         Uuid::new_v4(),
@@ -27,17 +27,17 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
         rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
             tenant: h.c.tenant,
             instance: resources.config.identity.instance_id.clone(),
-            source: Arc::new(super::super::software_sources::Source(
+            source: Arc::new(crate::assembly::software_sources::Source(
                 resources.source.clone(),
             )),
-            inventory: Arc::new(super::super::software_sources::Inventory),
-            lifecycle: Arc::new(super::super::software_sources::Lifecycle),
+            inventory: Arc::new(crate::assembly::software_sources::Inventory),
+            lifecycle: Arc::new(crate::assembly::software_sources::Lifecycle),
             protection: resources.protection.clone(),
             software_distribution: resources.config.software_distribution,
         },
     );
     let enrollment = Arc::new(
-        super::super::registration_installation_t2::support::service(
+        crate::assembly::registration_installation_t2::support::service(
             &h.c,
             &n,
             native,
@@ -45,7 +45,7 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
             &materials,
         )?,
     );
-    let tasks = Arc::new(super::super::agent_tasks::AgentTasks {
+    let tasks = Arc::new(crate::assembly::agent_tasks::AgentTasks {
         access: h.a.access_execution.service.clone(),
         credentials: vec![],
         software: h.a.software.service.clone(),
@@ -83,8 +83,9 @@ async fn authenticated_self_service_filters_typed_fields_and_business_search() -
         audit_store: h.audit.clone(),
         tenant: h.c.tenant.to_string(),
     };
-    let router = agent::task_router::<super::super::agent_tasks::SelfServiceQuery>(state, envelope)
-        .into_checked_axum(rss_mdm_http_contract::module::Listener::Agent);
+    let router =
+        agent::task_router::<crate::assembly::agent_tasks::SelfServiceQuery>(state, envelope)
+            .into_checked_axum(rss_mdm_http_contract::module::Listener::Agent);
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let _client = tokio::net::TcpStream::connect(socket.local_addr()?).await?;
     let (stream, _) = socket.accept().await?;

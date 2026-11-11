@@ -9,7 +9,7 @@ pub(super) fn check(cases: &[(String, String, Value)]) -> Result<()> {
     exercised.extend(
         [
             "executions", // execution_owners::directory::recurring_owners_share_http_pagination_statistics_and_redacted_evidence
-            "self_service", // execution_owners::self_service_directory::authenticated_self_service_filters_typed_fields_and_business_search
+            "self_service", // execution_owners::composition::directory::authenticated_self_service_filters_typed_fields_and_business_search
             "tenants",
             "provisionings", // operation_diagnostics::installation::original_tenant_result_and_missing_result_have_independent_evidence
             "device_access",

@@ -261,6 +261,22 @@ pub async fn verify(
         1
     );
     assert_eq!(page["items"][0]["id"], binding.to_string());
+    let missing = material::success::<serde_json::Value>(
+        client
+            .get(format!(
+                "{base}/api/v1/devices/{}/device-access",
+                receipt.device
+            ))
+            .header(
+                "cookie",
+                format!("__Host-identity-session={}", session_secret.expose()),
+            )
+            .query(&[("filter", format!("id=={}", Uuid::new_v4()))])
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(missing["items"], serde_json::json!([]));
     let mut tx = c.seed().await?;
     for name in ["directory-target", "directory-sentinel"] {
         let rp = pg::enterprise::RelyingParty {

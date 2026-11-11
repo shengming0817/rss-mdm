@@ -61,10 +61,47 @@ impl Http {
             .get(path, &[("filter", filter), ("limit", "1")])
             .await?;
         anyhow::ensure!(status == 200, "{path}: {status}: {body}");
-        let page = page(&body);
-        let items = page["items"].as_array().context("directory items")?;
+        let items = page(&body)["items"].as_array().context("directory items")?;
         anyhow::ensure!(items.len() == 1, "{path} must match a real object: {body}");
-        Ok(items[0].clone())
+        let row = items[0].clone();
+        // Even a singleton owner must prove that a valid unmatched predicate reaches SQL.
+        let key = [
+            "id",
+            "key",
+            "configurationId",
+            "entryId",
+            "account",
+            "serial",
+            "fieldId",
+            "principalId",
+            "attempt",
+            "operationId",
+            "releaseId",
+            "source",
+            "version",
+        ]
+        .into_iter()
+        .find(|key| row[*key].is_string())
+        .context("public directory identity")?;
+        let absent = match key {
+            "account" => format!("{}@example.test", Uuid::new_v4()),
+            "key" if row[key].as_str().unwrap().starts_with("endpoint:") => {
+                format!("endpoint:{}", Uuid::new_v4())
+            }
+            "key" => format!("custom.directory_{}", Uuid::new_v4().simple()),
+            _ => Uuid::new_v4().to_string(),
+        };
+        let (status, missing) = self
+            .get(
+                path,
+                &[("filter", &format!("{key}=={absent}")), ("limit", "1")],
+            )
+            .await?;
+        anyhow::ensure!(
+            status == 200 && page(&missing)["items"] == json!([]),
+            "{path} ignored an unmatched {key} predicate: {status}: {missing}"
+        );
+        Ok(row)
     }
 }
 // Saved queries use their existing AssetEnvelope; other management collections expose Page directly.

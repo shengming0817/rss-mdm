@@ -274,5 +274,3 @@ mod script_cases;
 mod scheduled;
 
 mod command_recovery;
-
-mod self_service_directory;

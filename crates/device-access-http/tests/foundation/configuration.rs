@@ -76,6 +76,20 @@ pub async fn concurrent_export(
             .iter()
             .all(|v| v["enabled"] == true && v["configuration"]["windows"]["kind"] == "whfb")
     );
+    let missing = material::success::<serde_json::Value>(
+        client
+            .get(format!("{base}/admin/configurations"))
+            .query(&[("filter", "enabled==false")])
+            .bearer_auth(token)
+            .send()
+            .await?,
+    )
+    .await?;
+    assert_eq!(
+        missing["items"],
+        serde_json::json!([]),
+        "configuration filter must exclude the published enabled row"
+    );
     Ok(())
 }
 
