@@ -158,19 +158,22 @@ pub async fn selected_on(
 
 /// Ordered current publications for a tenant directory or an explicitly selected device.
 pub async fn directory_on(
-    c: &mut PgConnection,
-    tenant: Uuid,
-    device: Option<&str>,
-    after: Option<Uuid>,
-    limit: i64,
+    c: &mut PgConnection, tenant: Uuid, device: Option<&str>,
+    query: &rss_mdm_query::directory::Query, after: Option<&rss_mdm_query::directory::Position>,
 ) -> Result<Vec<Publication>, Error> {
-    let values:Vec<serde_json::Value>=sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1 AND definition->'target' IS NOT NULL AND ($2::text IS NULL OR definition#>>'{target,device}'=$2) AND ($3::uuid IS NULL OR id>$3) ORDER BY id LIMIT $4")
-        .bind(tenant).bind(device).bind(after).bind(limit).fetch_all(c).await?;
-    values
-        .into_iter()
-        .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
-        .collect()
+    query.require_schema(&DIRECTORY_SCHEMA).map_err(|_|Error::Malformed)?;
+    let mut sql = sqlx::QueryBuilder::new("SELECT definition FROM rss_da.policies WHERE tenant_id=");
+    sql.push_bind(tenant).push(" AND definition->'target' IS NOT NULL");
+    if let Some(device)=device { sql.push(" AND (definition#>>'{target,device}'=").push_bind(device.to_owned()).push(")"); }
+    rss_mdm_query_postgres::append(&mut sql,query,after,&*DIRECTORY_BINDINGS).map_err(|_|Error::Malformed)?;
+    let rows: Vec<serde_json::Value> = sql.build_query_scalar().fetch_all(c).await?;
+    rows.into_iter().map(|row|serde_json::from_value(row).map_err(|_|Error::Malformed)).collect()
 }
+/// Public DA configuration model, including active and explicitly disabled publications.
+pub static DIRECTORY_SCHEMA: std::sync::LazyLock<rss_mdm_query::directory::Schema> = std::sync::LazyLock::new(|| rss_mdm_query::directory::Schema::derived::<Publication>("da_configurations", &["id"],64,100,&[]).expect("DA configuration directory model"));
+/// The same checked mapping is consumed by the HTTP declaration and the actual SQL read.
+pub static DIRECTORY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&DIRECTORY_SCHEMA,&[rss_mdm_query_postgres::Source::json("","definition")]).expect("DA configuration binding"));
+
 /// Immutable history, including withdrawn publications, in descending revision order.
 pub async fn history_on(
     c: &mut PgConnection,

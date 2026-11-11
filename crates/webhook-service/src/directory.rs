@@ -1,7 +1,7 @@
 //! Safe metadata catalogs and bounded SQL reads; the application supplies current visibility.
 //! ref: sqlx sqlx-core/src/query_builder.rs@v0.9.0
 use crate::{Error, model::EventType};
-use rss_mdm_query::directory::{Field, Kind, Position, Query, Schema};
+use rss_mdm_query::directory::{Position, Query, Schema};
 use serde_json::Value;
 use sqlx::{PgConnection, QueryBuilder};
 use uuid::Uuid;
@@ -25,45 +25,11 @@ static SUBSCRIPTION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindin
         )
         .expect("Webhook storage binds every subscription field")
     });
-pub static DELIVERIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "webhook_deliveries",
-    keys: &["id"],
-    default_limit: 32,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("eventId", Kind::Uuid),
-        Field::scalar("subscriptionId", Kind::Uuid),
-        Field::scalar("targetVersion", Kind::Integer),
-        Field::scalar("recoveryVersion", Kind::Integer),
-        Field::scalar("attempts", Kind::Integer),
-        Field::scalar("status", Kind::Text),
-        Field::output("sourceDelivery"),
-        Field::output("redriveWindowOpen"),
-        Field::output("transportObservation"),
-        Field::output("failureStage"),
-        Field::output("failureReason"),
-    ],
-});
+pub static DELIVERIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<crate::management::response::Delivery>("webhook_deliveries", &["id"], 32, 1000, &[]).expect("Public directory model"));
 pub fn query_error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
         _ => Error::Invalid,
-    }
-}
-fn column(n: &str) -> &'static str {
-    match n {
-        "id" => "(row->>'id') COLLATE \"C\"",
-        "eventId" => "(row->>'eventId') COLLATE \"C\"",
-        "subscriptionId" => "(row->>'subscriptionId') COLLATE \"C\"",
-        "revision" => "(row->>'revision')::bigint",
-        "targetVersion" => "(row->>'targetVersion')::bigint",
-        "recoveryVersion" => "(row->>'recoveryVersion')::bigint",
-        "attempts" => "(row->>'attempts')::bigint",
-        "enabled" => "(row->>'enabled')::boolean",
-        "deleted" => "(row->>'deleted')::boolean",
-        "status" => "(row->>'status') COLLATE \"C\"",
-        _ => unreachable!("checked webhook field"),
     }
 }
 pub async fn subscriptions(
@@ -114,7 +80,7 @@ pub async fn deliveries(
         sql.push(")");
     }
     sql.push(")) records WHERE true");
-    rss_mdm_query_postgres::append(&mut sql, q, after, column).map_err(query_error)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after, &*DELIVERY_BINDINGS).map_err(query_error)?;
     Ok(sql.build_query_scalar().fetch_all(c).await?)
 }
 
@@ -123,6 +89,7 @@ pub async fn deliveries(
 #[serde(transparent)]
 pub struct SubscriptionInput(String);
 impl SubscriptionInput {
+    pub fn execution() -> &'static rss_mdm_query::directory::Execution { SUBSCRIPTION_BINDINGS.execution() }
     pub fn capture(raw: &str) -> Self {
         Self(raw.to_owned())
     }
@@ -138,6 +105,7 @@ impl SubscriptionInput {
 #[serde(transparent)]
 pub struct DeliveryInput(String);
 impl DeliveryInput {
+    pub fn execution() -> &'static rss_mdm_query::directory::Execution { DELIVERY_BINDINGS.execution() }
     pub fn capture(raw: &str) -> Self {
         Self(raw.to_owned())
     }
@@ -148,3 +116,5 @@ impl DeliveryInput {
         Self::schema().parse(&self.0)
     }
 }
+
+pub static DELIVERY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&DELIVERIES, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));

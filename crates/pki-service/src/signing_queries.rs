@@ -3,7 +3,7 @@ use crate::Error;
 use rss_mdm_query::{
     Page,
     cursor::CursorCodec,
-    directory::{Field, Kind, Projection, Query, Schema},
+    directory::{Projection, Query, Schema},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
@@ -39,21 +39,12 @@ pub struct ReceiptIdentity {
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Operation {
+    #[schemars(extend("x-rss-maxUtf8Bytes" = 1024))]
     pub actor: String,
     pub instance: String,
     pub operation_id: Uuid,
 }
-pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "windows_signing_recovery_operations",
-    keys: &["actor", "operationId"],
-    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
-    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: vec![
-        Field::scalar("actor", Kind::Text),
-        Field::scalar("operationId", Kind::Uuid),
-        Field::output("instance"),
-    ],
-});
+pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Operation>("windows_signing_recovery_operations", &["actor", "operationId"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
 fn db(_: sqlx::Error) -> Error {
     Error::Storage
 }
@@ -121,13 +112,6 @@ pub async fn read_many_in(
     Ok(result)
 }
 
-fn column(name: &str) -> &'static str {
-    match name {
-        "actor" => "actor COLLATE \"C\"",
-        "operationId" => "operation::text COLLATE \"C\"",
-        _ => unreachable!("checked PKI receipt field"),
-    }
-}
 /// Caller supplies an authorization-bound query binding, never a client identity assertion.
 pub async fn operations_in(
     profile: rss_mdm_install_support::StorageProfile,
@@ -147,7 +131,7 @@ pub async fn operations_in(
         .push("::uuid AND signing_recovery_attempt=")
         .push_bind(attempt)
         .push(" AND phase='signing_recover'");
-    rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(query_error)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*OPERATION_BINDINGS).map_err(query_error)?;
     let rows: Vec<serde_json::Value> = sql.build_query_scalar().fetch_all(c).await.map_err(db)?;
     let rows = rows
         .into_iter()
@@ -201,3 +185,7 @@ pub async fn operation_in(
     })
     .transpose()
 }
+
+pub static OPERATION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&OPERATIONS, &[rss_mdm_query_postgres::Source::required_column("actor", "actor COLLATE \"C\""),
+rss_mdm_query_postgres::Source::required_column("operationId", "operation::text COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("instance", "instance COLLATE \"C\"")]).expect("Complete public model storage binding"));

@@ -147,7 +147,5 @@ async fn person(
 
 struct DefinitionDirectory;
 impl rss_mdm_http_contract::query::DirectoryOwner for DefinitionDirectory {
-    fn schema() -> &'static Schema {
-        &DIRECTORY
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { BINDINGS.execution() }
 }

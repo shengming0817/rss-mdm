@@ -212,7 +212,7 @@ pub struct SelfServiceDirectoryResponse {
     pub as_of: i64,
 }
 /// Selected directory fields; resolve returns the complete required descriptor instead.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelfServiceDirectoryProjection {
     /// Selected capability interface.
@@ -490,4 +490,14 @@ pub(crate) fn nullable_schema<T: schemars::JsonSchema>(
     generator: &mut schemars::SchemaGenerator,
 ) -> schemars::Schema {
     generator.subschema_for::<Option<T>>()
+}
+
+impl schemars::JsonSchema for SelfServiceDirectoryProjection {
+    fn schema_name() -> std::borrow::Cow<'static,str> { "SelfServiceDirectoryProjection".into() }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut value=SelfServiceDirectoryItem::json_schema(generator).to_value();
+        value.as_object_mut().expect("Self service row object").remove("required");
+        value["x-rss-directory-model"]=serde_json::json!({"identity":SelfServiceDirectoryItem::schema_id(),"schema":generator.subschema_for::<SelfServiceDirectoryItem>()});
+        value.try_into().expect("Self service projected schema")
+    }
 }

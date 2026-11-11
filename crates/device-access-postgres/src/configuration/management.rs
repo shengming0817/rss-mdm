@@ -410,13 +410,6 @@ fn query_error(e: rss_mdm_query::Error) -> Error {
         _ => Error::Malformed,
     }
 }
-pub static DIRECTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
-    id: "da_configurations",
-    default_limit: 64,
-    max_limit: 100,
-    order: "id asc",
-    context: &["device"],
-};
 pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
     id: "da_configuration_history",
     default_limit: 64,
@@ -459,72 +452,21 @@ impl Service {
         .await
     }
     pub async fn configurations(
-        &self,
-        p: &AuthorizedPrincipal,
-        device: Option<&str>,
-        input: &DirectoryQuery,
-    ) -> Result<ConfigurationPage, Error> {
-        let q = DIRECTORY
-            .page(input.limit, input.cursor.clone(), 4096)
-            .map_err(query_error)?;
-        self.read_with_session(p, (self, p, device, input, &q), |ctx, c| {
-            Box::pin(async move {
-                let (service, p, device, input, q) = *ctx;
-                let target = device
-                    .map(|device| Target::Device {
-                        device: device.into(),
-                    })
-                    .unwrap_or(Target::TenantDefault);
-                authorize(c, p, &target, false, false).await?;
-                let grants = rss_mdm_authorization_service::snapshot_on(
-                    p.authority_profile(),
-                    c,
-                    p.tenant_id(),
-                    p.instance_id(),
-                )
-                .await?;
-                if device.is_none() {
-                    grants.require_all_devices(p, Permission::OperationRead)?;
-                }
-                policy::lock_publications_on(c, tenant(p)?)
-                    .await
-                    .map_err(fault)?;
-                let binding = rss_mdm_query::cursor::fingerprint(&(
-                    "da.configuration.directory",
-                    p.tenant_id(),
-                    p.instance_id(),
-                    p.principal_id(),
-                    grants.query_binding(p)?,
-                    device,
-                    q.limit(),
-                ))
-                .map_err(query_error)?;
-                let after: Option<Uuid> = input
-                    .cursor
-                    .as_ref()
-                    .map(|v| service.cursor.decode_bounded(v, &binding, 4096))
-                    .transpose()
-                    .map_err(query_error)?;
-                let mut items =
-                    policy::directory_on(c, tenant(p)?, device, after, q.limit() as i64 + 1)
-                        .await
-                        .map_err(fault)?;
-                let more = items.len() > q.limit();
-                items.truncate(q.limit());
-                let next_cursor = if more {
-                    Some(
-                        service
-                            .cursor
-                            .encode_bounded(&binding, &items.last().ok_or(Error::Corrupt)?.id, 4096)
-                            .map_err(query_error)?,
-                    )
-                } else {
-                    None
-                };
-                Ok(ConfigurationPage { items, next_cursor })
-            })
-        })
-        .await
+        &self, p: &AuthorizedPrincipal, device: Option<&str>, q: &rss_mdm_query::directory::Query,
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Publication>>, Error> {
+        q.require_schema(&policy::DIRECTORY_SCHEMA).map_err(query_error)?;
+        self.read_with_session(p,(self,p,device,q),|ctx,c|Box::pin(async move {
+            let(service,p,device,q)=*ctx;
+            let target=device.map(|device|Target::Device{device:device.into()}).unwrap_or(Target::TenantDefault);
+            authorize(c,p,&target,false,false).await?;
+            let grants=rss_mdm_authorization_service::snapshot_on(p.authority_profile(),c,p.tenant_id(),p.instance_id()).await?;
+            if device.is_none() { grants.require_all_devices(p,Permission::OperationRead)?; }
+            policy::lock_publications_on(c,tenant(p)?).await.map_err(fault)?;
+            let binding=q.binding(&("da.configuration.directory",p.tenant_id(),p.instance_id(),p.principal_id(),grants.query_binding(p)?,device)).map_err(query_error)?;
+            let after=q.after(&service.cursor,&binding).map_err(query_error)?;
+            let items=policy::directory_on(c,tenant(p)?,device,q,after.as_ref()).await.map_err(fault)?;
+            q.page_typed(items,&service.cursor,&binding).map_err(query_error)
+        })).await
     }
     pub async fn configuration_history(
         &self,

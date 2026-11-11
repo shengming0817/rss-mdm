@@ -396,7 +396,7 @@ impl rss_mdm_http_contract::query::QueryOwner for GroupDirectoryQuery {
     type Error = rss_mdm_query::Error;
     fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
         Some(rss_mdm_http_contract::QueryDeclaration::Directory(
-            rss_mdm_group_service::directory::schema(),
+            rss_mdm_http_contract::DirectoryDeclaration::list(rss_mdm_group_service::directory::execution()),
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {

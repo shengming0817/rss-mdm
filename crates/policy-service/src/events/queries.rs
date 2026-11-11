@@ -1,6 +1,11 @@
 //! Device-scoped batch/member queries use the same directory contract and current read authority.
 use super::*;
-pub use rss_mdm_policy_postgres::directory::{BATCHES, MEMBERS};
+use rss_mdm_query::directory::Schema;
+pub static BATCHES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Batch>("policy_event_batches", &["id"],64,1000,&[]).expect("Public event batch model"));
+pub static MEMBERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Member>("policy_event_members", &["id"],64,1000,&[
+    rss_mdm_query::directory::Exclusion { path:"decision.operations", reason:"Operation references are object arrays requiring kind and identity to match the same element" },
+    rss_mdm_query::directory::Exclusion { path:"operations", reason:"Per-operation live progress has heterogeneous owner-specific evidence; inspect each original operation" },
+]).expect("Public event member model"));
 use rss_mdm_query::cursor::CursorCodec;
 impl Events {
     pub async fn member_receipt(
@@ -206,6 +211,7 @@ impl Events {
                         after.as_ref(),
                         rss_mdm_policy_postgres::directory::EventTarget { device, batch },
                         members,
+                        if members { &MEMBER_BINDINGS } else { &BATCH_BINDINGS },
                     )
                     .await?;
                     let result = if members {
@@ -329,3 +335,7 @@ impl ReadResult {
         }
     }
 }
+
+pub static BATCH_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&BATCHES, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));
+
+pub static MEMBER_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&MEMBERS, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));

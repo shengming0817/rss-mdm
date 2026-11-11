@@ -120,3 +120,9 @@ impl ResourceCatalog {
         .await
     }
 }
+
+/// Complete Resource directory execution supplied by the Resource storage owner.
+pub fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_resource_postgres::directory::BINDINGS.execution() }
+
+/// Version metadata uses the Resource store's checked execution binding.
+pub fn version_execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_resource_postgres::directory::VERSION_BINDINGS.execution() }

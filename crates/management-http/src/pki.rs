@@ -253,9 +253,7 @@ async fn read_rotation(
 }
 struct BlockersQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for BlockersQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_pki_service::rotation::BLOCKERS
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_pki_service::rotation::BLOCKER_BINDINGS.execution() }
 }
 async fn rotation_blockers(
     State(s): State<Arc<HttpState>>,

@@ -808,9 +808,7 @@ async fn retention_read(
 
 struct FieldsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for FieldsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_inventory_service::assets::field_directory::SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_inventory_service::assets::field_directory::BINDINGS.execution() }
 }
 
 struct QueryItemsQuery;
@@ -938,9 +936,7 @@ impl rss_mdm_http_contract::signature::Output for HttpResponse {
 
 struct SavedDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for SavedDirectoryQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        rss_mdm_inventory_service::assets::saved_directory::schema()
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_inventory_service::assets::saved_directory::execution() }
 }
 
 struct SearchBody(Operation<rss_mdm_inventory_service::assets::rsql::QueryInput>);

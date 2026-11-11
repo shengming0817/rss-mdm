@@ -7,20 +7,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 const BATCH: usize = 1000;
 const DOCUMENT: &str = "jsonb_build_object('id',id,'kind',kind,'device',device,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status)";
-fn metadata(name: &str) -> bool {
-    !matches!(
-        name,
-        "authorization.state" | "authorization.reason" | "reauthorization.state"
-    )
-}
+fn metadata(name: &str) -> bool { !name.starts_with("authorization.") && !name.starts_with("reauthorization.") }
 pub(super) fn classified(q: &Query) -> bool {
-    [
-        "authorization.state",
-        "authorization.reason",
-        "reauthorization.state",
-    ]
-    .iter()
-    .any(|f| q.mentions(f))
+    q.schema().fields().iter().any(|f| !metadata(&f.name) && q.mentions(&f.name))
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -40,10 +29,10 @@ async fn candidates(
     let (limit, size) = bounds;
     let mut sql = relation(tenant, allowed, limit, *source_rows);
     sql.push(",selected AS(SELECT * FROM visible WHERE true");
-    rss_mdm_query_postgres::prefilter(&mut sql, q, column, metadata).map_err(query_error)?;
-    rss_mdm_query_postgres::page_limit(&mut sql, q, after, column, size).map_err(query_error)?;
+    rss_mdm_query_postgres::prefilter(&mut sql, q, &*BINDINGS, metadata).map_err(query_error)?;
+    rss_mdm_query_postgres::page_limit(&mut sql, q, after, &*BINDINGS, size).map_err(query_error)?;
     sql.push(") SELECT b.rows AS source_rows,CASE WHEN s.id IS NOT NULL THEN ").push(DOCUMENT).push(" END AS document,coalesce(s.input_bytes,0)::bigint AS input_bytes FROM source_budget b LEFT JOIN selected s ON true");
-    rss_mdm_query_postgres::order(&mut sql, q, column).map_err(query_error)?;
+    rss_mdm_query_postgres::order(&mut sql, q, &*BINDINGS).map_err(query_error)?;
     let rows = {
         let c = &mut *c;
         sql.build().fetch_all(c).await.map_err(super::sql)
@@ -111,8 +100,8 @@ async fn matching(
         "WITH batch AS(SELECT value AS document FROM jsonb_array_elements(",
     );
     sql.push_bind(Value::Array(rows)).push("::jsonb)), classified AS(SELECT document,(document->>'id')::uuid AS id,document->>'kind' AS kind,document->>'device' AS device,(document->>'policy')::uuid AS policy,document->>'origin' AS source_kind,(document->>'deadline')::bigint AS deadline,document->>'status' AS status,document->'authorization' AS authorization_summary,document->'reauthorization' AS reauthorization_summary FROM batch) SELECT document FROM classified WHERE true");
-    rss_mdm_query_postgres::filter(&mut sql, q, column).map_err(query_error)?;
-    rss_mdm_query_postgres::order(&mut sql, q, column).map_err(query_error)?;
+    rss_mdm_query_postgres::filter(&mut sql, q, &*BINDINGS).map_err(query_error)?;
+    rss_mdm_query_postgres::order(&mut sql, q, &*BINDINGS).map_err(query_error)?;
     {
         let c = &mut *c;
         sql.build_query_scalar()
@@ -250,7 +239,7 @@ pub(super) async fn statistics(
     if !classified(q) {
         let mut sql = relation(p.tenant_id().to_owned(), allowed, STATISTICS_SOURCES, None);
         sql.push("SELECT b.rows,CASE WHEN b.rows<=4194304 THEN (SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'commands',count(*) FILTER(WHERE kind='command'),'actionRuns',count(*) FILTER(WHERE kind='action_run'),'unknown',count(*) FILTER(WHERE status='unknown')),'asOf',").push_bind(now).push(") FROM visible WHERE true");
-        rss_mdm_query_postgres::filter(&mut sql, q, column).map_err(query_error)?;
+        rss_mdm_query_postgres::filter(&mut sql, q, &*BINDINGS).map_err(query_error)?;
         sql.push(") END FROM source_budget b");
         let (count, value): (i64, Option<Value>) = {
             let c = &mut *c;

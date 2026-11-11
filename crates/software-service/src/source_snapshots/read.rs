@@ -1,58 +1,12 @@
 use super::*;
 use rss_mdm_query::{
     Page,
-    directory::{Field, Kind, Projection, Query, Schema},
+    directory::{Projection, Query, Schema},
 };
 use sqlx::Row;
 use uuid::Uuid;
-pub static SOURCES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "software_source_snapshots",
-    keys: &["source"],
-    default_limit: 20,
-    max_limit: 100,
-    fields: vec![
-        Field::scalar("source", Kind::Text),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("entryCount", Kind::Integer),
-        Field::scalar("importedAt", Kind::Integer),
-        Field::output("documentSha256"),
-        Field::output("extraction"),
-    ],
-});
-pub static ENTRIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "software_source_entries",
-    keys: &["entryId"],
-    default_limit: 20,
-    max_limit: 100,
-    fields: vec![
-        Field::scalar("entryId", Kind::Uuid),
-        Field::scalar("source", Kind::Text),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("packageId", Kind::Text),
-        Field::scalar("name", Kind::Text),
-        Field::scalar("version", Kind::Text),
-    ],
-});
-fn source_column(field: &str) -> &'static str {
-    match field {
-        "source" => "source COLLATE \"C\"",
-        "revision" => "revision",
-        "entryCount" => "entry_count",
-        "importedAt" => "imported_at",
-        _ => unreachable!("checked source directory field"),
-    }
-}
-fn entry_column(field: &str) -> &'static str {
-    match field {
-        "entryId" => "e.id::text COLLATE \"C\"",
-        "source" => "e.source COLLATE \"C\"",
-        "revision" => "s.revision",
-        "packageId" => "e.package_id COLLATE \"C\"",
-        "name" => "e.name COLLATE \"C\"",
-        "version" => "e.version COLLATE \"C\"",
-        _ => unreachable!("checked entry directory field"),
-    }
-}
+pub static SOURCES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Snapshot>("software_source_snapshots", &["source"], 20, 100, &[]).expect("Public directory model"));
+pub static ENTRIES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Entry>("software_source_entries", &["entryId"], 20, 100, &[]).expect("Public directory model"));
 fn read_audit(proof: &AuthorizedPrincipal, audit: &RequestAudit) -> Result<(), Error> {
     proof.require(Permission::SoftwareRead, None)?;
     audit.set_action(
@@ -94,7 +48,7 @@ pub async fn sources<C: ManagementContentPort>(
                     storage::SNAPSHOT_COLUMNS
                 ));
                 sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
-                rss_mdm_query_postgres::append(&mut sql, query, after.as_ref(), source_column)
+                rss_mdm_query_postgres::append(&mut sql, query, after.as_ref(), &*SOURCE_BINDINGS)
                     .map_err(crate::management::query_error)?;
                 let rows = tx
                     .with_connection(move |c| {
@@ -137,7 +91,7 @@ pub async fn entries<C: ManagementContentPort>(
         let after = query.after(&app.cursor, &binding).map_err(crate::management::query_error)?;
         let mut sql = sqlx::QueryBuilder::new("SELECT e.id,e.source,s.revision,e.package_id,e.name,e.version FROM mdm_software_snapshots.entries e JOIN mdm_software_snapshots.current s USING(tenant_id,source) WHERE e.tenant_id=");
         sql.push_bind(tx.tenant_id().to_string()).push("::uuid AND e.source=").push_bind(source.clone());
-        rss_mdm_query_postgres::append(&mut sql, query, after.as_ref(), entry_column)
+        rss_mdm_query_postgres::append(&mut sql, query, after.as_ref(), &*ENTRY_BINDINGS)
             .map_err(crate::management::query_error)?;
         let rows = tx.with_connection(move |c| Box::pin(async move { sql.build().fetch_all(c).await })).await?;
         let rows = rows.iter().map(storage::entry_row).collect::<transaction::Result<Vec<_>>>()?;
@@ -221,3 +175,17 @@ pub async fn operation<C: ManagementContentPort>(
     )
     .await
 }
+
+pub static SOURCE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SOURCES, &[rss_mdm_query_postgres::Source::required_column("source", "source COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("revision", "revision"),
+rss_mdm_query_postgres::Source::column("entryCount", "entry_count"),
+rss_mdm_query_postgres::Source::column("importedAt", "imported_at"),
+rss_mdm_query_postgres::Source::column("documentSha256", "ARRAY(SELECT get_byte(document_sha256,n)::bigint FROM generate_series(0,octet_length(document_sha256)-1) n)"),
+rss_mdm_query_postgres::Source::json("extraction", "extraction")]).expect("Complete public model storage binding"));
+
+pub static ENTRY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&ENTRIES, &[rss_mdm_query_postgres::Source::required_column("entryId", "e.id::text COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("source", "e.source COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("revision", "s.revision"),
+rss_mdm_query_postgres::Source::column("packageId", "e.package_id COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("name", "e.name COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("version", "e.version COLLATE \"C\"")]).expect("Complete public model storage binding"));

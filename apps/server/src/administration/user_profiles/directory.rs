@@ -1,57 +1,10 @@
-use rss_mdm_query::directory::{Field, Kind, Schema};
-pub static DIRECTORY: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "user_attributes",
-    keys: &["fieldId"],
-    default_limit: 128,
-    max_limit: 128,
-    fields: vec![
-        Field::scalar("fieldId", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("key", Kind::Text),
-        Field::scalar("displayName", Kind::Text),
-        Field::scalar("sourceKind", Kind::enumeration(&["identity_local", "idp"])),
-        Field::scalar("provider", Kind::Uuid),
-        Field::scalar(
-            "valueType",
-            Kind::enumeration(&["string", "boolean", "number", "integer", "array", "object"]),
-        ),
-        Field::scalar("enabled", Kind::Boolean),
-        Field::scalar("sensitive", Kind::Boolean),
-        Field::scalar("required", Kind::Boolean),
-        Field::scalar(
-            "visibility",
-            Kind::enumeration(&["self", "profiles_read", "both"]),
-        ),
-        Field::scalar(
-            "displayUse",
-            Kind::enumeration(&["profile", "summary", "hidden"]),
-        ),
-        Field::output("collectedAfterMicros"),
-        Field::output("value"),
-    ],
-});
+use rss_mdm_query::directory::{Schema};
+pub static DIRECTORY: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<DefinitionRow>("user_attributes", &["fieldId"], 128, 128, &[]).expect("Public directory model"));
 
 use self::DIRECTORY as SCHEMA;
 use super::*;
 use rss_mdm_query::directory::Query;
 
-fn column(name: &str) -> &'static str {
-    match name {
-        "fieldId" => "field_id::text COLLATE \"C\"",
-        "revision" => "revision",
-        "key" => "(value->>'key') COLLATE \"C\"",
-        "displayName" => "(value->>'displayName') COLLATE \"C\"",
-        "sourceKind" => "(value->'source'->>'kind') COLLATE \"C\"",
-        "provider" => "(value->'source'->>'provider') COLLATE \"C\"",
-        "valueType" => "(value->>'valueType') COLLATE \"C\"",
-        "enabled" => "(value->>'enabled')::boolean",
-        "sensitive" => "(value->>'sensitive')::boolean",
-        "required" => "(value->>'required')::boolean",
-        "visibility" => "(value->>'visibility') COLLATE \"C\"",
-        "displayUse" => "(value->>'displayUse') COLLATE \"C\"",
-        _ => unreachable!("checked attribute field"),
-    }
-}
 fn error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
@@ -75,7 +28,7 @@ pub(super) async fn list(
    let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(error)?;
    let after=q.after(&s.cursor,&binding).map_err(error)?;
    let mut sql=sqlx::QueryBuilder::new("SELECT jsonb_build_object('fieldId',field_id,'revision',revision,'collectedAfterMicros',collected_after_micros,'value',value,'key',value->>'key','displayName',value->>'displayName','sourceKind',value->'source'->>'kind','provider',value->'source'->>'provider','valueType',value->>'valueType','enabled',value->'enabled','sensitive',value->'sensitive','required',value->'required','visibility',value->>'visibility','displayUse',value->>'displayUse') FROM mdm_user_profiles.definitions WHERE value IS NOT NULL AND tenant_id=");
-   sql.push_bind(p.tenant_id().to_owned()).push("::uuid");rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(error)?;
+   sql.push_bind(p.tenant_id().to_owned()).push("::uuid");rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*BINDINGS).map_err(error)?;
    let rows:Vec<Value>=sql.build_query_scalar().fetch_all(c).await.map_err(database)?;
    for row in &rows{let definition:DefinitionValue=serde_json::from_value(row["value"].clone()).map_err(|_|unavailable())?;model::validate(&definition).map_err(|_|unavailable())?;}
    let rows=rows.into_iter().map(serde_json::from_value::<DefinitionRow>).collect::<Result<Vec<_>,_>>().map_err(|_|unavailable())?;
@@ -84,3 +37,18 @@ pub(super) async fn list(
  })).await;
     store::settle(result, audit, false)
 }
+
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&DIRECTORY, &[rss_mdm_query_postgres::Source::required_column("fieldId", "field_id::text COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("revision", "revision"),
+rss_mdm_query_postgres::Source::column("collectedAfterMicros", "collected_after_micros"),
+rss_mdm_query_postgres::Source::json("value", "value"),
+rss_mdm_query_postgres::Source::column("key", "(value->>'key') COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("displayName", "(value->>'displayName') COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("sourceKind", "(value->'source'->>'kind') COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("provider", "(value->'source'->>'provider') COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("valueType", "(value->>'valueType') COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("enabled", "(value->>'enabled')::boolean"),
+rss_mdm_query_postgres::Source::column("sensitive", "(value->>'sensitive')::boolean"),
+rss_mdm_query_postgres::Source::column("required", "(value->>'required')::boolean"),
+rss_mdm_query_postgres::Source::column("visibility", "(value->>'visibility') COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("displayUse", "(value->>'displayUse') COLLATE \"C\"")]).expect("Complete public model storage binding"));

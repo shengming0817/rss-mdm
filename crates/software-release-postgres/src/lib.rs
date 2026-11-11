@@ -30,6 +30,7 @@ pub(crate) const ADMISSION: Admission = Admission {
         "aggregates.revision",
         "aggregates.document",
         "aggregates.digest",
+        "aggregates.directory",
     ],
 };
 

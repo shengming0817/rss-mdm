@@ -8,31 +8,12 @@ use rss_mdm_pki_service::signing_queries as pki;
 use rss_mdm_query::{
     Page,
     cursor::CursorCodec,
-    directory::{Field, Kind, Projection, Query, Schema},
+    directory::{Projection, Query, Schema},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "windows_certificate_requests",
-    keys: &["attempt"],
-    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
-    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: vec![
-        Field::scalar("attempt", Kind::Uuid),
-        Field::scalar("kind", Kind::Text),
-        Field::scalar("enrollmentId", Kind::Uuid),
-        Field::output("device"),
-        Field::output("operationId"),
-        Field::output("registrationState"),
-        Field::output("enrollmentState"),
-        Field::output("predecessor"),
-        Field::output("linked"),
-        Field::output("activated"),
-        Field::output("signing"),
-        Field::output("requirements"),
-    ],
-});
+pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Request>("windows_certificate_requests", &["attempt"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestKind {
@@ -106,25 +87,23 @@ const HISTORY: &str = r#"
 )
 SELECT jsonb_build_object('attempt',attempt,'kind',kind,'device',device,'enrollmentId',enrollment_id,
  'operationId',operation_id,'registrationState',registration_state,
- 'enrollmentState',enrollment_state,'predecessor',predecessor,'linked',coalesce(linked,false),'activated',coalesce(activated,false))
+ 'enrollmentState',enrollment_state,'predecessor',predecessor,'linked',coalesce(linked,false),'activated',coalesce(activated,false)) AS context
 FROM candidates WHERE true
 "#;
+fn append_context(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, tenant: &str, device: &str) {
+    sql.push("WITH RECURSIVE params AS (SELECT ").push_bind(tenant.to_owned())
+        .push("::uuid AS tenant,").push_bind(device.to_owned()).push("::text AS device").push(HISTORY);
+}
 fn sql(tenant: &str, device: &str) -> sqlx::QueryBuilder<sqlx::Postgres> {
-    let mut sql = sqlx::QueryBuilder::new("WITH RECURSIVE params AS (SELECT ");
-    sql.push_bind(tenant.to_owned())
-        .push("::uuid AS tenant,")
-        .push_bind(device.to_owned())
-        .push("::text AS device")
-        .push(HISTORY);
+    let mut sql = sqlx::QueryBuilder::new("");
+    append_context(&mut sql, tenant, device);
     sql
 }
-fn column(name: &str) -> &'static str {
-    match name {
-        "attempt" => "attempt::text COLLATE \"C\"",
-        "kind" => "kind COLLATE \"C\"",
-        "enrollmentId" => "enrollment_id::text COLLATE \"C\"",
-        _ => unreachable!("checked Windows request field"),
-    }
+fn directory_sql(tenant: &str, device: &str, now: i64) -> sqlx::QueryBuilder<sqlx::Postgres> {
+    let mut sql = sqlx::QueryBuilder::new("WITH contexts AS (");
+    append_context(&mut sql, tenant, device);
+    sql.push("), clock AS (SELECT ").push_bind(now).push("::bigint AS now), signing AS (SELECT c.context,s.attempt,s.state,s.issuer,s.deadline,s.successor,floor(extract(epoch FROM s.created_at))::bigint created_at,convert_from(s.binding,'UTF8')::jsonb frozen FROM contexts c JOIN mdm_pki.signing s ON s.tenant_id=$1::uuid AND s.attempt=(c.context->>'attempt')::uuid AND s.purpose='windows'), corrected AS (SELECT context || jsonb_build_object('linked',state<>'superseded' AND (context->>'linked')::boolean,'activated',state<>'superseded' AND (context->>'activated')::boolean) context,attempt,state,issuer,deadline,successor,created_at,frozen FROM signing), rows AS (SELECT context || jsonb_build_object('signing',jsonb_build_object('attempt',attempt,'state',state,'issuer',frozen->>'issuer','createdAt',created_at,'deadline',deadline,'notBefore',(frozen->>'start')::bigint,'notAfter',(frozen->>'end')::bigint,'successor',successor),'requirements',to_jsonb(array_remove(ARRAY[CASE WHEN state='prepared' THEN CASE WHEN deadline<=clock.now THEN 'expired' ELSE 'awaiting_original_dispatch' END WHEN state IN('signing','unknown') THEN 'original_ca_response' WHEN state='issued' AND NOT(context->>'linked')::boolean THEN 'awaiting_native_continuation' WHEN state='issued' AND NOT(context->>'activated')::boolean THEN 'awaiting_device_possession' WHEN state='superseded' THEN 'superseded' END,CASE WHEN context->>'registrationState'='revoked' OR context->>'enrollmentState'='cancelled' THEN 'revoked' END,CASE WHEN context->>'enrollmentState'='expired' OR (frozen->>'end')::bigint<=clock.now THEN 'expired' END],NULL))) row FROM corrected CROSS JOIN clock) SELECT row FROM rows WHERE true");
+    sql
 }
 fn query_error(e: rss_mdm_query::Error) -> Error {
     match e {
@@ -235,8 +214,8 @@ impl Store {
             ))
             .map_err(query_error)?;
         let after = q.after(codec, &binding).map_err(query_error)?;
-        let mut sql = sql(p.tenant_id(), device);
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(query_error)?;
+        let mut sql = directory_sql(p.tenant_id(), device, now);
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*REQUEST_BINDINGS).map_err(query_error)?;
         let rows: Vec<serde_json::Value> = sql
             .build_query_scalar()
             .fetch_all(&mut *tx)
@@ -354,3 +333,5 @@ impl Store {
         Ok(result)
     }
 }
+
+pub static REQUEST_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&REQUESTS, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));

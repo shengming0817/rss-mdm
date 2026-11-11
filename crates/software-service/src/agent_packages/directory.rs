@@ -1,40 +1,8 @@
 //! Authenticated management metadata; public package discovery keeps its protocol admission.
 use super::*;
-use rss_mdm_query::directory::{Field, Kind, Query, Schema};
+use rss_mdm_query::directory::{Query, Schema};
 use serde_json::{Value, json};
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "agent_packages",
-    keys: &["releaseId"],
-    default_limit: 64,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("releaseId", Kind::Uuid),
-        Field::scalar("state", Kind::enumeration(&["published", "withdrawn"])),
-        Field::scalar("platform", Kind::enumeration(&["windows", "macos"])),
-        Field::scalar("architecture", Kind::enumeration(&["x86_64", "aarch64"])),
-        Field::scalar(
-            "format",
-            Kind::enumeration(&["windows_exe", "windows_msi", "windows_msix", "macos_pkg"]),
-        ),
-        Field::scalar("version", Kind::Text),
-        Field::output("tenantId"),
-        Field::output("target"),
-        Field::output("filename"),
-        Field::output("length"),
-        Field::output("installerSha256"),
-    ],
-});
-fn column(name: &str) -> &'static str {
-    match name {
-        "releaseId" => "id::text COLLATE \"C\"",
-        "state" => "state COLLATE \"C\"",
-        "platform" => "platform COLLATE \"C\"",
-        "architecture" => "architecture COLLATE \"C\"",
-        "format" => "format COLLATE \"C\"",
-        "version" => "product_version COLLATE \"C\"",
-        _ => unreachable!("checked package field"),
-    }
-}
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Row>("agent_packages", &["releaseId"], 64, 1000, &[]).expect("Public directory model"));
 fn validate(row: &Value, tenant: TenantId) -> Result<(), Error> {
     let p: w::Package = serde_json::from_value(row["_package"].clone()).map_err(|_| storage())?;
     if p.tenant_id.to_string() != tenant.to_string() || row["_id"] != json!(p.release_id) {
@@ -58,7 +26,7 @@ async fn rows<C: ManagementContentPort>(
   let(app,p,_audit,q)=ctx;let current=transaction::current(tx,p).await?;current.require(p,Permission::AgentEnrollmentRead,None)?;
   let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(management::query_error)?;let after=q.after(&app.cursor,&binding).map_err(management::query_error)?;
   let mut sql=sqlx::QueryBuilder::new("SELECT document || jsonb_build_object('_package',document,'_id',id,'state',state,'platform',platform,'architecture',architecture) FROM mdm_agent_packages.releases WHERE tenant_id=");sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
-  rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(management::query_error)?;
+  rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*BINDINGS).map_err(management::query_error)?;
   let mut rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
   for row in &mut rows{validate(row,app.tenant)?;let fields=row.as_object_mut().ok_or_else(storage)?;fields.remove("_package");fields.remove("_id");}
   let rows=rows.into_iter().map(serde_json::from_value).collect::<std::result::Result<Vec<Row>,_>>().map_err(|_|storage())?;
@@ -108,3 +76,8 @@ pub async fn list<C: ManagementContentPort>(
     q.page_typed(rows, &app.cursor, &binding)
         .map_err(management::query_error)
 }
+
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::json("", "document"),
+rss_mdm_query_postgres::Source::column("state", "state COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("platform", "platform COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("architecture", "architecture COLLATE \"C\"")]).expect("Complete public model storage binding"));

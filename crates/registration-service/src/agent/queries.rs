@@ -4,48 +4,11 @@ use super::*;
 use rss_mdm_authorization_service::Permission;
 use rss_mdm_query::{
     Page,
-    directory::{Field, Kind, Projection, Query, Schema},
+    directory::{Projection, Query, Schema},
 };
 
-pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "agent_requests",
-    keys: &["id"],
-    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
-    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("source", Kind::Text),
-        Field::scalar("state", Kind::Text),
-        Field::scalar("createdAt", Kind::Integer),
-        Field::output("device"),
-        Field::output("operationId"),
-        Field::output("actor"),
-        Field::output("instance"),
-        Field::output("expiresAt"),
-        Field::output("predecessor"),
-        Field::output("registrationState"),
-        Field::output("issuance"),
-        Field::output("issuanceState"),
-        Field::output("issuanceOperation"),
-        Field::output("issuer"),
-        Field::output("notBefore"),
-        Field::output("notAfter"),
-        Field::output("activationOperation"),
-        Field::output("activated"),
-        Field::output("requirements"),
-    ],
-});
-pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "agent_issuance_recovery_operations",
-    keys: &["actor", "operationId"],
-    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
-    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: vec![
-        Field::scalar("actor", Kind::Text),
-        Field::scalar("operationId", Kind::Uuid),
-        Field::output("instance"),
-    ],
-});
+pub static REQUESTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Request>("agent_requests", &["id"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
+pub static OPERATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Operation>("agent_issuance_recovery_operations", &["actor", "operationId"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReceiptIdentity {
@@ -68,6 +31,7 @@ impl ReceiptIdentity {
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Operation {
+    #[schemars(extend("x-rss-maxUtf8Bytes" = 1024))]
     pub actor: String,
     pub instance: String,
     pub operation_id: Uuid,
@@ -124,7 +88,7 @@ pub struct Request {
     pub activated: bool,
     pub requirements: Vec<Requirement>,
 }
-const REQUEST_SQL: &str = r#"SELECT jsonb_build_object(
+const REQUEST_SQL: &str = r#"SELECT row FROM (SELECT jsonb_build_object(
 'id',g.id,'device',g.device,'source',g.source,'state',CASE WHEN g.state='revoked' THEN 'revoked' WHEN g.expires_at<=statement_timestamp() THEN 'expired' ELSE g.state END,
 'operationId',g.operation_id,'actor',g.actor,'instance',g.instance,'createdAt',floor(extract(epoch FROM g.created_at))::bigint,'expiresAt',floor(extract(epoch FROM g.expires_at))::bigint,
 'registrationState',r.state,'predecessor',g.predecessor,
@@ -137,28 +101,10 @@ const REQUEST_SQL: &str = r#"SELECT jsonb_build_object(
  CASE WHEN i.id IS NULL AND g.state='available' THEN 'original_client_material' END,
  CASE WHEN i.state IN ('signing','unknown') THEN 'original_ca_response' END,
  CASE WHEN i.state='issued' AND i.activation_result IS NULL THEN 'awaiting_device_activation' END
- ],NULL)))
+ ],NULL))) AS row
  FROM mdm_access.certificate_grants g LEFT JOIN mdm_access.certificate_issuances i ON(i.tenant_id,i.grant_id)=(g.tenant_id,g.id)
  LEFT JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(g.tenant_id,g.device)
  WHERE g.tenant_id="#;
-fn request_column(name: &str) -> &'static str {
-    match name {
-        "id" => "g.id::text COLLATE \"C\"",
-        "source" => "g.source COLLATE \"C\"",
-        "state" => {
-            "(CASE WHEN g.state='revoked' THEN 'revoked' WHEN g.expires_at<=statement_timestamp() THEN 'expired' ELSE g.state END) COLLATE \"C\""
-        }
-        "createdAt" => "floor(extract(epoch FROM g.created_at))::bigint",
-        _ => unreachable!("checked Agent request field"),
-    }
-}
-fn operation_column(name: &str) -> &'static str {
-    match name {
-        "actor" => "actor COLLATE \"C\"",
-        "operationId" => "operation_id::text COLLATE \"C\"",
-        _ => unreachable!("checked operation field"),
-    }
-}
 fn conceal(e: Error) -> Error {
     if matches!(e, Error::Forbidden) {
         Error::NotFound
@@ -243,7 +189,8 @@ impl Service {
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND g.device=")
             .push_bind(device.to_owned());
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), request_column)
+        sql.push(") records WHERE true");
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*REQUEST_BINDINGS)
             .map_err(query_error)?;
         let rows: Vec<serde_json::Value> = sql
             .build_query_scalar()
@@ -287,7 +234,8 @@ impl Service {
         let mut sql = sqlx::QueryBuilder::new(REQUEST_SQL);
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND g.id=")
-            .push_bind(id);
+            .push_bind(id)
+            .push(") records");
         let row: serde_json::Value = sql
             .build_query_scalar()
             .fetch_one(&mut *tx)
@@ -341,7 +289,7 @@ impl Service {
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND agent_issuance_recovery=")
             .push_bind(id);
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), operation_column)
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*OPERATION_BINDINGS)
             .map_err(query_error)?;
         let rows: Vec<serde_json::Value> = sql
             .build_query_scalar()
@@ -490,3 +438,9 @@ pub async fn registration_recovery_operation(
     store.confirm_query(request, &before).await?;
     Ok(value)
 }
+
+pub static REQUEST_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&REQUESTS, &[rss_mdm_query_postgres::Source::json("", "row")]).expect("Complete public model storage binding"));
+
+pub static OPERATION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&OPERATIONS, &[rss_mdm_query_postgres::Source::required_column("actor", "actor COLLATE \"C\""),
+rss_mdm_query_postgres::Source::required_column("operationId", "operation_id::text COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("instance", "instance COLLATE \"C\"")]).expect("Complete public model storage binding"));

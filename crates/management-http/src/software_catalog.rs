@@ -222,7 +222,7 @@ async fn versions(
         Json<
             rss_mdm_query::Page<
                 rss_mdm_query::directory::Projection<
-                    rss_mdm_software_service::management::directory::VersionRow,
+                    rss_mdm_resource::directory::VersionRow,
                 >,
             >,
         >,
@@ -558,23 +558,17 @@ async fn sources(
 
 struct ManagedPackagesQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ManagedPackagesQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_software_service::agent_packages::directory::SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_software_service::agent_packages::directory::BINDINGS.execution() }
 }
 
 struct VersionsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for VersionsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_resource::directory::VERSION_SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_resource_service::directory::version_execution() }
 }
 
 struct SourcesQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for SourcesQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_software_service::management::directory::SOURCES
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_software_service::management::directory::SOURCE_BINDINGS.execution() }
 }
 
 pub fn mount_agent_packages(

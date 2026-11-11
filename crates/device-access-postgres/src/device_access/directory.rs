@@ -5,51 +5,11 @@ use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::{
     Page,
     cursor::CursorCodec,
-    directory::{Field, Kind, Query, Schema},
+    directory::{Query, Schema},
 };
 use serde_json::Value;
 use sqlx::PgConnection;
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "device_access",
-    keys: &["id"],
-    default_limit: 64,
-    max_limit: 100,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar(
-            "serverState",
-            Kind::enumeration(&["pending", "active", "revoked"]),
-        ),
-        Field::scalar("principal", Kind::Uuid),
-        Field::scalar("policy", Kind::Uuid),
-        Field::scalar("bindingGeneration", Kind::Integer),
-        Field::output("operationId"),
-        Field::output("device"),
-        Field::output("instance"),
-        Field::output("factorGeneration"),
-        Field::output("accountDisposition"),
-        Field::output("account"),
-        Field::output("accountIntent"),
-        Field::output("createdByRss"),
-        Field::output("policyVersion"),
-        Field::output("desired"),
-        Field::output("receivedRevision"),
-        Field::output("appliedRevision"),
-        Field::output("effect"),
-    ],
-});
-fn column(name: &str) -> &'static str {
-    match name {
-        "id" => "b.id::text COLLATE \"C\"",
-        "revision" => "b.revision",
-        "serverState" => "b.state COLLATE \"C\"",
-        "principal" => "b.principal::text COLLATE \"C\"",
-        "policy" => "(b.document->>'policy') COLLATE \"C\"",
-        "bindingGeneration" => "b.generation",
-        _ => unreachable!("checked binding field"),
-    }
-}
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<BindingView>("device_access", &["id"], 64, 100, &[]).expect("Public directory model"));
 pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
@@ -191,7 +151,7 @@ impl Service {
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND b.device=")
             .push_bind(device.to_owned());
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(error)?;
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*BINDINGS).map_err(error)?;
         let rows: Vec<Value> = sql
             .build_query_scalar()
             .fetch_all(&mut *tx)
@@ -212,3 +172,11 @@ impl Service {
         Ok(page)
     }
 }
+
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&SCHEMA, &[rss_mdm_query_postgres::Source::json("", "b.document"),
+rss_mdm_query_postgres::Source::column("instance", "(b.document->'person'->>'instance') COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("principal", "b.principal::text COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("bindingGeneration", "b.generation"),
+rss_mdm_query_postgres::Source::column("serverState", "b.state COLLATE \"C\""),
+rss_mdm_query_postgres::Source::json("accountIntent", "b.document->'intent'"),
+rss_mdm_query_postgres::Source::json("desired", "b.document->'configuration'")]).expect("Complete public model storage binding"));

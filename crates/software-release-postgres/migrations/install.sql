@@ -6,6 +6,7 @@ CREATE TABLE mdm_software_release.aggregates (
  tenant_id uuid NOT NULL, id text NOT NULL CHECK(octet_length(id) BETWEEN 1 AND 128),
  revision bigint NOT NULL CHECK(revision>=0),
  document bytea NOT NULL CHECK(octet_length(document) BETWEEN 1 AND 67108864), digest bytea NOT NULL CHECK(octet_length(digest)=32),
+ directory jsonb NOT NULL CHECK(jsonb_typeof(directory)='object'),
  PRIMARY KEY(tenant_id,id)
 );
 CREATE TABLE mdm_software_release.immutable (
@@ -36,7 +37,7 @@ CREATE POLICY tenant ON mdm_software_release.requests USING(tenant_id=nullif(cur
 REVOKE ALL ON mdm_software_release.requests FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_software_release TO mdm_software_release_runtime;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_software_release TO mdm_software_release_runtime;
-GRANT UPDATE(revision,document,digest) ON mdm_software_release.aggregates TO mdm_software_release_runtime;
+GRANT UPDATE(revision,document,digest,directory) ON mdm_software_release.aggregates TO mdm_software_release_runtime;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_software_release_runtime;
 GRANT SELECT ON rss_transactional_messaging.policy TO mdm_software_release_runtime;
 GRANT SELECT,INSERT ON rss_transactional_messaging.outbox TO mdm_software_release_runtime;

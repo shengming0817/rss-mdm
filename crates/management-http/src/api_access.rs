@@ -361,9 +361,7 @@ pub async fn admit_bearer(
 
 struct KeysQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for KeysQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        rss_mdm_authorization_service::directory::Directory::Keys.schema()
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_authorization_service::directory::Directory::Keys.execution() }
 }
 
 /// Secret exposure remains confined to this management response boundary.

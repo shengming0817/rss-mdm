@@ -347,9 +347,7 @@ async fn metadata(
 
 struct ListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        archive::directory::schema()
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { archive::directory::execution() }
 }
 
 struct HistoryQuery;

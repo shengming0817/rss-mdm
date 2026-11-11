@@ -115,16 +115,12 @@ async fn detail(
 
 struct ListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_registration_service::device::directory::SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_registration_service::device::directory::BINDINGS.execution() }
 }
 
 struct DeviceStatisticsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for DeviceStatisticsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_registration_service::device::directory::SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_registration_service::device::directory::BINDINGS.execution() }
 }
 
 #[derive(serde::Serialize, schemars::JsonSchema)]

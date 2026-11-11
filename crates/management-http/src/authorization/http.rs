@@ -537,23 +537,17 @@ async fn authenticate_and_run(
 
 struct RulesQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for RulesQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &directory::RULES
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { directory::RULE_BINDINGS.execution() }
 }
 
 struct GroupsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for GroupsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        directory::Directory::Groups.schema()
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { directory::Directory::Groups.execution() }
 }
 
 struct MembersQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for MembersQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        directory::Directory::Members(uuid::Uuid::nil()).schema()
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { directory::Directory::Members(uuid::Uuid::nil()).execution() }
 }
 
 #[derive(serde::Serialize, schemars::JsonSchema)]

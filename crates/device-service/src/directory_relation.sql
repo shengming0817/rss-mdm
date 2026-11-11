@@ -21,16 +21,16 @@ source_input AS MATERIALIZED (
  WHERE a.tenant_id=$1::uuid AND a.state<>'revoked' AND NOT m.released
  GROUP BY a.id HAVING count(*)=2
 ), members AS (
- SELECT v.*,coalesce('association:'||p.id::text,'endpoint:'||v.id) AS object_key,
+ SELECT CASE WHEN r.id IS NULL THEN NULL ELSE jsonb_build_object('id',r.id,'version',r.version,'evidence',r.evidence,'confirmedBy',r.confirmed_by,'confirmedAt',r.confirmed_at,'revokedBy',r.revoked_by,'revokedAt',r.revoked_at,'reason',r.reason) END AS association,v.*,coalesce('association:'||p.id::text,'endpoint:'||v.id) AS object_key,
  coalesce(a.state,'active') AS asset_state,u.registration_user,u.session_reference,u.registration_valid,
  u.valid_until,($3::text[] IS NULL OR v.id=ANY($3)) AS sensitive,
  ($4::text[] IS NULL OR v.id=ANY($4)) AS ownership
- FROM visible v LEFT JOIN paired p ON v.id=ANY(p.devices)
+ FROM visible v LEFT JOIN paired p ON v.id=ANY(p.devices) LEFT JOIN mdm_devices.associations r ON r.tenant_id=$1::uuid AND r.id=p.id
  LEFT JOIN mdm_devices.asset_states a ON a.tenant_id=$1::uuid AND a.device=v.id
  LEFT JOIN mdm_access.directory_users u ON u.tenant_id=$1::uuid AND u.device=v.id
 ), matched AS (
  SELECT m.object_key,m.id,
- jsonb_path_match(jsonb_build_object('key',m.object_key,'status',m.status,'assetState',m.asset_state,
+ jsonb_path_match(jsonb_build_object('reference',jsonb_build_object('kind',CASE WHEN left(m.object_key,12)='association:' THEN 'association' ELSE 'endpoint' END,'id',substring(m.object_key FROM position(':' IN m.object_key)+1)),'association',m.association,'key',m.object_key,'status',m.status,'assetState',m.asset_state,
  'channel',jsonb_build_array(m.channel),
  'source',jsonb_build_array(m.source),
  'platform',jsonb_build_array(m.platform),

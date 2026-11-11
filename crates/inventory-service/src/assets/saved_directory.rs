@@ -85,3 +85,6 @@ pub struct Row {
     pub deleted: bool,
     pub definition: Option<SavedDefinition>,
 }
+
+/// Public model with every executable selector checked by this storage owner.
+pub fn execution() -> &'static rss_mdm_query::directory::Execution { BINDINGS.execution() }

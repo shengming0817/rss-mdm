@@ -178,7 +178,7 @@ pub struct Change {
     pub publication: rss_mdm_policy_postgres::device_access::Publication,
 }
 mod management;
-pub use management::{ConfigurationPage, CurrentConfiguration, DIRECTORY, DirectoryQuery, HISTORY};
+pub use management::{ConfigurationPage, CurrentConfiguration, DirectoryQuery, HISTORY};
 
 mod diagnostics;
 pub use diagnostics::Diagnostics;

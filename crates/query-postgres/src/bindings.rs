@@ -49,6 +49,14 @@ pub struct Bindings {
     non_null: BTreeSet<String>,
 }
 impl Bindings {
+    /// Compile a closed domain dispatch over every executable model selector.
+    /// Unlike a request-time closure, missing fields fail before the directory is exported.
+    pub fn mapped(schema: &'static Schema, resolve: fn(&str) -> Result<&'static str>) -> Result<Self> {
+        let columns = schema.fields().iter().filter(|f| f.filter || f.sort)
+            .map(|field| Ok((field.name.clone(), resolve(&field.name)?.to_owned())))
+            .collect::<Result<BTreeMap<_,_>>>()?;
+        Ok(Self { execution: Execution::bind(schema, columns.keys().map(String::as_str))?, columns, non_null: BTreeSet::new() })
+    }
     pub fn new(schema: &'static Schema, sources: &[Source]) -> Result<Self> {
         let mut names = BTreeSet::new();
         if sources.iter().any(|s| !names.insert(s.name())) {

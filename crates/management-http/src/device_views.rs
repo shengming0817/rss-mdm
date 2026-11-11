@@ -496,16 +496,12 @@ impl rss_mdm_http_contract::query::WindowOwner for ChangesQuery {
 
 struct AssociationListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for AssociationListQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_device_service::association_directory::SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_device_service::association_directory::BINDINGS.execution() }
 }
 
 struct DeviceDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for DeviceDirectoryQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_device_service::directory::SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { &rss_mdm_device_service::directory::EXECUTION }
     fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
         rss_mdm_device_service::directory::parse(raw)
     }
@@ -513,7 +509,5 @@ impl rss_mdm_http_contract::query::DirectoryOwner for DeviceDirectoryQuery {
 
 struct DeviceStatisticsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for DeviceStatisticsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_device_service::directory::SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { &rss_mdm_device_service::directory::EXECUTION }
 }

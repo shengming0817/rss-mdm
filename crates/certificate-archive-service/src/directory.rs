@@ -63,3 +63,6 @@ pub(crate) fn entry(r: &sqlx::postgres::PgRow) -> Result<crate::Entry, Error> {
         latest: crate::store::decode_version(r)?,
     })
 }
+
+/// Public model with every executable selector checked by this storage owner.
+pub fn execution() -> &'static rss_mdm_query::directory::Execution { BINDINGS.execution() }

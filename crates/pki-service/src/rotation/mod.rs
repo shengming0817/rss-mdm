@@ -11,26 +11,13 @@ use rss_mdm_device_trust::DeviceTrust;
 use rss_mdm_query::{
     Page,
     cursor::CursorCodec,
-    directory::{Field, Kind, Projection, Query, Schema},
+    directory::{Projection, Query, Schema},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
 
-pub static BLOCKERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "pki_rotation_blockers",
-    keys: &["kind", "id"],
-    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
-    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    fields: vec![
-        Field::scalar("kind", Kind::Text),
-        Field::scalar("id", Kind::Text),
-        Field::output("device"),
-        Field::output("state"),
-        Field::output("deadline"),
-        Field::output("revocationState"),
-    ],
-});
+pub static BLOCKERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema::derived::<Blocker>("pki_rotation_blockers", &["kind", "id"], rss_mdm_query::DEFAULT_PAGE_LIMIT, rss_mdm_query::MAX_PAGE_LIMIT, &[]).expect("Public directory model"));
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockerKind {
@@ -44,6 +31,7 @@ pub enum BlockerKind {
 #[serde(rename_all = "camelCase")]
 pub struct Blocker {
     pub kind: BlockerKind,
+    #[schemars(extend("x-rss-maxUtf8Bytes" = 1024))]
     pub id: String,
     pub device: Option<String>,
     pub state: String,
@@ -359,3 +347,10 @@ impl Registry {
         Ok(page)
     }
 }
+
+pub static BLOCKER_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> = std::sync::LazyLock::new(|| rss_mdm_query_postgres::Bindings::new(&BLOCKERS, &[rss_mdm_query_postgres::Source::column("kind", "kind COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("id", "id COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("device", "device COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("state", "state COLLATE \"C\""),
+rss_mdm_query_postgres::Source::column("deadline", "deadline"),
+rss_mdm_query_postgres::Source::column("revocationState", "revocation_state COLLATE \"C\"")]).expect("Complete public model storage binding"));

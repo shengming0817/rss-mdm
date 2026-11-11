@@ -401,9 +401,7 @@ async fn task_trust_observation(
 
 struct DirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for DirectoryQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &crate::execution::operations::SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { &crate::execution::operations::EXECUTION }
 }
 
 struct DdmQuery;
@@ -415,7 +413,5 @@ impl rss_mdm_http_contract::query::WindowOwner for DdmQuery {
 
 struct ExecutionStatisticsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ExecutionStatisticsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &crate::execution::operations::SCHEMA
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { &crate::execution::operations::EXECUTION }
 }

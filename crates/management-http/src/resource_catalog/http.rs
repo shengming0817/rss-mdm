@@ -214,9 +214,7 @@ async fn write(
 
 struct ResourceDirectory;
 impl rss_mdm_http_contract::query::DirectoryOwner for ResourceDirectory {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        rss_mdm_resource_service::directory::schema()
-    }
+    fn execution() -> &'static rss_mdm_query::directory::Execution { rss_mdm_resource_service::directory::execution() }
 }
 
 struct ResourceReferences;

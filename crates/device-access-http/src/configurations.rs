@@ -18,9 +18,20 @@ use rss_mdm_http_contract::{
 use std::sync::Arc;
 use uuid::Uuid;
 struct Directory;
-impl WindowOwner for Directory {
-    fn schema() -> &'static rss_mdm_query::window::Schema {
-        &config::DIRECTORY
+impl rss_mdm_http_contract::query::QueryOwner for Directory {
+    type Parsed = (rss_mdm_query::directory::Query,std::collections::BTreeMap<String,String>);
+    type Error = rss_mdm_query::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Directory(rss_mdm_http_contract::DirectoryDeclaration::list(rss_mdm_policy_postgres::device_access::DIRECTORY_BINDINGS.execution())))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let s=&rss_mdm_policy_postgres::device_access::DIRECTORY_SCHEMA;
+        let mut shape=rss_mdm_http_contract::query::directory_parameters(s.default_limit,s.max_limit);
+        shape.value["properties"]["device"]=serde_json::json!({"type":"string"}); shape
+    }
+    fn parse(raw:&str) -> rss_mdm_query::Result<Self::Parsed> {
+        let(parameters,context)=rss_mdm_query::Parameters::parse_with_context(raw,&["device"])?;
+        Ok((rss_mdm_query::directory::Query::new(&rss_mdm_policy_postgres::device_access::DIRECTORY_SCHEMA,parameters)?,context))
     }
 }
 struct Versions;
@@ -144,17 +155,13 @@ async fn current(
 async fn list(
     State(s): State<Arc<Services>>,
     Administrator(p): Administrator,
-    q: OwnedQuery<Window<Directory>>,
-) -> Result<CollectionResponse<Json<config::ConfigurationPage>>, BusinessError> {
+    q: OwnedQuery<Directory>,
+) -> Result<CollectionResponse<Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<rss_mdm_policy_postgres::device_access::Publication>>>>, BusinessError> {
     let (q, extra) = q.parse()?;
-    let input = config::DirectoryQuery {
-        cursor: q.cursor().clone(),
-        limit: Some(q.limit() as u16),
-    };
     Ok(CollectionResponse(Json(
         service(&s)?
             .service
-            .configurations(&p, extra.get("device").map(String::as_str), &input)
+            .configurations(&p, extra.get("device").map(String::as_str), &q)
             .await?,
     )))
 }

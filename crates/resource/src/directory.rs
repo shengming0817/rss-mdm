@@ -37,26 +37,13 @@ pub struct Record {
     pub presentation: Map<String, Value>,
 }
 /// Nested version metadata has its own query identity; the aggregate remains its sole owner.
-pub static VERSION_SCHEMA: std::sync::LazyLock<rss_mdm_query::directory::Schema> =
-    std::sync::LazyLock::new(|| rss_mdm_query::directory::Schema {
-        id: "software_versions",
-        keys: &["version"],
-        default_limit: 64,
-        max_limit: 1000,
-        fields: vec![
-            rss_mdm_query::directory::Field::scalar(
-                "version",
-                rss_mdm_query::directory::Kind::Text,
-            ),
-            rss_mdm_query::directory::Field::scalar(
-                "state",
-                rss_mdm_query::directory::Kind::enumeration(&[
-                    "frozen",
-                    "active",
-                    "deprecated",
-                    "archived",
-                ]),
-            ),
-            rss_mdm_query::directory::Field::output("resource"),
-        ],
-    });
+pub static VERSION_SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(||
+    Schema::derived::<VersionRow>("software_versions", &["version"], 64, 1000, &[]).expect("Resource version directory model")
+);
+/// Public version metadata; shared by the Resource store and software HTTP consumer.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct VersionRow {
+    pub resource: Id,
+    pub version: Id,
+    pub state: crate::State,
+}

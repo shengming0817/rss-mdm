@@ -128,6 +128,20 @@ impl Schema {
         field.sort = false;
         Ok(self)
     }
+    /// A computed subtree may filter after bounded qualification without a storage seek order.
+    pub fn no_sort(mut self, path: &str, reason: &'static str) -> Result<Self> {
+        let mut found = false;
+        if reason.trim().is_empty() { return Err(BuildError::Configuration); }
+        for field in &mut self.fields {
+            if field.name == path || field.name.strip_prefix(path).is_some_and(|s| s.starts_with('.')) {
+                found = true;
+                field.sort = false;
+                field.reason = Some(reason.into());
+            }
+        }
+        if !found { return Err(BuildError::Unsupported(path.into())); }
+        Ok(self)
+    }
 }
 
 struct Compiler<'a> {

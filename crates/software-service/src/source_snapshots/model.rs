@@ -36,6 +36,7 @@ pub struct Import {
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Snapshot {
+    #[schemars(with = "rss_mdm_resource::Id")]
     pub source: String,
     pub revision: i64,
     /// Digest of the received JSON value's UTF-8 bytes, without a claim of upstream authenticity.

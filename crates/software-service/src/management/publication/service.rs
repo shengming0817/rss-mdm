@@ -119,7 +119,7 @@ pub(super) fn view(
         }
         .to_owned()
     });
-    Ok(wire::Publication {
+    Ok(wire::Publication { summary: wire::PublicationSummary {
         id,
         revision: snapshot.revision,
         target,
@@ -141,7 +141,7 @@ pub(super) fn view(
         .into(),
         withdrawn: snapshot.withdrawn || withdrawal.is_some(),
         withdrawal,
-        document,
+        }, document,
     })
 }
 
