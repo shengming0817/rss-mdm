@@ -34,6 +34,7 @@ pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>) -> PgError {
         Fault::Storage(e) => {
             use rss_transactional_messaging::error::MessagingErrorKind;
             let reason = match e.kind() {
+                MessagingErrorKind::Transient => Error::Unavailable(Failure::PolicyTransient),
                 MessagingErrorKind::OwnershipLost | MessagingErrorKind::Conflict => Error::Conflict,
                 MessagingErrorKind::Permanent | MessagingErrorKind::Invariant => {
                     Error::Unavailable(Failure::PolicyStorage)
@@ -46,9 +47,9 @@ pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>) -> PgError {
             let reason = if e
                 .as_database_error()
                 .and_then(|e| e.code())
-                .is_some_and(|c| c == "40001" || c == "40P01")
+                .is_some_and(|c| matches!(c.as_ref(), "40001" | "40P01" | "55P03"))
             {
-                Error::Conflict
+                Error::Unavailable(Failure::PolicyTransient)
             } else {
                 Error::Unavailable(Failure::PolicyStorage)
             };

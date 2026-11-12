@@ -84,7 +84,7 @@ pub(crate) async fn resume(state: &Service) -> Result<(), Error> {
         if completed.contains_key(&step.key) {
             continue;
         }
-        let result = execute(state, &authority, tenant_id, step).await;
+        let result = execute_step(state, &authority, tenant_id, step).await;
         match result {
             Ok(receipt) => {
                 use sha2::{Digest, Sha256};
@@ -121,6 +121,34 @@ pub(crate) async fn resume(state: &Service) -> Result<(), Error> {
     .await
     .map_err(|_| Error::CommitUnknown)?;
     Ok(())
+}
+/// Retry only an acknowledged rolled-back transient step, retaining its original
+/// operation identity. The managed task's total deadline/cancellation bounds this
+/// continuation; no business transaction or resource lock spans the delay.
+async fn execute_step(
+    state: &Service,
+    authority: &rss_mdm_authorization_service::baseline::Authority,
+    tenant: Uuid,
+    step: &Step,
+) -> Result<Value, Error> {
+    let mut delay = std::time::Duration::from_millis(25);
+    loop {
+        match execute(state, authority, tenant, step).await {
+            Err(error) if retryable_step(&error) => {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_secs(1));
+            }
+            outcome => return outcome,
+        }
+    }
+}
+fn retryable_step(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Policy(rss_mdm_policy_service::Error::Unavailable(
+            rss_mdm_policy_service::Failure::PolicyTransient
+        ))
+    )
 }
 // Owner wrappers retain the semantic category at this orchestration boundary.
 fn blocked_reason(error: &Error) -> &'static str {
@@ -527,5 +555,26 @@ mod tests {
             ),
             "outcome_unknown"
         );
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    #[test]
+    fn only_confirmed_rollback_transients_retry_the_original_step() {
+        use rss_mdm_policy_service::{Error as P, Failure as F};
+        assert!(retryable_step(&Error::Policy(P::Unavailable(
+            F::PolicyTransient
+        ))));
+        for error in [
+            P::Conflict,
+            P::CommitUnknown,
+            P::RollbackFailed,
+            P::Unavailable(F::PolicyStorage),
+            P::Forbidden,
+        ] {
+            assert!(!retryable_step(&Error::Policy(error)));
+        }
     }
 }

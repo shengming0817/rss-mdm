@@ -57,7 +57,7 @@ pub(super) fn error(e: rss_mdm_policy_service::Error) -> rss_mdm_device_service:
             F::PreparationContract => Failure::NativeInputIntegrity,
             F::SoftwareIntegrity => Failure::SoftwareCatalogInvariant,
             F::PolicyAdmission => Failure::PlanningAdmission,
-            F::PolicyStorage => Failure::PlanningStorage,
+            F::PolicyStorage | F::PolicyTransient => Failure::PlanningStorage,
             F::AutomationConnection => Failure::AutomationConnection,
             F::AutomationAdmission => Failure::AutomationAdmission,
             F::AutomationStorage => Failure::AutomationStorage,

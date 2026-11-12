@@ -12,6 +12,8 @@ pub enum Failure {
     AutomationConnection,
     AutomationAdmission,
     PolicyStorage,
+    /// A retryable provider failure after confirmed transaction rollback.
+    PolicyTransient,
     AutomationStorage,
 
     RequestDeadline,

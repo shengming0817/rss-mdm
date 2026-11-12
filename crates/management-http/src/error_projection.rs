@@ -566,7 +566,9 @@ impl From<rss_mdm_policy_service::Error> for Error {
                 F::Capacity => Self::Unavailable(Failure::Capacity),
                 F::SoftwareIntegrity => Self::Unavailable(Failure::SoftwareCatalogInvariant),
                 F::PolicyAdmission => Self::Unavailable(Failure::PlanningAdmission),
-                F::PolicyStorage => Self::Unavailable(Failure::PlanningStorage),
+                F::PolicyStorage | F::PolicyTransient => {
+                    Self::Unavailable(Failure::PlanningStorage)
+                }
                 F::AutomationConnection => Self::Unavailable(Failure::AutomationConnection),
                 F::AutomationAdmission => Self::Unavailable(Failure::AutomationAdmission),
                 F::AutomationStorage => Self::Unavailable(Failure::AutomationStorage),
