@@ -143,7 +143,10 @@ impl Transactions {
             .await?;
         }
         if transition.command.version() != previous {
-            service.changes.configuration_progressed_in(tx, std::slice::from_ref(&op.device)).await?;
+            service
+                .changes
+                .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
+                .await?;
         }
         let withdrawal_received = transition.command.status() == dc::Status::Received
             && matches!(&op.request.task,Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Declarations{declarations,..}} if declarations.is_empty());
@@ -299,7 +302,10 @@ async fn complete_ddm(
         return Err(Error::Conflict.into());
     }
     if transition.command.version() != previous {
-        service.changes.configuration_progressed_in(tx, std::slice::from_ref(&op.device)).await?;
+        service
+            .changes
+            .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
+            .await?;
     }
     service
         .wake_devices_in(tx, std::slice::from_ref(&op.device))

@@ -30,16 +30,28 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         lease: std::time::Duration,
         control: &rss_reconcile::Control<'_, T>,
     ) -> Result<rss_reconcile::ClaimBatch<Self::Claim>, rss_reconcile::Error> {
-        if self.0.readiness.health().inputs == Some(rss_mdm_recovery_observation::Phase::Initializing) {
+        if self.0.readiness.health().inputs
+            == Some(rss_mdm_recovery_observation::Phase::Initializing)
+        {
             let suspended = crate::control::transaction::inspect(
                 &self.0.transactions.runtime,
                 self.0.transactions.tenant,
                 (),
-                |_, tx| Box::pin(async move {
-                    crate::control::source_changes::health_in(tx).await.map(|(_, _, suspended)| suspended)
-                }),
-            ).await.map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
-            self.0.readiness.inputs(if suspended { Err(ErrorKind::Transient) } else { Ok(()) });
+                |_, tx| {
+                    Box::pin(async move {
+                        crate::control::source_changes::health_in(tx)
+                            .await
+                            .map(|(_, _, suspended)| suspended)
+                    })
+                },
+            )
+            .await
+            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+            self.0.readiness.inputs(if suspended {
+                Err(ErrorKind::Transient)
+            } else {
+                Ok(())
+            });
         }
         rss_mdm_recovery_observation::ObservedStore::new(&self.0.reconcile, &self.0.readiness)
             .claim_due(scope, limit, lease, control)

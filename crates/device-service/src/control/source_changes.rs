@@ -428,7 +428,18 @@ pub async fn wake_in(
     store: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
-    store.wake_in(tx, &target(tx.tenant_id()), &rss_reconcile::ResourceSet::empty(tx.tenant_id()), (), |_, tx| {
-        Box::pin(crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::CommandRecovery))
-    }).await
+    store
+        .wake_in(
+            tx,
+            &target(tx.tenant_id()),
+            &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+            (),
+            |_, tx| {
+                Box::pin(crate::control::worker_wake::notify_in(
+                    tx,
+                    crate::control::worker_wake::Work::CommandRecovery,
+                ))
+            },
+        )
+        .await
 }

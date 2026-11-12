@@ -449,7 +449,9 @@ impl DurableStore for DeviceWork {
         }
         let result = self.schedule.claim_due(scope, limit, lease, c).await;
         if result.is_ok() {
-            self.owner.worker_observed.store(true, std::sync::atomic::Ordering::Release);
+            self.owner
+                .worker_observed
+                .store(true, std::sync::atomic::Ordering::Release);
         }
         if result.is_ok()
             && let Ok(mut failures) = self.owner.worker_failures.lock()
@@ -517,8 +519,11 @@ pub async fn wake_inputs_in(
     tx: &mut PgTransaction<'_>,
 ) -> Result<(), PgError> {
     let tenant = tx.tenant_id();
-    let target = Target::new(Scope::new(tenant, "mdm.devices").expect("Device scope"), "inputs")
-        .expect("Device inputs");
+    let target = Target::new(
+        Scope::new(tenant, "mdm.devices").expect("Device scope"),
+        "inputs",
+    )
+    .expect("Device inputs");
     store.wake_in(tx, &target, &ResourceSet::empty(tenant), (), |_, tx| Box::pin(async move {
         tx.with_connection(|c| Box::pin(async move {
             sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'devices')").execute(c).await?;

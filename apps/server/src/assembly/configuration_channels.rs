@@ -122,10 +122,17 @@ fn windows_frame(
 impl Channels for ConfigurationChannels {
     fn verify_access<'a>(&'a self, c: &'a mut PgConnection) -> Pending<'a, ()> {
         Box::pin(async move {
-            let policy: bool = sqlx::query_scalar("SELECT current_user='mdm_policy_runtime'").fetch_one(&mut *c).await.map_err(|_| Error::Unavailable(Failure::Database))?;
+            let policy: bool = sqlx::query_scalar("SELECT current_user='mdm_policy_runtime'")
+                .fetch_one(&mut *c)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::Database))?;
             if policy {
-                rss_mdm_apple_channel::flow_store::verify_policy_access_on(c).await.map_err(|_| Error::Unavailable(Failure::Database))?;
-                rss_mdm_recovery_credentials::native::storage::verify_policy_access_on(c).await.map_err(|_| Error::Unavailable(Failure::Database))?;
+                rss_mdm_apple_channel::flow_store::verify_policy_access_on(c)
+                    .await
+                    .map_err(|_| Error::Unavailable(Failure::Database))?;
+                rss_mdm_recovery_credentials::native::storage::verify_policy_access_on(c)
+                    .await
+                    .map_err(|_| Error::Unavailable(Failure::Database))?;
             }
             Ok(())
         })
@@ -433,9 +440,11 @@ pub(super) async fn operation_permissions(
                     .permissions()?
             }
             super::native_ownership::Owner::Recovery => {
-                rss_mdm_recovery_credentials::native::storage::required_permissions_on(c, tenant, protection, id)
-                    .await
-                    .map_err(|_| Error::Unavailable(Failure::Database))?
+                rss_mdm_recovery_credentials::native::storage::required_permissions_on(
+                    c, tenant, protection, id,
+                )
+                .await
+                .map_err(|_| Error::Unavailable(Failure::Database))?
             }
             super::native_ownership::Owner::Device => {
                 rss_mdm_device_service::control::storage::load_on(c, tenant, protection, id)

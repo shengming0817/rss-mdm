@@ -89,8 +89,8 @@ impl ObjectReader for PlanningObjects {
                 .bind(tenant.to_string()).bind(after).bind(through).bind(limit as i64).fetch_all(c).await?;
             Ok(rows
                 .into_iter()
-                .map(
-                    |(position, object, old_devices, new_devices, kind)| Ok(ObjectChange {
+                .map(|(position, object, old_devices, new_devices, kind)| {
+                    Ok(ObjectChange {
                         kind: match kind.as_str() {
                             "asset_invalidated" => ObjectChangeKind::AssetInvalidated,
                             "identity_changed" => ObjectChangeKind::IdentityChanged,
@@ -100,8 +100,8 @@ impl ObjectReader for PlanningObjects {
                         object,
                         old_devices,
                         new_devices,
-                    }),
-                )
+                    })
+                })
                 .collect::<Result<Vec<_>, sqlx::Error>>()?)
         })
     }

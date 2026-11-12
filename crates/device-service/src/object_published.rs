@@ -14,11 +14,17 @@ pub struct ObjectPublished {
 }
 impl ObjectPublished {
     pub fn message_id(&self) -> String {
-        format!("object.published.v1:{}:{}", self.history_epoch, self.snapshot_id)
+        format!(
+            "object.published.v1:{}:{}",
+            self.history_epoch, self.snapshot_id
+        )
     }
     pub fn valid(&self) -> bool {
-        self.v == 1 && !self.tenant.is_nil() && !self.history_epoch.is_nil()
-            && !self.snapshot_id.is_nil() && self.through > 0
+        self.v == 1
+            && !self.tenant.is_nil()
+            && !self.history_epoch.is_nil()
+            && !self.snapshot_id.is_nil()
+            && self.through > 0
     }
 }
 
@@ -27,7 +33,13 @@ mod tests {
     use super::*;
     #[test]
     fn publication_identity_and_complete_watermark_are_required() {
-        let mut event = ObjectPublished { v: 1, tenant: Uuid::from_u128(1), history_epoch: Uuid::from_u128(2), snapshot_id: Uuid::from_u128(3), through: 1 };
+        let mut event = ObjectPublished {
+            v: 1,
+            tenant: Uuid::from_u128(1),
+            history_epoch: Uuid::from_u128(2),
+            snapshot_id: Uuid::from_u128(3),
+            through: 1,
+        };
         assert!(event.valid());
         let id = event.message_id();
         event.snapshot_id = Uuid::from_u128(4);

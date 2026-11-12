@@ -759,8 +759,13 @@ impl Store {
 
 /// Admit Policy's borrowed configuration access without granting protocol evidence writes.
 pub async fn verify_policy_access_on(c: &mut PgConnection) -> Result<(), sqlx::Error> {
-    if !sqlx::query_scalar::<_, bool>(include_str!("configuration-access.sql")).fetch_one(c).await? {
-        return Err(sqlx::Error::Protocol("Apple configuration access rejected".into()));
+    if !sqlx::query_scalar::<_, bool>(include_str!("configuration-access.sql"))
+        .fetch_one(c)
+        .await?
+    {
+        return Err(sqlx::Error::Protocol(
+            "Apple configuration access rejected".into(),
+        ));
     }
     Ok(())
 }

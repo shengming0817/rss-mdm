@@ -210,7 +210,10 @@ pub enum ObjectChangeKind {
 }
 impl ObjectChangeKind {
     pub fn as_str(self) -> &'static str {
-        match self { Self::AssetInvalidated => "asset_invalidated", Self::IdentityChanged => "identity_changed" }
+        match self {
+            Self::AssetInvalidated => "asset_invalidated",
+            Self::IdentityChanged => "identity_changed",
+        }
     }
 }
 

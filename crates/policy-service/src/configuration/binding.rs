@@ -59,9 +59,16 @@ impl Transactions {
                             })
                         })
                         .await?;
-                    tx.with_connection(move |c| Box::pin(async move {
-                        access.verify_access(c).await.map_err(|_| sqlx::Error::Protocol("configuration channel access rejected".into()))
-                    })).await?;
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            access.verify_access(c).await.map_err(|_| {
+                                sqlx::Error::Protocol(
+                                    "configuration channel access rejected".into(),
+                                )
+                            })
+                        })
+                    })
+                    .await?;
                     if !admitted {
                         return Err(sqlx::Error::Protocol(
                             "configuration participant admission".into(),
