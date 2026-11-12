@@ -166,7 +166,7 @@ pub(super) async fn scope(c: &Context, groups: &[Uuid]) -> Result<Uuid> {
     .await?;
     sqlx::query("INSERT INTO mdm_scope.scope_versions(tenant_id,id,revision,definition) VALUES($1::uuid,$2,1,$3)").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(definition)?).execute(&mut *tx).await?;
     for group in groups {
-        sqlx::query("INSERT INTO mdm_scope.scope_sources(tenant_id,scope,kind,target) VALUES($1::uuid,$2,'group',$3)").bind(c.tenant.to_string()).bind(id).bind(group.to_string()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_scope.scope_sources(tenant_id,scope,kind,target) VALUES($1::uuid,$2,'group',$3)").bind(c.tenant.to_string()).bind(id).bind(group).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(id)

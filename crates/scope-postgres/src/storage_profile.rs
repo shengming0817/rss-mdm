@@ -361,9 +361,9 @@ GRANT UPDATE(phase) ON TABLE "###, $schema, "scope_runs TO ", $scope_runtime, r#
 
 GRANT UPDATE(source_index) ON TABLE "###, $schema, "scope_runs TO ", $scope_runtime, r###";
 
-GRANT UPDATE(source_cursor) ON TABLE "###, $schema, "scope_runs TO ", $scope_runtime, r###";
+GRANT UPDATE(source_cursor_kind,source_cursor) ON TABLE "###, $schema, "scope_runs TO ", $scope_runtime, r###";
 
-GRANT UPDATE(evaluation_cursor) ON TABLE "###, $schema, "scope_runs TO ", $scope_runtime, r###";
+GRANT UPDATE(evaluation_cursor_kind,evaluation_cursor) ON TABLE "###, $schema, "scope_runs TO ", $scope_runtime, r###";
 
 GRANT UPDATE(object_count) ON TABLE "###, $schema, "scope_runs TO ", $scope_runtime, r###";
 
@@ -610,7 +610,7 @@ SELECT s.id,s.revision,s.policy_id,s.stage_id,
  ARRAY(SELECT role FROM (VALUES ('target',v.definition->'targets'),('limitation',v.definition->'limitations'),('exclusion',v.definition->'exclusions')) roles(role,entries)
  WHERE EXISTS(SELECT FROM jsonb_array_elements(coalesce(nullif(entries,'null'::jsonb),'[]'::jsonb)) e WHERE e->>'kind'='group' AND (e->>'id')::uuid=$2::uuid)) AS roles
 FROM "#, $schema, "scope_sources e JOIN ", $schema, "scopes s ON(s.tenant_id,s.id)=(e.tenant_id,e.scope) JOIN ", $schema, r#"scope_versions v ON(v.tenant_id,v.id,v.revision)=(s.tenant_id,s.id,s.revision)
-WHERE e.tenant_id=$1::uuid AND e.kind='group' AND e.target=$2::uuid::text AND NOT s.deleted
+WHERE e.tenant_id=$1::uuid AND e.kind='group' AND e.target=$2::uuid AND NOT s.deleted
 "#),
                 group_reference_facts: concat!(r###"
 SELECT s.tenant_id,s.id,s.policy_id,s.stage_id,s.revision,s.deleted,s.resolution,s.resolution_revision,s.calculation_revision,

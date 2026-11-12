@@ -37,7 +37,7 @@ macro_rules! define_storage {
                 bindings_announcement_1: concat!("SELECT announcement FROM ", $bindings, " WHERE tenant_id = CAST($1 AS uuid) AND device = $2"),
                 bindings_announce_1: concat!("UPDATE ", $bindings, " SET announcement = $3 WHERE tenant_id = CAST($1 AS uuid) AND device = $2"),
                 bindings_bindings_1: concat!("SELECT device, platform, architecture, capabilities, execution_context FROM ", $bindings, " WHERE tenant_id = CAST($1 AS uuid) AND device = ANY($2) AND wire_version = 1"),
-                bindings_bind_agent_in_1: concat!("INSERT INTO ", $bindings, " (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), CAST($2 AS text), 1, $3, $4, $5, $6)"),
+                bindings_bind_agent_in_1: concat!("INSERT INTO ", $bindings, " (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), $2, 1, $3, $4, $5, $6)"),
                 delivery_payload_1: concat!("SELECT coalesce(permit,offer) FROM ", $task_attempts, " WHERE tenant_id=$1::uuid AND run=$2 AND id=$3"),
                 delivery_replay_1: concat!("SELECT fingerprint, response FROM ", $task_receipts, " WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND id = $3"),
                 delivery_receipt_1: concat!("INSERT INTO ", $task_receipts, " (tenant_id, device, id, fingerprint, response) VALUES (CAST($1 AS uuid), $2, $3, $4, $5)"),

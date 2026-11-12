@@ -517,7 +517,7 @@ async fn device_observations(
             .field(key)?
             .canonical_value(rss_mdm_inventory::Scalar::String((*value).into()))?;
         sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,1,2,'known',$9,$11,$10,1,'{\"kind\":\"device\"}')")
-            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(&scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field).bind(serde_json::to_string(&value)?).bind(&batch).bind(registration.to_string()).bind(epoch.to_string()).bind(source.as_str()).execute(&mut *tx).await?;
+            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(&scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(field).bind(serde_json::to_string(&value)?).bind(&batch).bind(registration.into_uuid()).bind(epoch.to_string()).bind(source.as_str()).execute(&mut *tx).await?;
     }
     let fields = observations
         .iter()

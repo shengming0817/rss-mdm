@@ -77,7 +77,14 @@ macro_rules! policy_admission {
                 ($policies, &["tenant_id", "id"]),
                 (
                     $assignments,
-                    &["tenant_id", "policy", "version", "object", "channel"],
+                    &[
+                        "tenant_id",
+                        "policy",
+                        "version",
+                        "object_kind",
+                        "object_id",
+                        "channel",
+                    ],
                 ),
                 ($event_batches, &["tenant_id", "actor", "request"]),
                 ($event_members, &["tenant_id", "id"]),

@@ -291,7 +291,7 @@ async fn os_fact(c: &Context, registration: rss_mdm_agent_wire::DeviceId) -> Res
     let projection = rss_mdm_inventory_postgres::projection_scope(c.tenant);
     let at = time::OffsetDateTime::now_utc().unix_timestamp();
     sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$9,'known',$10,'mdm.windows',$11,$12,$13)")
-        .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(&Scalar::String("Windows".into()))?).bind(Uuid::new_v4().to_string()).bind(at).bind(registration.to_string()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(&Scalar::String("Windows".into()))?).bind(Uuid::new_v4().to_string()).bind(at).bind(registration.into_uuid()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }

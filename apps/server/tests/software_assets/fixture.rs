@@ -372,7 +372,7 @@ pub(super) async fn facts_for(
             (Some(serde_json::to_string(&value)?), None)
         };
         sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,value_version,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'known',$11,$15,$12,$13,$14) ON CONFLICT(tenant_id,journal,generation,scope,field,field_scope) DO UPDATE SET value=excluded.value,value_version=excluded.value_version,batch_id=excluded.batch_id,observed_at=excluded.observed_at,received_at=excluded.received_at,collection_sequence=excluded.collection_sequence,state='known'")
-            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key).bind(scalar).bind(version).bind(Uuid::new_v4().to_string()).bind(now).bind(registration.to_string()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).bind(source.as_str()).execute(&mut *tx).await?;
+            .bind(c.tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key).bind(scalar).bind(version).bind(Uuid::new_v4().to_string()).bind(now).bind(registration.into_uuid()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).bind(source.as_str()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())

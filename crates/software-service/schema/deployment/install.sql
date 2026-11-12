@@ -373,7 +373,7 @@ BEGIN
  RETURN NEW;
 END;$$;
 CREATE FUNCTION mdm_software_deployment.advance_software_bindings() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
-DECLARE t uuid; d text; v bigint;
+DECLARE t uuid; d uuid; v bigint;
 BEGIN
  IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
  t=coalesce(NEW.tenant_id,OLD.tenant_id);
