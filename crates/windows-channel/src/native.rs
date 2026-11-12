@@ -312,10 +312,10 @@ async fn receive_capabilities(
     history: &s::Expected,
 ) -> std::result::Result<(), Error> {
     let tenant = p.tenant().to_string();
-    let reg = p.device().to_string();
+    let reg = p.device().into_uuid();
     let session = i64::from(message.header.session_id);
     let query=sqlx::query("SELECT request, version_command, edition_command, os_version, edition, version_status, edition_status FROM mdm_windows.capability_queries WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3) AND capability_queries.protocol_epoch = $4")
- .bind(&tenant).bind(&reg).bind(session).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
+ .bind(&tenant).bind(reg).bind(session).bind(p.epoch()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(row) = query {
         let ids = [
             row.try_get::<i64, _>("version_command").map_err(db)? as u32,
@@ -370,7 +370,7 @@ async fn receive_capabilities(
                 consumed.insert((sent.header.message_id, *id));
             }
             sqlx::query("UPDATE mdm_windows.capability_queries SET os_version = $4, edition = $5, version_status = $6, edition_status = $7 WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND session = $3) AND capability_queries.protocol_epoch = $8")
-   .bind(&tenant).bind(&reg).bind(session).bind(&values[0]).bind(&values[1]).bind(statuses[0]).bind(statuses[1]).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
+   .bind(&tenant).bind(reg).bind(session).bind(&values[0]).bind(&values[1]).bind(statuses[0]).bind(statuses[1]).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
             if statuses
                 .iter()
                 .all(|status| matches!(status, Some(200 | 214)))
@@ -384,9 +384,9 @@ async fn receive_capabilities(
                 )
                 .is_ok()
             {
-                let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS (SELECT 1 FROM mdm_windows.capabilities WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND os_version = $3 AND edition = $4) AND capabilities.protocol_epoch = $5)").bind(&tenant).bind(&reg).bind(version).bind(edition as i32).bind(p.epoch()).fetch_one(&mut *c).await.map_err(db)?;
+                let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS (SELECT 1 FROM mdm_windows.capabilities WHERE (tenant_id = CAST($1 AS uuid) AND device = $2 AND os_version = $3 AND edition = $4) AND capabilities.protocol_epoch = $5)").bind(&tenant).bind(reg).bind(version).bind(edition as i32).bind(p.epoch()).fetch_one(&mut *c).await.map_err(db)?;
                 sqlx::query("INSERT INTO mdm_windows.capabilities(tenant_id,device,protocol_epoch,os_version,edition,session,observed_at) VALUES($1::uuid,$2,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint) ON CONFLICT(tenant_id,device,protocol_epoch) DO UPDATE SET os_version=excluded.os_version,edition=excluded.edition,session=excluded.session,observed_at=excluded.observed_at")
-    .bind(&tenant).bind(&reg).bind(p.epoch()).bind(version).bind(edition as i32).bind(session).execute(&mut *c).await.map_err(db)?;
+    .bind(&tenant).bind(reg).bind(p.epoch()).bind(version).bind(edition as i32).bind(session).execute(&mut *c).await.map_err(db)?;
                 if changed {
                     source.wake_configuration(c, p).await?;
                 }
