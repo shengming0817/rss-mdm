@@ -68,7 +68,7 @@ async fn collides(
 ) -> Result<bool, Error> {
     let mut after = Uuid::nil();
     loop {
-        let rows=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND device = $4 AND retired_at IS NULL AND identifier <> $5 AND manifest IS NOT NULL AND operation > $6 ORDER BY operation LIMIT 32")
+        let rows=sqlx::query("SELECT tenant_id,operation,device,user_key,identifier,profile,version,present,manifest,manifest_digest,manifest_cipher_digest FROM mdm_apple.profiles WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND device = $4 AND retired_at IS NULL AND identifier <> $5 AND manifest IS NOT NULL AND operation > $6 ORDER BY operation LIMIT 32")
             .bind(&target.tenant).bind(&target.device).bind(user).bind(&target.device).bind(root).bind(after).fetch_all(&mut *c).await.map_err(db)?;
         if rows.is_empty() {
             return Ok(false);

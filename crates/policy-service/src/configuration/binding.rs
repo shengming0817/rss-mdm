@@ -30,6 +30,7 @@ impl Transactions {
         }
         let caller = runtime.clone();
         let audit = audit_store.clone();
+        let access = channels.clone();
         let fingerprint_id = protection.fingerprint_id().to_owned();
         let (outbox, store) = runtime
             .local_tx(tenant, deadline(), move |tx| {
@@ -58,6 +59,9 @@ impl Transactions {
                             })
                         })
                         .await?;
+                    tx.with_connection(move |c| Box::pin(async move {
+                        access.verify_access(c).await.map_err(|_| sqlx::Error::Protocol("configuration channel access rejected".into()))
+                    })).await?;
                     if !admitted {
                         return Err(sqlx::Error::Protocol(
                             "configuration participant admission".into(),

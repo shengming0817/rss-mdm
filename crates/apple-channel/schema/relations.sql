@@ -116,3 +116,13 @@ GRANT SELECT (tenant_id, device, user_key, state)
 GRANT UPDATE(request) ON mdm_apple.attempts TO mdm_command_runtime;
 
 GRANT UPDATE(verification,verification_evidence) ON mdm_apple.profiles TO mdm_access,mdm_command_runtime;
+
+-- Policy borrows its own transaction for configuration reads and Profile reservation.
+GRANT SELECT(tenant_id,operation,device,user_key,owner,retired_at,snapshot)
+ ON mdm_apple.declarations TO mdm_policy_runtime;
+GRANT SELECT(tenant_id,operation,device,user_key,identifier,profile,version,present,
+ manifest,manifest_digest,manifest_cipher_digest,dispatched_at,observed_at,retired_at)
+ ON mdm_apple.profiles TO mdm_policy_runtime;
+GRANT INSERT(tenant_id,operation,device,user_key,identifier,profile,version,present)
+ ON mdm_apple.profiles TO mdm_policy_runtime;
+GRANT UPDATE(retired_at) ON mdm_apple.profiles TO mdm_policy_runtime;
