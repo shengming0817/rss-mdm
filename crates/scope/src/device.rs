@@ -21,9 +21,9 @@ pub enum Membership {
     Failed,
 }
 /// A single-device slice of the scope algebra. No collection of devices is needed.
-pub struct DeviceInput {
+pub struct ObjectInput {
     /// Tenant-scoped device being considered.
-    pub device: DeviceId,
+    pub device: ScopedObjectId,
     /// All target sources, including confirmed nonmatches.
     pub targets: Vec<SourceMembership>,
     /// None is unrestricted; Some([]) deliberately allows no devices.
@@ -35,7 +35,7 @@ pub struct DeviceInput {
 /// Resolve one device using target union, optional limitation union and exclusions.
 /// Every supplied source is checked, including sources that do not match the device.
 /// The caller enumerates candidates from sealed target sets and owns page completeness.
-pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, ScopeError> {
+pub fn resolve_object(input: &ObjectInput) -> Result<Option<MemberExplanation>, ScopeError> {
     let limits = input.limitations.as_deref().unwrap_or_default();
     if input
         .targets
@@ -119,7 +119,7 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
 }
 
 pub(crate) fn explanation(
-    object: DeviceId,
+    object: ScopedObjectId,
     targets: BTreeSet<SourceRef>,
     limitations: BTreeSet<SourceRef>,
     exclusions: BTreeSet<SourceRef>,

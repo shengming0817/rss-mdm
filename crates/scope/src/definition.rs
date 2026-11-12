@@ -18,7 +18,7 @@ use uuid::Uuid;
 pub enum Reference {
     /// Direct device identity.
     #[schemars(description = "")]
-    Device(String),
+    Device(rss_mdm_agent_wire::DeviceId),
     /// Group definition identity.
     #[schemars(description = "")]
     Group(Uuid),
