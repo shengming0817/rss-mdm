@@ -105,7 +105,10 @@ async fn next_command(
             .get("Queries")
             .and_then(plist::Value::as_array)
             .is_some_and(|a| a.iter().any(|v| v.as_string() == Some("SerialNumber")));
-        if kind == wanted && (wanted != "DeviceInformation" || template) {
+        if kind == wanted
+            && wanted != "InstallProfile"
+            && (wanted != "DeviceInformation" || template)
+        {
             return Ok(packet);
         }
         let id = packet
@@ -142,6 +145,15 @@ async fn next_command(
                 let result = child.wait_with_output().await?;
                 assert!(result.status.success());
                 let profile = plist::Value::from_reader(std::io::Cursor::new(result.stdout))?;
+                if wanted == "InstallProfile"
+                    && profile
+                        .as_dictionary()
+                        .and_then(|v| v.get("PayloadIdentifier"))
+                        .and_then(plist::Value::as_string)
+                        == Some("org.example.policy.firewall")
+                {
+                    return Ok(packet);
+                }
                 profiles.push(profile);
             }
             "ProfileList" => {
@@ -168,11 +180,36 @@ async fn next_command(
     }
     anyhow::bail!("Apple prerequisites did not complete for {wanted}")
 }
+async fn policy_worker(
+    a: &Fixture,
+    app: Arc<rss_mdm_policy_service::application::Application>,
+) -> Result<Arc<rss_mdm_policy_service::worker::PolicyWork>> {
+    let resources = &a.resources;
+    let materials = Arc::new(crate::assembly::policy::EventInputs {
+        source: resources.source.clone(),
+        protection: resources.protection.clone(),
+        instance: resources.config.identity.instance_id.clone(),
+    });
+    let events = crate::assembly::policy::events(
+        app.clone(),
+        materials,
+        a.software.materials.clone(),
+        a.registration.materials.clone(),
+        Vec::new(),
+    )
+    .await?;
+    Ok(rss_mdm_policy_service::worker::PolicyWork::new(
+        app,
+        events,
+        resources.storage.reconcile.clone(),
+    ))
+}
 async fn reconcile(
     c: &Context,
     owner: &crate::owner_storage::OwnerRuntime,
     cfg: &Arc<rss_mdm_policy_service::configuration::Transactions>,
     device: &str,
+    worker: &rss_mdm_policy_service::worker::PolicyWork,
 ) -> Result<()> {
     for pass in 0..3 {
         let audit = audit(c);
@@ -186,17 +223,14 @@ async fn reconcile(
             |ctx, tx| {
                 Box::pin(async move {
                     ctx.3.prepare_in(tx, ctx.2, &[]).await?;
-                    ctx.0.wake_devices_in(tx, &[ctx.1.to_owned()]).await?;
-                    ctx.0.reconcile_in(tx, ctx.1, ctx.2).await.map_err(|error| {
-                        eprintln!("configuration reconciliation failed: {error:?}");
-                        error
-                    })
+                    ctx.0.wake_devices_in(tx, &[ctx.1.to_owned()]).await
                 })
             },
         )
         .await
         .map_err(|e| anyhow::anyhow!("configuration reconcile pass {pass}: {e:?}"))?;
         audit.finalize(None);
+        crate::policy_configuration_t2::step(worker, c.tenant, device).await?;
         let timer = rss_mdm_policy_service::clock::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
@@ -219,7 +253,8 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     let n = identity::seed(&c, "apple").await?;
     let key = crate::device_material_support::protection(&c)?;
     let (apple, p) = support::apple(&c, &n, key.clone(), &[]).await?;
-    let scope = planning::published(&c, &object(&n.device)?).await?.scope;
+    let published = planning::published(&c, &object(&n.device)?).await?;
+    let scope = published.scope;
     let declaration = DeclarationInput {
         identifier: "policy-subscriptions".into(),
         declaration_type: "com.apple.configuration.management.status-subscriptions".into(),
@@ -258,6 +293,8 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     )
     .await?;
     let cfg = app.configuration.as_ref().unwrap();
+    // This fixture enters at the published configuration target; Scope assignment
+    // publication is covered by the planning owner tests.
     let mut seed = command::seed_transaction(&c).await?;
     sqlx::query(
         "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2)",
@@ -269,9 +306,11 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     seed.commit().await?;
     let a = Fixture::open(&c, false).await?;
     let d = delivery(&c, &a).await?;
-    let first = Uuid::new_v4();
-    let second = Uuid::new_v4();
-    for (policy, initial) in [(first, true), (second, false)] {
+    let worker = policy_worker(&a, app.clone()).await?;
+    let first = published.policy;
+    let other = planning::published(&c, &object(&n.device)?).await?;
+    let second = other.policy;
+    for (policy, scope, initial) in [(first, scope, true), (second, other.scope, false)] {
         let version = Uuid::new_v4();
         let frozen = Frozen::Configuration {
             native: Protected::seal(&key, c.tenant, Owner::Policy { policy, version }, &native)?,
@@ -280,7 +319,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
             resource_digest: [1; 32],
         };
         persist_policy(&c,policy,version,json!({"scope":scope,"action":{"resource":{"id":"policy-apple-test","version":"1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"configuration","exit":"remove"}}),serde_json::to_value(frozen)?).await?;
-        reconcile(&c, &owner, cfg, &n.device).await?;
+        reconcile(&c, &owner, cfg, &n.device, &worker).await?;
         if initial {
             let packet = next_command(&d, &apple, &p, &c, "DeclarativeManagement").await?;
             assert_eq!(
@@ -307,6 +346,29 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
             .unwrap()
             .is_empty()
     );
+    let configurations = initial["Declarations"]["Configurations"]
+        .as_array()
+        .unwrap();
+    let status = json!({"FullReport":true,"Errors":[],"StatusItems":{"management":{"declarations":{
+        "activations":[],"configurations":configurations.iter().map(|v| json!({
+            "identifier":v["Identifier"],"server-token":v["ServerToken"],"active":true,"valid":"valid"
+        })).collect::<Vec<_>>(),"assets":[],"management":[]
+    }}}});
+    let mut report = plist::Dictionary::new();
+    report.insert("MessageType".into(), "DeclarativeManagement".into());
+    report.insert("UDID".into(), n.device.clone().into());
+    report.insert("Endpoint".into(), "status".into());
+    report.insert(
+        "Data".into(),
+        plist::Value::Data(serde_json::to_vec(&status)?),
+    );
+    let exchange = rss_mdm_apple_channel::ddm::prepare(apple.clone(), &report, None)?;
+    let reply = d
+        .ddm(&p, exchange, &audit(&c))
+        .await
+        .map_err(|e| anyhow::anyhow!("DDM synchronization {e:?}"))?;
+    assert_eq!(reply.synchronized.len(), 1);
+    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
     let commands: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid",
     )
@@ -317,7 +379,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm_policy.policies SET state='disabled',revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(first).execute(&mut *tx).await?;
     tx.commit().await?;
-    reconcile(&c, &owner, cfg, &n.device).await?;
+    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
     assert_eq!(manifest(&d, &apple, &p, &c).await?, initial);
     let commands: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid",
@@ -329,7 +391,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     let mut tx = command::seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm_policy.policies SET state='disabled',revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(second).execute(&mut *tx).await?;
     tx.commit().await?;
-    reconcile(&c, &owner, cfg, &n.device).await?;
+    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
     let packet = next_command(&d, &apple, &p, &c, "DeclarativeManagement").await?;
     assert_eq!(
         packet
@@ -354,6 +416,7 @@ async fn ddm_policy_coowners_share_publication_and_only_last_exit_withdraws() ->
     );
     let status:String=sqlx::query_scalar("SELECT d.status FROM mdm_apple.attempts a JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(a.tenant_id,a.operation::text) WHERE a.tenant_id=$1::uuid AND a.id=$2").bind(c.tenant.to_string()).bind(attempt).fetch_one(&c.operator).await?;
     assert_eq!(status, "received");
+    drop(worker);
     drop(d);
     Fixture::close(a).await?;
     drop(app);
@@ -377,7 +440,8 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     let n = identity::seed(&c, "apple").await?;
     let key = crate::device_material_support::protection(&c)?;
     let (apple, p) = support::apple(&c, &n, key.clone(), &[]).await?;
-    let scope = planning::published(&c, &object(&n.device)?).await?.scope;
+    let published = planning::published(&c, &object(&n.device)?).await?;
+    let scope = published.scope;
     let profile = ProfileInput {
         identifier: "org.example.policy.firewall".into(),
         uuid: Uuid::new_v4(),
@@ -401,7 +465,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
         remove: None,
     };
     native.validate()?;
-    let policy = Uuid::new_v4();
+    let policy = published.policy;
     let version = Uuid::new_v4();
     let frozen = Frozen::Configuration {
         native: Protected::seal(&key, c.tenant, Owner::Policy { policy, version }, &native)?,
@@ -421,9 +485,21 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     )
     .await?;
     let cfg = app.configuration.as_ref().unwrap();
+    // This fixture enters at the published configuration target; Scope assignment
+    // publication is covered by the planning owner tests.
+    let mut seed = command::seed_transaction(&c).await?;
+    sqlx::query(
+        "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2)",
+    )
+    .bind(c.tenant.to_string())
+    .bind(&n.device)
+    .execute(&mut *seed)
+    .await?;
+    seed.commit().await?;
     let a = Fixture::open(&c, false).await?;
     let d = delivery(&c, &a).await?;
-    reconcile(&c, &owner, cfg, &n.device).await?;
+    let worker = policy_worker(&a, app.clone()).await?;
+    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
     let packet = next_command(&d, &apple, &p, &c, "InstallProfile").await?;
     let payload = packet["Command"].as_dictionary().unwrap()["Payload"]
         .as_data()
@@ -457,7 +533,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     report.insert("CommandUUID".into(), query["CommandUUID"].clone());
     report.insert("ProfileList".into(), plist::Value::Array(vec![manifest]));
     plist_send(&d, &apple, &p, &c, report).await?;
-    reconcile(&c, &owner, cfg, &n.device).await?;
+    reconcile(&c, &owner, cfg, &n.device, &worker).await?;
     let observed: (i64,bool) = sqlx::query_as("SELECT count(*),bool_and(observed_at IS NOT NULL) FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND identifier='org.example.policy.firewall'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(observed, (1, true));
     let pool = c.inputs.pool("shared", "mdm_policy_runtime").await?;
@@ -476,6 +552,7 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     }
     pool.close().await;
 
+    drop(worker);
     drop(d);
     Fixture::close(a).await?;
     drop(app);
