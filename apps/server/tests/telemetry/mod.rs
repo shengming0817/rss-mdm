@@ -447,13 +447,15 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         "live revoke"
     );
     drop(http);
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query(
         "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(c.tenant.to_string())
     .bind(principal.credential())
-    .execute(&c.operator)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     anyhow::ensure!(
         matches!(
             service.gap_status(&principal, gap.report_id).await,
