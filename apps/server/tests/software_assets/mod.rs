@@ -671,9 +671,21 @@ async fn aggregate_complete_results_and_revalidate_inputs() -> Result<()> {
         response(&first_evidence)["coordinates"],
         response(&next_evidence)["coordinates"]
     );
-    assert_ne!(
-        response(&first_evidence)["items"][0]["ordinal"],
-        response(&next_evidence)["items"][0]["ordinal"]
+    assert_eq!(
+        response(&first_evidence)["items"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        response(&next_evidence)["items"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        response(&first_evidence)["items"][0],
+        response(&evidence)["items"][0]
+    );
+    assert_eq!(
+        response(&next_evidence)["items"][0],
+        response(&evidence)["items"][1]
     );
     let filtered = query(
         &c,

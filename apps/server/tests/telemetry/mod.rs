@@ -212,12 +212,14 @@ fn validator(path: &str) -> jsonschema::Validator {
 #[ignore = "T2: actual HTTPS query handlers preserve exact samples and reopened PG summaries under current tenant/device grants"]
 async fn exact_integer_queries_and_live_authorization() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
-    let fixture = Fixture::open(&c).await?;
-    let result = exercise(&c, &fixture).await;
-    let cleanup = fixture.close(&c).await;
+    let result = async {
+        let fixture = Fixture::open(&c).await?;
+        let result = exercise(&c, &fixture).await;
+        fixture::with_cleanup(result, fixture.close(&c).await)
+    }
+    .await;
     c.close().await;
-    result?;
-    cleanup
+    result
 }
 async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     let (device, grant) = materials::seed_registration(c).await?;
@@ -260,7 +262,10 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let mut input = query(&device, field);
         input["maxPoints"] = json!(1);
         let first = http.post("/telemetry/history", input.clone()).await?;
-        anyhow::ensure!(h.is_valid(&first), "history schema");
+        anyhow::ensure!(
+            h.is_valid(&first) && first["rows"].as_array().is_some_and(|r| r.len() == 1),
+            "first history page"
+        );
         anyhow::ensure!(
             first["rows"][0]["sample"]["reading"]["value"]["value"]["value"] == n.to_string(),
             "exact reading"
@@ -270,7 +275,9 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
         let second = http.post("/telemetry/history", input).await?;
         anyhow::ensure!(
             h.is_valid(&second)
-                && first["rows"][0]["sample"]["id"] != second["rows"][0]["sample"]["id"],
+                && second["rows"].as_array().is_some_and(|r| r.len() == 1)
+                && first["rows"][0]["sample"]["id"] == format!("{field}-0")
+                && second["rows"][0]["sample"]["id"] == format!("{field}-1"),
             "fixed continuation"
         );
         let mut latest = query(&device, field);

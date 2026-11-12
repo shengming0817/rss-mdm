@@ -53,33 +53,37 @@ impl Fixture {
             database,
             roles,
         };
-        // Names are generated solely from fixed prefixes and UUID hex; no external SQL input.
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-            "CREATE DATABASE {}",
-            fixture.database
-        )))
-        .execute(&c.operator)
-        .await?;
-        let result = crate::installation::providers::telemetry::prepare(
-            crate::installation::providers::telemetry::Request {
-                operation_id: Uuid::new_v4(),
-                directory: fixture.directory.path().join("installation"),
-                tenant: c.tenant.to_string(),
-                configuration: fixture.config.clone(),
-                administrator,
-                owner: fixture.roles[0].clone(),
-                partitions: vec![crate::installation::providers::telemetry::Partition {
-                    start_micros: 0,
-                    end_micros: 10_000_000,
-                }],
-                clickhouse: None,
-            },
-        )
-        .await
-        .context("install telemetry provider");
+        let result = async {
+            // Names are fixed prefixes plus UUID hex; no external SQL input.
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "CREATE DATABASE {}",
+                fixture.database
+            )))
+            .execute(&c.operator)
+            .await
+            .with_context(|| format!("create telemetry database {}", fixture.database))?;
+            crate::installation::providers::telemetry::prepare(
+                crate::installation::providers::telemetry::Request {
+                    operation_id: Uuid::new_v4(),
+                    directory: fixture.directory.path().join("installation"),
+                    tenant: c.tenant.to_string(),
+                    configuration: fixture.config.clone(),
+                    administrator,
+                    owner: fixture.roles[0].clone(),
+                    partitions: vec![crate::installation::providers::telemetry::Partition {
+                        start_micros: 0,
+                        end_micros: 10_000_000,
+                    }],
+                    clickhouse: None,
+                },
+            )
+            .await
+            .context("install telemetry provider")?;
+            Ok(())
+        }
+        .await;
         if let Err(error) = result {
-            fixture.close(c).await?;
-            return Err(error);
+            return with_cleanup(Err(error), fixture.close(c).await);
         }
         Ok(fixture)
     }
@@ -128,18 +132,42 @@ impl Fixture {
     }
     pub async fn close(self, c: &Context) -> Result<()> {
         self.owner.runtime.close().await;
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        let mut failures = Vec::new();
+        if let Err(error) = sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "DROP DATABASE IF EXISTS {} WITH (FORCE)",
             self.database
         )))
         .execute(&c.operator)
-        .await?;
-        for role in self.roles.iter().rev() {
-            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP ROLE IF EXISTS {role}")))
-                .execute(&c.operator)
-                .await?;
+        .await
+        {
+            failures.push(format!("database {}: {error}", self.database));
         }
+        for role in self.roles.iter().rev() {
+            if let Err(error) =
+                sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP ROLE IF EXISTS {role}")))
+                    .execute(&c.operator)
+                    .await
+            {
+                failures.push(format!("role {role}: {error}"));
+            }
+        }
+        anyhow::ensure!(
+            failures.is_empty(),
+            "telemetry cleanup: {}",
+            failures.join("; ")
+        );
         Ok(())
+    }
+}
+/// Retain both failures when the scenario and its cleanup fail together.
+pub(super) fn with_cleanup<T>(result: Result<T>, cleanup: Result<()>) -> Result<T> {
+    match (result, cleanup) {
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("cleanup also failed: {cleanup:#}")))
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
     }
 }
 /// Explicit fixture operator authority, bound to this tenant's provider data only.
