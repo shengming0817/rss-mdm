@@ -643,10 +643,9 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
         "idle baseline has no pending configuration command"
     );
     wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_scope.scopes s JOIN mdm_policy.work w ON(w.tenant_id,w.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND w.started AND w.completed)",scope).await?;
-    // Startup's completed transactions must publish their cumulative PG statistics
-    // before the idle baseline; pg_stat_clear_snapshot only affects this reader.
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let idle_before = cost_sample(&c).await?;
+    // Wait for asynchronous publication tails and PG's cumulative statistics.
+    // A momentarily empty input queue does not establish an idle baseline.
+    let idle_before = settled_cost_sample(&c).await?;
     tokio::time::sleep(Duration::from_secs(25)).await;
     let idle_after = cost_sample(&c).await?;
     let changed_before = cost_sample(&c).await?;
@@ -1573,6 +1572,28 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     Ok(())
 }
 
+async fn settled_cost_sample(c: &Context) -> Result<serde_json::Value> {
+    let cutoff = tokio::time::Instant::now() + Duration::from_secs(40);
+    let mut previous = cost_sample(c).await?;
+    let mut stable = 0;
+    while tokio::time::Instant::now() < cutoff {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let current = cost_sample(c).await?;
+        if ["mdm.asset_changes", "mdm.asset_epochs"]
+            .iter()
+            .all(|table| current["tables"][table]["scans"] == previous["tables"][table]["scans"])
+        {
+            stable += 1;
+            if stable == 4 {
+                return Ok(current);
+            }
+        } else {
+            stable = 0;
+        }
+        previous = current;
+    }
+    anyhow::bail!("startup asset reads did not settle before idle sampling")
+}
 // Observational evidence, not a latency SLO. Run this owner serially for isolated counters.
 async fn cost_sample(c: &Context) -> Result<serde_json::Value> {
     sqlx::query("SELECT pg_stat_clear_snapshot()")
