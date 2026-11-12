@@ -87,6 +87,12 @@ impl Http {
         let tls = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![cert], key)?;
+        let client = reqwest::Client::builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
+                directory.join("ca.crt"),
+            )?)?)
+            .timeout(Duration::from_secs(15))
+            .build()?;
         let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let base = format!("https://localhost:{}", tcp.local_addr()?.port());
         let task = tokio::spawn(async move {
@@ -100,12 +106,6 @@ impl Http {
             .await
             .unwrap();
         });
-        let client = reqwest::Client::builder()
-            .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
-                directory.join("ca.crt"),
-            )?)?)
-            .timeout(Duration::from_secs(15))
-            .build()?;
         Ok(Self { task, base, client })
     }
     pub async fn call(
