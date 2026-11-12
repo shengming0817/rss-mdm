@@ -2,6 +2,7 @@
 use super::*;
 use crate::{asset_inputs, local_delivery, worker_wake};
 use rss_mdm_install_support::StorageProfile;
+use rss_reconcile::Timer as _;
 use rss_transactional_messaging::{message::*, policy::OperationDeadline};
 use rss_transactional_messaging_postgres::{PgConsumerEffect, PgRuntime};
 use sha2::{Digest, Sha256};
@@ -649,9 +650,10 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     tokio::time::sleep(Duration::from_secs(25)).await;
     let idle_after = cost_sample(&c).await?;
     let changed_before = cost_sample(&c).await?;
-    let changed_started = tokio::time::Instant::now();
+    let timer = rss_mdm_policy_service::clock::Timer::new();
+    let changed_started = timer.now();
     inventory(&c, &device.members[0].device, &definition, true).await?;
-    let committed = tokio::time::Instant::now();
+    let committed = timer.now();
     wait_sql(
         &c,
         "SELECT member_count=1 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
@@ -663,8 +665,10 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2 AND started AND completed AND failure IS NULL) AND EXISTS(SELECT FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND gateway_accepted)",run).await?;
     let policy_scheduled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.work w JOIN rss_reconcile.targets t ON t.tenant_id=w.tenant_id AND t.entity='job:'||w.id::text AND t.reconciler='mdm.policy' WHERE w.tenant_id=$1::uuid AND w.id=$2 AND w.started AND w.completed)").bind(c.tenant.to_string()).bind(run).fetch_one(&c.operator).await?;
     assert!(policy_scheduled);
-    let commit_to_operation_ms = committed.elapsed().as_millis();
-    tokio::time::sleep_until(changed_started + Duration::from_secs(25)).await;
+    let commit_to_operation_ms = (timer.now() - committed).as_millis();
+    timer
+        .sleep_until(changed_started + Duration::from_secs(25))
+        .await;
     let changed_after = cost_sample(&c).await?;
     wait_sql(&c,"SELECT NOT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND ((reconciler IN('mdm.groups','mdm.scopes','mdm.compliance','mdm.devices','mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs') OR (reconciler='mdm.policy' AND entity='configuration-inputs')) AND next_run IS NOT NULL) AND EXISTS(SELECT FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 AND resolution IS NOT NULL)",scope).await?;
     let before:Vec<(String,i64)>=sqlx::query_as("SELECT reconciler,wake_version FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND ((reconciler IN('mdm.groups','mdm.scopes','mdm.compliance','mdm.devices','mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs') OR (reconciler='mdm.policy' AND entity='configuration-inputs')) ORDER BY reconciler").bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
@@ -767,7 +771,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     .execute(&mut *change)
     .await?;
     change.commit().await?;
-    let offline_commit = tokio::time::Instant::now();
+    let offline_commit = timer.now();
     let workers = Workers::start_policy(&c, &owners, scopes, Some(&policy_fixture)).await?;
     settled(&c).await?;
     let (new_run, matched):(Uuid,bool)=sqlx::query_as("SELECT s.resolution,coalesce(bool_or(r.matched) FILTER(WHERE r.channel='mdm'),false) FROM mdm_scope.scopes s LEFT JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 GROUP BY s.resolution").bind(c.tenant.to_string()).bind(scope).fetch_one(&c.operator).await?;
@@ -776,7 +780,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
         "revoked credential must remove MDM qualification after recovery"
     );
     assert_ne!(new_run, run);
-    let evidence = json!({"tenant":c.tenant.to_string(),"windowSeconds":25,"deviceMode":"controlled protocol fixtures; no real device effect claim","serverMode":"host test process with production owner workers","changed":{"before":changed_before,"after":changed_after},"idle":{"before":idle_before,"after":idle_after},"commitToConfigurationOperationMs":commit_to_operation_ms,"offlineCommitToRestartedProjectionMs":offline_commit.elapsed().as_millis()});
+    let evidence = json!({"tenant":c.tenant.to_string(),"windowSeconds":25,"deviceMode":"controlled protocol fixtures; no real device effect claim","serverMode":"host test process with production owner workers","changed":{"before":changed_before,"after":changed_after},"idle":{"before":idle_before,"after":idle_after},"commitToConfigurationOperationMs":commit_to_operation_ms,"offlineCommitToRestartedProjectionMs":(timer.now() - offline_commit).as_millis()});
     let out =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/lifecycle-metrics");
     std::fs::create_dir_all(&out)?;
@@ -1573,10 +1577,11 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
 }
 
 async fn settled_cost_sample(c: &Context) -> Result<serde_json::Value> {
-    let cutoff = tokio::time::Instant::now() + Duration::from_secs(40);
+    let timer = rss_mdm_policy_service::clock::Timer::new();
+    let cutoff = timer.now() + Duration::from_secs(40);
     let mut previous = cost_sample(c).await?;
     let mut stable = 0;
-    while tokio::time::Instant::now() < cutoff {
+    while timer.now() < cutoff {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let current = cost_sample(c).await?;
         if ["mdm.asset_changes", "mdm.asset_epochs"]
