@@ -195,14 +195,14 @@ pub async fn agent_versions_in(
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).tasks_policy_agent_versions_in_1)
                     .bind(&tenant)
-                    .bind(registration.to_string())
+                    .bind(registration.into_uuid())
                     .execute(&mut *c)
                     .await?;
                 let after = sqlx::query_scalar::<_, Option<Uuid>>(
                     crate::storage_profile::sql(profile).tasks_policy_agent_versions_in_2,
                 )
                 .bind(&tenant)
-                .bind(registration.to_string())
+                .bind(registration.into_uuid())
                 .fetch_one(&mut *c)
                 .await?;
                 let rows = sqlx::query(
@@ -222,7 +222,7 @@ pub async fn agent_versions_in(
                 };
                 sqlx::query(crate::storage_profile::sql(profile).tasks_policy_agent_versions_in_4)
                     .bind(tenant)
-                    .bind(registration.to_string())
+                    .bind(registration.into_uuid())
                     .bind(next)
                     .execute(c)
                     .await?;

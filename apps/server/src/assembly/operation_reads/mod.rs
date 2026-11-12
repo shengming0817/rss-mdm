@@ -41,10 +41,10 @@ fn query_error(e: rss_mdm_query::Error) -> Error {
 fn column(name: &str) -> rss_mdm_query::Result<&'static str> {
     use ExecutionColumn::*;
     Ok(match execution_column(name)? {
-        Id => "id::text COLLATE \"C\"",
+        Id => "id",
         Kind => "kind COLLATE \"C\"",
         Device => "device",
-        Policy => "policy::text COLLATE \"C\"",
+        Policy => "policy",
         Status => "status COLLATE \"C\"",
         Origin => "source_kind COLLATE \"C\"",
         Deadline => "deadline",

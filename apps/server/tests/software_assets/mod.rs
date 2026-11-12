@@ -130,7 +130,7 @@ async fn missing_mapping_source_is_unknown_until_its_complete_empty_list() -> Re
         .context("software bucket")?;
     let evidence = http
         .get(&format!(
-            "/software-asset-queries/{task}/software/{bucket}/devices/endpoint:{}/evidence?limit=1",
+            "/software-asset-queries/{task}/software/{bucket}/devices/endpoint/{}/evidence?limit=1",
             a.members[0].device
         ))
         .await?;

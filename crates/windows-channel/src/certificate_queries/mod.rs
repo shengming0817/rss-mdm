@@ -108,7 +108,7 @@ fn append_context(
         .push_bind(tenant.to_owned())
         .push("::uuid AS tenant,")
         .push_bind(device.into_uuid())
-        .push("::text AS device")
+        .push("::uuid AS device")
         .push(HISTORY);
 }
 fn sql(tenant: &str, device: &rss_mdm_agent_wire::DeviceId) -> sqlx::QueryBuilder<sqlx::Postgres> {

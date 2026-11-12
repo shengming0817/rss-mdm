@@ -128,7 +128,7 @@ impl ScopeBinding {
                         crate::storage_profile::sql(profile).lib_group_change_page_in_2,
                     )
                     .bind(tenant)
-                    .bind(group.to_string())
+                    .bind(group)
                     .bind(cursor)
                     .fetch_all(c)
                     .await

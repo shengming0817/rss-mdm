@@ -610,7 +610,7 @@ async fn save(
         "challenge"
     };
     if session.stored.is_none() {
-        sqlx::query("INSERT INTO mdm_access.management_sessions (tenant_id, device, session_id, credential, state, last_message, client_authenticated, nonce, expires_at, run_id, login_user, protocol_epoch) VALUES (CAST($1 AS uuid), CAST($2 AS text), $3, $4, $5, $6, $7, $8, clock_timestamp() + CAST('15 minutes' AS interval), $9, $10, $11)")
+        sqlx::query("INSERT INTO mdm_access.management_sessions (tenant_id, device, session_id, credential, state, last_message, client_authenticated, nonce, expires_at, run_id, login_user, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, clock_timestamp() + CAST('15 minutes' AS interval), $9, $10, $11)")
             .bind(&tenant).bind(registration.into_uuid()).bind(&sid).bind(p.credential()).bind(state).bind(mid)
             .bind(session.client_authenticated).bind(&session.server.nonce).bind(session.run_id).bind(session.login_user).bind(p.epoch()).execute(&mut *c).await.map_err(db)?;
         notify(c).await.map_err(db)?;
@@ -628,7 +628,7 @@ async fn save(
         PackageState::Complete => "complete",
         PackageState::Aborted => "aborted",
     };
-    sqlx::query("INSERT INTO mdm_access.management_messages (tenant_id, device, session_id, message_id, digest, response, request, package_state, authenticated, protocol_epoch) VALUES (CAST($1 AS uuid), CAST($2 AS text), $3, $4, $5, $6, $7, $8, $9, $10)")
+    sqlx::query("INSERT INTO mdm_access.management_messages (tenant_id, device, session_id, message_id, digest, response, request, package_state, authenticated, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10)")
         .bind(&tenant).bind(registration.into_uuid()).bind(&sid).bind(mid).bind(session.digest).bind(reply).bind(incoming).bind(status).bind(session.authenticated).bind(p.epoch())
         .execute(c).await.map_err(db)?;
     Ok(Reply {

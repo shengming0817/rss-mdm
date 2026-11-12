@@ -39,7 +39,7 @@ static GROUP_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
         Bindings::new(
             &GROUPS,
             &[
-                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("id", "(row->>'id')::uuid"),
                 Source::column("revision", "(row->>'revision')::bigint"),
                 Source::column("deleted", "(row->>'deleted')::boolean"),
                 Source::column("name", "(row->>'name') COLLATE \"C\""),
@@ -69,7 +69,7 @@ static KEY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
         Bindings::new(
             &KEYS,
             &[
-                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("id", "(row->>'id')::uuid"),
                 Source::column("revision", "(row->>'revision')::bigint"),
                 Source::column("authorityRevision", "(row->>'authorityRevision')::bigint"),
                 Source::column("credentialRevision", "(row->>'credentialRevision')::bigint"),

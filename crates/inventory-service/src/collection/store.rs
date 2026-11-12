@@ -145,7 +145,11 @@ pub async fn start_in(
     sqlx::query(crate::storage_profile::sql(profile).collection_store_start_in_1)
         .bind(scope.tenant().to_string())
         .bind(id.to_string())
-        .bind(scope.registration().as_str())
+        .bind(
+            rss_mdm_agent_wire::DeviceId::parse(scope.registration().as_str())
+                .map_err(|_| Error::Malformed)?
+                .into_uuid(),
+        )
         .bind(scope.source().as_str())
         .bind(scope.epoch().as_str())
         .bind(scope.encode().map_err(|_| corrupt())?)
@@ -319,7 +323,11 @@ pub async fn agent_report_in(
 ) -> Result<Option<(DurableReport, i64)>, Error> {
     let row = sqlx::query(crate::storage_profile::sql(profile).collection_store_agent_report_in_1)
         .bind(scope.tenant().to_string())
-        .bind(scope.registration().as_str())
+        .bind(
+            rss_mdm_agent_wire::DeviceId::parse(scope.registration().as_str())
+                .map_err(|_| Error::Malformed)?
+                .into_uuid(),
+        )
         .bind(scope.source().as_str())
         .bind(scope.epoch().as_str())
         .bind(id.to_string())
@@ -342,7 +350,11 @@ pub async fn collection(
     let mut tx = database.begin(&scope.tenant().to_string()).await?;
     let row = sqlx::query(crate::storage_profile::sql(profile).collection_store_collection_1)
         .bind(scope.tenant().to_string())
-        .bind(scope.registration().as_str())
+        .bind(
+            rss_mdm_agent_wire::DeviceId::parse(scope.registration().as_str())
+                .map_err(|_| Error::Malformed)?
+                .into_uuid(),
+        )
         .bind(scope.source().as_str())
         .bind(scope.epoch().as_str())
         .bind(id.map(|v| v.to_string()))

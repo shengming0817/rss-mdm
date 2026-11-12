@@ -201,7 +201,7 @@ SELECT session_user=current_user
                 storage_access_unbound_in_2: concat!("UPDATE ", $versions, " SET validity='revoked',invalidated_at=coalesce(invalidated_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1 AND entry=$2 AND NOT pending"),
                 storage_access_unbound_in_3: concat!("UPDATE ", $entries, " SET current_version=NULL WHERE tenant_id=$1 AND id=$2 AND NOT EXISTS(SELECT 1 FROM ", $versions, " WHERE tenant_id=$1 AND entry=$2 AND pending)"),
                 storage_replace_native_coordinates_in_1: concat!("UPDATE ", $schema, "native_actions SET coordinates=$3 WHERE tenant_id=$1 AND operation=$2 AND action IN('collect_filevault','rotate_filevault')"),
-                tasks_policy_agent_versions_in_1: concat!("INSERT INTO ", $tasks_agent_admission, " (tenant_id, device) VALUES (CAST($1 AS uuid), CAST($2 AS text)) ON CONFLICT DO NOTHING"),
+                tasks_policy_agent_versions_in_1: concat!("INSERT INTO ", $tasks_agent_admission, " (tenant_id, device) VALUES (CAST($1 AS uuid), $2) ON CONFLICT DO NOTHING"),
                 tasks_policy_agent_versions_in_2: concat!("SELECT policy_after FROM ", $tasks_agent_admission, " WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE"),
                 tasks_policy_agent_versions_in_3: concat!("SELECT id,current_version FROM ", $policy_policies, " WHERE tenant_id=$1::uuid AND (state='enabled') AND definition->'action'->>'kind' =ANY($3) AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 64"),
                 tasks_policy_agent_versions_in_4: concat!("UPDATE ", $tasks_agent_admission, " SET policy_after = $3 WHERE tenant_id = CAST($1 AS uuid) AND device = $2"),

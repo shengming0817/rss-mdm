@@ -446,7 +446,7 @@ pub async fn attempt(
     apple: &Apple,
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
 ) -> Result<PgRow, Error> {
-    let row=sqlx::query("SELECT state, configuration, spki, fingerprint, authorization_version, transaction_id, csr_digest, CAST(device AS text) FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND enrollment = CAST($3 AS uuid) AND issuer = $4 FOR UPDATE")
+    let row=sqlx::query("SELECT state, configuration, spki, fingerprint, authorization_version, transaction_id, csr_digest, device FROM mdm_apple.scep_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND enrollment = CAST($3 AS uuid) AND issuer = $4 FOR UPDATE")
         .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.enrollment().to_string()).bind(leaf.issuer().as_slice()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if !matches!(
         row.try_get::<String, _>("state").map_err(db)?.as_str(),

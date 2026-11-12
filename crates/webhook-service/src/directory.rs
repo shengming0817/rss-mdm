@@ -15,7 +15,7 @@ static SUBSCRIPTION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindin
         Bindings::new(
             &SUBSCRIPTIONS,
             &[
-                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("id", "(row->>'id')::uuid"),
                 Source::column("revision", "(row->>'revision')::bigint"),
                 Source::column("targetVersion", "(row->>'targetVersion')::bigint"),
                 Source::column("enabled", "(row->>'enabled')::boolean"),

@@ -31,7 +31,7 @@ pub static SOURCES: &[rss_mdm_query_postgres::Source] = &[
     Source::column("versionId", "current_version"),
     Source::column("state", "state COLLATE \"C\""),
     Source::column("action", "(definition->'action'->>'kind') COLLATE \"C\""),
-    Source::column("scope", "(definition->>'scope') COLLATE \"C\""),
+    Source::column("scope", "(definition->>'scope')::uuid"),
     Source::column(
         "resource",
         "(definition->'action'->'resource'->>'id') COLLATE \"C\"",

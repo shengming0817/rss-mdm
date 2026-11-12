@@ -27,7 +27,7 @@ static PROFILE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
         Bindings::new(
             &PROFILES,
             &[
-                Source::column("id", "(row->>'id') COLLATE \"C\""),
+                Source::column("id", "(row->>'id')::uuid"),
                 Source::column("revision", "(row->>'revision')::bigint"),
                 Source::column("remoteUuid", "(row->>'remoteUuid') COLLATE \"C\""),
                 Source::json("configuration", "row->'configuration'"),

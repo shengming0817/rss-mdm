@@ -37,7 +37,7 @@ impl AssetService {
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,device),|ctx,tx|Box::pin(async move{
             let(s,p,device)=*ctx;
             query_authority(tx,p).await?.require(p,rss_mdm_authorization_service::Permission::InventoryRead,Some(device))?;
-            let tenant=s.tenant.to_string();let device_key=device.to_string();
+            let tenant=s.tenant.to_string();let device_key=device.into_uuid();
             let row=tx.with_connection(move|c|Box::pin(async move{
                 sqlx::query("SELECT c.started_at, c.sealed_at, c.result FROM mdm_access.collection_runs AS c INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (c.tenant_id, c.device) WHERE c.tenant_id = CAST($1 AS uuid) AND c.id = $2 AND r.id = $3")
                     .bind(tenant).bind(id).bind(device_key).fetch_optional(c).await
