@@ -77,7 +77,7 @@ pub async fn authority(c: &Context) -> Result<()> {
     runtime.rollback().await?;
     // Function metadata drift must reject the same real runtime before it can expose work.
     let mut altered = c.operator.begin().await?;
-    sqlx::query("ALTER FUNCTION rss_da.asset_sources_at(text[],jsonb) SET search_path TO public")
+    sqlx::query("ALTER FUNCTION rss_da.asset_sources_at(uuid[],jsonb) SET search_path TO public")
         .execute(&mut *altered)
         .await?;
     sqlx::query("SET LOCAL ROLE da_access")

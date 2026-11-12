@@ -152,7 +152,7 @@ CREATE TABLE mdm_devices.control_operations (
                                                             WHEN CAST('policy' AS text)
                                                               THEN authority ->> CAST('kind' AS text) = 'retirement'
                                                                AND authority ->> CAST('tenant' AS text) = CAST(tenant_id AS text)
-                                                               AND authority ->> CAST('device' AS text) = device
+                                                               AND (authority ->> 'device')::uuid = device
                                                                AND authority ->> CAST('version' AS text) = CAST(policy_version AS text)
                                                             ELSE CAST(NULL AS boolean)
                                                           END

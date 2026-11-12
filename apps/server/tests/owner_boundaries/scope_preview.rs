@@ -595,6 +595,7 @@ async fn uuid_object_pages_preserve_kind_and_tenant() -> Result<()> {
     let c = Context::open("shared", &[foreign]).await?;
     let endpoint = planning::endpoint(&c).await?;
     let published = planning::published(&c, &endpoint).await?;
+    let foreign_cut = rss_mdm_inventory_postgres::capture_asset_cut(&c.operator, foreign).await?;
     let snapshot = Uuid::new_v4();
     let low = DeviceId::try_from(Uuid::from_u128(1))?;
     let high = DeviceId::try_from(Uuid::from_u128(u128::MAX))?;
@@ -616,6 +617,31 @@ async fn uuid_object_pages_preserve_kind_and_tenant() -> Result<()> {
         sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object_kind,object_id,revision,input,devices) VALUES($1::uuid,$2,$3,1,$4,$5)")
             .bind(c.tenant.to_string()).bind(object.kind()).bind(object.uuid()).bind(serde_json::to_value(input)?).bind(vec![low.into_uuid(),high.into_uuid()]).execute(&mut *tx).await?;
     }
+    // The same snapshot and object UUIDs exist in both tenants, with distinct content.
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(foreign.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)")
+        .bind(foreign.to_string()).bind(snapshot).bind(foreign_cut.to_json()).execute(&mut *tx).await?;
+    let foreign_objects = [
+        ObjectRef::Endpoint(low),
+        ObjectRef::Association(high.into_uuid()),
+    ];
+    for object in foreign_objects {
+        let input = DeviceObject {
+            object,
+            association_version: None,
+            verified: true,
+            members: vec![],
+        };
+        sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object_kind,object_id,revision,input,devices) VALUES($1::uuid,$2,$3,1,$4,$5)")
+            .bind(foreign.to_string()).bind(object.kind()).bind(object.uuid()).bind(serde_json::to_value(input)?).bind(vec![high.into_uuid()]).execute(&mut *tx).await?;
+    }
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(c.tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
     expected.sort();
     let reader = rss_mdm_device_service::planning::PlanningObjects;
     let mut actual = Vec::new();
@@ -628,6 +654,10 @@ async fn uuid_object_pages_preserve_kind_and_tenant() -> Result<()> {
             break;
         }
         assert_eq!(page.len(), 1);
+        assert!(
+            !page[0].verified,
+            "foreign object content leaked into this tenant"
+        );
         after = Some(page[0].object);
         actual.push(page[0].object);
         assert!(actual.len() <= expected.len(), "continuation must advance");
@@ -650,9 +680,13 @@ async fn uuid_object_pages_preserve_kind_and_tenant() -> Result<()> {
     let foreign_page = reader
         .page(&mut tx, foreign, snapshot, None, 3, None)
         .await?;
+    assert_eq!(
+        foreign_page.iter().map(|v| v.object).collect::<Vec<_>>(),
+        foreign_objects
+    );
     assert!(
-        foreign_page.is_empty(),
-        "the same snapshot/object UUID cannot cross tenants"
+        foreign_page.iter().all(|v| v.verified),
+        "original tenant content leaked into the foreign snapshot"
     );
     tx.rollback().await?;
     c.close().await;

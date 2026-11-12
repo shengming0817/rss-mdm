@@ -79,6 +79,24 @@ async fn live_view_and_fixed_list_keep_distinct_read_semantics() -> Result<()> {
         assign(&c,&b,field,1,vec![9],proof.principal_id()).await?;
         let second:Value=serde_json::to_value(service.list_items(&proof,&reference,field,next,2,&personnel).await?)?;
         assert_eq!(second["items"],json!([{"kind":"integer","value":3}]));
+        for sort in ["reference.id", "-reference.id", "-reference.kind,reference.id"] {
+            let mut ids = Vec::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let mut parameters = url::form_urlencoded::Serializer::new(String::new());
+                parameters.append_pair("sort", sort).append_pair("limit", "1");
+                if let Some(token) = &cursor { parameters.append_pair("cursor", token); }
+                let query = rss_mdm_device_service::directory::parse(&parameters.finish())?;
+                let page: Value = serde_json::to_value(service.views(&proof, &query, &personnel).await?)?;
+                ids.extend(page["items"].as_array().unwrap().iter().map(|v| v["reference"]["id"].as_str().unwrap().to_owned()));
+                assert!(ids.len() <= 2, "directory seek repeated a UUID");
+                cursor = page["nextCursor"].as_str().map(str::to_owned);
+                if cursor.is_none() { break; }
+            }
+            let mut expected = [a,b]; expected.sort();
+            if sort == "-reference.id" { expected.reverse(); }
+            assert_eq!(ids, expected.map(|id| id.to_string()), "{sort}");
+        }
         let query=rss_mdm_device_service::directory::SCHEMA.parse("limit=1")?;
         let page:Value=serde_json::to_value(service.views(&proof,&query,&personnel).await?)?;
         let continuation=page["nextCursor"].as_str().expect("nonempty second page");

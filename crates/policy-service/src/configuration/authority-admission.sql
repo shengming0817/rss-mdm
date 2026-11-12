@@ -1,8 +1,8 @@
 -- Privileged kernels: exact bodies come from the corresponding owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
- ('mdm_planning.configuration_device_key(text)','sql','text',false,false,'i',ARRAY['p_device']::text[],ARRAY['search_path=pg_catalog']::text[],$1::text,ARRAY['mdm_access','mdm_command_runtime','mdm_policy_runtime','mdm_owner']::text[]),
+ ('mdm_planning.configuration_device_key(uuid)','sql','text',false,false,'i',ARRAY['p_device']::text[],ARRAY['search_path=pg_catalog']::text[],$1::text,ARRAY['mdm_access','mdm_command_runtime','mdm_policy_runtime','mdm_owner']::text[]),
  ('mdm_planning.configuration_windows_pending_operations(uuid,uuid)','sql','mdm_planning.configuration_operations',true,true,'v',ARRAY['p_device','p_after']::text[],ARRAY['search_path=pg_catalog']::text[],$2::text,ARRAY['mdm_access','mdm_command_runtime','mdm_policy_runtime','mdm_owner']::text[]),
- ('mdm_planning.configuration_windows_wake_candidates(uuid)','sql','text',true,true,'v',ARRAY['p_after','device']::text[],ARRAY['search_path=pg_catalog']::text[],$3::text,ARRAY['mdm_access','mdm_command_runtime','mdm_policy_runtime','mdm_owner']::text[])
+ ('mdm_planning.configuration_windows_wake_candidates(uuid)','sql','uuid',true,true,'v',ARRAY['p_after','device']::text[],ARRAY['search_path=pg_catalog']::text[],$3::text,ARRAY['mdm_access','mdm_command_runtime','mdm_policy_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

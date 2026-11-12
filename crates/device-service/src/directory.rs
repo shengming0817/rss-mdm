@@ -168,7 +168,7 @@ impl Associations {
             })
             .transpose()?;
         let after = old.as_ref().map(|c| c.after);
-        let descending = query.sort()[0].descending;
+        let order = crate::directory_filter::Order::for_query(query);
         let mut args = PgArguments::default();
         macro_rules! arg {
             ($v:expr) => {
@@ -203,7 +203,9 @@ impl Associations {
         if !statistics {
             arg!(after.map(|o| o.kind()));
             arg!(after.map(|o| o.uuid()));
-            arg!(descending);
+            arg!(order.kind_descending);
+            arg!(order.id_descending);
+            arg!(order.id_first);
             arg!((query.limit() + 1) as i64);
             arg!(vec![
                 "device.name",
@@ -272,9 +274,7 @@ impl Associations {
             .map(crate::view_response::DirectoryReply::Statistics);
         }
         let mut read = crate::snapshot::decode(proof, &access.snapshot, identity, &value)?;
-        if descending {
-            read.groups.reverse();
-        }
+        read.groups.sort_by(|a, b| order.compare(a.key(), b.key()));
         let more = value["more"].as_bool().ok_or(Error::Storage)?;
         let next_cursor = if more {
             Some(

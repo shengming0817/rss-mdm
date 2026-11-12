@@ -83,6 +83,16 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
     let key = crate::device_material_support::protection(&c)?;
     let user = Uuid::new_v4().to_string();
     let (apple, p) = support::apple(&c, &n, key.clone(), std::slice::from_ref(&user)).await?;
+    let native_udid = "Apple-UDID-MixedCase-01";
+    assert!(rss_mdm_agent_wire::DeviceId::parse(native_udid).is_err());
+    let mut tx = command::seed_transaction(&c).await?;
+    sqlx::query("UPDATE mdm_apple.devices SET udid=$3 WHERE tenant_id=$1::uuid AND device=$2")
+        .bind(c.tenant.to_string())
+        .bind(n.device.into_uuid())
+        .bind(native_udid)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     let operation = Uuid::new_v4();
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let task: Task = serde_json::from_value(
@@ -120,7 +130,7 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
             &apple,
             &p,
             &c,
-            receipt(&n.device.to_string(), attempt, Some(&user))?
+            receipt(native_udid, attempt, Some(&user))?
         )
         .await
         .is_err()
@@ -132,13 +142,34 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
             &apple,
             &p,
             &c,
-            receipt(&n.device.to_string(), Uuid::new_v4(), None)?
+            receipt(native_udid, Uuid::new_v4(), None)?
         )
         .await
         .is_err()
     );
     assert_eq!(state().await?, before);
-    let ack = receipt(&n.device.to_string(), attempt, None)?;
+    assert!(
+        manage(
+            &d,
+            &apple,
+            &p,
+            &c,
+            receipt(&n.device.to_string(), attempt, None)?
+        )
+        .await
+        .is_err(),
+        "internal UUID cannot substitute for Apple UDID"
+    );
+    assert_eq!(state().await?, before);
+    let stored_udid: String = sqlx::query_scalar(
+        "SELECT udid FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND device=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(n.device.into_uuid())
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(stored_udid, native_udid);
+    let ack = receipt(native_udid, attempt, None)?;
     manage(&d, &apple, &p, &c, ack.clone()).await?;
     let settled = state().await?;
     assert_eq!(settled.0, "acknowledged");

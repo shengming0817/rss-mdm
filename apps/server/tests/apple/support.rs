@@ -108,7 +108,7 @@ pub async fn apple(
     .management_principal(&credential)
     .await?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) VALUES (CAST($1 AS uuid), $2, $3, 'active', 8191)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(n.device.into_uuid()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) VALUES (CAST($1 AS uuid), $2, $3, 'active', 8191)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(n.device.to_string()).execute(&mut *tx).await?;
     for user in std::iter::once("").chain(users.iter().map(String::as_str)) {
         let aad = ProtectionContext::new(
             c.tenant,

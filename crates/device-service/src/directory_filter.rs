@@ -67,15 +67,52 @@ pub static EXECUTION: std::sync::LazyLock<rss_mdm_query::directory::Execution> =
 pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
     let mut q = SCHEMA.parse(raw)?;
     q.default_filter("assetState", "active")?;
-    if q.sort().len() != 2
-        || q.sort()[0].field != "reference.kind"
-        || q.sort()[1].field != "reference.id"
-        || q.sort()[0].descending != q.sort()[1].descending
-    {
-        return Err(rss_mdm_query::Error::Invalid);
-    }
     Ok(q)
 }
+/// The directory exposes independent direction and precedence for both identity fields.
+pub(super) struct Order {
+    pub kind_descending: bool,
+    pub id_descending: bool,
+    pub id_first: bool,
+}
+impl Order {
+    pub fn for_query(query: &Query) -> Self {
+        let sort = query.sort();
+        Self {
+            kind_descending: sort
+                .iter()
+                .find(|s| s.field == "reference.kind")
+                .expect("identity key")
+                .descending,
+            id_descending: sort
+                .iter()
+                .find(|s| s.field == "reference.id")
+                .expect("identity key")
+                .descending,
+            id_first: sort[0].field == "reference.id",
+        }
+    }
+    pub fn compare(
+        &self,
+        left: rss_mdm_agent_wire::ObjectRef,
+        right: rss_mdm_agent_wire::ObjectRef,
+    ) -> std::cmp::Ordering {
+        let kind = left.kind().cmp(&right.kind());
+        let id = left.uuid().cmp(&right.uuid());
+        let kind = if self.kind_descending {
+            kind.reverse()
+        } else {
+            kind
+        };
+        let id = if self.id_descending { id.reverse() } else { id };
+        if self.id_first {
+            id.then(kind)
+        } else {
+            kind.then(id)
+        }
+    }
+}
+
 pub(super) fn predicate(q: &Query) -> crate::Result<String> {
     EXECUTION
         .require(q.schema())
@@ -182,4 +219,49 @@ pub(super) fn predicate(q: &Query) -> crate::Result<String> {
         .map(expr)
         .transpose()
         .map(|v| v.unwrap_or_else(|| "true".into()))
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+    use rss_mdm_agent_wire::{DeviceId, ObjectRef};
+    #[test]
+    fn advertised_sort_fields_accept_independent_direction_and_precedence() {
+        let fields = SCHEMA
+            .fields()
+            .iter()
+            .filter(|field| field.sort)
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(fields.len(), 2);
+        for first in &fields {
+            for second in fields.iter().filter(|second| *second != first) {
+                for a in ["", "-"] {
+                    for b in ["", "-"] {
+                        assert!(parse(&format!("sort={a}{first},{b}{second}")).is_ok());
+                    }
+                }
+            }
+            assert!(parse(&format!("sort={first}")).is_ok());
+            assert!(parse(&format!("sort=-{first}")).is_ok());
+        }
+        let one = DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap();
+        let two = DeviceId::try_from(uuid::Uuid::from_u128(2)).unwrap();
+        let e1 = ObjectRef::Endpoint(one);
+        let e2 = ObjectRef::Endpoint(two);
+        let a1 = ObjectRef::Association(one.into_uuid());
+        let a2 = ObjectRef::Association(two.into_uuid());
+        for (sort, expected) in [
+            ("", [e1, e2, a1, a2]),
+            ("sort=reference.id", [e1, a1, e2, a2]),
+            ("sort=-reference.kind", [a1, a2, e1, e2]),
+            ("sort=reference.kind,-reference.id", [e2, e1, a2, a1]),
+            ("sort=-reference.id,reference.kind", [e2, a2, e1, a1]),
+        ] {
+            let order = Order::for_query(&parse(sort).unwrap());
+            let mut actual = [a1, e2, a2, e1];
+            actual.sort_by(|a, b| order.compare(*a, *b));
+            assert_eq!(actual, expected, "{sort}");
+        }
+    }
 }

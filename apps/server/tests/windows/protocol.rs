@@ -356,7 +356,7 @@ pub(crate) async fn windows(
     .derive();
     let secrets=protection.seal_bytes(&serde_json::to_vec(&serde_json::json!({"client_password":"client-secret","server_password":"server-secret","server_nonce":vec![7u8;32]}))?,&aad)?;
     let mut tx = command::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_access.enrollment_intents (tenant_id, request_id, csr, profile, issuer, configuration, device, credential, epoch, secrets, signing_attempt, protocol_device) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)").bind(c.tenant.to_string()).bind(n.request).bind(&n.csr).bind(profile).bind(&n.root).bind(configuration).bind(n.device.into_uuid()).bind(n.credential).bind(n.epoch).bind(secrets).bind(n.attempt).bind(n.device.into_uuid()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.enrollment_intents (tenant_id, request_id, csr, profile, issuer, configuration, device, credential, epoch, secrets, signing_attempt, protocol_device) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)").bind(c.tenant.to_string()).bind(n.request).bind(&n.csr).bind(profile).bind(&n.root).bind(configuration).bind(n.device.into_uuid()).bind(n.credential).bind(n.epoch).bind(secrets).bind(n.attempt).bind(n.device.to_string()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.enrollment_certificates(tenant_id,request_id,certificate,server_nonce) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(n.request).bind(&n.certificate).bind(vec![7u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     let w = Arc::new(rss_mdm_windows_channel::Windows::new(
@@ -377,6 +377,17 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     let c = Context::open("shared", &[]).await?;
     let n = identity::seed(&c, "windows").await?;
     let w = windows(&c, &n).await?;
+    let native_id = "Windows-DeviceID-MixedCase-01";
+    assert!(rss_mdm_agent_wire::DeviceId::parse(native_id).is_err());
+    let mut tx = command::seed_transaction(&c).await?;
+    sqlx::query("UPDATE mdm_access.enrollment_intents SET protocol_device=$3 WHERE tenant_id=$1::uuid AND request_id=$2")
+        .bind(c.tenant.to_string()).bind(n.request).bind(native_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let native_next = |id, code, final_message| {
+        let mut message = next(&n, id, code, final_message);
+        message.header.source = native_id.into();
+        message
+    };
     let h = host(&c, &n, w.clone()).await?;
     let http = client(&n)?;
     let mut first = s::decode(
@@ -385,12 +396,12 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     )?;
     first.header.session_id = 17;
     first.header.target = "https://localhost/ManagementServer/MDM.svc".into();
-    first.header.source = n.device.to_string();
+    first.header.source = native_id.into();
     for command in &mut first.commands {
         if let s::Command::DevInfo { items, .. } = command {
             for item in items {
                 if item.source.as_deref() == Some("./DevInfo/DevId") {
-                    item.data = Some(Secret(n.device.to_string()));
+                    item.data = Some(Secret(native_id.into()));
                 }
             }
         }
@@ -410,7 +421,19 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
             .0
             .final_message
     );
-    let second = s::encode(&next(&n, 2, 212, false), &CodecLimits::default())?;
+    assert_eq!(
+        s::decode_request(&response, &CodecLimits::default())?
+            .0
+            .header
+            .target,
+        native_id
+    );
+    let substituted = s::encode(&next(&n, 2, 212, false), &CodecLimits::default())?;
+    assert!(
+        send(&http, &h, &substituted).await.is_err(),
+        "internal UUID is not the native DeviceID"
+    );
+    let second = s::encode(&native_next(2, 212, false), &CodecLimits::default())?;
     send(&http, &h, &second).await?;
     let before:(String,i64)=sqlx::query_as("SELECT state, last_message FROM mdm_access.management_sessions WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = '17'").bind(c.tenant.to_string()).bind(n.device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(before, ("collecting".into(), 2));
@@ -418,11 +441,12 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     h.close().await?;
     let h = host(&c, &n, w).await?;
     let http = client(&n)?;
-    let third = s::encode(&next(&n, 3, 200, true), &CodecLimits::default())?;
+    let third = s::encode(&native_next(3, 200, true), &CodecLimits::default())?;
     let response = send(&http, &h, &third).await?;
     let decoded = s::decode_request(&response, &CodecLimits::default())?.0;
     assert_eq!(decoded.header.session_id, 17);
     assert_eq!(decoded.header.message_id, 3);
+    assert_eq!(decoded.header.target, native_id);
     assert!(
         decoded
             .commands
@@ -437,7 +461,7 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     assert_eq!(committed, (3, 1));
     assert_eq!(send(&http, &h, &third).await?, response);
     assert_eq!(count().await?, committed);
-    let wrong = s::encode(&next(&n, 5, 200, true), &CodecLimits::default())?;
+    let wrong = s::encode(&native_next(5, 200, true), &CodecLimits::default())?;
     assert!(send(&http, &h, &wrong).await.is_err());
     assert_eq!(count().await?, committed);
     drop(http);
