@@ -89,6 +89,9 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
             .await
             .map_err(PgConsumerEffectFailure::infrastructure)?;
         if message.metadata().route().as_str() == "asset.changed" {
+            rss_mdm_device_service::worker::wake_inputs_in(&self.messaging, tx)
+                .await
+                .map_err(PgConsumerEffectFailure::infrastructure)?;
             rss_mdm_compliance_service::input_wake::wake_in(&self.messaging, tx)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
@@ -107,6 +110,12 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
         )
         .await
         .map_err(PgConsumerEffectFailure::infrastructure)?;
+        rss_mdm_device_service::control::source_changes::wake_in(&self.messaging, tx)
+            .await
+            .map_err(PgConsumerEffectFailure::infrastructure)?;
+        rss_mdm_software_service::deployment::source_changes::wake_in(&self.messaging, tx)
+            .await
+            .map_err(PgConsumerEffectFailure::infrastructure)?;
         Ok(TerminalDisposition::Succeeded)
     }
 }

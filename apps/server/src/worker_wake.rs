@@ -108,11 +108,8 @@ impl Signals {
     fn received(&self, payload: &str) {
         if payload == "assets_changed" {
             for work in [
-                Work::Devices,
-                Work::CommandRecovery,
                 Work::ScriptRecovery,
                 Work::CollectionRecovery,
-                Work::SoftwareRecovery,
                 Work::EnrollmentRecovery,
                 Work::InstallationRecovery,
                 Work::AccessRecovery,

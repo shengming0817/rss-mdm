@@ -511,3 +511,19 @@ impl Timer for DeviceTimer {
         }
     }
 }
+
+/// Only asset events wake association inputs; object publication cannot wake its producer.
+pub async fn wake_inputs_in(
+    store: &PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+) -> Result<(), PgError> {
+    let tenant = tx.tenant_id();
+    let target = Target::new(Scope::new(tenant, "mdm.devices").expect("Device scope"), "inputs")
+        .expect("Device inputs");
+    store.wake_in(tx, &target, &ResourceSet::empty(tenant), (), |_, tx| Box::pin(async move {
+        tx.with_connection(|c| Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'devices')").execute(c).await?;
+            Ok(())
+        })).await
+    })).await
+}

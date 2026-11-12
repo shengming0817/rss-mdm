@@ -18,7 +18,7 @@ async fn initialize(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
     Ok(())
 }
 pub(crate) async fn pending(c: &mut PgConnection, tenant: TenantId) -> Result<bool> {
-    Ok(sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_devices.checkpoints p WHERE p.tenant_id=$1::uuid AND (p.rebuilding OR EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=p.tenant_id AND NOT mdm.asset_visible(p.from_cut,a.revision))))").bind(tenant.to_string()).fetch_one(c).await?)
+    Ok(sqlx::query_scalar("WITH input_cut AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid))) SELECT NOT EXISTS(SELECT FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_devices.checkpoints p WHERE p.tenant_id=$1::uuid AND (p.rebuilding OR EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=p.tenant_id AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM input_cut),false))))").bind(tenant.to_string()).fetch_one(c).await?)
 }
 async fn request(c: &mut PgConnection, tenant: TenantId, kind: &str, value: &str) -> Result<Uuid> {
     Ok(sqlx::query_scalar("INSERT INTO mdm_devices.association_work(tenant_id,id,kind,value) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,kind,value) DO UPDATE SET requested=association_work.requested+1 RETURNING id")
@@ -133,10 +133,10 @@ pub(crate) async fn advance(
     let cut = AssetCut::from_json(to.clone()).map_err(|_| Error::Storage)?;
     let through = match through {
         Some(value) => Some(value),
-        None => sqlx::query_scalar("SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND mdm.asset_visible($3::jsonb,revision) AND NOT mdm.asset_visible($4::jsonb,revision) ORDER BY revision LIMIT 64) page")
+        None => sqlx::query_scalar("WITH cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3::jsonb)), cut_4 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($4::jsonb)) SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM cut_3),false) AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM cut_4),false) ORDER BY revision LIMIT 64) page")
             .bind(&t).bind(after).bind(&to).bind(&from).fetch_one(&mut *c).await?,
     };
-    let rebuild = rebuilding || sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 AND mdm.asset_visible($4::jsonb,revision) AND NOT mdm.asset_visible($5::jsonb,revision) AND identity->>'device' IS NULL AND fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])")
+    let rebuild = rebuilding || sqlx::query_scalar::<_,bool>("WITH cut_4 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($4::jsonb)), cut_5 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($5::jsonb)) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM cut_4),false) AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM cut_5),false) AND identity->>'device' IS NULL AND fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])")
         .bind(&t).bind(after).bind(through).bind(&to).bind(&from).fetch_one(&mut *c).await?;
     if through.is_none() && !rebuild {
         finish_window(c, tenant, to).await?;
@@ -154,7 +154,7 @@ pub(crate) async fn advance(
         sqlx::query_scalar(r#"SELECT DISTINCT device COLLATE "C" FROM mdm_access.asset_authority_history WHERE tenant_id=$1::uuid AND kind='device' AND mdm.asset_visible($2::jsonb,revision) AND device COLLATE "C">coalesce($3,'') COLLATE "C" ORDER BY device COLLATE "C" LIMIT $4"#)
             .bind(&t).bind(&to).bind(rebuild_after).bind((PAGE+1) as i64).fetch_all(&mut *c).await?
     } else {
-        sqlx::query_scalar(r#"WITH changed AS (SELECT DISTINCT a.identity->>'device' COLLATE "C" device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND a.revision>$2 AND a.revision<=$3 AND mdm.asset_visible($4::jsonb,a.revision) AND NOT mdm.asset_visible($5::jsonb,a.revision)) SELECT device FROM changed WHERE device IS NOT NULL AND device>coalesce($6,'') COLLATE "C" ORDER BY device LIMIT $7"#)
+        sqlx::query_scalar(r#"WITH cut_4 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($4::jsonb)), cut_5 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($5::jsonb)), changed AS (SELECT DISTINCT a.identity->>'device' COLLATE "C" device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND a.revision>$2 AND a.revision<=$3 AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM cut_4),false) AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM cut_5),false)) SELECT device FROM changed WHERE device IS NOT NULL AND device>coalesce($6,'') COLLATE "C" ORDER BY device LIMIT $7"#)
             .bind(&t).bind(after).bind(through).bind(&to).bind(&from).bind(cursor).bind((PAGE+1) as i64).fetch_all(&mut *c).await?
     };
     let more = ids.len() > PAGE;

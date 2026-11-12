@@ -290,7 +290,7 @@ impl ExecutionChanges for Changes {
         })
     }
 
-    fn devices_changed_in<'a>(
+    fn configuration_progressed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         devices: &'a [String],
