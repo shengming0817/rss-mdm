@@ -1,5 +1,9 @@
 -- Exact Policy consumer privileges; source: PostgreSQL column GRANT semantics.
 WITH required(relation,col,insertable,updatable) AS (VALUES
+ ('mdm_apple.attempts','tenant_id',false,false),
+ ('mdm_apple.attempts','operation',false,false),
+ ('mdm_apple.attempts','phase',false,false),
+ ('mdm_apple.attempts','state',false,false),
  ('mdm_apple.declarations','tenant_id',false,false),
  ('mdm_apple.declarations','operation',false,false),
  ('mdm_apple.declarations','device',false,false),

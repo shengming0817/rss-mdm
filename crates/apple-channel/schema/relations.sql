@@ -126,3 +126,6 @@ GRANT SELECT(tenant_id,operation,device,user_key,identifier,profile,version,pres
 GRANT INSERT(tenant_id,operation,device,user_key,identifier,profile,version,present)
  ON mdm_apple.profiles TO mdm_policy_runtime;
 GRANT UPDATE(retired_at) ON mdm_apple.profiles TO mdm_policy_runtime;
+
+-- Configuration withdrawal must distinguish a queued command from an actual dispatch.
+GRANT SELECT(tenant_id,operation,phase,state) ON mdm_apple.attempts TO mdm_policy_runtime;

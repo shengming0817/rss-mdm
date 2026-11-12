@@ -187,7 +187,10 @@ async fn reconcile(
                 Box::pin(async move {
                     ctx.3.prepare_in(tx, ctx.2, &[]).await?;
                     ctx.0.wake_devices_in(tx, &[ctx.1.to_owned()]).await?;
-                    ctx.0.reconcile_in(tx, ctx.1, ctx.2).await
+                    ctx.0.reconcile_in(tx, ctx.1, ctx.2).await.map_err(|error| {
+                        eprintln!("configuration reconciliation failed: {error:?}");
+                        error
+                    })
                 })
             },
         )

@@ -631,6 +631,20 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     policy_scope.commit().await?;
     let workers = Workers::start_policy(&c, &owners, scopes.clone(), Some(&policy_fixture)).await?;
     wait_sql(&c,"SELECT member_set IS NOT NULL AND member_count=0 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",id).await?;
+    wait_sql(&c,"SELECT $2::uuid IS NOT NULL AND NOT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND entity IN('inputs','configuration-inputs') AND next_run IS NOT NULL)",id).await?;
+    let initial_operations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid",
+    )
+    .bind(c.tenant.to_string())
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(
+        initial_operations, 0,
+        "idle baseline has no pending configuration command"
+    );
+    let idle_before = cost_sample(&c).await?;
+    tokio::time::sleep(Duration::from_secs(25)).await;
+    let idle_after = cost_sample(&c).await?;
     let changed_before = cost_sample(&c).await?;
     let changed_started = tokio::time::Instant::now();
     inventory(&c, &device.members[0].device, &definition, true).await?;
@@ -651,9 +665,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     let changed_after = cost_sample(&c).await?;
     wait_sql(&c,"SELECT NOT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND ((reconciler IN('mdm.groups','mdm.scopes','mdm.compliance','mdm.devices','mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs') OR (reconciler='mdm.policy' AND entity='configuration-inputs')) AND next_run IS NOT NULL) AND EXISTS(SELECT FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 AND resolution IS NOT NULL)",scope).await?;
     let before:Vec<(String,i64)>=sqlx::query_as("SELECT reconciler,wake_version FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND ((reconciler IN('mdm.groups','mdm.scopes','mdm.compliance','mdm.devices','mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs') OR (reconciler='mdm.policy' AND entity='configuration-inputs')) ORDER BY reconciler").bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
-    let idle_before = cost_sample(&c).await?;
-    tokio::time::sleep(Duration::from_secs(25)).await;
-    let idle_after = cost_sample(&c).await?;
+    tokio::time::sleep(Duration::from_secs(6)).await;
     let after:Vec<(String,i64)>=sqlx::query_as("SELECT reconciler,wake_version FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND ((reconciler IN('mdm.groups','mdm.scopes','mdm.compliance','mdm.devices','mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs') OR (reconciler='mdm.policy' AND entity='configuration-inputs')) AND next_run IS NULL ORDER BY reconciler").bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
     assert_eq!(
         after, before,
@@ -1369,7 +1381,7 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     use rss_mdm_inventory_service::objects::ObjectReader;
     use rss_reconcile::{Completion, DurableStore, ReconcileStep, Reconciler};
     let c = Context::open("shared", &[]).await?;
-    for _ in 0..33 {
+    for _ in 0..65 {
         planning::endpoint(&c).await?;
     }
     let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
