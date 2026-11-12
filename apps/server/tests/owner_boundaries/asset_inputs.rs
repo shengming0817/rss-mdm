@@ -1383,6 +1383,132 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "T2: Device observer refreshes another instance's durable convergence, but keeps pending and unrelated failures"]
+async fn association_health_recovers_after_another_instance_converges() -> Result<()> {
+    use rss_reconcile::{Completion, ConvergeAction, DurableStore, ReconcileStep, Reconciler};
+    let c = Context::open("shared", &[]).await?;
+    let timer = rss_mdm_policy_service::clock::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
+    let pool = c.inputs.pool("shared", "mdm_scheduler_runtime").await?;
+    let schedule = rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await?;
+    let scope = rss_reconcile::Scope::new(c.tenant, "mdm.devices")?;
+    let targets = [
+        rss_reconcile::Target::new(scope.clone(), "inputs")?,
+        rss_reconcile::Target::new(scope.clone(), format!("work:{}", Uuid::new_v4()))?,
+    ];
+    for target in &targets {
+        schedule
+            .wake(
+                target,
+                &rss_reconcile::ResourceSet::empty(c.tenant),
+                &control,
+            )
+            .await?;
+        let claim = schedule
+            .claim_due(&scope, 1, Duration::from_secs(30), &control)
+            .await?
+            .claims
+            .pop()
+            .context("seed suspended target")?;
+        schedule
+            .finish(&claim, Completion::Suspended { failures: 3 }, &control)
+            .await?;
+    }
+    let a = Arc::new(rss_mdm_device_service::Associations::new(
+        c.audit.clone(),
+        c.tenant,
+        &[7; 32],
+    )?);
+    let worker_a = rss_mdm_device_service::worker::DeviceWork::new(
+        a.clone(),
+        c.runtime.clone(),
+        schedule.clone(),
+        1,
+        OperationDeadline::from_remaining(Duration::from_secs(6)),
+    )
+    .await?;
+    let b = Arc::new(rss_mdm_device_service::Associations::new(
+        c.audit.clone(),
+        c.tenant,
+        &[7; 32],
+    )?);
+    let worker_b = rss_mdm_device_service::worker::DeviceWork::new(
+        b,
+        c.runtime.clone(),
+        schedule.clone(),
+        1,
+        OperationDeadline::from_remaining(Duration::from_secs(6)),
+    )
+    .await?;
+    assert_eq!(a.worker_health().unresolved_attempts, 2);
+    for (index, target) in targets.iter().enumerate() {
+        schedule
+            .wake(
+                target,
+                &rss_reconcile::ResourceSet::empty(c.tenant),
+                &control,
+            )
+            .await?;
+        let claim = worker_b
+            .claim_due(&scope, 1, Duration::from_secs(30), &control)
+            .await?
+            .claims
+            .pop()
+            .context("replica recovery claim")?;
+        assert_eq!(claim.target(), target);
+        assert!(
+            worker_a
+                .claim_due(&scope, 1, Duration::from_secs(30), &control)
+                .await?
+                .claims
+                .is_empty()
+        );
+        assert_eq!(
+            a.worker_health().unresolved_attempts,
+            (2 - index) as u64,
+            "a wake and in-flight work cannot clear a failure"
+        );
+        let ReconcileStep::Ready(diff) = worker_b.observe(&claim, &control).await? else {
+            anyhow::bail!("recovery observation deferred");
+        };
+        if diff.converge_action() != ConvergeAction::Noop {
+            assert!(matches!(
+                worker_b.apply(&claim, diff, &control).await?,
+                ReconcileStep::Ready(())
+            ));
+        }
+        let ReconcileStep::Ready(diff) = worker_b.observe(&claim, &control).await? else {
+            anyhow::bail!("convergence observation deferred");
+        };
+        assert_eq!(diff.converge_action(), ConvergeAction::Noop);
+        worker_b
+            .finish(&claim, Completion::Converged, &control)
+            .await?;
+        assert!(
+            worker_a
+                .claim_due(&scope, 1, Duration::from_secs(30), &control)
+                .await?
+                .claims
+                .is_empty()
+        );
+        assert_eq!(
+            a.worker_health().unresolved_attempts,
+            (1 - index) as u64,
+            "clear only the recovered target; preserve the other suspended target"
+        );
+    }
+    assert!(a.worker_health().observed);
+    assert!(a.worker_health().failure.is_none());
+    drop(worker_a);
+    drop(worker_b);
+    drop(schedule);
+    pool.close().await;
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "T2: paged association projection emits no partial snapshot; final publication durably wakes consumers without feeding its producer"]
 async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result<()> {
     use rss_mdm_inventory_service::objects::ObjectReader;
