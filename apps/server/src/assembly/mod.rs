@@ -894,3 +894,7 @@ mod directory_queries_t2;
 
 #[cfg(test)]
 pub(crate) use software_t2::support::software as seed_software;
+
+#[cfg(test)]
+#[path = "../../tests/telemetry/mod.rs"]
+mod telemetry_queries_t2;

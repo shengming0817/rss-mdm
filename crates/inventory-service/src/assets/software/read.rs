@@ -118,6 +118,7 @@ impl AssetService {
         if matches!(command, Command::Status { .. }) {
             return Ok(Response::Status {
                 task: id,
+                dimensions: job.query.dimensions.clone(),
                 status: QueryStatus::from_progress(
                     state.completed,
                     state.started,

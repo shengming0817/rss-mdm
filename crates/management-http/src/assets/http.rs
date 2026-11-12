@@ -1,5 +1,7 @@
 #[path = "software.rs"]
 mod software;
+#[path = "software_evidence.rs"]
+mod software_evidence;
 use super::*;
 use crate::authorization::Permission;
 use crate::authorization::context::RequestAuth;

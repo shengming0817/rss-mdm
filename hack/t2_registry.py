@@ -6,6 +6,10 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'telemetry.query': dict(prefix='assembly::telemetry_queries_t2::', profiles=('shared',),
+        inputs=('crates/management-http/src/telemetry*', 'crates/management-http/src/decimal.rs',
+                'crates/telemetry-service/*', 'apps/server/src/telemetry.rs', 'apps/server/tests/telemetry/*',
+                'crates/http-contract/*', 'crates/inventory/src/telemetry.rs')),
     'directory.query': dict(prefix='assembly::directory_queries_t2::', profiles=('shared',),
         inputs=('crates/query/*','crates/query-postgres/*','crates/resource/*','crates/resource-postgres/*','crates/resource-service/*',
                 'crates/certificate-archive-service/*','crates/webhook-service/*','crates/apple-channel/src/management_query.rs',
@@ -56,7 +60,7 @@ MODULES = {
                 'crates/recovery-credentials/src/storage_profile.rs')),
     'inventory.software-assets': dict(prefix='assembly::software_assets_t2::', profiles=('shared',),
         inputs=('crates/inventory-service/*', 'crates/inventory-postgres/*', 'crates/inventory/*',
-                'crates/management-http/src/assets/*', 'crates/http-contract/*', 'crates/authorization-service/*',
+                'crates/management-http/src/assets/*', 'crates/management-http/src/decimal.rs', 'crates/http-contract/*', 'crates/authorization-service/*',
                 'crates/group-postgres/*', 'crates/device-service/src/planning*', 'apps/server/src/assembly/inventory.rs',
                 'apps/server/tests/software_assets/*')),
     'vault.sync': dict(package='rss-mdm-device-access-http', target='vault_sync', installer=None, prefix='vault_sync::', profiles=('da_foundation',), inputs=('crates/vault-sync/*', 'crates/agent-wire/src/vault.rs', 'crates/device-access-http/src/vault.rs', 'crates/device-access-http/src/browser.rs', 'crates/device-access-http/tests/vault_sync*', 'apps/da-server/*', 'crates/device-access-runtime/src/installation.rs')),

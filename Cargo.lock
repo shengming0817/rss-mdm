@@ -4448,6 +4448,7 @@ dependencies = [
  "rss-mdm-windows-mdm",
  "rss-observation",
  "rss-request-context",
+ "rss-timeseries",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
  "schemars",

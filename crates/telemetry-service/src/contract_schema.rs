@@ -1,7 +1,7 @@
 //! Narrow schema adapters for the fixed RSS types serialized by the actual HTTP inputs.
 //! No replacement DTO or execution model is defined here. Serde seam tests own drift detection.
 //! ref: rss crates/timeseries/src/{definition,model,query,aggregate,value}.rs@3de9b9eb7c43fad5ed39a02e41a035464224d3fb
-use rss_timeseries::{AggregateOp, CoveragePolicy, QueryMode};
+use rss_timeseries::CoveragePolicy;
 use schemars::{Schema, SchemaGenerator};
 use serde_json::{Value, json};
 
@@ -20,35 +20,6 @@ fn scope() -> Value {
         ("tenant", json!({"type":"string","format":"uuid"})),
         ("namespace", id()),
     ])
-}
-pub(crate) fn query_mode(_: &mut SchemaGenerator) -> Schema {
-    let names = [QueryMode::History, QueryMode::Latest].map(|mode| match mode {
-        QueryMode::History | QueryMode::Latest => {
-            serde_json::to_value(mode).expect("RSS query mode")
-        }
-    });
-    schemars::json_schema!({"type":"string","enum":names})
-}
-pub(crate) fn aggregate_op(_: &mut SchemaGenerator) -> Schema {
-    use AggregateOp::*;
-    let names = [
-        Min,
-        Max,
-        Sum,
-        Count,
-        Mean,
-        Increase,
-        Rate,
-        Timeline,
-        Transitions,
-        Coverage,
-    ]
-    .map(|op| match op {
-        Min | Max | Sum | Count | Mean | Increase | Rate | Timeline | Transitions | Coverage => {
-            serde_json::to_value(op).expect("RSS aggregate operation")
-        }
-    });
-    schemars::json_schema!({"type":"string","enum":names})
 }
 pub(crate) fn coverage(_: &mut SchemaGenerator) -> Schema {
     fn branch(value: CoveragePolicy) -> Value {
@@ -145,6 +116,27 @@ pub(crate) fn summary(generator: &mut SchemaGenerator) -> Schema {
             .retain(|v| v != "maxGap");
     }
     schema.try_into().expect("schema")
+}
+
+pub(crate) fn opaque_id(_: &mut SchemaGenerator) -> Schema {
+    Schema::try_from(id()).expect("RSS ID schema")
+}
+pub(crate) fn maintenance_block(_: &mut SchemaGenerator) -> Schema {
+    use rss_timeseries::MaintenanceBlock::*;
+    let values = [
+        PendingWrite,
+        Cutoff,
+        DirtySummary,
+        RestoreWindow,
+        ReplayGuarantee,
+        StreamOpen,
+        RetainedData,
+    ]
+    .map(|reason| match reason {
+        PendingWrite | Cutoff | DirtySummary | RestoreWindow | ReplayGuarantee | StreamOpen
+        | RetainedData => serde_json::to_value(reason).expect("RSS maintenance block"),
+    });
+    schemars::json_schema!({"type":"string","enum":values})
 }
 
 #[cfg(test)]
@@ -269,207 +261,6 @@ mod tests {
                 );
                 serde_json::from_value::<SummarySpec>(omitted).unwrap();
             }
-        }
-    }
-}
-
-pub(crate) fn opaque_id(_: &mut SchemaGenerator) -> Schema {
-    Schema::try_from(id()).expect("RSS ID schema")
-}
-pub(crate) fn maintenance_block(_: &mut SchemaGenerator) -> Schema {
-    use rss_timeseries::MaintenanceBlock::*;
-    let values = [
-        PendingWrite,
-        Cutoff,
-        DirtySummary,
-        RestoreWindow,
-        ReplayGuarantee,
-        StreamOpen,
-        RetainedData,
-    ]
-    .map(|reason| match reason {
-        PendingWrite | Cutoff | DirtySummary | RestoreWindow | ReplayGuarantee | StreamOpen
-        | RetainedData => serde_json::to_value(reason).expect("RSS maintenance block"),
-    });
-    schemars::json_schema!({"type":"string","enum":values})
-}
-
-fn timestamp() -> Value {
-    json!({"type":"integer","format":"int64","minimum":0,"maximum":i64::MAX})
-}
-pub(crate) fn interval(_: &mut SchemaGenerator) -> Schema {
-    object(&[("start", timestamp()), ("end", timestamp())])
-        .try_into()
-        .expect("interval schema")
-}
-fn external_variant(name: &str, value: Value) -> Value {
-    object(&[(name, value)])
-}
-fn numeric(generator: &mut SchemaGenerator) -> Value {
-    let variants = [
-        ("i64", generator.subschema_for::<i64>().to_value()),
-        ("u64", generator.subschema_for::<u64>().to_value()),
-        ("f64", generator.subschema_for::<f64>().to_value()),
-    ]
-    .into_iter()
-    .map(|(name, value)| object(&[("type", json!({"const":name})), ("value", value)]))
-    .collect::<Vec<_>>();
-    json!({"oneOf":variants})
-}
-pub(crate) fn sample(generator: &mut SchemaGenerator) -> Schema {
-    let values = json!({"oneOf":[
-        object(&[("type",json!({"const":"number"})),("value",numeric(generator))]),
-        object(&[("type",json!({"const":"bool"})),("value",json!({"type":"boolean"}))]),
-        object(&[("type",json!({"const":"state"})),("value",id())])
-    ]});
-    let reading = json!({"oneOf":[object(&[("quality",json!({"const":"valid"})),("value",values)]),object(&[("quality",json!({"const":"missing"}))]),object(&[("quality",json!({"const":"failed"}))])]});
-    let mut value = object(&[
-        ("stream", stream(generator).to_value()),
-        ("series", series(generator).to_value()),
-        ("id", id()),
-        ("sequence", generator.subschema_for::<u64>().to_value()),
-        ("observedAt", timestamp()),
-        (
-            "interval",
-            json!({"anyOf":[interval(generator),{"type":"null"}]}),
-        ),
-        ("reading", reading),
-    ]);
-    if generator.contract().is_deserialize() {
-        value["required"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|v| v != "interval");
-    }
-    value.try_into().expect("sample schema")
-}
-pub(crate) fn selection(generator: &mut SchemaGenerator) -> Schema {
-    schemars::json_schema!({"oneOf":[
-        object(&[("selection",json!({"const":"exact"})),("stream",stream(generator).to_value()),("series",series(generator).to_value())]),
-        object(&[("selection",json!({"const":"resource"})),("scope",scope()),("subject",id()),("resource",id()),("keys",json!({"type":"array","items":id(),"uniqueItems":true}))])
-    ]})
-}
-pub(crate) fn aggregate_buckets(generator: &mut SchemaGenerator) -> Schema {
-    let sum = json!({"oneOf":[external_variant("I128",generator.subschema_for::<i128>().to_value()),external_variant("U128",generator.subschema_for::<u128>().to_value()),external_variant("F64",generator.subschema_for::<f64>().to_value())]});
-    let state = json!({"oneOf":[external_variant("Bool",json!({"type":"boolean"})),external_variant("State",id())]});
-    let array = |value: Value| json!({"type":"array","items":value});
-    let value = json!({"oneOf":[
-        external_variant("Number",numeric(generator)),external_variant("Sum",sum.clone()),external_variant("Count",generator.subschema_for::<u64>().to_value()),
-        external_variant("Mean",object(&[("sum",sum.clone()),("count",positive())])),
-        external_variant("Rate",object(&[("increase",sum),("duration_micros",positive())])),
-        external_variant("StateSegments",array(object(&[("value",state.clone()),("window",interval(generator).to_value())]))),
-        external_variant("Transitions",array(object(&[("at",timestamp()),("from",state.clone()),("to",state.clone())]))),
-        external_variant("StateCoverage",array(object(&[("value",state),("micros",generator.subschema_for::<u64>().to_value())]))),
-        {"type":"string","const":"Missing"}
-    ]});
-    use rss_timeseries::Completeness;
-    let completeness = json!({"type":"array","uniqueItems":true,"items":{"type":"string","enum":[Completeness::Gaps,Completeness::Overlap,Completeness::ResetBoundary,Completeness::Boundary]}});
-    array(object(&[
-        ("window", interval(generator).to_value()),
-        ("value", value),
-        ("valid_samples", generator.subschema_for::<u64>().to_value()),
-        (
-            "covered_micros",
-            generator.subschema_for::<u64>().to_value(),
-        ),
-        ("completeness", completeness),
-    ]))
-    .try_into()
-    .expect("aggregate schema")
-}
-
-#[cfg(test)]
-mod response_tests {
-    use super::*;
-    use rss_timeseries::{
-        AggregateBucket, AggregateValue as A, Completeness, FiniteF64, Interval, Number,
-        StateDuration, StateSegment, StateValue, Sum, Timestamp, Transition,
-    };
-    use std::num::NonZeroU64;
-    fn window() -> Interval {
-        Interval::new(Timestamp::new(1).unwrap(), Timestamp::new(10).unwrap()).unwrap()
-    }
-    fn bucket(value: A) -> AggregateBucket {
-        AggregateBucket {
-            window: window(),
-            value,
-            valid_samples: 2,
-            covered_micros: 9,
-            completeness: [
-                Completeness::Gaps,
-                Completeness::Overlap,
-                Completeness::ResetBoundary,
-                Completeness::Boundary,
-            ]
-            .into(),
-        }
-    }
-    #[test]
-    fn aggregate_serializer_matches_every_actual_variant_and_rejects_unknown_core() {
-        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
-            .for_serialize()
-            .into_generator();
-        let schema = aggregate_buckets(&mut generator).to_value();
-        let validator = jsonschema::validator_for(&schema).unwrap();
-        let state = StateValue::State(rss_timeseries::Id::new("ready").unwrap());
-        for value in [
-            A::Number(Number::I64(i64::MIN)),
-            A::Number(Number::U64(u64::MAX)),
-            A::Number(Number::F64(FiniteF64::new(0.5).unwrap())),
-            A::Sum(Sum::I128(-1)),
-            A::Sum(Sum::U128(1)),
-            A::Sum(Sum::F64(FiniteF64::new(0.25).unwrap())),
-            A::Count(0),
-            A::Mean {
-                sum: Sum::I128(9),
-                count: NonZeroU64::new(2).unwrap(),
-            },
-            A::Rate {
-                increase: Sum::U128(9),
-                duration_micros: NonZeroU64::new(10).unwrap(),
-            },
-            A::StateSegments(vec![StateSegment {
-                value: state.clone(),
-                window: window(),
-            }]),
-            A::Transitions(vec![Transition {
-                at: Timestamp::new(5).unwrap(),
-                from: StateValue::Bool(false),
-                to: StateValue::Bool(true),
-            }]),
-            A::StateCoverage(vec![StateDuration {
-                value: state,
-                micros: 9,
-            }]),
-            A::Missing,
-        ] {
-            let value = serde_json::to_value(vec![bucket(value)]).unwrap();
-            assert!(validator.is_valid(&value), "{value}");
-            let mut unknown = value.clone();
-            unknown[0]["value"] = json!({"Future":{}});
-            assert!(!validator.is_valid(&unknown));
-            let mut missing = value;
-            missing[0].as_object_mut().unwrap().remove("covered_micros");
-            assert!(!validator.is_valid(&missing));
-        }
-    }
-    #[test]
-    fn aggregate_http_payload_serializes_128_bit_totals_without_a_value_intermediate() {
-        for value in [Sum::I128(i128::MIN), Sum::U128(u128::MAX)] {
-            let payload = crate::query::Aggregate {
-                buckets: vec![bucket(A::Sum(value))],
-                unavailable: vec![],
-                resolution_micros: NonZeroU64::new(10).unwrap(),
-                refreshed_through: None,
-                next: None,
-            };
-            let encoded = serde_json::to_string(&payload).unwrap();
-            let exact = match value {
-                Sum::I128(v) => v.to_string(),
-                Sum::U128(v) => v.to_string(),
-                _ => unreachable!(),
-            };
-            assert!(encoded.contains(&format!(":{exact}}}")), "{encoded}");
         }
     }
 }
