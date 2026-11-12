@@ -102,20 +102,6 @@ fn relay_diagnostic(phase: &str, message_id: Option<&str>, error: &Error) {
     eprintln!("{}", relay_diagnostic_value(phase, message_id, error));
 }
 impl SoftwareService {
-    /// Register the durable input scan while resources are admitted, before exposing a runner.
-    pub async fn initialize_recovery(&self) -> std::result::Result<(), rss_reconcile::Error> {
-        use rss_reconcile::DurableStore;
-        let timer = Timer::new();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        self.reconcile
-            .wake(
-                &crate::deployment::source_changes::target(self.transactions.tenant),
-                &rss_reconcile::ResourceSet::empty(self.transactions.tenant),
-                &control,
-            )
-            .await
-    }
     pub fn registration(
         self: Arc<Self>,
         signals: Arc<crate::deployment::worker_wake::Signals>,
@@ -142,7 +128,7 @@ impl SoftwareService {
             lease_ttl: Duration::from_secs(30),
             attempt_timeout: Duration::from_secs(6),
             scan_interval: Duration::from_millis(20),
-            idle_scan_interval: Duration::from_secs(5),
+            idle_scan_interval: Duration::from_secs(60),
             initial_backoff: Duration::from_secs(5),
             max_backoff: Duration::from_secs(60),
             max_attempts: 1000,

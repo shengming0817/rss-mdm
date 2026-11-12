@@ -1,4 +1,4 @@
-//! Device consumes identity changes and scans accepted retirements durably.
+//! Device consumes lifecycle and published identity inputs durably.
 use crate::control::transaction::*;
 use rss_mdm_inventory_service::objects::ObjectReader;
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -16,7 +16,7 @@ pub async fn pending_in(
         .await??;
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND stage<>'complete') OR EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid),revision)) OR $2>coalesce((SELECT relation_consumed FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid),0)").bind(tenant).bind(revision).fetch_one(c).await
+        sqlx::query_scalar("WITH input_cut AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid))) SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM input_cut),false)) OR $2>coalesce((SELECT relation_consumed FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid),0)").bind(tenant).bind(revision).fetch_one(c).await
     })).await?)
 }
 pub async fn advance_in(
@@ -31,7 +31,6 @@ pub async fn advance_in(
         sqlx::query("INSERT INTO mdm_devices.control_source_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
         sqlx::query("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
     })).await?;
-    retirement_page_in(tx, messaging).await?;
     let from: Option<serde_json::Value> = row.try_get("from_cut")?;
     let to: serde_json::Value = row
         .try_get::<Option<serde_json::Value>, _>("to_cut")?
@@ -45,7 +44,7 @@ pub async fn advance_in(
             let f = from.clone();
             let t = to.clone();
             tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar::<_,Option<i64>>("SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible($2,revision) AND mdm.asset_visible($3,revision) AND revision>$4 ORDER BY revision LIMIT 1000) page")
+                sqlx::query_scalar::<_,Option<i64>>("WITH cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)), cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)) SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM cut_3),false) AND revision>$4 ORDER BY revision LIMIT 1000) page")
                     .bind(tenant).bind(f).bind(t).bind(after).fetch_one(c).await
             })).await?
         }
@@ -64,9 +63,9 @@ pub async fn advance_in(
     })).await?;
     let tenant = tx.tenant_id().to_string();
     let devices=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar::<_,String>(r#"WITH changed AS (
+        sqlx::query_scalar::<_,String>(r#"WITH cut_2 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($2)), cut_3 AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context($3)), changed AS (
             SELECT DISTINCT a.identity->>'device' COLLATE "C" AS device
-            FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND a.revision>$4 AND a.revision<=$5
+            FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM cut_2),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM cut_3),false) AND a.revision>$4 AND a.revision<=$5
             AND (a.kind IN('device','source','credential') OR 'channel.agent.installation'=ANY(a.fields))
         ) SELECT device FROM changed WHERE device IS NOT NULL AND ($6::text IS NULL OR device>$6 COLLATE "C") ORDER BY device COLLATE "C" LIMIT 33"#)
             .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(cursor).fetch_all(c).await
@@ -175,6 +174,7 @@ async fn relation_page_in(
     let finished = changes.len() < 64 || position == watermark;
     let devices = changes
         .into_iter()
+        .filter(|c| c.kind == rss_mdm_inventory_service::objects::ObjectChangeKind::IdentityChanged)
         .flat_map(|c| c.old_devices.into_iter().chain(c.new_devices))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
@@ -244,7 +244,7 @@ impl crate::control::Service {
         self.transactions.runtime.local_tx(self.transactions.tenant, health_deadline(cutoff), |tx| Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM (SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid),revision) LIMIT 1001) q").bind(tenant).fetch_one(c).await
+                sqlx::query_scalar::<_, i64>("WITH input_cut AS MATERIALIZED (SELECT * FROM mdm.asset_cut_context((SELECT from_cut FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid))) SELECT count(*) FROM (SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,source_epoch,writer_xid) FROM input_cut),false) LIMIT 1001) q").bind(tenant).fetch_one(c).await
             })).await
         })).await.fold(|v|Ok(v as u64), |_| Err(crate::control::Error::Unavailable(crate::control::Failure::CommandStorage)), |_| Err(crate::control::Error::Unavailable(crate::control::Failure::CommandStorage)), |_| Err(crate::control::Error::RollbackFailed), |_| Err(crate::control::Error::CommitUnknown), |_| Err(crate::control::Error::Conflict))
     }
@@ -423,19 +423,23 @@ fn health_deadline(
     )
 }
 
-async fn retirement_page_in(
+/// Durable lifecycle input; notification is only a post-commit latency hint.
+pub async fn wake_in(
+    store: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
-    messaging: &rss_reconcile_postgres::PgMessagingStore,
-) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    let ids=tx.with_connection(move |c|Box::pin(async move {
-        let ids:Vec<uuid::Uuid>=sqlx::query_scalar("SELECT DISTINCT operation FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND stage<>'complete' AND operation>coalesce((SELECT retirement_after FROM mdm_devices.control_source_dispatch WHERE tenant_id=$1::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY operation LIMIT 33").bind(&tenant).fetch_all(&mut *c).await?;
-        let next=if ids.len()>32 {Some(ids[31])} else {None};
-        sqlx::query("UPDATE mdm_devices.control_source_dispatch SET retirement_after=$2 WHERE tenant_id=$1::uuid").bind(tenant).bind(next).execute(c).await?;
-        Ok(ids.into_iter().take(32).collect::<Vec<_>>())
-    })).await?;
-    for id in ids {
-        crate::control::unmanage::wake_in(messaging, tx, id).await?;
-    }
-    Ok(())
+) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    store
+        .wake_in(
+            tx,
+            &target(tx.tenant_id()),
+            &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+            (),
+            |_, tx| {
+                Box::pin(crate::control::worker_wake::notify_in(
+                    tx,
+                    crate::control::worker_wake::Work::CommandRecovery,
+                ))
+            },
+        )
+        .await
 }

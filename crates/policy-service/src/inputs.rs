@@ -57,7 +57,7 @@ pub trait ExecutionChanges: Send + Sync {
         target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
         available: bool,
     ) -> Pending<'a, (), Fault>;
-    fn devices_changed_in<'a>(
+    fn configuration_progressed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         devices: &'a [String],

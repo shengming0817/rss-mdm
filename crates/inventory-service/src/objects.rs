@@ -202,9 +202,25 @@ impl ObjectSnapshot {
     }
 }
 
+/// Why Device published an object version. Asset-only invalidation does not change execution eligibility.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectChangeKind {
+    AssetInvalidated,
+    IdentityChanged,
+}
+impl ObjectChangeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AssetInvalidated => "asset_invalidated",
+            Self::IdentityChanged => "identity_changed",
+        }
+    }
+}
+
 /// One committed object change; old and new members remain available after replacement.
 #[derive(Clone, Debug)]
 pub struct ObjectChange {
+    pub kind: ObjectChangeKind,
     pub position: i64,
     pub object: String,
     pub old_devices: Vec<String>,

@@ -75,7 +75,7 @@ async fn wake(app: &rss_mdm_policy_service::application::Application, device: &s
     .await?;
     Ok(())
 }
-async fn step(
+pub(crate) async fn step(
     worker: &rss_mdm_policy_service::worker::PolicyWork,
     tenant: rss_request_context::TenantId,
     device: &str,

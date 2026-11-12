@@ -315,3 +315,31 @@ pub async fn active_count_on(
     sqlx::query_scalar("SELECT count(*) FROM mdm_recovery_tasks.operations WHERE tenant_id=$1::uuid AND device=$2 AND mdm_recovery_tasks.native_status(id) NOT IN ('applied','rejected','cancelled','timed_out','superseded')")
         .bind(tenant.to_string()).bind(device).fetch_one(c).await
 }
+
+/// Read only the authenticated original request needed to authorize a replacement.
+pub async fn required_permissions_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    protection: &rss_mdm_native_protection::Protector,
+    id: Uuid,
+) -> Result<Vec<crate::native::authorization::Permission>> {
+    let row = sqlx::query("SELECT device,request,input_context FROM mdm_recovery_tasks.operations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(tenant.to_string()).bind(id).fetch_optional(c).await?.ok_or(Error::OperationNotFound)?;
+    crate::native::input_storage::open_row(protection, tenant, id, &row, "request")?
+        .task
+        .permissions()
+        .map_err(Into::into)
+}
+
+/// Policy cannot read mutable recovery state or write recovery operations.
+pub async fn verify_policy_access_on(c: &mut PgConnection) -> std::result::Result<(), sqlx::Error> {
+    if !sqlx::query_scalar::<_, bool>(include_str!("policy-access.sql"))
+        .fetch_one(c)
+        .await?
+    {
+        return Err(sqlx::Error::Protocol(
+            "Recovery configuration access rejected".into(),
+        ));
+    }
+    Ok(())
+}

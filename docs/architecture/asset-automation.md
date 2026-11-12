@@ -37,8 +37,8 @@ HTTP 409 `object_referenced`，其他版本、保护或生命周期冲突保持�
 - 每个资产事实通过 RSS 公开 SQL Outbox 接口追加单份无分区消息，事实、历史与消息同事务。
   消息携带原始租户、事实身份、注册/来源世代、变化字段和资格重验范围，不携带资产值或凭据秘密。
   采集失败、证据删除和来源撤销分别表达；采集接收不证明库存投影已完成，内部交付确认不产生规则变化。
-  App 的固定同库投影只原子登记 Group、Compliance、Scope 和 Policy 配置输入的持久 wake；
-  对象关系事实由 Device 发布，只唤醒其实际消费者。投影不读取业务表、求值或推进业务检查点。
+  App 的固定同库投影只原子登记 Device 关联、Group、Compliance、Scope、Policy 配置、Control 和 Software 输入的持久 wake；
+  Device 仅在完整 object cut 发布事务中发送 `object.published`，唤醒 Group、Scope、Policy 配置、Control 和 Software，不回唤关联输入。对象变化记录区分资产失效与身份变化；关联 Group 消费两者，执行消费者只处理身份变化。投影不读取业务表、求值或推进业务检查点。
   源消息、Inbox 与全部 wake 一起结算；业务 owner 随后独立消费，通知仅加速领取。
 - AssetCut 绑定租户、历史代次和 PostgreSQL snapshot。通过既有只读入口捕获已提交事实，
   释放读取连接后才进入业务写事务。历史读取先按切面过滤，再选同对象最新版本；
@@ -151,3 +151,8 @@ Device/Software 与 Policy configuration 的输入终止尝试通过相同 claim
 操作与分页见 [组、范围与 Policy](../guides/groups-scopes-policies.md)。容量目标须由独立性能验证给出证据，功能边界测试不作规模证明。
 
 业务回执的 operationId 以能力 owner、租户和已验证主体为作用域；规划、资产、资源目录与软件发布的审计事件键使用同一 owner namespace。同一作用域内的重复请求恢复原回执，复用标识但改变请求返回冲突；不同主体或能力的操作不会混用回执。
+
+生命周期输入收敛后不再周期重排，也不在启动时强制唤醒；空队列首次成功扫描建立就绪观察，
+持久失败仍阻止就绪。RSS 的有界到期扫描与同库投影保留最长 60 秒恢复入口，通知只缩短延迟。
+退休接受事务直接登记 `retirement:{id}`，该目标独占自身到期、重试和回执恢复；没有全局退休扫描。
+配置的普通输入唤醒只改变自身任务，真实协议进展、终态和撤回提交才通知 Control/Software。

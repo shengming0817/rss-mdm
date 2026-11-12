@@ -9,7 +9,7 @@ mod directory_filter;
 pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
-pub mod object_changed;
+pub mod object_published;
 pub mod personnel;
 pub mod planning;
 mod presentation;
@@ -37,14 +37,15 @@ pub const INSTALL_SQL: &str = concat!(
     "\n",
     include_str!("../schema/object-qualification.sql"),
     "\n",
-    include_str!("../schema/object-changes.sql")
+    include_str!("../schema/object-publication.sql")
 );
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 pub struct Associations {
     worker_observed: std::sync::atomic::AtomicBool,
     worker_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
-    worker_failures: std::sync::Mutex<std::collections::BTreeMap<String, rss_reconcile::ErrorKind>>,
+    worker_failures:
+        std::sync::Mutex<std::collections::BTreeMap<String, Arc<rss_reconcile::ErrorKind>>>,
     audit: Arc<AuditStore>,
     tenant: TenantId,
     key: ring::hmac::Key,
@@ -57,6 +58,18 @@ pub struct WorkerHealth {
     pub failure: Option<rss_reconcile::ErrorKind>,
 }
 impl Associations {
+    fn record_worker_failure(&self, target: String, kind: rss_reconcile::ErrorKind) {
+        if let Ok(mut failures) = self.worker_failures.lock() {
+            if failures.len() < 1000 || failures.contains_key(&target) {
+                failures.insert(target, Arc::new(kind));
+            } else {
+                failures.insert(
+                    "!truncated".into(),
+                    Arc::new(rss_reconcile::ErrorKind::Invariant),
+                );
+            }
+        }
+    }
     pub fn worker_health(&self) -> WorkerHealth {
         let (unresolved_attempts, truncated, failure) = self
             .worker_failures
@@ -65,7 +78,7 @@ impl Associations {
                 (
                     failures.keys().filter(|key| !key.starts_with('!')).count() as u64,
                     failures.contains_key("!truncated"),
-                    failures.values().next().copied(),
+                    failures.values().next().map(|kind| **kind),
                 )
             })
             .unwrap_or((0, true, Some(rss_reconcile::ErrorKind::Invariant)));

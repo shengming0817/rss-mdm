@@ -85,19 +85,24 @@ impl ObjectReader for PlanningObjects {
             if !(1..=1000).contains(&limit) || after < 0 || through < after {
                 return Err(storage("change window"));
             }
-            let rows:Vec<(i64,String,Vec<String>,Vec<String>)>=sqlx::query_as("SELECT revision,object,old_devices,new_devices FROM mdm_devices.object_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT $4")
+            type ChangeRow = (i64, String, Vec<String>, Vec<String>, String);
+            let rows:Vec<ChangeRow>=sqlx::query_as("SELECT revision,object,old_devices,new_devices,kind FROM mdm_devices.object_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT $4")
                 .bind(tenant.to_string()).bind(after).bind(through).bind(limit as i64).fetch_all(c).await?;
-            Ok(rows
-                .into_iter()
-                .map(
-                    |(position, object, old_devices, new_devices)| ObjectChange {
+            rows.into_iter()
+                .map(|(position, object, old_devices, new_devices, kind)| {
+                    Ok(ObjectChange {
+                        kind: match kind.as_str() {
+                            "asset_invalidated" => ObjectChangeKind::AssetInvalidated,
+                            "identity_changed" => ObjectChangeKind::IdentityChanged,
+                            _ => return Err(storage("object change kind")),
+                        },
                         position,
                         object,
                         old_devices,
                         new_devices,
-                    },
-                )
-                .collect())
+                    })
+                })
+                .collect::<Result<Vec<_>, sqlx::Error>>()
         })
     }
     fn change_head<'a>(&'a self, c: &'a mut PgConnection, tenant: TenantId) -> Pending<'a, i64> {
