@@ -2,53 +2,20 @@
 use super::service::{ReadReply, Service};
 use super::*;
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
-use rss_mdm_query::directory::{Field, Kind, Query, Schema};
+use rss_mdm_query::directory::{Query, Schema};
 use serde_json::Value;
-pub(super) static TENANTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "tenants",
-    keys: &["tenantId"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("tenantId", Kind::Uuid),
-        Field::scalar("name", Kind::Text),
-        Field::scalar("notes", Kind::Text),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("initialEpoch", Kind::Integer),
-        Field::scalar("management", Kind::Boolean),
-        Field::scalar("deletable", Kind::Boolean),
-        Field::output("currentEpoch"),
-    ],
+pub static TENANTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Tenant>("tenants", &["tenantId"], 100, 1000, &[])
+        .expect("Public directory model")
 });
-pub(super) static PROVISIONINGS: std::sync::LazyLock<Schema> =
-    std::sync::LazyLock::new(|| Schema {
-        id: "provisionings",
-        keys: &["operationId"],
-        default_limit: 100,
-        max_limit: 1000,
-        fields: vec![
-            Field::scalar("operationId", Kind::Uuid),
-            Field::output("action"),
-            Field::output("result"),
-        ],
-    });
+pub static PROVISIONINGS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Receipt>("provisionings", &["operationId"], 100, 1000, &[])
+        .expect("Public directory model")
+});
 fn error(e: rss_mdm_query::Error) -> Reason {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Reason::Conflict,
         _ => Reason::Invalid,
-    }
-}
-fn column(n: &str) -> &'static str {
-    match n {
-        "tenantId" => "t.tenant_id::text COLLATE \"C\"",
-        "name" => "t.name COLLATE \"C\"",
-        "notes" => "t.notes COLLATE \"C\"",
-        "revision" => "t.revision",
-        "initialEpoch" => "t.initial_epoch",
-        "management" => "(t.tenant_id=i.management_tenant_id)",
-        "deletable" => "NOT(t.used OR t.deleted OR t.tenant_id=i.management_tenant_id)",
-        "operationId" => "operation_id::text COLLATE \"C\"",
-        _ => unreachable!("checked tenant directory field"),
     }
 }
 pub(super) async fn page(
@@ -89,7 +56,8 @@ pub(super) async fn page(
         let mut sql = sqlx::QueryBuilder::new(
             "SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision'",
         );
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(error)?;
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*PROVISIONING_BINDINGS)
+            .map_err(error)?;
         let values = sql
             .build_query_scalar::<Value>()
             .fetch_all(c)
@@ -103,19 +71,35 @@ pub(super) async fn page(
                 .map_err(|_| Reason::Storage)?,
         )
     } else {
-        let mut sql = sqlx::QueryBuilder::new(
-            "SELECT t.tenant_id::text FROM public.mdm_tenants t CROSS JOIN public.mdm_installation i WHERE NOT t.deleted",
-        );
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(error)?;
-        let ids: Vec<String> = sql
+        // Epoch is an RSS tenant-scoped fact. The installation registry is bounded to
+        // 1024 business tenants plus management; qualify each original row under its
+        // tenant scope before applying one complete public-model filter and page.
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT tenant_id::text FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id LIMIT 1026",
+        ).fetch_all(&mut *c).await.map_err(|_| Reason::Storage)?;
+        if ids.len() > 1025 {
+            return Err(Reason::Storage);
+        }
+        let mut candidates = Vec::with_capacity(ids.len());
+        for id in ids {
+            candidates.push(tenant_on(c, &id, false).await?);
+        }
+        scope(c, p.tenant_id()).await?;
+        let mut sql = sqlx::QueryBuilder::new("SELECT row FROM jsonb_array_elements(");
+        sql.push_bind(serde_json::to_value(candidates).map_err(|_| Reason::Storage)?)
+            .push("::jsonb) row WHERE true");
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*TENANT_BINDINGS)
+            .map_err(error)?;
+        let values: Vec<Value> = sql
             .build_query_scalar()
-            .fetch_all(&mut *c)
+            .fetch_all(c)
             .await
             .map_err(|_| Reason::Storage)?;
-        let mut rows = Vec::with_capacity(ids.len());
-        for id in ids {
-            rows.push(tenant_on(c, &id, false).await?)
-        }
+        let rows = values
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<std::result::Result<Vec<Tenant>, _>>()
+            .map_err(|_| Reason::Storage)?;
         Rows::Tenants(rows)
     };
     p.check_live().map_err(|_| Reason::Forbidden)?;
@@ -128,3 +112,21 @@ pub(super) async fn page(
         }
     })
 }
+
+pub static PROVISIONING_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &PROVISIONINGS,
+            &[rss_mdm_query_postgres::Source::json("", "receipt")],
+        )
+        .expect("Complete public model storage binding")
+    });
+
+pub static TENANT_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &TENANTS,
+            &[rss_mdm_query_postgres::Source::json("", "row")],
+        )
+        .expect("Complete public model storage binding")
+    });

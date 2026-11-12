@@ -116,6 +116,7 @@ pub async fn accept_in(
     let stored_batch = rss_mdm_inventory_postgres::seal_collection_in(
         tx,
         rss_mdm_inventory_postgres::CollectionCompletion {
+            trusted: true,
             scope,
             run: batch.id().as_str(),
             sequence: batch.sequence(),

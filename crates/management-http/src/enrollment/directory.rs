@@ -63,13 +63,19 @@ async fn list(
             .map_err(|_| Error::Unauthorized)?;
         let page = s
             .devices
-            .directory(&auth, &query, &s.cursor, move |c, ids| {
-                Box::pin(async move {
-                    rss_mdm_inventory_service::assets::directory_presence_on(c, tenant, ids)
-                        .await
-                        .map_err(|_| rss_mdm_registration_service::Error::Storage)
-                })
-            })
+            .directory(
+                &auth,
+                &query,
+                &s.cursor,
+                rss_mdm_inventory_service::assets::directory_prepare_on,
+                move |c, ids| {
+                    Box::pin(async move {
+                        rss_mdm_inventory_service::assets::directory_presence_on(c, tenant, ids)
+                            .await
+                            .map_err(|_| rss_mdm_registration_service::Error::Storage)
+                    })
+                },
+            )
             .await?;
         Ok(Json(page))
     })
@@ -81,7 +87,7 @@ async fn statistics(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     query: rss_mdm_http_contract::query::OwnedQuery<
-        rss_mdm_http_contract::query::Statistics<DeviceStatisticsQuery>,
+        rss_mdm_http_contract::query::Statistics<ListQuery>,
     >,
 ) -> Result<
     Json<
@@ -96,7 +102,15 @@ async fn statistics(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     let q = query.parse().map_err(|_| Error::Malformed)?;
-    Ok(Json(s.devices.directory_statistics(&auth, &q).await?))
+    Ok(Json(
+        s.devices
+            .directory_statistics(
+                &auth,
+                &q,
+                rss_mdm_inventory_service::assets::directory_prepare_on,
+            )
+            .await?,
+    ))
 }
 
 async fn detail(
@@ -115,15 +129,8 @@ async fn detail(
 
 struct ListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_registration_service::device::directory::SCHEMA
-    }
-}
-
-struct DeviceStatisticsQuery;
-impl rss_mdm_http_contract::query::DirectoryOwner for DeviceStatisticsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_registration_service::device::directory::SCHEMA
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_registration_service::device::directory::BINDINGS.execution()
     }
 }
 

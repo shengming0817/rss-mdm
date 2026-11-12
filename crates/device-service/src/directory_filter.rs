@@ -2,48 +2,79 @@
 //! The field catalog checks names/operators first; values remain JSON literals.
 use rss_mdm_query::{
     Expression, Operator,
-    directory::{Field, Kind, Query, Schema},
+    directory::{Query, Schema},
 };
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema {
-    id: "device_views",
-    keys: &["key"],
-    default_limit: 64,
-    max_limit: 100,
-    fields: vec![
-        Field::scalar("key", Kind::Text),
-        Field::filter_only(
-            "status",
-            Kind::enumeration(&[
-                "active",
-                "pending",
-                "revoked",
-                "superseded",
-                "registered",
-                "cancelled",
-                "expired",
-            ]),
-        ),
-        Field::filter_only("assetState", Kind::enumeration(&["active", "archived", "deleted"])),
-        Field::filter_only("channel", Kind::enum_set(&["mdm", "agent"])),
-        Field::filter_only(
-            "source",
-            Kind::enum_set(&["mdm.windows", "mdm.apple", "agent.builtin"]),
-        ),
-        Field::filter_only("platform", Kind::enum_set(&["windows", "macos"])),
-        Field::filter_only("search", Kind::Text),
-        Field::output("reference").excluded("Object identity is selected through the canonical key selector"),
-        Field::output("association").excluded("Association evidence includes domain state and hardware maps; use the association directory"),
-        Field::output("endpoints").excluded("Endpoint object arrays use the existing whole-expression per-endpoint selectors; arbitrary child expansion is not supported"),
-    ],
-}
+    Schema::derived::<crate::view_response::DirectoryRow>("device_views", &["key"],64,100,&[
+        rss_mdm_query::directory::Exclusion { path:"association.members", reason:"Membership object arrays use the same-endpoint selectors; arbitrary member expansion cannot preserve that quantifier" },
+        rss_mdm_query::directory::Exclusion { path:"association.state", reason:"Effective association state requires current hardware and competitor qualification; raw stored state is not the public state" },
+        rss_mdm_query::directory::Exclusion { path:"endpoints", reason:"Endpoint object arrays evaluate the entire predicate on one endpoint through the typed domain selectors" },
+    ]).and_then(|s|s.with_selectors::<Selectors>("Entire predicate matches one authorized endpoint in the device view"))
+      .and_then(|s|s.no_sort("reference","Unified device views navigate by their canonical object key"))
+      .and_then(|s|s.no_sort("association","Association metadata sorting is owned by the association directory; unified views navigate by canonical object key"))
+      .expect("Public device-view model")
 });
+#[derive(schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct Selectors {
+    status: rss_mdm_registration_service::device::directory::Status,
+    asset_state: crate::lifecycle_management::AssetState,
+    channel: Vec<rss_mdm_inventory::Channel>,
+    source: Vec<rss_mdm_registration_service::device::directory::Source>,
+    platform: Vec<rss_mdm_agent_wire::runtime::TaskPlatform>,
+    search: String,
+}
+fn source_field(name: &str) -> rss_mdm_query::Result<()> {
+    if matches!(
+        name,
+        "key"
+            | "reference.kind"
+            | "reference.id"
+            | "association.id"
+            | "association.version"
+            | "association.evidence"
+            | "association.confirmedBy"
+            | "association.confirmedAt"
+            | "association.revokedBy"
+            | "association.revokedAt"
+            | "association.reason"
+            | "status"
+            | "assetState"
+            | "channel"
+            | "source"
+            | "platform"
+            | "search"
+    ) {
+        Ok(())
+    } else {
+        Err(rss_mdm_query::Error::Invalid)
+    }
+}
+pub static EXECUTION: std::sync::LazyLock<rss_mdm_query::directory::Execution> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query::directory::Execution::bind(
+            &SCHEMA,
+            SCHEMA
+                .fields()
+                .iter()
+                .filter(|f| f.filter || f.sort)
+                .map(|f| {
+                    source_field(&f.name).expect("Complete device view relation dispatch");
+                    f.name.as_str()
+                }),
+        )
+        .expect("Device view binding")
+    });
 pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
     let mut q = SCHEMA.parse(raw)?;
     q.default_filter("assetState", "active")?;
     Ok(q)
 }
 pub(super) fn predicate(q: &Query) -> crate::Result<String> {
+    EXECUTION
+        .require(q.schema())
+        .map_err(|_| crate::Error::Malformed)?;
     fn expr(e: &Expression<String, serde_json::Value>) -> crate::Result<String> {
         Ok(match e {
             Expression::And(v) | Expression::Or(v) => format!(
@@ -69,12 +100,30 @@ pub(super) fn predicate(q: &Query) -> crate::Result<String> {
                 {
                     return Err(crate::Error::Malformed);
                 }
-                let array = matches!(field.as_str(), "search" | "platform" | "source" | "channel");
+                source_field(field).map_err(|_| crate::Error::Malformed)?;
+                let array = field == "search"
+                    || SCHEMA
+                        .field(field)
+                        .map_err(|_| crate::Error::Malformed)?
+                        .kind
+                        .collection();
                 let path = format!(
                     "$.{}{}",
-                    serde_json::to_string(field).map_err(|_| crate::Error::Malformed)?,
+                    field
+                        .split('.')
+                        .map(serde_json::to_string)
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(|_| crate::Error::Malformed)?
+                        .join("."),
                     if array { "[*]" } else { "" }
                 );
+                if matches!(operator, Operator::IsNull | Operator::IsNotNull) {
+                    return Ok(if *operator == Operator::IsNull {
+                        format!("(!exists({path}) || {path} == null)")
+                    } else {
+                        format!("(exists({path}) && {path} != null)")
+                    });
+                }
                 let mut terms = Vec::new();
                 for v in values {
                     let term = if *operator == Operator::Icontains {

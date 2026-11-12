@@ -37,6 +37,8 @@ pub static ACTIVITIES: rss_mdm_query::window::Schema = rss_mdm_query::window::Sc
     default_limit: 50,
     max_limit: 200,
     order: "recordedAt DESC, id DESC",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
     context: &[
         "from",
         "until",

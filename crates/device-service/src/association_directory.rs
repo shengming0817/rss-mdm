@@ -4,31 +4,14 @@ use rss_mdm_audit_integration::budget::AuditBudget;
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_query::{
     cursor::CursorCodec,
-    directory::{Field, Kind, Query, Schema},
+    directory::{Query, Schema},
 };
 
 use std::time::Duration;
 use uuid::Uuid;
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "device_associations",
-    keys: &["id"],
-    default_limit: 64,
-    max_limit: 100,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("version", Kind::Integer),
-        Field::scalar("confirmedAt", Kind::Integer),
-        Field::output("association"),
-    ],
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<AssociationRow>("device_associations", &["id"], 64, 100, &[rss_mdm_query::directory::Exclusion { path: "association.members", reason: "Member object arrays require device and channel to match the same member" }, rss_mdm_query::directory::Exclusion { path: "association.state", reason: "Effective state is recomputed from current hardware evidence and competitor qualification; the stored association state is not this public value" }]).expect("Public directory model")
 });
-fn column(name: &str) -> &'static str {
-    match name {
-        "id" => "a.id::text COLLATE \"C\"",
-        "version" => "a.version",
-        "confirmedAt" => "a.confirmed_at",
-        _ => unreachable!("checked association field"),
-    }
-}
 impl Associations {
     pub async fn directory(
         &self,
@@ -47,24 +30,21 @@ impl Associations {
                 let binding=q.binding(&("live-associations",p.tenant_id(),p.instance_id(),p.principal_id(),current.query_binding(p)?)).map_err(|_|Error::Malformed)?;
                 let codec=CursorCodec::from_key(s.key.clone());
                 let after=q.after(&codec,&binding).map_err(|_|Error::CursorInvalidated)?;
-                let mut sql=sqlx::QueryBuilder::new("WITH selected AS MATERIALIZED (SELECT a.id,a.version,a.confirmed_at FROM mdm_devices.associations a WHERE a.tenant_id=");
+                let mut sql=sqlx::QueryBuilder::new("WITH selected AS MATERIALIZED (SELECT a.* FROM mdm_devices.associations a WHERE a.tenant_id=");
                 sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
                 if let Some(ids)=allowed {
                     sql.push(" AND NOT EXISTS(SELECT FROM mdm_devices.members m WHERE m.tenant_id=a.tenant_id AND m.association_id=a.id AND NOT(m.device=ANY(").push_bind(ids.into_iter().collect::<Vec<_>>()).push(")))");
                 }
-                rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(|_|Error::Malformed)?;
-                sql.push(") SELECT mdm_devices.read_world(ARRAY(SELECT id FROM selected),ARRAY(SELECT DISTINCT m.device FROM mdm_devices.members m JOIN selected s ON s.id=m.association_id WHERE m.tenant_id=$1::uuid),ARRAY[]::text[])");
+                rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*BINDINGS).map_err(|_|Error::Malformed)?;
+                sql.push(") SELECT jsonb_build_object('world',mdm_devices.read_world(ARRAY(SELECT id FROM selected),ARRAY(SELECT DISTINCT m.device FROM mdm_devices.members m JOIN selected s ON s.id=m.association_id WHERE m.tenant_id=$1::uuid),ARRAY[]::text[]),'ids',ARRAY(SELECT a.id FROM selected a");
+                rss_mdm_query_postgres::order(&mut sql,q,&*BINDINGS).map_err(|_|Error::Malformed)?;
+                sql.push("))");
                 let raw:serde_json::Value=sql.build_query_scalar().fetch_one(c).await?;
-                let ids=raw["endpoints"].as_array().ok_or(Error::Storage)?.iter().map(|v|v["id"].as_str().map(str::to_owned).ok_or(Error::Storage)).collect::<Result<Vec<_>>>()?;
-                let (world,_,_,_)=crate::snapshot::decode_world(&raw,s.tenant,&ids)?;
-                let mut rows=world.associations.iter().map(|a| { let a=world.effective(a.clone());AssociationRow{id:a.id,version:a.version,confirmed_at:a.confirmed_at,association:a} }).collect::<Vec<_>>();
-                rows.sort_by(|a,b| {
-                    for sort in q.sort() {
-                        let order=match sort.field.as_str(){"id"=>a.id.cmp(&b.id),"version"=>a.version.cmp(&b.version),"confirmedAt"=>a.confirmed_at.cmp(&b.confirmed_at),_=>unreachable!("checked association sort")};
-                        if !order.is_eq(){return if sort.descending{order.reverse()}else{order};}
-                    }
-                    std::cmp::Ordering::Equal
-                });
+                let ids=raw["world"]["endpoints"].as_array().ok_or(Error::Storage)?.iter().map(|v|v["id"].as_str().map(str::to_owned).ok_or(Error::Storage)).collect::<Result<Vec<_>>>()?;
+                let (world,_,_,_)=crate::snapshot::decode_world(&raw["world"],s.tenant,&ids)?;
+                let mut by_id=world.associations.iter().map(|a| { let a=world.effective(a.clone());(a.id,AssociationRow{id:a.id,version:a.version,confirmed_at:a.confirmed_at,association:a}) }).collect::<std::collections::BTreeMap<_,_>>();
+                let selected: Vec<Uuid> = serde_json::from_value(raw["ids"].clone()).map_err(|_|Error::Storage)?;
+                let rows=selected.into_iter().map(|id|by_id.remove(&id).ok_or(Error::Storage)).collect::<Result<Vec<_>>>()?;
                 p.check_live()?;
                 Ok((q.page_typed(rows,&codec,&binding).map_err(|_|Error::Malformed)?,current.query_binding(p)?))
             })).await
@@ -79,6 +59,8 @@ pub static CANDIDATES: rss_mdm_query::window::Schema = rss_mdm_query::window::Sc
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "candidate device identity",
+    purpose: rss_mdm_query::window::Purpose::Qualification,
+    reason: "Candidates require live endpoint and association-write qualification within a bounded scan",
     context: &["channel"],
 };
 pub static SOURCE_ITEMS: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
@@ -86,6 +68,8 @@ pub static SOURCE_ITEMS: rss_mdm_query::window::Schema = rss_mdm_query::window::
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "immutable source array ordinal",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Items preserve an immutable source array ordinal",
     context: &[],
 };
 
@@ -97,3 +81,39 @@ pub struct AssociationRow {
     pub confirmed_at: i64,
     pub association: Association,
 }
+
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::required_column("id", "a.id::text COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("version", "a.version"),
+                rss_mdm_query_postgres::Source::column("confirmedAt", "a.confirmed_at"),
+                rss_mdm_query_postgres::Source::column(
+                    "association.id",
+                    "a.id::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("association.version", "a.version"),
+                rss_mdm_query_postgres::Source::column(
+                    "association.evidence",
+                    "a.evidence COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "association.confirmedBy",
+                    "a.confirmed_by COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("association.confirmedAt", "a.confirmed_at"),
+                rss_mdm_query_postgres::Source::column(
+                    "association.revokedBy",
+                    "a.revoked_by COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("association.revokedAt", "a.revoked_at"),
+                rss_mdm_query_postgres::Source::column(
+                    "association.reason",
+                    "a.reason COLLATE \"C\"",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

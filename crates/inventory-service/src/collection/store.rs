@@ -185,6 +185,7 @@ pub async fn seal(
             rss_mdm_inventory_postgres::seal_collection_in(
                 tx,
                 rss_mdm_inventory_postgres::CollectionCompletion {
+                    trusted: true,
                     scope: &run.scope,
                     run: &run.id.to_string(),
                     sequence: run.sequence,

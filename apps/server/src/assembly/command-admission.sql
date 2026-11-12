@@ -81,7 +81,8 @@ WITH tables AS (
 
  ('mdm_content.manifests',true,false,false),('mdm_flow.native_protection',true,true,false),('mdm_access.certificate_grants',true,true,false),('mdm_access.agent_enrollment_settings',true,false,false),('mdm_access.agent_connection_versions',true,false,false),
  ('mdm.inventory_presence',true,false,false),('mdm.inventory',true,false,false),('mdm.array_versions',true,false,false),('mdm.array_items',true,false,false),('mdm_access.collection_versions',true,false,false),('mdm_access.collection_items',true,false,false),
- ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),
+ ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),('mdm.device_hardware_evidence',true,true,false),
+ ('mdm_assets.device_inventory_presence',true,false,false),
  ('mdm_software_composition.withdrawals',true,false,false),('mdm_software_composition.subjects',true,false,false),('mdm_software_composition.targets',true,false,false),('mdm_software_composition.projections',true,false,false),('mdm_software_release.aggregates',true,false,false),
  ('mdm_devices.unmanage_policy_recovery',true,true,false),('mdm_policy.policies',true,false,false),('mdm_policy.versions',true,false,false),('mdm_policy.triggers',true,false,false),('mdm_planning.configuration_claims',true,true,true),('mdm_planning.configuration_devices',true,true,false),
  ('mdm_task_signing.heads',true,false,false),('mdm_task_signing.versions',true,false,false),('mdm_task_signing.acknowledgements',true,false,false),

@@ -38,22 +38,28 @@ fn query_error(e: rss_mdm_query::Error) -> Error {
         _ => Error::Malformed,
     }
 }
-fn column(name: &str) -> &'static str {
-    match name {
-        "id" => "id::text COLLATE \"C\"",
-        "kind" => "kind COLLATE \"C\"",
-        "device" => "device COLLATE \"C\"",
-        "policy" => "policy::text COLLATE \"C\"",
-        "status" => "status COLLATE \"C\"",
-
-        "origin" => "source_kind COLLATE \"C\"",
-        "deadline" => "deadline",
-        "authorization.state" => "authorization_summary->>'state'",
-        "authorization.reason" => "authorization_summary->>'reason'",
-        "reauthorization.state" => "reauthorization_summary->>'state'",
-        _ => unreachable!("checked execution field"),
-    }
+fn column(name: &str) -> rss_mdm_query::Result<&'static str> {
+    use ExecutionColumn::*;
+    Ok(match execution_column(name)? {
+        Id => "id::text COLLATE \"C\"",
+        Kind => "kind COLLATE \"C\"",
+        Device => "device COLLATE \"C\"",
+        Policy => "policy::text COLLATE \"C\"",
+        Status => "status COLLATE \"C\"",
+        Origin => "source_kind COLLATE \"C\"",
+        Deadline => "deadline",
+        AuthorizationState => "(authorization_summary->>'state') COLLATE \"C\"",
+        AuthorizationReason => "(authorization_summary->>'reason') COLLATE \"C\"",
+        ReauthorizationState => "(reauthorization_summary->>'state') COLLATE \"C\"",
+        ReauthorizationReason => "(reauthorization_summary->>'reason') COLLATE \"C\"",
+        ConfirmationRequired => "(reauthorization_summary->>'confirmationRequired')::boolean",
+    })
 }
+static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::mapped(&SCHEMA, column)
+            .expect("Complete operation SQL dispatch")
+    });
 const PAGE_SOURCES: i64 = 1_048_576;
 const CONFIGURATION_RELATION: &str = "SELECT id,device,kind,source_kind,policy_version,policy,deadline,status,input_bytes FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid";
 const STATISTICS_SOURCES: i64 = 4_194_304;
@@ -514,7 +520,7 @@ impl rss_mdm_management_http::execution::operations::Reads for Operations {
                         }
                     })};
                     let detail_url=match metadata.kind{KindOfOperation::Command=>format!("/api/v1/devices/{}/operations/{}",url::form_urlencoded::byte_serialize(metadata.device.as_bytes()).collect::<String>().replace('+',"%20"),metadata.id),KindOfOperation::ActionRun=>format!("/api/v1/policies/{}/runs/{}",metadata.policy.ok_or(Error::Conflict)?,metadata.id)};
-                    items.push(Item{metadata,evidence,authorization,reauthorization,detail_url});
+                    items.push(q.project_typed(Item{metadata,evidence,authorization,reauthorization,detail_url}).map_err(query_error)?);
                 }
                 Ok(Page{items,next_cursor:page.next_cursor})
             })).await.inspect(|_|audit.require_final_request())

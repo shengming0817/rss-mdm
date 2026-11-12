@@ -149,13 +149,13 @@ async fn entries(
 }
 struct Sources;
 impl rss_mdm_http_contract::query::DirectoryOwner for Sources {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &owner::SOURCES
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        owner::SOURCE_BINDINGS.execution()
     }
 }
 struct Entries;
 impl rss_mdm_http_contract::query::DirectoryOwner for Entries {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &owner::ENTRIES
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        owner::ENTRY_BINDINGS.execution()
     }
 }

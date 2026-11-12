@@ -1,20 +1,7 @@
-use rss_mdm_query::{
-    Error,
-    cursor::CursorCodec,
-    directory::{Field, Kind, Schema},
-};
+use rss_mdm_query::{Error, cursor::CursorCodec, directory::Schema};
 use serde_json::{Value, json};
-static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "example",
-    keys: &["id"],
-    default_limit: 2,
-    max_limit: 3,
-    fields: vec![
-        Field::scalar("id", Kind::Integer),
-        Field::scalar("name", Kind::Text),
-        Field::scalar("enabled", Kind::Boolean),
-        Field::output("detail"),
-    ],
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Row>("example", &["id"], 2, 3, &[]).expect("Public directory model")
 });
 #[test]
 fn projection_does_not_change_authenticated_seek_and_context_is_bound() {
@@ -124,6 +111,8 @@ fn bounded_product_continuations_preserve_signed_positions_and_page_budgets() {
         default_limit: 1,
         max_limit: 10,
         order: "ordinal",
+        purpose: rss_mdm_query::window::Purpose::Snapshot,
+        reason: "Test fixture for a fixed source continuation",
         context: &[],
     };
     let codec = CursorCodec::new(&[9; 32]).unwrap();
@@ -167,4 +156,19 @@ fn bounded_product_continuations_preserve_signed_positions_and_page_budgets() {
             .decode_bounded::<Value>(&forged, "assets", 256 * 1024)
             .is_err()
     );
+}
+
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+struct Row {
+    id: i64,
+    #[schemars(length(max = 64))]
+    name: Option<String>,
+    enabled: bool,
+    detail: Detail,
+}
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+struct Detail {
+    value: String,
 }

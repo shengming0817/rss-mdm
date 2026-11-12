@@ -2,46 +2,20 @@
 //! ref: sqlx sqlx-core/src/query_builder.rs@v0.9.0
 use crate::{Error, HttpState, database::db};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_query::directory::{Field, Kind, Schema};
+use rss_mdm_query::directory::Schema;
 use serde_json::{Value, json};
 use uuid::Uuid;
-pub(crate) static ORGANIZATIONS: std::sync::LazyLock<Schema> =
-    std::sync::LazyLock::new(|| Schema {
-        id: "apple_organizations",
-        keys: &["id"],
-        default_limit: 100,
-        max_limit: 1000,
-        fields: vec![
-            Field::scalar("id", Kind::Uuid),
-            Field::output("ade"),
-            Field::output("accountEnrollment"),
-        ],
-    });
-pub(crate) static ACCOUNTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "apple_accounts",
-    keys: &["account"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("account", Kind::Text),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("enabled", Kind::Boolean),
-        Field::scalar("principalId", Kind::Uuid),
-        Field::scalar("instanceId", Kind::Uuid),
-    ],
+pub static ORGANIZATIONS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Organization>("apple_organizations", &["id"], 100, 1000, &[])
+        .expect("Public directory model")
 });
-pub(crate) static DEVICES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "ade_devices",
-    keys: &["serial"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("serial", Kind::Text),
-        Field::scalar("deleted", Kind::Boolean),
-        Field::scalar("profileUuid", Kind::Uuid),
-        Field::scalar("observedAt", Kind::Integer),
-        Field::output("registration"),
-    ],
+pub static ACCOUNTS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Account>("apple_accounts", &["account"], 100, 1000, &[])
+        .expect("Public directory model")
+});
+pub static DEVICES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Device>("ade_devices", &["serial"], 100, 1000, &[])
+        .expect("Public directory model")
 });
 pub(crate) static PROFILES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
     Schema::derived::<Profile>("ade_profiles", &["id"], 100, 1000, &[])
@@ -67,22 +41,6 @@ pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
         _ => Error::Malformed,
     }
 }
-fn column(n: &str) -> &'static str {
-    match n {
-        "id" => "(row->>'id') COLLATE \"C\"",
-        "account" => "(row->>'account') COLLATE \"C\"",
-        "serial" => "(row->>'serial') COLLATE \"C\"",
-        "principalId" => "(row->>'principalId') COLLATE \"C\"",
-        "instanceId" => "(row->>'instanceId') COLLATE \"C\"",
-        "profileUuid" => "(row->>'profileUuid') COLLATE \"C\"",
-        "remoteUuid" => "(row->>'remoteUuid') COLLATE \"C\"",
-        "revision" => "(row->>'revision')::bigint",
-        "observedAt" => "(row->>'observedAt')::bigint",
-        "enabled" => "(row->>'enabled')::boolean",
-        "deleted" => "(row->>'deleted')::boolean",
-        _ => unreachable!("checked Apple field"),
-    }
-}
 const CONFIG: &str = "jsonb_build_object('domain',a.domain,'serverUuid',a.server_uuid,'signingKey',a.signing_key,'enabled',a.enabled,'revision',a.revision,'externalOrganizationVerification','not_observed')";
 const ACCOUNT: &str = "jsonb_build_object('account',a.account,'principalId',a.principal,'instanceId',a.instance,'revision',a.revision,'enabled',a.enabled)";
 #[derive(Clone, Copy)]
@@ -93,6 +51,14 @@ pub(crate) enum Collection {
     Profiles(Uuid),
 }
 impl Collection {
+    fn bindings(self) -> &'static rss_mdm_query_postgres::Bindings {
+        match self {
+            Self::Organizations => &ORGANIZATION_BINDINGS,
+            Self::Accounts(_) => &ACCOUNT_BINDINGS,
+            Self::Devices(_) => &DEVICE_BINDINGS,
+            Self::Profiles(_) => &PROFILE_BINDINGS,
+        }
+    }
     fn schema(self) -> &'static Schema {
         match self {
             Self::Organizations => &ORGANIZATIONS,
@@ -148,36 +114,46 @@ pub(crate) async fn page<Q: rss_mdm_http_contract::query::DirectoryOwner>(
         Collection::Organizations => None,
         Collection::Accounts(id) | Collection::Devices(id) | Collection::Profiles(id) => Some(id),
     };
+    let now = app
+        .clock
+        .unix_seconds()
+        .ok_or(Error::Unavailable(crate::Failure::Clock))?;
+    let configured_keys = app
+        .apple
+        .as_ref()
+        .map(|a| {
+            a.account_keys
+                .iter()
+                .filter(|(_, s)| s.expires() > now as u64)
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let binding = q
         .binding(&(
             p.tenant_id(),
             p.instance_id(),
             current.query_binding(p)?,
             parent,
+            &configured_keys,
         ))
         .map_err(error)?;
     let after = q.after(&app.query_cursor, &binding).map_err(error)?;
-    let now = app
-        .clock
-        .unix_seconds()
-        .ok_or(Error::Unavailable(crate::Failure::Clock))?;
     let source=match kind{
  Collection::Organizations=>format!("SELECT jsonb_build_object('id',o.id,'accountEnrollment',CASE WHEN a.id IS NULL THEN NULL ELSE {CONFIG} END,'ade',CASE WHEN d.organization IS NULL THEN NULL ELSE jsonb_build_object('organizationId',d.organization,'revision',d.revision,'enabled',d.enabled,'serverUuid',d.server_uuid,'orgId',d.org_id,'keyId',d.key_id,'tokenRevision',d.token_revision,'tokenExpiresAt',d.token_expires,'tokenState',CASE WHEN d.token_expires IS NULL THEN 'missing' WHEN d.token_expires<=extract(epoch FROM statement_timestamp()) THEN 'expired' WHEN d.token_invalid THEN 'invalid' WHEN d.verified THEN 'verified' ELSE 'unverified' END,'syncedAt',d.synced_at,'externalDeviceVerification','not_observed') END) row FROM mdm_apple.organizations o LEFT JOIN mdm_apple.account_configuration a ON(a.tenant_id,a.id)=(o.tenant_id,o.id) LEFT JOIN mdm_apple.ade_servers d ON(d.tenant_id,d.organization)=(o.tenant_id,o.id) WHERE o.tenant_id="),
  Collection::Accounts(_)=>format!("SELECT {ACCOUNT} row FROM mdm_apple.account_bindings a WHERE a.tenant_id="),
  Collection::Devices(_)=>"SELECT jsonb_build_object('serial',serial,'deleted',deleted,'profileUuid',remote_profile,'observedAt',observed_at,'registration','not_implied') row FROM mdm_apple.ade_devices WHERE tenant_id=".into(),
  Collection::Profiles(_)=>"SELECT jsonb_build_object('id',id,'revision',revision,'configuration',configuration,'remoteUuid',remote_uuid) row FROM mdm_apple.ade_profiles WHERE tenant_id=".into()};
-    let mut sql = sqlx::QueryBuilder::new(format!("SELECT row FROM ({source}"));
+    let mut sql = sqlx::QueryBuilder::new("WITH configured AS (SELECT ");
+    sql.push_bind(configured_keys)
+        .push("::text[] AS keys) SELECT row FROM (")
+        .push(source);
     sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
     if let Some(id) = parent {
         sql.push(" AND organization=").push_bind(id);
     }
-    sql.push(") records WHERE true");
-    if matches!(kind, Collection::Profiles(_)) {
-        rss_mdm_query_postgres::append(&mut sql, &q, after.as_ref(), &*PROFILE_BINDINGS)
-            .map_err(error)?;
-    } else {
-        rss_mdm_query_postgres::append(&mut sql, &q, after.as_ref(), column).map_err(error)?;
-    }
+    sql.push(") records CROSS JOIN configured WHERE true");
+    rss_mdm_query_postgres::append(&mut sql, &q, after.as_ref(), kind.bindings()).map_err(error)?;
     let mut rows: Vec<Value> = sql
         .build_query_scalar()
         .fetch_all(&mut *tx)
@@ -305,29 +281,29 @@ pub async fn summary(
 
 pub(crate) struct OrganizationsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for OrganizationsQuery {
-    fn schema() -> &'static Schema {
-        &ORGANIZATIONS
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        ORGANIZATION_BINDINGS.execution()
     }
 }
 
 pub(crate) struct AccountsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for AccountsQuery {
-    fn schema() -> &'static Schema {
-        &ACCOUNTS
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        ACCOUNT_BINDINGS.execution()
     }
 }
 
 pub(crate) struct DevicesQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for DevicesQuery {
-    fn schema() -> &'static Schema {
-        &DEVICES
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        DEVICE_BINDINGS.execution()
     }
 }
 
 pub(crate) struct ProfilesQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ProfilesQuery {
-    fn schema() -> &'static Schema {
-        PROFILE_BINDINGS.schema()
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        PROFILE_BINDINGS.execution()
     }
 }
 
@@ -357,6 +333,7 @@ pub(crate) enum NotObserved {
 #[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Account {
+    #[schemars(extend("x-rss-maxUtf8Bytes" = 1024))]
     pub account: String,
     pub principal_id: Uuid,
     pub instance_id: Uuid,
@@ -390,6 +367,7 @@ pub(crate) enum TokenState {
 #[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Device {
+    #[schemars(extend("x-rss-maxUtf8Bytes" = 256))]
     pub serial: String,
     pub deleted: bool,
     pub profile_uuid: Option<Uuid>,
@@ -477,3 +455,95 @@ impl Detail {
         }
     }
 }
+
+pub static ORGANIZATION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &ORGANIZATIONS,
+            &[
+                rss_mdm_query_postgres::Source::json("id", "row#>'{id}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "ade.organizationId",
+                    "row#>'{ade,organizationId}'",
+                ),
+                rss_mdm_query_postgres::Source::json("ade.revision", "row#>'{ade,revision}'"),
+                rss_mdm_query_postgres::Source::json("ade.enabled", "row#>'{ade,enabled}'"),
+                rss_mdm_query_postgres::Source::json("ade.serverUuid", "row#>'{ade,serverUuid}'"),
+                rss_mdm_query_postgres::Source::json("ade.orgId", "row#>'{ade,orgId}'"),
+                rss_mdm_query_postgres::Source::json("ade.keyId", "row#>'{ade,keyId}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "ade.tokenRevision",
+                    "row#>'{ade,tokenRevision}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "ade.tokenExpiresAt",
+                    "row#>'{ade,tokenExpiresAt}'",
+                ),
+                rss_mdm_query_postgres::Source::json("ade.tokenState", "row#>'{ade,tokenState}'"),
+                rss_mdm_query_postgres::Source::json("ade.syncedAt", "row#>'{ade,syncedAt}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "ade.externalDeviceVerification",
+                    "row#>'{ade,externalDeviceVerification}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "accountEnrollment.domain",
+                    "row#>'{accountEnrollment,domain}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "accountEnrollment.serverUuid",
+                    "row#>'{accountEnrollment,serverUuid}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "accountEnrollment.signingKey",
+                    "row#>'{accountEnrollment,signingKey}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "accountEnrollment.enabled",
+                    "row#>'{accountEnrollment,enabled}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "accountEnrollment.revision",
+                    "row#>'{accountEnrollment,revision}'",
+                ),
+                rss_mdm_query_postgres::Source::json(
+                    "accountEnrollment.externalOrganizationVerification",
+                    "row#>'{accountEnrollment,externalOrganizationVerification}'",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "accountEnrollment.signingKeyConfigured",
+                    "((row->'accountEnrollment'->>'signingKey')=ANY(configured.keys))",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });
+
+pub static ACCOUNT_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &ACCOUNTS,
+            &[
+                rss_mdm_query_postgres::Source::json("account", "row#>'{account}'"),
+                rss_mdm_query_postgres::Source::json("principalId", "row#>'{principalId}'"),
+                rss_mdm_query_postgres::Source::json("instanceId", "row#>'{instanceId}'"),
+                rss_mdm_query_postgres::Source::json("revision", "row#>'{revision}'"),
+                rss_mdm_query_postgres::Source::json("enabled", "row#>'{enabled}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });
+
+pub static DEVICE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &DEVICES,
+            &[
+                rss_mdm_query_postgres::Source::json("serial", "row#>'{serial}'"),
+                rss_mdm_query_postgres::Source::json("deleted", "row#>'{deleted}'"),
+                rss_mdm_query_postgres::Source::json("profileUuid", "row#>'{profileUuid}'"),
+                rss_mdm_query_postgres::Source::json("observedAt", "row#>'{observedAt}'"),
+                rss_mdm_query_postgres::Source::json("registration", "row#>'{registration}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

@@ -1,10 +1,11 @@
-use rss_mdm_query::directory::{Field, Kind, Projection, Schema};
+use rss_mdm_query::directory::{Projection, Schema};
 use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::Serialize;
 
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct Row {
+    #[schemars(length(max = 64))]
     id: String,
     custom_event: Option<String>,
     nested: Nested,
@@ -13,16 +14,8 @@ struct Row {
 struct Nested {
     required: bool,
 }
-static DIRECTORY: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "projection",
-    keys: &["id"],
-    default_limit: 10,
-    max_limit: 10,
-    fields: vec![
-        Field::scalar("id", Kind::Text),
-        Field::scalar("customEvent", Kind::Text),
-        Field::output("nested"),
-    ],
+pub static DIRECTORY: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Row>("projection", &["id"], 10, 10, &[]).expect("Public directory model")
 });
 
 #[test]

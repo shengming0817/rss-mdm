@@ -2,7 +2,7 @@
 use super::*;
 use axum::response::IntoResponse;
 use rss_mdm_authorization_service::Permission;
-use rss_mdm_management_http::execution::operations::{Page, Reads, SCHEMA};
+use rss_mdm_management_http::execution::operations::{Reads, SCHEMA};
 use rss_mdm_query::cursor::CursorCodec;
 
 #[tokio::test]
@@ -98,14 +98,6 @@ async fn native_directory_serializes_the_actual_owner_and_respects_projection() 
             let (page, ()) =
                 tokio::try_join!(async { Ok::<_, anyhow::Error>(read.await?) }, write)?;
             assert_eq!(page.items.len(), 1);
-            let page = Page {
-                items: page
-                    .items
-                    .into_iter()
-                    .map(|row| query.project_typed(row))
-                    .collect::<rss_mdm_query::Result<Vec<_>>>()?,
-                next_cursor: page.next_cursor,
-            };
             let response =
                 rss_mdm_http_contract::CollectionResponse(axum::Json(page)).into_response();
             assert_eq!(response.status(), axum::http::StatusCode::OK);

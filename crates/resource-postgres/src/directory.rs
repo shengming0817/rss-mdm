@@ -74,7 +74,8 @@ pub fn select(
     sql.push("SELECT id,revision,document,digest,directory FROM mdm_resource.aggregates WHERE tenant_id=").push_bind(tenant.to_string()).push("::uuid");
     rss_mdm_query_postgres::append(sql, q, after, &*BINDINGS)
 }
-static BINDINGS: std::sync::LazyLock<Bindings> = std::sync::LazyLock::new(|| {
+/// The canonical aggregate projection binds every executable public field.
+pub static BINDINGS: std::sync::LazyLock<Bindings> = std::sync::LazyLock::new(|| {
     Bindings::new(
         &SCHEMA,
         &[
@@ -119,18 +120,10 @@ impl ResourceStore {
         }
         let document: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| STORAGE.fault("version directory"))?;
-        let mut sql = QueryBuilder::new("SELECT jsonb_build_object('resource',");
-        sql.push_bind(id).push(",'version',v->>0,'state',CASE v->>1 WHEN '0' THEN 'frozen' WHEN '1' THEN 'active' WHEN '2' THEN 'deprecated' WHEN '3' THEN 'archived' END) FROM jsonb_array_elements(").push_bind(document).push("->5) v WHERE TRUE");
-        fn column(name: &str) -> &'static str {
-            match name {
-                "version" => "(v->>0) COLLATE \"C\"",
-                "state" => {
-                    "(CASE v->>1 WHEN '0' THEN 'frozen' WHEN '1' THEN 'active' WHEN '2' THEN 'deprecated' WHEN '3' THEN 'archived' END) COLLATE \"C\""
-                }
-                _ => unreachable!("checked version field"),
-            }
-        }
-        if rss_mdm_query_postgres::append(&mut sql, q, after, column).is_err() {
+        let mut sql = QueryBuilder::new("SELECT row FROM (SELECT jsonb_build_object('resource',");
+        sql.push_bind(id).push(",'version',v->>0,'state',CASE v->>1 WHEN '0' THEN 'frozen' WHEN '1' THEN 'active' WHEN '2' THEN 'deprecated' WHEN '3' THEN 'archived' END) row FROM jsonb_array_elements(")
+            .push_bind(document).push("->5) v) versions WHERE true");
+        if rss_mdm_query_postgres::append(&mut sql, q, after, &*VERSION_BINDINGS).is_err() {
             return Ok(Err(Rejection::InvalidInput));
         }
         let rows = tx
@@ -141,3 +134,17 @@ impl ResourceStore {
         Ok(Ok(rows))
     }
 }
+
+/// Nested versions share one checked execution contract with their HTTP owner.
+pub static VERSION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &rss_mdm_resource::directory::VERSION_SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::json("resource", "row#>'{resource}'"),
+                rss_mdm_query_postgres::Source::json("version", "row#>'{version}'"),
+                rss_mdm_query_postgres::Source::json("state", "row#>'{state}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

@@ -534,8 +534,8 @@ async fn list_configurations(
 
 struct ListConfigurationsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ListConfigurationsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_registration_service::agent::configurations::directory::SCHEMA
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_registration_service::agent::configurations::directory::BINDINGS.execution()
     }
 }
 
@@ -578,14 +578,14 @@ impl rss_mdm_http_contract::signature::Output for HttpFailure {
 
 struct RequestsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for RequestsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_registration_service::agent::queries::REQUESTS
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_registration_service::agent::queries::REQUEST_BINDINGS.execution()
     }
 }
 struct RecoveryOperationsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for RecoveryOperationsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_registration_service::agent::queries::OPERATIONS
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_registration_service::agent::queries::OPERATION_BINDINGS.execution()
     }
 }
 async fn request_directory(

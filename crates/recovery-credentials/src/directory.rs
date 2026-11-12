@@ -4,43 +4,14 @@ use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_query::{
     Page,
     cursor::CursorCodec,
-    directory::{Field, Kind, Query, Schema},
+    directory::{Query, Schema},
 };
 use serde_json::Value;
 use sqlx::PgConnection;
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "recovery_credentials",
-    keys: &["id", "version"],
-    default_limit: 64,
-    max_limit: 100,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("version", Kind::Integer),
-        Field::scalar("current", Kind::Boolean),
-        Field::scalar(
-            "validity",
-            Kind::enumeration(&["unverified", "verified", "revoked", "unknown", "superseded"]),
-        ),
-        Field::scalar("escrowed", Kind::Boolean),
-        Field::scalar("operation", Kind::Uuid),
-        Field::scalar("createdAt", Kind::Integer),
-        Field::scalar("invalidatedAt", Kind::Integer),
-        Field::output("binding"),
-    ],
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<crate::Material>("recovery_credentials", &["id", "version"], 64, 100, &[])
+        .expect("Public directory model")
 });
-fn column(name: &str) -> &'static str {
-    match name {
-        "id" => "e.id::text COLLATE \"C\"",
-        "version" => "v.version",
-        "current" => "coalesce(e.current_version=v.version,false)",
-        "validity" => "v.validity COLLATE \"C\"",
-        "escrowed" => "(v.sealed IS NOT NULL)",
-        "operation" => "v.operation::text COLLATE \"C\"",
-        "createdAt" => "v.created_at",
-        "invalidatedAt" => "v.invalidated_at",
-        _ => unreachable!("checked recovery field"),
-    }
-}
 pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
@@ -74,7 +45,7 @@ pub(crate) async fn read(
         .push(crate::storage_profile::sql(profile).directory_read_2)
         .push_bind(device.to_owned())
         .push("))");
-    rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(error)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*BINDINGS).map_err(error)?;
     let rows: Vec<Value> = sql.build_query_scalar().fetch_all(&mut *c).await?;
     let rows = rows
         .into_iter()
@@ -82,3 +53,29 @@ pub(crate) async fn read(
         .collect::<Result<Vec<_>, _>>()?;
     q.page_typed(rows, codec, &binding).map_err(error)
 }
+
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::required_column("id", "e.id::text COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::required_column("version", "v.version"),
+                rss_mdm_query_postgres::Source::column(
+                    "current",
+                    "coalesce(e.current_version=v.version,false)",
+                ),
+                rss_mdm_query_postgres::Source::column("validity", "v.validity COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("escrowed", "(v.sealed IS NOT NULL)"),
+                rss_mdm_query_postgres::Source::column(
+                    "operation",
+                    "v.operation::text COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column("createdAt", "v.created_at"),
+                rss_mdm_query_postgres::Source::column("invalidatedAt", "v.invalidated_at"),
+                rss_mdm_query_postgres::Source::column("binding.device", "e.device COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::json("binding.subject", "e.subject"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

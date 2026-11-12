@@ -77,6 +77,8 @@ pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schem
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "evaluated_at DESC, task DESC",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
     context: &["from", "until"],
 };
 #[derive(Clone, Debug, Serialize)]

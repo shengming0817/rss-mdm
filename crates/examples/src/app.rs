@@ -150,6 +150,7 @@ impl App {
         let reference = rss_mdm_inventory_postgres::seal_collection_in(
             &mut tx,
             rss_mdm_inventory_postgres::CollectionCompletion {
+                trusted: true,
                 scope: self.authority.scope(),
                 run: batch.id().as_str(),
                 sequence: batch.sequence(),

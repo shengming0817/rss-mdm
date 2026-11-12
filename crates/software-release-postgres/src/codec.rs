@@ -218,6 +218,21 @@ pub(crate) fn snapshot(p: &Publication) -> Result<Vec<u8>, PgError> {
         attempt(&s.attempt)
     ]))
 }
+pub(crate) fn directory(p: &Publication) -> Value {
+    let s = p.snapshot();
+    let a = &s.attempt;
+    let outcome = match a.outcome {
+        PublicationOutcome::Pending => "pending",
+        PublicationOutcome::Reported(PublicationResult::Unknown(_)) => "unknown",
+        PublicationOutcome::Reported(PublicationResult::NotApplied(_)) => "not_applied",
+        PublicationOutcome::Reported(PublicationResult::Applied(_)) => "published",
+    };
+    json!({"id":s.id.value(), "revision":s.revision, "target":a.binding.target.value(),
+        "publication":a.id().digest().bytes(), "contentDigest":s.content.digest().bytes(),
+        "manifestDigest":s.content.manifest().bytes(), "targetDigest":a.binding.target_digest.bytes(),
+        "attempt":a.attempt, "outcome":outcome, "withdrawn":s.withdrawn,
+        "withdrawalKey":format!("w:{}:{}",crate::hex(&a.id().digest().bytes()),a.attempt)})
+}
 pub(crate) fn read_snapshot(bytes: &[u8]) -> Result<Publication, PgError> {
     let v: Value = STORAGE.decode(bytes)?;
     let a = array(&v, 7)?;

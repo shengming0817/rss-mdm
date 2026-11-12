@@ -4,50 +4,17 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::context::RequestAuth;
 use rss_mdm_query::{
     cursor::CursorCodec,
-    directory::{Field, Kind, Query, Schema},
+    directory::{Query, Schema},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "executions",
-    keys: &["id", "kind"],
-    default_limit: 64,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("kind", Kind::enumeration(&["command", "action_run"])),
-        Field::scalar("device", Kind::Text),
-        Field::scalar("policy", Kind::Uuid),
-        Field::scalar("status", Kind::Text),
-        Field::scalar("origin", Kind::enumeration(&["direct", "policy"])),
-        Field::scalar("deadline", Kind::Integer),
-        Field::output("authorization"),
-        Field::output("reauthorization"),
-        Field::filter_only(
-            "authorization.state",
-            Kind::enumeration(&["authorized", "blocked", "not_applicable"]),
-        ),
-        Field::filter_only(
-            "authorization.reason",
-            Kind::enumeration(&[
-                "lifecycle_blocked",
-                "device_inactive",
-                "input_mismatch",
-                "source_invalid",
-            ]),
-        ),
-        Field::filter_only(
-            "reauthorization.state",
-            Kind::enumeration(&["available", "unavailable", "not_applicable"]),
-        ),
-        Field::output("evidence"),
-        Field::output("detailUrl"),
-    ],
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Item>("executions", &["id", "kind"], 64, 1000, &[rss_mdm_query::directory::Exclusion { path: "evidence", reason: "Heterogeneous per-operation detail with owner-specific collections and qualification; read the original operation for evidence queries" }, rss_mdm_query::directory::Exclusion { path: "detailUrl", reason: "Navigation link derived from the operation identity; its routing encoding is not a business selector" }]).and_then(|s| s.no_sort("authorization", "Current authorization is classified during a bounded scan; it is not a persistent seek key")).and_then(|s| s.no_sort("reauthorization", "Current reauthorization is classified during a bounded scan; it is not a persistent seek key")).expect("Public directory model")
 });
 
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct Page<T = Item> {
+pub struct Page<T = rss_mdm_query::directory::Projection<Item>> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
 }
@@ -215,3 +182,55 @@ pub trait Reads: Send + Sync {
         audit: &'a RequestAudit,
     ) -> Pending<'a, rss_mdm_device_service::control::ChangedReceipt>;
 }
+
+/// Closed logical read fields. App supplies the exhaustive SQL interpretation of this port.
+#[derive(Clone, Copy)]
+pub enum ExecutionColumn {
+    Id,
+    Kind,
+    Device,
+    Policy,
+    Status,
+    Origin,
+    Deadline,
+    AuthorizationState,
+    AuthorizationReason,
+    ReauthorizationState,
+    ReauthorizationReason,
+    ConfirmationRequired,
+}
+/// New public query fields must have an execution interpretation before mounting.
+pub fn execution_column(name: &str) -> rss_mdm_query::Result<ExecutionColumn> {
+    use ExecutionColumn::*;
+    Ok(match name {
+        "id" => Id,
+        "kind" => Kind,
+        "device" => Device,
+        "policy" => Policy,
+        "status" => Status,
+        "origin" => Origin,
+        "deadline" => Deadline,
+        "authorization.state" => AuthorizationState,
+        "authorization.reason" => AuthorizationReason,
+        "reauthorization.state" => ReauthorizationState,
+        "reauthorization.reason" => ReauthorizationReason,
+        "reauthorization.confirmationRequired" => ConfirmationRequired,
+        _ => return Err(rss_mdm_query::Error::Invalid),
+    })
+}
+/// The actual App implementation exhaustively consumes the same closed read-field port.
+pub static EXECUTION: std::sync::LazyLock<rss_mdm_query::directory::Execution> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query::directory::Execution::bind(
+            &SCHEMA,
+            SCHEMA
+                .fields()
+                .iter()
+                .filter(|f| f.filter || f.sort)
+                .map(|f| {
+                    execution_column(&f.name).expect("Complete operation read port");
+                    f.name.as_str()
+                }),
+        )
+        .expect("Complete operation model")
+    });

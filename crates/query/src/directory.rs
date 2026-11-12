@@ -68,26 +68,49 @@ impl<T: schemars::JsonSchema> schemars::JsonSchema for Projection<T> {
             projected(&mut value),
             "directory rows require an owner-defined object schema"
         );
+        value["x-rss-directory-model"] = serde_json::json!({
+            "identity": T::schema_id(),
+            "schema": generator.subschema_for::<T>(),
+        });
         schema = value.try_into().expect("projected owner schema");
         schema
     }
 }
 
+mod execution;
 mod field;
 mod model;
+pub use execution::Execution;
 pub use field::{Field, Kind};
 pub use model::{BuildError, Exclusion};
 
 #[derive(Debug, Serialize)]
 pub struct Schema {
     pub id: &'static str,
-    pub fields: Vec<Field>,
+    fields: Vec<Field>,
+    /// The unprojected serialization model is the field authority.
+    pub(crate) model: Value,
+    #[serde(rename = "modelIdentity")]
+    pub(crate) model_identity: String,
+    pub(crate) selectors: Vec<String>,
     /// Unique identity, appended when absent from the caller's ordering.
     pub keys: &'static [&'static str],
     pub default_limit: u16,
     pub max_limit: u16,
 }
 impl Schema {
+    pub fn fields(&self) -> &[Field] {
+        &self.fields
+    }
+    pub fn model(&self) -> &Value {
+        &self.model
+    }
+    pub fn model_identity(&self) -> &str {
+        &self.model_identity
+    }
+    pub fn selectors(&self) -> &[String] {
+        &self.selectors
+    }
     pub fn field(&self, name: &str) -> Result<&Field> {
         self.fields
             .iter()
@@ -146,7 +169,6 @@ impl Query {
             }
         }
         // Derived sortable fields carry conservative encoded bounds. Admission occurs before SQL.
-        // Explicit catalogs without model bounds retain their owner-defined sorting policy.
         let bounds: Option<Vec<usize>> = sort
             .iter()
             .map(|s| schema.field(&s.field).ok().and_then(|f| f.sort_bytes))
@@ -375,6 +397,10 @@ fn scalar(field: &Field, operator: Operator, input: String) -> Result<Value> {
                 .to_string(),
         ),
         _ => Value::from(input),
+    };
+    let value = match field.normalizer {
+        Some(normalize) => normalize(&value).ok_or(Error::Invalid)?,
+        None => value,
     };
     if field.valid_operand(operator, &value) {
         Ok(value)

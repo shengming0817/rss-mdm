@@ -286,12 +286,7 @@ pub enum Response {
         task: Uuid,
         status_url: String,
     },
-    #[serde(skip_deserializing)]
-    FieldList {
-        dictionary: String,
-        items: Vec<rss_mdm_query::directory::Projection<super::FieldView>>,
-        next_cursor: Option<String>,
-    },
+
     FieldDescriptor {
         field: Box<super::FieldView>,
     },
@@ -311,12 +306,6 @@ pub enum Response {
     },
     Saved {
         query: SavedView,
-    },
-    #[serde(skip_deserializing)]
-    SavedList {
-        items: Vec<rss_mdm_query::directory::Projection<super::saved_directory::Row>>,
-        #[serde(rename = "nextCursor")]
-        next_cursor: Option<String>,
     },
 }
 #[derive(Clone, Debug, Serialize)]

@@ -137,6 +137,8 @@ static WINDOW: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
     default_limit: 2,
     max_limit: 3,
     order: "id ASC",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Test fixture for a fixed source continuation",
     context: &[],
 };
 impl rss_mdm_http_contract::query::QueryOwner for Window {

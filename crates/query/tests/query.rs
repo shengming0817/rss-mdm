@@ -114,6 +114,8 @@ fn fixed_windows_reject_reinterpretation_and_keep_context_strict() {
         default_limit: 10,
         max_limit: 100,
         order: "frozen source ordinal",
+        purpose: rss_mdm_query::window::Purpose::Snapshot,
+        reason: "Test fixture for a fixed source continuation",
         context: &["scope"],
     };
     let (q, context) = SCHEMA.parse("limit=2&scope=device").unwrap();
@@ -140,6 +142,8 @@ fn windows_use_thousand_row_budget_and_reject_foreign_schemas() {
         default_limit: DEFAULT_PAGE_LIMIT,
         max_limit: MAX_PAGE_LIMIT,
         order: "id",
+        purpose: rss_mdm_query::window::Purpose::Snapshot,
+        reason: "Test fixture for a fixed source continuation",
         context: &[],
     };
     static SECOND: Schema = Schema {
@@ -147,6 +151,8 @@ fn windows_use_thousand_row_budget_and_reject_foreign_schemas() {
         default_limit: DEFAULT_PAGE_LIMIT,
         max_limit: MAX_PAGE_LIMIT,
         order: "id",
+        purpose: rss_mdm_query::window::Purpose::Snapshot,
+        reason: "Test fixture for a fixed source continuation",
         context: &[],
     };
     let (query, _) = FIRST.parse("").unwrap();

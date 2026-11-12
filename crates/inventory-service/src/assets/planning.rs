@@ -403,48 +403,6 @@ impl SnapshotReader {
     }
 }
 
-pub(super) struct SelectedSources {
-    pub subjects: BTreeMap<String, String>,
-}
-impl SnapshotReader {
-    pub(super) async fn select_sources_on(
-        profile: rss_mdm_install_support::StorageProfile,
-        c: &mut sqlx::PgConnection,
-        tenant: TenantId,
-        rows: Vec<sqlx::postgres::PgRow>,
-        collection_scope: &rss_mdm_inventory::CollectionScope,
-        fields: &[FieldKey],
-    ) -> Result<SelectedSources> {
-        if rows.len() > 2000 {
-            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
-        }
-        let datasets = rss_mdm_inventory_postgres::datasets_in(c, tenant, collection_scope, fields)
-            .await
-            .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
-        let mut subjects = BTreeMap::new();
-        for row in rows {
-            let device: String = row.try_get("device")?;
-            let source = stored(rss_mdm_inventory::Source::parse(row.try_get("source")?))?;
-            let channel: &str = row.try_get("channel")?;
-            if channel != source.channel().ok_or(Error::Malformed)?.as_str() {
-                return Err(Error::Unavailable(Failure::InventoryQuery).into());
-            }
-            for dataset in datasets.get(&source).into_iter().flatten() {
-                let scope = crate::device::scope_dataset(
-                    profile,
-                    tenant,
-                    &device,
-                    source.as_str(),
-                    stored(Uuid::parse_str(row.try_get("epoch")?))?,
-                    dataset,
-                )?;
-                subjects.insert(stored(scope.encode())?, device.clone());
-            }
-        }
-        Ok(SelectedSources { subjects })
-    }
-}
-
 /// One committed change in a fixed asset window. Interpretation belongs to the consuming owner.
 pub struct AssetChange {
     pub revision: i64,

@@ -9,6 +9,7 @@ GRANT UPDATE(revision) ON TABLE mdm_software_release.aggregates TO mdm_software_
 GRANT UPDATE(document) ON TABLE mdm_software_release.aggregates TO mdm_software_release_runtime;
 
 GRANT UPDATE(digest) ON TABLE mdm_software_release.aggregates TO mdm_software_release_runtime;
+GRANT UPDATE(directory) ON TABLE mdm_software_release.aggregates TO mdm_software_release_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_software_release.immutable TO mdm_software_release_runtime;
 

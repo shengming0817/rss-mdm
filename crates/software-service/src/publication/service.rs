@@ -1005,6 +1005,7 @@ pub(super) fn operation(t: &Target) -> String {
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct PublicTarget {
+    #[schemars(extend("x-rss-maxUtf8Bytes" = 128))]
     pub id: String,
     pub digest: [u8; 32],
     pub protocol: TargetProtocol,
