@@ -376,7 +376,8 @@ async fn evidence(
     Extension(audit): Extension<RequestAudit>,
     Path((id, bucket, object)): Path<(Uuid, String, String)>,
     query: OwnedQuery<Window<Evidence>>,
-) -> Result<CollectionResponse<HttpResponse>, Error> {
+) -> Result<CollectionResponse<Json<AssetEnvelope<super::software_evidence::EvidenceAsset>>>, Error>
+{
     invoke(
         &app,
         &auth,
@@ -389,6 +390,8 @@ async fn evidence(
         },
     )
     .await
+    .and_then(|response| super::software_evidence::project(response.envelope))
+    .map(Json)
     .map(CollectionResponse)
 }
 

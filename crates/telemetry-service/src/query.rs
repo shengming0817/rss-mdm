@@ -11,8 +11,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 /// A bounded product query. No SQL, tenant override or client-authored definition is accepted.
-#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone)]
 pub struct HistoryRequest {
     pub device: String,
     pub field: String,
@@ -20,7 +19,6 @@ pub struct HistoryRequest {
     pub start_micros: i64,
     pub end_micros: i64,
     pub max_points: NonZeroU32,
-    #[schemars(schema_with = "crate::contract_schema::query_mode")]
     pub mode: QueryMode,
     pub after: Option<String>,
 }
@@ -438,8 +436,7 @@ async fn read_on(
 }
 
 /// Explicit statistical semantics and exact source/definition identity, returned by history.
-#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone)]
 pub struct AggregateRequest {
     pub query: HistoryRequest,
     pub definition_version: std::num::NonZeroU64,
@@ -447,9 +444,7 @@ pub struct AggregateRequest {
     pub epoch: uuid::Uuid,
     pub dimensions: std::collections::BTreeMap<String, String>,
     pub resolution_micros: std::num::NonZeroU64,
-    #[schemars(schema_with = "crate::contract_schema::aggregate_op")]
     pub operation: AggregateOp,
-    #[schemars(schema_with = "crate::contract_schema::coverage")]
     pub coverage: CoveragePolicy,
     pub max_gap_micros: Option<std::num::NonZeroU64>,
 }
@@ -716,23 +711,6 @@ mod tests {
         assert_eq!(result.len(), 1);
         let selected = &result[0].sample;
         assert_eq!(selected.input().observed_at.micros(), 200);
-        let schema = schemars::generate::SchemaSettings::draft2020_12()
-            .for_serialize()
-            .into_generator()
-            .into_root_schema_for::<LatestRow>()
-            .to_value();
-        let validator = jsonschema::validator_for(&schema).unwrap();
-        let encoded = serde_json::to_value(&result[0]).unwrap();
-        assert!(validator.is_valid(&encoded));
-        let mut unknown = encoded.clone();
-        unknown["sample"]["reading"]["quality"] = "future".into();
-        assert!(!validator.is_valid(&unknown));
-        let mut missing = encoded;
-        missing["sample"]
-            .as_object_mut()
-            .unwrap()
-            .remove("interval");
-        assert!(!validator.is_valid(&missing));
         assert!(result[0].effective_source);
         assert!(
             latest(values.clone(), &live, &field, true, 16)
@@ -795,8 +773,6 @@ pub enum Quality {
     Failed,
 }
 
-#[derive(Serialize, schemars::JsonSchema)]
-#[serde(tag = "mode", rename_all = "camelCase")]
 pub enum History {
     History {
         rows: Vec<HistoryRow>,
@@ -811,31 +787,26 @@ pub enum History {
         retired: bool,
     },
 }
-#[derive(Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
+
 pub struct HistoryRow {
-    #[schemars(schema_with = "crate::contract_schema::sample")]
     pub sample: Sample,
     pub received_at: i64,
     pub live_source: bool,
 }
-#[derive(Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
+
 pub struct LatestRow {
-    #[schemars(schema_with = "crate::contract_schema::sample")]
     pub sample: Sample,
     pub received_at: i64,
     pub effective_source: bool,
     pub source_conflict: bool,
 }
-#[derive(Serialize, schemars::JsonSchema)]
+
 pub struct Unavailable {
-    #[schemars(schema_with = "crate::contract_schema::selection")]
     pub selection: Selection,
-    #[schemars(schema_with = "crate::contract_schema::interval")]
     pub window: Interval,
     pub reason: UnavailableCause,
 }
+
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UnavailableCause {
@@ -854,10 +825,8 @@ impl From<UnavailableRange> for Unavailable {
         }
     }
 }
-#[derive(Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
+
 pub struct Aggregate {
-    #[schemars(schema_with = "crate::contract_schema::aggregate_buckets")]
     pub buckets: Vec<AggregateBucket>,
     pub unavailable: Vec<Unavailable>,
     pub resolution_micros: std::num::NonZeroU64,

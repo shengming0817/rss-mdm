@@ -6,6 +6,7 @@ pub mod authorization;
 mod body_policy;
 pub mod compliance;
 pub mod content;
+mod decimal;
 pub mod enrollment;
 mod error;
 mod error_projection;

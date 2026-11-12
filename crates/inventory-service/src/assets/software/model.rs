@@ -495,6 +495,7 @@ pub enum Response {
     },
     Status {
         task: Uuid,
+        dimensions: Vec<Dimension>,
         status: QueryStatus,
         result_state: ResultState,
         failure: Option<String>,

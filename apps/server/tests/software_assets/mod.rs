@@ -83,7 +83,7 @@ async fn missing_mapping_source_is_unknown_until_its_complete_empty_list() -> Re
     for key in ["is_bundle", "is_framework", "is_provisioned"] {
         store.insert(key.into(), Scalar::Boolean(false));
     }
-    store.insert("package_status".into(), Scalar::Integer(0));
+    store.insert("package_status".into(), Scalar::Integer(i64::MAX));
     fixture::facts_for(
         &c,
         &a,
@@ -125,6 +125,27 @@ async fn missing_mapping_source_is_unknown_until_its_complete_empty_list() -> Re
     let rows = http
         .get(&format!("/software-asset-queries/{task}/software"))
         .await?;
+    let bucket = response(&rows)["items"][0]["id"]
+        .as_str()
+        .context("software bucket")?;
+    let evidence = http
+        .get(&format!(
+            "/software-asset-queries/{task}/software/{bucket}/devices/endpoint:{}/evidence?limit=1",
+            a.members[0].device
+        ))
+        .await?;
+    assert_eq!(
+        response(&evidence)["items"][0]["value"]["value"]["package_status"]["value"],
+        i64::MAX.to_string()
+    );
+    assert_eq!(
+        response(&evidence)["coordinates"],
+        response(&rows)["coordinates"]
+    );
+    assert_eq!(
+        response(&http.get(&format!("/software-asset-queries/{task}")).await?)["dimensions"],
+        json!([])
+    );
     assert_eq!(response(&rows)["items"][0]["assessmentDevices"], 1);
     assert_eq!(response(&rows)["items"][0]["thresholdState"], "unknown");
     let coverage = http
@@ -574,6 +595,16 @@ async fn aggregate_complete_results_and_revalidate_inputs() -> Result<()> {
         json!({"context":"endpoint","dimensions":["version","component"]}),
     )
     .await?;
+    // Reopen the reader around the same durable task, with no client-supplied dimensions.
+    let reopened = Http::open(&c, &fixture, Arc::new(c.authenticate(&account).await?)).await?;
+    let status = reopened
+        .get(&format!("/software-asset-queries/{task}"))
+        .await?;
+    assert_eq!(
+        response(&status)["dimensions"],
+        json!(["version", "component"])
+    );
+    reopened.close().await;
     let buckets = http
         .get(&format!("/software-asset-queries/{task}/software"))
         .await?;
@@ -583,6 +614,16 @@ async fn aggregate_complete_results_and_revalidate_inputs() -> Result<()> {
     assert_eq!(bucket["thresholdState"], "reached");
     let key = bucket["id"].as_str().unwrap();
     let base = format!("/software-asset-queries/{task}/software/{key}");
+    assert_eq!(
+        http.call(
+            reqwest::Method::GET,
+            &format!("{base}/breakdowns/publisher"),
+            None
+        )
+        .await?
+        .0,
+        400
+    );
     let versions = http.get(&format!("{base}/breakdowns/version")).await?;
     assert_eq!(response(&versions)["items"].as_array().unwrap().len(), 3);
     assert!(
@@ -614,6 +655,25 @@ async fn aggregate_complete_results_and_revalidate_inputs() -> Result<()> {
             .unwrap()
             .iter()
             .all(|v| v["confirmed"] == true)
+    );
+    let first_evidence = http
+        .get(&format!("{base}/devices/{object}/evidence?limit=1"))
+        .await?;
+    let evidence_cursor = response(&first_evidence)["nextCursor"]
+        .as_str()
+        .context("evidence continuation")?;
+    let next_evidence = http
+        .get(&format!(
+            "{base}/devices/{object}/evidence?limit=1&cursor={evidence_cursor}"
+        ))
+        .await?;
+    assert_eq!(
+        response(&first_evidence)["coordinates"],
+        response(&next_evidence)["coordinates"]
+    );
+    assert_ne!(
+        response(&first_evidence)["items"][0]["ordinal"],
+        response(&next_evidence)["items"][0]["ordinal"]
     );
     let filtered = query(
         &c,

@@ -22,6 +22,7 @@ rss-contract.workspace = true
 rss-mdm-http-contract.workspace = true
 rss-mdm-query.workspace = true
 rss-mdm-telemetry-service.workspace = true
+rss-timeseries.workspace = true
 rss-mdm-mail-service.workspace = true
 rss-mdm-webhook-service.workspace = true
 rss-mdm-recovery-credentials.workspace = true

@@ -1,4 +1,5 @@
 //! Telemetry management stays inside the existing account/session HTTP boundary.
+mod wire;
 use crate::{Error, Failure, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
@@ -12,7 +13,7 @@ use rss_mdm_http_contract::{
 };
 use rss_mdm_telemetry_service::{
     Service,
-    query::{AggregateRequest, HealthRequest, HistoryRequest, ResourceRequest},
+    query::{HealthRequest, ResourceRequest},
 };
 use std::sync::Arc;
 type App = Arc<Option<Arc<Service>>>;
@@ -120,9 +121,10 @@ async fn history(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    input: Result<Json<HistoryRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<rss_mdm_telemetry_service::query::History>, Error> {
-    let input = input.map_err(Error::from)?.0;
+    input: Result<Json<wire::HistoryRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<wire::History>, Error> {
+    let input: rss_mdm_telemetry_service::query::HistoryRequest =
+        input.map_err(Error::from)?.0.into();
     audit.set_action(
         "telemetry_history_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -132,6 +134,7 @@ async fn history(
     service
         .history(&auth.proof, &input, &audit)
         .await
+        .map(wire::History::from)
         .map(Json)
         .map_err(error)
 }
@@ -140,9 +143,10 @@ async fn aggregate(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    input: Result<Json<AggregateRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<rss_mdm_telemetry_service::query::Aggregate>, Error> {
-    let input = input.map_err(Error::from)?.0;
+    input: Result<Json<wire::AggregateRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<wire::Aggregate>, Error> {
+    let input: rss_mdm_telemetry_service::query::AggregateRequest =
+        input.map_err(Error::from)?.0.into();
     audit.set_action(
         "telemetry_aggregate_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -152,6 +156,7 @@ async fn aggregate(
     service
         .aggregate(&auth.proof, &input, &audit)
         .await
+        .map(wire::Aggregate::from)
         .map(Json)
         .map_err(error)
 }
