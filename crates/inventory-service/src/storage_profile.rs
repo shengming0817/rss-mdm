@@ -224,8 +224,8 @@ SELECT CASE WHEN (SELECT ok FROM budget) THEN jsonb_build_object('ok',true,
  'quality',coalesce((SELECT jsonb_agg(document) FROM quality),'[]'::jsonb))
  ELSE jsonb_build_object('ok',false) END
 $$;
-REVOKE ALL ON FUNCTION "###, $asset_reader, r###"(text[],text[],jsonb,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION "###, $asset_reader, "(text[],text[],jsonb,jsonb) TO ", $access, ",mdm_identity_runtime,", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, ",", $command_runtime, r###";
+REVOKE ALL ON FUNCTION "###, $asset_reader, r###"(uuid[],text[],jsonb,jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION "###, $asset_reader, "(uuid[],text[],jsonb,jsonb) TO ", $access, ",mdm_identity_runtime,", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, ",", $command_runtime, r###";
 GRANT USAGE ON "###, $asset_schema, " TO ", $command_runtime, r###";
 "###),
                 assets_planning_condition_inputs_in_1: concat!("SELECT DISTINCT (f->'scope')::text AS scope FROM ", $access_schema, "collection_history h JOIN ", $access_schema, "collection_versions v ON v.tenant_id=h.tenant_id AND v.version=h.document->>'progress_version' CROSS JOIN LATERAL jsonb_array_elements(v.metadata->'definition'->'fields') f WHERE h.tenant_id=$1::uuid AND mdm.asset_visible($2,h.revision) AND (h.scope::jsonb->>'registration')::uuid=ANY($3) AND ($4::text IS NULL OR ($5::text='macos' AND ((f->'scope'->>'kind' IN ('macos_applications','macos_brew') AND f->'scope'->>'uid'=$4) OR (f->'scope'->'owner'->>'kind'='macos' AND f->'scope'->'owner'->>'uid'=$4))) OR ($5::text='windows' AND f->'scope'->'owner'->>'kind'='windows' AND f->'scope'->'owner'->>'sid'=$4)) LIMIT 129"),
@@ -235,7 +235,7 @@ WITH expected(signature,language,result,definer,returns_set,volatility,names,con
  ('"###, $access_schema, "capture_collection_history()', 'plpgsql', 'trigger', true, false, 'v', ARRAY[]::text[], ARRAY['", $authority_search_path, "']::text[], $1::text, ARRAY['", $owner, r###"']::text[]),
  ('"###, $access_schema, "immutable_collection()', 'plpgsql', 'trigger', false, false, 'v', ARRAY[]::text[], NULL::text[], $2::text, ARRAY['", $owner, r###"']::text[]),
  ('"###, $access_schema, "capture_collection_metadata()', 'plpgsql', 'trigger', true, false, 'v', ARRAY[]::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['", $owner, r###"']::text[]),
- ('"###, $asset_reader, "(text[],text[],jsonb,jsonb)', 'sql', 'jsonb', true, false, 's', ARRAY['p_devices','p_fields','p_cut','p_scope']::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['", $access, "','mdm_identity_runtime','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $telemetry_runtime, "','", $command_runtime, "','", $owner, r###"']::text[])
+ ('"###, $asset_reader, "(uuid[],text[],jsonb,jsonb)', 'sql', 'jsonb', true, false, 's', ARRAY['p_devices','p_fields','p_cut','p_scope']::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['", $access, "','mdm_identity_runtime','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $telemetry_runtime, "','", $command_runtime, "','", $owner, r###"']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

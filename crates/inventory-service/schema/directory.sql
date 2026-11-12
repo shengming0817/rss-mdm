@@ -62,7 +62,7 @@ JOIN datasets d ON d.source=s.source AND d.dataset=p.scope::jsonb->>'dataset'
 WHERE p.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
  AND p.journal='mdm.observation.v1' AND p.generation='inventory-projection-v1'
  AND p.scope::jsonb->>'tenant'=p.tenant_id::text
- AND p.scope::jsonb->>'object'=CASE WHEN d.dataset='inventory' THEN r.id ELSE r.id||':'||d.dataset END
+ AND p.scope::jsonb->>'object'=CASE WHEN d.dataset='inventory' THEN r.id::text ELSE r.id::text||':'||d.dataset END
  AND r.channel=CASE WHEN s.source IN('mdm.windows','mdm.apple') THEN 'mdm' WHEN s.source IN('agent.builtin','agent.script','agent.osquery','agent.native') THEN 'agent' END
  AND EXISTS(SELECT FROM mdm_access.credentials k WHERE k.tenant_id=r.tenant_id AND k.device=r.id AND k.state='active')
 UNION

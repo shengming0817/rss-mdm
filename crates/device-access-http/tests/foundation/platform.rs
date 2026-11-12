@@ -315,7 +315,7 @@ pub async fn verify(
     let (actor, secret) = Box::pin(business::login(c, principal))
         .await
         .context("platform proof cookie login")?;
-    let old: Value = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND definition#>>'{target,device}'=$2")
+    let old: Value = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1::uuid AND (definition#>>'{target,device}')::uuid=$2")
         .bind(c.tenant.to_string()).bind(registration.device.into_uuid()).fetch_one(&c.operator).await?;
     let mut publication: rss_mdm_policy_postgres::device_access::Publication =
         serde_json::from_value(old)?;

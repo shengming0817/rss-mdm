@@ -754,8 +754,8 @@ async fn unknown_recovery(
         "SELECT
           (SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1 AND device=$2),
           (SELECT count(*) FROM rss_da.report_history WHERE tenant_id=$1 AND device=$3),
-          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND definition#>>'{target,device}'=$2),
-          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND definition#>>'{target,device}'=$3)")
+          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND (definition#>>'{target,device}')::uuid=$2),
+          (SELECT count(*) FROM rss_da.policies WHERE tenant_id=$1 AND (definition#>>'{target,device}')::uuid=$3)")
         .bind(registration.tenant).bind(old_device.into_uuid()).bind(registration.device.into_uuid())
         .fetch_one(&c.operator).await?;
     assert!(
