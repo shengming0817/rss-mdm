@@ -642,6 +642,10 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
         initial_operations, 0,
         "idle baseline has no pending configuration command"
     );
+    wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_scope.scopes s JOIN mdm_policy.work w ON(w.tenant_id,w.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND w.started AND w.completed)",scope).await?;
+    // Startup's completed transactions must publish their cumulative PG statistics
+    // before the idle baseline; pg_stat_clear_snapshot only affects this reader.
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let idle_before = cost_sample(&c).await?;
     tokio::time::sleep(Duration::from_secs(25)).await;
     let idle_after = cost_sample(&c).await?;

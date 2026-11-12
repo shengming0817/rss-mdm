@@ -569,6 +569,19 @@ async fn policy_channel_permissions_are_exact() -> Result<()> {
     let mut connection = pool.acquire().await?;
     rss_mdm_apple_channel::flow_store::verify_policy_access_on(&mut connection).await?;
     rss_mdm_recovery_credentials::native::storage::verify_policy_access_on(&mut connection).await?;
+    for forbidden in [
+        "SELECT response FROM mdm_apple.attempts LIMIT 0",
+        "DELETE FROM mdm_apple.declarations WHERE false",
+    ] {
+        let error = sqlx::query(forbidden)
+            .execute(&mut *connection)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("42501")
+        );
+    }
     drop(connection);
     pool.close().await;
     c.close().await;
