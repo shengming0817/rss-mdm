@@ -214,7 +214,11 @@ impl Transactions {
             .wake_in(
                 tx,
                 &target,
-                &rss_reconcile::ResourceSet::empty(tenant),
+                &rss_mdm_registration_service::lifecycle::resources::device(
+                    tenant,
+                    &device,
+                    rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+                ),
                 (),
                 |_, _| Box::pin(async { Ok(()) }),
             )

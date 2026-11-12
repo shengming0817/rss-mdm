@@ -315,7 +315,11 @@ pub async fn advance_run(
         .wake_in(
             tx,
             &target,
-            &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
+            &rss_mdm_registration_service::lifecycle::resources::device(
+                target.scope().tenant(),
+                &run.target.device,
+                rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+            ),
             (),
             |_, _| Box::pin(async { Ok(()) }),
         )

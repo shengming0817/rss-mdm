@@ -32,14 +32,11 @@ async fn wake(
         work.entity(),
     )
     .map_err(|_| Error::Malformed)?;
+    let resources = crate::control::recovery::resources_in(tx, target.entity()).await?;
     reconcile
-        .wake_in(
-            tx,
-            &target,
-            &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
-            (),
-            |_, _| Box::pin(async { Ok(()) }),
-        )
+        .wake_in(tx, &target, &resources, (), |_, _| {
+            Box::pin(async { Ok(()) })
+        })
         .await?;
     crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::CommandRecovery)
         .await?;

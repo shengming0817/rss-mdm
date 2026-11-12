@@ -266,11 +266,14 @@ pub(crate) async fn key_page(
     c: &mut PgConnection,
     tenant: TenantId,
     id: Uuid,
-) -> Result<(Option<(String, i64)>, Vec<Uuid>)> {
+) -> Result<Option<(Option<(String, i64)>, Vec<Uuid>)>> {
     let t = tenant.to_string();
-    let (kind,value,requested,completed,window,cursor):(String,String,i64,i64,i64,Option<String>)=sqlx::query_as("SELECT kind,value,requested,completed,watermark,cursor FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE NOWAIT").bind(&t).bind(id).fetch_one(&mut *c).await?;
+    let row: Option<(String,String,i64,i64,i64,Option<String>)> = sqlx::query_as("SELECT kind,value,requested,completed,watermark,cursor FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE SKIP LOCKED").bind(&t).bind(id).fetch_optional(&mut *c).await?;
+    let Some((kind, value, requested, completed, window, cursor)) = row else {
+        return Ok(None);
+    };
     if requested == completed {
-        return Ok((None, vec![]));
+        return Ok(Some((None, vec![])));
     }
     let window = if window == completed {
         requested
@@ -278,7 +281,7 @@ pub(crate) async fn key_page(
         window
     };
     if kind == "device" {
-        return Ok((Some((value, window)), vec![]));
+        return Ok(Some((Some((value, window)), vec![])));
     }
     let devices:Vec<String>=sqlx::query_scalar("SELECT DISTINCT device FROM mdm_devices.identity_keys WHERE tenant_id=$1::uuid AND kind=$2 AND value=$3 AND device>coalesce($4,'') COLLATE \"C\" ORDER BY device LIMIT 65").bind(&t).bind(kind).bind(value).bind(cursor).fetch_all(&mut *c).await?;
     let mut work = Vec::new();
@@ -287,7 +290,7 @@ pub(crate) async fn key_page(
     }
     let more = devices.len() > PAGE;
     sqlx::query("UPDATE mdm_devices.association_work SET watermark=$3,completed=CASE WHEN $4 THEN completed ELSE $3 END,cursor=$5 WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(id).bind(window).bind(more).bind(more.then(||devices[PAGE-1].clone())).execute(c).await?;
-    Ok((None, work))
+    Ok(Some((None, work)))
 }
 pub(crate) async fn complete_work(
     c: &mut PgConnection,

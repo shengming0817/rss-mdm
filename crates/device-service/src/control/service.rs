@@ -400,7 +400,11 @@ impl crate::control::transactions::Transactions {
             .wake_in(
                 tx,
                 &target(self.tenant, device),
-                &rss_reconcile::ResourceSet::empty(self.tenant),
+                &rss_mdm_registration_service::lifecycle::resources::device(
+                    self.tenant,
+                    device,
+                    rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+                ),
                 (),
                 |_, _| Box::pin(async { Ok(()) }),
             )

@@ -176,7 +176,7 @@ MODULES = {
                 'apps/server/tests/support/command_runtime.rs', 'apps/server/tests/task_trust/support.rs',
                 'hack/task_trust_materials.py')),
     'task.locking': dict(prefix='assembly::execution_owners_t2::locking::', profiles=('shared',),
-        inputs=('crates/script-service/*', 'crates/inventory-service/src/collection/*',
+        inputs=('crates/registration-service/src/lifecycle*', 'crates/registration-service/src/lifecycle/*', 'crates/script-service/*', 'crates/inventory-service/src/collection/*',
                 'crates/inventory-service/schema/*', 'crates/agent-channel/*',
                 'crates/device-service/src/control/capacity.rs', 'crates/task-state/*', 'crates/recovery-observation/*',
                 'crates/device-service/src/control/actions/history.rs', 'crates/device-service/src/control/unmanage.rs',

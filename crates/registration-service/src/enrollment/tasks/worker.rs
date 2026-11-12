@@ -221,6 +221,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             let (service,claim,audit,error)=ctx;
             if let Err(e)=service.transactions.audit_store.bind_in(tx).await {return Err(crate::enrollment::tasks::transaction::rejection(e.into(),error));}
             let ready=match prepare_in(profile, service,tx,claim.target().entity()).await {Ok(v)=>v,Err(e)=>return Err(crate::enrollment::tasks::transaction::rejection(e,error))};
+            if !matches!(ready, Prepared::Deferred) {
+                let resources = match crate::enrollment::tasks::wake::resources_in(profile, tx, claim.target().entity()).await {Ok(v)=>v, Err(e)=>return Err(crate::enrollment::tasks::transaction::rejection(e,error))};
+                service.transactions.reconcile_messaging.bind_in(tx, claim.target(), &resources).await?;
+            }
             service.transactions.reconcile_messaging.protect_in(tx,claim,(service,claim.target().entity(),audit,error,ready),|ctx,tx|Box::pin(async move {
                 let (service,entity,audit,error,ready)=ctx;
                 if matches!(ready, Prepared::Deferred) {audit.mark_commit_started();return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));}
@@ -400,6 +404,42 @@ impl rss_reconcile::Timer for Timer {
         match self.0.checked_add(at) {
             Some(at) => tokio::time::sleep_until(at).await,
             None => std::future::pending().await,
+        }
+    }
+}
+
+impl Worker {
+    /// Calibrate every existing declaration before runners start, including delayed
+    /// and suspended work. Binding preserves wake identity and recovery history.
+    pub async fn initialize_resource_bindings(&self) -> std::result::Result<(), Error> {
+        let profile = self.service.profile();
+        let transactions = &self.service.transactions;
+        let tenant = transactions.tenant;
+        let scope = crate::enrollment::tasks::wake::scope(profile, tenant);
+        let mut after = String::new();
+        loop {
+            let page = crate::enrollment::tasks::transaction::inspect(
+                &transactions.runtime, tenant, (transactions, scope.clone(), after.clone()),
+                move |(transactions, scope, after), tx| Box::pin(async move {
+                    let t = tx.tenant_id().to_string();
+                    let domain = scope.reconciler().to_owned();
+                    let after = after.clone();
+                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
+                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity>$3 ORDER BY entity LIMIT 64")
+                            .bind(t).bind(domain).bind(after).fetch_all(c).await
+                    })).await?;
+                    for entity in &page {
+                        let target = rss_reconcile::Target::new(scope.clone(), entity).map_err(|_| Error::Malformed)?;
+                        let resources = crate::enrollment::tasks::wake::resources_in(profile, tx, entity).await?;
+                        transactions.reconcile_messaging.bind_in(tx, &target, &resources).await?;
+                    }
+                    Ok(page)
+                }),
+            ).await?;
+            if page.len() < 64 {
+                return Ok(());
+            }
+            after = page.last().expect("nonempty page").clone();
         }
     }
 }

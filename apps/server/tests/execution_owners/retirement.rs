@@ -42,6 +42,13 @@ async fn accept(
     tx.commit().await?;
     Ok(id)
 }
+async fn resources(h: &Harness, id: Uuid) -> Result<rss_reconcile::ResourceSet> {
+    let devices: Vec<String> = sqlx::query_scalar("SELECT device FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device")
+        .bind(h.c.tenant.to_string()).bind(id).fetch_all(&h.c.operator).await?;
+    Ok(rss_mdm_registration_service::lifecycle::resources::devices(
+        h.c.tenant, &devices,
+    )?)
+}
 async fn step(h: &Harness, id: Uuid) -> Result<()> {
     let timer = rss_mdm_device_service::control::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -50,11 +57,7 @@ async fn step(h: &Harness, id: Uuid) -> Result<()> {
     let target = rss_reconcile::Target::new(scope.clone(), format!("retirement:{id}"))?;
     let store = h.a.service.recovery_store();
     store
-        .wake(
-            &target,
-            &rss_reconcile::ResourceSet::empty(h.c.tenant),
-            &control,
-        )
+        .wake(&target, &resources(h, id).await?, &control)
         .await?;
     let batch = store
         .claim_due(&scope, 64, Duration::from_secs(30), &control)
@@ -207,11 +210,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     let (old_claim, old_diff) = {
         let store = h.a.service.recovery_store();
         store
-            .wake(
-                &target,
-                &rss_reconcile::ResourceSet::empty(h.c.tenant),
-                &control,
-            )
+            .wake(&target, &resources(&h, retirement).await?, &control)
             .await?;
         let mut batch = store
             .claim_due(&scope, 64, Duration::from_secs(30), &control)

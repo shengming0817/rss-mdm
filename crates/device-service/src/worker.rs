@@ -47,13 +47,46 @@ impl DeviceWork {
                 },
                 Err,
             )?;
-        Ok(Self {
+        let worker = Self {
             owner,
             runtime,
             schedule,
             messaging,
             concurrency,
-        })
+        };
+        worker.initialize_resource_bindings(deadline).await?;
+        Ok(worker)
+    }
+    async fn initialize_resource_bindings(
+        &self,
+        deadline: OperationDeadline,
+    ) -> Result<(), PgError> {
+        let mut after = String::new();
+        loop {
+            let page = self.runtime.local_tx_with_context(self.owner.tenant, deadline, (self, after),
+                |(owner, after), tx| Box::pin(async move {
+                    let tenant = owner.owner.tenant.to_string();
+                    let after = after.clone();
+                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
+                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.devices' AND entity>$2 ORDER BY entity LIMIT 64")
+                            .bind(tenant).bind(after).fetch_all(c).await
+                    })).await?;
+                    for entity in &page {
+                        let task = if entity == "inputs" { Task::Inputs } else {
+                            Task::Work(entity.strip_prefix("work:").and_then(|id| Uuid::parse_str(id).ok()).ok_or_else(|| sqlx::Error::Protocol("association target".into()))?)
+                        };
+                        let resources = owner.resources_in(tx, task).await?;
+                        let target = Target::new(owner.scope(), entity).map_err(|_| sqlx::Error::Protocol("association target".into()))?;
+                        owner.messaging.bind_in(tx, &target, &resources).await?;
+                    }
+                    Ok(page)
+                })
+            ).await.fold(Ok, Err, Err, Err, Err, Err)?;
+            if page.len() < 64 {
+                return Ok(());
+            }
+            after = page.last().expect("nonempty page").clone();
+        }
     }
     fn scope(&self) -> Scope {
         Scope::new(self.owner.tenant, "mdm.devices").expect("Device scope")
@@ -71,12 +104,47 @@ impl DeviceWork {
                 .ok_or_else(|| Error::new(ErrorKind::Invariant)),
         }
     }
+    async fn device_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Task,
+    ) -> Result<Option<String>, PgError> {
+        let Task::Work(id) = task else {
+            return Ok(None);
+        };
+        let tenant = self.owner.tenant.to_string();
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT value FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND id=$2 AND kind='device'")
+                .bind(tenant).bind(id).fetch_optional(c).await
+        })).await
+    }
+    async fn resources_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Task,
+    ) -> Result<ResourceSet, PgError> {
+        let Some(device) = self.device_in(tx, task).await? else {
+            return Ok(ResourceSet::empty(self.owner.tenant));
+        };
+        let tenant = self.owner.tenant;
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                let devices = crate::identity::affected_devices_on(c, tenant, &device)
+                    .await
+                    .map_err(sql_error)?;
+                rss_mdm_registration_service::lifecycle::resources::devices(tenant, &devices)
+                    .map_err(|_| sqlx::Error::Protocol("association resource budget".into()))
+            })
+        })
+        .await
+    }
     async fn step(
         &self,
         tx: &mut PgTransaction<'_>,
         task: Task,
+        prepared: Option<reconcile::Prepared>,
         cut: Option<&rss_mdm_inventory::AssetCut>,
-    ) -> Result<(), PgError> {
+    ) -> Result<rss_reconcile_postgres::ProtectedStep<()>, PgError> {
         let tenant = self.owner.tenant;
         let (wake, facts) = match task {
             Task::Inputs => (
@@ -95,7 +163,7 @@ impl DeviceWork {
                 vec![],
             ),
             Task::Work(id) => {
-                let (device, wake) = tx
+                let page = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
                             identity_projection::key_page(c, tenant, id)
@@ -104,17 +172,15 @@ impl DeviceWork {
                         })
                     })
                     .await?;
-                let facts = if let Some((device, window)) = device {
-                    let selected = device.clone();
-                    let prepared = tx
-                        .with_connection(move |c| {
-                            Box::pin(async move {
-                                reconcile::prepare(c, tenant, &selected)
-                                    .await
-                                    .map_err(sql_error)
-                            })
-                        })
-                        .await?;
+                let Some((device, wake)) = page else {
+                    return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(
+                        Duration::from_millis(50),
+                    ));
+                };
+                let facts = if let Some((_device, window)) = device {
+                    let prepared = prepared.ok_or_else(|| {
+                        sqlx::Error::Protocol("missing association preparation".into())
+                    })?;
 
                     let facts = tx
                         .with_connection(move |c| {
@@ -125,6 +191,11 @@ impl DeviceWork {
                             })
                         })
                         .await?;
+                    let Some(facts) = facts else {
+                        return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(
+                            Duration::from_millis(50),
+                        ));
+                    };
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             identity_projection::complete_work(c, tenant, id, window)
@@ -141,12 +212,13 @@ impl DeviceWork {
             }
         };
         for id in wake {
+            let resources = self.resources_in(tx, Task::Work(id)).await?;
             self.messaging
                 .wake_in(
                     tx,
                     &Target::new(self.scope(), format!("work:{id}"))
                         .map_err(|_| sqlx::Error::Protocol("device work target".into()))?,
-                    &rss_reconcile::ResourceSet::empty(self.scope().tenant()),
+                    &resources,
                     (),
                     |_, _| Box::pin(async { Ok(()) }),
                 )
@@ -159,7 +231,7 @@ impl DeviceWork {
                 .await
                 .map_err(PgError::from)?;
         }
-        Ok(())
+        Ok(rss_reconcile_postgres::ProtectedStep::Ready(()))
     }
     pub fn registration(
         self: Arc<Self>,
@@ -280,16 +352,46 @@ impl Reconciler<PgClaim> for DeviceWork {
                 |(owner, claim, cut), tx| {
                     Box::pin(async move {
                         owner.owner.audit.bind_in(tx).await.map_err(PgError::from)?;
+                        let prepared = if let Some(device) = owner.device_in(tx, task).await? {
+                            let tenant = owner.owner.tenant;
+                            let prepared = tx
+                                .with_connection(move |c| {
+                                    Box::pin(async move {
+                                        reconcile::prepare(c, tenant, &device)
+                                            .await
+                                            .map_err(sql_error)
+                                    })
+                                })
+                                .await?;
+                            let Some(prepared) = prepared else {
+                                return Ok(ReconcileStep::Deferred(Duration::from_millis(50)));
+                            };
+                            Some(prepared)
+                        } else {
+                            None
+                        };
+                        let resources = match &prepared {
+                            Some(prepared) => {
+                                prepared.resources(owner.owner.tenant).map_err(sql_error)?
+                            }
+                            None => ResourceSet::empty(owner.owner.tenant),
+                        };
                         owner
                             .messaging
-                            .protect_in(tx, claim, (owner, *cut), |(owner, cut), tx| {
-                                Box::pin(async move {
-                                    owner
-                                        .step(tx, task, *cut)
-                                        .await
-                                        .map(rss_reconcile_postgres::ProtectedStep::Ready)
-                                })
-                            })
+                            .bind_in(tx, claim.target(), &resources)
+                            .await?;
+                        owner
+                            .messaging
+                            .protect_in(
+                                tx,
+                                claim,
+                                (owner, *cut, prepared),
+                                |(owner, cut, prepared), tx| {
+                                    Box::pin(async move {
+                                        owner.step(tx, task, prepared.take(), *cut).await
+                                    })
+                                },
+                            )
                             .await
                     })
                 },

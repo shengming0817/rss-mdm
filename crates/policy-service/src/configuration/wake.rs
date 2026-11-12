@@ -56,7 +56,11 @@ impl Transactions {
                 .wake_in(
                     tx,
                     &target(tenant, &device),
-                    &rss_reconcile::ResourceSet::empty(tenant),
+                    &rss_mdm_registration_service::lifecycle::resources::device(
+                        tenant,
+                        &device,
+                        rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+                    ),
                     (),
                     |_, _| Box::pin(async { Ok(()) }),
                 )
@@ -80,10 +84,18 @@ impl Transactions {
             return Err(Error::Conflict);
         }
         sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=configuration_devices.input_revision+1").bind(&tenant).bind(p.device()).execute(&mut *c).await.map_err(db)?;
-        sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3,'{}'::text[])")
+        sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3,$4)")
             .bind(tenant)
             .bind("mdm.policy")
             .bind(target(p.tenant(), p.device()).entity())
+            .bind(
+                rss_mdm_registration_service::lifecycle::resources::device(
+                    p.tenant(),
+                    p.device(),
+                    rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+                )
+                .keys(),
+            )
             .execute(&mut *c)
             .await
             .map_err(db)?;

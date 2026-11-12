@@ -308,6 +308,20 @@ async fn device(tx: &mut PgTransaction<'_>, entity: &str) -> Result<Option<Strin
     Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND mdm_registration_tasks.recovery_key(device)=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
 }
 
+pub(crate) async fn resources_in(
+    tx: &mut PgTransaction<'_>,
+    entity: &str,
+) -> Result<rss_reconcile::ResourceSet> {
+    Ok(match device(tx, entity).await? {
+        Some(device) => crate::lifecycle::resources::device(
+            tx.tenant_id(),
+            &device,
+            crate::lifecycle::resources::Work::Exclusive,
+        ),
+        None => rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+    })
+}
+
 pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, entity: &str) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let entity = entity.to_owned();
@@ -580,6 +594,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                                         Err(error) => return Err(rejection(error, context.3)),
                                     };
 
+                                if prepared.is_some() {
+                                    let resources = resources_in(tx, claim.target().entity()).await.map_err(|e| rejection(e, context.3))?;
+                                    service.transactions.reconcile_messaging.bind_in(tx, claim.target(), &resources).await?;
+                                }
                                 service
                                     .transactions
                                     .reconcile_messaging
@@ -711,4 +729,39 @@ async fn command_candidates_in(
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(CommandCandidates { operations, after })
+}
+
+impl Service {
+    /// Calibrate every existing declaration before runners start, including delayed
+    /// and suspended work. Binding preserves wake identity and recovery history.
+    pub async fn initialize_resource_bindings(&self) -> std::result::Result<(), Error> {
+        let transactions = &self.transactions;
+        let tenant = transactions.tenant;
+        let scope = recovery_scope(tenant);
+        let mut after = String::new();
+        loop {
+            let page = crate::installation::transaction::inspect(
+                &transactions.runtime, tenant, (transactions, scope.clone(), after.clone()),
+                move |(transactions, scope, after), tx| Box::pin(async move {
+                    let t = tx.tenant_id().to_string();
+                    let domain = scope.reconciler().to_owned();
+                    let after = after.clone();
+                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
+                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity>$3 ORDER BY entity LIMIT 64")
+                            .bind(t).bind(domain).bind(after).fetch_all(c).await
+                    })).await?;
+                    for entity in &page {
+                        let target = rss_reconcile::Target::new(scope.clone(), entity).map_err(|_| Error::Malformed)?;
+                        let resources = resources_in(tx, entity).await?;
+                        transactions.reconcile_messaging.bind_in(tx, &target, &resources).await?;
+                    }
+                    Ok(page)
+                }),
+            ).await?;
+            if page.len() < 64 {
+                return Ok(());
+            }
+            after = page.last().expect("nonempty page").clone();
+        }
+    }
 }

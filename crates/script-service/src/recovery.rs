@@ -124,7 +124,17 @@ pub async fn recover_one(
 ) -> Result<()> {
     service.transactions.validate_in(tx)?;
     let target = storage::read_run(tx, id).await?.target;
-    storage::lock_device(tx, &target.device).await?;
+    let tenant = tx.tenant_id().to_string();
+    let device = target.device.clone();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            Ok(
+                rss_mdm_registration_service::lifecycle::lock_recovery_in(c, &tenant, &device)
+                    .await,
+            )
+        })
+    })
+    .await??;
     let now = storage::now(tx).await?;
     let mut run = storage::load_run(tx, id).await?;
     let plan = crate::policy::read_in(&service.transactions, tx, run.policy_version).await?;

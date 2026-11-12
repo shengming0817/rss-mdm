@@ -189,3 +189,171 @@ async fn script_policy_change_and_worker_share_lock_order() -> Result<()> {
 async fn collection_policy_change_and_worker_share_lock_order() -> Result<()> {
     policy_change_race(true).await
 }
+
+#[tokio::test]
+#[ignore = "T2: real Script and Agent Collection claims overlap on one device; current bindings preserve retry history"]
+async fn independent_run_recovery_overlaps_and_existing_bindings_preserve_history() -> Result<()> {
+    use rss_reconcile::{Completion, ResourceSet};
+    let h = Harness::open().await?;
+    assert!(h.a.resources.storage.worker_budget.available_permits() >= 2);
+    let (_, version) = h.policy("resource-coordination").await?;
+    let first = h.run(version, "resource-coordination", now() + 300).await?;
+    let second = h.run(version, "resource-coordination", now() + 300).await?;
+    let (definition, frozen, _) = super::mixed::agent(&h)?;
+    let collection_version =
+        super::mixed::publish(&h, Uuid::new_v4(), 1, definition, frozen).await?;
+    let collection_id = super::mixed::run(&h, collection_version, now() - 400).await?;
+    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        h.a.resources.storage.runtime.clone(),
+        h.c.tenant,
+        script::transaction::deadline(),
+    )
+    .await?;
+    script::transaction::inspect(
+        &h.a.resources.storage.runtime,
+        h.c.tenant,
+        &messaging,
+        |messaging, tx| {
+            Box::pin(async move {
+                script::wake::run_in(messaging, tx, first).await?;
+                script::wake::run_in(messaging, tx, second).await?;
+                collection::wake::run_in(messaging, tx, collection_id).await?;
+                Ok(())
+            })
+        },
+    )
+    .await?;
+    let timer = rss_mdm_device_service::control::recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
+    let store =
+        rss_reconcile_postgres::PgStore::new(h.a.resources.storage.read_pool.clone(), &control)
+            .await?;
+    let script_scope = script::wake::scope(h.c.tenant);
+    let collection_scope = collection::wake::scope(h.c.tenant);
+    let mut scripts = store
+        .claim_due(&script_scope, 2, Duration::from_secs(30), &control)
+        .await?;
+    assert_eq!(
+        scripts.claims.len(),
+        1,
+        "same-category runs must remain exclusive"
+    );
+    let script_claim = scripts.claims.remove(0);
+    let mut collections = store
+        .claim_due(&collection_scope, 1, Duration::from_secs(30), &control)
+        .await?;
+    assert_eq!(
+        collections.claims.len(),
+        1,
+        "independent recovery must be admitted while Script holds its resources"
+    );
+    let collection_claim = collections.claims.remove(0);
+    let script_diff = observe(&h, false, &script_claim, &control).await?;
+    let collection_diff = observe(&h, true, &collection_claim, &control).await?;
+    let run = Uuid::parse_str(script_claim.target().entity().strip_prefix("run:").unwrap())?;
+    let mut blocker = command::seed_transaction(&h.c).await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *blocker)
+        .await?;
+    sqlx::query("SELECT id FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        .bind(h.c.tenant.to_string())
+        .bind(run)
+        .fetch_one(&mut *blocker)
+        .await?;
+    let before: Value = sqlx::query_scalar(
+        "SELECT agent_state FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(h.c.tenant.to_string())
+    .bind(collection_id)
+    .fetch_one(&h.c.operator)
+    .await?;
+    let concurrent = async {
+        let result = tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))")
+                    .bind(pid).fetch_one(&h.c.operator).await?;
+                if waiting { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            h.a.collection_work.apply(&collection_claim, collection_diff, &control).await?;
+            let after: Value = sqlx::query_scalar("SELECT agent_state FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(h.c.tenant.to_string()).bind(collection_id).fetch_one(&h.c.operator).await?;
+            assert_ne!(after, before, "Collection must commit expiry while the Script transaction is still blocked");
+            Ok::<_, anyhow::Error>(())
+        }).await;
+        blocker.rollback().await?;
+        result??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (script_result, collection_result) = tokio::join!(
+        h.a.script_work.apply(&script_claim, script_diff, &control),
+        concurrent
+    );
+    script_result?;
+    collection_result?;
+    store.release(&collection_claim, &control).await?;
+    // Recovery can self-wake. Take a fresh claim before recording a failure so
+    // the Retry refers to its current wake version rather than superseded input.
+    store.release(&script_claim, &control).await?;
+    let mut retry = store
+        .claim_due(&script_scope, 1, Duration::from_secs(30), &control)
+        .await?;
+    let retry = retry.claims.remove(0);
+    let target = retry.target().clone();
+    store
+        .finish(
+            &retry,
+            Completion::Retry {
+                after: Duration::from_secs(60),
+                failures: 3,
+            },
+            &control,
+        )
+        .await?;
+    store
+        .bind_resources(&target, &ResourceSet::empty(h.c.tenant), &control)
+        .await?;
+    let original: (i64, i64, Option<String>) = sqlx::query_as("SELECT wake_version,failures,next_run::text FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
+        .bind(h.c.tenant.to_string()).bind(target.scope().reconciler()).bind(target.entity()).fetch_one(&h.c.operator).await?;
+    h.a.script_work.initialize_resource_bindings().await?;
+    let repaired: (i64, i64, Option<String>) = sqlx::query_as("SELECT wake_version,failures,next_run::text FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
+        .bind(h.c.tenant.to_string()).bind(target.scope().reconciler()).bind(target.entity()).fetch_one(&h.c.operator).await?;
+    assert_eq!(repaired, original);
+    assert_eq!(repaired.1, 3);
+    let resources: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_reconcile.target_resources WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity=$3")
+        .bind(h.c.tenant.to_string()).bind(target.scope().reconciler()).bind(target.entity()).fetch_one(&h.c.operator).await?;
+    assert_eq!(resources, 1);
+    h.close().await
+}
+
+#[tokio::test]
+#[ignore = "T2: a busy multi-endpoint fence releases its partial acquisition before deferring"]
+async fn partial_endpoint_fence_acquisition_is_rolled_back() -> Result<()> {
+    use rss_mdm_registration_service::lifecycle::{lock_device_in, try_lock_devices_in};
+    let c = Context::open("shared", &[]).await?;
+    let profile = rss_mdm_install_support::StorageProfile::Mdm;
+    let tenant = c.tenant.to_string();
+    let mut blocker = command::seed_transaction(&c).await?;
+    let mut attempt = command::seed_transaction(&c).await?;
+    let mut observer = command::seed_transaction(&c).await?;
+    lock_device_in(profile, &mut blocker, &tenant, "z-endpoint").await?;
+    assert!(
+        !try_lock_devices_in(
+            profile,
+            &mut attempt,
+            &tenant,
+            &["a-endpoint".into(), "z-endpoint".into()]
+        )
+        .await?
+    );
+    assert!(
+        try_lock_devices_in(profile, &mut observer, &tenant, &["a-endpoint".into()]).await?,
+        "the failed batch retained its first fence"
+    );
+    observer.rollback().await?;
+    attempt.rollback().await?;
+    blocker.rollback().await?;
+    c.close().await;
+    Ok(())
+}
