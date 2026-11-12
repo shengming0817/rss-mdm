@@ -76,6 +76,15 @@ impl RetirementPlan {
     }
 }
 
+/// An Unmanage run participates in its accepted retirement's complete membership.
+pub(crate) async fn run_devices_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Vec<String>> {
+    let tenant = tx.tenant_id().to_string();
+    Ok(tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT c.device FROM mdm_devices.retirement_channels c WHERE c.tenant_id=$1::uuid AND c.operation=(SELECT d.retirement FROM mdm_access.devices d JOIN mdm_devices.unmanage_runs r ON(r.tenant_id,r.device)=(d.tenant_id,d.id) WHERE r.tenant_id=$1::uuid AND r.id=$2) UNION SELECT device FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2 ORDER BY device")
+            .bind(tenant).bind(id).fetch_all(c).await
+    })).await?)
+}
+
 pub async fn wake_in(
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
@@ -86,14 +95,11 @@ pub async fn wake_in(
         format!("retirement:{operation}"),
     )
     .map_err(|_| Error::Malformed)?;
+    let resources = crate::control::recovery::resources_in(tx, target.entity()).await?;
     reconcile
-        .wake_in(
-            tx,
-            &target,
-            &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
-            (),
-            |_, _| Box::pin(async { Ok(()) }),
-        )
+        .wake_in(tx, &target, &resources, (), |_, _| {
+            Box::pin(async { Ok(()) })
+        })
         .await?;
     crate::control::worker_wake::notify_in(tx, crate::control::worker_wake::Work::CommandRecovery)
         .await?;
@@ -149,7 +155,7 @@ impl Service {
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
-    ) -> Result<PreparedRetirement> {
+    ) -> Result<Option<PreparedRetirement>> {
         use crate::lifecycle::{self as owner};
         let tenant = tx.tenant_id();
         let original = tx
@@ -178,7 +184,26 @@ impl Service {
             .iter()
             .map(|c| c.device.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        crate::control::storage::lock_devices(tx, &devices.into_iter().collect::<Vec<_>>()).await?;
+        let t = tenant.to_string();
+        let devices = devices.into_iter().collect::<Vec<_>>();
+        let locked = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(
+                        rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                            rss_mdm_install_support::StorageProfile::Mdm,
+                            c,
+                            &t,
+                            &devices,
+                        )
+                        .await,
+                    )
+                })
+            })
+            .await??;
+        if !locked {
+            return Ok(None);
+        }
         let original = tx
             .with_connection(move |c| {
                 Box::pin(
@@ -195,11 +220,11 @@ impl Service {
                 executions.insert(channel.device.clone(), execution);
             }
         }
-        Ok(PreparedRetirement {
+        Ok(Some(PreparedRetirement {
             id,
             original,
             executions,
-        })
+        }))
     }
     pub(crate) async fn advance_retirement_in(
         &self,

@@ -25,6 +25,9 @@ pub struct Health {
     pub task: Option<TaskState>,
     pub stopping: bool,
     pub recovery: Phase,
+    pub scan: Phase,
+    pub unresolved_attempts: u64,
+    pub truncated: bool,
     pub relay: Option<Phase>,
     pub inputs: Option<Phase>,
 }
@@ -71,26 +74,40 @@ impl Readiness {
         }
     }
     pub fn health(&self) -> Health {
-        let (recovery, relay, inputs) = match self.rounds.lock() {
-            Ok(r) => (
-                if r.overflow {
-                    Phase::Failed(ErrorKind::Invariant)
-                } else {
-                    r.failures
-                        .values()
-                        .next()
-                        .copied()
-                        .map_or(r.scan, Phase::Failed)
-                },
-                r.relay,
-                r.inputs,
-            ),
-            Err(_) => (Phase::Failed(ErrorKind::Invariant), None, None),
-        };
+        let (recovery, relay, inputs, scan, unresolved_attempts, truncated) =
+            match self.rounds.lock() {
+                Ok(r) => (
+                    if r.overflow {
+                        Phase::Failed(ErrorKind::Invariant)
+                    } else {
+                        r.failures
+                            .values()
+                            .next()
+                            .copied()
+                            .map_or(r.scan, Phase::Failed)
+                    },
+                    r.relay,
+                    r.inputs,
+                    r.scan,
+                    r.failures.len() as u64,
+                    r.overflow,
+                ),
+                Err(_) => (
+                    Phase::Failed(ErrorKind::Invariant),
+                    None,
+                    None,
+                    Phase::Failed(ErrorKind::Invariant),
+                    0,
+                    true,
+                ),
+            };
         Health {
             task: self.task.get().map(TaskStatus::current),
             stopping: self.stopping.load(Ordering::Acquire),
             recovery,
+            scan,
+            unresolved_attempts,
+            truncated,
             relay,
             inputs,
         }

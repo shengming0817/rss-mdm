@@ -44,6 +44,54 @@ impl PolicyWork {
         })
     }
 
+    /// Bind the current resource contract before exposing either Policy runner.
+    pub fn initialize_resource_bindings(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<(), Error>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            let mut owners = vec![(&self.service, jobs::domain(self.profile()))];
+            if let Some(events) = &self.events {
+                owners.push((&events.application, jobs::event_domain(self.profile())));
+            }
+            for (service, domain) in owners {
+                let scope =
+                    rss_reconcile::Scope::new(service.tenant, domain).expect("Policy domain");
+                let mut after = String::new();
+                loop {
+                    let page = crate::transaction::inspect(&service.runtime, service.tenant,
+                    (service, scope.clone(), after), |(service, scope, after), tx| Box::pin(async move {
+                        let tenant = tx.tenant_id().to_string();
+                        let domain = scope.reconciler().to_owned();
+                        let after = after.clone();
+                        let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
+                            sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity>$3 ORDER BY entity LIMIT 64")
+                                .bind(tenant).bind(domain).bind(after).fetch_all(c).await
+                        })).await?;
+                        for entity in &page {
+                            let resources = if entity.starts_with("configuration:") {
+                                let configuration = service.configuration.as_ref().ok_or(Error::Unsupported)?;
+                                match configuration.device_in(tx, entity).await? {
+                                    Some(device) => rss_mdm_registration_service::lifecycle::resources::device(tx.tenant_id(), &device, rss_mdm_registration_service::lifecycle::resources::Work::Exclusive),
+                                    None => rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+                                }
+                            } else { rss_reconcile::ResourceSet::empty(tx.tenant_id()) };
+                            let target = rss_reconcile::Target::new(scope.clone(), entity).map_err(|_| Error::Malformed)?;
+                            service.reconcile_messaging.bind_in(tx, &target, &resources).await?;
+                        }
+                        Ok(page)
+                    })
+                ).await?;
+                    if page.len() < 64 {
+                        break;
+                    }
+                    after = page.last().expect("nonempty page").clone();
+                }
+            }
+            Ok(())
+        })
+    }
     fn execution(&self) -> Option<&dyn crate::events::participants::ExecutionEvents> {
         self.events.as_ref().map(|events| events.execution.as_ref())
     }

@@ -83,7 +83,24 @@ impl PolicyWork {
                 Box::pin(async move {
                     let (service, claim, cut, audit) = *ctx;
                     let entity = claim.target().entity();
-                    let device = service.prepare_work_in(tx, entity, audit).await?;
+                    let device = match service.prepare_work_in(tx, entity, audit).await? {
+                        ReconcileStep::Ready(device) => device,
+                        ReconcileStep::Deferred(after) => {
+                            return Ok(ReconcileStep::Deferred(after));
+                        }
+                    };
+                    let resources = match &device {
+                        Some(device) => rss_mdm_registration_service::lifecycle::resources::device(
+                            tx.tenant_id(),
+                            device,
+                            rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+                        ),
+                        None => rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+                    };
+                    service
+                        .reconcile_messaging
+                        .bind_in(tx, claim.target(), &resources)
+                        .await?;
                     let rejected = Mutex::new(None);
                     let result = service
                         .reconcile_messaging

@@ -14,14 +14,11 @@ pub async fn run_in(
 ) -> Result<()> {
     let target = rss_reconcile::Target::new(scope(tx.tenant_id()), format!("run:{id}"))
         .map_err(|_| Error::Malformed)?;
+    let resources = resources_in(tx, target.entity()).await?;
     reconcile
-        .wake_in(
-            tx,
-            &target,
-            &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
-            (),
-            |_, _| Box::pin(async { Ok(()) }),
-        )
+        .wake_in(tx, &target, &resources, (), |_, _| {
+            Box::pin(async { Ok(()) })
+        })
         .await?;
     tx.with_connection(|c| Box::pin(async move {
         sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'access_recovery')").execute(c).await?;
@@ -48,15 +45,41 @@ pub async fn entity_in(
 ) -> Result<()> {
     let target =
         rss_reconcile::Target::new(scope(tx.tenant_id()), entity).map_err(|_| Error::Malformed)?;
+    let resources = resources_in(tx, target.entity()).await?;
     reconcile
-        .wake_in(
-            tx,
-            &target,
-            &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
-            (),
-            |_, _| Box::pin(async { Ok(()) }),
-        )
+        .wake_in(tx, &target, &resources, (), |_, _| {
+            Box::pin(async { Ok(()) })
+        })
         .await?;
     tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'access_recovery')").execute(c).await?;Ok(())})).await?;
     Ok(())
+}
+
+/// Resolve resources from immutable owner facts; policy work only registers run work.
+pub(crate) async fn resources_in(
+    tx: &mut PgTransaction<'_>,
+    entity: &str,
+) -> Result<rss_reconcile::ResourceSet> {
+    if let Some(id) = entity
+        .strip_prefix("run:")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
+        let device = crate::device_access::execution::storage::read_run(tx, id)
+            .await?
+            .target
+            .device;
+        return Ok(rss_mdm_registration_service::lifecycle::resources::device(
+            tx.tenant_id(),
+            &device,
+            rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+        ));
+    }
+    if entity
+        .strip_prefix("policy:")
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .is_some()
+    {
+        return Ok(rss_reconcile::ResourceSet::empty(tx.tenant_id()));
+    }
+    Err(Error::Malformed.into())
 }

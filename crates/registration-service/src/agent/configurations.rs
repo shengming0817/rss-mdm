@@ -203,6 +203,21 @@ async fn row(
         .map_err(db)?
         .ok_or(Error::Unauthorized)
 }
+/// Metadata reads borrow the caller's snapshot without acquiring a write lock.
+async fn read_row(
+    profile: rss_mdm_install_support::StorageProfile,
+    c: &mut PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> Result<PgRow, Error> {
+    sqlx::query(crate::storage_profile::sql(profile).agent_configurations_read_1)
+        .bind(tenant)
+        .bind(id)
+        .fetch_optional(c)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)
+}
 fn document(row: &PgRow) -> Result<wire_config::Configuration, Error> {
     serde_json::from_value(row.try_get("document").map_err(db)?).map_err(|_| Error::Corrupt)
 }
@@ -398,12 +413,12 @@ impl Service {
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden.into());
         }
-        let mut tx = self.store.begin(p.tenant_id()).await?;
+        let mut tx = self.store.snapshot(p.tenant_id()).await?;
         authorize_on(profile, &mut tx, p, Permission::AgentEnrollmentRead).await?;
-        let row = row(profile, &mut tx, p.tenant_id(), id).await?;
+        let row = read_row(profile, &mut tx, p.tenant_id(), id).await?;
         let out = read_on(profile, &mut tx, p.tenant_id(), &row).await?;
         p.check_live()?;
-        tx.commit().await.map_err(db)?;
+        tx.rollback().await.map_err(db)?;
         Ok(out)
     }
     /// Resolve a possibly committed create without recovering its transferable secret.
@@ -740,7 +755,7 @@ pub async fn configuration_operation(
     .await
     .map_err(db)?;
     let out = if let Some(id) = id {
-        let row = row(profile, &mut tx, p.tenant_id(), id).await?;
+        let row = read_row(profile, &mut tx, p.tenant_id(), id).await?;
         Some(read_on(profile, &mut tx, p.tenant_id(), &row).await?)
     } else {
         None

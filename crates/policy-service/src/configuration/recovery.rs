@@ -48,10 +48,32 @@ impl Transactions {
         tx: &mut PgTransaction<'_>,
         entity: &str,
         audit: &RequestAudit,
-    ) -> Result<Option<String>> {
+    ) -> Result<rss_reconcile::ReconcileStep<Option<String>>> {
         let device = if entity.starts_with("configuration:") {
             let device = self.device_in(tx, entity).await?;
             if let Some(device) = &device {
+                let tenant = tx.tenant_id().to_string();
+                let selected = device.clone();
+                let locked = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(
+                                rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                                    rss_mdm_install_support::StorageProfile::Mdm,
+                                    c,
+                                    &tenant,
+                                    &[selected],
+                                )
+                                .await,
+                            )
+                        })
+                    })
+                    .await??;
+                if !locked {
+                    return Ok(rss_reconcile::ReconcileStep::Deferred(
+                        std::time::Duration::from_millis(50),
+                    ));
+                }
                 storage::lock_device(tx, device).await?;
                 let tenant = tx.tenant_id().to_string();
                 let name = device.clone();
@@ -62,7 +84,7 @@ impl Transactions {
             None
         };
         self.audit_store.prepare_in(tx, audit, &[]).await?;
-        Ok(device)
+        Ok(rss_reconcile::ReconcileStep::Ready(device))
     }
     pub(crate) async fn advance_work_in(
         &self,

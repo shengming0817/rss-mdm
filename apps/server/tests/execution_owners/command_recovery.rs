@@ -29,7 +29,11 @@ async fn claim_device(
     store
         .wake(
             &target,
-            &rss_reconcile::ResourceSet::empty(h.c.tenant),
+            &rss_mdm_registration_service::lifecycle::resources::device(
+                h.c.tenant,
+                device,
+                rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+            ),
             control,
         )
         .await?;

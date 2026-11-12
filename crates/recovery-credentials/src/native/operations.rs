@@ -135,7 +135,11 @@ impl Service {
                         .wake_in(
                             tx,
                             &super::service::target(service.transactions.tenant, device),
-                            &rss_reconcile::ResourceSet::empty(service.transactions.tenant),
+                            &rss_mdm_registration_service::lifecycle::resources::device(
+                                service.transactions.tenant,
+                                device,
+                                rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+                            ),
                             (),
                             |_, _| Box::pin(async { Ok(()) }),
                         )

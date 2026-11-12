@@ -202,19 +202,104 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         );
         audit.identify_service("collection-recovery");
         let error = Mutex::new(None);
-        let attempt=service.transactions.runtime.local_tx_with_context(service.transactions.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(service,claim,&audit,&error),|ctx,tx|Box::pin(async move {
-            let (service,claim,audit,error)=ctx;
-            if let Err(e)=service.transactions.audit_store.bind_in(tx).await {return Err(crate::transaction::rejection(e.into(),error,crate::transaction::TransactionOwner::Collections));}
-            let ready=match prepare_in(service,tx,claim.target().entity()).await {Ok(v)=>v,Err(e)=>return Err(crate::transaction::rejection(e,error,crate::transaction::TransactionOwner::Collections))};
-            service.transactions.reconcile_messaging.protect_in(tx,claim,(service,claim.target().entity(),audit,error,ready),|ctx,tx|Box::pin(async move {
-                let (service,entity,audit,error,ready)=ctx;
-                if matches!(ready, Prepared::Deferred) {audit.mark_commit_started();return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));}
-                match advance_in(service,tx,entity,ready).await {
-                    Ok(delay)=>{audit.mark_commit_started();Ok(match delay {Some(after)=>rss_reconcile_postgres::ProtectedStep::Deferred(after),None=>rss_reconcile_postgres::ProtectedStep::Ready(())})},
-                    Err(e)=>Err(crate::transaction::rejection(e,error,crate::transaction::TransactionOwner::Collections)),
-                }
-            })).await
-        })).await;
+        let attempt = service
+            .transactions
+            .runtime
+            .local_tx_with_context(
+                service.transactions.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+                (service, claim, &audit, &error),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let (service, claim, audit, error) = ctx;
+                        if let Err(e) = service.transactions.audit_store.bind_in(tx).await {
+                            return Err(crate::transaction::rejection(
+                                e.into(),
+                                error,
+                                crate::transaction::TransactionOwner::Collections,
+                            ));
+                        }
+                        let ready = match prepare_in(service, tx, claim.target().entity()).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                return Err(crate::transaction::rejection(
+                                    e,
+                                    error,
+                                    crate::transaction::TransactionOwner::Collections,
+                                ));
+                            }
+                        };
+                        if !matches!(ready, Prepared::Deferred) {
+                            let resources = match super::wake::resources_in(
+                                tx,
+                                claim.target().entity(),
+                            )
+                            .await
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    return Err(crate::transaction::rejection(
+                                        e,
+                                        error,
+                                        crate::transaction::TransactionOwner::Collections,
+                                    ));
+                                }
+                            };
+                            service
+                                .transactions
+                                .reconcile_messaging
+                                .bind_in(tx, claim.target(), &resources)
+                                .await?;
+                        }
+                        let settlement_audit = *audit;
+                        let outcome = service
+                            .transactions
+                            .reconcile_messaging
+                            .protect_in(
+                                tx,
+                                claim,
+                                (service, claim.target().entity(), audit, error, ready),
+                                |ctx, tx| {
+                                    Box::pin(async move {
+                                        let (service, entity, _audit, error, ready) = ctx;
+                                        if matches!(ready, Prepared::Deferred) {
+                                            return Ok(
+                                                rss_reconcile_postgres::ProtectedStep::Deferred(
+                                                    Duration::from_millis(50),
+                                                ),
+                                            );
+                                        }
+                                        match advance_in(service, tx, entity, ready).await {
+                                            Ok(delay) => Ok(match delay {
+                                                Some(after) => {
+                                                    rss_reconcile_postgres::ProtectedStep::Deferred(
+                                                        after,
+                                                    )
+                                                }
+                                                None => {
+                                                    rss_reconcile_postgres::ProtectedStep::Ready(())
+                                                }
+                                            }),
+                                            Err(e) => Err(crate::transaction::rejection(
+                                                e,
+                                                error,
+                                                crate::transaction::TransactionOwner::Collections,
+                                            )),
+                                        }
+                                    })
+                                },
+                            )
+                            .await;
+                        if outcome.is_ok() {
+                            settlement_audit.mark_commit_started();
+                        }
+                        outcome
+                    })
+                },
+            )
+            .await;
         let result = crate::transaction::settle(
             attempt,
             &audit,
@@ -256,29 +341,36 @@ async fn prepare_in(
         .and_then(|s| Uuid::parse_str(s).ok())
     {
         let tenant = tx.tenant_id().to_string();
-        Some(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,String>("SELECT device FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?)
+        Some(tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,bool)>("SELECT device,channel='agent' FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?)
     } else if let Some(work) = super::scheduled::Work::parse(entity) {
-        super::scheduled::device_in(&service.transactions.policy_reader, tx, &work).await?
+        super::scheduled::device_in(&service.transactions.policy_reader, tx, &work)
+            .await?
+            .map(|device| (device, false))
     } else if let Some(device) = checkin(entity) {
         let tenant = tx.tenant_id().to_string();
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id AS device FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(tenant).bind(&device).fetch_optional(c).await})).await?
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT id AS device FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(tenant).bind(&device).fetch_optional(c).await})).await?.map(|device| (device, false))
     } else {
         None
     };
-    if let Some(device) = device {
+    if let Some((device, shared)) = device {
         let tenant = tx.tenant_id().to_string();
         let locked = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    Ok(
+                    Ok(if shared {
+                        rss_mdm_registration_service::lifecycle::try_lock_recovery_in(
+                            c, &tenant, &device,
+                        )
+                        .await
+                    } else {
                         rss_mdm_registration_service::lifecycle::try_lock_devices_in(
                             rss_mdm_install_support::StorageProfile::Mdm,
                             c,
                             &tenant,
                             &[device],
                         )
-                        .await,
-                    )
+                        .await
+                    })
                 })
             })
             .await??;
@@ -400,4 +492,45 @@ fn checkin(entity: &str) -> Option<String> {
     let device = entity.strip_prefix("checkin:")?;
     (!device.is_empty() && device.len() <= 256 && !device.chars().any(char::is_control))
         .then(|| device.to_owned())
+}
+
+impl Worker {
+    /// Calibrate every existing declaration before runners start, including delayed
+    /// and suspended work. Binding preserves wake identity and recovery history.
+    pub fn initialize_resource_bindings(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<(), Error>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            let transactions = &self.service.transactions;
+            let tenant = transactions.tenant;
+            let scope = super::wake::scope(tenant);
+            let mut after = String::new();
+            loop {
+                let page = crate::transaction::inspect(
+                &transactions.runtime, tenant, (transactions, scope.clone(), after.clone()),
+                move |(transactions, scope, after), tx| Box::pin(async move {
+                    let t = tx.tenant_id().to_string();
+                    let domain = scope.reconciler().to_owned();
+                    let after = after.clone();
+                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
+                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity>$3 ORDER BY entity LIMIT 64")
+                            .bind(t).bind(domain).bind(after).fetch_all(c).await
+                    })).await?;
+                    for entity in &page {
+                        let target = rss_reconcile::Target::new(scope.clone(), entity).map_err(|_| Error::Malformed)?;
+                        let resources = super::wake::resources_in(tx, entity).await?;
+                        transactions.reconcile_messaging.bind_in(tx, &target, &resources).await?;
+                    }
+                    Ok(page)
+                }), crate::transaction::TransactionOwner::Collections,
+            ).await?;
+                if page.len() < 64 {
+                    return Ok(());
+                }
+                after = page.last().expect("nonempty page").clone();
+            }
+        })
+    }
 }

@@ -4,19 +4,19 @@ use crate::{Error, authorization::context::RequestAuth};
 use axum::{Extension, Json, extract::State};
 use futures::future::BoxFuture;
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_authorization_service::credential::RequestCredential;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
-use rss_request_context::TenantId;
 use serde::Serialize;
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 /// The host must recheck its exact tenant/instance binding before observing components.
 pub trait Source: Send + Sync {
     fn snapshot<'a>(
         &'a self,
-        tenant: TenantId,
-        instance: &'a str,
-        deadline: Instant,
+        auth: &'a RequestAuth,
+        audit: &'a RequestAudit,
+        continuation: &'a RequestCredential,
     ) -> BoxFuture<'a, Result<Snapshot, Error>>;
 }
 #[derive(schemars::JsonSchema, Serialize)]
@@ -25,6 +25,8 @@ pub struct Snapshot {
     pub ready: bool,
     pub components: Vec<Component>,
     pub channels: Vec<ChannelStatus>,
+    #[serde(rename = "firstUse", skip_serializing_if = "Option::is_none")]
+    pub first_use: Option<FirstUse>,
 }
 #[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +59,9 @@ pub struct ChannelStatus {
 #[serde(rename_all = "camelCase")]
 pub struct Component {
     pub name: ComponentName,
+    pub mounted: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<PhaseObservation>,
     pub readiness: Readiness,
     /// Current diagnostic observation, independent of the public readiness predicate.
     pub health: Health,
@@ -74,14 +79,30 @@ pub struct Component {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
 }
-#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentName {
-    Initialization,
+    Baseline,
     Telemetry,
     Inventory,
-    Automation,
-    ExecutionRecovery,
+    Policy,
+    Group,
+    Scope,
+    AssetQuery,
+    Compliance,
+    DeviceAssociations,
+    ScopeGroupDelivery,
+    AssetInputDelivery,
+    DeviceControl,
+    SoftwareDeployment,
+    NativeInstallation,
+    ScriptExecution,
+    CollectionExecution,
+    EnrollmentTasks,
+    DeviceAccessExecution,
+    NativeRecoveryCredentials,
+    MdmCredentialTasks,
+    DaCredentialTasks,
 }
 #[derive(schemars::JsonSchema, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -257,6 +278,7 @@ async fn read(
     State(source): State<Arc<dyn Source>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
+    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
 ) -> Result<Json<Snapshot>, Error> {
     audit.set_action(
         "runtime_diagnostics_read",
@@ -265,9 +287,8 @@ async fn read(
     audit.target("runtime");
     auth.proof
         .manage(rss_mdm_authorization_service::Permission::RuntimeDiagnosticsRead)?;
-    let tenant = TenantId::parse(auth.proof.tenant_id()).map_err(|_| Error::Unauthorized)?;
     source
-        .snapshot(tenant, auth.proof.instance_id(), auth.deadline)
+        .snapshot(&auth, &audit, continuation.secret())
         .await
         .map(Json)
 }
@@ -277,4 +298,57 @@ async fn read(
 pub struct Dispatch {
     pub event_after: u64,
     pub window_open: bool,
+}
+
+#[derive(schemars::JsonSchema, Serialize)]
+pub struct PhaseObservation {
+    pub name: PhaseName,
+    pub state: PhaseState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Reason>,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseName {
+    Recovery,
+    Relay,
+    Inputs,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseState {
+    Unobserved,
+    Healthy,
+    Failed,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case", tag = "access", content = "summary")]
+pub enum FirstUse {
+    Available(FirstUseSummary),
+    Forbidden,
+    Unavailable,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirstUseSummary {
+    pub revision: i64,
+    pub can_complete: bool,
+    pub complete: bool,
+    pub steps: Vec<FirstUseStep>,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+pub struct FirstUseStep {
+    pub id: String,
+    pub status: FirstUseStatus,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstUseStatus {
+    Ready,
+    Unconfigured,
+    Pending,
+    Unknown,
+    Unavailable,
+    Forbidden,
+    Skipped,
 }

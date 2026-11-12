@@ -328,3 +328,68 @@ async fn stage_identity_is_owned_and_reorder_does_not_republish() -> Result<()> 
     c.close().await;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "T2: baseline Policy step can retry a confirmed rollback after Scope contention using its original operation"]
+async fn scope_contention_preserves_original_policy_operation_for_retry() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let account = c
+        .account(&[
+            P::PolicyRead,
+            P::PolicyWrite,
+            P::InventoryRead,
+            P::DeviceUnmanage,
+        ])
+        .await?;
+    let p = c.authenticate(&account).await?;
+    let object = planning::endpoint(&c).await?;
+    let f = Fixture::open(&c).await?;
+    let first = f.create(&c, &p, serde_json::from_value(json!({"targets":[{"kind":"device","id":object.members[0].device}],"limitations":null,"exclusions":[]}))?).await?;
+    let mut operation = put(&first);
+    if let Change::Put { definition, .. } = &mut operation.input {
+        definition.scope.limitations = Some(Default::default());
+    }
+    let before = counts(&c, first.id).await?;
+    let mut blocker = c.operator.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(c.tenant.to_string())
+        .execute(&mut *blocker)
+        .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3048))")
+        .bind(format!("scope:{}:{}", c.tenant, first.scopes[0].id))
+        .execute(&mut *blocker)
+        .await?;
+    let rejected = f
+        .policies
+        .change(&p, first.id, &operation, &c.request(&p)?)
+        .await;
+    blocker.rollback().await?;
+    assert!(
+        matches!(
+            rejected,
+            Err(rss_mdm_policy_service::Error::Unavailable(
+                rss_mdm_policy_service::Failure::PolicyTransient
+            ))
+        ),
+        "{rejected:?}"
+    );
+    assert_eq!(counts(&c, first.id).await?, before);
+    let committed = f
+        .policies
+        .change(&p, first.id, &operation, &c.request(&p)?)
+        .await?;
+    assert_eq!(committed.revision, first.revision + 1);
+    let after = counts(&c, first.id).await?;
+    let replay = f
+        .policies
+        .change(&p, first.id, &operation, &c.request(&p)?)
+        .await?;
+    assert_eq!(
+        serde_json::to_value(committed)?,
+        serde_json::to_value(replay)?
+    );
+    assert_eq!(counts(&c, first.id).await?, after);
+    f.close().await?;
+    c.close().await;
+    Ok(())
+}

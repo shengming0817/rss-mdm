@@ -128,7 +128,21 @@ pub async fn recover_one(
     let (device,channel): (String,String)=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query_as("SELECT device,channel FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await
     })).await?;
-    storage::lock_device(tx, &device).await?;
+    if channel == "agent" {
+        let tenant = tx.tenant_id().to_string();
+        let device = device.clone();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(
+                    rss_mdm_registration_service::lifecycle::lock_recovery_in(c, &tenant, &device)
+                        .await,
+                )
+            })
+        })
+        .await??;
+    } else {
+        storage::lock_device(tx, &device).await?;
+    }
     let now = storage::now(tx).await?;
     if channel == "agent" {
         let mut run = storage::load_run(tx, id).await?;

@@ -55,7 +55,7 @@ pub(super) async fn seed(
         let signature =
             URL_SAFE_NO_PAD.encode(key.sign(&document.signing_bytes(&secret)?).as_ref());
         sqlx::query("INSERT INTO mdm_access.agent_configurations(tenant_id,id,operation_id,creator,instance,secret_digest,signature,request_digest,document,quantity,state,expires_at) VALUES($1,$2,$3,$4,$5,repeat('a',64),$7,repeat('b',64),$6,3,'available',to_timestamp($8))")
-            .bind(tenant).bind(id).bind(Uuid::new_v4()).bind(name).bind(p.instance_id()).bind(serde_json::to_value(document)?).bind(signature).bind(expiry as f64).execute(&mut *tx).await?;
+            .bind(tenant).bind(id).bind(Uuid::new_v4()).bind(if i == 0 { p.principal_id() } else { name }).bind(p.instance_id()).bind(serde_json::to_value(document)?).bind(signature).bind(expiry as f64).execute(&mut *tx).await?;
         let source = format!("directory-source-{i}");
         let document = format!("[{{\"name\":\"{name}\",\"version\":\"2.0\"}}]");
         use sha2::{Digest, Sha256};

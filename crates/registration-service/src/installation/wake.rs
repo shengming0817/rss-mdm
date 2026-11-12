@@ -8,7 +8,11 @@ pub async fn wake_native_in(
         .wake_in(
             tx,
             &target(tx.tenant_id(), device),
-            &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+            &crate::lifecycle::resources::device(
+                tx.tenant_id(),
+                device,
+                crate::lifecycle::resources::Work::Exclusive,
+            ),
             (),
             |_, _| Box::pin(async { Ok(()) }),
         )

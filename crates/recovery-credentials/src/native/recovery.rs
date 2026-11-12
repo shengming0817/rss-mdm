@@ -305,6 +305,20 @@ async fn device(tx: &mut PgTransaction<'_>, entity: &str) -> Result<Option<Strin
     Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND mdm_recovery_tasks.recovery_key(device)=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
 }
 
+pub(crate) async fn resources_in(
+    tx: &mut PgTransaction<'_>,
+    entity: &str,
+) -> Result<rss_reconcile::ResourceSet> {
+    Ok(match device(tx, entity).await? {
+        Some(device) => rss_mdm_registration_service::lifecycle::resources::device(
+            tx.tenant_id(),
+            &device,
+            rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
+        ),
+        None => rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+    })
+}
+
 pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, entity: &str) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let entity = entity.to_owned();
@@ -567,7 +581,18 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                                         Err(error) => return Err(rejection(error, context.3)),
                                     };
 
-                                service
+                                if prepared.is_some() {
+                                    let resources = resources_in(tx, claim.target().entity())
+                                        .await
+                                        .map_err(|e| rejection(e, context.3))?;
+                                    service
+                                        .transactions
+                                        .reconcile_messaging
+                                        .bind_in(tx, claim.target(), &resources)
+                                        .await?;
+                                }
+                                let settlement_audit = context.2;
+                                let outcome = service
                                     .transactions
                                     .reconcile_messaging
                                     .protect_in(tx, claim, (context, prepared), |ctx, tx| {
@@ -575,26 +600,28 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Service {
                                             let ((service, _, audit, failure), prepared) = ctx;
                                             let Some(prepared) = prepared.take() else {
                                                 // Normal endpoint contention yields without counting a failed attempt.
-                                                audit.mark_commit_started();
-                                                return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));
+                                                return Ok(
+                                                    rss_reconcile_postgres::ProtectedStep::Deferred(
+                                                        Duration::from_millis(50),
+                                                    ),
+                                                );
                                             };
-                                            match apply_prepared(
-                                                service,
-                                                tx,
-                                                prepared,
-                                                audit,
-                                            )
-                                            .await
+                                            match apply_prepared(service, tx, prepared, audit).await
                                             {
-                                                Ok(more) => {
-                                                    audit.mark_commit_started();
-                                                    Ok(rss_reconcile_postgres::ProtectedStep::Ready(more))
-                                                }
+                                                Ok(more) => Ok(
+                                                    rss_reconcile_postgres::ProtectedStep::Ready(
+                                                        more,
+                                                    ),
+                                                ),
                                                 Err(e) => Err(rejection(e, failure)),
                                             }
                                         })
                                     })
-                                    .await
+                                    .await;
+                                if outcome.is_ok() {
+                                    settlement_audit.mark_commit_started();
+                                }
+                                outcome
                             })
                         },
                     )
@@ -698,4 +725,45 @@ async fn command_candidates_in(
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(CommandCandidates { operations, after })
+}
+
+impl Service {
+    /// Calibrate every existing declaration before runners start, including delayed
+    /// and suspended work. Binding preserves wake identity and recovery history.
+    pub fn initialize_resource_bindings(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::result::Result<(), Error>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            let transactions = &self.transactions;
+            let tenant = transactions.tenant;
+            let scope = recovery_scope(tenant);
+            let mut after = String::new();
+            loop {
+                let page = crate::native::transaction::inspect(
+                &transactions.runtime, tenant, (transactions, scope.clone(), after.clone()),
+                move |(transactions, scope, after), tx| Box::pin(async move {
+                    let t = tx.tenant_id().to_string();
+                    let domain = scope.reconciler().to_owned();
+                    let after = after.clone();
+                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
+                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler=$2 AND entity>$3 ORDER BY entity LIMIT 64")
+                            .bind(t).bind(domain).bind(after).fetch_all(c).await
+                    })).await?;
+                    for entity in &page {
+                        let target = rss_reconcile::Target::new(scope.clone(), entity).map_err(|_| Error::Malformed)?;
+                        let resources = resources_in(tx, entity).await?;
+                        transactions.reconcile_messaging.bind_in(tx, &target, &resources).await?;
+                    }
+                    Ok(page)
+                }),
+            ).await?;
+                if page.len() < 64 {
+                    return Ok(());
+                }
+                after = page.last().expect("nonempty page").clone();
+            }
+        })
+    }
 }

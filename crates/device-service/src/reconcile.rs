@@ -10,6 +10,14 @@ pub(crate) struct Prepared {
     input: identity::PreparedWorld,
     changes: Vec<Change>,
 }
+impl Prepared {
+    pub(crate) fn resources(&self, tenant: TenantId) -> Result<rss_reconcile::ResourceSet> {
+        Ok(rss_mdm_registration_service::lifecycle::resources::devices(
+            tenant,
+            self.input.devices(),
+        )?)
+    }
+}
 enum Change {
     Refresh(Association),
     Write(
@@ -22,8 +30,10 @@ pub(crate) async fn prepare(
     c: &mut PgConnection,
     tenant: TenantId,
     device: &str,
-) -> Result<Prepared> {
-    let input = identity::affected_world(c, tenant, device).await?;
+) -> Result<Option<Prepared>> {
+    let Some(input) = identity::affected_world(c, tenant, device).await? else {
+        return Ok(None);
+    };
     let world = &input.world;
     let mut occupied = BTreeSet::new();
     let mut changes = Vec::new();
@@ -89,18 +99,20 @@ pub(crate) async fn prepare(
         ));
         occupied.extend(members.iter().map(|m| m.device.clone()));
     }
-    Ok(Prepared { input, changes })
+    Ok(Some(Prepared { input, changes }))
 }
 /// Only relevant-input revalidation and publication hold the nonblocking tenant fence.
 pub(crate) async fn publish(
     c: &mut PgConnection,
     tenant: TenantId,
     prepared: Prepared,
-) -> Result<Vec<Fact>> {
+) -> Result<Option<Vec<Fact>>> {
     if prepared.changes.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Some(Vec::new()));
     }
-    prepared.input.fence(c, tenant).await?;
+    if !prepared.input.fence(c, tenant).await? {
+        return Ok(None);
+    }
     let t = tenant.to_string();
     let mut results = Vec::new();
     for change in prepared.changes {
@@ -158,7 +170,7 @@ pub(crate) async fn publish(
         );
     }
     audit.finalize(None);
-    Ok(facts)
+    Ok(Some(facts))
 }
 fn command(old: Option<&Association>, members: &[Member], evidence: &str) -> Confirm {
     Confirm {

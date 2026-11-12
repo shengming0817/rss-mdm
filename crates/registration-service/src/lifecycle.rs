@@ -1,5 +1,38 @@
 use crate::Error;
 use std::{future::Future, pin::Pin};
+pub mod resources;
+
+/// A run recovery may share the lifecycle fence only when it neither admits new
+/// device work nor mutates registration/channel state. Retirement and foreground
+/// writers retain the exclusive fence. Resource admission still serializes runs
+/// of the same kind before their protected effect.
+pub async fn lock_recovery_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<(), Error> {
+    let key = serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed)?;
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2790))")
+        .bind(key)
+        .execute(c)
+        .await
+        .map_err(crate::database::db)?;
+    Ok(())
+}
+
+/// Nonblocking counterpart for Script and Agent Collection run recovery.
+pub async fn try_lock_recovery_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<bool, Error> {
+    let key = serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed)?;
+    sqlx::query_scalar("SELECT pg_try_advisory_xact_lock_shared(hashtextextended($1,2790))")
+        .bind(key)
+        .fetch_one(c)
+        .await
+        .map_err(crate::database::db)
+}
 /// Participate after registration state is retired, using the same borrowed transaction.
 pub trait Retirement: Send + Sync {
     /// The host's optional event destination, fixed with this lifecycle participant.
@@ -54,14 +87,23 @@ pub async fn lock_devices_in(
 }
 
 /// Try an endpoint page without waiting behind device writers while a caller holds directory locks.
-/// A false result requires the caller to roll back the entire transaction before retrying.
+/// Roll back partial multi-endpoint acquisition before returning false. The caller
+/// still owns transaction settlement; successful fences live until that settlement.
 pub async fn try_lock_devices_in(
     _profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     devices: &[String],
 ) -> Result<bool, Error> {
-    for key in device_lock_keys(tenant, devices)? {
+    let keys = device_lock_keys(tenant, devices)?;
+    let batch = keys.len() > 1;
+    if batch {
+        sqlx::query("SAVEPOINT mdm_endpoint_fences")
+            .execute(&mut *c)
+            .await
+            .map_err(crate::database::db)?;
+    }
+    for key in keys {
         let locked: bool =
             sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2790))")
                 .bind(key)
@@ -69,8 +111,24 @@ pub async fn try_lock_devices_in(
                 .await
                 .map_err(crate::database::db)?;
         if !locked {
+            if batch {
+                sqlx::query("ROLLBACK TO SAVEPOINT mdm_endpoint_fences")
+                    .execute(&mut *c)
+                    .await
+                    .map_err(crate::database::db)?;
+                sqlx::query("RELEASE SAVEPOINT mdm_endpoint_fences")
+                    .execute(&mut *c)
+                    .await
+                    .map_err(crate::database::db)?;
+            }
             return Ok(false);
         }
+    }
+    if batch {
+        sqlx::query("RELEASE SAVEPOINT mdm_endpoint_fences")
+            .execute(c)
+            .await
+            .map_err(crate::database::db)?;
     }
     Ok(true)
 }

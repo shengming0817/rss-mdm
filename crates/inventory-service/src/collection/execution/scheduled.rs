@@ -105,14 +105,11 @@ pub(crate) async fn wake_in(
     }
     let target = rss_reconcile::Target::new(super::wake::scope(tx.tenant_id()), work.entity())
         .map_err(|_| Error::Malformed)?;
+    let resources = super::wake::resources_in(tx, target.entity()).await?;
     reconcile
-        .wake_in(
-            tx,
-            &target,
-            &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
-            (),
-            |_, _| Box::pin(async { Ok(()) }),
-        )
+        .wake_in(tx, &target, &resources, (), |_, _| {
+            Box::pin(async { Ok(()) })
+        })
         .await?;
     Ok(())
 }

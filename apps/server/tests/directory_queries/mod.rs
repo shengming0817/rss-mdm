@@ -1,6 +1,7 @@
 //! Real management routes and PostgreSQL owners. This proof does not exercise device effects.
 mod certificates;
 mod coverage;
+mod diagnostics;
 pub(super) mod history;
 mod materials;
 mod metadata;
@@ -135,8 +136,10 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             P::Credentials,
             P::WebhookRead,
             P::RegistrationConfigurationRead,
+            P::RuntimeDiagnosticsRead,
             P::UserGroupRead,
             P::AuthorizationRead,
+            P::AuthorizationWrite,
         ])
         .await?;
     let proof = c.authenticate(&manager).await?;
@@ -147,6 +150,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
     let recovery = materials::seed(&c, &mut fixtures.cases).await?;
     let history = history::seed(&c, &proof).await?;
     let ordinary = c.account(&[P::InventoryRead]).await?;
+    let diagnostic_reader = c.account(&[P::RuntimeDiagnosticsRead]).await?;
     let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = reservation.local_addr()?;
     let mut config = crate::host_t2_support::configuration(
@@ -208,6 +212,31 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
             Ok::<_, anyhow::Error>(())
         })
         .await.with_context(|| format!("directory App readiness: {readiness:?}"))??;
+        // Real HTTP contracts expose each owner and retain first-use permission boundaries.
+        let (status, diagnostics) = http.get("/api/v1/runtime/diagnostics", &[]).await?;
+        assert_eq!(status, 200, "{diagnostics}");
+        let names = diagnostics["components"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(names.len(), 21);
+        for name in ["baseline", "policy", "group", "scope", "asset_query", "compliance", "device_associations", "device_control", "software_deployment", "script_execution", "collection_execution"] { assert!(names.contains(name), "{name}"); }
+        assert!(!names.contains("automation") && !names.contains("execution_recovery"));
+        assert_eq!(diagnostics["firstUse"]["access"], "available");
+        assert!(diagnostics["firstUse"]["summary"].get("saved").is_none());
+        let access::credential::RequestCredential::Cookie(secret) = diagnostic_reader.credential()? else { anyhow::bail!("cookie fixture") };
+        let restricted = Http { client: http.client.clone(), address: http.address, cookie: format!("__Host-identity-session={}", secret.expose()), csrf: secret.csrf() };
+        let (status, restricted_body) = restricted.get("/api/v1/runtime/diagnostics", &[]).await?;
+        assert_eq!(status, 200, "{restricted_body}");
+        assert_eq!(restricted_body["firstUse"]["access"], "forbidden");
+        assert!(restricted_body["firstUse"].get("summary").is_none());
+        diagnostics::exercise(&c, &manager, &diagnostic_reader, &restricted, &http).await?;
+        // Reading the original configuration operation must work in its read-only snapshot.
+        let operation: Uuid = sqlx::query_scalar("SELECT operation_id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(c.tenant.to_string()).bind(Uuid::from_u128(7000)).fetch_one(&c.operator).await?;
+        let (status, receipt) = http.get(&format!("/api/v1/agent-configuration-operations/{operation}"), &[]).await?;
+        assert_eq!(status, 200, "{receipt}");
+        assert_eq!(receipt["configuration"]["configurationId"], Uuid::from_u128(7000).to_string());
+        let (status, absent) = http.get(&format!("/api/v1/agent-configuration-operations/{}", Uuid::new_v4()), &[]).await?;
+        assert_eq!(status, 200);
+        assert!(absent.is_null());
         let mut failures = Vec::new();
         for (path, filter, expected) in &fixtures.cases {
             match http.selected(path, filter).await {
@@ -223,6 +252,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         );
         let access::credential::RequestCredential::Cookie(secret)=ordinary.credential()? else {anyhow::bail!("cookie fixture")};
         let ordinary_http=Http{client:http.client.clone(),address:http.address,cookie:format!("__Host-identity-session={}",secret.expose()),csrf:secret.csrf()};
+        assert_eq!(ordinary_http.get("/api/v1/runtime/diagnostics", &[]).await?.0, 403);
         let (status,body)=ordinary_http.get("/api/v1/device-views",&[("filter","search=icontains=éclair")]).await?;
         assert_eq!(status,200,"{body}");
         assert_eq!(body["items"],json!([]));

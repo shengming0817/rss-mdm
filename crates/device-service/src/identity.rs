@@ -284,16 +284,40 @@ pub(crate) struct PreparedWorld {
     stamp: Stamp,
 }
 impl PreparedWorld {
+    pub(crate) fn devices(&self) -> &[String] {
+        &self.ids
+    }
+
     /// Called only after all computation, before any association/evidence publication.
-    pub(crate) async fn fence(&self, c: &mut PgConnection, tenant: TenantId) -> Result<()> {
-        // Only the Device publication owner touches this row; ingress never does.
-        // NOWAIT avoids the claim/publication inversion with the input worker.
-        sqlx::query("SELECT tenant_id FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE NOWAIT")
-            .bind(tenant.to_string()).fetch_optional(&mut *c).await?;
-        if stamp(c, tenant, &self.ids).await? != self.stamp {
-            return Err(Error::Conflict);
+    pub(crate) async fn fence(&self, c: &mut PgConnection, tenant: TenantId) -> Result<bool> {
+        // NOWAIT failure aborts only this savepoint; no effect has been published.
+        sqlx::query("SAVEPOINT mdm_association_publication")
+            .execute(&mut *c)
+            .await?;
+        let locked = sqlx::query("SELECT tenant_id FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE NOWAIT")
+            .bind(tenant.to_string()).fetch_optional(&mut *c).await;
+        match locked {
+            Err(error)
+                if error
+                    .as_database_error()
+                    .and_then(|e| e.code())
+                    .is_some_and(|code| code == "55P03") =>
+            {
+                sqlx::query("ROLLBACK TO SAVEPOINT mdm_association_publication")
+                    .execute(&mut *c)
+                    .await?;
+                sqlx::query("RELEASE SAVEPOINT mdm_association_publication")
+                    .execute(c)
+                    .await?;
+                return Ok(false);
+            }
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
         }
-        Ok(())
+        sqlx::query("RELEASE SAVEPOINT mdm_association_publication")
+            .execute(&mut *c)
+            .await?;
+        Ok(stamp(c, tenant, &self.ids).await? == self.stamp)
     }
 }
 async fn stamp(c: &mut PgConnection, tenant: TenantId, ids: &[String]) -> Result<Stamp> {
@@ -317,11 +341,12 @@ async fn stamp(c: &mut PgConnection, tenant: TenantId, ids: &[String]) -> Result
     })
 }
 /// Read and compute under the affected device fences, without the tenant publication lock.
-pub(crate) async fn affected_world(
+/// Current closure without advancing the association work watermark.
+pub(crate) async fn affected_devices_on(
     c: &mut PgConnection,
     tenant: TenantId,
     device: &str,
-) -> Result<PreparedWorld> {
+) -> Result<Vec<String>> {
     let t = tenant.to_string();
     let mut ids: BTreeSet<String> = sqlx::query_scalar("SELECT DISTINCT p.device FROM mdm_assets.hardware_keys k CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_assets.hardware_keys WHERE tenant_id=k.tenant_id AND kind=k.kind AND value=k.value ORDER BY device LIMIT 3) p WHERE k.tenant_id=$1::uuid AND k.device=$2")
         .bind(&t).bind(device).fetch_all(&mut *c).await?.into_iter().collect();
@@ -329,7 +354,15 @@ pub(crate) async fn affected_world(
     let associated: Vec<String> = sqlx::query_scalar("SELECT peer.device FROM mdm_devices.members anchor JOIN mdm_devices.members peer USING(tenant_id,association_id) WHERE anchor.tenant_id=$1::uuid AND anchor.device=$2 AND NOT anchor.released")
         .bind(&t).bind(device).fetch_all(&mut *c).await?;
     ids.extend(associated);
-    let ids = ids.into_iter().collect::<Vec<_>>();
+    Ok(ids.into_iter().collect())
+}
+pub(crate) async fn affected_world(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    device: &str,
+) -> Result<Option<PreparedWorld>> {
+    let t = tenant.to_string();
+    let ids = affected_devices_on(c, tenant, device).await?;
     if !rss_mdm_registration_service::lifecycle::try_lock_devices_in(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -338,7 +371,10 @@ pub(crate) async fn affected_world(
     )
     .await?
     {
-        return Err(Error::Conflict);
+        return Ok(None);
+    }
+    if affected_devices_on(c, tenant, device).await? != ids {
+        return Ok(None);
     }
     let association_ids: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=ANY($2) AND NOT released ORDER BY association_id")
         .bind(&t).bind(&ids).fetch_all(&mut *c).await?;
@@ -358,10 +394,10 @@ pub(crate) async fn affected_world(
             .collect::<BTreeMap<_, _>>()
             != stamp.associations
     {
-        return Err(Error::Conflict);
+        return Ok(None);
     }
     world.revoked_pairs = stamp.revoked.clone();
-    Ok(PreparedWorld { world, ids, stamp })
+    Ok(Some(PreparedWorld { world, ids, stamp }))
 }
 
 fn pair(a: &str, b: &str) -> (String, String) {

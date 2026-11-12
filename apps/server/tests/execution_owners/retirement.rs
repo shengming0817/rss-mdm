@@ -42,36 +42,71 @@ async fn accept(
     tx.commit().await?;
     Ok(id)
 }
-async fn step(h: &Harness, id: Uuid) -> Result<()> {
-    let timer = rss_mdm_device_service::control::recovery::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
-    let scope = rss_mdm_device_service::control::recovery_scope(h.c.tenant);
-    let target = rss_reconcile::Target::new(scope.clone(), format!("retirement:{id}"))?;
-    let store = h.a.service.recovery_store();
-    store
-        .wake(
-            &target,
-            &rss_reconcile::ResourceSet::empty(h.c.tenant),
-            &control,
-        )
-        .await?;
-    let batch = store
-        .claim_due(&scope, 64, Duration::from_secs(30), &control)
-        .await?;
-    let mut seen = false;
-    for claim in batch.claims {
-        if claim.target() == &target {
-            let ReconcileStep::Ready(diff) = h.a.service.observe(&claim, &control).await? else {
-                anyhow::bail!("retirement observation deferred")
-            };
-            h.a.service.apply(&claim, diff, &control).await?;
-            seen = true;
+async fn resources(h: &Harness, id: Uuid) -> Result<rss_reconcile::ResourceSet> {
+    let devices: Vec<String> = sqlx::query_scalar("SELECT device FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device")
+        .bind(h.c.tenant.to_string()).bind(id).fetch_all(&h.c.operator).await?;
+    Ok(rss_mdm_registration_service::lifecycle::resources::devices(
+        h.c.tenant, &devices,
+    )?)
+}
+fn step(h: &Harness, id: Uuid) -> futures::future::LocalBoxFuture<'_, Result<()>> {
+    Box::pin(async move {
+        let timer = rss_mdm_device_service::control::recovery::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
+        let scope = rss_mdm_device_service::control::recovery_scope(h.c.tenant);
+        let target = rss_reconcile::Target::new(scope.clone(), format!("retirement:{id}"))?;
+        let store = h.a.service.recovery_store();
+        store
+            .wake(&target, &resources(h, id).await?, &control)
+            .await?;
+        loop {
+            control.check()?;
+            let batch = store
+                .claim_due(&scope, 64, Duration::from_secs(30), &control)
+                .await?;
+            let mut seen = false;
+            for claim in batch.claims {
+                if claim.target() != &target {
+                    // This fixture drives retirement only. Yield the other owner's
+                    // claim normally, keeping its work and retry history intact.
+                    store
+                        .finish(
+                            &claim,
+                            rss_reconcile::Completion::Deferred(Duration::from_secs(1)),
+                            &control,
+                        )
+                        .await?;
+                    continue;
+                }
+                let ReconcileStep::Ready(diff) = h.a.service.observe(&claim, &control).await?
+                else {
+                    store.release(&claim, &control).await?;
+                    continue;
+                };
+                let completion = if diff.drift() == rss_reconcile::DriftKind::Converged {
+                    rss_reconcile::Completion::Converged
+                } else {
+                    match h.a.service.apply(&claim, diff, &control).await? {
+                        ReconcileStep::Ready(()) => {
+                            rss_reconcile::Completion::Reobserve(Duration::from_millis(50))
+                        }
+                        ReconcileStep::Deferred(delay) => {
+                            rss_reconcile::Completion::Deferred(delay)
+                        }
+                    }
+                };
+                seen |= claim.target() == &target;
+                store.finish(&claim, completion, &control).await?;
+            }
+            if seen {
+                break;
+            }
+            // The next bounded claim scan can now admit the retirement target.
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        store.release(&claim, &control).await?;
-    }
-    anyhow::ensure!(seen, "retirement not claimed");
-    Ok(())
+        Ok(())
+    })
 }
 async fn state(h: &Harness, id: Uuid) -> Result<(String, String, Option<Uuid>)> {
     Ok(sqlx::query_as("SELECT stage,effect,blocking_execution FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2").bind(h.c.tenant.to_string()).bind(id).fetch_one(&h.c.operator).await?)
@@ -207,11 +242,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     let (old_claim, old_diff) = {
         let store = h.a.service.recovery_store();
         store
-            .wake(
-                &target,
-                &rss_reconcile::ResourceSet::empty(h.c.tenant),
-                &control,
-            )
+            .wake(&target, &resources(&h, retirement).await?, &control)
             .await?;
         let mut batch = store
             .claim_due(&scope, 64, Duration::from_secs(30), &control)
