@@ -3,7 +3,6 @@ use super::*;
 use crate::planning_t2_support as planning;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::Acquire;
 use std::{collections::BTreeMap, time::Duration};
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
@@ -458,6 +457,22 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
     reconcile(&c, &owner, cfg, &n.device).await?;
     let observed: (i64,bool) = sqlx::query_as("SELECT count(*),bool_and(observed_at IS NOT NULL) FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND identifier='org.example.policy.firewall'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(observed, (1, true));
+    let pool = c.inputs.pool("shared", "mdm_policy_runtime").await?;
+    for (tenant, expected) in [
+        (c.tenant.to_string(), 1_i64),
+        (Uuid::new_v4().to_string(), 0_i64),
+    ] {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant)
+            .execute(&mut *tx)
+            .await?;
+        let visible:i64=sqlx::query_scalar("SELECT count(tenant_id) FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND identifier='org.example.policy.firewall'").bind(c.tenant.to_string()).bind(&n.device).fetch_one(&mut *tx).await?;
+        assert_eq!(visible, expected);
+        tx.rollback().await?;
+    }
+    pool.close().await;
+
     drop(d);
     Fixture::close(a).await?;
     drop(app);
@@ -467,28 +482,13 @@ async fn policy_profile_reservation_dispatch_and_observation() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "T2: exact Apple and Recovery permissions are admitted on a Policy login with forced tenant RLS"]
-async fn policy_channel_permissions_are_exact_and_tenant_scoped() -> Result<()> {
+#[ignore = "T2: exact Apple and Recovery privileges and forced tenant policy are admitted on a Policy login"]
+async fn policy_channel_permissions_are_exact() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let pool = c.inputs.pool("shared", "mdm_policy_runtime").await?;
     let mut connection = pool.acquire().await?;
     rss_mdm_apple_channel::flow_store::verify_policy_access_on(&mut connection).await?;
     rss_mdm_recovery_credentials::native::storage::verify_policy_access_on(&mut connection).await?;
-    let other = identity::seed(&c, "apple").await?;
-    let mut tx = connection.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(Uuid::new_v4().to_string())
-        .execute(&mut *tx)
-        .await?;
-    let visible: i64 = sqlx::query_scalar(
-        "SELECT count(tenant_id) FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2",
-    )
-    .bind(c.tenant.to_string())
-    .bind(other.device)
-    .fetch_one(&mut *tx)
-    .await?;
-    assert_eq!(visible, 0);
-    tx.rollback().await?;
     drop(connection);
     pool.close().await;
     c.close().await;

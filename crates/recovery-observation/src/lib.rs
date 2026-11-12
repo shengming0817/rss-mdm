@@ -132,6 +132,11 @@ impl Readiness {
             && r.inputs.is_some()
         {
             r.inputs = Some(phase(outcome));
+            if outcome.is_ok() {
+                // Input owners confirm durable progress/failure before recording success.
+                // Another instance may have recovered this fixed target since our attempt.
+                r.failures.remove("inputs");
+            }
         }
     }
     /// Runner timeouts may drop the store future before it can return an observation.

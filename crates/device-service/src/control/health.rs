@@ -30,9 +30,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         lease: std::time::Duration,
         control: &rss_reconcile::Control<'_, T>,
     ) -> Result<rss_reconcile::ClaimBatch<Self::Claim>, rss_reconcile::Error> {
-        if self.0.readiness.health().inputs
-            == Some(rss_mdm_recovery_observation::Phase::Initializing)
-        {
+        if self.0.readiness.health().inputs != Some(rss_mdm_recovery_observation::Phase::Healthy) {
             let suspended = crate::control::transaction::inspect(
                 &self.0.transactions.runtime,
                 self.0.transactions.tenant,

@@ -631,7 +631,10 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     policy_scope.commit().await?;
     let workers = Workers::start_policy(&c, &owners, scopes.clone(), Some(&policy_fixture)).await?;
     wait_sql(&c,"SELECT member_set IS NOT NULL AND member_count=0 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",id).await?;
+    let changed_before = cost_sample(&c).await?;
+    let changed_started = tokio::time::Instant::now();
     inventory(&c, &device.members[0].device, &definition, true).await?;
+    let committed = tokio::time::Instant::now();
     wait_sql(
         &c,
         "SELECT member_count=1 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
@@ -643,9 +646,14 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     wait_sql(&c,"SELECT EXISTS(SELECT FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2 AND started AND completed AND failure IS NULL) AND EXISTS(SELECT FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND gateway_accepted)",run).await?;
     let policy_scheduled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.work w JOIN rss_reconcile.targets t ON t.tenant_id=w.tenant_id AND t.entity='job:'||w.id::text AND t.reconciler='mdm.policy' WHERE w.tenant_id=$1::uuid AND w.id=$2 AND w.started AND w.completed)").bind(c.tenant.to_string()).bind(run).fetch_one(&c.operator).await?;
     assert!(policy_scheduled);
+    let commit_to_operation_ms = committed.elapsed().as_millis();
+    tokio::time::sleep_until(changed_started + Duration::from_secs(25)).await;
+    let changed_after = cost_sample(&c).await?;
     wait_sql(&c,"SELECT NOT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND ((reconciler IN('mdm.groups','mdm.scopes','mdm.compliance','mdm.devices','mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs') OR (reconciler='mdm.policy' AND entity='configuration-inputs')) AND next_run IS NOT NULL) AND EXISTS(SELECT FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 AND resolution IS NOT NULL)",scope).await?;
     let before:Vec<(String,i64)>=sqlx::query_as("SELECT reconciler,wake_version FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND ((reconciler IN('mdm.groups','mdm.scopes','mdm.compliance','mdm.devices','mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs') OR (reconciler='mdm.policy' AND entity='configuration-inputs')) ORDER BY reconciler").bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    let idle_before = cost_sample(&c).await?;
+    tokio::time::sleep(Duration::from_secs(25)).await;
+    let idle_after = cost_sample(&c).await?;
     let after:Vec<(String,i64)>=sqlx::query_as("SELECT reconciler,wake_version FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND ((reconciler IN('mdm.groups','mdm.scopes','mdm.compliance','mdm.devices','mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs') OR (reconciler='mdm.policy' AND entity='configuration-inputs')) AND next_run IS NULL ORDER BY reconciler").bind(c.tenant.to_string()).fetch_all(&c.operator).await?;
     assert_eq!(
         after, before,
@@ -744,6 +752,7 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
     .execute(&mut *change)
     .await?;
     change.commit().await?;
+    let offline_commit = tokio::time::Instant::now();
     let workers = Workers::start_policy(&c, &owners, scopes, Some(&policy_fixture)).await?;
     settled(&c).await?;
     let (new_run, matched):(Uuid,bool)=sqlx::query_as("SELECT s.resolution,coalesce(bool_or(r.matched) FILTER(WHERE r.channel='mdm'),false) FROM mdm_scope.scopes s LEFT JOIN mdm_scope.scope_channel_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 GROUP BY s.resolution").bind(c.tenant.to_string()).bind(scope).fetch_one(&c.operator).await?;
@@ -752,6 +761,15 @@ async fn actual_workers_recover_events_and_preserve_entry_without_idle_input_pol
         "revoked credential must remove MDM qualification after recovery"
     );
     assert_ne!(new_run, run);
+    let evidence = json!({"tenant":c.tenant.to_string(),"windowSeconds":25,"deviceMode":"controlled protocol fixtures; no real device effect claim","serverMode":"host test process with production owner workers","changed":{"before":changed_before,"after":changed_after},"idle":{"before":idle_before,"after":idle_after},"commitToConfigurationOperationMs":commit_to_operation_ms,"offlineCommitToRestartedProjectionMs":offline_commit.elapsed().as_millis()});
+    let out =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/lifecycle-metrics");
+    std::fs::create_dir_all(&out)?;
+    std::fs::write(
+        out.join(format!("{}.json", c.tenant)),
+        serde_json::to_vec_pretty(&evidence)?,
+    )?;
+
     let publication:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.work w JOIN rss_reconcile.targets t ON t.tenant_id=w.tenant_id AND t.entity='job:'||w.id::text AND t.reconciler='mdm.policy' WHERE w.tenant_id=$1::uuid AND w.id=$2)").bind(c.tenant.to_string()).bind(new_run).fetch_one(&c.operator).await?;
     wait_sql(&c,"SELECT completed AND failure IS NULL FROM mdm_policy.work WHERE tenant_id=$1::uuid AND id=$2",new_run).await?;
     assert!(
@@ -1259,6 +1277,22 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
     suspend!(group, "mdm.groups");
     suspend!(scope, "mdm.scopes");
     suspend!(compliance, "mdm.compliance");
+    let execution = crate::policy_configuration_t2::fixture::Fixture::open(&c, false).await?;
+    suspend!(execution.service.recovery_store(), "mdm.commands.v1");
+    suspend!(
+        execution.software.service.recovery_store(),
+        "mdm.software.deployment.v1"
+    );
+    assert!(matches!(
+        execution.service.health().inputs,
+        Some(rss_mdm_recovery_observation::Phase::Failed(_))
+    ));
+    assert!(matches!(
+        execution.software.service.health().inputs,
+        Some(rss_mdm_recovery_observation::Phase::Failed(_))
+    ));
+    let execution_replica =
+        crate::policy_configuration_t2::fixture::Fixture::open(&c, false).await?;
     let replica = Owners::open(&c).await?;
     let replica_scopes = crate::scope_t2::open(&c).await?;
     assert!(replica.groups.input_failed(Duration::from_secs(6)).await?);
@@ -1269,7 +1303,8 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
             .await?
     );
     assert!(replica_scopes.input_failed(Duration::from_secs(6)).await?);
-    let workers = Workers::start(&c, &replica, replica_scopes).await?;
+    let workers =
+        Workers::start_policy(&c, &replica, replica_scopes, Some(&execution_replica)).await?;
     settled(&c).await?;
     assert!(!owners.groups.input_failed(Duration::from_secs(6)).await?);
     assert!(
@@ -1279,7 +1314,48 @@ async fn input_health_is_durable_across_instances() -> Result<()> {
             .await?
     );
     assert!(!scopes.input_failed(Duration::from_secs(6)).await?);
+    wait_sql(&c,"SELECT $2::uuid IS NOT NULL AND NOT EXISTS(SELECT FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler IN('mdm.commands.v1','mdm.software.deployment.v1') AND entity='inputs' AND next_run IS NOT NULL)",Uuid::new_v4()).await?;
+    let fresh_control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    assert!(
+        execution
+            .service
+            .recovery_store()
+            .claim_due(
+                &rss_mdm_device_service::control::recovery_scope(c.tenant),
+                1,
+                Duration::from_secs(30),
+                &fresh_control
+            )
+            .await?
+            .claims
+            .is_empty()
+    );
+    assert!(
+        execution
+            .software
+            .service
+            .recovery_store()
+            .claim_due(
+                &rss_mdm_software_service::deployment::recovery_scope(c.tenant),
+                1,
+                Duration::from_secs(30),
+                &fresh_control
+            )
+            .await?
+            .claims
+            .is_empty()
+    );
+    assert_eq!(
+        execution.service.health().inputs,
+        Some(rss_mdm_recovery_observation::Phase::Healthy)
+    );
+    assert_eq!(
+        execution.software.service.health().inputs,
+        Some(rss_mdm_recovery_observation::Phase::Healthy)
+    );
     workers.close().await?;
+    execution_replica.close().await?;
+    execution.close().await?;
     pool.close().await;
     drop(replica);
     drop(owners);
@@ -1479,4 +1555,44 @@ async fn object_publication_waits_for_complete_cut_and_does_not_loop() -> Result
     pool.close().await;
     c.close().await;
     Ok(())
+}
+
+// Observational evidence, not a latency SLO. Run this owner serially for isolated counters.
+async fn cost_sample(c: &Context) -> Result<serde_json::Value> {
+    sqlx::query("SELECT pg_stat_clear_snapshot()")
+        .execute(&c.operator)
+        .await?;
+    let tables:serde_json::Value=sqlx::query_scalar("SELECT jsonb_object_agg(schemaname||'.'||relname,jsonb_build_object('scans',seq_scan+coalesce(idx_scan,0),'updates',n_tup_upd)) FROM pg_stat_all_tables WHERE (schemaname,relname) IN (('mdm','asset_changes'),('mdm','asset_epochs'),('rss_reconcile','targets'),('rss_reconcile','scans'))").fetch_one(&c.operator).await?;
+    let wal: i64 = sqlx::query_scalar("SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),'0/0')::bigint")
+        .fetch_one(&c.operator)
+        .await?;
+    // The existing Compose environment owns the PG container; no resources are created here.
+    let cpu = tokio::process::Command::new("python3")
+        .arg("-c")
+        .arg(
+            r#"
+import json, pathlib, subprocess, sys
+sys.path.insert(0, 'hack')
+from dev_environment import Environment
+container=Environment(pathlib.Path.cwd(),group='foundation-t2').container()
+raw=subprocess.check_output(['docker','exec',container,'cat','/sys/fs/cgroup/cpu.stat'],text=True)
+postgres=int(dict(line.split() for line in raw.splitlines())['usage_usec'])
+raw=subprocess.check_output(['ps','-p',sys.argv[1],'-o','cputime='],text=True).strip()
+seconds=0.0
+for value in raw.split(':'): seconds=seconds*60+float(value)
+print(json.dumps({'postgresContainerMicros':postgres,'serverProcessMicros':round(seconds*1000000)}))
+"#,
+        )
+        .arg(std::process::id().to_string())
+        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .output()
+        .await?;
+    anyhow::ensure!(
+        cpu.status.success(),
+        "CPU sample failed: {}",
+        String::from_utf8_lossy(&cpu.stderr)
+    );
+    Ok(
+        json!({"tables":tables,"walBytes":wal,"cpu":serde_json::from_slice::<serde_json::Value>(&cpu.stdout)?}),
+    )
 }

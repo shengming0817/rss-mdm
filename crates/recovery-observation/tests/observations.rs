@@ -221,3 +221,22 @@ async fn failures_are_owner_scoped_and_overflow_requires_a_new_process_window() 
     let restarted = Readiness::new(scope, false, false);
     assert_eq!(restarted.health().recovery, Phase::Initializing);
 }
+
+#[test]
+fn durable_input_recovery_clears_only_its_own_attempt_failure() {
+    let scope = scope("execution");
+    let health = Readiness::new(scope.clone(), false, true);
+    let inputs = Target::new(scope.clone(), "inputs").unwrap();
+    let operation = Target::new(scope, "operation").unwrap();
+    fail(&health, &inputs);
+    fail(&health, &operation);
+    health.inputs(Err(ErrorKind::Permanent));
+    assert_eq!(health.health().unresolved_attempts, 2);
+    health.inputs(Ok(()));
+    assert_eq!(health.health().inputs, Some(Phase::Healthy));
+    assert_eq!(health.health().unresolved_attempts, 1);
+    assert_eq!(
+        health.health().recovery,
+        Phase::Failed(ErrorKind::Permanent)
+    );
+}
