@@ -9,7 +9,7 @@ mod directory_filter;
 pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
-pub mod object_changed;
+pub mod object_published;
 pub mod personnel;
 pub mod planning;
 mod presentation;
@@ -37,7 +37,7 @@ pub const INSTALL_SQL: &str = concat!(
     "\n",
     include_str!("../schema/object-qualification.sql"),
     "\n",
-    include_str!("../schema/object-changes.sql")
+    include_str!("../schema/object-publication.sql")
 );
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 

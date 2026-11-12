@@ -44,16 +44,16 @@ impl IngressValidator<Vec<u8>> for Validator {
                         event.message_id(),
                     )
                 }
-                "object.changed" => {
-                    let event: rss_mdm_device_service::object_changed::ObjectChanged =
+                "object.published" => {
+                    let event: rss_mdm_device_service::object_published::ObjectPublished =
                         serde_json::from_slice(message.payload())
                             .map_err(|_| EnvelopeValidationFailure::MalformedMetadata)?;
                     if !event.valid() {
                         return Err(EnvelopeValidationFailure::MalformedMetadata);
                     }
                     (
-                        rss_mdm_device_service::object_changed::SCHEMA,
-                        "mdm.device.object-changed",
+                        rss_mdm_device_service::object_published::SCHEMA,
+                        "mdm.device.object-published",
                         event.tenant,
                         event.message_id(),
                     )

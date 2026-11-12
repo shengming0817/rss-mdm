@@ -95,6 +95,7 @@ pub enum ObjectRef {
 
 #[derive(Clone, Debug)]
 pub struct ObjectChange {
+    pub identity_changed: bool,
     pub position: i64,
     pub object: String,
     pub old_devices: Vec<String>,

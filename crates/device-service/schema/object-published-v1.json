@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mdm.device.object-published.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "tenant": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "historyEpoch": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "snapshotId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "through": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    }
+  },
+  "required": [
+    "v",
+    "tenant",
+    "historyEpoch",
+    "snapshotId",
+    "through"
+  ]
+}

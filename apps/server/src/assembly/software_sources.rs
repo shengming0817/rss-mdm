@@ -262,6 +262,7 @@ impl Sources for Source {
                 .await?
                 .into_iter()
                 .map(|v| ObjectChange {
+                    identity_changed: v.kind == rss_mdm_inventory_service::objects::ObjectChangeKind::IdentityChanged,
                     position: v.position,
                     object: v.object,
                     old_devices: v.old_devices,

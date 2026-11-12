@@ -210,12 +210,18 @@ async fn publish(
         .map(serde_json::to_value)
         .transpose()
         .map_err(|_| Error::Storage)?;
-    if !force && old.as_ref().map(|o| &o.0) == Some(&doc) || old.is_none() && doc.is_none() {
+    let identity_changed = old.as_ref().map(|o| &o.0) != Some(&doc);
+    if !force && !identity_changed || old.is_none() && doc.is_none() {
         return Ok(());
     }
+    let kind = if identity_changed {
+        rss_mdm_inventory_service::objects::ObjectChangeKind::IdentityChanged
+    } else {
+        rss_mdm_inventory_service::objects::ObjectChangeKind::AssetInvalidated
+    };
     let revision:i64=sqlx::query_scalar("UPDATE mdm_devices.checkpoints SET object_revision=object_revision+1 WHERE tenant_id=$1::uuid RETURNING object_revision").bind(&t).fetch_one(&mut *c).await?;
     sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) VALUES($1::uuid,$2,$3,$4,$5)").bind(&t).bind(key).bind(revision).bind(doc).bind(&devices).execute(&mut *c).await?;
-    sqlx::query("INSERT INTO mdm_devices.object_changes(tenant_id,revision,object,old_devices,new_devices) VALUES($1::uuid,$2,$3,$4,$5)").bind(&t).bind(revision).bind(key).bind(old.map(|o|o.1).unwrap_or_default()).bind(devices).execute(&mut *c).await?;
+    sqlx::query("INSERT INTO mdm_devices.object_changes(tenant_id,revision,object,old_devices,new_devices,kind) VALUES($1::uuid,$2,$3,$4,$5,$6)").bind(&t).bind(revision).bind(key).bind(old.map(|o|o.1).unwrap_or_default()).bind(devices).bind(kind.as_str()).execute(&mut *c).await?;
     sqlx::query("INSERT INTO mdm_devices.object_heads(tenant_id,object,revision) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,object) DO UPDATE SET revision=excluded.revision").bind(t).bind(key).bind(revision).execute(c).await?;
     Ok(())
 }

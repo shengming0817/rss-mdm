@@ -178,6 +178,7 @@ async fn relation_page_in(
     let finished = changes.len() < 64 || position == watermark;
     let devices = changes
         .into_iter()
+        .filter(|c| c.identity_changed)
         .flat_map(|c| c.old_devices.into_iter().chain(c.new_devices))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()

@@ -560,6 +560,7 @@ impl Scopes {
             let more_changes = changes.len() == 64 && position < through;
             let devices = changes
                 .into_iter()
+                .filter(|c| c.kind == rss_mdm_inventory_service::objects::ObjectChangeKind::IdentityChanged)
                 .flat_map(|c| c.old_devices.into_iter().chain(c.new_devices))
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
