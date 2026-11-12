@@ -19,7 +19,6 @@ impl Transactions {
         if devices.is_empty() {
             return Ok(());
         }
-        self.changes.devices_changed_in(tx, &devices).await?;
         let tenant = tx.tenant_id();
         let names = devices.clone();
         let known:Vec<rss_mdm_agent_wire::DeviceId>=tx.with_connection(move|c|Box::pin(async move {

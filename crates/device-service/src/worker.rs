@@ -67,11 +67,14 @@ impl DeviceWork {
                 |(owner, after), tx| Box::pin(async move {
                     let tenant = owner.owner.tenant.to_string();
                     let after = after.clone();
-                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
-                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.devices' AND entity>$2 ORDER BY entity LIMIT 64")
+                    let page: Vec<(String, bool)> = tx.with_connection(move |c| Box::pin(async move {
+                        sqlx::query_as("SELECT entity,result='suspended' FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.devices' AND entity>$2 ORDER BY entity LIMIT 64")
                             .bind(tenant).bind(after).fetch_all(c).await
                     })).await?;
-                    for entity in &page {
+                    for (entity, suspended) in &page {
+                        if *suspended {
+                            owner.owner.record_worker_failure(entity.clone(), ErrorKind::Transient);
+                        }
                         let task = if entity == "inputs" { Task::Inputs } else {
                             Task::Work(entity.strip_prefix("work:").and_then(|id| Uuid::parse_str(id).ok()).ok_or_else(|| sqlx::Error::Protocol("association target".into()))?)
                         };
@@ -85,8 +88,52 @@ impl DeviceWork {
             if page.len() < 64 {
                 return Ok(());
             }
-            after = page.last().expect("nonempty page").clone();
+            after = page.last().expect("nonempty page").0.clone();
         }
+    }
+    // Refresh only previously failed targets. A wake or an empty scan proves no recovery.
+    // Snapshot identities keep an older read from erasing a concurrent new failure.
+    async fn refresh_failures<T: Timer>(&self, control: &Control<'_, T>) -> Result<(), Error> {
+        let previous = self
+            .owner
+            .worker_failures
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Invariant))?
+            .iter()
+            .filter(|(key, _)| !key.starts_with('!'))
+            .map(|(key, failure)| (key.clone(), failure.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if previous.is_empty() {
+            return Ok(());
+        }
+        let names = previous.keys().cloned().collect::<Vec<_>>();
+        let tenant = self.owner.tenant.to_string();
+        let recovered: Vec<String> = self.runtime.local_tx(
+            self.owner.tenant, OperationDeadline::from_remaining(control.remaining()),
+            move |tx| Box::pin(async move {
+                tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.devices' AND entity=ANY($2) AND result='converged'")
+                        .bind(tenant).bind(names).fetch_all(c).await
+                })).await
+            })
+        ).await.fold(Ok, |e|Err(error(e)), |e|Err(error(e)),
+            |_|Err(Error::new(ErrorKind::RollbackFailed)),
+            |_|Err(Error::new(ErrorKind::CommitUnknown)), |e|Err(error(e)))?;
+        let mut current = self
+            .owner
+            .worker_failures
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Invariant))?;
+        for entity in recovered {
+            if current
+                .get(&entity)
+                .zip(previous.get(&entity))
+                .is_some_and(|(now, old)| Arc::ptr_eq(now, old))
+            {
+                current.remove(&entity);
+            }
+        }
+        Ok(())
     }
     fn scope(&self) -> Scope {
         Scope::new(self.owner.tenant, "mdm.devices").expect("Device scope")
@@ -245,17 +292,14 @@ impl DeviceWork {
             let timer=DeviceTimer(tokio::time::Instant::now());
             let force=tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
-            let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(8),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(2),initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
-            for entity in ["inputs"] {self.schedule.wake(&Target::new(self.scope(),entity).expect("owner input"), &rss_reconcile::ResourceSet::empty(self.scope().tenant()),&control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;}
+            let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(8),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(60),initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
             rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&self.scope(),policy,&control,&stop,&notify,|event|{
-                if let Ok(mut failures)=self.owner.worker_failures.lock() {
-                    let (key,kind)=match &event {
-                        rss_reconcile::Observation::Deferred{..}=>return,
-                        rss_reconcile::Observation::AttemptFailed{target,error,..}=>(target.entity().to_owned(),error.kind()),
-                        rss_reconcile::Observation::ScanFailed{error,..}=>("!scan".to_owned(),error.kind()),
-                    };
-                    if failures.len()<1000 || failures.contains_key(&key) {failures.insert(key,kind);} else {failures.insert("!truncated".into(),ErrorKind::Invariant);}
-                }
+                let (key,kind)=match &event {
+                    rss_reconcile::Observation::Deferred{..}=>return,
+                    rss_reconcile::Observation::AttemptFailed{target,error,..}=>(target.entity().to_owned(),error.kind()),
+                    rss_reconcile::Observation::ScanFailed{error,..}=>("!scan".to_owned(),error.kind()),
+                };
+                self.owner.record_worker_failure(key, kind);
                 eprintln!("{}",serde_json::json!({"event":"device_owner_failure","diagnostic":format!("{event:?}")}));
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
         })
@@ -441,7 +485,13 @@ impl DurableStore for DeviceWork {
         if scope != &self.scope() {
             return Err(Error::new(ErrorKind::Invariant));
         }
+        self.refresh_failures(c).await?;
         let result = self.schedule.claim_due(scope, limit, lease, c).await;
+        if result.is_ok() {
+            self.owner
+                .worker_observed
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         if result.is_ok()
             && let Ok(mut failures) = self.owner.worker_failures.lock()
         {
@@ -468,32 +518,32 @@ impl DurableStore for DeviceWork {
         completion: Completion,
         c: &Control<'_, T>,
     ) -> Result<(), Error> {
-        let task = self.task(claim)?;
-        let scheduled = if matches!(task, Task::Inputs) && completion == Completion::Converged {
-            Completion::Reobserve(Duration::from_secs(2))
-        } else {
-            completion
-        };
-        let result = self.schedule.finish(claim, scheduled, c).await;
-        if matches!(task, Task::Inputs) && result.is_ok() && completion == Completion::Converged {
-            self.owner
-                .worker_observed
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
-        if let Ok(mut failures) = self.owner.worker_failures.lock() {
-            if result.is_ok()
-                && matches!(completion, Completion::Converged | Completion::Reobserve(_))
+        self.task(claim)?;
+        let previous = self
+            .owner
+            .worker_failures
+            .lock()
+            .ok()
+            .and_then(|failures| failures.get(claim.target().entity()).cloned());
+        let result = self.schedule.finish(claim, completion, c).await;
+        if result.is_ok() && matches!(completion, Completion::Converged | Completion::Reobserve(_))
+        {
+            if let Ok(mut failures) = self.owner.worker_failures.lock()
+                && failures
+                    .get(claim.target().entity())
+                    .zip(previous.as_ref())
+                    .is_some_and(|(now, old)| Arc::ptr_eq(now, old))
             {
                 failures.remove(claim.target().entity());
-            } else if result.is_err() || !matches!(completion, Completion::Deferred(_)) {
-                failures.insert(
-                    claim.target().entity().to_owned(),
-                    result
-                        .as_ref()
-                        .err()
-                        .map_or(ErrorKind::Transient, |e| e.kind()),
-                );
             }
+        } else if result.is_err() || !matches!(completion, Completion::Deferred(_)) {
+            self.owner.record_worker_failure(
+                claim.target().entity().to_owned(),
+                result
+                    .as_ref()
+                    .err()
+                    .map_or(ErrorKind::Transient, |e| e.kind()),
+            );
         }
         result
     }
@@ -510,4 +560,23 @@ impl Timer for DeviceTimer {
             None => std::future::pending().await,
         }
     }
+}
+
+/// Only asset events wake association inputs; object publication cannot wake its producer.
+pub async fn wake_inputs_in(
+    store: &PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+) -> Result<(), PgError> {
+    let tenant = tx.tenant_id();
+    let target = Target::new(
+        Scope::new(tenant, "mdm.devices").expect("Device scope"),
+        "inputs",
+    )
+    .expect("Device inputs");
+    store.wake_in(tx, &target, &ResourceSet::empty(tenant), (), |_, tx| Box::pin(async move {
+        tx.with_connection(|c| Box::pin(async move {
+            sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'devices')").execute(c).await?;
+            Ok(())
+        })).await
+    })).await
 }

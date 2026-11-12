@@ -44,16 +44,16 @@ impl IngressValidator<Vec<u8>> for Validator {
                         event.message_id(),
                     )
                 }
-                "object.changed" => {
-                    let event: rss_mdm_device_service::object_changed::ObjectChanged =
+                "object.published" => {
+                    let event: rss_mdm_device_service::object_published::ObjectPublished =
                         serde_json::from_slice(message.payload())
                             .map_err(|_| EnvelopeValidationFailure::MalformedMetadata)?;
                     if !event.valid() {
                         return Err(EnvelopeValidationFailure::MalformedMetadata);
                     }
                     (
-                        rss_mdm_device_service::object_changed::SCHEMA,
-                        "mdm.device.object-changed",
+                        rss_mdm_device_service::object_published::SCHEMA,
+                        "mdm.device.object-published",
                         event.tenant,
                         event.message_id(),
                     )
@@ -89,6 +89,9 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
             .await
             .map_err(PgConsumerEffectFailure::infrastructure)?;
         if message.metadata().route().as_str() == "asset.changed" {
+            rss_mdm_device_service::worker::wake_inputs_in(&self.messaging, tx)
+                .await
+                .map_err(PgConsumerEffectFailure::infrastructure)?;
             rss_mdm_compliance_service::input_wake::wake_in(&self.messaging, tx)
                 .await
                 .map_err(PgConsumerEffectFailure::infrastructure)?;
@@ -107,6 +110,12 @@ impl PgConsumerEffect<Vec<u8>> for Receiver {
         )
         .await
         .map_err(PgConsumerEffectFailure::infrastructure)?;
+        rss_mdm_device_service::control::source_changes::wake_in(&self.messaging, tx)
+            .await
+            .map_err(PgConsumerEffectFailure::infrastructure)?;
+        rss_mdm_software_service::deployment::source_changes::wake_in(&self.messaging, tx)
+            .await
+            .map_err(PgConsumerEffectFailure::infrastructure)?;
         Ok(TerminalDisposition::Succeeded)
     }
 }

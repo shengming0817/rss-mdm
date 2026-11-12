@@ -81,7 +81,7 @@ async fn wake(
     .await?;
     Ok(())
 }
-async fn step(
+pub(crate) async fn step(
     worker: &rss_mdm_policy_service::worker::PolicyWork,
     tenant: rss_request_context::TenantId,
     device: &rss_mdm_agent_wire::DeviceId,

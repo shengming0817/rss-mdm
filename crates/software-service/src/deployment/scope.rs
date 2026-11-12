@@ -80,6 +80,7 @@ pub struct DeviceObject {
 
 #[derive(Clone, Debug)]
 pub struct ObjectChange {
+    pub identity_changed: bool,
     pub position: i64,
     pub object: rss_mdm_agent_wire::ObjectRef,
     pub old_devices: Vec<rss_mdm_agent_wire::DeviceId>,

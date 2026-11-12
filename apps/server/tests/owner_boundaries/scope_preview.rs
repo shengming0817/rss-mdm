@@ -380,8 +380,10 @@ async fn frozen_membership_does_not_follow_current_heads() -> Result<()> {
             .is_err()
     );
     let deleted_cut = Uuid::new_v4();
+    let mut publication = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,2)")
-        .bind(c.tenant.to_string()).bind(deleted_cut).bind(published.cut.to_json()).execute(&mut *connection).await?;
+        .bind(c.tenant.to_string()).bind(deleted_cut).bind(published.cut.to_json()).execute(&mut *publication).await?;
+    publication.commit().await?;
     let deleted = reader
         .memberships_at(
             &mut connection,

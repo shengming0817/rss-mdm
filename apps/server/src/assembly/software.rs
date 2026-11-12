@@ -118,10 +118,7 @@ pub(crate) async fn assemble(
         budget,
         config.background.device_concurrency,
     ));
-    service
-        .initialize_recovery()
-        .await
-        .map_err(|_| crate::Error::Unavailable(crate::Failure::CommandInvariant))?;
+
     Ok(Assembly {
         service,
         transactions,

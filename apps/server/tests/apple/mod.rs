@@ -249,3 +249,5 @@ async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Resul
     c.close().await;
     Ok(())
 }
+
+mod configuration;

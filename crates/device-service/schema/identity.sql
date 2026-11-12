@@ -31,6 +31,7 @@ CREATE TABLE mdm_devices.object_heads (
 CREATE TABLE mdm_devices.object_changes (
  tenant_id uuid NOT NULL,revision bigint NOT NULL,object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),
  old_devices uuid[] NOT NULL,new_devices uuid[] NOT NULL,
+ kind text NOT NULL CHECK(kind IN('asset_invalidated','identity_changed')),
  PRIMARY KEY(tenant_id,revision),
  FOREIGN KEY(tenant_id,object_kind,object_id,revision) REFERENCES mdm_devices.object_versions(tenant_id,object_kind,object_id,revision)
 );

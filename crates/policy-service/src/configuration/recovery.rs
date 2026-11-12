@@ -215,6 +215,9 @@ impl Transactions {
             let version = command.version();
             tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_planning.configuration_operations SET observed_command_version=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(id).bind(version).execute(c).await?;Ok(())})).await?;
             if command.status().is_terminal() {
+                self.changes
+                    .configuration_progressed_in(tx, &[*device])
+                    .await?;
                 self.wake_devices_in(tx, &[*device]).await?;
             }
         }

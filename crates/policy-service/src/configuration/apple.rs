@@ -142,6 +142,12 @@ impl Transactions {
             )
             .await?;
         }
+        if transition.command.version() != previous {
+            service
+                .changes
+                .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
+                .await?;
+        }
         let withdrawal_received = transition.command.status() == dc::Status::Received
             && matches!(&op.request.task,Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Declarations{declarations,..}} if declarations.is_empty());
         if transition.command.status().is_terminal() || withdrawal_received {
@@ -258,6 +264,7 @@ async fn complete_ddm(
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
 ) -> Result<()> {
+    let previous = service.required_command(tx, op).await?.version();
     if service.required_command(tx, op).await?.status() == dc::Status::Published {
         let transition = service
             .store
@@ -293,6 +300,12 @@ async fn complete_ddm(
         .await?;
     if transition.outcome == dc::Outcome::OutOfOrder {
         return Err(Error::Conflict.into());
+    }
+    if transition.command.version() != previous {
+        service
+            .changes
+            .configuration_progressed_in(tx, std::slice::from_ref(&op.device))
+            .await?;
     }
     service
         .wake_devices_in(tx, std::slice::from_ref(&op.device))

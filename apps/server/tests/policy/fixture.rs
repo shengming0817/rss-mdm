@@ -4,6 +4,7 @@ use anyhow::Result;
 use std::sync::Arc;
 pub(crate) struct Fixture {
     pub(crate) resources: Prepared,
+    pub(crate) service: Arc<rss_mdm_device_service::control::Service>,
     pub(crate) software: crate::assembly::software::Assembly,
     pub(crate) registration: crate::assembly::registration::Assembly,
     pub(crate) materials: Arc<crate::assembly::policy::EventInputs>,
@@ -71,12 +72,32 @@ impl Fixture {
                 protection: protection.clone(),
                 instance: config.identity.instance_id.clone(),
             });
-            Ok((software, registration, materials))
+            let configuration = assembly::policy::configuration(
+                storage.runtime.clone(),
+                storage.audit.clone(),
+                storage.tenant,
+                protection.clone(),
+                None,
+            )
+            .await?;
+            let (service, _) = assembly::device_control::assemble(
+                config,
+                storage,
+                protection.clone(),
+                None,
+                software.transactions.clone(),
+                configuration,
+                rss_device_command_postgres::CommandClock::Postgres,
+            )
+            .await?;
+            Ok((software, registration, materials, service))
         }
         .await;
-        let (resources, (software, registration, materials)) = resources.finish(result).await?;
+        let (resources, (software, registration, materials, service)) =
+            resources.finish(result).await?;
         Ok(Self {
             resources,
+            service,
             software,
             registration,
             materials,

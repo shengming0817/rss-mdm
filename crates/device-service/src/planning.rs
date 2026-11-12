@@ -13,6 +13,7 @@ pub enum ActivityPair {
 
 #[derive(sqlx::FromRow)]
 struct ChangeRow {
+    kind: String,
     revision: i64,
     object_kind: i16,
     object_id: Uuid,
@@ -94,11 +95,16 @@ impl ObjectReader for PlanningObjects {
             if !(1..=1000).contains(&limit) || after < 0 || through < after {
                 return Err(storage("change window"));
             }
-            let rows:Vec<ChangeRow>=sqlx::query_as("SELECT revision,object_kind,object_id,old_devices,new_devices FROM mdm_devices.object_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT $4")
+            let rows:Vec<ChangeRow>=sqlx::query_as("SELECT revision,object_kind,object_id,old_devices,new_devices,kind FROM mdm_devices.object_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT $4")
                 .bind(tenant.to_string()).bind(after).bind(through).bind(limit as i64).fetch_all(c).await?;
             rows.into_iter()
                 .map(|row| {
                     Ok(ObjectChange {
+                        kind: match row.kind.as_str() {
+                            "asset_invalidated" => ObjectChangeKind::AssetInvalidated,
+                            "identity_changed" => ObjectChangeKind::IdentityChanged,
+                            _ => return Err(storage("object change kind")),
+                        },
                         position: row.revision,
                         object: ObjectRef::from_parts(row.object_kind, row.object_id)
                             .map_err(storage)?,

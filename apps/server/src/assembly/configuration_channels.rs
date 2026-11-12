@@ -120,6 +120,23 @@ fn windows_frame(
     }
 }
 impl Channels for ConfigurationChannels {
+    fn verify_access<'a>(&'a self, c: &'a mut PgConnection) -> Pending<'a, ()> {
+        Box::pin(async move {
+            let policy: bool = sqlx::query_scalar("SELECT current_user='mdm_policy_runtime'")
+                .fetch_one(&mut *c)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::Database))?;
+            if policy {
+                rss_mdm_apple_channel::flow_store::verify_policy_access_on(c)
+                    .await
+                    .map_err(|_| Error::Unavailable(Failure::Database))?;
+                rss_mdm_recovery_credentials::native::storage::verify_policy_access_on(c)
+                    .await
+                    .map_err(|_| Error::Unavailable(Failure::Database))?;
+            }
+            Ok(())
+        })
+    }
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -382,8 +399,8 @@ pub(super) async fn operation_permissions(
 ) -> Result<Vec<rss_mdm_authorization_service::Permission>, Error> {
     let mut required = Vec::new();
     let mut owned = Vec::with_capacity(old.len());
-    for id in old {
-        owned.push((id, super::native_ownership::on(c, tenant, id).await?));
+    for ids in old.chunks(1000) {
+        owned.extend(super::native_ownership::batch_on(c, tenant, ids).await?);
     }
     for (id, owner) in owned {
         required.extend(match owner {
@@ -423,13 +440,11 @@ pub(super) async fn operation_permissions(
                     .permissions()?
             }
             super::native_ownership::Owner::Recovery => {
-                rss_mdm_recovery_credentials::native::storage::load_on(c, tenant, protection, id)
-                    .await
-                    .map_err(|_| Error::Unavailable(Failure::Database))?
-                    .request
-                    .task
-                    .permissions()
-                    .map_err(|_| Error::Forbidden)?
+                rss_mdm_recovery_credentials::native::storage::required_permissions_on(
+                    c, tenant, protection, id,
+                )
+                .await
+                .map_err(|_| Error::Unavailable(Failure::Database))?
             }
             super::native_ownership::Owner::Device => {
                 rss_mdm_device_service::control::storage::load_on(c, tenant, protection, id)

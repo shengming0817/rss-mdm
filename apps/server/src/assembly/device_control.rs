@@ -108,9 +108,6 @@ pub(crate) async fn assemble(
             instance: config.identity.instance_id.clone(),
         },
     ));
-    service
-        .initialize_recovery()
-        .await
-        .map_err(|_| Error::Configuration(crate::ConfigIssue::CommandStorage))?;
+
     Ok((service, queries))
 }

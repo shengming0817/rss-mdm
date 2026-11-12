@@ -15,3 +15,7 @@ GRANT EXECUTE ON FUNCTION mdm_recovery_tasks.native_status(uuid),mdm_recovery_ta
 -- Immutable request coordinates used by the tenant-scoped activity projection.
 GRANT SELECT(tenant_id,actor,id,operation) ON mdm_recovery_tasks.requests TO mdm_access;
 COMMIT;
+-- Previous configuration ownership requires only the authenticated original request.
+GRANT USAGE ON SCHEMA mdm_recovery_tasks TO mdm_policy_runtime;
+GRANT SELECT(tenant_id,id,device,request,input_context)
+ ON mdm_recovery_tasks.operations TO mdm_policy_runtime;

@@ -15,6 +15,8 @@ pub struct Reservation {
     pub input_version: String,
 }
 pub trait Channels: WindowsEvidence + Send + Sync {
+    /// Validate owner-provided access contracts on the initiating participant connection.
+    fn verify_access<'a>(&'a self, c: &'a mut PgConnection) -> Pending<'a, ()>;
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,
