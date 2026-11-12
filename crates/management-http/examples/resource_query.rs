@@ -4,7 +4,7 @@ fn main() {
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "endpoint":"GET /api/v1/resources",
-            "fields":&rss_mdm_resource_service::directory::schema().fields,
+            "fields":&rss_mdm_resource_service::directory::schema().fields(),
             "defaultLimit":rss_mdm_resource::directory::DEFAULT_LIMIT,
             "maxLimit":rss_mdm_resource::directory::MAX_LIMIT,
             "rawQueryBytes":rss_mdm_query::MAX_RAW_QUERY_BYTES,

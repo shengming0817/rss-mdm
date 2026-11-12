@@ -157,15 +157,7 @@ async fn directory(
         );
         let q = query.parse().map_err(|_| Error::Malformed)?;
         let page = s.directory(&auth, &q, &codec, &audit).await?;
-        let items = page
-            .items
-            .into_iter()
-            .map(|item| q.project_typed(item).map_err(|_| Error::Malformed))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Json(super::operations::Page {
-            items,
-            next_cursor: page.next_cursor,
-        }))
+        Ok(Json(page))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -175,7 +167,7 @@ async fn statistics(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     query: rss_mdm_http_contract::query::OwnedQuery<
-        rss_mdm_http_contract::query::Statistics<ExecutionStatisticsQuery>,
+        rss_mdm_http_contract::query::Statistics<DirectoryQuery>,
     >,
 ) -> std::result::Result<Json<rss_mdm_query::Statistics<super::operations::Statistics>>, Error> {
     audit.set_action(
@@ -401,8 +393,8 @@ async fn task_trust_observation(
 
 struct DirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for DirectoryQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &crate::execution::operations::SCHEMA
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        &crate::execution::operations::EXECUTION
     }
 }
 
@@ -410,12 +402,5 @@ struct DdmQuery;
 impl rss_mdm_http_contract::query::WindowOwner for DdmQuery {
     fn schema() -> &'static rss_mdm_query::window::Schema {
         &super::declarations::SCHEMA
-    }
-}
-
-struct ExecutionStatisticsQuery;
-impl rss_mdm_http_contract::query::DirectoryOwner for ExecutionStatisticsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &crate::execution::operations::SCHEMA
     }
 }

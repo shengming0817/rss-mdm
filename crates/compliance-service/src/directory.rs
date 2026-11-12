@@ -116,3 +116,8 @@ static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
         )
         .expect("Complete service model binding")
     });
+
+/// Public model with every executable selector checked by this storage owner.
+pub fn execution() -> &'static rss_mdm_query::directory::Execution {
+    BINDINGS.execution()
+}

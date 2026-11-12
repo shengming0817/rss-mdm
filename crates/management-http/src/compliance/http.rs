@@ -289,8 +289,8 @@ async fn version(
 
 struct ComplianceDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ComplianceDirectoryQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        rss_mdm_compliance_service::directory::schema()
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_compliance_service::directory::execution()
     }
     fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
         rss_mdm_compliance_service::directory::parse(raw)

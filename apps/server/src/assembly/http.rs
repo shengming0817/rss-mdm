@@ -833,6 +833,7 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
     let (windows_enrollment, windows_management) =
         rss_mdm_windows_channel::mount_native(None, None);
     let apple = rss_mdm_apple_channel::mount_native(None);
+    let da = rss_mdm_device_access_http::router(None).when("device_access_registration", true);
     let mut violations = browser
         .validate(rss_mdm_http_contract::module::Listener::Browser)
         .into_iter()
@@ -851,6 +852,7 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
         windows_management.validate(rss_mdm_http_contract::module::Listener::WindowsManagement),
     );
     violations.extend(apple.validate(rss_mdm_http_contract::module::Listener::Apple));
+    violations.extend(da.validate(rss_mdm_http_contract::module::Listener::Da));
     if !violations.is_empty() {
         return Err(violations);
     }
@@ -860,6 +862,7 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
         ("windows-enrollment", windows_enrollment.into_endpoints()),
         ("windows-management", windows_management.into_endpoints()),
         ("apple", apple.into_endpoints()),
+        ("da", da.into_endpoints()),
     ])?;
     document["externalOwners"] = serde_json::json!([{"owner":"rss-identity-http-axum","entry":"Identity::http_routes","scope":"Identity SDK routers; RSS product adapters are included in endpoints"}]);
     Ok(document)

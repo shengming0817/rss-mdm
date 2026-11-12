@@ -11,6 +11,8 @@ pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema
     default_limit: 64,
     max_limit: 64,
     order: "audit position navigation",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
     context: &[],
 };
 #[derive(Serialize, Deserialize)]

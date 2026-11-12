@@ -1,7 +1,7 @@
 //! Bind the complete model before it can be advertised or executed. Requests never supply SQL paths.
 use rss_mdm_query::{
     Error, Result,
-    directory::{Kind, Schema},
+    directory::{Execution, Kind, Schema},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,7 +33,9 @@ impl Source {
             nullable: false,
         }
     }
-    /// Empty field binds a complete JSON row; a named field binds its typed subtree.
+    /// Bind a subtree serialized by its actual owner type. Synthesized SQL rows bind their
+    /// individual leaves instead, so a newly returned scalar cannot silently map to SQL NULL.
+    /// Empty field is reserved for a complete, typed serialized row.
     pub const fn json(field: &'static str, sql: &'static str) -> Self {
         Self::Json { field, sql }
     }
@@ -44,11 +46,29 @@ impl Source {
     }
 }
 pub struct Bindings {
-    schema: &'static Schema,
+    execution: Execution,
     columns: BTreeMap<String, String>,
     non_null: BTreeSet<String>,
 }
 impl Bindings {
+    /// Compile a closed domain dispatch over every executable model selector.
+    /// Unlike a request-time closure, missing fields fail before the directory is exported.
+    pub fn mapped(
+        schema: &'static Schema,
+        resolve: fn(&str) -> Result<&'static str>,
+    ) -> Result<Self> {
+        let columns = schema
+            .fields()
+            .iter()
+            .filter(|f| f.filter || f.sort)
+            .map(|field| Ok((field.name.clone(), resolve(&field.name)?.to_owned())))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        Ok(Self {
+            execution: Execution::bind(schema, columns.keys().map(String::as_str))?,
+            columns,
+            non_null: BTreeSet::new(),
+        })
+    }
     pub fn new(schema: &'static Schema, sources: &[Source]) -> Result<Self> {
         let mut names = BTreeSet::new();
         if sources.iter().any(|s| !names.insert(s.name())) {
@@ -57,7 +77,7 @@ impl Bindings {
         let mut used = BTreeSet::new();
         let mut columns = BTreeMap::new();
         let mut non_null = BTreeSet::new();
-        for field in schema.fields.iter().filter(|f| f.filter || f.sort) {
+        for field in schema.fields().iter().filter(|f| f.filter || f.sort) {
             let source = sources
                 .iter()
                 .filter(|source| match source {
@@ -106,30 +126,31 @@ impl Bindings {
             return Err(Error::Invalid);
         }
         Ok(Self {
-            schema,
+            execution: Execution::bind(schema, columns.keys().map(String::as_str))?,
             columns,
             non_null,
         })
     }
     /// Ingress exports this same checked schema, forcing storage completeness at composition time.
     pub fn schema(&self) -> &'static Schema {
-        self.schema
+        self.execution.schema()
+    }
+    pub fn execution(&self) -> &Execution {
+        &self.execution
     }
 }
-pub trait Columns: Copy {
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for &super::Bindings {}
+}
+/// Checked directory execution; only validated bindings implement this sealed interface.
+pub trait Columns: Copy + sealed::Sealed {
     fn column(&self, name: &str) -> Result<&str>;
-    /// Manual catalogs and JSON paths are conservative unless storage proves otherwise.
+    /// Expressions are conservative unless storage proves they are non-null.
     fn nullable(&self, _name: &str) -> bool {
         true
     }
-    fn require(&self, _schema: &Schema) -> Result<()> {
-        Ok(())
-    }
-}
-impl<F: Fn(&str) -> &'static str + Copy> Columns for F {
-    fn column(&self, name: &str) -> Result<&str> {
-        Ok(self(name))
-    }
+    fn require(&self, schema: &Schema) -> Result<()>;
 }
 impl Columns for &Bindings {
     fn nullable(&self, name: &str) -> bool {
@@ -142,11 +163,7 @@ impl Columns for &Bindings {
             .ok_or(Error::Invalid)
     }
     fn require(&self, schema: &Schema) -> Result<()> {
-        if std::ptr::eq(self.schema, schema) {
-            Ok(())
-        } else {
-            Err(Error::Invalid)
-        }
+        self.execution.require(schema)
     }
 }
 fn json_column(root: &str, path: &str, kind: &Kind) -> Result<String> {

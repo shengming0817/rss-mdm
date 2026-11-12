@@ -136,3 +136,5 @@ GRANT SELECT,INSERT ON mdm.collection_definitions TO mdm_policy_runtime;
 
 -- Periodic current facts enter the existing immutable collection producer in the same transaction.
 GRANT INSERT ON mdm.collection_definitions,mdm.collection_results TO mdm_telemetry_runtime;
+-- Only admitted collection owners append hardware locator evidence.
+GRANT SELECT,INSERT ON mdm.device_hardware_evidence TO mdm_access,mdm_command_runtime,mdm_inventory_runtime,mdm_telemetry_runtime;

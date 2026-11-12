@@ -8,6 +8,8 @@ pub static WINDOW: window::Schema = window::Schema {
     default_limit: 64,
     max_limit: 100,
     order: "sequence desc",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
     context: &["kind"],
 };
 #[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]

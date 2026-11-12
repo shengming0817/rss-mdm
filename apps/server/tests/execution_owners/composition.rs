@@ -97,3 +97,6 @@ async fn original_self_service_receipt_replays_after_policy_kind_changes() -> Re
     drop(tasks);
     h.close().await
 }
+
+#[path = "self_service_directory.rs"]
+mod directory;

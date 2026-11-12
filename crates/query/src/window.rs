@@ -2,6 +2,15 @@
 use crate::{Error, Parameters, Result};
 use serde::Serialize;
 use std::collections::BTreeMap;
+/// Why a collection intentionally keeps an owner-defined continuation order.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Purpose {
+    History,
+    Snapshot,
+    Qualification,
+    References,
+}
 #[derive(Debug, Serialize)]
 pub struct Schema {
     pub id: &'static str,
@@ -9,6 +18,8 @@ pub struct Schema {
     pub max_limit: u16,
     /// The source owns this order and the meaning of the frozen continuation.
     pub order: &'static str,
+    pub purpose: Purpose,
+    pub reason: &'static str,
     pub context: &'static [&'static str],
 }
 #[derive(Clone, Debug, Serialize)]
@@ -35,7 +46,11 @@ impl Schema {
         cursor: Option<String>,
         max_cursor_bytes: usize,
     ) -> Result<Query> {
-        if self.order.is_empty() || self.default_limit == 0 || self.default_limit > self.max_limit {
+        if self.order.is_empty()
+            || self.reason.trim().is_empty()
+            || self.default_limit == 0
+            || self.default_limit > self.max_limit
+        {
             return Err(Error::Invalid);
         }
         let limit = limit.unwrap_or(self.default_limit);

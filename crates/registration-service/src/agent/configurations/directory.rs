@@ -1,29 +1,9 @@
 //! Metadata only: no signed configuration, connections, signature or secret material.
 use super::*;
-use rss_mdm_query::directory::{Field, Kind, Query, Schema};
+use rss_mdm_query::directory::{Query, Schema};
 use serde_json::Value;
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "agent_configurations",
-    keys: &["configurationId"],
-    default_limit: 64,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("configurationId", Kind::Uuid),
-        Field::scalar(
-            "state",
-            Kind::enumeration(&["available", "revoked", "expired"]),
-        ),
-        Field::scalar("createdAt", Kind::Integer),
-        Field::scalar("expiresAt", Kind::Integer),
-        Field::scalar("createdBy", Kind::Text),
-        Field::filter_only("platform", Kind::enum_set(&["windows", "macos"])),
-        Field::filter_only("architecture", Kind::enum_set(&["x86_64", "aarch64"])),
-        Field::output("targets"),
-        Field::output("quantity"),
-        Field::output("reserved"),
-        Field::output("consumed"),
-        Field::output("remaining"),
-    ],
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Metadata>("agent_configurations", &["configurationId"], 64, 1000, &[rss_mdm_query::directory::Exclusion { path: "targets", reason: "Each target combines platform and architecture; use the typed platform/architecture selectors with same-target matching" }]).and_then(|s| s.with_selectors::<TargetSelectors>("Installation target capabilities, matched within the same target")).expect("Public directory model")
 });
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -38,24 +18,6 @@ pub struct Metadata {
     reserved: u64,
     consumed: u64,
     remaining: Option<u64>,
-}
-fn column(name: &str) -> &'static str {
-    match name {
-        "configurationId" => "id::text COLLATE \"C\"",
-        "state" => {
-            "(CASE WHEN state='revoked' THEN 'revoked' WHEN expires_at<=statement_timestamp() THEN 'expired' ELSE 'available' END) COLLATE \"C\""
-        }
-        "createdAt" => "floor(extract(epoch FROM created_at))::bigint",
-        "expiresAt" => "floor(extract(epoch FROM expires_at))::bigint",
-        "createdBy" => "creator COLLATE \"C\"",
-        "platform" => {
-            "ARRAY(SELECT x->>'platform' FROM jsonb_array_elements(document->'targets') x)"
-        }
-        "architecture" => {
-            "ARRAY(SELECT x->>'architecture' FROM jsonb_array_elements(document->'targets') x)"
-        }
-        _ => unreachable!("checked configuration field"),
-    }
 }
 fn error(e: rss_mdm_query::Error) -> Error {
     match e {
@@ -93,33 +55,24 @@ impl Service {
             .binding(&(p.tenant_id(), p.instance_id(), current.query_binding(p)?))
             .map_err(error)?;
         let after = q.after(&self.cursor, &binding).map_err(error)?;
-        let mut sql = sqlx::QueryBuilder::new(
-            crate::storage_profile::sql(profile)
-                .agent_configurations_directory_configuration_directory_1,
-        );
-        sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
-        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(error)?;
-        // Reapply the same order after aggregation; no implicit CTE order is assumed.
+        let mut sql = sqlx::QueryBuilder::new("SELECT row FROM (");
         sql.push(
             crate::storage_profile::sql(profile)
+                .agent_configurations_directory_configuration_directory_1,
+        )
+        .push_bind(p.tenant_id().to_owned())
+        .push("::uuid")
+        .push(
+            crate::storage_profile::sql(profile)
                 .agent_configurations_directory_configuration_directory_2,
+        )
+        .push(") records WHERE true");
+        sql.push(
+            " AND EXISTS (SELECT 1 FROM jsonb_array_elements(row->'targets') target WHERE true",
         );
-        for (i, sort) in q.sort().iter().enumerate() {
-            sql.push(if i == 0 { " ORDER BY " } else { "," });
-            sql.push(match sort.field.as_str() {
-                "configurationId" => "c.id::text COLLATE \"C\"",
-                "state" => "c.effective_state COLLATE \"C\"",
-                "createdAt" => "c.created",
-                "expiresAt" => "c.expiry",
-                "createdBy" => "c.creator COLLATE \"C\"",
-                _ => unreachable!("checked configuration order"),
-            });
-            sql.push(if sort.descending {
-                " DESC NULLS LAST"
-            } else {
-                " ASC NULLS LAST"
-            });
-        }
+        rss_mdm_query_postgres::filter(&mut sql, q, &*BINDINGS).map_err(error)?;
+        sql.push(")");
+        rss_mdm_query_postgres::page(&mut sql, q, after.as_ref(), &*BINDINGS).map_err(error)?;
         let rows: Vec<Value> = sql
             .build_query_scalar()
             .fetch_all(&mut *tx)
@@ -149,3 +102,37 @@ enum EffectiveState {
     Revoked,
     Expired,
 }
+
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+struct TargetSelectors {
+    platform: rss_mdm_agent_wire::runtime::TaskPlatform,
+    architecture: rss_mdm_agent_wire::runtime::TaskArchitecture,
+}
+
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::json("configurationId", "row#>'{configurationId}'"),
+                rss_mdm_query_postgres::Source::json("state", "row#>'{state}'"),
+                rss_mdm_query_postgres::Source::json("createdAt", "row#>'{createdAt}'"),
+                rss_mdm_query_postgres::Source::json("expiresAt", "row#>'{expiresAt}'"),
+                rss_mdm_query_postgres::Source::json("createdBy", "row#>'{createdBy}'"),
+                rss_mdm_query_postgres::Source::json("quantity", "row#>'{quantity}'"),
+                rss_mdm_query_postgres::Source::json("reserved", "row#>'{reserved}'"),
+                rss_mdm_query_postgres::Source::json("consumed", "row#>'{consumed}'"),
+                rss_mdm_query_postgres::Source::json("remaining", "row#>'{remaining}'"),
+                rss_mdm_query_postgres::Source::column(
+                    "platform",
+                    "(target->>'platform') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "architecture",
+                    "(target->>'architecture') COLLATE \"C\"",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

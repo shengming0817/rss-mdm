@@ -76,6 +76,6 @@ GRANT EXECUTE ON FUNCTION
  rss_reconcile.release(uuid,text,text,uuid,bigint),
  rss_reconcile.mark_applied(uuid,text,text,uuid,bigint,bigint)
  TO da_command_runtime,da_inventory_runtime,da_scope_runtime,da_policy_runtime;
-GRANT SELECT,INSERT ON mdm.collection_definitions,mdm.collection_results TO da_access,da_command_runtime;
+GRANT SELECT,INSERT ON mdm.collection_definitions,mdm.collection_results,mdm.device_hardware_evidence TO da_access,da_command_runtime;
 GRANT EXECUTE ON FUNCTION rss_transactional_messaging.consumer_scope_domain(),rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text),rss_transactional_messaging.projection_scope_matches(text,text) TO da_access;
 COMMIT;

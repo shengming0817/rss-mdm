@@ -45,6 +45,13 @@ pub enum AggregateDocument {
         /// Typed current-directory metadata; never another aggregate authority.
         directory: serde_json::Value,
     },
+    /// Publication facts projected by the Software Release owner in the same transaction.
+    SoftwareRelease {
+        /// Canonical publication bytes.
+        document: Vec<u8>,
+        /// Queryable publication facts; not a second publication authority.
+        directory: serde_json::Value,
+    },
 }
 impl BackendStorage {
     /// Acquire the existing tenant/domain transaction advisory lock.
@@ -181,7 +188,16 @@ impl BackendStorage {
                     directory,
                 },
             ) => (document, Some(directory)),
-            (crate::BackendKind::Resource, _) | (_, AggregateDocument::Resource { .. }) => {
+            (
+                crate::BackendKind::SoftwareRelease,
+                AggregateDocument::SoftwareRelease {
+                    document,
+                    directory,
+                },
+            ) => (document, Some(directory)),
+            (crate::BackendKind::Resource | crate::BackendKind::SoftwareRelease, _)
+            | (_, AggregateDocument::Resource { .. } | AggregateDocument::SoftwareRelease { .. }) =>
+            {
                 return Err(self.fault("db::write-payload"));
             }
             (_, AggregateDocument::Canonical(document)) => (document, None),

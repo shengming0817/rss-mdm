@@ -466,6 +466,7 @@ async fn native_observation(c: &Context, registration: String) -> Result<()> {
     let batch = rss_mdm_inventory_postgres::seal_collection_in(
         &mut tx,
         rss_mdm_inventory_postgres::CollectionCompletion {
+            trusted: true,
             scope: &scope,
             run: &report.to_string(),
             sequence: sequence.try_into()?,

@@ -23,7 +23,7 @@ python3 hack/http_contract_artifact.py --output artifacts/http-contract/http-v1.
 - `endpoints` 按 listener、method、path 排序。`operationId` 为 `listener:METHOD:path`，`handler` 保留实际 Rust handler 来源。
 - `request` 包含 path、query、body 和 headers。body 同时声明媒体类型；`required_headers` 记录实际必需 header。响应按实际 HTTP status、媒体类型、body 和 header 描述，错误使用真实 HTTP 投影，不导出内部错误枚举作为回包。
 - 每个 schema 描述含 `direction` 与 `schemaId`。`schemas[schemaId]` 是独立的 schema 根；其中 `#/$defs/...` 必须相对于该根解析。请求按 deserialize、响应按 serialize 派生，省略字段与显式 null 不等同。二进制、范围下载、压缩入口、数值编码继续由原传输 owner 执行。
-- `conditions` 表示真实条件挂载。完整导出包含这些条件下的端点全集；条件名称不是部署能力探测或版本握手。`agent_listener` 要求产品实际启用 Agent listener；各服务条件仍由生产装配决定。
+- `conditions` 表示真实条件挂载。完整导出包含这些条件下的端点全集，包括 `device_access_registration` 条件下的 DA 独立 listener；条件名称不是部署能力探测或版本握手。`agent_listener` 要求产品实际启用 Agent listener；各服务条件仍由生产装配决定。
 - `configuredPath` 描述配置绑定的静态 UUID 路径段。例如 management tenant 路径保留生产中静态路由优先于普通捕获路由的语义，记录配置来源及被覆盖的 operation，不写入某个部署的 UUID。
 - `external` 标记已挂载的 Apple/Windows/软件仓库原生协议入口，`externalOwners` 记录 Identity SDK 边界。平台模块中的自有管理和 Agent 接口仍属于 `endpoints`。原生状态叶子等明确的外部协议数据由其原 owner 校验，不能据此放开核心身份、动作或状态结构。
 
@@ -47,6 +47,12 @@ Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如
 目录只对模型可保证游标大小的字段声明排序；无界描述、保存查询文本和未规定长度的名称仍支持过滤与返回。多个排序键的累计游标预算在解析时检查，超限请求在查询前拒绝。
 
 `=containsany=`／`=containsall=` 对标量集合分别表示包含任一／全部候选值。复杂对象数组、递归条件定义、动态参数和无类型扩展键在声明中说明限制；不接受任意 JSONPath。Policy 保存完整主范围和阶段范围定义，内部 Scope 不提供独立目录或写入口。阶段通过稳定 UUID 寻址；范围、任务和历史结果使用 Policy 子路由，读取及编辑权限归属 Policy。设备组目录继续提供目标、限制和排除的选择来源。
+
+普通目录只能从真实公开行模型推导，挂载时执行完整性检查将 `modelIdentity`、未投影模型引用 与实际成功响应的 `items` 对齐；`Projection<T>` 仍省略未选择字段。列表与统计的 `role` 不同，但必须引用同一个目录 owner。HTTP 制品只发布能力和模型，不包含 SQL、数据库角色或内部执行绑定。固定顺序历史、固定快照、资格扫描和引用列表另标注 `purpose` 与具体原因；DA 活跃配置属于普通目录。
+
+`/api/v1/devices` 的 `registeredAt` 是首次成功主注册事务记录的 Unix 秒，支持范围、空值过滤与排序；重试和续证保持不变，缺少可信历史的记录保持 null。`serialNumber`、`hardwareUuid` 是仅过滤的历史定位选择器，只支持 `==`、`=in=` 及逻辑组合，沿用 Inventory 规范化和字段敏感权限。组合条件必须在同一设备的同一份可信采集证据中成立；多个上报不会拼接，重复硬件返回全部获授权候选且不重复计数。非硬件 OR 分支不要求硬件证据。
+
+硬件定位包含仍保留的退管设备，普通 Inventory 保留清理不删除定位证据；已物理删除的设备不会复活。结果只用于选择原设备 ID，时间线仍需要原 `AuditRead` 权限，不据此自动关联、合并历史或继承身份。新安装定义不回填旧记录，不从证书时间或最近通信推测注册时间。
 
 保存查询的 `definition.query.filter` 匹配规范化 RSQL 文本，表示字面内容匹配，不表示逻辑等价或蕴含。规范文本由原 AST formatter 在同一写事务生成查询投影；字段退役检查仍消费权威 AST。
 

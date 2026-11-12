@@ -507,6 +507,7 @@ async fn independent_registration_and_rolling_configuration_trust() -> Result<()
         &receipt,
         &client,
         &server.origin,
+        &installed_host.runtime_file,
     ))
     .await
     .context("DA business owner proof")?;

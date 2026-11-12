@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 
 def run(*args):
@@ -56,7 +56,8 @@ default_crl_days=30
 
 def leaf(directory, tenant, device, purpose, service=None):
     root=directory/'task-trust-ca'
-    destination=directory/('task-trust-'+purpose+'-'+tenant)
+    issuance=uuid4()
+    destination=directory/('task-trust-'+purpose+'-'+str(issuance))
     destination.mkdir(mode=0o700)
     assert purpose in ('agent', 'da_device')
     prefix = 'urn:rss-mdm:agent:v1:' if purpose == 'agent' else 'urn:rss:da:device:v1:'
@@ -76,7 +77,7 @@ def leaf(directory, tenant, device, purpose, service=None):
     ext.write_text('basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nsubjectAltName=URI:'+identity+'\n1.3.6.1.4.1.37476.9000.64.1=DER:'+marker.hex(':')+'\n')
     run('req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+subject,'-keyout',destination/'leaf.key','-out',destination/'leaf.csr')
     (destination/'leaf.key').chmod(0o600)
-    run('x509','-req','-in',destination/'leaf.csr','-CA',root/'ca.pem','-CAkey',root/'ca.key','-set_serial',str(int(tenant.replace('-',''),16)),'-days','1','-sha256','-extfile',ext,'-out',destination/'leaf.pem')
+    run('x509','-req','-in',destination/'leaf.csr','-CA',root/'ca.pem','-CAkey',root/'ca.key','-set_serial',str(issuance.int),'-days','1','-sha256','-extfile',ext,'-out',destination/'leaf.pem')
     print(json.dumps(dict(leaf=str(destination/'leaf.pem'),root=str(root/'ca.pem'),crl=str(root/'ca.crl'),identity=identity)))
 
 if __name__ == '__main__':

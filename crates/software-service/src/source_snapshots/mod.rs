@@ -11,7 +11,9 @@ use crate::management::{
     transaction::{self, TransactionOwner},
 };
 pub use model::*;
-pub use read::{ENTRIES, SOURCES, entries, entry, operation, snapshot, sources};
+pub use read::{
+    ENTRIES, ENTRY_BINDINGS, SOURCE_BINDINGS, SOURCES, entries, entry, operation, snapshot, sources,
+};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_transactional_messaging_postgres::PgTransaction;

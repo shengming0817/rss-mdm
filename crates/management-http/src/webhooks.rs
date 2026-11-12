@@ -405,7 +405,7 @@ impl rss_mdm_http_contract::query::QueryOwner for SubscriptionsQuery {
     type Error = std::convert::Infallible;
     fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
         Some(rss_mdm_http_contract::QueryDeclaration::Directory(
-            Self::Parsed::schema(),
+            rss_mdm_http_contract::DirectoryDeclaration::list(Self::Parsed::execution()),
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {
@@ -423,7 +423,7 @@ impl rss_mdm_http_contract::query::QueryOwner for DeliveriesQuery {
     type Error = std::convert::Infallible;
     fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
         Some(rss_mdm_http_contract::QueryDeclaration::Directory(
-            Self::Parsed::schema(),
+            rss_mdm_http_contract::DirectoryDeclaration::list(Self::Parsed::execution()),
         ))
     }
     fn parameters() -> rss_mdm_http_contract::signature::Schema {

@@ -41,6 +41,8 @@ pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schem
     default_limit: 50,
     max_limit: 200,
     order: "version DESC",
+    purpose: rss_mdm_query::window::Purpose::History,
+    reason: "Immutable history coordinates define navigation; mutable business directories use model-derived RSQL",
     context: &[],
 };
 pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
@@ -62,4 +64,9 @@ pub(crate) fn entry(r: &sqlx::postgres::PgRow) -> Result<crate::Entry, Error> {
         recommended_version: r.try_get("recommended_version")?,
         latest: crate::store::decode_version(r)?,
     })
+}
+
+/// Public model with every executable selector checked by this storage owner.
+pub fn execution() -> &'static rss_mdm_query::directory::Execution {
+    BINDINGS.execution()
 }

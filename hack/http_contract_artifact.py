@@ -58,6 +58,11 @@ def validate_document(data):
             raise ValueError('dynamic schema references are unsupported')
         if '$ref' in value:
             resolve(root, value['$ref'])
+        if 'x-rss-directory-model' in value:
+            marker=value['x-rss-directory-model']
+            if not isinstance(marker,dict) or not marker.get('identity') or 'schema' not in marker:
+                raise ValueError('invalid directory model marker')
+            references(marker['schema'],root)
         for key in ('$defs', 'properties', 'patternProperties', 'dependentSchemas'):
             for child in value.get(key, {}).values():
                 references(child, root)
@@ -80,13 +85,24 @@ def validate_document(data):
             if not isinstance(value, dict) or not isinstance(value.get('content_type'), str):
                 raise ValueError('missing body content type')
             description(value.get('schema'), direction)
+    owners, statistics = {}, []
     def directory(value):
-        if value is None or value.get('kind') != 'directory':
+        if value is None:
+            return
+        if value.get('kind') in ('window','body_window'):
+            fixed=value.get('schema',{})
+            if fixed.get('purpose') not in ('history','snapshot','qualification','references') or not fixed.get('reason','').strip():
+                raise ValueError('fixed collection requires an explicit classification and reason')
+            return
+        if value.get('kind') != 'directory':
             return
         owner = value.get('schema', {})
         fields = owner.get('fields')
         if not owner.get('id') or not isinstance(fields, list) or not fields:
             raise ValueError('missing directory field owner')
+        if owner.get('role') not in ('list','statistics') or not owner.get('modelIdentity'):
+            raise ValueError('directory requires public model identity and role')
+        description(owner.get('model'),'response')
         names = set()
         for field in fields:
             name, operators = field.get('name'), field.get('operators')
@@ -103,6 +119,16 @@ def validate_document(data):
                 raise ValueError('directory exclusion requires a reason')
         if not set(owner.get('keys', [])) <= names:
             raise ValueError('unbound directory ordering key')
+        selectors=owner.get('selectors')
+        if not isinstance(selectors,list) or any(not isinstance(name,str) or name not in names for name in selectors) or len(set(selectors))!=len(selectors):
+            raise ValueError('invalid typed domain selectors')
+        contract={k:v for k,v in owner.items() if k!='role'}
+        if owner['role']=='statistics':
+            statistics.append(contract)
+        elif owner['id'] in owners and owners[owner['id']]!=contract:
+            raise ValueError('directory has conflicting model/execution owners')
+        else:
+            owners[owner['id']]=contract
     identities, routes = set(), set()
     for endpoint in endpoints:
         if not isinstance(endpoint, dict):
@@ -143,6 +169,8 @@ def validate_document(data):
                 description(header, 'response')
         identities.add(identity)
         routes.add((listener, method, path))
+    if any(owners.get(owner['id'])!=owner for owner in statistics):
+        raise ValueError('statistics differs from its list model/execution owner')
     return document
 
 

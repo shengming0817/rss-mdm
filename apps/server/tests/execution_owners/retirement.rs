@@ -109,6 +109,15 @@ async fn certificate(h: &Harness) -> Result<()> {
 async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     let mut h = Harness::open().await?;
     certificate(&h).await?;
+    super::super::directory_queries_t2::history::seal(
+        &h.c,
+        h.p.device(),
+        rss_mdm_inventory::Source::AgentBuiltin,
+        "retirement-serial",
+        "0a1b2c3d-0000-4000-8000-000000000003",
+        true,
+    )
+    .await?;
     let (_, v) = h.policy("retiring").await?;
     let script = h.run(v, "retiring", now() + 300).await?;
     let (d, f, _) = super::mixed::agent(&h)?;
@@ -129,6 +138,23 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
         .await?;
     tx.commit().await?;
     let credential = credential_run(&h, &running).await?;
+    super::super::directory_queries_t2::history::seal(
+        &h.c,
+        h.p.device(),
+        rss_mdm_inventory::Source::AgentBuiltin,
+        "retirement-second",
+        "0a1b2c3d-0000-4000-8000-000000000004",
+        true,
+    )
+    .await?;
+    let late = super::super::directory_queries_t2::history::prepare(
+        &h.c,
+        h.p.device(),
+        rss_mdm_inventory::Source::AgentBuiltin,
+        "retirement-late",
+        "0a1b2c3d-0000-4000-8000-000000000005",
+    )
+    .await?;
     let retirement = accept(&h, &h.object).await?;
     step(&h, retirement).await?;
     assert_eq!(state(&h, retirement).await?.0, "cleanup");
@@ -235,6 +261,9 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     let revoked: (String, bool, bool, i64) = sqlx::query_as("SELECT r.state, NOT EXISTS (SELECT FROM mdm_access.credentials AS k WHERE k.tenant_id = r.tenant_id AND k.device = r.id AND k.state = 'active'), NOT EXISTS (SELECT FROM mdm_access.report_sources AS s WHERE s.tenant_id = r.tenant_id AND s.device = r.id AND s.enabled), (SELECT count(*) FROM mdm_pki.revocations AS v INNER JOIN mdm_pki.certificates AS k USING (tenant_id, purpose, issuer, serial) WHERE k.tenant_id = r.tenant_id AND k.device = r.id AND v.state = 'pending') FROM mdm_access.devices AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2")
         .bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
     assert_eq!(revoked, ("revoked".into(), true, true, 1));
+    late.accept(&h.c, true).await?;
+    let retained:i64=sqlx::query_scalar("SELECT count(*) FROM mdm.device_hardware_evidence WHERE tenant_id=$1::uuid AND device=$2 AND serial_number IN('RETIREMENT-SERIAL','RETIREMENT-SECOND','RETIREMENT-LATE')").bind(h.c.tenant.to_string()).bind(h.p.device()).fetch_one(&h.c.operator).await?;
+    assert_eq!(retained, 3);
     let before: serde_json::Value = sqlx::query_scalar(
         "SELECT state FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2",
     )

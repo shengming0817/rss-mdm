@@ -515,11 +515,11 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "One currently authorized script and its Resource-owned parameter schema.",
+  "description": "One currently authorized capability and its Resource-owned interface.",
   "properties": {
     "capability": {
       "$ref": "#/$defs/CapabilityDescriptor",
-      "description": "Server-owned identity and current callable interface."
+      "description": "Stable capability identity and current callable interface."
     },
     "policyId": {
       "description": "Logical Policy identity.",
@@ -527,7 +527,7 @@
       "type": "string"
     },
     "policyRevision": {
-      "description": "Current configuration CAS revision.",
+      "description": "Informational configuration revision.",
       "format": "uint64",
       "minimum": 0,
       "type": "integer"
@@ -539,15 +539,15 @@
     },
     "selfService": {
       "$ref": "#/$defs/SelfServiceMetadata",
-      "description": "Normalized presentation and invocation settings."
+      "description": "Presentation and invocation settings."
     },
     "subject": {
       "$ref": "#/$defs/SelfServiceSubject",
-      "description": "Current qualified subject, rechecked when invoking and before execution."
+      "description": "Qualified subject, rechecked on invocation and execution."
     },
     "task": {
       "$ref": "#/$defs/SelfServiceTask",
-      "description": "Closed task kind and the exact invocation interface."
+      "description": "Closed task kind and exact invocation interface."
     }
   },
   "required": [

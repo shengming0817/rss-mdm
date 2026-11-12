@@ -220,8 +220,8 @@ async fn read_filevault_configuration(
 
 struct ListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_recovery_credentials::directory::SCHEMA
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_recovery_credentials::directory::BINDINGS.execution()
     }
 }
 

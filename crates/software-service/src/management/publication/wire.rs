@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Publication {
+pub struct PublicationSummary {
+    #[schemars(with = "rss_mdm_resource::Id")]
     pub id: String,
     pub revision: u64,
     pub target: String,
@@ -15,6 +16,12 @@ pub struct Publication {
     pub outcome: String,
     pub withdrawn: bool,
     pub withdrawal: Option<String>,
+}
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Publication {
+    #[serde(flatten)]
+    pub summary: PublicationSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document: Option<crate::publication::ExportDocument>,
 }

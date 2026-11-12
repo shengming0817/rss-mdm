@@ -44,11 +44,6 @@ static PROTOCOL: rss_mdm_http_contract::Resource = rss_mdm_http_contract::Resour
     collection: None,
 };
 pub fn router(
-    service: Arc<Services>,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    protocol(Some(service))
-}
-fn protocol(
     service: Option<Arc<Services>>,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     let business = service.as_ref().and_then(|s| s.business.as_ref());
@@ -427,7 +422,7 @@ pub mod pki;
 
 /// Offline projection from the exact DA production declarations.
 pub fn contract() -> Result<serde_json::Value, Error> {
-    let routes = protocol(None);
+    let routes = router(None);
     let browser = browser::router(None);
     if !routes
         .validate(rss_mdm_http_contract::module::Listener::Da)

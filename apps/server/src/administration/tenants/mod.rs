@@ -74,6 +74,7 @@ pub enum Action {
 #[derive(schemars::JsonSchema, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Tenant {
+    #[schemars(with = "Uuid")]
     pub tenant_id: String,
     /// Reserved installation tenant; it cannot be updated, deleted or used for business.
     pub management: bool,

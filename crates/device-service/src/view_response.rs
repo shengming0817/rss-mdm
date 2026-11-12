@@ -90,6 +90,7 @@ pub struct Summary {
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 pub struct DirectoryRow {
+    #[schemars(extend("x-rss-maxUtf8Bytes" = 1036))]
     pub key: String,
     #[serde(flatten)]
     pub summary: Summary,

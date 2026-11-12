@@ -121,7 +121,7 @@ async fn list(
     >,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<
-        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<wire::Publication>>>,
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<wire::PublicationSummary>>>,
     >,
     Error,
 > {
@@ -179,14 +179,15 @@ pub struct HttpState {
 
 struct ListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_software_service::management::publication::directory::PUBLICATIONS
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_software_service::management::publication::directory::PUBLICATION_BINDINGS
+            .execution()
     }
 }
 
 struct TargetsQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for TargetsQuery {
-    fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_software_service::management::publication::directory::TARGETS
+    fn execution() -> &'static rss_mdm_query::directory::Execution {
+        rss_mdm_software_service::management::publication::directory::TARGET_BINDINGS.execution()
     }
 }

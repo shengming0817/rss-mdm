@@ -6,7 +6,7 @@ use rss_mdm_audit_integration::{AuditStore, RequestAudit};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_query::{
     Parameters,
-    directory::{Field, Kind, Query, Schema},
+    directory::{Query, Schema},
 };
 use rss_mdm_registration_service::DevicePrincipal;
 use rss_request_context::TenantId;
@@ -261,25 +261,8 @@ async fn describe_in(
         _ => Err(Error::Forbidden),
     }
 }
-pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "self_service",
-    keys: &["id"],
-    default_limit: 64,
-    max_limit: 64,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid).without_output(),
-        Field::scalar("toolName", Kind::Text).without_output(),
-        Field::scalar("alias", Kind::Text).without_output(),
-        Field::scalar("displayName", Kind::Text).without_output(),
-        Field::scalar("category", Kind::Text).without_output(),
-        Field::output("capability"),
-        Field::output("policyId"),
-        Field::output("policyRevision"),
-        Field::output("policyVersion"),
-        Field::output("subject"),
-        Field::output("selfService"),
-        Field::output("task"),
-    ],
+pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<wire::SelfServiceDirectoryItem>("self_service", &["policyId"], 64, 64, &[rss_mdm_query::directory::Exclusion { path: "capability.inputSchema", reason: "Resource-owned parameter schema has its own schema language, not directory selectors" }, rss_mdm_query::directory::Exclusion { path: "capability.outputSchema", reason: "Resource-owned result schema has its own schema language, not directory selectors" }, rss_mdm_query::directory::Exclusion { path: "selfService.presentation", reason: "Open presentation keys are not typed; the displayName and category domain selectors read the published strings" }, rss_mdm_query::directory::Exclusion { path: "task.parameterSchema", reason: "Resource-owned script parameter schema is not a directory value model" }, rss_mdm_query::directory::Exclusion { path: "task.parameterSources", reason: "Dynamic parameter names and scalar variants are interpreted by the script owner" }]).and_then(|s|s.with_selectors::<PresentationSelectors>("Published display name and category from the open presentation metadata")).and_then(|s|s.no_sort("capability","Qualified capability properties are evaluated within the bounded candidate scan")).and_then(|s|s.no_sort("subject","Qualified subject is request-specific and has no persistent seek order")).and_then(|s|s.no_sort("task","The qualified task interface is evaluated within the bounded candidate scan")).and_then(|s|s.no_sort("selfService","Effective publication settings are qualified inside the bounded candidate scan")).expect("Public directory model")
 });
 /// Captured input keeps parsing after the service's existing identity binding.
 pub struct Input(String);
@@ -287,20 +270,11 @@ impl Input {
     pub fn new(raw: &str) -> Self {
         Self(raw.to_owned())
     }
+    pub fn execution() -> &'static rss_mdm_query::directory::Execution {
+        BINDINGS.execution()
+    }
     pub fn schema() -> &'static Schema {
         &SCHEMA
-    }
-}
-fn column(field: &str) -> &'static str {
-    match field {
-        "id" => "id::text COLLATE \"C\"",
-        "toolName" => "('policy_' || replace(id::text,'-','')) COLLATE \"C\"",
-        "alias" => "(definition->>'alias') COLLATE \"C\"",
-        "displayName" => {
-            "(definition->'selfService'->'presentation'->>'displayName') COLLATE \"C\""
-        }
-        "category" => "(definition->'selfService'->'presentation'->>'category') COLLATE \"C\"",
-        _ => unreachable!("checked field"),
     }
 }
 impl AgentTasks {
@@ -328,21 +302,24 @@ impl AgentTasks {
             } else { None };
             let binding = query.binding(&(service.requests.instance.as_str(), p.tenant().to_string(), p.device(), source, subject)).map_err(|_| Error::Malformed)?;
             let after = query.after(&service.requests.cursor, &binding).map_err(|_| Error::Conflict)?;
-            let mut sql = sqlx::QueryBuilder::new("SELECT jsonb_build_object('id',id,'toolName','policy_' || replace(id::text,'-',''),'alias',definition->>'alias','displayName',definition->'selfService'->'presentation'->>'displayName','category',definition->'selfService'->'presentation'->>'category') FROM mdm_policy.policies WHERE tenant_id=");
-            sql.push_bind(tx.tenant_id().to_string()).push("::uuid AND state='enabled' AND definition->'selfService'->>'published'='true'");
-            rss_mdm_query_postgres::append(&mut sql, query, after.as_ref(), column).map_err(|_| Error::Malformed)?;
-            let rows: Vec<Value> = tx.with_connection(move |c| Box::pin(async move { sql.build_query_scalar().fetch_all(c).await })).await?;
-            // Cursor advances over examined candidates, including invisible ones.
-            let page = query.unprojected_page(rows, &service.requests.cursor, &binding).map_err(|_| Error::Malformed)?;
-            let now = rss_mdm_script_service::storage::now(tx).await.map_err(script_fault)?;
-            let mut items = Vec::new();
-            for mut row in page.items {
-                let id = stored(serde_json::from_value(row["id"].clone()))?;
-                if let Some(item) = describe_in(service, tx, p, proof, source, id, now).await? {
-                    row.as_object_mut().ok_or(Error::Malformed)?.extend(json(&item)?.as_object().ok_or(Error::Malformed)?.clone());
-                    items.push(query.project(row).map_err(|_| Error::Malformed)?);
-                }
+            let mut sql=sqlx::QueryBuilder::new("SELECT row FROM (SELECT jsonb_build_object('policyId',id,'policyRevision',revision,'policyVersion',current_version) row FROM mdm_policy.policies WHERE tenant_id=");
+            sql.push_bind(tx.tenant_id().to_string()).push("::uuid AND state='enabled' AND definition->'selfService'->>'published'='true') candidates WHERE true");
+            rss_mdm_query_postgres::prefilter(&mut sql,query,&*BINDINGS,|name|matches!(name,"policyId"|"policyRevision"|"policyVersion")).map_err(|_|Error::Malformed)?;
+            rss_mdm_query_postgres::page(&mut sql,query,after.as_ref(),&*BINDINGS).map_err(|_|Error::Malformed)?;
+            let rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
+            let page=query.unprojected_page(rows,&service.requests.cursor,&binding).map_err(|_|Error::Malformed)?;
+            let now=rss_mdm_script_service::storage::now(tx).await.map_err(script_fault)?;
+            let mut qualified=Vec::new();
+            for row in page.items {
+                let id=stored(serde_json::from_value(row["policyId"].clone()))?;
+                if let Some(item)=describe_in(service,tx,p,proof,source,id,now).await? { qualified.push(json(&item)?); }
             }
+            let mut sql=sqlx::QueryBuilder::new("SELECT row FROM jsonb_array_elements(");
+            sql.push_bind(Value::Array(qualified)).push("::jsonb) row WHERE true");
+            rss_mdm_query_postgres::filter(&mut sql,query,&*BINDINGS).map_err(|_|Error::Malformed)?;
+            rss_mdm_query_postgres::order(&mut sql,query,&*BINDINGS).map_err(|_|Error::Malformed)?;
+            let rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
+            let items=rows.into_iter().map(|row|query.project(row).map_err(|_|Error::Malformed)).collect::<Result<Vec<_>>>()?;
             if let Some(proof) = proof { proof.check_live()?; }
             Ok(wire::SelfServiceDirectoryResponse { items: stored(serde_json::from_value(json!(items)))?, next_cursor:page.next_cursor, as_of:now })
         })).await
@@ -543,3 +520,30 @@ impl AgentTasks {
             .await
     }
 }
+
+#[derive(schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct PresentationSelectors {
+    display_name: Option<String>,
+    category: Option<String>,
+}
+
+pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &SCHEMA,
+            &[
+                rss_mdm_query_postgres::Source::json("", "row"),
+                rss_mdm_query_postgres::Source::column(
+                    "displayName",
+                    "(row#>>'{selfService,presentation,displayName}') COLLATE \"C\"",
+                ),
+                rss_mdm_query_postgres::Source::column(
+                    "category",
+                    "(row#>>'{selfService,presentation,category}') COLLATE \"C\"",
+                ),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

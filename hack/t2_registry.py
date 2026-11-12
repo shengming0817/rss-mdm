@@ -13,7 +13,7 @@ MODULES = {
                 'crates/policy/*','crates/policy-postgres/*','crates/policy-service/src/management/read.rs',
                 'crates/compliance/*','crates/compliance-postgres/*','crates/compliance-service/src/directory.rs',
                 'crates/authorization-service/src/directory.rs','crates/inventory-service/src/assets/*','crates/inventory-service/schema/*',
-                'crates/device-service/src/directory*','crates/management-http/*','crates/http-contract/*',
+                'crates/device-service/src/directory*','crates/registration-service/*','crates/inventory-postgres/*','crates/software-service/*','crates/agent-package-service/*','crates/policy-service/src/events/*','crates/management-http/*','crates/http-contract/*',
                 'apps/server/src/migration*','apps/server/src/migration/*','apps/server/tests/directory_queries/*',
                 'apps/server/tests/support/host.rs','apps/server/tests/owner_boundaries/mod.rs','apps/server/tests/software/support.rs')),
 

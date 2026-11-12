@@ -5,6 +5,8 @@ pub static STANDARDS: Schema = Schema {
     default_limit: 100,
     max_limit: 1000,
     order: "configuration revision, UUID",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "The continuation freezes the software-standard configuration revision",
     context: &[],
 };
 pub static BUCKETS: Schema = Schema {
@@ -12,6 +14,8 @@ pub static BUCKETS: Schema = Schema {
     default_limit: 100,
     max_limit: 1000,
     order: "frozen software identity",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Rows belong to one fixed software asset query snapshot",
     context: &[],
 };
 pub static DEVICES: Schema = Schema {
@@ -19,6 +23,8 @@ pub static DEVICES: Schema = Schema {
     default_limit: 100,
     max_limit: 1000,
     order: "frozen object identity",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Rows belong to one fixed software asset query snapshot",
     context: &[],
 };
 pub static EVIDENCE: Schema = Schema {
@@ -26,6 +32,8 @@ pub static EVIDENCE: Schema = Schema {
     default_limit: 100,
     max_limit: 1000,
     order: "frozen evidence identity",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Rows belong to one fixed software asset query snapshot",
     context: &[],
 };
 pub static BREAKDOWNS: Schema = Schema {
@@ -33,6 +41,8 @@ pub static BREAKDOWNS: Schema = Schema {
     default_limit: 100,
     max_limit: 1000,
     order: "frozen dimension value",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Rows belong to one fixed software asset query snapshot",
     context: &[],
 };
 
@@ -41,6 +51,8 @@ pub static MAPPINGS: Schema = Schema {
     default_limit: 100,
     max_limit: 1000,
     order: "configuration revision, UUID",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "The continuation freezes the complete software-mapping configuration revision",
     context: &[],
 };
 
@@ -49,5 +61,7 @@ pub static COVERAGE: Schema = Schema {
     default_limit: 100,
     max_limit: 1000,
     order: "frozen object identity",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Rows belong to one fixed software asset query snapshot",
     context: &[],
 };

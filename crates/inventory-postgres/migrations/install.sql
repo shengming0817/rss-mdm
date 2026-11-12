@@ -231,11 +231,25 @@ CREATE TABLE mdm.collection_results (
  tenant_id uuid NOT NULL,run text NOT NULL CHECK(length(run) BETWEEN 1 AND 256),
  scope text NOT NULL,coverage text NOT NULL,sequence bigint NOT NULL CHECK(sequence>=0),
  observed_at bigint NOT NULL,digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'),
- document bytea NOT NULL CHECK(octet_length(document)<=33554432),
+ document bytea NOT NULL CHECK(octet_length(document)<=33554432),trusted boolean NOT NULL,
  PRIMARY KEY(tenant_id,scope,run)
 );
+-- Minimal immutable locator evidence outlives ordinary raw/result retention.
+-- It deliberately has no cascading dependency on the raw collection result.
+CREATE TABLE mdm.device_hardware_evidence (
+ tenant_id uuid NOT NULL, scope text NOT NULL, run text NOT NULL,
+ device text NOT NULL, source text NOT NULL, epoch text NOT NULL, coverage text NOT NULL,
+ sequence bigint NOT NULL CHECK(sequence>=0),
+ result_digest text NOT NULL CHECK(result_digest ~ '^[0-9a-f]{64}$'), observed_at bigint NOT NULL,
+ serial_number text, hardware_uuid text,
+ CHECK(serial_number IS NOT NULL OR hardware_uuid IS NOT NULL),
+ PRIMARY KEY(tenant_id,scope,run)
+);
+CREATE INDEX device_hardware_device ON mdm.device_hardware_evidence(tenant_id,device);
+CREATE INDEX device_hardware_serial ON mdm.device_hardware_evidence(tenant_id,serial_number COLLATE "C",device) WHERE serial_number IS NOT NULL;
+CREATE INDEX device_hardware_uuid ON mdm.device_hardware_evidence(tenant_id,hardware_uuid COLLATE "C",device) WHERE hardware_uuid IS NOT NULL;
 DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['field_versions','collection_definitions','collection_results'] LOOP
+ FOREACH t IN ARRAY ARRAY['field_versions','collection_definitions','collection_results','device_hardware_evidence'] LOOP
   EXECUTE format('ALTER TABLE mdm.%I ENABLE ROW LEVEL SECURITY',t);
   EXECUTE format('ALTER TABLE mdm.%I FORCE ROW LEVEL SECURITY',t);
   EXECUTE format('CREATE POLICY tenant ON mdm.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);

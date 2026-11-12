@@ -2,7 +2,11 @@
 use super::*;
 use anyhow::Context as _;
 use rss_mdm_software_release as rel;
-pub(super) async fn withdrawn(c: &Context, resource: &r::Version) -> Result<()> {
+pub(in crate::assembly) async fn withdrawn(
+    c: &Context,
+    resource: &r::Version,
+    source: &str,
+) -> Result<()> {
     let document = rss_mdm_software_service::publication::derive_document(
         resource,
         &[],
@@ -10,7 +14,7 @@ pub(super) async fn withdrawn(c: &Context, resource: &r::Version) -> Result<()> 
     )?;
     let content = rel::Content::new(
         rel::SoftwareIdentity::new(rel::SoftwareIdentityFields {
-            source: "private".into(),
+            source: source.into(),
             package: "Acme.App".into(),
             version: "1.2".into(),
             platform: "windows".into(),
@@ -39,7 +43,7 @@ pub(super) async fn withdrawn(c: &Context, resource: &r::Version) -> Result<()> 
         rel::PublicationBinding {
             publication: id.clone(),
             content: content.digest(),
-            target: rel::TargetId::new(c.tenant, "private")?,
+            target: rel::TargetId::new(c.tenant, source)?,
             target_digest: rel::Digest::from_bytes([2; 32]),
             evidence: rel::Evidence {
                 actor: actor.clone(),
@@ -68,7 +72,7 @@ pub(super) async fn withdrawn(c: &Context, resource: &r::Version) -> Result<()> 
         .await
         .context("create retained publication")?;
     let bytes = serde_json::to_vec(
-        &json!({"target":"private","format":1,"resource":resource.resource().as_str(),"version":resource.label().as_str(),"resource_digest":resource.digest().bytes(),"expected_resource_revision":2,"coordinate":"Acme.App/1.2","document":document}),
+        &json!({"target":source,"format":1,"resource":resource.resource().as_str(),"version":resource.label().as_str(),"resource_digest":resource.digest().bytes(),"expected_resource_revision":2,"coordinate":"Acme.App/1.2","document":document}),
     )?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_software_composition.subjects(tenant_id,record,resource,version,document,digest) VALUES($1::uuid,'retained-publication',$2,$3,$4,sha256($4))").bind(c.tenant.to_string()).bind(resource.resource().as_str()).bind(resource.label().as_str()).bind(bytes).execute(&mut *tx).await?;

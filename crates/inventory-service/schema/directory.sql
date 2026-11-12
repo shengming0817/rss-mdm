@@ -39,3 +39,34 @@ GRANT USAGE ON SCHEMA mdm_assets TO mdm_identity_runtime;
 GRANT SELECT(tenant_id,device) ON mdm.manual_assignments TO mdm_access,mdm_command_runtime;
 GRANT SELECT ON mdm.inventory_presence TO mdm_access,mdm_command_runtime;
 COMMIT;
+
+-- One current-source definition of device inventory presence, shared by return/filter/sort/count.
+BEGIN;
+CREATE VIEW mdm_assets.device_inventory_presence WITH (security_barrier=true) AS
+WITH catalog AS (
+ SELECT field FROM (SELECT DISTINCT ON(field) field,definition FROM mdm.field_versions
+ WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid ORDER BY field,version DESC) latest
+ WHERE definition IS NOT NULL
+), datasets AS (
+ SELECT DISTINCT source,dataset FROM mdm.collection_definitions
+ WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+ AND EXISTS(SELECT FROM jsonb_array_elements(definition->'fields') f
+ WHERE f->'scope'='{"kind":"device"}'::jsonb AND f->'definition'->>'key' IN(SELECT field FROM catalog))
+)
+SELECT DISTINCT p.tenant_id,r.id AS device
+FROM mdm.inventory_presence p
+JOIN mdm_access.devices r ON r.tenant_id=p.tenant_id AND r.id=p.scope::jsonb->>'registration' AND r.state='active'
+JOIN mdm_access.report_sources s ON s.tenant_id=r.tenant_id AND s.device=r.id AND s.enabled
+ AND s.source=p.scope::jsonb->>'source' AND s.epoch::text=p.scope::jsonb->>'epoch'
+JOIN datasets d ON d.source=s.source AND d.dataset=p.scope::jsonb->>'dataset'
+WHERE p.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+ AND p.journal='mdm.observation.v1' AND p.generation='inventory-projection-v1'
+ AND p.scope::jsonb->>'tenant'=p.tenant_id::text
+ AND p.scope::jsonb->>'object'=CASE WHEN d.dataset='inventory' THEN r.id ELSE r.id||':'||d.dataset END
+ AND r.channel=CASE WHEN s.source IN('mdm.windows','mdm.apple') THEN 'mdm' WHEN s.source IN('agent.builtin','agent.script','agent.osquery','agent.native') THEN 'agent' END
+ AND EXISTS(SELECT FROM mdm_access.credentials k WHERE k.tenant_id=r.tenant_id AND k.device=r.id AND k.state='active')
+UNION
+SELECT tenant_id,device FROM mdm.manual_assignments WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid;
+REVOKE ALL ON mdm_assets.device_inventory_presence FROM PUBLIC;
+GRANT SELECT ON mdm_assets.device_inventory_presence TO mdm_access,mdm_command_runtime;
+COMMIT;

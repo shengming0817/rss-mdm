@@ -1,7 +1,7 @@
 //! Direct blockers use real owner transactions and runtime roles. HTTP consumes the same
 //! authenticated principal as the service; these cases do not replace session/TLS proofs.
 mod fields;
-mod publication;
+pub(super) mod publication;
 use super::{
     owner_boundaries_t2::{Owners, scope},
     software_t2::support,
@@ -186,7 +186,7 @@ async fn resource_http_retention_permissions_and_continuations() -> Result<()> {
     .await?;
     sqlx::query("UPDATE mdm_software.versions SET lifecycle=jsonb_set(lifecycle,'{state}','\"withdrawn\"') WHERE tenant_id=$1::uuid AND resource='blocker-software'").bind(c.tenant.to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
-    publication::withdrawn(&c, &resource).await?;
+    publication::withdrawn(&c, &resource, "private").await?;
     let (owner, service) = catalog(&c).await?;
     let http = Http::open(
         rss_mdm_management_http::resource_catalog::http::routes()

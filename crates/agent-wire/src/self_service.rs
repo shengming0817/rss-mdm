@@ -211,50 +211,34 @@ pub struct SelfServiceDirectoryResponse {
     /// Server observation time in Unix seconds.
     pub as_of: i64,
 }
-/// Selected directory fields; resolve returns the complete required descriptor instead.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SelfServiceDirectoryProjection {
-    /// Selected capability interface.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capability: Option<crate::runtime::CapabilityDescriptor>,
-    /// Selected Policy identity.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy_id: Option<Uuid>,
-    /// Selected informational configuration revision.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy_revision: Option<u64>,
-    /// Selected informational material version.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy_version: Option<Uuid>,
-    /// Selected qualified subject.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<SelfServiceSubject>,
-    /// Selected presentation and invocation settings.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub self_service: Option<SelfServiceMetadata>,
-    /// Selected operation-specific interface.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<SelfServiceTask>,
+// One typed declaration keeps the selected response fields and the complete row inseparable.
+macro_rules! self_service_directory_row {
+    ($( $(#[$doc:meta])* $name:ident : $ty:ty ),* $(,)?) => {
+        /// One currently authorized capability and its Resource-owned interface.
+        #[derive(Clone,Debug,Deserialize,Serialize,schemars::JsonSchema)]
+        #[serde(rename_all="camelCase",deny_unknown_fields)]
+        pub struct SelfServiceDirectoryItem { $( $(#[$doc])* pub $name:$ty, )* }
+        /// Selected fields from the same public row; omission does not grant authority.
+        #[derive(Clone,Debug,Deserialize,Serialize)]
+        #[serde(rename_all="camelCase",deny_unknown_fields)]
+        pub struct SelfServiceDirectoryProjection { $( $(#[$doc])* #[serde(skip_serializing_if="Option::is_none")] pub $name:Option<$ty>, )* }
+    };
 }
-/// One currently authorized script and its Resource-owned parameter schema.
-#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SelfServiceDirectoryItem {
-    /// Server-owned identity and current callable interface.
-    pub capability: crate::runtime::CapabilityDescriptor,
+self_service_directory_row! {
+    /// Stable capability identity and current callable interface.
+    capability: crate::runtime::CapabilityDescriptor,
     /// Logical Policy identity.
-    pub policy_id: Uuid,
-    /// Current configuration CAS revision.
-    pub policy_revision: u64,
+    policy_id: Uuid,
+    /// Informational configuration revision.
+    policy_revision: u64,
     /// Immutable execution version.
-    pub policy_version: Uuid,
-    /// Current qualified subject, rechecked when invoking and before execution.
-    pub subject: SelfServiceSubject,
-    /// Normalized presentation and invocation settings.
-    pub self_service: SelfServiceMetadata,
-    /// Closed task kind and the exact invocation interface.
-    pub task: SelfServiceTask,
+    policy_version: Uuid,
+    /// Qualified subject, rechecked on invocation and execution.
+    subject: SelfServiceSubject,
+    /// Presentation and invocation settings.
+    self_service: SelfServiceMetadata,
+    /// Closed task kind and exact invocation interface.
+    task: SelfServiceTask,
 }
 /// One directory interface; software does not inherit script parameter semantics.
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -490,4 +474,20 @@ pub(crate) fn nullable_schema<T: schemars::JsonSchema>(
     generator: &mut schemars::SchemaGenerator,
 ) -> schemars::Schema {
     generator.subschema_for::<Option<T>>()
+}
+
+impl schemars::JsonSchema for SelfServiceDirectoryProjection {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "SelfServiceDirectoryProjection".into()
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut value =
+            <SelfServiceDirectoryItem as schemars::JsonSchema>::json_schema(generator).to_value();
+        value
+            .as_object_mut()
+            .expect("Self service row object")
+            .remove("required");
+        value["x-rss-directory-model"] = serde_json::json!({"identity":<SelfServiceDirectoryItem as schemars::JsonSchema>::schema_id(),"schema":generator.subschema_for::<SelfServiceDirectoryItem>()});
+        value.try_into().expect("Self service projected schema")
+    }
 }

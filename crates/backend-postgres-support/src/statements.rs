@@ -50,9 +50,9 @@ statements!(
     "mdm_software_release.aggregates",
     "mdm_software_release.requests",
     "mdm_software_release.immutable",
-    "",
-    "",
-    ""
+    ",directory",
+    ",$7",
+    ",directory=$7"
 );
 impl crate::BackendKind {
     pub(crate) const fn statements(self) -> &'static Statements {

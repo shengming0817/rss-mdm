@@ -88,7 +88,8 @@ pub(super) async fn page(
     let after = q.after(codec, binding).map_err(query_error)?;
     let mut sql = sql(profile, tenant, id, now);
     sql.push("SELECT jsonb_build_object('kind',kind,'id',id,'device',device,'state',state,'deadline',deadline,'revocationState',revocation_state) FROM blockers WHERE true");
-    rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(query_error)?;
+    rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*BLOCKER_BINDINGS)
+        .map_err(query_error)?;
     let rows: Vec<serde_json::Value> = sql.build_query_scalar().fetch_all(c).await.map_err(db)?;
     let rows = rows
         .into_iter()
@@ -96,11 +97,4 @@ pub(super) async fn page(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| Error::Storage)?;
     q.page_typed(rows, codec, binding).map_err(query_error)
-}
-fn column(name: &str) -> &'static str {
-    match name {
-        "kind" => "kind COLLATE \"C\"",
-        "id" => "id COLLATE \"C\"",
-        _ => unreachable!("checked blocker field"),
-    }
 }

@@ -8,6 +8,8 @@ pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "object key ASC",
+    purpose: rss_mdm_query::window::Purpose::Snapshot,
+    reason: "Rows belong to a fixed Scope result, not a live resource directory",
     context: &["channel"],
 };
 #[derive(Clone, Debug, Serialize)]

@@ -19,7 +19,7 @@ pub mod evaluation;
 pub mod filter;
 
 mod directory;
-pub use directory::directory_presence_on;
+pub use directory::{directory_prepare_on, directory_presence_on};
 pub mod field_directory;
 mod field_layout;
 pub mod field_references;
@@ -271,9 +271,9 @@ impl AssetService {
 }
 #[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AssetEnvelope {
+pub struct AssetEnvelope<T = Response> {
     pub tenant_id: String,
-    pub asset: Response,
+    pub asset: T,
 }
 
 #[cfg(test)]

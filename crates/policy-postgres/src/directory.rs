@@ -1,7 +1,7 @@
 //! Query catalogs and SQL belong to the Policy storage owner.
 use rss_mdm_query::{
     Error as QueryError,
-    directory::{Field, Kind, Position, Query, Schema},
+    directory::{Position, Query},
 };
 use rss_mdm_query_postgres::Source;
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
@@ -42,59 +42,6 @@ pub static SOURCES: &[rss_mdm_query_postgres::Source] = &[
     ),
     Source::json("definition", "definition"),
 ];
-/// Event batch directory fields.
-pub static BATCHES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "policy_event_batches",
-    keys: &["id"],
-    default_limit: 64,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("operationId", Kind::Uuid),
-        Field::scalar("event", Kind::Text),
-        Field::scalar("createdAt", Kind::Integer),
-        Field::output("deadline"),
-        Field::output("members"),
-        Field::output("admission"),
-        Field::output("request"),
-        Field::output("processingFailure"),
-    ],
-});
-/// Event member directory fields.
-pub static MEMBERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "policy_event_members",
-    keys: &["id"],
-    default_limit: 64,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("policyId", Kind::Uuid),
-        Field::scalar("versionId", Kind::Uuid),
-        Field::scalar("state", Kind::Text),
-        Field::output("revision"),
-        Field::output("decision"),
-        Field::output("operations"),
-    ],
-});
-fn batch_column(name: &str) -> &'static str {
-    match name {
-        "id" => "b.id::text COLLATE \"C\"",
-        "operationId" => "b.request::text COLLATE \"C\"",
-        "event" => "(b.input->>'event') COLLATE \"C\"",
-        "createdAt" => "b.created_at",
-        _ => unreachable!("checked batch field"),
-    }
-}
-fn member_column(name: &str) -> &'static str {
-    match name {
-        "id" => "m.id::text COLLATE \"C\"",
-        "policyId" => "m.policy::text COLLATE \"C\"",
-        "versionId" => "m.version::text COLLATE \"C\"",
-        "state" => "(m.decision->>'state') COLLATE \"C\"",
-        _ => unreachable!("checked member field"),
-    }
-}
-
 /// Read a bounded management directory page from a checked query.
 pub async fn policies_in(
     profile: rss_mdm_install_support::StorageProfile,
@@ -132,27 +79,25 @@ pub async fn events_in(
     after: Option<&Position>,
     target: EventTarget<'_>,
     members: bool,
+    bindings: &rss_mdm_query_postgres::Bindings,
 ) -> Result<Vec<Value>, Error> {
     let EventTarget { device, batch } = target;
-    q.require_schema(if members { &MEMBERS } else { &BATCHES })?;
+    q.require_schema(bindings.schema())?;
     let prefix = if members {
         crate::storage_profile::sql(profile).directory_events_in_1
     } else {
         crate::storage_profile::sql(profile).directory_event_batches
     };
-    let mut sql = sqlx::QueryBuilder::new(prefix);
+    let mut sql = sqlx::QueryBuilder::new("SELECT row FROM (");
+    sql.push(prefix);
     sql.push_bind(tx.tenant_id().to_string())
         .push("::uuid AND b.device=")
         .push_bind(device.to_owned());
     if let Some(batch) = batch {
         sql.push(" AND b.id=").push_bind(batch);
     }
-    rss_mdm_query_postgres::append(
-        &mut sql,
-        q,
-        after,
-        if members { member_column } else { batch_column },
-    )?;
+    sql.push(") records WHERE true");
+    rss_mdm_query_postgres::append(&mut sql, q, after, bindings)?;
     Ok(tx
         .with_connection(move |c| {
             Box::pin(async move { sql.build_query_scalar().fetch_all(c).await })

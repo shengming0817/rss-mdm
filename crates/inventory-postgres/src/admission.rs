@@ -156,6 +156,24 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
             ]),
         ),
         (
+            "device_hardware_evidence",
+            "PRIMARY KEY (tenant_id, scope, run)",
+            serde_json::json!([
+                ["tenant_id", "uuid", true],
+                ["scope", "text", true],
+                ["run", "text", true],
+                ["device", "text", true],
+                ["source", "text", true],
+                ["epoch", "text", true],
+                ["coverage", "text", true],
+                ["sequence", "bigint", true],
+                ["result_digest", "text", true],
+                ["observed_at", "bigint", true],
+                ["serial_number", "text", false],
+                ["hardware_uuid", "text", false]
+            ]),
+        ),
+        (
             "collection_results",
             "PRIMARY KEY (tenant_id, scope, run)",
             serde_json::json!([
@@ -166,7 +184,8 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
                 ["sequence", "bigint", true],
                 ["observed_at", "bigint", true],
                 ["digest", "text", true],
-                ["document", "bytea", true]
+                ["document", "bytea", true],
+                ["trusted", "boolean", true]
             ]),
         ),
     ] {
@@ -178,7 +197,15 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
                 | CollectionRole::Software
                 | CollectionRole::Telemetry
         );
-        let select = if table == "retention_policies" {
+        let select = if table == "device_hardware_evidence" {
+            matches!(
+                role,
+                CollectionRole::Access
+                    | CollectionRole::Command
+                    | CollectionRole::Inventory
+                    | CollectionRole::Telemetry
+            )
+        } else if table == "retention_policies" {
             matches!(role, CollectionRole::Inventory | CollectionRole::Telemetry)
         } else if consumer {
             !matches!(role, CollectionRole::Resource | CollectionRole::Software)
@@ -206,7 +233,7 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
                     | CollectionRole::Policy
                     | CollectionRole::Telemetry
             ),
-            "collection_results" => matches!(
+            "collection_results" | "device_hardware_evidence" => matches!(
                 role,
                 CollectionRole::Access
                     | CollectionRole::Command

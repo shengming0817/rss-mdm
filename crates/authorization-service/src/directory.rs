@@ -4,23 +4,13 @@ use crate::{Error, Permission, context::AuthorizedPrincipal, database::db};
 use rss_mdm_audit_integration::{AuditStore, budget::AuditBudget};
 use rss_mdm_query::{
     cursor::CursorCodec,
-    directory::{Field, Kind, Query, Schema},
+    directory::{Query, Schema},
 };
 use serde_json::Value;
 use uuid::Uuid;
 
-pub static RULES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| Schema {
-    id: "authorization_rules",
-    keys: &["id"],
-    default_limit: 100,
-    max_limit: 1000,
-    fields: vec![
-        Field::scalar("id", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("deleted", Kind::Boolean),
-        Field::scalar("subjectKind", Kind::Text),
-        Field::output("value"),
-    ],
+pub static RULES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<RuleRow>("authorization_rules", &["id"], 100, 1000, &[rss_mdm_query::directory::Exclusion { path: "value.grants", reason: "Each grant combines an operation with its own scope; use the authorization rule owner to evaluate grants" }]).expect("Public directory model")
 });
 pub static GROUPS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
     Schema::derived::<GroupRow>("user_groups", &["id"], 100, 1000, &[])
@@ -110,6 +100,14 @@ impl Directory {
             Self::Keys => KEY_BINDINGS.schema(),
         }
     }
+    pub fn execution(self) -> &'static rss_mdm_query::directory::Execution {
+        match self {
+            Self::Rules => RULE_BINDINGS.execution(),
+            Self::Groups => GROUP_BINDINGS.execution(),
+            Self::Members(_) => MEMBER_BINDINGS.execution(),
+            Self::Keys => KEY_BINDINGS.execution(),
+        }
+    }
     fn permission(self) -> Permission {
         match self {
             Self::Rules | Self::Keys => Permission::AuthorizationRead,
@@ -121,22 +119,6 @@ fn error(e: rss_mdm_query::Error) -> Error {
     match e {
         rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
         _ => Error::Malformed,
-    }
-}
-fn column(name: &str) -> &'static str {
-    match name {
-        "id" => "(row->>'id') COLLATE \"C\"",
-        "principalId" => "(row->>'principalId') COLLATE \"C\"",
-        "revision" => "(row->>'revision')::bigint",
-        "memberCount" => "(row->>'memberCount')::bigint",
-        "createdAt" => "(row->>'createdAt')::bigint",
-        "expiresAt" => "(row->>'expiresAt')::bigint",
-        "deleted" => "(row->>'deleted')::boolean",
-        "enabled" => "(row->>'enabled')::boolean",
-        "revoked" => "(row->>'revoked')::boolean",
-        "name" => "(row->>'name') COLLATE \"C\"",
-        "subjectKind" => "(row->>'subjectKind') COLLATE \"C\"",
-        _ => unreachable!("validated authorization field"),
     }
 }
 pub async fn list(
@@ -172,7 +154,7 @@ pub async fn list(
             if let Directory::Members(id)=kind {sql.push(" AND id=").push_bind(*id);}
             sql.push(") records WHERE true");
             match kind {
-                Directory::Rules => rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column),
+                Directory::Rules => rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*RULE_BINDINGS),
                 Directory::Groups => rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*GROUP_BINDINGS),
                 Directory::Members(_) => rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*MEMBER_BINDINGS),
                 Directory::Keys => rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),&*KEY_BINDINGS),
@@ -374,3 +356,18 @@ impl Detail {
         }
     }
 }
+
+pub static RULE_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &RULES,
+            &[
+                rss_mdm_query_postgres::Source::json("id", "row#>'{id}'"),
+                rss_mdm_query_postgres::Source::json("revision", "row#>'{revision}'"),
+                rss_mdm_query_postgres::Source::json("deleted", "row#>'{deleted}'"),
+                rss_mdm_query_postgres::Source::json("subjectKind", "row#>'{subjectKind}'"),
+                rss_mdm_query_postgres::Source::json("value", "row#>'{value}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

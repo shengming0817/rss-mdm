@@ -1,6 +1,16 @@
 //! Device-scoped batch/member queries use the same directory contract and current read authority.
 use super::*;
-pub use rss_mdm_policy_postgres::directory::{BATCHES, MEMBERS};
+use rss_mdm_query::directory::Schema;
+pub static BATCHES: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Batch>("policy_event_batches", &["id"], 64, 1000, &[rss_mdm_query::directory::Exclusion{path:"request.executionContext.sourceCredentials",reason:"Each credential pairs its source and identity; this directory does not define a same-credential selector"}])
+        .expect("Public event batch model")
+});
+pub static MEMBERS: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
+    Schema::derived::<Member>("policy_event_members", &["id"],64,1000,&[
+    rss_mdm_query::directory::Exclusion { path:"decision.operations", reason:"Operation references are object arrays requiring kind and identity to match the same element" },
+    rss_mdm_query::directory::Exclusion { path:"operations", reason:"Per-operation live progress has heterogeneous owner-specific evidence; inspect each original operation" },
+]).expect("Public event member model")
+});
 use rss_mdm_query::cursor::CursorCodec;
 impl Events {
     pub async fn member_receipt(
@@ -206,6 +216,11 @@ impl Events {
                         after.as_ref(),
                         rss_mdm_policy_postgres::directory::EventTarget { device, batch },
                         members,
+                        if members {
+                            &MEMBER_BINDINGS
+                        } else {
+                            &BATCH_BINDINGS
+                        },
                     )
                     .await?;
                     let result = if members {
@@ -329,3 +344,41 @@ impl ReadResult {
         }
     }
 }
+
+pub static BATCH_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &BATCHES,
+            &[
+                rss_mdm_query_postgres::Source::json("id", "row#>'{id}'"),
+                rss_mdm_query_postgres::Source::json("operationId", "row#>'{operationId}'"),
+                rss_mdm_query_postgres::Source::json("event", "row#>'{event}'"),
+                rss_mdm_query_postgres::Source::json("createdAt", "row#>'{createdAt}'"),
+                rss_mdm_query_postgres::Source::json("deadline", "row#>'{deadline}'"),
+                rss_mdm_query_postgres::Source::json("request", "row#>'{request}'"),
+                rss_mdm_query_postgres::Source::json(
+                    "processingFailure",
+                    "row#>'{processingFailure}'",
+                ),
+                rss_mdm_query_postgres::Source::json("members", "row#>'{members}'"),
+                rss_mdm_query_postgres::Source::json("admission", "row#>'{admission}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });
+
+pub static MEMBER_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
+    std::sync::LazyLock::new(|| {
+        rss_mdm_query_postgres::Bindings::new(
+            &MEMBERS,
+            &[
+                rss_mdm_query_postgres::Source::json("id", "row#>'{id}'"),
+                rss_mdm_query_postgres::Source::json("policyId", "row#>'{policyId}'"),
+                rss_mdm_query_postgres::Source::json("versionId", "row#>'{versionId}'"),
+                rss_mdm_query_postgres::Source::json("revision", "row#>'{revision}'"),
+                rss_mdm_query_postgres::Source::json("state", "row#>'{state}'"),
+                rss_mdm_query_postgres::Source::json("decision", "row#>'{decision}'"),
+            ],
+        )
+        .expect("Complete public model storage binding")
+    });

@@ -32,7 +32,11 @@ async fn execute() -> Result<()> {
         return Ok(());
     }
     if args.as_slice() == ["status-mapping"] {
-        println!("{}", rss_mdm_device_access_http::exports::status_mapping());
+        println!(
+            "{}",
+            serde_json::to_string(&rss_mdm_device_access_http::exports::status_mapping())
+                .map_err(|_| Error::Configuration)?
+        );
 
         return Ok(());
     }
