@@ -374,7 +374,7 @@ impl From<ts::Sample> for Sample {
 enum Selection {
     Exact {
         stream: Stream,
-        series: Series,
+        series: Box<Series>,
     },
     Resource {
         scope: Scope,
@@ -388,7 +388,7 @@ impl From<ts::Selection> for Selection {
         match v {
             ts::Selection::Exact { stream, series } => Self::Exact {
                 stream: (&stream).into(),
-                series: (&series).into(),
+                series: Box::new((&series).into()),
             },
             ts::Selection::Resource {
                 scope,

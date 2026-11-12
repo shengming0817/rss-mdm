@@ -21,7 +21,8 @@ pub(super) struct Fixture {
 impl Fixture {
     pub async fn open(c: &Context) -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::tempdir()?;
+        // The installer rejects symlink ancestors, including the macOS /var temp alias.
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
         for (name, data) in [
             ("password", Uuid::new_v4().to_string().into_bytes()),
             ("cursor", vec![7; 32]),

@@ -118,6 +118,27 @@ pub(crate) fn summary(generator: &mut SchemaGenerator) -> Schema {
     schema.try_into().expect("schema")
 }
 
+pub(crate) fn opaque_id(_: &mut SchemaGenerator) -> Schema {
+    Schema::try_from(id()).expect("RSS ID schema")
+}
+pub(crate) fn maintenance_block(_: &mut SchemaGenerator) -> Schema {
+    use rss_timeseries::MaintenanceBlock::*;
+    let values = [
+        PendingWrite,
+        Cutoff,
+        DirtySummary,
+        RestoreWindow,
+        ReplayGuarantee,
+        StreamOpen,
+        RetainedData,
+    ]
+    .map(|reason| match reason {
+        PendingWrite | Cutoff | DirtySummary | RestoreWindow | ReplayGuarantee | StreamOpen
+        | RetainedData => serde_json::to_value(reason).expect("RSS maintenance block"),
+    });
+    schemars::json_schema!({"type":"string","enum":values})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,25 +263,4 @@ mod tests {
             }
         }
     }
-}
-
-pub(crate) fn opaque_id(_: &mut SchemaGenerator) -> Schema {
-    Schema::try_from(id()).expect("RSS ID schema")
-}
-pub(crate) fn maintenance_block(_: &mut SchemaGenerator) -> Schema {
-    use rss_timeseries::MaintenanceBlock::*;
-    let values = [
-        PendingWrite,
-        Cutoff,
-        DirtySummary,
-        RestoreWindow,
-        ReplayGuarantee,
-        StreamOpen,
-        RetainedData,
-    ]
-    .map(|reason| match reason {
-        PendingWrite | Cutoff | DirtySummary | RestoreWindow | ReplayGuarantee | StreamOpen
-        | RetainedData => serde_json::to_value(reason).expect("RSS maintenance block"),
-    });
-    schemars::json_schema!({"type":"string","enum":values})
 }

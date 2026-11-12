@@ -14,6 +14,10 @@ use std::{
 };
 use uuid::Uuid;
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "One legal fixture keeps definition, samples and durable summary on the same series coordinates"
+)]
 async fn seed(
     c: &Context,
     f: &Fixture,
@@ -221,6 +225,10 @@ async fn exact_integer_queries_and_live_authorization() -> Result<()> {
     c.close().await;
     result
 }
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "One HTTPS scenario checks exact values, continuation and live authorization against the same persisted data"
+)]
 async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     let (device, grant) = materials::seed_registration(c).await?;
     let _principal = materials::authenticated_agent(
@@ -233,6 +241,21 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     let epoch = Uuid::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,device,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.native',$3,0,true)").bind(c.tenant.to_string()).bind(&device).bind(epoch).execute(&mut *tx).await?;
+    anyhow::ensure!(
+        rss_mdm_inventory_postgres::publish_retention_policy_in(
+            &mut tx,
+            c.tenant,
+            &inv::RetentionPolicy {
+                key: "standard".into(),
+                revision: 1,
+                raw_seconds: 86400,
+                summary_seconds: 86400,
+                restore_seconds: 0,
+            },
+        )
+        .await?,
+        "retention policy seed"
+    );
     tx.commit().await?;
     for (key, values, counter) in [
         ("custom.minimum", [Number::I64(i64::MIN); 2], false),
@@ -266,9 +289,11 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
             h.is_valid(&first) && first["rows"].as_array().is_some_and(|r| r.len() == 1),
             "first history page"
         );
+        let expected = n.to_string();
         anyhow::ensure!(
-            first["rows"][0]["sample"]["reading"]["value"]["value"]["value"] == n.to_string(),
-            "exact reading"
+            first["rows"][0]["sample"]["reading"]["value"]["value"]["value"].as_str()
+                == Some(expected.as_str()),
+            "exact string reading"
         );
         let cursor = first["next"].as_str().context("history continuation")?;
         input["after"] = json!(cursor);
