@@ -967,31 +967,33 @@ async fn coalesced_static_edit_and_scope_request_are_not_acknowledged_by_old_tas
 async fn put_rule(
     c: &Context,
     owners: &Owners,
-    proof: &AuthorizedPrincipal,
+    account: &crate::authority_t2_support::Account,
     group: Uuid,
 ) -> Result<Uuid> {
+    let proof = c.authenticate(account).await?;
     let rule = Uuid::new_v4();
     owners.compliance.execute(&compliance::Command::Put { id:rule, request:Box::new(compliance::operation::Operation {
         operation_id:Uuid::new_v4(), expected_revision:0,
         input:serde_json::from_value(json!({"presentation":{"name":"actual-inputs"},"severity":"low","enabled":true,"platform":"all","target":{"kind":"groups","ids":[group]},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.asset.ready","op":"eq","value":{"kind":"boolean","value":true}}}}))?,
-    })}, &c.request(proof)?, proof).await?;
+    })}, &c.request(&proof)?, &proof).await?;
     Ok(rule)
 }
 async fn rule_status(
     c: &Context,
     owners: &Owners,
-    proof: &AuthorizedPrincipal,
+    account: &crate::authority_t2_support::Account,
     device: &str,
     rule: Uuid,
 ) -> Result<rss_mdm_compliance::Current> {
+    let proof = c.authenticate(account).await?;
     let current = owners
         .compliance
         .execute(
             &compliance::Command::Current {
                 device: device.into(),
             },
-            &c.request(proof)?,
-            proof,
+            &c.request(&proof)?,
+            &proof,
         )
         .await?
         .current()?;
@@ -1014,11 +1016,12 @@ async fn desired(c: &Context, rule: Uuid) -> Result<Uuid> {
 async fn members(
     c: &Context,
     owners: &Owners,
-    proof: &AuthorizedPrincipal,
+    account: &crate::authority_t2_support::Account,
     group: Uuid,
     device: &str,
     add: bool,
 ) -> Result<()> {
+    let proof = c.authenticate(account).await?;
     let revision: i64 = sqlx::query_scalar(
         "SELECT revision FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -1041,8 +1044,8 @@ async fn members(
                     },
                 }),
             },
-            &c.request(proof)?,
-            proof,
+            &c.request(&proof)?,
+            &proof,
         )
         .await?;
     Ok(())
@@ -1074,20 +1077,20 @@ async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<
     inventory(&c, a, &definition, true).await?;
     inventory(&c, b, &definition, true).await?;
     let fixed = owners.create(&c, &proof, None).await?;
-    members(&c, &owners, &proof, fixed, a, true).await?;
+    members(&c, &owners, &account, fixed, a, true).await?;
     let dynamic = Uuid::new_v4();
     owners.groups.execute(&group::Command::Group{id:dynamic,change:Box::new(group::operation::Operation{operation_id:Uuid::new_v4(),expected_revision:0,input:group::GroupChange::Create{presentation:serde_json::from_value(json!({"name":"unknown-input","description":""}))?,criteria:Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.asset.unrelated","op":"eq","value":{"kind":"boolean","value":true}}}))?),asset_context:rss_mdm_group::AssetContext::Endpoint}})},&c.request(&proof)?,&proof).await?;
     let workers = Workers::start(&c, &owners, scopes).await?;
     settled(&c).await?;
-    let fixed_rule = put_rule(&c, &owners, &proof, fixed).await?;
-    let unknown_rule = put_rule(&c, &owners, &proof, dynamic).await?;
+    let fixed_rule = put_rule(&c, &owners, &account, fixed).await?;
+    let unknown_rule = put_rule(&c, &owners, &account, dynamic).await?;
     settled(&c).await?;
     assert_eq!(
-        rule_status(&c, &owners, &proof, a, fixed_rule).await?,
+        rule_status(&c, &owners, &account, a, fixed_rule).await?,
         Current::Compliant
     );
     assert_eq!(
-        rule_status(&c, &owners, &proof, a, unknown_rule).await?,
+        rule_status(&c, &owners, &account, a, unknown_rule).await?,
         Current::Unknown
     );
     let fixed_before = desired(&c, fixed_rule).await?;
@@ -1100,7 +1103,7 @@ async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<
         "outside-target device must not schedule this rule"
     );
     assert_eq!(
-        rule_status(&c, &owners, &proof, a, fixed_rule).await?,
+        rule_status(&c, &owners, &account, a, fixed_rule).await?,
         Current::Compliant,
         "outside-target changes must not turn a settled result into Pending"
     );
@@ -1112,7 +1115,7 @@ async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<
     inventory(&c, a, &definition, false).await?;
     settled(&c).await?;
     assert_eq!(
-        rule_status(&c, &owners, &proof, a, fixed_rule).await?,
+        rule_status(&c, &owners, &account, a, fixed_rule).await?,
         Current::NonCompliant
     );
     let fixed_before = desired(&c, fixed_rule).await?;
@@ -1124,20 +1127,20 @@ async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<
         "unreferenced field must not schedule this rule"
     );
     assert_eq!(
-        rule_status(&c, &owners, &proof, a, unknown_rule).await?,
+        rule_status(&c, &owners, &account, a, unknown_rule).await?,
         Current::NonCompliant,
         "Group completion wakes the previously Unknown assessment"
     );
-    members(&c, &owners, &proof, fixed, a, false).await?;
+    members(&c, &owners, &account, fixed, a, false).await?;
     settled(&c).await?;
     assert_eq!(
-        rule_status(&c, &owners, &proof, a, fixed_rule).await?,
+        rule_status(&c, &owners, &account, a, fixed_rule).await?,
         Current::NotApplicable
     );
-    members(&c, &owners, &proof, fixed, a, true).await?;
+    members(&c, &owners, &account, fixed, a, true).await?;
     settled(&c).await?;
     assert_eq!(
-        rule_status(&c, &owners, &proof, a, fixed_rule).await?,
+        rule_status(&c, &owners, &account, a, fixed_rule).await?,
         Current::NonCompliant
     );
     // A rule revision is semantic even when the complete three-valued membership
@@ -1214,14 +1217,13 @@ async fn compliance_workers_share_candidate_and_freshness_semantics() -> Result<
             )
             .await?;
         settled(&c).await?;
-        let proof = c.authenticate(&account).await?;
         assert_eq!(
             desired(&c, unknown_rule).await?,
             stable,
             "no new semantic demand"
         );
         assert_eq!(
-            rule_status(&c, &owners, &proof, a, unknown_rule).await?,
+            rule_status(&c, &owners, &account, a, unknown_rule).await?,
             Current::NonCompliant,
             "a complete frozen assessment survives a new identical calculation and presentation edits"
         );
