@@ -703,7 +703,7 @@ async fn aggregate_complete_results_and_revalidate_inputs() -> Result<()> {
     // Indeterminate current evidence exposes its retained observation without counting it as an installation.
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("UPDATE mdm.inventory SET state='unknown_incomplete',last_known_version=value_version,last_known_batch=batch_id,last_known_observed=observed_at,last_known_received=received_at,value_version=NULL,value=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.software.installations'")
-        .bind(c.tenant.to_string()).bind(a.members[0].device.to_string()).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(a.members[0].device.into_uuid()).execute(&mut *tx).await?;
     tx.commit().await?;
     let uncertain = query(&c, &fixture, &http, json!({"context":"endpoint"})).await?;
     let uncertain_rows = http

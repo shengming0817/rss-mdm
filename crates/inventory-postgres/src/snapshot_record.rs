@@ -16,12 +16,17 @@ impl Record {
     }
     pub fn observed(row: &sqlx::postgres::PgRow) -> Result<Self> {
         let mut value = serde_json::Map::new();
+        value.insert(
+            "registration".into(),
+            json!(rss_mdm_agent_wire::DeviceId::try_from(
+                row.try_get::<uuid::Uuid, _>("registration")?
+            )?),
+        );
         for key in [
             "scope",
             "field",
             "field_scope",
             "source",
-            "registration",
             "epoch",
             "batch_id",
             "coverage",

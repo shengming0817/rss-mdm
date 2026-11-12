@@ -48,10 +48,11 @@ pub async fn seal_collection_in(
         progress.definition(),
         digest.clone(),
     )?;
+    let device = rss_mdm_agent_wire::DeviceId::parse(scope.registration().as_str())?;
     let (serial, uuid) = hardware(progress)?;
     // Retention may remove the full result; retained locator evidence still freezes acceptance.
     let unchanged:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM mdm.device_hardware_evidence WHERE tenant_id=$1::uuid AND scope=$2 AND run=$3 AND (NOT $13 OR device<>$4 OR source<>$5 OR epoch<>$6 OR coverage<>$7 OR sequence<>$8 OR result_digest<>$9 OR observed_at<>$10 OR serial_number IS DISTINCT FROM $11 OR hardware_uuid IS DISTINCT FROM $12))")
-        .bind(scope.tenant().to_string()).bind(&scope_key).bind(run).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(&coverage).bind(sequence_db).bind(&digest).bind(observed_at).bind(&serial).bind(&uuid).bind(trusted).fetch_one(&mut *c).await?;
+        .bind(scope.tenant().to_string()).bind(&scope_key).bind(run).bind(device.into_uuid()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(&coverage).bind(sequence_db).bind(&digest).bind(observed_at).bind(&serial).bind(&uuid).bind(trusted).fetch_one(&mut *c).await?;
     ensure!(unchanged, "retained hardware evidence conflict");
     sqlx::query("INSERT INTO mdm.collection_results(tenant_id,run,scope,coverage,sequence,observed_at,digest,document,trusted) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING")
         .bind(scope.tenant().to_string()).bind(run).bind(&scope_key).bind(&coverage).bind(sequence_db).bind(observed_at).bind(&digest).bind(&bytes).bind(trusted).execute(&mut *c).await?;
@@ -60,9 +61,9 @@ pub async fn seal_collection_in(
     ensure!(matches, "collection result conflict");
     if trusted && (serial.is_some() || uuid.is_some()) {
         sqlx::query("INSERT INTO mdm.device_hardware_evidence(tenant_id,scope,run,device,source,epoch,coverage,sequence,result_digest,observed_at,serial_number,hardware_uuid) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING")
-                .bind(scope.tenant().to_string()).bind(&scope_key).bind(run).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(&coverage).bind(sequence_db).bind(&digest).bind(observed_at).bind(&serial).bind(&uuid).execute(&mut *c).await?;
+                .bind(scope.tenant().to_string()).bind(&scope_key).bind(run).bind(device.into_uuid()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(&coverage).bind(sequence_db).bind(&digest).bind(observed_at).bind(&serial).bind(&uuid).execute(&mut *c).await?;
         let same: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.device_hardware_evidence WHERE tenant_id=$1::uuid AND scope=$2 AND run=$3 AND device=$4 AND source=$5 AND epoch=$6 AND coverage=$7 AND sequence=$8 AND result_digest=$9 AND observed_at=$10 AND serial_number IS NOT DISTINCT FROM $11 AND hardware_uuid IS NOT DISTINCT FROM $12)")
-                .bind(scope.tenant().to_string()).bind(&scope_key).bind(run).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(&coverage).bind(sequence_db).bind(&digest).bind(observed_at).bind(&serial).bind(&uuid).fetch_one(&mut *c).await?;
+                .bind(scope.tenant().to_string()).bind(&scope_key).bind(run).bind(device.into_uuid()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(&coverage).bind(sequence_db).bind(&digest).bind(observed_at).bind(&serial).bind(&uuid).fetch_one(&mut *c).await?;
         ensure!(same, "hardware evidence conflict");
     }
     Ok(batch)

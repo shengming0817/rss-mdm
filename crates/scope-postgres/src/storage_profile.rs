@@ -574,7 +574,7 @@ GRANT SELECT ON "###, $schema, "scope_projection_runs, ", $schema, "scope_channe
 ), reachable AS (
  SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))
 ), expected(name,updates,keys) AS (VALUES
- ('scope_projection_runs',ARRAY['phase','source_cursor','projection_cursor','channel_hashes','agent_revision','mdm_revision']::text[],ARRAY['tenant_id','id']::text[]),
+ ('scope_projection_runs',ARRAY['phase','source_cursor_source','source_cursor_kind','source_cursor','projection_cursor_channel','projection_cursor','channel_hashes','agent_revision','mdm_revision']::text[],ARRAY['tenant_id','id']::text[]),
  ('scope_channel_results',ARRAY['matched','pending','target','entry_revision']::text[],ARRAY['tenant_id','run','channel','device']::text[])
 ), relations AS (
  SELECT e.*,c.oid,c.relowner,c.relrowsecurity,c.relforcerowsecurity,c.relacl FROM expected e

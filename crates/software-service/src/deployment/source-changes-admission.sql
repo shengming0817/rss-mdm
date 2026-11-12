@@ -12,7 +12,7 @@ SELECT EXISTS(SELECT 1 FROM pg_class c WHERE c.oid=to_regclass('mdm_software_dep
  AND c.relowner NOT IN(SELECT oid FROM reachable)
  AND (SELECT count(*) FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped)=(SELECT count(*) FROM expected_columns)
  AND NOT EXISTS(SELECT 1 FROM expected_columns e LEFT JOIN pg_attribute a ON a.attrelid=c.oid AND a.attname=e.name AND a.attnum>0 AND NOT a.attisdropped
-  WHERE a.attname IS NULL OR a.atttypid<>to_regtype(e.type) OR a.attnotnull<>e.required OR (e.name='cursor' AND a.attcollation<>'pg_catalog."C"'::regcollation))
+  WHERE a.attname IS NULL OR a.atttypid<>to_regtype(e.type) OR a.attnotnull<>e.required OR (e.name='cursor' AND a.attcollation<>0))
  AND EXISTS(SELECT 1 FROM pg_constraint k WHERE k.conrelid=c.oid AND k.contype='p' AND k.convalidated AND NOT k.condeferrable
   AND k.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=c.oid AND attname='tenant_id')])
  AND has_table_privilege(current_user,c.oid,'SELECT') AND has_table_privilege(current_user,c.oid,'INSERT')
