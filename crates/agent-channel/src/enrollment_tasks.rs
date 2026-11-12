@@ -39,11 +39,10 @@ impl Tasks for EnrollmentTasks {
             let profile = self.profile();
             self.service.validate_in(tx).map_err(fault)?;
             let now = enrollment::storage::now(tx).await.map_err(fault)?;
-            let after =
-                crate::delivery::offer_after_in(profile, tx, p.device().to_string()).await?;
+            let after = crate::delivery::offer_after_in(profile, tx, *p.device()).await?;
             // The selected owner and its enrollment capability are fixed before this bounded page.
             let candidates =
-                enrollment::poll::offer_candidates(profile, tx, p.device().to_string(), now, after)
+                enrollment::poll::offer_candidates(profile, tx, *p.device(), now, after)
                     .await
                     .map_err(fault)?;
             self.service
@@ -69,7 +68,7 @@ impl Tasks for EnrollmentTasks {
             } else {
                 None
             };
-            crate::delivery::offer_through_in(profile, tx, p.device().to_string(), next).await?;
+            crate::delivery::offer_through_in(profile, tx, *p.device(), next).await?;
             Ok(result)
         })
     }
@@ -130,7 +129,7 @@ impl Tasks for EnrollmentTasks {
     fn cancellations<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
         after: Option<Uuid>,
     ) -> Pending<'a, Vec<wire::TaskCancellation>> {
         Box::pin(async move {

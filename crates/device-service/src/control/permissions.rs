@@ -2,7 +2,7 @@ use crate::control::{Error, authorization::Permission as P};
 pub(super) fn authorize(
     snapshot: &crate::control::authorization::Snapshot,
     proof: &crate::control::authorization::context::AuthorizedPrincipal,
-    device: Option<&str>,
+    device: Option<&rss_mdm_agent_wire::DeviceId>,
     permission: P,
 ) -> Result<(), Error> {
     if permission.device() && device.is_none() {

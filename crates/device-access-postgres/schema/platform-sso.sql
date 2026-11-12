@@ -4,7 +4,7 @@ CREATE TABLE rss_da.psso_sources (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , kind text NOT NULL CHECK (kind IN ('device', 'user'))
-  , device text NOT NULL
+  , device uuid NOT NULL
   , binding uuid
   , parent uuid
   , version bigint NOT NULL CHECK (version > 0)

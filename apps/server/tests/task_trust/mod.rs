@@ -207,7 +207,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     let payload = w::TaskPayload::Unmanage(Box::new(w::UnmanageTaskSpec {
         wire_version: 1,
         tenant_id: Uuid::parse_str(&c.tenant.to_string())?,
-        device_id: device.clone(),
+        device_id: device,
 
         retirement_id: Uuid::new_v4(),
         task_id: Uuid::new_v4(),
@@ -238,7 +238,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     let service = support::service(&c, protection)?;
     let ack = rss_mdm_agent_wire::task_trust::Acknowledgement {
         operation: Uuid::new_v4(),
-        device_id: device.clone(),
+        device_id: device,
 
         revision: 1,
         digest: trust.installation_digest()?,
@@ -262,7 +262,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         .await?;
     let mut wrong = payload.clone();
     if let w::TaskPayload::Unmanage(v) = &mut wrong {
-        v.device_id = Uuid::new_v4().to_string();
+        v.device_id = rss_mdm_agent_wire::DeviceId::new_v4();
     }
     assert!(matches!(
         signing.sign_task_on(&mut tx, &principal, wrong).await,
@@ -288,7 +288,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     let mut telemetry: w::SignedTelemetryConfiguration =
         serde_json::from_value(vector["signed"].clone())?;
     telemetry.configuration.tenant_id = Uuid::parse_str(&c.tenant.to_string())?;
-    telemetry.configuration.device_id = principal.device().into();
+    telemetry.configuration.device_id = *principal.device();
     telemetry.configuration.issued_at = now;
     telemetry.configuration.expires_at = now + 300;
     telemetry.configuration.backfill_seconds = 3600;
@@ -323,7 +323,7 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
         .await?;
     sqlx::query("UPDATE mdm_access.devices SET state = 'revoked' WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
         .bind(c.tenant.to_string())
-        .bind(&device)
+        .bind(device.into_uuid())
         .execute(&mut *update)
         .await?;
     update.commit().await?;
@@ -392,7 +392,7 @@ async fn retirement_retains_key_until_original_signature_expires() -> Result<()>
     let payload = w::TaskPayload::Unmanage(Box::new(w::UnmanageTaskSpec {
         wire_version: 1,
         tenant_id: Uuid::parse_str(&c.tenant.to_string())?,
-        device_id: device.clone(),
+        device_id: device,
 
         retirement_id: Uuid::new_v4(),
         task_id: run,
@@ -415,7 +415,7 @@ async fn retirement_retains_key_until_original_signature_expires() -> Result<()>
     };
     let mut tx = c.operator.begin().await?;
     sqlx::query("INSERT INTO mdm_agent.task_attempts (tenant_id, id, run, device, claimed_at, deadline, offer) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7)")
-        .bind(c.tenant.to_string()).bind(attempt).bind(run).bind(&device).bind(now).bind(now+5).bind(serde_json::to_value(&offer)?).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(attempt).bind(run).bind(device.into_uuid()).bind(now).bind(now+5).bind(serde_json::to_value(&offer)?).execute(&mut *tx).await?;
     tx.commit().await?;
     let operation = Uuid::new_v4();
     let change = Change::Retire {

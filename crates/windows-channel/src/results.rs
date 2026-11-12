@@ -13,7 +13,7 @@ fn stored<T, E>(v: std::result::Result<T, E>) -> Result<T> {
 }
 pub struct Read {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub request: rss_mdm_windows_mdm::native::Execution,
     pub values: bool,
 }
@@ -23,7 +23,7 @@ pub struct Evidence {
 }
 pub struct InstallationRead {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub snapshot: Option<Uuid>,
 }
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -126,7 +126,7 @@ impl Results {
         session: u32,
         after: Option<Uuid>,
     ) -> Result<Vec<Uuid>> {
-        sqlx::query_scalar("SELECT DISTINCT a.operation FROM mdm_windows.attempts AS a INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt) = (a.tenant_id, a.id) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.credential = $3 AND a.session = $4 AND i.receipt_accepted AND (CAST($5 AS uuid) IS NULL OR a.operation > $5) ORDER BY a.operation LIMIT 64").bind(p.tenant().to_string()).bind(p.device()).bind(p.credential()).bind(i64::from(session)).bind(after).fetch_all(c).await.map_err(crate::database::db)
+        sqlx::query_scalar("SELECT DISTINCT a.operation FROM mdm_windows.attempts AS a INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt) = (a.tenant_id, a.id) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.credential = $3 AND a.session = $4 AND i.receipt_accepted AND (CAST($5 AS uuid) IS NULL OR a.operation > $5) ORDER BY a.operation LIMIT 64").bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(p.credential()).bind(i64::from(session)).bind(after).fetch_all(c).await.map_err(crate::database::db)
     }
     pub async fn settlement(
         &self,
@@ -395,7 +395,7 @@ const WINDOWS_PLATFORMS: &str = "SELECT DISTINCT ON(operation) operation,platfor
 const WINDOWS_ENDPOINTS: &str = "SELECT DISTINCT ON (a.operation) a.operation, a.protocol_epoch, m.response, a.credential, a.session, a.message FROM mdm_windows.attempts AS a INNER JOIN mdm_access.management_messages AS m ON (m.tenant_id, m.device, m.session_id, m.message_id) = (a.tenant_id, a.device, CAST(a.session AS text), a.message) AND m.protocol_epoch=a.protocol_epoch INNER JOIN mdm_access.management_sessions AS s ON (s.tenant_id, s.device, s.session_id) = (m.tenant_id, m.device, m.session_id) AND s.protocol_epoch = m.protocol_epoch WHERE a.tenant_id = CAST($1 AS uuid) AND a.operation = ANY($2) AND a.phase = 'observe' AND (a.protocol_epoch,a.session) <> (SELECT protocol_epoch,session FROM mdm_windows.attempts WHERE tenant_id = CAST($1 AS uuid) AND operation = a.operation AND phase = 'execute' ORDER BY ordinal DESC LIMIT 1) ORDER BY a.operation, a.ordinal DESC";
 
 // The channel owns receipt precedence and post-dispatch collection correlation.
-const INSTALLATIONS: &str = "WITH selected AS MATERIALIZED (SELECT x.operation, (SELECT q.channel_state FROM mdm_windows.collections AS q INNER JOIN mdm_windows.attempts AS a ON a.tenant_id = q.tenant_id AND a.operation = x.operation AND a.phase = 'execute' INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt) = (a.tenant_id, a.id) WHERE q.tenant_id = CAST($1 AS uuid) AND q.id = x.snapshot AND q.device = x.device AND q.protocol_epoch=a.protocol_epoch AND a.device = x.device AND q.first_command > i.command ORDER BY q.first_command DESC LIMIT 1) AS channel_state, (SELECT i.status FROM mdm_windows.attempts AS a INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt) = (a.tenant_id, a.id) WHERE a.tenant_id = CAST($1 AS uuid) AND a.operation = x.operation AND a.device = x.device AND (a.phase = 'execute' OR (a.phase = 'prepare' AND i.status >= 400)) AND i.receipt_accepted ORDER BY a.ordinal DESC, i.command DESC LIMIT 1) AS delivery_status FROM jsonb_to_recordset(CAST($2 AS jsonb)) AS x(operation uuid, device text, snapshot uuid)), budget AS (SELECT COALESCE(sum(pg_column_size(selected)), 0) <= 16777216 AS ok FROM selected) SELECT selected.*, budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok";
+const INSTALLATIONS: &str = "WITH selected AS MATERIALIZED (SELECT x.operation, (SELECT q.channel_state FROM mdm_windows.collections AS q INNER JOIN mdm_windows.attempts AS a ON a.tenant_id = q.tenant_id AND a.operation = x.operation AND a.phase = 'execute' INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt) = (a.tenant_id, a.id) WHERE q.tenant_id = CAST($1 AS uuid) AND q.id = x.snapshot AND q.device = x.device AND q.protocol_epoch=a.protocol_epoch AND a.device = x.device AND q.first_command > i.command ORDER BY q.first_command DESC LIMIT 1) AS channel_state, (SELECT i.status FROM mdm_windows.attempts AS a INNER JOIN mdm_windows.attempt_items AS i ON (i.tenant_id, i.attempt) = (a.tenant_id, a.id) WHERE a.tenant_id = CAST($1 AS uuid) AND a.operation = x.operation AND a.device = x.device AND (a.phase = 'execute' OR (a.phase = 'prepare' AND i.status >= 400)) AND i.receipt_accepted ORDER BY a.ordinal DESC, i.command DESC LIMIT 1) AS delivery_status FROM jsonb_to_recordset(CAST($2 AS jsonb)) AS x(operation uuid, device uuid, snapshot uuid)), budget AS (SELECT COALESCE(sum(pg_column_size(selected)), 0) <= 16777216 AS ok FROM selected) SELECT selected.*, budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok";
 
 impl Results {
     /// Operations with durable execute delivery evidence; a terminal timeout is not a stop acknowledgement.
@@ -418,13 +418,17 @@ impl Results {
         &self,
         c: &mut PgConnection,
         tenant: TenantId,
-        checks: Vec<(usize, String, rss_mdm_windows_mdm::native::Request)>,
+        checks: Vec<(
+            usize,
+            rss_mdm_agent_wire::DeviceId,
+            rss_mdm_windows_mdm::native::Request,
+        )>,
     ) -> Result<BTreeMap<usize, std::result::Result<(), rss_mdm_windows_mdm::native::Error>>> {
         if checks.len() > 1000 {
             return Err(Error::Malformed);
         }
-        let registrations = checks.iter().map(|v| v.1.clone()).collect::<Vec<_>>();
-        let rows:Vec<(String,String,i32)>=sqlx::query_as("SELECT c.device, c.os_version, c.edition FROM mdm_windows.capabilities c JOIN mdm_access.devices d ON(d.tenant_id,d.id,d.epoch)=(c.tenant_id,c.device,c.protocol_epoch) WHERE c.tenant_id = CAST($1 AS uuid) AND c.device = ANY($2)").bind(tenant.to_string()).bind(registrations).fetch_all(c).await.map_err(crate::database::db)?;
+        let registrations = checks.iter().map(|v| v.1.into_uuid()).collect::<Vec<_>>();
+        let rows:Vec<(Uuid,String,i32)>=sqlx::query_as("SELECT c.device, c.os_version, c.edition FROM mdm_windows.capabilities c JOIN mdm_access.devices d ON(d.tenant_id,d.id,d.epoch)=(c.tenant_id,c.device,c.protocol_epoch) WHERE c.tenant_id = CAST($1 AS uuid) AND c.device = ANY($2)").bind(tenant.to_string()).bind(registrations).fetch_all(c).await.map_err(crate::database::db)?;
         let capabilities = rows
             .into_iter()
             .map(|(id, v, e)| (id, (v, e)))
@@ -432,7 +436,7 @@ impl Results {
         Ok(checks
             .into_iter()
             .map(|(id, device, request)| {
-                let supported = match capabilities.get(&device) {
+                let supported = match capabilities.get(device.as_uuid()) {
                     None => Err(rss_mdm_windows_mdm::native::Error::MissingEvidence),
                     Some((v, e)) => rss_mdm_windows_mdm::native::Context::from_capabilities(
                         v,

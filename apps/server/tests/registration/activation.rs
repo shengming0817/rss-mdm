@@ -10,7 +10,7 @@ pub(super) async fn prove(
     service: &agent::Service,
     input: &wire::NativeGrantRequest,
 ) -> Result<()> {
-    let device = Uuid::new_v4().to_string();
+    let device = rss_mdm_agent_wire::DeviceId::new_v4();
     let grant = Uuid::new_v4();
     let (peer, certificate, csr) = crate::device_material_support::peer_material(
         c,
@@ -28,7 +28,7 @@ pub(super) async fn prove(
         .expect("built-in activation collection");
     rss_mdm_inventory_postgres::publish_field_in(&mut tx, c.tenant, 0, &builtin).await?;
     sqlx::query("INSERT INTO mdm_access.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,expires_at) VALUES($1::uuid,$2,$2,'download','activation-time-proof',$3,$4,'windows',repeat('0',64),repeat('1',64),$5,'consumed',clock_timestamp()+interval '1 hour')")
-        .bind(c.tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(&device).bind(metadata.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(device.into_uuid()).bind(metadata.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.certificate_issuances(tenant_id,id,grant_id,operation_id,request_digest,authority_digest,csr,spki,identity,profile,not_before,not_after,state,certificate_chain,metadata,fingerprint,signing_issuer) VALUES($1::uuid,$2,$3,$4,repeat('1',64),repeat('2',64),$5,$6,$7,$8,$9,$10,'issued',$11,$12,$13,$14)")
         .bind(c.tenant.to_string()).bind(issuance).bind(grant).bind(Uuid::new_v4()).bind(csr)
         .bind(metadata.spki.iter().map(|v|format!("{v:02x}")).collect::<String>()).bind(&metadata.identity).bind(serde_json::to_value(&input.runtime)?).bind(metadata.not_before).bind(metadata.not_after).bind(json!([STANDARD.encode(&certificate)])).bind(serde_json::to_value(metadata)?).bind(format!("{:x}",Sha256::digest(&certificate))).bind(&issuer).execute(&mut *tx).await?;
@@ -56,7 +56,7 @@ pub(super) async fn prove(
             .await
             .is_err()
     );
-    let retained:(bool,bool,bool)=sqlx::query_as("SELECT EXISTS(SELECT FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2),EXISTS(SELECT FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND device=$2),EXISTS(SELECT FROM mdm_access.certificate_issuances WHERE tenant_id=$1::uuid AND id=$3 AND activation_result IS NOT NULL)").bind(c.tenant.to_string()).bind(&device).bind(issuance).fetch_one(&c.operator).await?;
+    let retained:(bool,bool,bool)=sqlx::query_as("SELECT EXISTS(SELECT FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2),EXISTS(SELECT FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND device=$2),EXISTS(SELECT FROM mdm_access.certificate_issuances WHERE tenant_id=$1::uuid AND id=$3 AND activation_result IS NOT NULL)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(issuance).fetch_one(&c.operator).await?;
     assert_eq!(retained, (false, false, false));
     let mut trust = n.trust.clone();
     trust.purpose = rss_mdm_agent_wire::pki::Purpose::Agent;
@@ -80,7 +80,7 @@ pub(super) async fn prove(
         "SELECT registered_at FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(&device)
+    .bind(device.into_uuid())
     .fetch_one(&c.operator)
     .await?;
     assert!(registered >= before);
@@ -96,7 +96,7 @@ pub(super) async fn prove(
         "SELECT registered_at FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(&device)
+    .bind(device.into_uuid())
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(registered, after);
@@ -135,7 +135,7 @@ pub(super) async fn prove(
         "SELECT registered_at FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(c.tenant.to_string())
-    .bind(&device)
+    .bind(device.into_uuid())
     .fetch_one(&c.operator)
     .await?;
     assert_eq!(registered, after);

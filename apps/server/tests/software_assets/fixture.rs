@@ -316,7 +316,7 @@ pub(super) async fn facts_for(
         definition.bindings().to_vec(),
     )?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3").bind(c.tenant.to_string()).bind(registration).bind(source.as_str()).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = $3").bind(c.tenant.to_string()).bind(registration.into_uuid()).bind(source.as_str()).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
@@ -329,7 +329,7 @@ pub(super) async fn facts_for(
         rss_mdm_install_support::StorageProfile::Mdm,
         &mut tx,
         &c.tenant.to_string(),
-        &registration.to_string(),
+        registration,
         source,
         &epoch.to_string(),
         1,
@@ -381,24 +381,25 @@ pub(super) async fn facts_for(
 pub(super) async fn agent_endpoint(
     c: &Context,
 ) -> Result<rss_mdm_inventory_service::objects::DeviceObject> {
-    use rss_mdm_inventory_service::objects::{DeviceObject, ObjectRef};
+    use rss_mdm_agent_wire::ObjectRef;
+    use rss_mdm_inventory_service::objects::DeviceObject;
     use rss_mdm_registration_service::device::endpoints::PrimaryRegistration;
     let grant = Uuid::new_v4();
     let epoch = Uuid::new_v4();
-    let device = Uuid::new_v4().to_string();
+    let device = rss_mdm_agent_wire::DeviceId::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_access.certificate_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1::uuid,$2,$2,'download','software-fixture',$3,$4,'windows',repeat('0',64),repeat('1',64),'consumed',clock_timestamp()+interval '1 hour')")
-        .bind(c.tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(&device).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(grant).bind(&c.inputs.installation.instance_id).bind(device.into_uuid()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.devices (tenant_id, id, channel, certificate_grant_id, state, purpose, epoch) VALUES (CAST($1 AS uuid), $2, 'agent', $3, 'active', 'primary', $4)")
-        .bind(c.tenant.to_string()).bind(&device).bind(grant).bind(epoch).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(device.into_uuid()).bind(grant).bind(epoch).execute(&mut *tx).await?;
     let credential = Uuid::new_v4();
     sqlx::query("INSERT INTO mdm_access.credentials (tenant_id, id, device, channel, locator, state, purpose) VALUES (CAST($1 AS uuid), $2, $3, 'agent', $4, 'active', 'primary')")
-        .bind(c.tenant.to_string()).bind(credential).bind(&device).bind(format!("{:x}",Sha256::digest(credential.as_bytes()))).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(credential).bind(device.into_uuid()).bind(format!("{:x}",Sha256::digest(credential.as_bytes()))).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.report_sources (tenant_id, device, source, epoch, next_sequence, enabled) VALUES (CAST($1 AS uuid), $2, 'agent.builtin', $3, 0, TRUE)")
-        .bind(c.tenant.to_string()).bind(&device).bind(epoch).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(device.into_uuid()).bind(epoch).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(DeviceObject {
-        object: ObjectRef::Endpoint(device.clone()),
+        object: ObjectRef::Endpoint(device),
         association_version: None,
         verified: true,
         members: vec![PrimaryRegistration {

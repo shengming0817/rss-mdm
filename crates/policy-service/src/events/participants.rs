@@ -5,7 +5,7 @@ use crate::transaction::Fault;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Target {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 pub trait ExecutionEvents: Send + Sync {
     fn verify_event_device_in<'a>(
@@ -105,7 +105,7 @@ pub struct InstallationObservation {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRegistration {
-    pub device_id: String,
+    pub device_id: rss_mdm_agent_wire::DeviceId,
     pub state: String,
     pub capabilities: Option<Vec<String>>,
 }

@@ -75,7 +75,7 @@ impl ScriptPolicy {
         &self,
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<Option<rss_mdm_policy::pages::TaskAdmission>> {
         use rss_mdm_policy::pages::{TaskAdmission as A, TaskAdmissionState as S};
@@ -121,7 +121,7 @@ impl ScriptPolicy {
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
         scope: rss_mdm_scope_service::channels::ScopeAdmission,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<std::result::Result<i64, rss_mdm_policy::pages::TaskAdmission>> {
         if let Some(reason) = self.base_on(c, tenant, device, now).await? {
@@ -133,7 +133,7 @@ impl ScriptPolicy {
         &self,
         service: &Transactions,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<Option<i64>> {
         crate::storage::lock_device(tx, device).await?;
@@ -217,7 +217,7 @@ impl ScriptPolicy {
 
             let source = service.source.clone();
             let tenant = tx.tenant_id();
-            let device = run.target.device.clone();
+            let device = run.target.device;
             let evidence = run.source_objects.clone();
             if !tx
                 .with_connection(move |c| {
@@ -266,13 +266,10 @@ impl ScriptPolicy {
         tx: &mut PgTransaction<'_>,
         target: &Target,
     ) -> Result<Option<wire::SoftwareExecutionTarget>> {
-        let binding = crate::agent_facts::agent_binding_in(
-            tx,
-            service.agent_store.clone(),
-            target.device.clone(),
-        )
-        .await?
-        .ok_or(Error::Forbidden)?;
+        let binding =
+            crate::agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.device)
+                .await?
+                .ok_or(Error::Forbidden)?;
         Ok(Some(
             rss_mdm_software_service::preparation::execution::identity_target(
                 self.frozen.execution_identity(),
@@ -313,7 +310,7 @@ impl ScriptPolicy {
         let binding = crate::agent_facts::agent_binding_in(
             tx,
             service.agent_store.clone(),
-            run.target.device.clone(),
+            run.target.device,
         )
         .await?
         .ok_or(Error::Forbidden)?;
@@ -345,7 +342,7 @@ pub async fn admission_in(
     tx: &mut PgTransaction<'_>,
     scope: Uuid,
     channel: rss_mdm_inventory::Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<rss_mdm_scope_service::channels::ScopeAdmission> {
     let tenant = tx.tenant_id();
     let source = source.clone();

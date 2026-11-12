@@ -26,7 +26,6 @@ impl Scopes {
                     )?;
                 }
                 Reference::Device(id) => {
-                    checked_input(rss_mdm_scope::DeviceId::new(self.tenant, &id))?;
                     let tenant = self.tenant.to_string();
                     if !tx
                         .with_connection(move |c| {

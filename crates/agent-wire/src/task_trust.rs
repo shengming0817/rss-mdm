@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 /// Fingerprint of the generated, fixed public schema artifact.
 pub const SCHEMA_FINGERPRINT: &str =
-    "9aa24493f46a902d1dd0152f363488cd26c16244dede708e5d8116f7b72ae7b5";
+    "419fe966fc26052299d0b3a17888895c4d1d4180513cadde23eba68b2dc616b6";
 /// Canonical manifest for fixed consumer artifacts.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/task_trust/manifest.json");
 /// Task-signing trust protocol version.
@@ -154,12 +154,8 @@ pub struct Acknowledgement {
     /// Exact protocol version.
     pub version: u8,
     /// Original device identity, checked against the authenticated transport.
-    #[serde(
-        rename = "deviceId",
-        deserialize_with = "crate::runtime::profile_device"
-    )]
-    #[schemars(schema_with = "crate::runtime::device_schema")]
-    pub device_id: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: crate::DeviceId,
 
     /// Installed complete-set revision.
     pub revision: u64,
@@ -170,7 +166,6 @@ impl Acknowledgement {
     /// Check shape before comparing the registration with the authenticated channel.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.operation.is_nil()
-            || !crate::runtime::valid_device_id(&self.device_id)
             || self.version != API_VERSION
             || !(1..=i64::MAX as u64).contains(&self.revision)
             || self.digest.len() != 64
@@ -202,12 +197,8 @@ pub struct Observation {
     #[schemars(extend("const" = 1))]
     pub version: u8,
     /// Original device identity, checked against the authenticated transport.
-    #[serde(
-        rename = "deviceId",
-        deserialize_with = "crate::runtime::profile_device"
-    )]
-    #[schemars(schema_with = "crate::runtime::device_schema")]
-    pub device_id: String,
+    #[serde(rename = "deviceId")]
+    pub device_id: crate::DeviceId,
 
     /// Monotonic sequence within this device identity and domain.
     #[schemars(extend("minimum" = 1, "maximum" = i64::MAX))]
@@ -279,7 +270,6 @@ impl Observation {
         };
         if self.version != API_VERSION
             || self.operation.is_nil()
-            || !crate::runtime::valid_device_id(&self.device_id)
             || !number(self.sequence)
             || self.observed_at < 0
             || !material(self.target_revision, &self.target_digest)

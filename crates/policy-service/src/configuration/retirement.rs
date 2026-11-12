@@ -9,18 +9,18 @@ impl Transactions {
         &self,
         tx: &mut PgTransaction<'_>,
         retirement: Uuid,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         audit: &RequestAudit,
     ) -> Result<CleanupProgress> {
         self.runtime.validate_transaction(tx)?;
         let tenant = tx.tenant_id();
         let name = device.to_owned();
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant.to_string()).bind(name).execute(c).await?;Ok(())})).await?;
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant.to_string()).bind(name.into_uuid()).execute(c).await?;Ok(())})).await?;
         self.reconcile_in(tx, device, audit).await?;
         let name = device.to_owned();
         let (mut pending,mut blocker)=tx.with_connection(move|c|Box::pin(async move{
-   let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2)").bind(tenant.to_string()).bind(&name).fetch_one(&mut *c).await?;
-   let blocker:Option<(i32,Option<Uuid>)>=sqlx::query_as("SELECT 1,c.operation FROM mdm_planning.configuration_claims c JOIN mdm_planning.configuration_objects d USING(tenant_id,device,user_key,platform,object_kind,object_key) WHERE c.tenant_id=$1::uuid AND c.device=$2 AND d.diagnosis IN('configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit') ORDER BY c.operation LIMIT 1").bind(tenant.to_string()).bind(name).fetch_optional(c).await?;
+   let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2)").bind(tenant.to_string()).bind(name.into_uuid()).fetch_one(&mut *c).await?;
+   let blocker:Option<(i32,Option<Uuid>)>=sqlx::query_as("SELECT 1,c.operation FROM mdm_planning.configuration_claims c JOIN mdm_planning.configuration_objects d USING(tenant_id,device,user_key,platform,object_kind,object_key) WHERE c.tenant_id=$1::uuid AND c.device=$2 AND d.diagnosis IN('configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit') ORDER BY c.operation LIMIT 1").bind(tenant.to_string()).bind(name.into_uuid()).fetch_optional(c).await?;
    Ok((pending,blocker))
   })).await?;
         let mut after = Uuid::nil();

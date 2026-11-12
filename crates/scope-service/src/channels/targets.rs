@@ -28,7 +28,7 @@ async fn rows_for(
     tenant: TenantId,
     run: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Vec<RowInput>, SourceError> {
     crate::results::source_rows_on(profile, c, tenant, run, channel, device)
         .await
@@ -55,7 +55,7 @@ async fn current(
     let locks = input
         .members
         .iter()
-        .map(|m| (m.device.clone(), m.channel))
+        .map(|m| (m.device, m.channel))
         .collect::<Vec<_>>();
     rss_mdm_registration_service::device::store::lock_channels(
         profile,
@@ -78,7 +78,7 @@ pub async fn admission_on(
     tenant: TenantId,
     scope: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<ScopeAdmission, SourceError> {
     // Missing/deleted scopes exclude; an existing unpublished scope remains pending.
     let status = rss_mdm_scope_postgres::admission_on(profile, c, tenant, scope).await?;
@@ -108,14 +108,14 @@ pub async fn channel_state_on(
     c: &mut PgConnection,
     scope: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<ScopeAdmission, SourceError> {
     let value: serde_json::Value = sqlx::query_scalar(
         crate::storage_profile::sql(profile).channels_targets_channel_state_on_1,
     )
     .bind(scope)
     .bind(channel.as_str())
-    .bind(device)
+    .bind(device.into_uuid())
     .fetch_one(c)
     .await?;
     match value["state"].as_str() {
@@ -142,7 +142,7 @@ pub(crate) async fn explanation_on(
     run: Uuid,
     frozen: &ScopeInput,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     reader: Option<&dyn rss_mdm_inventory_service::objects::ObjectReader>,
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let rows = rows_for(profile, c, tenant, run, channel, device).await?;
@@ -193,14 +193,22 @@ pub(crate) async fn explanation_on(
             }
         }
     }
-    resolve_membership(tenant, frozen, device, at, &known, &uncertain, None)
+    resolve_membership(
+        tenant,
+        frozen,
+        ObjectRef::Endpoint(*device),
+        at,
+        &known,
+        &uncertain,
+        None,
+    )
 }
 
 /// The publication and draft preview interpret exactly the same frozen source rows.
 pub(crate) fn frozen_explanation(
     tenant: TenantId,
     frozen: &ScopeInput,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     rows: &[RowInput],
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let mut known = BTreeSet::new();
@@ -213,7 +221,15 @@ pub(crate) fn frozen_explanation(
         }
     }
     let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;
-    resolve_membership(tenant, frozen, device, at, &known, &uncertain, None)
+    resolve_membership(
+        tenant,
+        frozen,
+        ObjectRef::Endpoint(*device),
+        at,
+        &known,
+        &uncertain,
+        None,
+    )
 }
 
 /// A confirmed exclusion dominates uncertainty, including conflicting identities.
@@ -242,7 +258,7 @@ pub(crate) fn qualification(
 pub(crate) fn resolve_membership(
     tenant: TenantId,
     frozen: &ScopeInput,
-    device: &str,
+    target: ObjectRef,
     at: Timepoint,
     known: &BTreeSet<usize>,
     uncertain: &BTreeSet<usize>,
@@ -262,18 +278,18 @@ pub(crate) fn resolve_membership(
                         // member references coalesce to one direct object source.
                         let key = match object {
                             Some((object, _)) if object.members.iter().any(|m| m.device == *id) => {
-                                object.object.key()
+                                object.object
                             }
-                            Some(_) => ObjectRef::Endpoint(id.clone()).key(),
-                            None => id.clone(),
+                            Some(_) => ObjectRef::Endpoint(*id),
+                            None => ObjectRef::Endpoint(*id),
                         };
                         s::SourceId::Direct(
-                            s::DeviceId::new(tenant, key).map_err(|_| SourceError::Invariant)?,
+                            s::ScopedObjectId::new(tenant, key)
+                                .map_err(|_| SourceError::Invariant)?,
                         )
                     }
                     Reference::Group(id) => s::SourceId::Group(
-                        s::GroupId::new(tenant, id.to_string())
-                            .map_err(|_| SourceError::Invariant)?,
+                        s::GroupId::new(tenant, *id).map_err(|_| SourceError::Invariant)?,
                     ),
                 };
                 Ok(s::SourceMembership {
@@ -301,8 +317,8 @@ pub(crate) fn resolve_membership(
             })
             .collect()
     };
-    let result = s::resolve_device(&s::DeviceInput {
-        device: s::DeviceId::new(tenant, device).map_err(|_| SourceError::Invariant)?,
+    let result = s::resolve_object(&s::ObjectInput {
+        object: s::ScopedObjectId::new(tenant, target).map_err(|_| SourceError::Invariant)?,
         targets: membership(&frozen.definition.targets)?,
         limitations: frozen
             .definition
@@ -322,7 +338,7 @@ pub async fn devices_on(
     tenant: TenantId,
     scope: Uuid,
     channel: Channel,
-    after: Option<&str>,
+    after: Option<&rss_mdm_agent_wire::DeviceId>,
 ) -> Result<ScopePreview, SourceError> {
     devices_page(profile, c, tenant, scope, channel, after, 64).await
 }
@@ -332,7 +348,7 @@ pub async fn devices_page(
     tenant: TenantId,
     scope: Uuid,
     channel: Channel,
-    after: Option<&str>,
+    after: Option<&rss_mdm_agent_wire::DeviceId>,
     limit: usize,
 ) -> Result<ScopePreview, SourceError> {
     if !(1..=1000).contains(&limit) {
@@ -375,7 +391,7 @@ pub async fn objects_on(
     tenant: TenantId,
     scope: Uuid,
     channel: Channel,
-    after: Option<&str>,
+    after: Option<rss_mdm_agent_wire::ObjectRef>,
     limit: usize,
 ) -> Result<Vec<AssignmentObject>, SourceError> {
     let Some((run, _, frozen, fresh)) =
@@ -425,7 +441,7 @@ pub async fn objects_on(
             vec![input.clone()]
         };
         result.push(AssignmentObject {
-            object: input.object.clone(),
+            object: input.object,
             channel,
             availability: if ready {
                 Availability::Ready
@@ -464,7 +480,7 @@ pub async fn evidence_on(
     tenant: TenantId,
     scope: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Vec<DeviceObject>, SourceError> {
     match admission_on(profile, reader, c, tenant, scope, channel, device).await? {
         ScopeAdmission::Pending => return Ok(vec![]),
@@ -487,7 +503,7 @@ pub async fn evidence_valid_on(
     c: &mut PgConnection,
     tenant: TenantId,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     evidence: &[DeviceObject],
 ) -> Result<bool, SourceError> {
     if evidence.is_empty() {
@@ -496,7 +512,7 @@ pub async fn evidence_valid_on(
     for input in evidence {
         if current(profile, reader, c, tenant, input, channel)
             .await?
-            .is_none_or(|m| m.device != device)
+            .is_none_or(|m| m.device != *device)
         {
             return Ok(false);
         }
@@ -525,7 +541,7 @@ pub async fn result_admission_on(
     scope: Uuid,
     run: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<ScopeAdmission, SourceError> {
     let frozen = historical(profile, c, tenant, scope, run).await?;
     let result = explanation_on(profile, c, tenant, run, &frozen, channel, device, None).await?;
@@ -559,7 +575,7 @@ pub async fn result_available_on(
     scope: Uuid,
     run: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     reader: Option<&dyn rss_mdm_inventory_service::objects::ObjectReader>,
 ) -> Result<bool, SourceError> {
     let frozen = historical(profile, c, tenant, scope, run).await?;
@@ -580,7 +596,7 @@ pub async fn result_devices_on(
     scope: Uuid,
     run: Uuid,
     channel: Channel,
-    after: Option<&str>,
+    after: Option<&rss_mdm_agent_wire::DeviceId>,
     limit: usize,
 ) -> Result<ScopePreview, SourceError> {
     let frozen = historical(profile, c, tenant, scope, run).await?;
@@ -615,7 +631,7 @@ pub async fn result_explanation_on(
     scope: Uuid,
     run: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let frozen = historical(profile, c, tenant, scope, run).await?;
     explanation_on(profile, c, tenant, run, &frozen, channel, device, None).await
@@ -627,7 +643,7 @@ async fn published_admission(
     tenant: TenantId,
     run: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<ScopeAdmission, SourceError> {
     let row = sqlx::query_as::<_, (bool, bool, i64)>(
         crate::storage_profile::sql(profile).channels_targets_published_admission_1,
@@ -635,7 +651,7 @@ async fn published_admission(
     .bind(tenant.to_string())
     .bind(run)
     .bind(channel.as_str())
-    .bind(device)
+    .bind(device.into_uuid())
     .fetch_optional(c)
     .await?;
     Ok(match row {
@@ -653,7 +669,7 @@ pub async fn lifecycle_objects_on(
     c: &mut PgConnection,
     tenant: TenantId,
     scope: Uuid,
-    after: Option<&str>,
+    after: Option<rss_mdm_agent_wire::ObjectRef>,
     limit: usize,
 ) -> Result<Vec<DeviceAssignment>, SourceError> {
     if profile != rss_mdm_install_support::StorageProfile::Mdm || reader.is_none() {
@@ -679,7 +695,8 @@ pub async fn lifecycle_objects_on(
     .bind(tenant.to_string())
     .bind(run)
     .bind(targets)
-    .bind(after)
+    .bind(after.map(|o| o.kind()))
+    .bind(after.map(|o| o.uuid()))
     .bind((limit + 1) as i64)
     .fetch_all(&mut *c)
     .await?;
@@ -691,7 +708,7 @@ pub async fn lifecycle_objects_on(
         let input = rss_mdm_device_service::lifecycle::complete_target_in(c, tenant, &input)
             .await
             .map_err(|_| SourceError::Invariant)?;
-        let cursor = input.object.key();
+        let cursor = input.object;
         let mut known = BTreeSet::new();
         let mut uncertain = BTreeSet::new();
         let mut valid = fresh
@@ -738,7 +755,7 @@ pub async fn lifecycle_objects_on(
             resolve_membership(
                 tenant,
                 &frozen,
-                &input.object.key(),
+                input.object,
                 at,
                 &known,
                 &uncertain,
@@ -785,20 +802,31 @@ mod lifecycle_mapping_tests {
     #[test]
     fn complete_device_direct_sources_keep_limits_and_peer_exclusions() {
         let tenant = TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap();
-        let native = Reference::Device("native".into());
-        let agent = Reference::Device("agent".into());
-        let other = Reference::Device("other".into());
+        let native = Reference::Device(
+            rss_mdm_agent_wire::DeviceId::parse("78d7c391-edd7-59f5-b82a-17488662e72c").unwrap(),
+        );
+        let agent = Reference::Device(
+            rss_mdm_agent_wire::DeviceId::parse("eade504c-4515-50ed-a3a7-ef0823e7a753").unwrap(),
+        );
+        let other =
+            Reference::Device(rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(4)).unwrap());
         let object = DeviceObject {
             object: ObjectRef::Association(Uuid::from_u128(1)),
             association_version: Some(1),
             verified: true,
             members: vec![
                 rss_mdm_registration_service::device::endpoints::PrimaryRegistration {
-                    device: "native".into(),
+                    device: rss_mdm_agent_wire::DeviceId::parse(
+                        "78d7c391-edd7-59f5-b82a-17488662e72c",
+                    )
+                    .unwrap(),
                     channel: Channel::Mdm,
                 },
                 rss_mdm_registration_service::device::endpoints::PrimaryRegistration {
-                    device: "agent".into(),
+                    device: rss_mdm_agent_wire::DeviceId::parse(
+                        "eade504c-4515-50ed-a3a7-ef0823e7a753",
+                    )
+                    .unwrap(),
                     channel: Channel::Agent,
                 },
             ],
@@ -832,7 +860,7 @@ mod lifecycle_mapping_tests {
         let result = resolve_membership(
             tenant,
             &frozen,
-            &object.object.key(),
+            object.object,
             at,
             &known,
             &unknown,
@@ -849,7 +877,7 @@ mod lifecycle_mapping_tests {
             resolve_membership(
                 tenant,
                 &frozen,
-                &object.object.key(),
+                object.object,
                 at,
                 &known,
                 &unknown,
@@ -866,7 +894,7 @@ mod lifecycle_mapping_tests {
             !resolve_membership(
                 tenant,
                 &frozen,
-                &object.object.key(),
+                object.object,
                 at,
                 &known,
                 &unknown,
@@ -884,7 +912,10 @@ mod lifecycle_mapping_tests {
             resolve_membership(
                 tenant,
                 &frozen,
-                "native",
+                rss_mdm_agent_wire::ObjectRef::Endpoint(
+                    rss_mdm_agent_wire::DeviceId::parse("78d7c391-edd7-59f5-b82a-17488662e72c")
+                        .unwrap()
+                ),
                 at,
                 &BTreeSet::from([0]),
                 &unknown,

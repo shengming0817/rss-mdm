@@ -37,7 +37,7 @@ pub(crate) async fn authorization_binding(
 pub struct BindingView {
     pub id: uuid::Uuid,
     pub operation_id: uuid::Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub instance: uuid::Uuid,
     pub principal: uuid::Uuid,
     pub binding_generation: i64,
@@ -84,7 +84,7 @@ impl Service {
     pub async fn device_access_binding(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: uuid::Uuid,
     ) -> Result<BindingView, Error> {
         let p = request.proof.as_ref();
@@ -108,7 +108,7 @@ impl Service {
             id,
         )
         .await?;
-        if b.device != device {
+        if b.device != *device {
             return Err(Error::NotFound);
         }
         p.check_live()?;
@@ -119,7 +119,7 @@ impl Service {
     pub async fn device_access_bindings(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         q: &Query,
         codec: &CursorCodec,
     ) -> Result<Page<rss_mdm_query::directory::Projection<BindingView>>, Error> {
@@ -153,7 +153,7 @@ impl Service {
             sqlx::QueryBuilder::new("SELECT b.document FROM rss_da.bindings b WHERE b.tenant_id=");
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND b.device=")
-            .push_bind(device.to_owned());
+            .push_bind(device.into_uuid());
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*BINDINGS).map_err(error)?;
         let rows: Vec<Value> = sql
             .build_query_scalar()
@@ -216,10 +216,7 @@ pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
                     "instance",
                     "(b.document->'person'->>'instance') COLLATE \"C\"",
                 ),
-                rss_mdm_query_postgres::Source::column(
-                    "principal",
-                    "b.principal::text COLLATE \"C\"",
-                ),
+                rss_mdm_query_postgres::Source::column("principal", "b.principal"),
                 rss_mdm_query_postgres::Source::column("bindingGeneration", "b.generation"),
                 rss_mdm_query_postgres::Source::column("serverState", "b.state COLLATE \"C\""),
                 rss_mdm_query_postgres::Source::json("accountIntent", "b.document->'intent'"),

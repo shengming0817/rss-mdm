@@ -1,5 +1,5 @@
 //! Authorized recovery and asset disposition for accepted Policy retirement.
-use crate::{Associations, Error, Result, ViewRef, lifecycle, read};
+use crate::{Associations, Error, ObjectRef, Result, lifecycle, read};
 use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ pub struct ForceRevoke {
 #[serde(tag = "action", rename_all = "snake_case")]
 enum Change<'a> {
     Asset {
-        target: &'a ViewRef,
+        target: &'a ObjectRef,
         input: &'a AssetChange,
     },
     Force {
@@ -80,7 +80,10 @@ impl Associations {
                                 rss_mdm_audit_integration::operation::ReceiptSummary::new(id);
                             result.accepted = Some(true);
                             result.recorded_at = Some(header.created_at);
-                            result.object = Some(header.target.object.key());
+                            result.object = Some(
+                                serde_json::to_string(&header.target.object)
+                                    .map_err(|_| Error::Storage)?,
+                            );
                             p.check_live()?;
                             Ok(Some(result))
                         })
@@ -146,7 +149,7 @@ impl Associations {
     pub async fn asset_state(
         &self,
         p: &AuthorizedPrincipal,
-        target: &ViewRef,
+        target: &ObjectRef,
         input: &AssetChange,
         audit: &RequestAudit,
     ) -> Result<AssetReceipt> {
@@ -225,16 +228,16 @@ impl Associations {
           for device in &devices {
             if input.state!=AssetState::Active {
               let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')")
-                .bind(p.tenant_id()).bind(device).fetch_one(&mut *c).await?;
+                .bind(p.tenant_id()).bind(device.into_uuid()).fetch_one(&mut *c).await?;
               if active {
                 let exiting:bool=sqlx::query_scalar("SELECT retirement IS NOT NULL FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2")
-                    .bind(p.tenant_id()).bind(device).fetch_one(&mut *c).await?;
+                    .bind(p.tenant_id()).bind(device.into_uuid()).fetch_one(&mut *c).await?;
                 if input.state==AssetState::Deleted||!exiting{return Err(Error::Conflict);}
               }
             }
             let state=serde_json::to_value(input.state).map_err(|_|Error::Malformed)?;
             sqlx::query("INSERT INTO mdm_devices.asset_states(tenant_id,device,state) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id,device) DO UPDATE SET state=EXCLUDED.state")
-                .bind(p.tenant_id()).bind(device).bind(state.as_str()).execute(&mut *c).await?;
+                .bind(p.tenant_id()).bind(device.into_uuid()).bind(state.as_str()).execute(&mut *c).await?;
           }
           json!({"operationId":input.operation_id,"devices":devices,"state":input.state})
         }
@@ -265,15 +268,15 @@ impl Associations {
 async fn asset_devices(
     c: &mut PgConnection,
     tenant: &str,
-    target: &ViewRef,
-) -> Result<Vec<String>> {
+    target: &ObjectRef,
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>> {
     let mut devices=match target {
-  ViewRef::Endpoint(id)=>{
-    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant).bind(id).fetch_one(&mut *c).await?;
+  ObjectRef::Endpoint(id)=>{
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant).bind(id.into_uuid()).fetch_one(&mut *c).await?;
     if !exists{return Err(Error::NotFound);}
-    vec![id.clone()]
+    vec![*id]
   },
-  ViewRef::Association(id)=>sqlx::query_scalar("SELECT device FROM mdm_devices.members WHERE tenant_id=$1::uuid AND association_id=$2 ORDER BY device").bind(tenant).bind(id).fetch_all(c).await?,
+  ObjectRef::Association(id)=>sqlx::query_scalar("SELECT device FROM mdm_devices.members WHERE tenant_id=$1::uuid AND association_id=$2 ORDER BY device").bind(tenant).bind(id).fetch_all(c).await.and_then(crate::device_ids)?,
  };
     if devices.is_empty() {
         return Err(Error::NotFound);
@@ -287,7 +290,7 @@ async fn asset_devices(
 #[serde(rename_all = "camelCase")]
 pub struct AssetReceipt {
     pub operation_id: Uuid,
-    pub devices: Vec<String>,
+    pub devices: Vec<rss_mdm_agent_wire::DeviceId>,
     pub state: AssetState,
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]

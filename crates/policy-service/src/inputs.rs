@@ -60,7 +60,7 @@ pub trait ExecutionChanges: Send + Sync {
     fn devices_changed_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        devices: &'a [String],
+        devices: &'a [rss_mdm_agent_wire::DeviceId],
     ) -> Pending<'a, (), Fault>;
     fn retirement_accepted_in<'a>(
         &'a self,

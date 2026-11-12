@@ -27,7 +27,10 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
         resource_id: row.try_get("resource_id")?,
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         target: crate::Target {
-            device: row.try_get("device")?,
+            device: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })?,
         },
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
@@ -98,11 +101,11 @@ pub async fn save_run(
                     version: 1,
                     occurred_at,
                     tenant_id: stored(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                    device_id: run.target.device.clone(),
+                    device_id: run.target.device,
                     data: EventData::Policy {
                         run_id: run.id,
                         policy_version: run.policy_version,
-                        device_id: run.target.device.to_string(),
+                        device_id: run.target.device,
 
                         status: status.into(),
                     },
@@ -138,7 +141,7 @@ pub async fn pending_on(
     now: i64,
 ) -> Result<Pending> {
     let (unknown, active, last) = sqlx::query_as("WITH candidates AS (SELECT r.id,(r.resource_id=$3 AND (r.state->>'execution'='unknown' OR (r.state->>'execution'='running' AND r.deadline<=$6))) AS unknown,(v.policy=$4 AND r.state->>'cancellation'<>'confirmed' AND (r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$6))) AS active FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND r.device=$2) SELECT (SELECT id FROM candidates WHERE unknown ORDER BY id LIMIT 1),(SELECT id FROM candidates WHERE active ORDER BY id LIMIT 1),(SELECT max(created_at) FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND policy_version=$5)")
-        .bind(tenant.to_string()).bind(&target.device).bind(resource_id).bind(policy).bind(version)
+        .bind(tenant.to_string()).bind(target.device.into_uuid()).bind(resource_id).bind(policy).bind(version)
         .bind(now).fetch_one(c).await?;
     Ok(Pending {
         unknown,
@@ -170,11 +173,11 @@ pub async fn pending_in(
 pub async fn active_count_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*) FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$3")
-        .bind(tenant.to_string()).bind(device).bind(now).fetch_one(c).await
+        .bind(tenant.to_string()).bind(device.into_uuid()).bind(now).fetch_one(c).await
 }
 pub async fn owned_ids_on(
     c: &mut sqlx::PgConnection,
@@ -238,12 +241,15 @@ pub async fn receipt(
     let target = target.clone();
     tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("INSERT INTO mdm_script.receipts(tenant_id,actor,id,fingerprint,response,device) VALUES($1::uuid,$2,$3,$4,$5,$6)")
-            .bind(tenant).bind(actor).bind(id).bind(fingerprint).bind(response).bind(target.device.clone()).execute(c).await?;
+            .bind(tenant).bind(actor).bind(id).bind(fingerprint).bind(response).bind(target.device.into_uuid()).execute(c).await?;
         Ok(())
     })).await?;
     Ok(())
 }
-pub async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+pub async fn lock_device(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let devices = vec![device.to_owned()];
     tx.with_connection(move |c| {
@@ -274,7 +280,7 @@ pub async fn now(tx: &mut PgTransaction<'_>) -> Result<i64> {
 pub async fn authorized(
     tx: &mut PgTransaction<'_>,
     proof: &crate::authorization::context::AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     permission: crate::authorization::Permission,
 ) -> Result<crate::authorization::Snapshot> {
     let snapshot = current(tx, proof).await?;
@@ -314,17 +320,17 @@ pub async fn current(
 /// A late recovery worker must not create a window for another Policy to start.
 pub async fn unknown_conflict_in(tx: &mut PgTransaction<'_>, run: &Run) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
-    let device = run.target.device.clone();
+    let device = run.target.device;
     let resource = run.resource_id.clone();
     let id = run.id;
-    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND resource_id=$3 AND id<>$4 AND (state->>'execution'='unknown' OR (state->>'execution'='running' AND deadline<=floor(extract(epoch FROM clock_timestamp())))))").bind(tenant).bind(&device).bind(resource).bind(id).fetch_one(c).await})).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_script.runs WHERE tenant_id=$1::uuid AND device=$2 AND resource_id=$3 AND id<>$4 AND (state->>'execution'='unknown' OR (state->>'execution'='running' AND deadline<=floor(extract(epoch FROM clock_timestamp())))))").bind(tenant).bind(device.into_uuid()).bind(resource).bind(id).fetch_one(c).await})).await?)
 }
 /// Resolve only this owner's immutable task identity for Timeline correlation.
 pub async fn association_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     id: uuid::Uuid,
-) -> std::result::Result<Option<(String, Option<uuid::Uuid>)>, sqlx::Error> {
+) -> std::result::Result<Option<(rss_mdm_agent_wire::DeviceId, Option<uuid::Uuid>)>, sqlx::Error> {
     sqlx::query_as(
         "SELECT device,NULL::uuid FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -332,4 +338,14 @@ pub async fn association_on(
     .bind(id)
     .fetch_optional(c)
     .await
+    .and_then(|row: Option<(uuid::Uuid, Option<uuid::Uuid>)>| {
+        row.map(|(id, operation)| {
+            Ok((
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+                operation,
+            ))
+        })
+        .transpose()
+    })
 }

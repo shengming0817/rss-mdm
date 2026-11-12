@@ -33,7 +33,7 @@ impl Http {
         &self,
         c: &Context,
         proof: Arc<AuthorizedPrincipal>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<(u16, Value)> {
         let router = directory::routes()
             .with_state::<()>(self.state.clone())
@@ -91,11 +91,11 @@ fn wipe() -> Input {
 async fn windows(c: &Context, n: &native::Native, version: &str) -> Result<()> {
     let mut tx = command::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_windows.capabilities (tenant_id, device, protocol_epoch, os_version, edition, session, observed_at) VALUES (CAST($1 AS uuid), $2, $4, $3, 4, 1, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint)) ON CONFLICT (tenant_id, device, protocol_epoch) DO UPDATE SET os_version = excluded.os_version")
-        .bind(c.tenant.to_string()).bind(n.device.clone()).bind(version).bind(n.epoch).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(version).bind(n.epoch).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }
-async fn change(c: &Context, query: &'static str, id: String) -> Result<(), sqlx::Error> {
+async fn change(c: &Context, query: &'static str, id: Uuid) -> Result<(), sqlx::Error> {
     let mut tx = c.operator.begin().await?;
     sqlx::query(
         "SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','6000',true)",
@@ -199,19 +199,19 @@ async fn supported_snapshot_never_authorizes_a_later_write() -> Result<()> {
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Malformed)));
         assert_eq!(effects(&c).await?,before);
         let input = wipe();
-        change(&c, "DELETE FROM mdm_windows.capabilities WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.clone()).await?;
+        change(&c, "DELETE FROM mdm_windows.capabilities WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.into_uuid()).await?;
         let before = effects(&c).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Unsupported)));
         assert_eq!(effects(&c).await?,before);
         windows(&c,&n,"10.0.22631.0").await?;
         let input = wipe();
-        change(&c, "UPDATE mdm_access.devices SET state = 'revoked' WHERE tenant_id = CAST($1 AS uuid) AND id = $2", n.device.clone()).await?;
+        change(&c, "UPDATE mdm_access.devices SET state = 'revoked' WHERE tenant_id = CAST($1 AS uuid) AND id = $2", n.device.into_uuid()).await?;
         let before = effects(&c).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Conflict)));
         assert_eq!(effects(&c).await?,before);
-        change(&c, "UPDATE mdm_access.devices SET state = 'active' WHERE tenant_id = CAST($1 AS uuid) AND id = $2", n.device.clone()).await?;
+        change(&c, "UPDATE mdm_access.devices SET state = 'active' WHERE tenant_id = CAST($1 AS uuid) AND id = $2", n.device.into_uuid()).await?;
         let input = wipe();
-        change(&c, "DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2::uuid", account.rule.to_string()).await?;
+        change(&c, "DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2::uuid", account.rule).await?;
         let before = effects(&c).await?;
         assert!(matches!(a.service.create_control(&p,&n.device,&input,&c.request(&p)?).await,Err(ControlError::Forbidden)));
         assert_eq!(effects(&c).await?,before);
@@ -254,13 +254,13 @@ async fn apple_facts(
     crate::apple_t2::support::operation(c, n, &a.resources.protection, &input, authority, None)
         .await?;
     let mut tx = command::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) VALUES (CAST($1 AS uuid), $2, $3, 'active', 8191) ON CONFLICT (tenant_id, device) DO NOTHING").bind(c.tenant.to_string()).bind(n.device.clone()).bind(&n.device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_apple.devices (tenant_id, device, udid, state, access_rights) VALUES (CAST($1 AS uuid), $2, $3, 'active', 8191) ON CONFLICT (tenant_id, device) DO NOTHING").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(n.device.to_string()).execute(&mut *tx).await?;
     // This fixture starts at the accepted, authenticated evidence boundary being read.
     sqlx::query(
         "DELETE FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = $2",
     )
     .bind(c.tenant.to_string())
-    .bind(n.device.clone())
+    .bind(n.device.into_uuid())
     .execute(&mut *tx)
     .await?;
     let mut facts = plist::Dictionary::new();
@@ -281,7 +281,7 @@ async fn apple_facts(
         )]));
         let mut bytes = Vec::new();
         body.to_writer_xml(&mut bytes)?;
-        let owner = serde_json::to_string(&(n.device.clone(), id))?;
+        let owner = serde_json::to_string(&(n.device, id))?;
         let response = a.resources.protection.seal_bytes(
             &bytes,
             &ProtectionContext::new(c.tenant, &owner, "apple.attempt.response", 1)?.derive(),
@@ -291,7 +291,7 @@ async fn apple_facts(
             &ProtectionContext::new(c.tenant, &owner, "apple.attempt.request", 1)?.derive(),
         )?;
         sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, operation, phase, request, state, response, response_digest, received_at, accepted, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'acknowledged', $7, $8, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint), TRUE, clock_timestamp() + CAST('5 minutes' AS interval))")
-            .bind(c.tenant.to_string()).bind(id).bind(n.device.clone()).bind(operation).bind(phase).bind(request).bind(response).bind(Sha256::digest(&bytes).to_vec()).execute(&mut *tx).await?;
+            .bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).bind(operation).bind(phase).bind(request).bind(response).bind(Sha256::digest(&bytes).to_vec()).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(())
@@ -327,7 +327,7 @@ async fn apple_reads_distinguish_platform_evidence_and_product_configuration() -
         apple_facts(&c,&a,&n,&p,Some(true),None).await?;
         assert_eq!(capability(&read(&c,&http,&p,&n).await?,"restart")["devicePrerequisite"]["state"],"unknown");
         apple_facts(&c,&a,&n,&p,Some(true),Some("15.0.1")).await?;
-        change(&c, "UPDATE mdm_apple.devices SET access_rights = 1 WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.clone()).await?;
+        change(&c, "UPDATE mdm_apple.devices SET access_rights = 1 WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.into_uuid()).await?;
         let body=read(&c,&http,&p,&n).await?;
         assert_eq!(capability(&body,"wipe")["devicePrerequisite"]["state"],"unsupported");
         assert_eq!(capability(&body,"wipe")["permission"]["allowed"],true);
@@ -359,16 +359,16 @@ async fn lifecycle_and_dependency_failures_are_not_platform_unsupported() -> Res
         let outsider=foreign.account(&[Permission::InventoryRead]).await?;
         assert_eq!(http.get(&foreign,Arc::new(foreign.authenticate(&outsider).await?),&n.device).await?.0,403);
         windows(&c,&n,"10.0.22631.0").await?;
-        change(&c, "UPDATE mdm_windows.capabilities SET protocol_epoch = gen_random_uuid() WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.clone()).await?;
+        change(&c, "UPDATE mdm_windows.capabilities SET protocol_epoch = gen_random_uuid() WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.into_uuid()).await?;
         assert_eq!(capability(&read(&c,&http,&p,&n).await?,"wipe")["devicePrerequisite"]["state"],"unknown");
         windows(&c,&n,"10.0.22631.0").await?;
-        change(&c, "UPDATE mdm_windows.capabilities SET os_version = 'corrupt' WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.clone()).await?;
+        change(&c, "UPDATE mdm_windows.capabilities SET os_version = 'corrupt' WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.into_uuid()).await?;
         assert_eq!(http.get(&c,p.clone(),&n.device).await?.0,503);
         windows(&c,&n,"10.0.22631.0").await?;
-        change(&c, "UPDATE mdm_access.report_sources SET enabled = FALSE WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.clone()).await?;
+        change(&c, "UPDATE mdm_access.report_sources SET enabled = FALSE WHERE tenant_id = CAST($1 AS uuid) AND device = $2", n.device.into_uuid()).await?;
         let body=read(&c,&http,&p,&n).await?;
         for kind in ["restart","lock","wipe"] { assert_eq!(capability(&body,kind)["devicePrerequisite"],json!({"state":"blocked","reason":"capability_unknown"})); }
-        change(&c, "UPDATE mdm_access.devices SET state = 'revoked' WHERE tenant_id = CAST($1 AS uuid) AND id = $2", n.device.clone()).await?;
+        change(&c, "UPDATE mdm_access.devices SET state = 'revoked' WHERE tenant_id = CAST($1 AS uuid) AND id = $2", n.device.into_uuid()).await?;
         let body=read(&c,&http,&p,&n).await?;
         for kind in ["restart","lock","wipe"] { assert_eq!(capability(&body,kind)["devicePrerequisite"],json!({"state":"blocked","reason":"not_registered"})); }
         Ok(())
@@ -395,12 +395,12 @@ async fn snapshot_revalidates_authority_and_registration_before_return() -> Resu
             let request=c.read_auth(p.clone());
             let result=a.task_reads.snapshot_registered(&request,(&c,&n,&account),move |args,connection,_,_,registration| Box::pin(async move {
                 let (c,n,account)=*args;
-                *registration=Some((n.device.clone(),endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm,connection,&c.tenant.to_string(),&n.device,rss_mdm_inventory::Channel::Mdm).await?));
+                *registration=Some((n.device,endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm,connection,&c.tenant.to_string(),&n.device,rss_mdm_inventory::Channel::Mdm).await?));
                 // A second real connection commits while the first retains its RR snapshot.
                 if change_registration {
-                    change(c, "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2::uuid", n.credential.to_string()).await.map_err(crate::assembly::task_reads::sql)?;
+                    change(c, "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2::uuid", n.credential).await.map_err(crate::assembly::task_reads::sql)?;
                 } else {
-                    change(c, "DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2::uuid", account.rule.to_string()).await.map_err(crate::assembly::task_reads::sql)?;
+                    change(c, "DELETE FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2::uuid", account.rule).await.map_err(crate::assembly::task_reads::sql)?;
                 }
                 Ok(())
             })).await;

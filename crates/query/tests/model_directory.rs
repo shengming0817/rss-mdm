@@ -280,3 +280,29 @@ fn text_range_boundaries_are_not_stored_values_or_seek_positions() {
             .is_err()
     );
 }
+
+#[test]
+fn uuid_literals_require_canonical_nonzero_identity() {
+    #[derive(JsonSchema)]
+    #[allow(dead_code)]
+    struct Identity {
+        id: uuid::Uuid,
+    }
+    let schema = Box::leak(Box::new(
+        Schema::derived::<Identity>("uuid_identity", &["id"], 2, 10, &[]).unwrap(),
+    ));
+    for (id, accepted) in [
+        ("7f8c2d91-4a63-4f20-9b8e-c1526d0a7349", true),
+        ("00000000-0000-0000-0000-000000000001", true),
+        ("7F8C2D91-4A63-4F20-9B8E-C1526D0A7349", false),
+        ("7f8c2d914a634f209b8ec1526d0a7349", false),
+        ("00000000-0000-0000-0000-000000000000", false),
+        ("device", false),
+    ] {
+        assert_eq!(
+            schema.parse(&format!("filter=id=={id}")).is_ok(),
+            accepted,
+            "{id}"
+        );
+    }
+}

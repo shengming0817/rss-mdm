@@ -33,13 +33,9 @@ impl FrozenCredential {
         _now: i64,
     ) -> Result<bool> {
         if super::product::rss(&self.operation)
-            && !agent_facts::agent_binding_in(
-                tx,
-                service.agent_store.clone(),
-                target.device.clone(),
-            )
-            .await?
-            .is_some_and(|b| b.capabilities.contains(&wire::Capability::DeviceAccessV1))
+            && !agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.device)
+                .await?
+                .is_some_and(|b| b.capabilities.contains(&wire::Capability::DeviceAccessV1))
         {
             return Ok(false);
         }
@@ -70,7 +66,7 @@ pub(crate) async fn eligible(
     architecture: Architecture,
 ) -> Result<bool> {
     Ok(
-        agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.device.clone())
+        agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.device)
             .await?
             .is_some_and(|b| capable(&b, architecture)),
     )
@@ -138,9 +134,7 @@ pub(crate) async fn task(
     let target_owned = run
         .material
         .as_ref()
-        .map(|b| Target {
-            device: b.device.clone(),
-        })
+        .map(|b| Target { device: b.device })
         .unwrap_or_else(|| target.clone());
     let product = service.product.clone();
     let revisions = tx
@@ -184,7 +178,7 @@ pub(crate) async fn task(
         let registration = run
             .material
             .as_ref()
-            .map_or_else(|| target.device.clone(), |b| b.device.clone());
+            .map_or_else(|| target.device, |b| b.device);
         let product = service.product.clone();
         let guard = tx
             .with_connection(move |c| {
@@ -193,7 +187,7 @@ pub(crate) async fn task(
                         super::product::custody(profile, product.as_deref()),
                         c,
                         tenant,
-                        registration.clone(),
+                        registration,
                     )
                     .await)
                 })
@@ -255,7 +249,7 @@ pub(crate) async fn task(
     let spec = wire::CredentialTaskSpec {
         wire_version: wire::WIRE_VERSION,
         tenant_id: tenant,
-        device_id: target.device.clone(),
+        device_id: target.device,
         platform: wire::TaskPlatform::Windows,
         architecture: match policy.frozen.input.architecture {
             Architecture::X86_64 => wire::TaskArchitecture::X86_64,
@@ -370,9 +364,7 @@ pub(crate) async fn escrow(
     let protection = service.recovery_credentials.clone();
     let product = service.product.clone();
     let anchor = run.material.clone();
-    let registration = anchor
-        .as_ref()
-        .map_or_else(|| task.device_id.clone(), |a| a.device.clone());
+    let registration = anchor.as_ref().map_or_else(|| task.device_id, |a| a.device);
     let value = value.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
@@ -399,7 +391,7 @@ pub(crate) async fn escrow(
                     let binding = super::product::material(
                         anchor.as_ref(),
                         &Target {
-                            device: task.device_id.clone(),
+                            device: task.device_id,
                         },
                         subject(&item.subject),
                     )?;
@@ -414,7 +406,7 @@ pub(crate) async fn escrow(
                             super::product::custody(profile, product.as_deref()),
                             c,
                             task.tenant_id,
-                            registration.clone(),
+                            registration,
                         )
                         .await?
                             != Some((recovery.task_id, recovery.attempt_id))
@@ -519,9 +511,7 @@ pub(crate) async fn finish(
     }
     let product = service.product.clone();
     let anchor = run.material.clone();
-    let registration = anchor
-        .as_ref()
-        .map_or_else(|| task.device_id.clone(), |a| a.device.clone());
+    let registration = anchor.as_ref().map_or_else(|| task.device_id, |a| a.device);
     let value = value.clone();
     let (success, uncertain, recovered) = tx
         .with_connection(move |c| {
@@ -582,7 +572,7 @@ pub(crate) async fn finish(
                                             super::product::custody(profile, product.as_deref()),
                                             c,
                                             task.tenant_id,
-                                            registration.clone(),
+                                            registration,
                                         )
                                         .await?
                                             != Some((recovery.task_id, recovery.attempt_id))
@@ -648,7 +638,7 @@ pub(crate) async fn finish(
                                     super::product::custody(profile, product.as_deref()),
                                     c,
                                     task.tenant_id,
-                                    registration.clone(),
+                                    registration,
                                 )
                                 .await?
                                     != Some((recovery.task_id, recovery.attempt_id))
@@ -700,7 +690,7 @@ pub(crate) async fn finish(
                                         c,
                                         task.tenant_id,
                                         &vault::Binding {
-                                            device: task.device_id.clone(),
+                                            device: task.device_id,
 
                                             subject: subject(&old),
                                         },
@@ -748,7 +738,7 @@ pub(crate) async fn finish(
                             c,
                             task.tenant_id,
                             &vault::Binding {
-                                device: task.device_id.clone(),
+                                device: task.device_id,
 
                                 subject: subject(&previous),
                             },
@@ -840,7 +830,7 @@ pub(crate) async fn start(
     let registration = run
         .material
         .as_ref()
-        .map_or_else(|| task.device_id.clone(), |a| a.device.clone());
+        .map_or_else(|| task.device_id, |a| a.device);
     if matches!(
         task.operation,
         wire::CredentialOperation::RotateRssLogin { .. }
@@ -853,7 +843,7 @@ pub(crate) async fn start(
                     super::product::custody(profile, product.as_deref()),
                     c,
                     task.tenant_id,
-                    registration.clone(),
+                    registration,
                     task.task_id,
                     task.attempt_id,
                 )

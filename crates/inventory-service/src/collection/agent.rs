@@ -72,7 +72,14 @@ pub async fn accept_in(
             .await
             .map_err(db)?
     {
-        if row.try_get::<String, _>("device").map_err(db)? != principal.device()
+        if row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })
+            .map_err(db)?
+            != *principal.device()
             || row.try_get::<String, _>("source").map_err(db)?
                 != InventorySource::AgentBuiltin.as_str()
             || row.try_get::<String, _>("epoch").map_err(db)? != scope.epoch().as_str()
@@ -85,7 +92,7 @@ pub async fn accept_in(
     let pending: i64 =
         sqlx::query_scalar(crate::storage_profile::sql(profile).collection_agent_accept_in_2)
             .bind(principal.tenant().to_string())
-            .bind(principal.device().to_string())
+            .bind(principal.device().into_uuid())
             .bind(scope.epoch().as_str())
             .fetch_one(&mut *tx)
             .await
@@ -95,7 +102,7 @@ pub async fn accept_in(
     }
     let _: i64 =
         sqlx::query_scalar(crate::storage_profile::sql(profile).collection_agent_accept_in_3)
-            .bind(principal.device().to_string())
+            .bind(principal.device().into_uuid())
             .bind(scope.epoch().as_str())
             .fetch_one(&mut *tx)
             .await
@@ -130,7 +137,7 @@ pub async fn accept_in(
     let stored_digest = super::store::fingerprint(&stored_batch, scope)?;
     sqlx::query(crate::storage_profile::sql(profile).collection_agent_accept_in_4)
         .bind(principal.tenant().to_string())
-        .bind(principal.device().to_string())
+        .bind(principal.device().into_uuid())
         .bind(scope.epoch().as_str())
         .bind(batch.id().as_str().to_string())
         .bind(i64::try_from(batch.sequence()).map_err(|_| Error::Malformed)?)

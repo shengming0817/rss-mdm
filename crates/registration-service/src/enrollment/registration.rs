@@ -6,13 +6,13 @@ pub async fn read(
     profile: rss_mdm_install_support::StorageProfile,
     database: &Store,
     request: &rss_mdm_authorization_service::context::RequestAuth,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Registration, Error> {
     let proof = request.proof.as_ref();
     if profile != proof.profile() || profile != database.profile() {
         return Err(Error::Forbidden);
     }
-    rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
+
     proof.credentials(device)?;
     let mut tx = database.snapshot(proof.tenant_id()).await?;
     let current = rss_mdm_authorization_service::snapshot_on(
@@ -29,7 +29,7 @@ pub async fn read(
     let row: serde_json::Value =
         sqlx::query_scalar(crate::storage_profile::sql(profile).enrollment_registration_read)
             .bind(proof.tenant_id())
-            .bind(device)
+            .bind(device.into_uuid())
             .fetch_optional(&mut *tx)
             .await
             .map_err(db)?
@@ -44,7 +44,7 @@ pub async fn read(
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Registration {
-    pub device_id: String,
+    pub device_id: rss_mdm_agent_wire::DeviceId,
     pub source: Option<rss_mdm_inventory::ReportSource>,
     pub status: super::read::RegistrationState,
     pub enrolled_user: bool,

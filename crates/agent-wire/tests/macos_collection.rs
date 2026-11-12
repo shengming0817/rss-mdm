@@ -370,7 +370,8 @@ fn signed_macos_collection_binds_identity_plan_and_permit() {
         mappings,
         wire_version: COLLECTION_TASK_VERSION,
         tenant_id: id,
-        device_id: "mac".into(),
+        device_id: rss_mdm_agent_wire::DeviceId::parse("8dcc1916-77c7-5c7e-a710-3fedbee30f26")
+            .unwrap(),
         platform: TaskPlatform::Macos,
         architecture: TaskArchitecture::Aarch64,
 
@@ -410,7 +411,7 @@ fn signed_macos_collection_binds_identity_plan_and_permit() {
                 *session_id = uuid::Uuid::from_u128(2);
             }
             3 => tampered.resource_digest[0] ^= 1,
-            4 => tampered.device_id = "other".into(),
+            4 => tampered.device_id = rss_mdm_agent_wire::DeviceId::new_v4(),
             5 => tampered.architecture = TaskArchitecture::X86_64,
             _ => {
                 let mut p = tampered.plan.spec().clone();

@@ -25,7 +25,7 @@ pub struct BuildRequest {
     /// Published calculation captured at admission, independent of descriptive edits.
     pub base_calculation: i64,
     /// Exact device changes; absent requests a full rule evaluation.
-    pub changed_objects: Option<Vec<String>>,
+    pub changed_objects: Option<Vec<rss_mdm_agent_wire::ObjectRef>>,
     /// Rule selected when the input was frozen.
     pub rule_version: Option<String>,
     /// Static membership patch, absent for a dynamic build.
@@ -42,9 +42,9 @@ pub struct BuildRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MemberPatch {
     /// Device identities to add.
-    pub add: Vec<String>,
+    pub add: Vec<rss_mdm_agent_wire::DeviceId>,
     /// Device identities to remove; overlap with additions is rejected.
-    pub remove: Vec<String>,
+    pub remove: Vec<rss_mdm_agent_wire::DeviceId>,
 }
 fn check_build(group: &Group, request: &BuildRequest) -> CommandOutcome<()> {
     crate::store::active(group)?;
@@ -92,10 +92,8 @@ fn check_page_selection(
             return Err(Rejection::InvalidInput);
         }
         for id in patch.add.iter().chain(&patch.remove) {
-            if id.len() > 256 {
-                return Err(Rejection::InvalidInput);
-            }
-            rss_mdm_group::ObjectKey::new(tenant, id).map_err(crate::store::core_rejection)?;
+            rss_mdm_group::ObjectKey::new(tenant, rss_mdm_agent_wire::ObjectRef::Endpoint(*id))
+                .map_err(crate::store::core_rejection)?;
         }
     }
     if let Some(devices) = &request.changed_objects {
@@ -106,7 +104,7 @@ fn check_page_selection(
             return Err(Rejection::InvalidInput);
         }
         for device in devices {
-            rss_mdm_group::ObjectKey::new(tenant, device).map_err(crate::store::core_rejection)?;
+            rss_mdm_group::ObjectKey::new(tenant, *device).map_err(crate::store::core_rejection)?;
         }
     }
     Ok(())
@@ -127,9 +125,9 @@ pub struct MemberBuild {
     /// Original immutable admission.
     pub request: BuildRequest,
     /// Last input object atomically persisted with its page.
-    pub cursor: Option<String>,
+    pub cursor: Option<rss_mdm_agent_wire::ObjectRef>,
     /// Last key whose membership difference has been durably examined.
-    pub difference_cursor: Option<String>,
+    pub difference_cursor: Option<rss_mdm_agent_wire::ObjectRef>,
     /// Number of input objects already persisted.
     pub objects: usize,
     /// Devices evaluated in this calculation; deltas do not count unchanged devices.
@@ -152,7 +150,7 @@ pub struct DifferenceStep {
     /// Durable progress after the step.
     pub build: MemberBuild,
     /// Sorted old-or-new member identities, at most 1,000.
-    pub devices: Vec<String>,
+    pub devices: Vec<rss_mdm_agent_wire::ObjectRef>,
 }
 
 impl GroupStore {
@@ -163,7 +161,7 @@ impl GroupStore {
     pub async fn affected_groups_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        devices: &[String],
+        devices: &[rss_mdm_agent_wire::DeviceId],
         include_dynamic: bool,
         after: Option<GroupId>,
         limit: usize,
@@ -173,16 +171,16 @@ impl GroupStore {
             return Ok(Err(Rejection::InvalidInput));
         }
         for device in devices {
-            if device.len() > 256 {
-                return Ok(Err(Rejection::InvalidInput));
-            }
             input!(
-                rss_mdm_group::ObjectKey::new(self.tenant, device)
-                    .map_err(crate::store::core_rejection)
+                rss_mdm_group::ObjectKey::new(
+                    self.tenant,
+                    rss_mdm_agent_wire::ObjectRef::Endpoint(*device)
+                )
+                .map_err(crate::store::core_rejection)
             );
         }
         let tenant = self.tenant.to_string();
-        let devices = devices.to_vec();
+        let devices = devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>();
         let after = after.map(|id| id.to_string());
         let rows: Vec<String> = tx
             .with_connection(move |c| {
@@ -190,12 +188,12 @@ impl GroupStore {
                     sqlx::query_scalar(
                         r#"
                 SELECT id::text FROM (
-                    SELECT hit.group_id AS id FROM unnest($2::text[]) device
+                    SELECT hit.group_id AS id FROM unnest($2::uuid[]) device
                     CROSS JOIN LATERAL (
                         SELECT latest.group_id FROM (
                             SELECT DISTINCT ON(m.group_id) m.group_id,m.added
                             FROM mdm_group.member_changes m
-                            WHERE m.tenant_id=$1::uuid AND m.object_id=device
+                            WHERE m.tenant_id=$1::uuid AND m.object_kind=0 AND m.object_id=device
                                 AND ($4::uuid IS NULL OR m.group_id>$4::uuid)
                                 AND EXISTS(SELECT 1 FROM mdm_group.member_runs r
                                     WHERE r.tenant_id=m.tenant_id AND r.id=m.run_id AND r.phase='published')
@@ -357,11 +355,10 @@ impl GroupStore {
         )
         .await?;
         if let Some(devices) = &build.request.changed_objects
-            && page.objects.iter().any(|o| {
-                devices
-                    .binary_search_by(|d| d.as_str().cmp(o.key.id()))
-                    .is_err()
-            })
+            && page
+                .objects
+                .iter()
+                .any(|o| devices.binary_search(&o.key.id()).is_err())
         {
             return Ok(Err(Rejection::InvalidInput));
         }
@@ -371,13 +368,13 @@ impl GroupStore {
         );
         let fingerprint = db::fingerprint(&[
             &input!(crate::codec::encode_page(page).map_err(|_| Rejection::PageBudgetExceeded)),
-            page.after.map_or("", |k| k.id()).as_bytes(),
+            &data(serde_json::to_vec(&page.after.map(|k| k.id())))?,
         ]);
         let tenant = self.tenant.to_string();
         let first_id = first.key.id().to_owned();
         let old=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar::<_,Vec<u8>>("SELECT fingerprint FROM mdm_group.member_pages WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND first_id=$3")
-                .bind(tenant).bind(id.to_string()).bind(first_id).fetch_optional(c).await
+            sqlx::query_scalar::<_,Vec<u8>>("SELECT fingerprint FROM mdm_group.member_pages WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND (first_kind,first_id)=($3,$4)")
+                .bind(tenant).bind(id.to_string()).bind(first_id.kind()).bind(first_id.uuid()).fetch_optional(c).await
         })).await?;
         if let Some(old) = old {
             return Ok(if old == fingerprint {
@@ -386,7 +383,7 @@ impl GroupStore {
                 Err(Rejection::IdentityConflict)
             });
         }
-        if build.input_sealed || build.cursor.as_deref() != page.after.map(|k| k.id()) {
+        if build.input_sealed || build.cursor != page.after.map(|k| k.id()) {
             return Ok(Err(Rejection::InvalidInput));
         }
         if build.request.changed_objects.is_none() && !page_fits(build.objects, page.objects.len())
@@ -397,9 +394,6 @@ impl GroupStore {
         let mut matches = Vec::new();
         let mut evidence = Vec::new();
         for object in evaluated.objects {
-            if object.key.id().len() > 256 {
-                return Ok(Err(Rejection::InvalidInput));
-            }
             ids.push(object.key.id().to_owned());
             matches.push(object.decision == Decision::Match);
             evidence.push(data(serde_json::to_vec(&crate::decisions::evaluated(
@@ -415,7 +409,7 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-        after: Option<&str>,
+        after: Option<&rss_mdm_agent_wire::ObjectRef>,
         decisions: &[crate::DecisionRecord],
     ) -> InTransaction<MemberBuild> {
         input!(self.check_transaction(tx)?);
@@ -430,16 +424,16 @@ impl GroupStore {
         if group.kind != GroupKind::System
             || decisions.is_empty()
             || decisions.len() > 1000
-            || decisions.windows(2).any(|v| v[0].device >= v[1].device)
+            || decisions.windows(2).any(|v| v[0].object >= v[1].object)
             || decisions.iter().any(|d| {
                 d.origin != crate::DecisionOrigin::System
-                    || rss_mdm_group::ObjectKey::new(self.tenant, &d.device).is_err()
-                    || after.is_some_and(|a| d.device.as_str() <= a)
+                    || rss_mdm_group::ObjectKey::new(self.tenant, d.object).is_err()
+                    || after.is_some_and(|a| &d.object <= a)
                     || build
                         .request
                         .changed_objects
                         .as_ref()
-                        .is_some_and(|v| v.binary_search(&d.device).is_err())
+                        .is_some_and(|v| v.binary_search(&d.object).is_err())
             })
         {
             return Ok(Err(Rejection::InvalidInput));
@@ -449,10 +443,10 @@ impl GroupStore {
         );
         let fingerprint = digest(&bytes);
         let tenant = self.tenant.to_string();
-        let first = decisions[0].device.clone();
+        let first = decisions[0].object;
         let old = tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,Vec<u8>>("SELECT fingerprint FROM mdm_group.member_pages WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND first_id=$3")
-                .bind(tenant).bind(id.to_string()).bind(first).fetch_optional(c).await
+            sqlx::query_scalar::<_,Vec<u8>>("SELECT fingerprint FROM mdm_group.member_pages WHERE tenant_id=$1::uuid AND run_id=$2::uuid AND (first_kind,first_id)=($3,$4)")
+                .bind(tenant).bind(id.to_string()).bind(first.kind()).bind(first.uuid()).fetch_optional(c).await
         })).await?;
         if let Some(old) = old {
             return Ok(if old == fingerprint {
@@ -461,7 +455,7 @@ impl GroupStore {
                 Err(Rejection::IdentityConflict)
             });
         }
-        if build.input_sealed || build.cursor.as_deref() != after {
+        if build.input_sealed || build.cursor.as_ref() != after {
             return Ok(Err(Rejection::InvalidInput));
         }
         if build.request.changed_objects.is_none() && !page_fits(build.objects, decisions.len()) {
@@ -474,7 +468,7 @@ impl GroupStore {
         self.store_page_in(
             tx,
             id,
-            decisions.iter().map(|d| d.device.clone()).collect(),
+            decisions.iter().map(|d| d.object).collect(),
             decisions
                 .iter()
                 .map(|d| d.decision == crate::DecisionValue::Match)
@@ -489,7 +483,7 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-        ids: Vec<String>,
+        ids: Vec<rss_mdm_agent_wire::ObjectRef>,
         matches: Vec<bool>,
         evidence: Vec<Vec<u8>>,
         fingerprint: Vec<u8>,
@@ -519,15 +513,17 @@ impl GroupStore {
             }
         }
         let tenant = self.tenant.to_string();
-        let first = ids.first().ok_or_else(stored_shape)?.clone();
-        let last = ids.last().ok_or_else(stored_shape)?.clone();
+        let first = *ids.first().ok_or_else(stored_shape)?;
+        let last = *ids.last().ok_or_else(stored_shape)?;
+        let kinds = ids.iter().map(|o| o.kind()).collect::<Vec<_>>();
+        let uuids = ids.iter().map(|o| o.uuid()).collect::<Vec<_>>();
         tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_group.member_rows SELECT $1::uuid,$2::uuid,* FROM unnest($3::text[],$4::boolean[],$5::bytea[],$6::bytea[])")
-                .bind(&tenant).bind(id.to_string()).bind(ids).bind(matches).bind(evidence).bind(hashes).execute(&mut *c).await?;
-            sqlx::query("INSERT INTO mdm_group.member_pages VALUES($1::uuid,$2::uuid,$3,$4,$5)")
-                .bind(&tenant).bind(id.to_string()).bind(first).bind(&last).bind(fingerprint).execute(&mut *c).await?;
-            sqlx::query("UPDATE mdm_group.member_runs SET cursor=$3,object_count=object_count+$4,member_count=member_count+$5,processed_count=processed_count+$6 WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                .bind(tenant).bind(id.to_string()).bind(last).bind(objects).bind(members).bind(count).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_group.member_rows(tenant_id,run_id,object_kind,object_id,matched,evidence,evidence_digest) SELECT $1::uuid,$2::uuid,* FROM unnest($3::smallint[],$4::uuid[],$5::boolean[],$6::bytea[],$7::bytea[])")
+                .bind(&tenant).bind(id.to_string()).bind(kinds).bind(uuids).bind(matches).bind(evidence).bind(hashes).execute(&mut *c).await?;
+            sqlx::query("INSERT INTO mdm_group.member_pages(tenant_id,run_id,first_kind,first_id,last_kind,last_id,fingerprint) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7)")
+                .bind(&tenant).bind(id.to_string()).bind(first.kind()).bind(first.uuid()).bind(last.kind()).bind(last.uuid()).bind(fingerprint).execute(&mut *c).await?;
+            sqlx::query("UPDATE mdm_group.member_runs SET cursor_kind=$3,cursor=$4,object_count=object_count+$5,member_count=member_count+$6,processed_count=processed_count+$7 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                .bind(tenant).bind(id.to_string()).bind(last.kind()).bind(last.uuid()).bind(objects).bind(members).bind(count).execute(c).await?;
             Ok(())
         })).await?;
         self.build_in(tx, id).await
@@ -553,7 +549,7 @@ impl GroupStore {
         if build.input_sealed {
             return Ok(Ok(build));
         }
-        let wanted: std::collections::BTreeMap<String, bool> = patch
+        let wanted: std::collections::BTreeMap<rss_mdm_agent_wire::DeviceId, bool> = patch
             .remove
             .into_iter()
             .map(|id| (id, false))
@@ -561,18 +557,19 @@ impl GroupStore {
             .collect();
         let tenant = self.tenant.to_string();
         let group_id = group.id.to_string();
-        let selected: Vec<_> = wanted.keys().cloned().collect();
+        let selected: Vec<_> = wanted.keys().map(|id| id.into_uuid()).collect();
         let old=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT d,coalesce((SELECT m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND m.object_id=d AND r.phase='published' ORDER BY m.revision DESC LIMIT 1),false) AS present FROM unnest($3::text[]) d")
+            sqlx::query("SELECT d,coalesce((SELECT m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND m.object_kind=0 AND m.object_id=d AND r.phase='published' ORDER BY m.revision DESC LIMIT 1),false) AS present FROM unnest($3::uuid[]) d")
                 .bind(tenant).bind(group_id).bind(selected).fetch_all(c).await
         })).await?;
         let mut ids = Vec::new();
         let mut values = Vec::new();
         for row in old {
-            let key: String = row.try_get("d")?;
+            let key = rss_mdm_agent_wire::DeviceId::try_from(row.try_get::<uuid::Uuid, _>("d")?)
+                .map_err(|_| stored_shape())?;
             let new = *wanted.get(&key).ok_or_else(stored_shape)?;
             if new != row.try_get::<bool, _>("present")? {
-                ids.push(key);
+                ids.push(key.into_uuid());
                 values.push(new);
             }
         }
@@ -588,7 +585,7 @@ impl GroupStore {
                 .ok_or(Rejection::VersionExhausted)
         );
         tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_group.member_changes(tenant_id,run_id,object_id,group_id,revision,added) SELECT $1::uuid,$2::uuid,d,$3::uuid,$4,v FROM unnest($5::text[],$6::boolean[]) AS p(d,v)")
+            sqlx::query("INSERT INTO mdm_group.member_changes(tenant_id,run_id,object_kind,object_id,group_id,revision,added) SELECT $1::uuid,$2::uuid,0,d,$3::uuid,$4,v FROM unnest($5::uuid[],$6::boolean[]) AS p(d,v)")
                 .bind(&tenant).bind(id.to_string()).bind(group_id).bind(revision).bind(ids).bind(values).execute(&mut *c).await?;
             sqlx::query("UPDATE mdm_group.member_runs SET object_count=$3,member_count=$3,processed_count=$3,added=$4,removed=$5,phase='diff' WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='reading'")
                 .bind(tenant).bind(id.to_string()).bind(members as i64).bind(added as i64).bind(removed as i64).execute(c).await?;Ok(())
@@ -662,16 +659,13 @@ impl GroupStore {
         if build.request.changed_objects.is_some() {
             return self.delta_difference_in(tx, id, &build, previous).await;
         }
-        let after = build.difference_cursor.clone();
+        let after = build.difference_cursor;
         let old = if let Some(previous) = previous {
-            input!(
-                self.build_members_in(tx, previous, after.clone(), 1000)
-                    .await?
-            )
+            input!(self.build_members_in(tx, previous, after, 1000).await?)
         } else {
             vec![]
         };
-        let new = input!(self.build_members_in(tx, id, after.clone(), 1000).await?);
+        let new = input!(self.build_members_in(tx, id, after, 1000).await?);
         let DifferencePage {
             devices,
             ids,
@@ -683,13 +677,15 @@ impl GroupStore {
         let removed = changes.len() as i64 - added;
         let tenant = self.tenant.to_string();
         let dynamic = build.request.patch.is_none();
+        let kinds = ids.iter().map(|o| o.kind()).collect::<Vec<_>>();
+        let uuids = ids.iter().map(|o| o.uuid()).collect::<Vec<_>>();
         tx.with_connection(move |c|Box::pin(async move {
             if dynamic {
-                sqlx::query("INSERT INTO mdm_group.member_changes(tenant_id,run_id,object_id,group_id,revision,added) SELECT r.tenant_id,r.id,d,r.group_id,r.base_calculation+1,v FROM mdm_group.member_runs r CROSS JOIN unnest($3::text[],$4::boolean[]) AS p(d,v) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
-                    .bind(&tenant).bind(id.to_string()).bind(ids).bind(changes).execute(&mut *c).await?;
+                sqlx::query("INSERT INTO mdm_group.member_changes(tenant_id,run_id,object_kind,object_id,group_id,revision,added) SELECT r.tenant_id,r.id,k,d,r.group_id,r.base_calculation+1,v FROM mdm_group.member_runs r CROSS JOIN unnest($3::smallint[],$4::uuid[],$5::boolean[]) AS p(k,d,v) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
+                    .bind(&tenant).bind(id.to_string()).bind(kinds).bind(uuids).bind(changes).execute(&mut *c).await?;
             }
-            sqlx::query("UPDATE mdm_group.member_runs SET diff_cursor=$3,added=added+$4,removed=removed+$5,phase=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                .bind(tenant).bind(id.to_string()).bind(last).bind(if dynamic {added}else{0}).bind(if dynamic {removed}else{0}).bind(if more {"diff"}else{"ready"}).execute(c).await?;Ok(())
+            sqlx::query("UPDATE mdm_group.member_runs SET diff_cursor_kind=$3,diff_cursor=$4,added=added+$5,removed=removed+$6,phase=$7 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                .bind(tenant).bind(id.to_string()).bind(last.map(|o|o.kind())).bind(last.map(|o|o.uuid())).bind(if dynamic {added}else{0}).bind(if dynamic {removed}else{0}).bind(if more {"diff"}else{"ready"}).execute(c).await?;Ok(())
         })).await?;
         let build = input!(self.build_in(tx, id).await?);
         Ok(Ok(DifferenceStep { build, devices }))
@@ -717,12 +713,14 @@ impl GroupStore {
             };
             if same_input {
                 let tenant = self.tenant.to_string();
-                let devices=tx.with_connection(move |c|Box::pin(async move {
-                    let devices=sqlx::query_scalar::<_,String>("SELECT object_id FROM mdm_group.member_changes WHERE tenant_id=$1::uuid AND run_id=$2::uuid ORDER BY object_id LIMIT 1000")
+                let rows=tx.with_connection(move |c|Box::pin(async move {
+                    let rows=sqlx::query("SELECT object_kind,object_id FROM mdm_group.member_changes WHERE tenant_id=$1::uuid AND run_id=$2::uuid ORDER BY object_kind,object_id LIMIT 1000")
                         .bind(&tenant).bind(id.to_string()).fetch_all(&mut *c).await?;
-                    sqlx::query("UPDATE mdm_group.member_runs SET phase='ready',diff_cursor=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                        .bind(tenant).bind(id.to_string()).bind(devices.last()).execute(c).await?;Ok(devices)
+                    let last=rows.last().map(|r|Ok::<_,sqlx::Error>((r.try_get::<i16,_>("object_kind")?,r.try_get::<uuid::Uuid,_>("object_id")?))).transpose()?;
+                    sqlx::query("UPDATE mdm_group.member_runs SET phase='ready',diff_cursor_kind=$3,diff_cursor=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                        .bind(tenant).bind(id.to_string()).bind(last.map(|v|v.0)).bind(last.map(|v|v.1)).execute(c).await?;Ok(rows)
                 })).await?;
+                let devices = rows.iter().map(db::object).collect::<Result<Vec<_>, _>>()?;
                 return Ok(Ok(Some(DifferenceStep {
                     build: input!(self.build_in(tx, id).await?),
                     devices,
@@ -747,7 +745,7 @@ impl GroupStore {
             added != 0 || removed != 0
         } else {
             tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar::<_,bool>("WITH latest AS (SELECT DISTINCT ON(m.object_id) m.object_id,convert_from(m.evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND r.group_id=$2::uuid AND (NOT $4 OR m.object_id IN (SELECT object_id FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid)) AND r.phase='published' AND r.base_calculation >= coalesce((SELECT floor_revision FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid)),0) ORDER BY m.object_id,r.base_calculation DESC), current AS (SELECT object_id,convert_from(evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid) SELECT CASE WHEN $4 THEN EXISTS(SELECT 1 FROM current n LEFT JOIN latest o USING(object_id) WHERE n.decision<>coalesce(o.decision,'no_match')) ELSE EXISTS((SELECT * FROM latest WHERE decision<>'no_match' EXCEPT SELECT * FROM current WHERE decision<>'no_match') UNION ALL (SELECT * FROM current WHERE decision<>'no_match' EXCEPT SELECT * FROM latest WHERE decision<>'no_match')) END")
+                sqlx::query_scalar::<_,bool>("WITH latest AS (SELECT DISTINCT ON(m.object_kind,m.object_id) m.object_kind,m.object_id,convert_from(m.evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND r.group_id=$2::uuid AND (NOT $4 OR (m.object_kind,m.object_id) IN (SELECT object_kind,object_id FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid)) AND r.phase='published' AND r.base_calculation >= coalesce((SELECT floor_revision FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid)),0) ORDER BY m.object_kind,m.object_id,r.base_calculation DESC), current AS (SELECT object_kind,object_id,convert_from(evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid) SELECT CASE WHEN $4 THEN EXISTS(SELECT 1 FROM current n LEFT JOIN latest o USING(object_kind,object_id) WHERE n.decision<>coalesce(o.decision,'no_match')) ELSE EXISTS((SELECT * FROM latest WHERE decision<>'no_match' EXCEPT SELECT * FROM current WHERE decision<>'no_match') UNION ALL (SELECT * FROM current WHERE decision<>'no_match' EXCEPT SELECT * FROM latest WHERE decision<>'no_match')) END")
                     .bind(tenant).bind(owner).bind(id.to_string()).bind(sparse).fetch_one(c).await
             })).await?
         })
@@ -845,9 +843,9 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
-    ) -> InTransaction<Vec<String>> {
+    ) -> InTransaction<Vec<rss_mdm_agent_wire::ObjectRef>> {
         self.sources.build_members_in(tx, id, after, limit).await
     }
 }
@@ -871,14 +869,17 @@ fn member_count_after_patch(
 }
 
 struct DifferencePage {
-    devices: Vec<String>,
-    ids: Vec<String>,
+    devices: Vec<rss_mdm_agent_wire::ObjectRef>,
+    ids: Vec<rss_mdm_agent_wire::ObjectRef>,
     changes: Vec<bool>,
     more: bool,
 }
-fn difference_page(old: Vec<String>, new: Vec<String>) -> DifferencePage {
+fn difference_page(
+    old: Vec<rss_mdm_agent_wire::ObjectRef>,
+    new: Vec<rss_mdm_agent_wire::ObjectRef>,
+) -> DifferencePage {
     let full = old.len() == 1000 || new.len() == 1000;
-    let mut keys = std::collections::BTreeMap::<String, (bool, bool)>::new();
+    let mut keys = std::collections::BTreeMap::<rss_mdm_agent_wire::ObjectRef, (bool, bool)>::new();
     for key in old {
         keys.entry(key).or_default().0 = true;
     }
@@ -890,7 +891,7 @@ fn difference_page(old: Vec<String>, new: Vec<String>) -> DifferencePage {
     let mut ids = Vec::new();
     let mut changes = Vec::new();
     for (key, (old, new)) in keys.into_iter().take(1000) {
-        devices.push(key.clone());
+        devices.push(key);
         if old != new {
             ids.push(key);
             changes.push(new);

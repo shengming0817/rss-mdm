@@ -51,7 +51,7 @@ impl CredentialPolicy {
         &self,
         source: &Arc<dyn Sources>,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<Option<i64>> {
         let profile = source.storage_profile();
@@ -134,7 +134,7 @@ impl CredentialPolicy {
         if run.state.started_at.is_none() {
             let source = service.source.clone();
             let tenant = tx.tenant_id();
-            let device = run.target.device.clone();
+            let device = run.target.device;
             let evidence = run.source_objects.clone();
             if !tx
                 .with_connection(move |c| {
@@ -186,7 +186,7 @@ use sqlx::Row;
 pub async fn agent_versions_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Vec<Uuid>> {
     let tenant = tx.tenant_id().to_string();
     let kinds = vec!["credential"];

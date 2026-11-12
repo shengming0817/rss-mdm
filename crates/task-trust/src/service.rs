@@ -293,7 +293,7 @@ impl Service {
 
         self.require_device(p, audit)?;
         input.validate().map_err(|_| Error::Malformed)?;
-        if input.device_id != p.device() {
+        if input.device_id != *p.device() {
             return Err(Error::Forbidden);
         }
         audit.owned_operation(
@@ -358,7 +358,7 @@ impl Service {
         &self,
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<Option<rss_mdm_agent_wire::task_trust::ObservedInstallation>, Error> {
         let profile = self.signing.profile;
         let usage = self.signing.usage;

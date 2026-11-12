@@ -47,16 +47,22 @@ pub(crate) async fn seed(
         "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2)",
     )
     .bind(c.tenant.to_string())
-    .bind(&object.members[0].device)
+    .bind(object.members[0].device.into_uuid())
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok(policy)
 }
-async fn counts(c: &Context, device: &str) -> Result<(i64, i64, i64, i64, i64, i64, i64, i64)> {
-    Ok(sqlx::query_as("SELECT input_revision, observed_revision, (SELECT count(*) FROM mdm_planning.configuration_claims AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM mdm_planning.configuration_objects AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM mdm_planning.configuration_operations AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM rss_device_command.commands AS x INNER JOIN mdm_access.command_authorities AS a ON (a.tenant_id, a.command_device) = (x.tenant_id, x.device_id) WHERE a.tenant_id = d.tenant_id AND a.device = d.device), (SELECT count(*) FROM mdm_windows.native_commands AS x INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (x.tenant_id, x.device) WHERE r.tenant_id = d.tenant_id AND r.id = d.device), (SELECT count(*) FROM mdm_planning.configuration_receipts AS r INNER JOIN mdm_planning.configuration_operations AS o ON (o.tenant_id, o.id) = (r.tenant_id, r.id) WHERE o.tenant_id = d.tenant_id AND o.device = d.device) FROM mdm_planning.configuration_devices AS d WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?)
+async fn counts(
+    c: &Context,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<(i64, i64, i64, i64, i64, i64, i64, i64)> {
+    Ok(sqlx::query_as("SELECT input_revision, observed_revision, (SELECT count(*) FROM mdm_planning.configuration_claims AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM mdm_planning.configuration_objects AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM mdm_planning.configuration_operations AS x WHERE x.tenant_id = d.tenant_id AND x.device = d.device), (SELECT count(*) FROM rss_device_command.commands AS x INNER JOIN mdm_access.command_authorities AS a ON (a.tenant_id, a.command_device) = (x.tenant_id, x.device_id) WHERE a.tenant_id = d.tenant_id AND a.device = d.device), (SELECT count(*) FROM mdm_windows.native_commands AS x INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (x.tenant_id, x.device) WHERE r.tenant_id = d.tenant_id AND r.id = d.device), (SELECT count(*) FROM mdm_planning.configuration_receipts AS r INNER JOIN mdm_planning.configuration_operations AS o ON (o.tenant_id, o.id) = (r.tenant_id, r.id) WHERE o.tenant_id = d.tenant_id AND o.device = d.device) FROM mdm_planning.configuration_devices AS d WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&c.operator).await?)
 }
-async fn wake(app: &rss_mdm_policy_service::application::Application, device: &str) -> Result<()> {
+async fn wake(
+    app: &rss_mdm_policy_service::application::Application,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<()> {
     transaction::inspect(
         &app.runtime,
         app.tenant,
@@ -78,13 +84,16 @@ async fn wake(app: &rss_mdm_policy_service::application::Application, device: &s
 async fn step(
     worker: &rss_mdm_policy_service::worker::PolicyWork,
     tenant: rss_request_context::TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     let timer = rss_mdm_policy_service::clock::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
     let scope = rss_reconcile::Scope::new(tenant, "mdm.policy")?;
-    let expected = format!("configuration:{:x}", Sha256::digest(device.as_bytes()));
+    let expected = format!(
+        "configuration:{:x}",
+        Sha256::digest(device.to_string().as_bytes())
+    );
     let batch = worker
         .claim_due(&scope, 16, Duration::from_secs(30), &control)
         .await?;
@@ -210,7 +219,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     assert_eq!(configuration.relay_once(&control).await?, 0);
     let committed = counts(&c, device).await?;
     assert_eq!(committed, (2, 2, 1, 1, 1, 1, 1, 1));
-    let identity:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id, o.authority, r.actor FROM mdm_planning.configuration_operations AS o INNER JOIN mdm_planning.configuration_receipts AS r USING (tenant_id, id) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?;
+    let identity:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id, o.authority, r.actor FROM mdm_planning.configuration_operations AS o INNER JOIN mdm_planning.configuration_receipts AS r USING (tenant_id, id) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2").bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(identity.1["policy"], json!(policy));
     drop(worker);
     drop(app);
@@ -242,9 +251,9 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     step(&worker, c.tenant, device).await?;
     let replay = counts(&c, device).await?;
     assert_eq!(replay, (3, 3, 1, 1, 1, 1, 1, 1));
-    let after:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id, o.authority, r.actor FROM mdm_planning.configuration_operations AS o INNER JOIN mdm_planning.configuration_receipts AS r USING (tenant_id, id) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?;
+    let after:(Uuid,serde_json::Value,String)=sqlx::query_as("SELECT o.id, o.authority, r.actor FROM mdm_planning.configuration_operations AS o INNER JOIN mdm_planning.configuration_receipts AS r USING (tenant_id, id) WHERE o.tenant_id = CAST($1 AS uuid) AND o.device = $2").bind(c.tenant.to_string()).bind(device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(after, identity);
-    let foreign:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(&sentinel.members[0].device).fetch_one(&c.operator).await?;
+    let foreign:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_operations WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(sentinel.members[0].device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(foreign, 0);
     let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm.policy.configuration.v1'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(outbox, 1);

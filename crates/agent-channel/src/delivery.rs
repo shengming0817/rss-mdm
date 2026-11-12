@@ -65,7 +65,7 @@ pub trait Tasks: Send + Sync {
     fn cancellations<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         after: Option<Uuid>,
     ) -> Pending<'a, Vec<wire::TaskCancellation>>;
     fn content<'a>(
@@ -177,7 +177,7 @@ impl Delivery {
                                 .update_context(
                                     c,
                                     principal.tenant().to_string(),
-                                    principal.device().to_string(),
+                                    *principal.device(),
                                     claim.execution_context(),
                                 )
                                 .await?;
@@ -185,7 +185,7 @@ impl Delivery {
                                 .announce(
                                     c,
                                     principal.tenant().to_string(),
-                                    principal.device().to_string(),
+                                    *principal.device(),
                                     &claim,
                                 )
                                 .await?;
@@ -230,7 +230,7 @@ impl Delivery {
                 } else {
                     (None, None)
                 };
-                let after = cancellation_after(profile, tx, p.device().to_string()).await?;
+                let after = cancellation_after(profile, tx, *p.device()).await?;
                 let cancellations = s
                     .tasks
                     .cancellations(tx, p.device().to_owned(), after)
@@ -288,7 +288,7 @@ impl Delivery {
                                 .update_context(
                                     c,
                                     principal.tenant().to_string(),
-                                    principal.device().to_string(),
+                                    *principal.device(),
                                     &context,
                                 )
                                 .await)
@@ -489,7 +489,7 @@ pub async fn payload(
 async fn replay(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     operation: Uuid,
     hash: &[u8],
 ) -> Result<Option<serde_json::Value>, Error> {
@@ -505,7 +505,7 @@ async fn replay(
                     .map_err(db)?;
                 let row = sqlx::query(crate::storage_profile::sql(profile).delivery_replay_1)
                     .bind(tenant)
-                    .bind(&device)
+                    .bind(device.into_uuid())
                     .bind(operation)
                     .fetch_optional(c)
                     .await
@@ -527,7 +527,7 @@ async fn replay(
 async fn receipt(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     operation: Uuid,
     hash: Vec<u8>,
     response: &impl serde::Serialize,
@@ -538,7 +538,7 @@ async fn receipt(
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).delivery_receipt_1)
                 .bind(tenant)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .bind(operation)
                 .bind(hash)
                 .bind(value)
@@ -568,7 +568,7 @@ async fn persist_offer(
                 .bind(tenant)
                 .bind(attempt)
                 .bind(run)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .bind(value)
                 .bind(deadline)
                 .execute(c)
@@ -613,19 +613,19 @@ async fn persist_permit(
 async fn cancellation_after(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<Uuid>, Error> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).delivery_cancellation_after_1)
                 .bind(&tenant)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .execute(&mut *c)
                 .await?;
             sqlx::query_scalar(crate::storage_profile::sql(profile).delivery_cancellation_after_2)
                 .bind(tenant)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .fetch_one(c)
                 .await
         })
@@ -636,7 +636,7 @@ async fn cancellation_after(
 async fn save_cancellation_after(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     after: Option<Uuid>,
 ) -> Result<(), Error> {
     let tenant = tx.tenant_id().to_string();
@@ -644,7 +644,7 @@ async fn save_cancellation_after(
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).delivery_save_cancellation_after_1)
                 .bind(tenant)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .bind(after)
                 .execute(c)
                 .await?;
@@ -676,7 +676,7 @@ fn start_permit(payload: &mut wire::TaskPayload, expiry: i64) {
 pub async fn offer_after_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<(i64, Uuid)>, Error> {
     let tenant = tx.tenant_id().to_string();
     let (at, id) = tx
@@ -684,14 +684,14 @@ pub async fn offer_after_in(
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).delivery_offer_after_in_1)
                     .bind(&tenant)
-                    .bind(&device)
+                    .bind(device.into_uuid())
                     .execute(&mut *c)
                     .await?;
                 sqlx::query_as::<_, (Option<i64>, Option<Uuid>)>(
                     crate::storage_profile::sql(profile).delivery_offer_after_in_2,
                 )
                 .bind(tenant)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .fetch_one(c)
                 .await
             })
@@ -707,7 +707,7 @@ pub async fn offer_after_in(
 pub async fn offer_through_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     after: Option<(i64, Uuid)>,
 ) -> Result<(), Error> {
     let tenant = tx.tenant_id().to_string();
@@ -715,7 +715,7 @@ pub async fn offer_through_in(
         Box::pin(async move {
             sqlx::query(crate::storage_profile::sql(profile).delivery_offer_through_in_1)
                 .bind(tenant)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .bind(after.map(|v| v.0))
                 .bind(after.map(|v| v.1))
                 .execute(c)

@@ -44,7 +44,7 @@ pub struct Event {
     pub version: u8,
     pub occurred_at: i64,
     pub tenant_id: Uuid,
-    pub device_id: String,
+    pub device_id: rss_mdm_agent_wire::DeviceId,
     pub data: EventData,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -58,7 +58,7 @@ pub enum EventData {
     DeviceAccess {
         operation_id: Uuid,
         binding_id: Uuid,
-        device_id: String,
+        device_id: rss_mdm_agent_wire::DeviceId,
         instance_id: Uuid,
         principal_id: Uuid,
         previous_principal: Option<Uuid>,
@@ -69,14 +69,14 @@ pub enum EventData {
         phase: String,
     },
     Registration {
-        device_id: String,
+        device_id: rss_mdm_agent_wire::DeviceId,
         channel: String,
         state: String,
     },
     Policy {
         run_id: Uuid,
         policy_version: Uuid,
-        device_id: String,
+        device_id: rss_mdm_agent_wire::DeviceId,
         status: String,
     },
     Compliance {
@@ -94,8 +94,6 @@ impl Event {
             || self.tenant_id.is_nil()
             || self.version != 1
             || self.occurred_at < 0
-            || self.device_id.is_empty()
-            || self.device_id.len() > 255
         {
             return Err(Error::Invalid);
         }
@@ -201,8 +199,12 @@ impl Event {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Selection {
     AllDevices,
-    Devices { ids: Vec<String> },
-    Groups { ids: Vec<Uuid> },
+    Devices {
+        ids: Vec<rss_mdm_agent_wire::DeviceId>,
+    },
+    Groups {
+        ids: Vec<Uuid>,
+    },
 }
 #[derive(schemars::JsonSchema, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -256,7 +258,6 @@ impl Settings {
             Selection::Devices { ids }
                 if !ids.is_empty()
                     && ids.len() <= 256
-                    && ids.iter().all(|i| text(i, 255))
                     && ids.iter().collect::<std::collections::BTreeSet<_>>().len() == ids.len() => {
             }
             Selection::Groups { ids }
@@ -334,10 +335,16 @@ mod tests {
         let mut a = settings();
         let mut b = a.clone();
         a.selection = Selection::Devices {
-            ids: vec!["a".into(), "b".into()],
+            ids: vec![
+                rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(1)).unwrap(),
+                rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(2)).unwrap(),
+            ],
         };
         b.selection = Selection::Devices {
-            ids: vec!["b".into(), "a".into()],
+            ids: vec![
+                rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(2)).unwrap(),
+                rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(1)).unwrap(),
+            ],
         };
         assert!(a.same_delivery(&b));
         let (x, y) = (Uuid::new_v4(), Uuid::new_v4());
@@ -370,11 +377,12 @@ mod tests {
             event_type: EventType::PolicyTerminal,
             version: 1,
             occurred_at: 0,
-            device_id: "device".into(),
+            device_id: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+                .unwrap(),
             data: EventData::Policy {
                 run_id: Uuid::new_v4(),
                 policy_version: Uuid::new_v4(),
-                device_id: Uuid::new_v4().to_string(),
+                device_id: rss_mdm_agent_wire::DeviceId::try_from(Uuid::new_v4()).unwrap(),
 
                 status: "unknown".into(),
             },
@@ -391,7 +399,10 @@ mod tests {
             (
                 EventType::Registered,
                 EventData::Registration {
-                    device_id: "device-a".into(),
+                    device_id: rss_mdm_agent_wire::DeviceId::parse(
+                        "e9b5bd79-4201-51f0-a6b4-d6713d03b511",
+                    )
+                    .unwrap(),
                     channel: "mdm".into(),
                     state: "active".into(),
                 },
@@ -401,7 +412,10 @@ mod tests {
                 EventData::Policy {
                     run_id: id,
                     policy_version: id,
-                    device_id: "device-a".into(),
+                    device_id: rss_mdm_agent_wire::DeviceId::parse(
+                        "e9b5bd79-4201-51f0-a6b4-d6713d03b511",
+                    )
+                    .unwrap(),
                     status: "succeeded".into(),
                 },
             ),
@@ -410,7 +424,10 @@ mod tests {
                 EventData::DeviceAccess {
                     operation_id: id,
                     binding_id: id,
-                    device_id: "device-a".into(),
+                    device_id: rss_mdm_agent_wire::DeviceId::parse(
+                        "e9b5bd79-4201-51f0-a6b4-d6713d03b511",
+                    )
+                    .unwrap(),
                     instance_id: id,
                     principal_id: id,
                     previous_principal: None,
@@ -428,7 +445,10 @@ mod tests {
                 version: 1,
                 occurred_at: 1,
                 tenant_id: id,
-                device_id: "device-a".into(),
+                device_id: rss_mdm_agent_wire::DeviceId::parse(
+                    "e9b5bd79-4201-51f0-a6b4-d6713d03b511",
+                )
+                .unwrap(),
                 data,
             };
             event.validate().unwrap();

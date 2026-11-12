@@ -63,14 +63,14 @@ impl Password {
         }
         Ok(Self(Zeroizing::new(value)))
     }
-    pub fn digest(&self, tenant: &str, device: &str) -> Result<String, EnrollmentError> {
+    pub fn digest(&self, tenant: &str, binding: Uuid) -> Result<String, EnrollmentError> {
         if !valid(&self.0) {
             return Err(EnrollmentError::InvalidPassword);
         }
         Ok(digest(&(
             "mdm.enrollment.password.v1",
             tenant,
-            device,
+            binding,
             self.0.as_str(),
         )))
     }
@@ -88,14 +88,14 @@ pub struct Receipt {
     pub enrollment_id: Uuid,
     pub status: String,
     pub expires_at: i64,
-    pub device_id: String,
+    pub device_id: rss_mdm_agent_wire::DeviceId,
     pub source: ReportSource,
 }
 /// All fields originate in PG, never in device claims.
 pub struct Authorization {
     pub self_service: bool,
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub actor: String,
     pub instance: String,
     pub credential_ref: Uuid,
@@ -330,7 +330,7 @@ impl EnrollmentService {
     pub async fn registration(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<registration::Registration, Error> {
         registration::read(self.profile(), &self.access, request, device).await
     }

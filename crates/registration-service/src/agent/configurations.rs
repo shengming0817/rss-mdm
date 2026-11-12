@@ -625,7 +625,7 @@ impl Service {
                 .bind(input.operation_id)
                 .bind(config.try_get::<String, _>("creator").map_err(db)?)
                 .bind(config.try_get::<String, _>("instance").map_err(db)?)
-                .bind(Uuid::new_v4().to_string())
+                .bind(rss_mdm_agent_wire::DeviceId::new_v4().into_uuid())
                 .bind(platform(input.runtime.platform))
                 .bind(secret_digest(&tenant, id, &input.secret))
                 .bind(&*d)

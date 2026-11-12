@@ -181,7 +181,7 @@ async fn create(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     input: std::result::Result<Json<Input>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<
     rss_mdm_http_contract::signature::WithStatus<
@@ -208,7 +208,7 @@ async fn read(
     State(app): State<Arc<dyn super::operations::Reads>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> std::result::Result<Json<super::operations::Detail>, Error> {
     audit.operation(
         id,
@@ -222,7 +222,7 @@ async fn cancel(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
     input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<rss_mdm_device_service::control::ChangedReceipt>, Error> {
     let change = input.map_err(Error::from)?.0;
@@ -242,7 +242,7 @@ async fn reauthorize(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
     input: std::result::Result<Json<Reauthorization>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<rss_mdm_device_service::control::ChangedReceipt>, Error> {
     let change = input.map_err(Error::from)?.0;
@@ -286,7 +286,7 @@ async fn ddm(
     State(s): State<Arc<dyn super::operations::Reads>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
     query: rss_mdm_http_contract::query::OwnedQuery<rss_mdm_http_contract::query::Window<DdmQuery>>,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<super::projection::Ddm>>, Error> {
@@ -305,7 +305,7 @@ async fn create_recovery(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     input: Result<
         Json<rss_mdm_recovery_credentials::native::operations::Input>,
         axum::extract::rejection::JsonRejection,
@@ -381,7 +381,7 @@ async fn task_trust_observation(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> std::result::Result<Json<Option<rss_mdm_agent_wire::task_trust::ObservedInstallation>>, Error>
 {
     s.task_trust

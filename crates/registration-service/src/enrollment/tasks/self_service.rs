@@ -91,7 +91,7 @@ async fn prepare_in(
         profile,
         &service.transactions,
         tx,
-        target.device.clone(),
+        target.device,
     )
     .await?
     .ok_or(Error::Forbidden)?;
@@ -110,7 +110,7 @@ async fn prepare_in(
 }
 fn target(p: &DevicePrincipal) -> Target {
     Target {
-        device: p.device().into(),
+        device: *p.device(),
     }
 }
 fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
@@ -466,7 +466,7 @@ async fn invocation_slot_in(
     {
         return Ok(None);
     }
-    let Some(slot) = schedule.occurrence(now, target.device.as_bytes())? else {
+    let Some(slot) = schedule.occurrence(now, target.device.to_string().as_bytes())? else {
         return Ok(None);
     };
     let available = slot.available_at.max(now);
@@ -556,7 +556,7 @@ pub(crate) async fn advance_waiting_in(
         }
         let source = service.transactions.source.clone();
         let tenant = tx.tenant_id();
-        let device = run.target.device.clone();
+        let device = run.target.device;
         let evidence = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -616,7 +616,7 @@ pub async fn diagnostic_on(
         return Err(Error::Malformed.into());
     }
     let actor = locator.actor.as_deref().ok_or(Error::Malformed)?;
-    let device = locator.device.as_deref().ok_or(Error::Malformed)?;
+    let device = locator.device.as_ref().ok_or(Error::Malformed)?;
     grant.require(p, Permission::OperationRead, Some(device))?;
     let raw: Option<Value> = sqlx::query_scalar(
         crate::storage_profile::sql(p.profile()).enrollment_tasks_diagnostic_receipt,
@@ -624,8 +624,8 @@ pub async fn diagnostic_on(
     .bind(p.tenant_id())
     .bind(actor)
     .bind(locator.operation_id)
-    .bind(device)
-    .bind(device)
+    .bind(device.into_uuid())
+    .bind(device.into_uuid())
     .fetch_optional(c)
     .await?;
     let Some(raw) = raw else { return Ok(None) };
@@ -634,7 +634,7 @@ pub async fn diagnostic_on(
         return Err(Error::Malformed.into());
     }
     let mut value = rss_mdm_audit_integration::operation::ReceiptSummary::new(locator.operation_id);
-    value.object = Some(device.into());
+    value.object = Some(device.to_string());
     value.accepted = Some(true);
     value.revision = Some(i64::try_from(response.policy_revision).map_err(|_| Error::Malformed)?);
     value.executions.push(response.run_id);

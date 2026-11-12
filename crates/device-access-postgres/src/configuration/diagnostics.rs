@@ -42,25 +42,25 @@ impl Service {
         signing: &ConfigurationService,
         authorities: &Authorities,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<Diagnostics, Error> {
         self.read_with_session(p, (self, signing, authorities, p, device), |ctx, c| Box::pin(async move {
             let (service, signing, authorities, p, device) = *ctx;
             let tenant = tenant(p)?;
-            authorize(c, p, &policy::Target::Device { device: device.into() }, false, false).await?;
+            authorize(c, p, &policy::Target::Device { device: *device }, false, false).await?;
             endpoints::lock_da_in(c, p.tenant_id(), device).await?;
             let anchor = endpoints::current_da_in(c, p.tenant_id(), device).await?.ok_or(Error::NotFound)?;
             policy::lock_publications_on(c, tenant).await.map_err(fault)?;
             let publication = policy::selected_on(c, tenant, device).await.map_err(fault)?;
             let now = crate::platform_sso::store::now(c).await?;
             let identity = da::ReportIdentity { service_id: service.service_id()?, tenant,
-                device_id: anchor.device.clone(),  };
+                device_id: anchor.device,  };
 
             // Each authority retains bounded references per immutable Policy, even after a
             // complete snapshot omits configuration, reports ordinary delivery, or is revoked.
             let previous: Vec<serde_json::Value> = sqlx::query_scalar(
                 "SELECT mandatory FROM rss_da.deployment_evidence WHERE tenant_id = $1 AND device = $2")
-                .bind(tenant).bind(&anchor.device)
+                .bind(tenant).bind(anchor.device.into_uuid())
                 .fetch_all(&mut *c).await.map_err(crate::database::db)?;
             let mut locked = Vec::new();
             for value in previous {

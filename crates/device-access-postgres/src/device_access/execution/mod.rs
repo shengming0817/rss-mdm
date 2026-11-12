@@ -24,7 +24,7 @@ pub use transaction::{Result, checked_input, stored};
 use uuid::Uuid;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Target {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 pub const INSTALL_SQL: &str = include_str!("../../../schema/device-access-tasks.sql");
 

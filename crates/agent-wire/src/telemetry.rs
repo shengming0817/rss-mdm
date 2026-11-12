@@ -308,7 +308,7 @@ pub struct TelemetryConfiguration {
     /// Trusted tenant coordinate; compare with the local enrollment before execution.
     pub tenant_id: uuid::Uuid,
     /// Trusted device coordinate.
-    pub device_id: String,
+    pub device_id: crate::DeviceId,
 
     /// Exact source incarnation for producer sequence ownership.
     pub source_epoch: uuid::Uuid,
@@ -546,9 +546,6 @@ impl TelemetryConfiguration {
     pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
         if self.tenant_id.is_nil()
             || self.source_epoch.is_nil()
-            || self.device_id.is_empty()
-            || self.device_id.len() > 1024
-            || self.device_id.chars().any(char::is_control)
             || self.issued_at < 0
             || self.expires_at <= self.issued_at
             || self.expires_at - self.issued_at > 300

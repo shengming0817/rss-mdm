@@ -52,7 +52,8 @@ fn task() -> SoftwareTaskSpec {
     let mut task = SoftwareTaskSpec {
         wire_version: 1,
         tenant_id: id,
-        device_id: "device".into(),
+        device_id: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+            .unwrap(),
 
         task_id: id,
         attempt_id: id,

@@ -20,7 +20,7 @@ pub use transaction::{Result, checked_input, stored};
 use uuid::Uuid;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Target {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 pub use actions::production::messaging_domain;
 pub use actions::storage;

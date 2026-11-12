@@ -109,7 +109,7 @@
         "sqlParameters": null,
         "timeoutSeconds": 1
       },
-      "deviceId": "telemetry-vector",
+      "deviceId": "23cd0f4e-49b6-52d1-8ac2-483415aa70ff",
       "executionMillis": 1000,
       "expiresAt": 1300,
       "fields": [
@@ -201,8 +201,8 @@
       "uploadMillis": 10000
     },
     "keyId": "vector-key",
-    "signature": "YLinrKAPUFjnuZteZkla7iASzQW9qermQZa0yMinYZucS2VRdZeWnDOSf8SUlkNczWehHfiBGWTz5qGwUj1VAA"
+    "signature": "Prx_OBUYcQty_13oOrEyJaICsAKuiNdsNfY8VgpC1WMKke82eYygFl1Gc-XG-t0kxzfc2Iyu0BqUsms1Yz9VAw"
   },
-  "signingBytesLength": 1690,
-  "signingBytesSha256": "18f65dc3db7d8fcb9b50b10a035a1a000073914265b6ded9bccdec9050d83591"
+  "signingBytesLength": 1710,
+  "signingBytesSha256": "c1687d8a025a4d0cfc0031f2399e2782e4e276f4ea93d21cee887863cb4b7961"
 }

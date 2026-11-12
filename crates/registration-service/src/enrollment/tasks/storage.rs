@@ -52,7 +52,9 @@ async fn run_in(
         policy_version: row.try_get("policy_version")?,
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         target: crate::enrollment::tasks::Target {
-            device: row.try_get("device")?,
+            device: row
+                .try_get::<uuid::Uuid, _>("device")
+                .and_then(crate::database::device_id)?,
         },
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
@@ -144,11 +146,11 @@ pub async fn save_run(
                 version: 1,
                 occurred_at,
                 tenant_id: stored(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                device_id: run.target.device.clone(),
+                device_id: run.target.device,
                 data: EventData::Policy {
                     run_id: run.id,
                     policy_version: run.policy_version,
-                    device_id: run.target.device.to_string(),
+                    device_id: run.target.device,
 
                     status: status.into(),
                 },
@@ -181,10 +183,10 @@ pub async fn pending_in(
                     crate::storage_profile::sql(profile).enrollment_tasks_storage_pending_in_1,
                 )
                 .bind(tenant)
-                .bind(&target.device)
+                .bind(target.device.into_uuid())
                 .bind(policy)
                 .bind(version)
-                .bind(&target.device)
+                .bind(target.device.into_uuid())
                 .bind(now)
                 .fetch_one(c)
                 .await
@@ -197,14 +199,14 @@ pub async fn active_count_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         crate::storage_profile::sql(profile).enrollment_tasks_storage_active_count_on_1,
     )
     .bind(tenant.to_string())
-    .bind(device)
+    .bind(device.into_uuid())
     .bind(now)
     .fetch_one(c)
     .await
@@ -288,7 +290,7 @@ pub async fn receipt(
                 .bind(id)
                 .bind(fingerprint)
                 .bind(response)
-                .bind(&target.device)
+                .bind(target.device.into_uuid())
                 .execute(c)
                 .await?;
             Ok(())
@@ -300,7 +302,7 @@ pub async fn receipt(
 pub async fn lock_device(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let devices = vec![device.to_owned()];
@@ -326,7 +328,7 @@ pub async fn now(tx: &mut PgTransaction<'_>) -> Result<i64> {
 pub async fn authorized(
     tx: &mut PgTransaction<'_>,
     proof: &crate::enrollment::tasks::authorization::context::AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     permission: crate::enrollment::tasks::authorization::Permission,
 ) -> Result<crate::enrollment::tasks::authorization::Snapshot> {
     let snapshot = current(tx, proof).await?;
@@ -364,10 +366,20 @@ pub async fn association_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     id: uuid::Uuid,
-) -> std::result::Result<Option<(String, Option<uuid::Uuid>)>, sqlx::Error> {
+) -> std::result::Result<Option<(rss_mdm_agent_wire::DeviceId, Option<uuid::Uuid>)>, sqlx::Error> {
     sqlx::query_as(crate::storage_profile::sql(profile).enrollment_tasks_storage_association_on_1)
         .bind(tenant)
         .bind(id)
         .fetch_optional(c)
         .await
+        .and_then(|row: Option<(uuid::Uuid, Option<uuid::Uuid>)>| {
+            row.map(|(id, operation)| {
+                Ok((
+                    rss_mdm_agent_wire::DeviceId::try_from(id)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+                    operation,
+                ))
+            })
+            .transpose()
+        })
 }

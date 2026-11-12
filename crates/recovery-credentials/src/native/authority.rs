@@ -6,7 +6,7 @@ use authorization::{
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Authority {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub operation: Uuid,
     pub required: Vec<Permission>,
     pub actor: Actor,
@@ -16,7 +16,7 @@ impl Authority {
     pub fn admitted(
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         permissions: Vec<Permission>,
     ) -> std::result::Result<Self, Error> {
@@ -25,7 +25,7 @@ impl Authority {
             .map(|p| OperationAuthority::from_proof(snapshot, proof, device, *p).map(|a| (*p, a)))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Self {
-            device: device.into(),
+            device: *device,
             operation,
             required: permissions,
             actor: proof.actor(),
@@ -54,7 +54,7 @@ impl Authority {
         if self.actor.tenant_id() != tenant.to_string() || self.required.is_empty() {
             return Ok(false);
         }
-        let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant.to_string()).bind(&self.device).fetch_one(&mut *c).await.map_err(database::db)?;
+        let active:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active')").bind(tenant.to_string()).bind(self.device.into_uuid()).fetch_one(&mut *c).await.map_err(database::db)?;
         if !active
             || !rss_mdm_registration_service::lifecycle::work_allowed_in(
                 rss_mdm_install_support::StorageProfile::Mdm,

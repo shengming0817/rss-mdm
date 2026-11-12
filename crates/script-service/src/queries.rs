@@ -10,7 +10,7 @@ pub struct Record<R> {
     pub task_id: Uuid,
     pub policy_id: Uuid,
     pub version_id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub occurrence: String,
     pub available_at: i64,
     pub deadline: i64,
@@ -78,8 +78,10 @@ pub async fn detail_on(
     proof: &AuthorizedPrincipal,
     grant: &Snapshot,
 ) -> Result<Detail> {
-    let row:Option<(String,bool)>=sqlx::query_as("SELECT r.device,(v.frozen->'action'->'collection') IS NOT NULL AND v.frozen->'action'->'collection'<>'null'::jsonb FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(tenant).bind(policy).bind(id).fetch_optional(&mut *c).await?;
+    let row:Option<(Uuid,bool)>=sqlx::query_as("SELECT r.device,(v.frozen->'action'->'collection') IS NOT NULL AND v.frozen->'action'->'collection'<>'null'::jsonb FROM mdm_script.runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(tenant).bind(policy).bind(id).fetch_optional(&mut *c).await?;
     let (device, collection) = row.ok_or(Error::NotFound)?;
+    let device = rss_mdm_agent_wire::DeviceId::try_from(device)
+        .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
     grant.require(proof, Permission::OperationRead, Some(&device))?;
     if collection {
         grant.require(proof, Permission::InventoryRead, Some(&device))?;
@@ -110,7 +112,7 @@ pub async fn latest_assignment_on(
         .build_query_scalar::<serde_json::Value>()
         .bind(tenant.to_string())
         .bind(policy)
-        .bind(&target.device)
+        .bind(target.device.into_uuid())
         .fetch_optional(c)
         .await?
         .map(|v| crate::stored(serde_json::from_value(v)))

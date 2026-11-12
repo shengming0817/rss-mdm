@@ -50,7 +50,7 @@ pub(crate) async fn policy_on(
     scope: rss_request_context::TenantId,
     c: &mut sqlx::PgConnection,
     tenant: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     policy: Uuid,
 ) -> std::result::Result<rss_mdm_device_access::PolicySelection, AccessError> {
     if tenant.to_string() != scope.to_string() {
@@ -72,13 +72,13 @@ pub(crate) async fn policy_on(
 // The writer takes its business locks above; snapshot discovery only evaluates the same SQL facts.
 async fn policy_read_on(
     c: &mut sqlx::PgConnection,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     policy: Uuid,
     now: i64,
 ) -> std::result::Result<rss_mdm_device_access::PolicySelection, AccessError> {
     let selection: serde_json::Value = sqlx::query_scalar("SELECT rss_da.access_policy($1,$2,$3)")
         .bind(policy)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(now)
         .fetch_one(c)
         .await
@@ -142,8 +142,7 @@ impl Plan {
             return Ok(false);
         }
         let native =
-            agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.device.clone())
-                .await?;
+            agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.device).await?;
         if !native
             .as_ref()
             .is_some_and(|b| capable(b, &self.binding.configuration.windows))
@@ -179,7 +178,7 @@ impl Plan {
                     return Ok(Ok(true));
                 }
                 let enabled: bool = sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)=$1::text AND rss_da.access_policy($2,$3,floor(extract(epoch FROM clock_timestamp()))::bigint)->>'version'=$4")
-                    .bind(tenant).bind(current.policy).bind(&current.device).bind(current.policy_version.to_string()).fetch_one(c).await?;
+                    .bind(tenant).bind(current.policy).bind(current.device.into_uuid()).bind(current.policy_version.to_string()).fetch_one(c).await?;
                 Ok(Ok(enabled))
             })
         })
@@ -195,7 +194,7 @@ impl Plan {
         if issue.run != self.delivery || !self.allowed_in(service, tx, target).await? {
             return Err(Error::Forbidden.into());
         }
-        let (_, architecture) = runs::agent_profile_in(service, tx, target.device.clone())
+        let (_, architecture) = runs::agent_profile_in(service, tx, target.device)
             .await?
             .ok_or(Error::Forbidden)?;
         let run = runs::load_run(tx, issue.run).await?;
@@ -230,7 +229,7 @@ impl Plan {
         let spec = wire::AccessTaskSpec {
             wire_version: wire::WIRE_VERSION,
             tenant_id: b.tenant,
-            device_id: target.device.clone(),
+            device_id: target.device,
 
             platform: b.intent.platform(),
             architecture: match architecture {
@@ -299,7 +298,7 @@ pub(crate) async fn prepare_target_reconciliation_in(
     // Retirement needs this poll to carry its accepted cleanup/unmanage work.
     // Keep the existing lifecycle lock and propagate storage faults unchanged.
     let tenant_name = tx.tenant_id().to_string();
-    let device_name = target.device.clone();
+    let device_name = target.device;
     let work_allowed = tx
         .with_connection(move |c| {
             Box::pin(async move {
@@ -320,9 +319,9 @@ pub(crate) async fn prepare_target_reconciliation_in(
         });
     }
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
-    let name = target.device.clone();
+    let name = target.device;
     let documents:Vec<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{
-        sqlx::query_scalar("SELECT b.document FROM rss_da.bindings AS b INNER JOIN rss_da.agent_delivery AS d ON (d.tenant_id, d.da_device) = (b.tenant_id, b.device) WHERE b.tenant_id = $1 AND d.agent_device = $2 AND (CAST($3 AS uuid) IS NULL OR b.document ->> 'policy' = CAST($3 AS text)) AND d.enabled ORDER BY b.id LIMIT 128").bind(tenant).bind(name).bind(policy).fetch_all(c).await
+        sqlx::query_scalar("SELECT b.document FROM rss_da.bindings AS b INNER JOIN rss_da.agent_delivery AS d ON (d.tenant_id, d.da_device) = (b.tenant_id, b.device) WHERE b.tenant_id = $1 AND d.agent_device = $2 AND (CAST($3 AS uuid) IS NULL OR b.document ->> 'policy' = CAST($3 AS text)) AND d.enabled ORDER BY b.id LIMIT 128").bind(tenant).bind(name.into_uuid()).bind(policy).fetch_all(c).await
     })).await?;
     let mut bindings = Vec::new();
     for document in documents {

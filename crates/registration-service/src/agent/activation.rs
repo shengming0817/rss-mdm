@@ -73,8 +73,11 @@ impl Service {
                     {
                         return Err(Error::Unauthorized);
                     }
-                    let device: String = g.try_get("device").map_err(db)?;
-                    a.target(&device);
+                    let device: rss_mdm_agent_wire::DeviceId = g
+                        .try_get::<uuid::Uuid, _>("device")
+                        .and_then(crate::database::device_id)
+                        .map_err(db)?;
+                    a.target_device(&device);
                     device::store::lock_registration(
                         profile,
                         c,
@@ -97,7 +100,7 @@ impl Service {
                             serde_json::from_value(result).map_err(|_| Error::Corrupt)?;
                         let p = device::authenticate_endpoint_in(profile, c, service.tenant, proof)
                             .await?;
-                        a.target(p.device());
+                        a.target_device(p.device());
                         return Ok(Change {
                             value: out,
                             replay: true,
@@ -129,7 +132,7 @@ impl Service {
                             crate::storage_profile::sql(profile).agent_activation_activate_5,
                         )
                         .bind(&tenant)
-                        .bind(&device)
+                        .bind(device.into_uuid())
                         .bind(predecessor)
                         .bind(service.registration_channel())
                         .fetch_optional(&mut *c)
@@ -195,7 +198,7 @@ impl Service {
                             crate::storage_profile::sql(profile).agent_activation_activate_10,
                         )
                         .bind(&tenant)
-                        .bind(&device)
+                        .bind(device.into_uuid())
                         .bind(grant)
                         .bind(epoch)
                         .bind(service.registration_channel())
@@ -228,7 +231,7 @@ impl Service {
                                 crate::storage_profile::sql(profile).agent_activation_activate_11,
                             )
                             .bind(&tenant)
-                            .bind(&device)
+                            .bind(device.into_uuid())
                             .bind(source)
                             .bind(epoch)
                             .execute(&mut *c)
@@ -246,7 +249,7 @@ impl Service {
                                         Binding {
                                             profile,
                                             tenant: service.tenant,
-                                            device: device.clone(),
+                                            device,
                                             epoch,
                                             operation: input.operation_id,
                                         },
@@ -265,7 +268,7 @@ impl Service {
                     sqlx::query(crate::storage_profile::sql(profile).agent_activation_activate_12)
                         .bind(&tenant)
                         .bind(credential)
-                        .bind(&device)
+                        .bind(device.into_uuid())
                         .bind(&*fingerprint)
                         .bind(service.registration_channel())
                         .bind(service.registration_purpose().as_str())

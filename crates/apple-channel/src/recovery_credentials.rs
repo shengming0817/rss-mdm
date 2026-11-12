@@ -82,12 +82,18 @@ pub(crate) async fn purge_inputs(
         .bind(tenant).bind(operation).fetch_all(&mut *c).await.map_err(crate::database::db)?;
     for row in rows {
         let id = row.try_get("id").map_err(crate::database::db)?;
-        let device = row.try_get("device").map_err(crate::database::db)?;
+        let device = row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })
+            .map_err(crate::database::db)?;
 
         let plain = crate::protection::open(
             key,
             tenant,
-            device,
+            &device,
             id,
             crate::protection::Part::Request,
             &row.try_get::<Vec<u8>, _>("request")
@@ -99,7 +105,7 @@ pub(crate) async fn purge_inputs(
         let sealed = crate::protection::seal(
             key,
             tenant,
-            device,
+            &device,
             id,
             crate::protection::Part::Request,
             &encoded,

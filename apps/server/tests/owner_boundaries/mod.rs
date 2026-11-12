@@ -429,12 +429,16 @@ async fn fact_readers_reject_cross_runtime_and_tenant_and_keep_the_frozen_cut() 
                     .0
                     .changes_page_in(tx, Some(&ctx.4), &ctx.5, 0, None, 1000)
                     .await?;
-                assert!(changes.iter().any(
-                    |e| e.identity.device.as_deref() == Some(first.members[0].device.as_str())
-                ));
-                assert!(!changes.iter().any(
-                    |e| e.identity.device.as_deref() == Some(later.members[0].device.as_str())
-                ));
+                assert!(
+                    changes
+                        .iter()
+                        .any(|e| e.identity.device.as_ref() == Some(&first.members[0].device))
+                );
+                assert!(
+                    !changes
+                        .iter()
+                        .any(|e| e.identity.device.as_ref() == Some(&later.members[0].device))
+                );
                 assert!(changes.windows(2).all(|w| w[0].revision < w[1].revision));
                 Ok(())
             })

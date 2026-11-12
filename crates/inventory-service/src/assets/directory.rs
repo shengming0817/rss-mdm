@@ -85,12 +85,15 @@ pub fn directory_prepare_on<'a>(
 pub async fn directory_presence_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    devices: &[String],
-) -> crate::transaction::Result<BTreeSet<String>> {
+    devices: &[rss_mdm_agent_wire::DeviceId],
+) -> crate::transaction::Result<BTreeSet<rss_mdm_agent_wire::DeviceId>> {
     if devices.len() > 1000 {
         return Err(Error::Malformed.into());
     }
-    let rows:Vec<String>=sqlx::query_scalar("SELECT device FROM mdm_assets.device_inventory_presence WHERE tenant_id=$1::uuid AND device=ANY($2)")
-        .bind(tenant.to_string()).bind(devices).fetch_all(c).await?;
-    Ok(rows.into_iter().collect())
+    let rows:Vec<uuid::Uuid>=sqlx::query_scalar("SELECT device FROM mdm_assets.device_inventory_presence WHERE tenant_id=$1::uuid AND device=ANY($2)")
+        .bind(tenant.to_string()).bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).fetch_all(c).await?;
+    Ok(rows
+        .into_iter()
+        .map(crate::database::device_id)
+        .collect::<std::result::Result<_, _>>()?)
 }

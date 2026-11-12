@@ -87,7 +87,7 @@ pub enum IssuanceState {
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub source: Source,
     pub state: wire::GrantState,
     pub operation_id: Uuid,
@@ -141,7 +141,7 @@ async fn authorize(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<String, Error> {
     if profile != p.profile() {
         return Err(crate::Error::Forbidden);
@@ -164,12 +164,13 @@ async fn issuance_device(
     c: &mut PgConnection,
     tenant: &str,
     id: Uuid,
-) -> Result<String, Error> {
+) -> Result<rss_mdm_agent_wire::DeviceId, Error> {
     sqlx::query_scalar(crate::storage_profile::sql(profile).agent_queries_issuance_device_1)
         .bind(tenant)
         .bind(id)
         .fetch_optional(c)
         .await
+        .and_then(|id| id.map(crate::database::device_id).transpose())
         .map_err(db)?
         .ok_or(Error::NotFound)
 }
@@ -184,7 +185,7 @@ impl Service {
     pub async fn request_directory(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         q: &Query,
     ) -> Result<Page<Projection<Request>>, Error> {
         let p = request.proof.as_ref();
@@ -207,7 +208,7 @@ impl Service {
         let mut sql = sqlx::QueryBuilder::new(REQUEST_SQL);
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND g.device=")
-            .push_bind(device.to_owned());
+            .push_bind(device.into_uuid());
         sql.push(") records WHERE true");
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*REQUEST_BINDINGS)
             .map_err(query_error)?;
@@ -238,13 +239,14 @@ impl Service {
 
         self.query_tenant(p)?;
         let mut tx = self.store.snapshot(p.tenant_id()).await?;
-        let device: String = sqlx::query_scalar(
+        let device: rss_mdm_agent_wire::DeviceId = sqlx::query_scalar(
             crate::storage_profile::sql(profile).agent_queries_request_details_1,
         )
         .bind(p.tenant_id())
         .bind(id)
         .fetch_optional(&mut *tx)
         .await
+        .and_then(|id| id.map(crate::database::device_id).transpose())
         .map_err(db)?
         .ok_or(Error::NotFound)?;
         let before = authorize(profile, &mut tx, p, &device)
@@ -268,7 +270,7 @@ impl Service {
     pub async fn registration_recovery_operation(
         &self,
         request: &rss_mdm_authorization_service::context::RequestAuth,
-        device_id: &str,
+        device_id: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         identity: &ReceiptIdentity,
     ) -> Result<Option<wire::GrantReceipt>, Error> {
@@ -408,7 +410,7 @@ impl Service {
 pub async fn registration_recovery_operation(
     store: &crate::database::Store,
     request: &rss_mdm_authorization_service::context::RequestAuth,
-    device_id: &str,
+    device_id: &rss_mdm_agent_wire::DeviceId,
     operation: Uuid,
     identity: &ReceiptIdentity,
 ) -> Result<Option<wire::GrantReceipt>, Error> {
@@ -421,13 +423,14 @@ pub async fn registration_recovery_operation(
     }
     identity.validate()?;
     let mut tx = store.snapshot(p.tenant_id()).await?;
-    let device: String = sqlx::query_scalar(
+    let device: rss_mdm_agent_wire::DeviceId = sqlx::query_scalar(
         crate::storage_profile::sql(profile).agent_queries_registration_recovery_operation_1,
     )
     .bind(p.tenant_id())
-    .bind(device_id)
+    .bind(device_id.into_uuid())
     .fetch_optional(&mut *tx)
     .await
+    .and_then(|id| id.map(crate::database::device_id).transpose())
     .map_err(db)?
     .ok_or(Error::NotFound)?;
     let before = authorize(profile, &mut tx, p, &device)
@@ -438,14 +441,18 @@ pub async fn registration_recovery_operation(
     )
     .bind(p.tenant_id())
     .bind(operation)
-    .bind(device_id)
+    .bind(device_id.into_uuid())
     .fetch_optional(&mut *tx)
     .await
     .map_err(db)?;
     let value = if let Some(row) = row {
         if row.try_get::<String, _>("actor").map_err(db)? != identity.actor
             || row.try_get::<String, _>("instance").map_err(db)? != identity.instance
-            || row.try_get::<String, _>("device").map_err(db)? != device_id
+            || row
+                .try_get::<uuid::Uuid, _>("device")
+                .and_then(crate::database::device_id)
+                .map_err(db)?
+                != *device_id
         {
             return Err(Error::Conflict);
         }
@@ -503,10 +510,7 @@ pub static OPERATION_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindi
             &OPERATIONS,
             &[
                 rss_mdm_query_postgres::Source::required_column("actor", "actor COLLATE \"C\""),
-                rss_mdm_query_postgres::Source::required_column(
-                    "operationId",
-                    "operation_id::text COLLATE \"C\"",
-                ),
+                rss_mdm_query_postgres::Source::required_column("operationId", "operation_id"),
                 rss_mdm_query_postgres::Source::column("instance", "instance COLLATE \"C\""),
             ],
         )

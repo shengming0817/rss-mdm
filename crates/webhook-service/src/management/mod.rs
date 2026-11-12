@@ -31,13 +31,13 @@ pub trait Sources: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
         groups: &'a [Uuid],
-        endpoint: &'a str,
+        endpoint: &'a rss_mdm_agent_wire::DeviceId,
     ) -> futures::future::BoxFuture<'a, Result<bool, Error>>;
     fn compliance_page<'a>(
         &'a self,
         c: &'a mut PgConnection,
         source: &'a events::CompliancePublication,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> futures::future::BoxFuture<'a, Result<webhooks::fanout::ChangePage, Error>>;
 }
 pub struct Dependencies {
@@ -330,7 +330,7 @@ impl Service {
         p: &AuthorizedPrincipal,
         subscription: Uuid,
         operation: Uuid,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<(Value, bool), Error> {
         let t = self.host.tenant;
         let input = ("test", subscription, operation, device);

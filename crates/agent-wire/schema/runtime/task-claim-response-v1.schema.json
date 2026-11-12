@@ -276,8 +276,8 @@
           "type": "array"
         },
         "deviceId": {
-          "description": "Exact endpoint.",
-          "type": "string"
+          "$ref": "#/$defs/DeviceId",
+          "description": "Exact endpoint."
         },
         "expiresAt": {
           "description": "Signed permission deadline.",
@@ -903,11 +903,8 @@
           "type": "integer"
         },
         "deviceId": {
-          "description": "Server-selected device identity.",
-          "maxLength": 1024,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}]+$",
-          "type": "string"
+          "$ref": "#/$defs/DeviceId",
+          "description": "Server-selected device identity."
         },
         "execution": {
           "$ref": "#/$defs/NativeExecutionBinding",
@@ -1546,8 +1543,8 @@
           "type": "array"
         },
         "deviceId": {
-          "description": "Exact device.",
-          "type": "string"
+          "$ref": "#/$defs/DeviceId",
+          "description": "Exact device."
         },
         "expected": {
           "description": "Expected revisions, sorted by subject without duplicates.",
@@ -1645,6 +1642,16 @@
       ],
       "type": "object"
     },
+    "DeviceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "minLength": 36,
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
     "EnrollmentEntry": {
       "description": "Platform-owned enrollment entry; opening it never proves enrollment completed.",
       "oneOf": [
@@ -1714,11 +1721,8 @@
           "description": "Current Policy or employee invocation authority, covered by the task signature."
         },
         "deviceId": {
-          "description": "Independent source Agent device.",
-          "maxLength": 256,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}]+$",
-          "type": "string"
+          "$ref": "#/$defs/DeviceId",
+          "description": "Independent source Agent device."
         },
         "entry": {
           "$ref": "#/$defs/EnrollmentEntry",
@@ -5699,11 +5703,8 @@
           "type": "array"
         },
         "deviceId": {
-          "description": "Server-selected device.",
-          "maxLength": 1024,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}]+$",
-          "type": "string"
+          "$ref": "#/$defs/DeviceId",
+          "description": "Server-selected device."
         },
         "executionContext": {
           "$ref": "#/$defs/SoftwareExecutionContext",
@@ -6401,11 +6402,8 @@
           "type": "integer"
         },
         "deviceId": {
-          "description": "Server-selected device identity.",
-          "maxLength": 1024,
-          "minLength": 1,
-          "pattern": "^[^\\p{Cc}]+$",
-          "type": "string"
+          "$ref": "#/$defs/DeviceId",
+          "description": "Server-selected device identity."
         },
         "environment": {
           "additionalProperties": {
@@ -6795,8 +6793,8 @@
           "type": "integer"
         },
         "deviceId": {
-          "description": "Original Agent endpoint.",
-          "type": "string"
+          "$ref": "#/$defs/DeviceId",
+          "description": "Original Agent endpoint."
         },
         "expiresAt": {
           "description": "Expiration of this signed permission.",

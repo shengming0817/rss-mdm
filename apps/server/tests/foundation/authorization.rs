@@ -270,7 +270,10 @@ async fn embedded_da_http_binds_authority_before_purpose() -> Result<()> {
                     assert_eq!(auth.proof.profile(), StorageProfile::Da);
                     assert_eq!(auth.proof.authority_profile(), StorageProfile::Mdm);
                     auth.proof
-                        .require(Permission::InventoryRead, Some("device"))
+                        .require(
+                            Permission::InventoryRead,
+                            Some(&rss_mdm_agent_wire::DeviceId::new_v4()),
+                        )
                         .map_err(rss_mdm_management_http::Error::from)?;
                     Ok::<_, rss_mdm_management_http::Error>(axum::http::StatusCode::OK)
                 }),

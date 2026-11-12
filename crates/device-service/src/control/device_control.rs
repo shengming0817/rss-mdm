@@ -88,7 +88,7 @@ pub enum Applicability {
 /// A capability read has no operation identity, deadline, confirmation or secret.
 #[derive(Clone)]
 pub struct Check {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub source: ReportSource,
     pub action: Kind,
 }
@@ -243,10 +243,10 @@ pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
 pub async fn source_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> crate::control::Result<Option<ReportSource>> {
     let sources = sqlx::query_scalar::<_, String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND device=$2 AND enabled AND source IN('mdm.apple','mdm.windows') ORDER BY source")
-        .bind(tenant.to_string()).bind(device).fetch_all(c).await?;
+        .bind(tenant.to_string()).bind(device.into_uuid()).fetch_all(c).await?;
     match sources.as_slice() {
         [] => Ok(None),
         [source] if source == "mdm.apple" => Ok(Some(ReportSource::MdmApple)),
@@ -274,14 +274,14 @@ pub(crate) async fn applicability_on(
             Ok(Task::Windows {
                 request: rss_mdm_windows_mdm::native::Execution::SyncMl { request },
             }) => {
-                windows_checks.push((id, check.device.clone(), request));
+                windows_checks.push((id, check.device, request));
             }
             Ok(Task::Macos {
                 request: rss_mdm_apple_mdm::native::request::Request::Command { command },
             }) => {
                 apples.push(crate::control::apple_facts::AppleControlCheck {
                     id,
-                    device: check.device.clone(),
+                    device: check.device,
 
                     action: check.action,
                     command,
@@ -325,7 +325,7 @@ impl crate::control::Service {
     pub(crate) async fn validate_control_in(
         &self,
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         input: &Create,
         action: Kind,
     ) -> crate::control::Result<()> {

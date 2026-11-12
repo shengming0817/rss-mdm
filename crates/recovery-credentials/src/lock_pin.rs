@@ -18,12 +18,12 @@ impl LockPins {
         &self,
         c: &mut PgConnection,
         tenant: Uuid,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         operation: Uuid,
         pin: &str,
     ) -> Result<(), Error> {
         let binding = Binding {
-            device: device.into(),
+            device: *device,
 
             subject: Subject::LockPin { operation },
         };

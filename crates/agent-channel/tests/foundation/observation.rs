@@ -177,7 +177,7 @@ pub async fn enrollment(c: &Context, p: &registration::DevicePrincipal) -> Resul
         DA,
         &mut tx,
         c.tenant,
-        p.device().to_string(),
+        *p.device(),
         rss_mdm_inventory::ReportSource::AgentBuiltin,
     )
     .await?;

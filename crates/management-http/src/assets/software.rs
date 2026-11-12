@@ -135,7 +135,7 @@ pub(super) fn routes()
             ),
         ),
         evidence: Route::new(
-            "/software-asset-queries/{id}/software/{bucket}/devices/{object}/evidence",
+            "/software-asset-queries/{id}/software/{bucket}/devices/{object_kind}/{object_id}/evidence",
             get(
                 evidence,
                 &contracts::SOFTWARE_ASSET_EVIDENCE,
@@ -374,7 +374,7 @@ async fn evidence(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((id, bucket, object)): Path<(Uuid, String, String)>,
+    Path((id, bucket, object_kind, object_id)): Path<(Uuid, String, String, String)>,
     query: OwnedQuery<Window<Evidence>>,
 ) -> Result<CollectionResponse<Json<AssetEnvelope<super::software_evidence::EvidenceAsset>>>, Error>
 {
@@ -385,7 +385,8 @@ async fn evidence(
         model::Command::Evidence {
             id,
             bucket,
-            object,
+            object: rss_mdm_agent_wire::ObjectRef::from_path(&object_kind, &object_id)
+                .map_err(|_| Error::Malformed)?,
             page: page(query)?,
         },
     )

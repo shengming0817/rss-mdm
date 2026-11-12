@@ -11,9 +11,10 @@ fn error(e: rss_mdm_native_protection::canonical::Error) -> Error {
 pub fn fingerprint(
     p: &rss_mdm_native_protection::Protector,
     t: rss_request_context::TenantId,
-    o: &str,
+    o: &rss_mdm_agent_wire::DeviceId,
     purpose: &str,
     v: &impl serde::Serialize,
 ) -> Result<Vec<u8>, Error> {
-    rss_mdm_native_protection::canonical::fingerprint(p, t, o, purpose, v).map_err(error)
+    rss_mdm_native_protection::canonical::fingerprint(p, t, &o.to_string(), purpose, v)
+        .map_err(error)
 }

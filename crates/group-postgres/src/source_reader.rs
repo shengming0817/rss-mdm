@@ -188,7 +188,7 @@ impl GroupSources {
         input!(self.check_transaction(tx)?);
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT input,fingerprint,phase,cursor,diff_cursor,object_count,processed_count,member_count,receipt,authority_version FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
+            sqlx::query("SELECT input,fingerprint,phase,cursor_kind,cursor,diff_cursor_kind,diff_cursor,object_count,processed_count,member_count,receipt,authority_version FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
         })).await?;
         let row = input!(row.ok_or(Rejection::NotFound));
@@ -211,8 +211,8 @@ impl GroupSources {
                 .map(|v| data(u64::try_from(v)))
                 .transpose()?,
             request,
-            cursor: row.try_get("cursor")?,
-            difference_cursor: row.try_get("diff_cursor")?,
+            cursor: crate::storage::cursor(&row, "cursor_kind", "cursor")?,
+            difference_cursor: crate::storage::cursor(&row, "diff_cursor_kind", "diff_cursor")?,
             objects: data(usize::try_from(row.try_get::<i64, _>("object_count")?))?,
             processed: data(usize::try_from(row.try_get::<i64, _>("processed_count")?))?,
             members: data(usize::try_from(row.try_get::<i64, _>("member_count")?))?,
@@ -230,9 +230,9 @@ impl GroupSources {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
-    ) -> InTransaction<Vec<String>> {
+    ) -> InTransaction<Vec<rss_mdm_agent_wire::ObjectRef>> {
         input!(self.check_transaction(tx)?);
         if !(1..=usize::from(rss_mdm_query::MAX_PAGE_LIMIT) + 1).contains(&limit) {
             return Ok(Err(Rejection::InvalidInput));
@@ -241,22 +241,22 @@ impl GroupSources {
         if !build.input_sealed {
             return Ok(Err(Rejection::IncompleteSnapshot));
         }
-        if build.request.patch.is_some() {
+        let rows = if build.request.patch.is_some() {
             let tenant = self.tenant.to_string();
             let group = build.request.group.to_string();
             let base = build.request.base_calculation;
-            return Ok(Ok(tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar("SELECT object_id FROM (SELECT DISTINCT ON (m.object_id) m.object_id,m.added FROM mdm_group.member_changes m WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND ((m.revision<=$3 AND EXISTS(SELECT 1 FROM mdm_group.member_runs r WHERE r.tenant_id=m.tenant_id AND r.id=m.run_id AND r.phase='published' OFFSET 0)) OR m.run_id=$4::uuid) AND m.object_id>coalesce($5::text,'') COLLATE \"C\" ORDER BY m.object_id,m.revision DESC) latest WHERE added ORDER BY object_id LIMIT $6")
-                    .bind(tenant).bind(group).bind(base).bind(id.to_string()).bind(after).bind(limit as i64).fetch_all(c).await
-            })).await?));
-        }
-        Ok(Ok(crate::history::metadata(
-            tx, id, after, None, limit, true,
-        )
-        .await?
-        .into_iter()
-        .map(|r| r.try_get("object_id"))
-        .collect::<Result<Vec<String>, sqlx::Error>>()?))
+            tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query("SELECT object_kind,object_id FROM (SELECT DISTINCT ON(m.object_kind,m.object_id) m.object_kind,m.object_id,m.added FROM mdm_group.member_changes m WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND ((m.revision<=$3 AND EXISTS(SELECT FROM mdm_group.member_runs r WHERE r.tenant_id=m.tenant_id AND r.id=m.run_id AND r.phase='published' OFFSET 0)) OR m.run_id=$4::uuid) AND ($5::smallint IS NULL OR (m.object_kind,m.object_id)>($5,$6::uuid)) ORDER BY m.object_kind,m.object_id,m.revision DESC) latest WHERE added ORDER BY object_kind,object_id LIMIT $7")
+                    .bind(tenant).bind(group).bind(base).bind(id.to_string())
+                    .bind(after.map(|o|o.kind())).bind(after.map(|o|o.uuid())).bind(limit as i64).fetch_all(c).await
+            })).await?
+        } else {
+            crate::history::metadata(tx, id, after, None, limit, true).await?
+        };
+        Ok(Ok(rows
+            .iter()
+            .map(crate::storage::object)
+            .collect::<Result<_, _>>()?))
     }
 
     /// Read Group-owned source facts in the initiating transaction.
@@ -264,7 +264,7 @@ impl GroupSources {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
         max_bytes: usize,
     ) -> InTransaction<crate::DecisionPage> {
@@ -282,7 +282,7 @@ impl GroupSources {
                 return Ok(Err(Rejection::PageBudgetExceeded));
             }
             let devices = crate::store::input!(self.build_members_in(tx, id, after, limit).await?);
-            let bytes = devices.iter().map(|s| s.len() + 1024).sum();
+            let bytes = devices.len() * (18 + 1024);
             return Ok(Ok(crate::DecisionPage {
                 items: devices.into_iter().map(manual).collect(),
                 bytes,
@@ -298,7 +298,7 @@ impl GroupSources {
             let bytes: Vec<u8> = row.try_get("evidence")?;
             crate::storage::document(&bytes, row.try_get("evidence_digest")?)?;
             let record: DecisionRecord = data(serde_json::from_slice(&bytes))?;
-            if record.device != row.try_get::<String, _>("object_id")?
+            if record.object != crate::storage::object(&row)?
                 || (record.decision == DecisionValue::Match) != row.try_get::<bool, _>("matched")?
                 || (record.origin == DecisionOrigin::Manual) != build.request.patch.is_some()
             {

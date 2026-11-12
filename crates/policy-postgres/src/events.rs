@@ -8,7 +8,7 @@ pub async fn member_operation_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<(Uuid, i64, String)>, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
@@ -16,7 +16,7 @@ pub async fn member_operation_in(
             sqlx::query_as(crate::storage_profile::sql(profile).event_member_operation)
                 .bind(tenant)
                 .bind(id)
-                .bind(device)
+                .bind(device.into_uuid())
                 .fetch_optional(c)
                 .await
         })
@@ -29,7 +29,7 @@ pub async fn operation_in(
     tx: &mut PgTransaction<'_>,
     actor: String,
     id: Uuid,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<(Uuid, i64)>, PgError> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
@@ -38,7 +38,7 @@ pub async fn operation_in(
                 .bind(tenant)
                 .bind(actor)
                 .bind(id)
-                .bind(device)
+                .bind(device.into_uuid())
                 .fetch_optional(c)
                 .await
         })
@@ -87,7 +87,7 @@ pub struct Batch {
     /// Complete caller provenance.
     pub caller: Value,
     /// Target device identity.
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     /// Original validated event input.
     pub input: Value,
     /// Complete replay fingerprint.
@@ -112,7 +112,7 @@ pub async fn insert_batch_in(
                 .bind(batch.operation)
                 .bind(batch.actor)
                 .bind(batch.caller)
-                .bind(batch.device)
+                .bind(batch.device.into_uuid())
                 .bind(batch.input)
                 .bind(batch.fingerprint)
                 .bind(batch.at)

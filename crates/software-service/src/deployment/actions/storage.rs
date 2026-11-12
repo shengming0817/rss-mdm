@@ -47,7 +47,7 @@ pub async fn read_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
 }
 async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{if locked {sqlx::query("SELECT id FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?;}sqlx::query("SELECT a.retirement, a.origin, a.source_kind, a.policy_version, a.device, CAST(a.device AS text), a.available_at, a.deadline, a.state, a.result, a.invocation, a.source_objects FROM mdm_software_deployment.action_runs AS a WHERE a.tenant_id = CAST($1 AS uuid) AND a.id = CAST($2 AS uuid)").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::deployment::missing::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{if locked {sqlx::query("SELECT id FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?;}sqlx::query("SELECT a.retirement, a.origin, a.source_kind, a.policy_version, a.device, a.available_at, a.deadline, a.state, a.result, a.invocation, a.source_objects FROM mdm_software_deployment.action_runs AS a WHERE a.tenant_id = CAST($1 AS uuid) AND a.id = CAST($2 AS uuid)").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::deployment::missing::ExecutionError::MissingTask))?;
     Ok(Run {
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         retirement: row.try_get("retirement")?,
@@ -67,7 +67,10 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
             }
         },
         target: Target {
-            device: row.try_get("device")?,
+            device: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })?,
         },
         source_objects: stored(serde_json::from_value(row.try_get("source_objects")?))?,
         available_at: row.try_get("available_at")?,
@@ -111,7 +114,7 @@ pub async fn save_run(
                 &verified,
                 &super::scheduled::Work {
                     version,
-                    device: run.target.device.to_string(),
+                    device: run.target.device,
                 },
             )
             .await?;
@@ -142,11 +145,11 @@ pub async fn save_run(
                 version: 1,
                 occurred_at: crate::deployment::storage::now(tx).await?,
                 tenant_id: stored(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                device_id: run.target.device.clone(),
+                device_id: run.target.device,
                 data: EventData::Policy {
                     run_id: run.id,
                     policy_version: version,
-                    device_id: run.target.device.to_string(),
+                    device_id: run.target.device,
 
                     status: status.into(),
                 },
@@ -189,7 +192,7 @@ pub async fn receipt(
     let actor = actor.to_owned();
     let response = response.clone();
     let target = target.clone();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software_deployment.action_receipts (tenant_id, actor, id, fingerprint, response, audit_details, device) VALUES (CAST($1 AS uuid), $2, CAST($3 AS uuid), $4, $5, $6, $7)").bind(tenant).bind(actor).bind(id.to_string()).bind(fingerprint).bind(response).bind(audit_details).bind(target.device).execute(c).await?;Ok(())})).await?;
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_software_deployment.action_receipts (tenant_id, actor, id, fingerprint, response, audit_details, device) VALUES (CAST($1 AS uuid), $2, CAST($3 AS uuid), $4, $5, $6, $7)").bind(tenant).bind(actor).bind(id.to_string()).bind(fingerprint).bind(response).bind(audit_details).bind(target.device.into_uuid()).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
 pub async fn audit_details(
@@ -228,7 +231,7 @@ impl ScheduledPolicy {
             && v.assignment.retirement.is_some()
         {
             let Some((platform, architecture)) =
-                agent_profile_in(service, tx, target.device.clone()).await?
+                agent_profile_in(service, tx, target.device).await?
             else {
                 return Ok(false);
             };
@@ -245,7 +248,7 @@ impl ScheduledPolicy {
                 .await;
         }
         let tenant = tx.tenant_id().to_string();
-        let device = target.device.clone();
+        let device = target.device;
         let allowed = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -288,7 +291,7 @@ impl ScheduledPolicy {
                 let Some(binding) = crate::deployment::agent_facts::agent_binding_in(
                     tx,
                     service.agent_store.clone(),
-                    target.device.clone(),
+                    target.device,
                 )
                 .await?
                 else {
@@ -302,7 +305,7 @@ impl ScheduledPolicy {
                     return Ok(false);
                 }
                 let Some((platform, architecture)) =
-                    agent_profile_in(service, tx, target.device.clone()).await?
+                    agent_profile_in(service, tx, target.device).await?
                 else {
                     return Ok(false);
                 };
@@ -330,7 +333,7 @@ impl ScheduledPolicy {
         {
             let Self::Software(v) = self;
             let tenant = tx.tenant_id().to_string();
-            let device = target.device.clone();
+            let device = target.device;
             if !tx
                 .with_connection(move |c| {
                     Box::pin(async move {
@@ -362,7 +365,7 @@ impl ScheduledPolicy {
                     | crate::deployment::native_software::TargetAdmission::Rejected(_) => None,
                 }
             } else {
-                agent_profile_in(service, tx, target.device.clone()).await?
+                agent_profile_in(service, tx, target.device).await?
             };
             let Some((platform, architecture)) = profile else {
                 return Ok(false);
@@ -412,7 +415,7 @@ impl ScheduledPolicy {
             };
             let source = service.source.clone();
             let tenant = tx.tenant_id();
-            let device = run.target.device.clone();
+            let device = run.target.device;
             let evidence = run.source_objects.clone();
             if !tx
                 .with_connection(move |c| {
@@ -474,7 +477,7 @@ impl ScheduledPolicy {
                     .is_some());
             }
             let Some((platform, architecture)) =
-                agent_profile_in(service, tx, target.device.clone()).await?
+                agent_profile_in(service, tx, target.device).await?
             else {
                 return Ok(false);
             };
@@ -542,13 +545,13 @@ impl ScheduledPolicy {
         match self {
             Self::Software(v) => {
                 use rss_mdm_agent_wire::runtime as wire;
-                let (platform, architecture) = agent_profile_in(service, tx, target.device.clone())
+                let (platform, architecture) = agent_profile_in(service, tx, target.device)
                     .await?
                     .ok_or(Error::Forbidden)?;
                 let binding = crate::deployment::agent_facts::agent_binding_in(
                     tx,
                     service.agent_store.clone(),
-                    target.device.clone(),
+                    target.device,
                 )
                 .await?
                 .ok_or(Error::Forbidden)?;
@@ -580,7 +583,7 @@ impl ScheduledPolicy {
                 let spec = wire::SoftwareTaskSpec {
                     wire_version: wire::WIRE_VERSION,
                     tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                    device_id: target.device.clone(),
+                    device_id: target.device,
                     platform: match platform {
                         rss_mdm_policy::Platform::Windows => wire::TaskPlatform::Windows,
                         rss_mdm_policy::Platform::Macos => wire::TaskPlatform::Macos,
@@ -616,7 +619,7 @@ impl ScheduledPolicy {
 pub(crate) async fn agent_profile_in(
     service: &crate::deployment::transactions::Transactions,
     tx: &mut PgTransaction<'_>,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
     let profile =
         crate::deployment::agent_facts::agent_binding_in(tx, service.agent_store.clone(), device)

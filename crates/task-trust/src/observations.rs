@@ -22,7 +22,7 @@ pub async fn record_in(
     let inserted =
         sqlx::query(crate::storage_profile::sql(profile, usage).observations_record_in_1)
             .bind(tenant)
-            .bind(&input.device_id)
+            .bind(input.device_id.into_uuid())
             .bind(input.sequence as i64)
             .bind(input.operation)
             .bind(&body)
@@ -51,7 +51,7 @@ pub async fn latest_in(
     usage: crate::Use,
     c: &mut PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<ObservedInstallation>, Error> {
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
     let consumers = rss_mdm_registration_service::device::consumers_for_device_in(
@@ -68,7 +68,7 @@ pub async fn latest_in(
     let row: Option<(serde_json::Value, i64)> =
         sqlx::query_as(crate::storage_profile::sql(profile, usage).observations_latest_in_1)
             .bind(tenant)
-            .bind(device)
+            .bind(device.into_uuid())
             .fetch_optional(c)
             .await
             .map_err(db)?;

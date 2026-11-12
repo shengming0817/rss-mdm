@@ -323,12 +323,12 @@ pub async fn verify(
         serde_json::to_value(&accepted)?
     );
     let anchor = registration::device::endpoints::DaRegistration {
-        device: receipt.device.clone(),
+        device: receipt.device,
     };
     let observation = Observation {
         tenant: Uuid::parse_str(&c.tenant.to_string())?,
         installation: Uuid::parse_str(&c.inputs.installation.instance_id)?,
-        device: receipt.device.clone(),
+        device: receipt.device,
 
         authority: authority_id(),
         sequence: 1,
@@ -401,10 +401,7 @@ pub async fn verify(
     v.tenant = Uuid::new_v4();
     invalid.push(v);
     let mut v = observation.clone();
-    v.device = Uuid::new_v4().to_string();
-    invalid.push(v);
-    let mut v = observation.clone();
-    v.device.push_str("-different");
+    v.device = rss_mdm_agent_wire::DeviceId::new_v4();
     invalid.push(v);
     let mut v = observation.clone();
     v.authority = Uuid::new_v4();
@@ -463,7 +460,7 @@ pub async fn verify(
             id: Uuid::new_v4(),
             version: Uuid::new_v4(),
             target: Target::Device {
-                device: receipt.device.clone(),
+                device: receipt.device,
             },
             enabled: false,
             ..publication.clone()
@@ -495,7 +492,7 @@ pub async fn verify(
             .policy(
                 &mut tx,
                 observation.tenant,
-                "another-da-device",
+                &rss_mdm_agent_wire::DeviceId::new_v4(),
                 publication.id
             )
             .await
@@ -582,7 +579,7 @@ async fn directory_http(
     m: &material::Material,
     configuration: &std::path::Path,
     secret: &SessionSecret,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     binding: Uuid,
 ) -> Result<()> {
     let origin = c.browser_origin.get().context("browser listener origin")?;

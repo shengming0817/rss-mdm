@@ -12,7 +12,7 @@ pub enum Target {
     /// An override applies to exactly one DA device.
     Device {
         /// DA device identity, never an Inventory object or Group ID.
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
     },
 }
 /// One current publication; previous immutable versions remain queryable.
@@ -80,9 +80,6 @@ pub async fn publish_on(
         .configuration
         .validate()
         .map_err(|_| Error::Malformed)?;
-    if matches!(&value.target,Target::Device{device} if device.is_empty() || device.len()>256) {
-        return Err(Error::Malformed);
-    }
     lock_on(c, value.id).await?;
     let row=sqlx::query("SELECT revision,version_number FROM rss_da.policies WHERE tenant_id=$1 AND id=$2 FOR UPDATE").bind(tenant).bind(value.id).fetch_optional(&mut *c).await?;
     let (revision, number) = match row {
@@ -118,7 +115,7 @@ pub async fn publish_on(
 pub const INSTALL_SQL:&str="GRANT SELECT,INSERT ON rss_da.policies,rss_da.policy_versions TO da_access,da_identity_runtime;
 GRANT UPDATE(revision,current_version,version_number,state,definition,author,updated_at) ON rss_da.policies TO da_access,da_identity_runtime;
 GRANT EXECUTE ON FUNCTION rss_da.lock_policy(uuid) TO da_access,da_policy_runtime,da_identity_runtime;
-CREATE UNIQUE INDEX da_configuration_target ON rss_da.policies(tenant_id,(definition#>>'{target,kind}'),(coalesce(definition#>>'{target,device}',''))) WHERE definition->'target' IS NOT NULL;";
+CREATE UNIQUE INDEX da_configuration_target ON rss_da.policies(tenant_id,(definition#>>'{target,kind}'),((definition#>>'{target,device}')::uuid)) NULLS NOT DISTINCT WHERE definition->'target' IS NOT NULL;";
 
 /// Access profile for the minimal DA publication consumer.
 pub const ACCESS_CONTRACT: &str = include_str!("../schema/da-device-access.json");
@@ -147,10 +144,10 @@ pub async fn get_on(
 pub async fn selected_on(
     c: &mut PgConnection,
     tenant: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<Publication>, Error> {
-    let value: Option<serde_json::Value> = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1 AND (definition#>>'{target,kind}'='tenant_default' OR (definition#>>'{target,kind}'='device' AND definition#>>'{target,device}'=$2)) ORDER BY (definition#>>'{target,kind}'='device') DESC LIMIT 1")
-        .bind(tenant).bind(device).fetch_optional(c).await?;
+    let value: Option<serde_json::Value> = sqlx::query_scalar("SELECT definition FROM rss_da.policies WHERE tenant_id=$1 AND (definition#>>'{target,kind}'='tenant_default' OR (definition#>>'{target,kind}'='device' AND (definition#>>'{target,device}')::uuid=$2)) ORDER BY (definition#>>'{target,kind}'='device') DESC LIMIT 1")
+        .bind(tenant).bind(device.into_uuid()).fetch_optional(c).await?;
     value
         .map(|v| serde_json::from_value(v).map_err(|_| Error::Malformed))
         .transpose()
@@ -160,7 +157,7 @@ pub async fn selected_on(
 pub async fn directory_on(
     c: &mut PgConnection,
     tenant: Uuid,
-    device: Option<&str>,
+    device: Option<&rss_mdm_agent_wire::DeviceId>,
     query: &rss_mdm_query::directory::Query,
     after: Option<&rss_mdm_query::directory::Position>,
 ) -> Result<Vec<Publication>, Error> {
@@ -172,8 +169,8 @@ pub async fn directory_on(
     sql.push_bind(tenant)
         .push(" AND definition->'target' IS NOT NULL");
     if let Some(device) = device {
-        sql.push(" AND (definition#>>'{target,device}'=")
-            .push_bind(device.to_owned())
+        sql.push(" AND ((definition#>>'{target,device}')::uuid=")
+            .push_bind(device.into_uuid())
             .push(")");
     }
     rss_mdm_query_postgres::append(&mut sql, query, after, &*DIRECTORY_BINDINGS)

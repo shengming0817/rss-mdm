@@ -26,7 +26,7 @@ pub struct Grant {
     /// Stable caller operation identity; changed input under the same ID conflicts.
     pub operation_id: Uuid,
     /// Registration-owner allocated endpoint identity.
-    pub device: String,
+    pub device: crate::DeviceId,
     /// Exclusive validity limit in Unix seconds.
     pub expires_at: i64,
 }
@@ -52,7 +52,7 @@ pub struct Registration {
     /// Tenant owning this identity and signing authority.
     pub tenant: Uuid,
     /// Registration-owner allocated endpoint identity.
-    pub device: String,
+    pub device: crate::DeviceId,
 
     /// Exact current credential identity.
     pub credential: Uuid,
@@ -70,7 +70,7 @@ pub enum Audience {
     /// One exact endpoint device identity.
     Device {
         /// Registration-owner allocated endpoint identity.
-        device: String,
+        device: crate::DeviceId,
     },
 }
 /// Permission to transport content is separate from proof of its actual delivery channel.
@@ -134,6 +134,6 @@ pub struct Progress {
 
 /// Fingerprint of the generated Device Access protocol schema.
 pub const SCHEMA_FINGERPRINT: &str =
-    "e274a0ce4d22fa701d96ced27aa703deb7e5521b396667638a71aa2cadf5659c";
+    "a6fc193311a01978d0656220a6f9cd1ba1718a04f164f52c2f76cb5f1143a89e";
 /// Canonical current Device Access schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/da/manifest.json");

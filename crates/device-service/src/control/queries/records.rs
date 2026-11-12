@@ -51,7 +51,7 @@ pub enum Origin {
 pub struct ExecutionMetadata {
     pub id: Uuid,
     pub kind: ExecutionKind,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     origin: Origin,
     pub policy: Option<Uuid>,
     deadline: i64,
@@ -99,7 +99,7 @@ pub struct RunSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     attempt_id: Option<Uuid>,
     pub task_id: Uuid,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     occurrence: String,
     pub available_at: i64,
     deadline: i64,
@@ -119,7 +119,7 @@ pub struct RunDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     attempt_id: Option<Uuid>,
     task_id: Uuid,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     available_at: i64,
     deadline: i64,
     state: RunState,

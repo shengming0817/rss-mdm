@@ -19,7 +19,7 @@ async fn current_confirmation_is_atomic() -> Result<()> {
     let proof = c.authenticate(&account).await?;
     let a = Fixture::open(&c, false).await?;
     let mut tx = command::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_windows.capabilities (tenant_id, device, protocol_epoch, os_version, edition, session, observed_at) VALUES (CAST($1 AS uuid), $2, $3, '10.0.22631.0', 4, 1, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint))").bind(c.tenant.to_string()).bind(&identity.device).bind(identity.epoch).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.capabilities (tenant_id, device, protocol_epoch, os_version, edition, session, observed_at) VALUES (CAST($1 AS uuid), $2, $3, '10.0.22631.0', 4, 1, CAST(EXTRACT(EPOCH FROM clock_timestamp()) AS bigint))").bind(c.tenant.to_string()).bind(identity.device.into_uuid()).bind(identity.epoch).execute(&mut *tx).await?;
     tx.commit().await?;
     let id = Uuid::new_v4();
     let mut input = Input {
@@ -42,8 +42,8 @@ async fn current_confirmation_is_atomic() -> Result<()> {
     a.service
         .create_control(&proof, &identity.device, &input, &c.request(&proof)?)
         .await?;
-    let stored:String=sqlx::query_scalar("SELECT device FROM mdm_devices.control_operations WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
-    assert_eq!(stored, identity.device);
+    let stored:Uuid=sqlx::query_scalar("SELECT device FROM mdm_devices.control_operations WHERE tenant_id = CAST($1 AS uuid) AND id = $2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?;
+    assert_eq!(stored, identity.device.into_uuid());
     Fixture::close(a).await?;
     c.close().await;
     Ok(())

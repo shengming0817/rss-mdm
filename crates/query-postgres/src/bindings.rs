@@ -207,7 +207,8 @@ pub(crate) fn sql_type(kind: &Kind) -> Result<&'static str> {
         Kind::Integer => "bigint",
         Kind::Number => "double precision",
         Kind::Boolean => "boolean",
-        Kind::Text | Kind::Uuid | Kind::Enum(_) => "text",
+        Kind::Text | Kind::Enum(_) => "text",
+        Kind::Uuid => "uuid",
         _ => return Err(Error::Invalid),
     })
 }

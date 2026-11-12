@@ -18,11 +18,13 @@ pub(super) async fn seed(c: &Context) -> Result<Seed> {
         state: State::Confirmed,
         members: vec![
             Member {
-                device: "background-mdm".into(),
+                device: rss_mdm_agent_wire::DeviceId::parse("b9968637-849a-5a6e-810e-e7995fccf143")
+                    .unwrap(),
                 channel: Channel::Mdm,
             },
             Member {
-                device: "background-agent".into(),
+                device: rss_mdm_agent_wire::DeviceId::parse("3d748fe8-1653-5c04-b552-cfda9e1c798d")
+                    .unwrap(),
                 channel: Channel::Agent,
             },
         ],
@@ -80,7 +82,7 @@ pub(super) async fn seed(c: &Context) -> Result<Seed> {
         grants: vec![access::Grant {
             operation: Permission::InventoryRead,
             scope: Scope::Device {
-                id: "background-mdm".into(),
+                id: rss_mdm_agent_wire::DeviceId::new_v4(),
             },
         }],
     };

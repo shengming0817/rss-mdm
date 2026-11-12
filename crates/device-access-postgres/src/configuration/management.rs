@@ -50,7 +50,7 @@ pub(super) async fn authorize(
     .await?;
     let device = match target {
         Target::TenantDefault => None,
-        Target::Device { device } => Some(device.as_str()),
+        Target::Device { device } => Some(device),
     };
     grants
         .require(
@@ -223,9 +223,7 @@ impl Service {
                             endpoints::current_da_in(c, p.tenant_id(), device)
                                 .await?
                                 .ok_or(Error::NotFound)?;
-                            da::Audience::Device {
-                                device: device.clone(),
-                            }
+                            da::Audience::Device { device: *device }
                         }
                     };
                     let managed_fields =
@@ -456,7 +454,7 @@ impl Service {
     pub async fn configurations(
         &self,
         p: &AuthorizedPrincipal,
-        device: Option<&str>,
+        device: Option<&rss_mdm_agent_wire::DeviceId>,
         q: &rss_mdm_query::directory::Query,
     ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Publication>>, Error> {
         q.require_schema(&policy::DIRECTORY_SCHEMA)
@@ -465,9 +463,7 @@ impl Service {
             Box::pin(async move {
                 let (service, p, device, q) = *ctx;
                 let target = device
-                    .map(|device| Target::Device {
-                        device: device.into(),
-                    })
+                    .map(|device| Target::Device { device: *device })
                     .unwrap_or(Target::TenantDefault);
                 authorize(c, p, &target, false, false).await?;
                 let grants = rss_mdm_authorization_service::snapshot_on(

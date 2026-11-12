@@ -17,7 +17,7 @@ CREATE TABLE mdm_assets.group_tasks (
  kind text NOT NULL CHECK(kind IN('group_definition','group')),
  input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576),
  completed boolean NOT NULL DEFAULT false,
- cursor text,replacement_task uuid,
+ cursor uuid,definition_progress jsonb,replacement_task uuid,
  failure text CHECK(failure IN('superseded','capacity_exceeded','source_unavailable','invalid_input','storage_invariant','automation_suspended','capability_unknown','owner_conflict','permission_denied')),
  PRIMARY KEY(tenant_id,id),
  CHECK(failure IS NULL OR completed),
@@ -44,7 +44,7 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('GRANT SELECT,INSERT ON mdm_assets.%I TO mdm_inventory_runtime',t);
  END LOOP;
 END $$;
-GRANT UPDATE(completed,cursor,replacement_task,failure) ON mdm_assets.group_tasks TO mdm_inventory_runtime;
+GRANT UPDATE(completed,cursor,definition_progress,replacement_task,failure) ON mdm_assets.group_tasks TO mdm_inventory_runtime;
 GRANT UPDATE(binding) ON mdm_assets.group_evaluations TO mdm_inventory_runtime;
 GRANT UPDATE(state) ON mdm_assets.group_evaluation_arrays TO mdm_inventory_runtime;
 GRANT DELETE ON mdm_assets.group_evaluations,mdm_assets.group_evaluation_arrays TO mdm_inventory_runtime;
@@ -52,7 +52,7 @@ CREATE TABLE mdm_assets.group_dispatch (
  tenant_id uuid PRIMARY KEY,from_cut jsonb, to_cut jsonb,
  input_failed boolean NOT NULL DEFAULT false,
  event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
- page_through bigint CHECK(page_through>event_after),cursor text COLLATE "C",
+ page_through bigint CHECK(page_through>event_after),cursor uuid,
  relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0),
  relation_cursor uuid,relation_pending_revision bigint
 );

@@ -170,14 +170,14 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         groups: &[uuid::Uuid],
-        devices: &[String],
+        devices: &[rss_mdm_agent_wire::DeviceId],
     ) -> InTransaction<Vec<uuid::Uuid>> {
         input!(self.check_transaction(tx)?);
         if groups.len() > 16 || devices.len() > 1000 {
             return Ok(Err(Rejection::CapacityExceeded));
         }
         let groups = groups.to_vec();
-        let devices = devices.to_vec();
+        let devices = devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>();
         let result = tx
             .with_connection(move |c| {
                 Box::pin(async move {

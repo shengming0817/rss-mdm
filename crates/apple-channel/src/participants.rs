@@ -20,13 +20,13 @@ pub trait Business: Send + Sync {
     fn prepare_wake<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        devices: Vec<String>,
+        devices: Vec<rss_mdm_agent_wire::DeviceId>,
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()>;
     fn wake_commands<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
 
         after: Uuid,
     ) -> Pending<'a, WakePage>;
@@ -138,7 +138,7 @@ pub trait Departure: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ()>;
 }
 

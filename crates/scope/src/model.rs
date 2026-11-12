@@ -1,4 +1,4 @@
-use crate::{ScopedObjectId, GroupId};
+use crate::{GroupId, ScopedObjectId};
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
 use std::num::NonZeroU64;
@@ -6,7 +6,7 @@ use std::num::NonZeroU64;
 /// Source roles cannot be confused with device members at the API boundary.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SourceId {
-    /// A direct device source; its complete resolution must contain exactly that device.
+    /// A direct object source; its complete resolution must contain exactly that object.
     Direct(ScopedObjectId),
     /// A caller-expanded group snapshot, which may legitimately have no members.
     Group(GroupId),
@@ -65,9 +65,9 @@ pub enum ExclusionReason {
     UnknownExclusion,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Deterministic source matches and exclusions for one targeted device.
+/// Deterministic source matches and exclusions for one targeted object.
 pub struct MemberExplanation {
-    /// Targeted device, whether retained or excluded.
+    /// Targeted object, whether retained or excluded.
     pub object: ScopedObjectId,
     /// Sorted unique target source references that include the device.
     pub targets: Vec<SourceRef>,

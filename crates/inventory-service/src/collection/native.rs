@@ -8,7 +8,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 pub struct Target {
     pub tenant: rss_request_context::TenantId,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 pub async fn start(
     c: &mut PgConnection,
@@ -57,7 +57,7 @@ pub async fn start(
     }
     if let rss_mdm_inventory::CollectionScope::AppleUser { identity } = &template_scope {
         let active: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND state = 'active')")
-            .bind(p.tenant.to_string()).bind(&p.device).bind(identity)
+            .bind(p.tenant.to_string()).bind(p.device.into_uuid()).bind(identity)
             .fetch_one(&mut *c).await.map_err(db)?;
         if !active {
             return Err(Error::Conflict);
@@ -79,7 +79,7 @@ pub async fn start(
         .map_err(|_| Error::Malformed)?;
     let progress = CollectionProgress::new(definition);
     sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, deadline, evidence) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint), $8, 'pending', to_timestamp($9), $10)")
-        .bind(p.tenant.to_string()).bind(id).bind(&p.device).bind(source.as_str()).bind(target.epoch).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(target.sequence)
+        .bind(p.tenant.to_string()).bind(id).bind(p.device.into_uuid()).bind(source.as_str()).bind(target.epoch).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(target.sequence)
         .bind(serde_json::to_string(&progress).map_err(|_|Error::Malformed)?).bind(deadline as f64).bind(serde_json::json!({"nativeTemplate":template})).execute(&mut *c).await.map_err(db)?;
     crate::wake::notify(c).await.map_err(db)?;
     Ok(())

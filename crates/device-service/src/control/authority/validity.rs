@@ -58,7 +58,7 @@ async fn retirement_sources(
         else {
             return Err(Error::Malformed);
         };
-        targets.push((*execution, device.clone()));
+        targets.push((*execution, *device));
         executions.insert(*index, *execution);
     }
     let lifecycle = crate::lifecycle::execution_permissions_in(c, tenant, &targets)
@@ -68,7 +68,7 @@ async fn retirement_sources(
         .iter()
         .map(|(n, a)| json!({"n":n,"a":a}))
         .collect::<Vec<_>>();
-    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS (SELECT value -> 'a' AS a, CAST(value ->> 'n' AS bigint) AS n FROM jsonb_array_elements($2)) SELECT x.n, EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (w.tenant_id, w.device) WHERE w.tenant_id = CAST($1 AS uuid) AND w.operation = CAST(x.a ->> 'retirement' AS uuid) AND w.device = CAST(x.a ->> 'registration' AS text) AND w.execution = CAST(x.a ->> 'execution' AS uuid) AND r.id = x.a ->> 'device' AND r.state = 'active') FROM input AS x").bind(tenant).bind(Value::Array(inputs)).fetch_all(c).await.map_err(db)?;
+    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS (SELECT value -> 'a' AS a, CAST(value ->> 'n' AS bigint) AS n FROM jsonb_array_elements($2)) SELECT x.n, EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (w.tenant_id, w.device) WHERE w.tenant_id = CAST($1 AS uuid) AND w.operation = CAST(x.a ->> 'retirement' AS uuid) AND w.device = CAST(x.a ->> 'device' AS uuid) AND w.execution = CAST(x.a ->> 'execution' AS uuid) AND r.state = 'active') FROM input AS x").bind(tenant).bind(Value::Array(inputs)).fetch_all(c).await.map_err(db)?;
     rows.into_iter()
         .map(|(index, valid)| {
             let index = index as usize;

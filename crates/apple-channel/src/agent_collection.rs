@@ -14,7 +14,7 @@ pub(super) async fn due(
     source: &dyn Business,
     c: &mut PgConnection,
     tenant: &str,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<bool, Error> {
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
     let catalog = source.detection(c, tenant_id).await?;
@@ -22,7 +22,7 @@ pub(super) async fn due(
         return Ok(false);
     }
     sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active' AND access_rights & 272 = 272) AND COALESCE((SELECT CASE WHEN r.sealed_at IS NOT NULL THEN r.sealed_at <= CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint) - 300 ELSE a.deadline <= clock_timestamp() END FROM mdm_apple.attempts AS a INNER JOIN mdm_access.collection_runs AS r ON (r.tenant_id, r.id) = (a.tenant_id, a.collection) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.phase = 'collect_agent_platform' ORDER BY a.collection_sequence DESC LIMIT 1), TRUE)")
-        .bind(tenant).bind(&device).fetch_one(c).await.map_err(db)
+        .bind(tenant).bind(device.into_uuid()).fetch_one(c).await.map_err(db)
 }
 #[allow(
     clippy::too_many_arguments,
@@ -39,7 +39,7 @@ pub async fn receive(
     bytes: &[u8],
 ) -> Result<Option<AppleReception>, Error> {
     let row=sqlx::query("SELECT collection, phase, request, deadline <= clock_timestamp() AS expired FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3 AND phase IN ('collect_agent_platform', 'collect_agent')")
-        .bind(p.tenant().to_string()).bind(id).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(id).bind(p.device().into_uuid()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -218,12 +218,12 @@ pub async fn send(
         return Ok((vec![], vec![]));
     }
     let tenant = p.tenant().to_string();
-    let allowed:bool=sqlx::query_scalar("SELECT access_rights & $3 = $3 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(&tenant).bind(p.device()).bind(if bundles.is_empty(){16_i64}else{272_i64}).fetch_one(&mut *c).await.map_err(db)?;
+    let allowed:bool=sqlx::query_scalar("SELECT access_rights & $3 = $3 FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(&tenant).bind(p.device().into_uuid()).bind(if bundles.is_empty(){16_i64}else{272_i64}).fetch_one(&mut *c).await.map_err(db)?;
     if !allowed {
         return Ok((vec![], vec![]));
     }
     let previous=sqlx::query("SELECT a.collection, a.deadline <= clock_timestamp() AS expired, r.sealed_at FROM mdm_apple.attempts AS a INNER JOIN mdm_access.collection_runs AS r ON (r.tenant_id, r.id) = (a.tenant_id, a.collection) WHERE a.tenant_id = CAST($1 AS uuid) AND a.device = $2 AND a.phase = 'collect_agent_platform' ORDER BY a.collection_sequence DESC LIMIT 1 FOR UPDATE OF a")
-        .bind(&tenant).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?;
+        .bind(&tenant).bind(p.device().into_uuid()).fetch_optional(&mut *c).await.map_err(db)?;
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *c)
@@ -288,7 +288,7 @@ pub async fn send(
                 &request,
             )?;
             sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, collection, phase, request, state, collection_sequence, deadline) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'pending', $7, clock_timestamp() + CAST('5 minutes' AS interval))")
-                .bind(&tenant).bind(attempt).bind(p.device()).bind(id).bind(phase).bind(request).bind(sequence).execute(&mut *c).await.map_err(db)?;
+                .bind(&tenant).bind(attempt).bind(p.device().into_uuid()).bind(id).bind(phase).bind(request).bind(sequence).execute(&mut *c).await.map_err(db)?;
         }
         id
     };

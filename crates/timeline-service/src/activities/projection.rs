@@ -20,11 +20,6 @@ pub(crate) async fn project_activity(
     } else {
         return Ok(None);
     };
-    if let Some(target) = &activity.target
-        && !crate::model::identifier(&target.device)
-    {
-        return Err(Error::Integrity);
-    }
     if activity.links.steps.len() > 256
         || activity
             .links
@@ -54,19 +49,19 @@ pub(crate) async fn project_activity(
 pub(crate) async fn publish_in(
     c: &mut PgConnection,
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     position: i64,
 ) -> Result<(), Error> {
     let tenant = tenant.to_string();
-    sqlx::query("INSERT INTO mdm_timeline.activity_streams(tenant_id,device,generation) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(&tenant).bind(device).bind(Uuid::new_v4()).execute(&mut *c).await?;
-    let head:i64=sqlx::query_scalar("SELECT revision FROM mdm_timeline.activity_streams WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(&tenant).bind(device).fetch_one(&mut *c).await?;
-    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_timeline.activity_entries WHERE tenant_id=$1::uuid AND device=$2 AND position=$3)").bind(&tenant).bind(device).bind(position).fetch_one(&mut *c).await?;
+    sqlx::query("INSERT INTO mdm_timeline.activity_streams(tenant_id,device,generation) VALUES($1::uuid,$2,$3) ON CONFLICT DO NOTHING").bind(&tenant).bind(device.into_uuid()).bind(Uuid::new_v4()).execute(&mut *c).await?;
+    let head:i64=sqlx::query_scalar("SELECT revision FROM mdm_timeline.activity_streams WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(&tenant).bind(device.into_uuid()).fetch_one(&mut *c).await?;
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_timeline.activity_entries WHERE tenant_id=$1::uuid AND device=$2 AND position=$3)").bind(&tenant).bind(device.into_uuid()).bind(position).fetch_one(&mut *c).await?;
     if exists {
         return Ok(());
     }
     let revision = head.checked_add(1).ok_or(Error::Integrity)?;
-    sqlx::query("INSERT INTO mdm_timeline.activity_entries(tenant_id,device,revision,position) VALUES($1::uuid,$2,$3,$4)").bind(&tenant).bind(device).bind(revision).bind(position).execute(&mut *c).await?;
-    sqlx::query("UPDATE mdm_timeline.activity_streams SET revision=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(&tenant).bind(device).bind(revision).execute(c).await?;
+    sqlx::query("INSERT INTO mdm_timeline.activity_entries(tenant_id,device,revision,position) VALUES($1::uuid,$2,$3,$4)").bind(&tenant).bind(device.into_uuid()).bind(revision).bind(position).execute(&mut *c).await?;
+    sqlx::query("UPDATE mdm_timeline.activity_streams SET revision=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(&tenant).bind(device.into_uuid()).bind(revision).execute(c).await?;
     Ok(())
 }
 
@@ -87,9 +82,7 @@ pub(super) fn summary(
         target: activity
             .target
             .as_ref()
-            .map(|t| rss_mdm_agent_wire::activities::ActivityTarget {
-                device: t.device.clone(),
-            }),
+            .map(|t| rss_mdm_agent_wire::activities::ActivityTarget { device: t.device }),
         links: ActivityLinks {
             policy: activity.links.policy,
             version: activity.links.version,

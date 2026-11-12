@@ -38,7 +38,7 @@ pub struct ListSummary {
 struct Cursor {
     kind: String,
     tenant: String,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     field: FieldKey,
     scope: String,
     asset_cut: AssetCut,
@@ -48,7 +48,7 @@ struct Cursor {
 impl AssetService {
     fn list_cursor(
         &self,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         field: FieldKey,
         scope: &ReadScope,
         cut: &AssetCut,
@@ -58,7 +58,7 @@ impl AssetService {
         let cursor = Cursor {
             kind: "inventory-list-v1".into(),
             tenant: self.tenant.to_string(),
-            device: device.into(),
+            device: *device,
             field,
             scope: digest(scope)?,
             asset_cut: cut.clone(),
@@ -121,7 +121,7 @@ impl AssetService {
     pub(super) async fn detail_metadata(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         scope: &ReadScope,
         cut: &AssetCut,
     ) -> Result<DeviceView> {
@@ -186,7 +186,7 @@ impl AssetService {
     pub(super) async fn list_items(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         field: FieldKey,
         scope: &ReadScope,
         page: (Option<&str>, usize),
@@ -207,7 +207,7 @@ impl AssetService {
                 .map_err(|_| Error::Conflict)?;
             if c.kind != "inventory-list-v1"
                 || c.tenant != self.tenant.to_string()
-                || c.device != device
+                || c.device != *device
                 || c.field != field
                 || c.scope != digest(scope)?
                 || c.asset_cut.tenant().to_string() != self.tenant.to_string()
@@ -293,7 +293,7 @@ impl AssetService {
             })
             .await??;
         Ok(Response::ListItems {
-            device: device.into(),
+            device: *device,
             field,
             asset_cut: cut.clone(),
             total,

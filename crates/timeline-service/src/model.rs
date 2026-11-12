@@ -43,7 +43,7 @@ impl From<rss_mdm_audit_integration::Error> for Error {
 pub struct Query {
     pub target_id: Option<String>,
     pub target_type: Option<String>,
-    pub device: Option<String>,
+    pub device: Option<rss_mdm_agent_wire::DeviceId>,
     pub operation_id: Option<Uuid>,
     pub request_id: Option<Uuid>,
     pub owner: Option<rss_mdm_audit_integration::operation::OperationOwner>,
@@ -137,7 +137,6 @@ impl Query {
             || self.from.zip(self.until).is_some_and(|(a, b)| a >= b)
             || self.cursor.as_ref().is_some_and(|v| v.len() > 4096)
             || [
-                &self.device,
                 &self.actor,
                 &self.action,
                 &self.target_id,
@@ -180,7 +179,7 @@ pub struct FactView {
     pub actor: String,
     pub action: String,
     pub target: Target,
-    pub device_id: Option<String>,
+    pub device_id: Option<rss_mdm_agent_wire::DeviceId>,
     pub operation_id: Option<Uuid>,
     pub related_operation_ids: Vec<Uuid>,
     pub request_id: Option<Uuid>,

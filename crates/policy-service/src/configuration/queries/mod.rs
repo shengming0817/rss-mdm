@@ -19,7 +19,7 @@ impl Transactions {
         let operations = storage::load_many_on(c, self.tenant, &self.protection, ids).await?;
         let targets = operations
             .values()
-            .map(|o| (o.id, o.device.clone()))
+            .map(|o| (o.id, o.device))
             .collect::<Vec<_>>();
         let lifecycle = rss_mdm_device_service::lifecycle::execution_permissions_in(
             c,
@@ -36,7 +36,7 @@ impl Transactions {
             let devices = operations
                 .values()
                 .filter_map(|o| match o.request.task.purpose() {
-                    Ok(p) if p == purpose => Some(Ok(o.device.clone())),
+                    Ok(p) if p == purpose => Some(Ok(o.device)),
                     Ok(_) => None,
                     Err(e) => Some(Err(e)),
                 })
@@ -55,7 +55,7 @@ impl Transactions {
             .await?;
             for device in rows {
                 registrations
-                    .entry((device.clone(), purpose.as_str()))
+                    .entry((device, purpose.as_str()))
                     .and_modify(|v| *v = None)
                     .or_insert(Some(device));
             }
@@ -66,12 +66,12 @@ impl Transactions {
         for op in operations.values() {
             grant.require(proof, Permission::OperationRead, Some(&op.device))?;
             let current = registrations
-                .get(&(op.device.clone(), op.request.task.purpose()?.as_str()))
+                .get(&(op.device, op.request.task.purpose()?.as_str()))
                 .cloned()
                 .flatten();
             let reason = if lifecycle.get(&op.id) != Some(&true) {
                 Some(BlockReason::LifecycleBlocked)
-            } else if current != Some(op.device.clone()) {
+            } else if current != Some(op.device) {
                 Some(BlockReason::DeviceInactive)
             } else {
                 pending.push(op.id);
@@ -106,12 +106,12 @@ impl Transactions {
         proof: &AuthorizedPrincipal,
         grant: &Snapshot,
         now: i64,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> Result<Detail> {
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let op = storage::load_on(c, self.tenant, &self.protection, id).await?;
-        if op.device != device {
+        if op.device != *device {
             return Err(Error::Forbidden.into());
         }
         let authorization = self
@@ -180,14 +180,14 @@ impl Transactions {
         target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
         ids: Vec<Uuid>,
     ) -> Result<BTreeMap<Uuid, Declaration>> {
-        let device = target.device.as_str();
+        let device = &target.device;
         let registration = &target.device;
 
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let operations = storage::load_many_on(c, self.tenant, &self.protection, ids).await?;
         let mut result = BTreeMap::new();
         for (id, op) in operations {
-            if op.device != device {
+            if op.device != *device {
                 return Err(Error::Conflict.into());
             }
             let allowed = native_values(grant, proof, &op)?;
@@ -200,7 +200,7 @@ impl Transactions {
             result.insert(
                 id,
                 Declaration {
-                    device: registration.to_string(),
+                    device: *registration,
 
                     redacted: !allowed,
                     observation,
@@ -237,7 +237,7 @@ fn native_values(
             return Err(Error::Forbidden.into());
         }
         for p in required {
-            snapshot.require(proof, p, p.device().then_some(op.device.as_str()))?;
+            snapshot.require(proof, p, p.device().then_some(&op.device))?;
         }
     }
     if op.request.profile_target().is_some() {
@@ -247,7 +247,7 @@ fn native_values(
         required.sort();
         required.dedup();
         for p in required {
-            match snapshot.require(proof, p, p.device().then_some(op.device.as_str())) {
+            match snapshot.require(proof, p, p.device().then_some(&op.device)) {
                 Ok(()) => {}
                 Err(crate::authorization::error::AuthorizationError::Forbidden) => values = false,
                 Err(e) => return Err(Error::from(e).into()),

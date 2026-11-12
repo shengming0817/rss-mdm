@@ -67,11 +67,17 @@ async fn prune_on(
 ) -> Result<u64, Error> {
     let expired=sqlx::query("SELECT device,protocol_epoch,session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND expires_at<clock_timestamp() ORDER BY expires_at,device,protocol_epoch,session_id LIMIT 32 FOR UPDATE SKIP LOCKED")
         .bind(tenant).fetch_all(&mut *tx).await.map_err(db)?;
-    let mut devices = Vec::<String>::new();
+    let mut devices = Vec::<rss_mdm_agent_wire::DeviceId>::new();
     let mut epochs = Vec::<uuid::Uuid>::new();
     let mut sessions = Vec::<String>::new();
     for row in expired {
-        let device: String = row.try_get("device").map_err(db)?;
+        let device: rss_mdm_agent_wire::DeviceId = row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })
+            .map_err(db)?;
         let epoch: uuid::Uuid = row.try_get("protocol_epoch").map_err(db)?;
         let session: String = row.try_get("session_id").map_err(db)?;
         crate::collection::terminate_session(
@@ -85,14 +91,14 @@ async fn prune_on(
     if devices.is_empty() {
         return Ok(0);
     }
-    sqlx::query("DELETE FROM mdm_access.management_messages x USING unnest($2::text[],$3::uuid[],$4::text[]) k(device,protocol_epoch,session_id) WHERE x.tenant_id=$1::uuid AND x.device=k.device AND x.protocol_epoch=k.protocol_epoch AND x.session_id=k.session_id")
-        .bind(tenant).bind(&devices).bind(&epochs).bind(&sessions).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("DELETE FROM mdm_windows.trust_deliveries x USING unnest($2::text[],$3::uuid[],$4::text[]) k(device,protocol_epoch,session_id) WHERE x.tenant_id=$1::uuid AND x.device=k.device AND x.protocol_epoch=k.protocol_epoch AND x.session::text=k.session_id")
-        .bind(tenant).bind(&devices).bind(&epochs).bind(&sessions).execute(&mut *tx).await.map_err(db)?;
-    sqlx::query("DELETE FROM mdm_windows.push_queries x USING unnest($2::text[],$3::uuid[],$4::text[]) k(device,protocol_epoch,session_id) WHERE x.tenant_id=$1::uuid AND x.device=k.device AND x.protocol_epoch=k.protocol_epoch AND x.session::text=k.session_id")
-        .bind(tenant).bind(&devices).bind(&epochs).bind(&sessions).execute(&mut *tx).await.map_err(db)?;
-    let count=sqlx::query("DELETE FROM mdm_access.management_sessions x USING unnest($2::text[],$3::uuid[],$4::text[]) k(device,protocol_epoch,session_id) WHERE x.tenant_id=$1::uuid AND x.device=k.device AND x.protocol_epoch=k.protocol_epoch AND x.session_id=k.session_id")
-        .bind(tenant).bind(&devices).bind(&epochs).bind(&sessions).execute(tx).await.map_err(db)?.rows_affected();
+    sqlx::query("DELETE FROM mdm_access.management_messages x USING unnest($2::uuid[],$3::uuid[],$4::text[]) k(device,protocol_epoch,session_id) WHERE x.tenant_id=$1::uuid AND x.device=k.device AND x.protocol_epoch=k.protocol_epoch AND x.session_id=k.session_id")
+        .bind(tenant).bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(&epochs).bind(&sessions).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("DELETE FROM mdm_windows.trust_deliveries x USING unnest($2::uuid[],$3::uuid[],$4::text[]) k(device,protocol_epoch,session_id) WHERE x.tenant_id=$1::uuid AND x.device=k.device AND x.protocol_epoch=k.protocol_epoch AND x.session::text=k.session_id")
+        .bind(tenant).bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(&epochs).bind(&sessions).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("DELETE FROM mdm_windows.push_queries x USING unnest($2::uuid[],$3::uuid[],$4::text[]) k(device,protocol_epoch,session_id) WHERE x.tenant_id=$1::uuid AND x.device=k.device AND x.protocol_epoch=k.protocol_epoch AND x.session::text=k.session_id")
+        .bind(tenant).bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(&epochs).bind(&sessions).execute(&mut *tx).await.map_err(db)?;
+    let count=sqlx::query("DELETE FROM mdm_access.management_sessions x USING unnest($2::uuid[],$3::uuid[],$4::text[]) k(device,protocol_epoch,session_id) WHERE x.tenant_id=$1::uuid AND x.device=k.device AND x.protocol_epoch=k.protocol_epoch AND x.session_id=k.session_id")
+        .bind(tenant).bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(&epochs).bind(&sessions).execute(tx).await.map_err(db)?.rows_affected();
 
     Ok(count)
 }

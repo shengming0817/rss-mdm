@@ -107,7 +107,7 @@ impl Diagnostics {
         Ok(match value {
             Some(value) => {
                 let mut result = ReceiptSummary::new(locator.operation_id);
-                result.object = locator.device.clone();
+                result.object = locator.device.map(|id| id.to_string());
                 result.accepted = Some(true);
                 result.executions.push(locator.operation_id);
                 (
@@ -123,7 +123,7 @@ impl Diagnostics {
     pub(super) async fn da_execution(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> Result<Evidence<rss_mdm_management_http::execution::operations::Evidence>, Error> {
         let da = self
@@ -220,7 +220,7 @@ impl Diagnostics {
                 result.revision = Some(service.delivery_operation(p, id).await.map_err(da_error)?)
             }
             O::DeviceAccess => {
-                let device = l.query.device.as_deref().ok_or(Error::Malformed)?;
+                let device = l.query.device.as_ref().ok_or(Error::Malformed)?;
                 let v = service
                     .device_access_operation(p, device, id)
                     .await
@@ -246,7 +246,7 @@ impl Diagnostics {
                 return rss_mdm_recovery_credentials::filevault_operation_receipt(
                     &da.audit,
                     p,
-                    l.query.device.as_deref().ok_or(Error::Malformed)?,
+                    l.query.device.as_ref().ok_or(Error::Malformed)?,
                     id,
                 )
                 .await

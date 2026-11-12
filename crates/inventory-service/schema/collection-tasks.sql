@@ -1,9 +1,9 @@
 -- Stable collection admission/dispatch. Per-attempt reports remain in collection_runs.
 BEGIN;
-CREATE TABLE mdm_inventory.collection_tasks (tenant_id uuid NOT NULL, id uuid NOT NULL, policy_version uuid NOT NULL, channel text NOT NULL CHECK (channel IN ('agent', 'mdm')), origin jsonb NOT NULL CHECK (origin IN ('"system"', '"policy"', '"human"', '"ai"')), source_objects jsonb NOT NULL, device text NOT NULL, occurrence text NOT NULL CHECK (octet_length(occurrence) BETWEEN 1 AND 256), triggered_at bigint CHECK (triggered_at IS NULL OR triggered_at >= 0), created_at bigint NOT NULL CHECK (created_at >= 0), available_at bigint NOT NULL CHECK (available_at >= 0), deadline bigint NOT NULL CHECK (deadline > available_at), gateway_accepted boolean NOT NULL DEFAULT FALSE, dispatch_fingerprint bytea NOT NULL CHECK (octet_length(dispatch_fingerprint) = 32), dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR octet_length(CAST(dispatch_failure AS text)) <= 8192), agent_state jsonb CHECK (agent_state IS NULL OR octet_length(CAST(agent_state AS text)) <= 4096), agent_result jsonb CHECK (agent_result IS NULL OR octet_length(CAST(agent_result AS text)) <= 1114112), native_delivery text CHECK (native_delivery IN ('queued', 'prepared', 'sent', 'cancelled')), collection_run uuid, terminal_notified boolean NOT NULL DEFAULT FALSE, started_at bigint CHECK (started_at IS NULL OR started_at >= 0), CHECK (NOT terminal_notified OR (channel = 'mdm' AND collection_run IS NOT NULL)), CHECK ((channel = 'agent' AND agent_state IS NOT NULL AND native_delivery IS NULL AND collection_run IS NULL AND started_at IS NULL) OR (channel = 'mdm' AND agent_state IS NULL AND agent_result IS NULL AND native_delivery IS NOT NULL)), PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, policy_version, device, occurrence));
+CREATE TABLE mdm_inventory.collection_tasks (tenant_id uuid NOT NULL, id uuid NOT NULL, policy_version uuid NOT NULL, channel text NOT NULL CHECK (channel IN ('agent', 'mdm')), origin jsonb NOT NULL CHECK (origin IN ('"system"', '"policy"', '"human"', '"ai"')), source_objects jsonb NOT NULL, device uuid NOT NULL, occurrence text NOT NULL CHECK (octet_length(occurrence) BETWEEN 1 AND 256), triggered_at bigint CHECK (triggered_at IS NULL OR triggered_at >= 0), created_at bigint NOT NULL CHECK (created_at >= 0), available_at bigint NOT NULL CHECK (available_at >= 0), deadline bigint NOT NULL CHECK (deadline > available_at), gateway_accepted boolean NOT NULL DEFAULT FALSE, dispatch_fingerprint bytea NOT NULL CHECK (octet_length(dispatch_fingerprint) = 32), dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR octet_length(CAST(dispatch_failure AS text)) <= 8192), agent_state jsonb CHECK (agent_state IS NULL OR octet_length(CAST(agent_state AS text)) <= 4096), agent_result jsonb CHECK (agent_result IS NULL OR octet_length(CAST(agent_result AS text)) <= 1114112), native_delivery text CHECK (native_delivery IN ('queued', 'prepared', 'sent', 'cancelled')), collection_run uuid, terminal_notified boolean NOT NULL DEFAULT FALSE, started_at bigint CHECK (started_at IS NULL OR started_at >= 0), CHECK (NOT terminal_notified OR (channel = 'mdm' AND collection_run IS NOT NULL)), CHECK ((channel = 'agent' AND agent_state IS NOT NULL AND native_delivery IS NULL AND collection_run IS NULL AND started_at IS NULL) OR (channel = 'mdm' AND agent_state IS NULL AND agent_result IS NULL AND native_delivery IS NOT NULL)), PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, policy_version, device, occurrence));
 CREATE TABLE mdm_inventory.collection_admission (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , policy_after uuid
   , PRIMARY KEY (tenant_id, device)
 );
@@ -28,7 +28,7 @@ CREATE TABLE mdm_inventory.collection_policy_recovery (
 );
 CREATE TABLE mdm_inventory.collection_native_checkins (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , active_event uuid
   , active_at bigint
   , policy_after uuid

@@ -10,9 +10,9 @@ pub struct ObjectChanged {
     pub tenant: Uuid,
     pub revision: i64,
     pub history_epoch: Uuid,
-    pub object: String,
-    pub old_devices: Vec<String>,
-    pub new_devices: Vec<String>,
+    pub object: rss_mdm_agent_wire::ObjectRef,
+    pub old_devices: Vec<rss_mdm_agent_wire::DeviceId>,
+    pub new_devices: Vec<rss_mdm_agent_wire::DeviceId>,
 }
 impl ObjectChanged {
     pub fn message_id(&self) -> String {
@@ -23,15 +23,9 @@ impl ObjectChanged {
             && !self.tenant.is_nil()
             && !self.history_epoch.is_nil()
             && self.revision > 0
-            && !self.object.is_empty()
-            && self.object.len() <= 1024
+            && !self.object.uuid().is_nil()
             && self.old_devices.len() <= 1000
             && self.new_devices.len() <= 1000
-            && self
-                .old_devices
-                .iter()
-                .chain(&self.new_devices)
-                .all(|d| !d.is_empty() && d.len() <= 256 && !d.chars().any(char::is_control))
     }
 }
 
@@ -39,23 +33,24 @@ impl ObjectChanged {
 mod tests {
     use super::*;
     #[test]
-    fn both_relation_sides_accept_the_full_device_byte_boundary() {
-        for device in ["x".repeat(256), "é".repeat(128)] {
-            let mut event = ObjectChanged {
-                v: 1,
-                tenant: Uuid::from_u128(1),
-                revision: 1,
-                history_epoch: Uuid::from_u128(2),
-                object: "object".into(),
-                old_devices: vec![device.clone()],
-                new_devices: vec![device.clone()],
-            };
-            assert!(event.valid(), "both relation sides accept 256 UTF-8 bytes");
-            event.old_devices[0].push('x');
-            assert!(!event.valid(), "the old side rejects 257 bytes");
-            event.old_devices[0] = device;
-            event.new_devices[0].push('x');
-            assert!(!event.valid(), "the new side rejects 257 bytes");
-        }
+    fn relation_changes_preserve_object_kind_and_both_endpoint_sets() {
+        let device = rss_mdm_agent_wire::DeviceId::try_from(Uuid::from_u128(3)).unwrap();
+        let event = ObjectChanged {
+            v: 1,
+            tenant: Uuid::from_u128(1),
+            revision: 1,
+            history_epoch: Uuid::from_u128(2),
+            object: rss_mdm_agent_wire::ObjectRef::Association(device.into_uuid()),
+            old_devices: vec![device],
+            new_devices: vec![device],
+        };
+        assert!(event.valid());
+        let mut value = serde_json::to_value(&event).unwrap();
+        let decoded: ObjectChanged = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded.object, event.object);
+        assert_eq!(decoded.old_devices, event.old_devices);
+        assert_eq!(decoded.new_devices, event.new_devices);
+        value["oldDevices"][0] = serde_json::json!("old-arbitrary-device");
+        assert!(serde_json::from_value::<ObjectChanged>(value).is_err());
     }
 }

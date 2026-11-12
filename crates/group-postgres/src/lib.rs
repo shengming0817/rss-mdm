@@ -62,7 +62,7 @@ pub struct DecisionPage {
 /// Selected frozen membership, with absent dynamic keys remaining unknown.
 pub struct SourceDecisions {
     /// Explicit outcomes for the requested keys that have evidence.
-    pub outcomes: std::collections::BTreeMap<String, rss_mdm_group::Outcome>,
+    pub outcomes: std::collections::BTreeMap<rss_mdm_agent_wire::ObjectRef, rss_mdm_group::Outcome>,
     /// Accumulated evidence bytes, including per-record overhead.
     pub bytes: usize,
 }

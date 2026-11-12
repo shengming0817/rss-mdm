@@ -7,7 +7,7 @@ pub async fn retire_in(
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<Fact>,
     tenant: &str,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     let audit = RequestAudit::new(
         rss_mdm_audit_integration::Origin::Background,
@@ -21,7 +21,7 @@ pub async fn retire_in(
 
     let mut after = Uuid::nil();
     loop {
-        let rows = sqlx::query("SELECT id,state AS state FROM mdm_script.runs a WHERE tenant_id=$1::uuid AND device=$2 AND id>$3 AND ((state->>'execution' IN ('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none')) AND EXISTS(SELECT 1 FROM mdm_access.devices r WHERE (r.tenant_id,r.id)=(a.tenant_id,a.device) AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices d WHERE (d.tenant_id,d.id)=(r.tenant_id,r.id) AND d.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE (w.tenant_id,w.execution)=(a.tenant_id,a.id))))) ORDER BY id LIMIT 64").bind(tenant).bind(&device).bind(after).fetch_all(&mut *c).await?;
+        let rows = sqlx::query("SELECT id,state AS state FROM mdm_script.runs a WHERE tenant_id=$1::uuid AND device=$2 AND id>$3 AND ((state->>'execution' IN ('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none')) AND EXISTS(SELECT 1 FROM mdm_access.devices r WHERE (r.tenant_id,r.id)=(a.tenant_id,a.device) AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices d WHERE (d.tenant_id,d.id)=(r.tenant_id,r.id) AND d.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE (w.tenant_id,w.execution)=(a.tenant_id,a.id))))) ORDER BY id LIMIT 64").bind(tenant).bind(device.into_uuid()).bind(after).fetch_all(&mut *c).await?;
         let count = rows.len();
         for row in rows {
             let id: Uuid = row.try_get("id")?;
@@ -32,7 +32,7 @@ pub async fn retire_in(
                     crate::stored(serde_json::from_value(previous.clone()))?;
                 state.cancel();
                 sqlx::query_scalar::<_, bool>("SELECT mdm_script.save_retired_run($1,$2,$3,$4)")
-                    .bind(&device)
+                    .bind(device.into_uuid())
                     .bind(id)
                     .bind(previous)
                     .bind(serde_json::to_value(state).map_err(|_| Error::Malformed)?)
@@ -71,9 +71,9 @@ pub async fn retire_in(
 pub async fn progress_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    devices: &[String],
+    devices: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<(bool, Option<Uuid>)> {
     let row: (bool, Option<Uuid>) = sqlx::query_as("SELECT count(*)>0,(array_agg(t.id ORDER BY t.id) FILTER(WHERE t.state->>'execution'='unknown'))[1] FROM mdm_script.runs t WHERE t.tenant_id=$1::uuid AND t.device=ANY($2) AND (t.state->>'execution' IN('running','waiting_reboot','unknown'))")
-        .bind(tenant).bind(devices).fetch_one(c).await?;
+        .bind(tenant).bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).fetch_one(c).await?;
     Ok(row)
 }

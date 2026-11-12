@@ -15,7 +15,7 @@ pub async fn now(tx: &mut PgTransaction<'_>) -> Result<i64> {
 pub async fn authorized(
     tx: &mut PgTransaction<'_>,
     proof: &crate::authorization::context::AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     permission: crate::authorization::Permission,
 ) -> Result<crate::authorization::Snapshot> {
     let snapshot = current(tx, proof).await?;

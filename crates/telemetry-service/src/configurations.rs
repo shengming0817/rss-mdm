@@ -30,7 +30,7 @@ pub struct Configuration {
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Configurations {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub evaluated_at_micros: i64,
     pub configurations: Vec<Configuration>,
 }
@@ -46,7 +46,7 @@ pub(crate) struct Eligible {
 pub(crate) async fn eligible_on(
     service: &Service,
     c: &mut sqlx::PgConnection,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Vec<Eligible>, Error> {
     let candidates = service
         .policies
@@ -88,7 +88,7 @@ pub(crate) async fn eligible_on(
 pub(crate) async fn supported_on(
     service: &Service,
     c: &mut sqlx::PgConnection,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     frozen: &FrozenProfile,
 ) -> Result<Option<bool>, Error> {
     let keys = frozen
@@ -122,15 +122,12 @@ impl Service {
     pub async fn configurations(
         self: &Arc<Self>,
         proof: &Arc<AuthorizedPrincipal>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         audit: &RequestAudit,
     ) -> Result<Configurations, Error> {
         proof.check_live().map_err(|_| Error::Denied)?;
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Denied);
-        }
-        if device.is_empty() || device.len() > 512 || device.chars().any(char::is_control) {
-            return Err(Error::Invalid);
         }
         let service = self.clone();
         let proof = proof.clone();
@@ -183,7 +180,7 @@ async fn read_on(
     service: &Service,
     c: &mut sqlx::PgConnection,
     proof: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Configurations, Error> {
     rss_mdm_authorization_service::lock_shared_on(
         rss_mdm_install_support::StorageProfile::Mdm,
@@ -213,7 +210,7 @@ async fn read_on(
         "SELECT EXISTS(SELECT 1 FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2)",
     )
     .bind(service.tenant.to_string())
-    .bind(device)
+    .bind(device.into_uuid())
     .fetch_one(&mut *c)
     .await?;
     if !exists {
@@ -260,7 +257,7 @@ async fn read_on(
                 continue;
             }
             let Some(supported) =
-                supported_on(service, c, primary.device.clone(), &candidate.frozen).await?
+                supported_on(service, c, primary.device, &candidate.frozen).await?
             else {
                 continue;
             };
@@ -285,7 +282,7 @@ async fn read_on(
     }
     proof.check_live().map_err(|_| Error::Denied)?;
     Ok(Configurations {
-        device: device.into(),
+        device: *device,
         evaluated_at_micros: now,
         configurations,
     })

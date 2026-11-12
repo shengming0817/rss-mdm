@@ -206,7 +206,7 @@ async fn checkin_on(
     let principal = *principal;
     let udid = *udid;
     let tenant = principal.tenant().to_string();
-    let device = principal.device().to_string();
+    let device = *principal.device();
     crate::device::store::lock_channel(
         rss_mdm_install_support::StorageProfile::Mdm,
         tx,
@@ -223,7 +223,7 @@ async fn checkin_on(
         rss_mdm_inventory::ReportSource::MdmApple,
     )
     .await?;
-    let row=sqlx::query("SELECT udid, state FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND state <> 'retired' FOR UPDATE").bind(&tenant).bind(&device).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let row=sqlx::query("SELECT udid, state FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state <> 'retired' FOR UPDATE").bind(&tenant).bind(device.into_uuid()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if udid.is_some_and(|udid| row.try_get::<String, _>("udid").ok().as_deref() != Some(udid)) {
         return Err(Error::Unauthorized);
     }
@@ -251,7 +251,7 @@ async fn checkin_on(
         }
         CheckIn::CheckOut { .. } => {
             departure
-                .departed(tx, &tenant, principal.device().to_string())
+                .departed(tx, &tenant, *principal.device())
                 .await
                 .map_err(|_| crate::Error::Unavailable(crate::Failure::AppleStorage))?;
             rss_mdm_registration_service::retire(
@@ -278,7 +278,7 @@ async fn checkin_on(
         }
         CheckIn::SetBootstrapToken { .. } | CheckIn::GetBootstrapToken => {
             crate::material::bootstrap_allowed(tx, principal).await?;
-            let current=sqlx::query("SELECT bootstrap, bootstrap_revision FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE").bind(&tenant).bind(principal.device()).fetch_one(&mut *tx).await.map_err(db)?;
+            let current=sqlx::query("SELECT bootstrap, bootstrap_revision FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 FOR UPDATE").bind(&tenant).bind(principal.device().into_uuid()).fetch_one(&mut *tx).await.map_err(db)?;
             let revision = current
                 .try_get::<i64, _>("bootstrap_revision")
                 .map_err(db)?;
@@ -330,7 +330,7 @@ async fn checkin_on(
                             .map_err(|_| Error::Unavailable(Failure::AppleStorage))
                     })
                     .transpose()?;
-                sqlx::query("UPDATE mdm_apple.devices SET bootstrap = $3, bootstrap_revision = $4 WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(&tenant).bind(principal.device()).bind(sealed).bind(revision).execute(&mut *tx).await.map_err(db)?;
+                sqlx::query("UPDATE mdm_apple.devices SET bootstrap = $3, bootstrap_revision = $4 WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(&tenant).bind(principal.device().into_uuid()).bind(sealed).bind(revision).execute(&mut *tx).await.map_err(db)?;
             } else {
                 let mut body = plist::Dictionary::new();
                 if let Some(sealed) = current

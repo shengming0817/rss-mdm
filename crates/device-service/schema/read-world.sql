@@ -1,5 +1,5 @@
 -- A bounded raw product snapshot. Personnel projection remains inside Identity's read scope.
-CREATE FUNCTION mdm_devices.read_world(p_associations uuid[],p_devices text[],p_fields text[])
+CREATE FUNCTION mdm_devices.read_world(p_associations uuid[],p_devices uuid[],p_fields text[])
 RETURNS jsonb LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
 WITH context AS (
  SELECT nullif(current_setting('rss.tenant_id',true),'')::uuid AS tenant
@@ -30,10 +30,10 @@ SELECT CASE WHEN EXISTS(SELECT FROM context) THEN jsonb_build_object(
  'associations',coalesce((SELECT jsonb_agg(document) FROM associations),'[]'::jsonb),
  'primary',coalesce((SELECT jsonb_agg(document) FROM primary_registrations),'[]'::jsonb),
  'peers',coalesce((SELECT jsonb_agg(to_jsonb(p)) FROM peers p),'[]'::jsonb),
- 'endpoints',coalesce((SELECT jsonb_agg(e.summary||jsonb_build_object('assetState',coalesce(s.state,'active')) ORDER BY e.id COLLATE "C")
+ 'endpoints',coalesce((SELECT jsonb_agg(e.summary||jsonb_build_object('assetState',coalesce(s.state,'active')) ORDER BY e.id)
   FROM mdm_access.directory_endpoints e LEFT JOIN mdm_devices.asset_states s ON(s.tenant_id,s.device)=(e.tenant_id,e.id)
   WHERE e.tenant_id=(SELECT tenant FROM context) AND e.id=ANY(p_devices)),'[]'::jsonb),
  'assets',mdm_assets.read_snapshot(p_devices,ARRAY(SELECT field FROM fields),NULL::jsonb,'{"kind":"device"}'::jsonb)) ELSE jsonb_build_object('assets',jsonb_build_object('ok',false)) END
 $$;
-REVOKE ALL ON FUNCTION mdm_devices.read_world(uuid[],text[],text[]) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_devices.read_world(uuid[],text[],text[]) TO mdm_access,mdm_identity_runtime;
+REVOKE ALL ON FUNCTION mdm_devices.read_world(uuid[],uuid[],text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_devices.read_world(uuid[],uuid[],text[]) TO mdm_access,mdm_identity_runtime;

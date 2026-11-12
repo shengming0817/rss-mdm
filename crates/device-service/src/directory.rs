@@ -39,9 +39,9 @@ const REFERENCE_STATISTICS: &str = concat!(
     include_str!("directory_statistics.sql")
 );
 pub(crate) struct Access {
-    pub(crate) allowed: Option<Vec<String>>,
-    pub(crate) sensitive: Option<Vec<String>>,
-    pub(crate) owners: Option<Vec<String>>,
+    pub(crate) allowed: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
+    pub(crate) sensitive: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
+    pub(crate) owners: Option<Vec<rss_mdm_agent_wire::DeviceId>>,
     pub(crate) binding: String,
     pub(crate) snapshot: Snapshot,
 }
@@ -49,7 +49,7 @@ fn permission_scope(
     snapshot: &Snapshot,
     proof: &AuthorizedPrincipal,
     permission: Permission,
-) -> Result<Option<Vec<String>>> {
+) -> Result<Option<Vec<rss_mdm_agent_wire::DeviceId>>> {
     // Tenant capabilities (notably InventorySensitiveRead) apply only inside
     // the independently authorized device candidates. devices_for rejects these
     // capabilities; treating that rejection as denial would hide permitted data.
@@ -167,7 +167,7 @@ impl Associations {
                     .map_err(|_| Error::CursorInvalidated)
             })
             .transpose()?;
-        let after = old.as_ref().map(|c| c.after.clone());
+        let after = old.as_ref().map(|c| c.after);
         let descending = query.sort()[0].descending;
         let mut args = PgArguments::default();
         macro_rules! arg {
@@ -176,9 +176,24 @@ impl Associations {
             };
         }
         arg!(proof.tenant_id().to_owned());
-        arg!(access.allowed.clone());
-        arg!(access.sensitive.clone());
-        arg!(access.owners.clone());
+        arg!(
+            access
+                .allowed
+                .as_ref()
+                .map(|ids| ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
+        );
+        arg!(
+            access
+                .sensitive
+                .as_ref()
+                .map(|ids| ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
+        );
+        arg!(
+            access
+                .owners
+                .as_ref()
+                .map(|ids| ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
+        );
         arg!(crate::directory_filter::predicate(query)?);
         arg!(proof.instance_id().to_owned());
         arg!(personnel.platform_configuration()?);
@@ -186,7 +201,8 @@ impl Associations {
         let candidate_limit: i64 = if statistics { 16384 } else { 4096 };
         arg!(candidate_limit);
         if !statistics {
-            arg!(after);
+            arg!(after.map(|o| o.kind()));
+            arg!(after.map(|o| o.uuid()));
             arg!(descending);
             arg!((query.limit() + 1) as i64);
             arg!(vec![
@@ -281,8 +297,7 @@ impl Associations {
             .groups
             .iter()
             .map(|g| {
-                let mut row = g.summary();
-                row["key"] = json!(g.key());
+                let row = g.summary();
                 query
                     .project_typed(crate::view_response::decode::<
                         crate::view_response::DirectoryRow,
@@ -298,6 +313,6 @@ impl Associations {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Continuation {
-    after: String,
+    after: rss_mdm_agent_wire::ObjectRef,
     identity: Value,
 }

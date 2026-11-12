@@ -271,7 +271,7 @@ pub async fn advance_run(
         target: rss_mdm_policy::SoftwareTarget::new(p, a),
         tenant: tx.tenant_id().to_string(),
         version: policy.id,
-        device: run.target.device.clone(),
+        device: run.target.device,
         operation: run.id,
         required: vec![crate::deployment::authorization::Permission::SoftwareDeploy],
     };

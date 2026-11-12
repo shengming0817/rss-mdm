@@ -30,7 +30,7 @@ fn page_evaluation_requires_ordered_partial_universe_and_complete_field_coverage
             .unwrap(),
         expected
     );
-    let last = page.objects[0].key.clone();
+    let last = page.objects[0].key;
     assert!(
         rule.evaluate_page(&input(&page.objects, &page.coverage, Some(&last)), time(1))
             .is_err()
@@ -100,6 +100,11 @@ fn borrowed_rule_views_preserve_structure_for_independent_persistence() {
     );
 }
 
+fn endpoint(n: u128) -> rss_mdm_agent_wire::ObjectRef {
+    rss_mdm_agent_wire::ObjectRef::Endpoint(
+        rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(n)).unwrap(),
+    )
+}
 fn tenant() -> TenantId {
     TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap()
 }
@@ -153,7 +158,7 @@ fn snapshot(state: FactState) -> FixturePage {
         dictionary_version: "dictionary-1".into(),
         coverage: BTreeSet::from(["device.model".into()]),
         objects: vec![ObjectSnapshot::single(
-            ObjectKey::new(tenant(), "device-a").unwrap(),
+            ObjectKey::new(tenant(), endpoint(1)).unwrap(),
             BTreeMap::from([(
                 "device.model".into(),
                 Fact {
@@ -574,7 +579,18 @@ fn string_byte_limits_have_inclusive_boundaries() {
         (limits::STRING_BYTES, true),
         (limits::STRING_BYTES + 1, false),
     ] {
-        assert_eq!(ObjectKey::new(tenant(), "x".repeat(len)).is_ok(), ok);
+        assert_eq!(
+            Criteria::predicate(Predicate {
+                field: "f".into(),
+                op: Op::Eq,
+                operand: Some(Operand {
+                    value: string(&"x".repeat(len)),
+                    unit: None
+                })
+            })
+            .is_ok(),
+            ok
+        );
     }
 }
 
@@ -714,7 +730,7 @@ fn rules_cannot_be_applied_to_another_tenants_consistent_snapshot() {
     );
     let mut s = snapshot(FactState::Known(string("x")));
     s.tenant = TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap();
-    s.objects[0].key = ObjectKey::new(s.tenant, "device-a").unwrap();
+    s.objects[0].key = ObjectKey::new(s.tenant, endpoint(1)).unwrap();
     for empty in [false, true] {
         if empty {
             s.objects.clear();
@@ -769,7 +785,7 @@ fn explanation_and_provenance_cover_each_object_and_field() {
     s.objects = (0..2)
         .map(|i| {
             let mut o = object.clone();
-            o.key = ObjectKey::new(tenant(), format!("device-{i:07}")).unwrap();
+            o.key = ObjectKey::new(tenant(), endpoint(i as u128 + 1)).unwrap();
             o
         })
         .collect();
@@ -795,7 +811,15 @@ fn explanation_and_provenance_cover_each_object_and_field() {
 #[test]
 fn limit_diagnostics_distinguish_categories_without_input_values() {
     let secret = format!("private-device{}", "x".repeat(limits::STRING_BYTES - 13));
-    let string_error = ObjectKey::new(tenant(), secret.clone()).unwrap_err();
+    let string_error = Criteria::predicate(Predicate {
+        field: "f".into(),
+        op: Op::Eq,
+        operand: Some(Operand {
+            value: string(&secret),
+            unit: None,
+        }),
+    })
+    .unwrap_err();
     let node_error =
         Criteria::and(vec![leaf(Op::Eq, Some(string("x"))); limits::NODES]).unwrap_err();
     assert_eq!(string_error, Error::LimitExceeded(LimitKind::StringBytes));
@@ -853,7 +877,7 @@ fn bounded_page_rejects_missing_coverage_foreign_cursor_and_oversized_universe()
     );
     s = snapshot(FactState::Known(string("x")));
     let other = TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap();
-    let cursor = ObjectKey::new(other, "a").unwrap();
+    let cursor = ObjectKey::new(other, endpoint(1)).unwrap();
     let mut page = s.input();
     page.after = Some(&cursor);
     assert_eq!(r.evaluate_page(&page, time(10)), Err(Error::TenantMismatch));
@@ -861,7 +885,7 @@ fn bounded_page_rejects_missing_coverage_foreign_cursor_and_oversized_universe()
     s.objects = (0..1001)
         .map(|n| {
             ObjectSnapshot::single(
-                ObjectKey::new(tenant(), format!("d{n:07}")).unwrap(),
+                ObjectKey::new(tenant(), endpoint(n as u128 + 1)).unwrap(),
                 Default::default(),
             )
         })
@@ -1039,7 +1063,7 @@ fn membership_negation_preserves_unknown_and_requires_complete_frozen_inputs() {
             )
             .unwrap();
             let mut object = ObjectSnapshot::single(
-                ObjectKey::new(tenant(), "device").unwrap(),
+                ObjectKey::new(tenant(), endpoint(1)).unwrap(),
                 BTreeMap::new(),
             );
             let coverage = BTreeSet::new();

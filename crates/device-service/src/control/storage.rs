@@ -38,7 +38,7 @@ pub async fn bind_command_in(
 
 pub struct Operation {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub request: Create,
     pub authority: Authority,
     pub revision: i64,
@@ -81,7 +81,9 @@ fn decode_operation(
 ) -> Result<Operation> {
     Ok(Operation {
         id,
-        device: row.try_get("device")?,
+        device: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+            rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+        })?,
         request: super::input_storage::open_row(protection, tenant, id, row, "request")?,
         authority: stored(serde_json::from_str(
             &row.try_get::<String, _>("authority")?,
@@ -159,7 +161,7 @@ pub async fn authority_decision(
     now: i64,
 ) -> Result<crate::control::authorization_decision::Authorization> {
     let tenant = tx.tenant_id().to_string();
-    let device = operation.device.clone();
+    let device = operation.device;
     let id = operation.id;
     let lifecycle = tx
         .with_connection(move |c| {
@@ -175,7 +177,7 @@ pub async fn authority_decision(
     let preliminary = crate::control::authorization_decision::decide(
         operation,
         lifecycle,
-        Some(operation.device.clone()),
+        Some(operation.device),
         true,
     )?;
     if !preliminary.is_authorized() {
@@ -192,12 +194,8 @@ pub async fn authority_decision(
         Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => None,
         Err(e) => return Err(e),
     };
-    let decision = crate::control::authorization_decision::decide(
-        operation,
-        lifecycle,
-        registration.clone(),
-        true,
-    )?;
+    let decision =
+        crate::control::authorization_decision::decide(operation, lifecycle, registration, true)?;
     if !decision.is_authorized() {
         return Ok(decision);
     }
@@ -219,7 +217,7 @@ pub async fn receipt_valid(
     now: i64,
 ) -> Result<bool> {
     match current_registration(tx, &operation.device, operation.request.task.purpose()?).await {
-        Ok(current) if current == operation.device.clone() => {}
+        Ok(current) if current == operation.device => {}
         Ok(_) | Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => {
             return Ok(false);
         }
@@ -236,13 +234,13 @@ pub async fn receipt_valid(
 }
 pub async fn current_registration(
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     purpose: rss_mdm_registration_service::Purpose,
-) -> Result<String> {
+) -> Result<rss_mdm_agent_wire::DeviceId> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let t = tenant.clone();
-    let d = device.clone();
+    let d = device;
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::control::device::store::lock_channel(
@@ -307,7 +305,7 @@ pub async fn read_on(
 
 pub async fn require_source(
     tx: &mut PgTransaction<'_>,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
@@ -331,7 +329,7 @@ pub async fn require_source(
 pub async fn authorized_native(
     tx: &mut PgTransaction<'_>,
     proof: &crate::control::authorization::context::AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     permissions: &[crate::control::authorization::Permission],
 ) -> Result<crate::control::authorization::Snapshot> {
     if permissions.is_empty() {

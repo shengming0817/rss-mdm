@@ -172,7 +172,7 @@ async fn prepare_on(
     read::lock_members(c, proof.tenant_id(), &members).await?;
     let ids = members
         .iter()
-        .map(|member| member.device.clone())
+        .map(|member| member.device)
         .collect::<Vec<_>>();
     let associations = match change {
         Change::Confirm(request) => request.association_id.into_iter().collect::<Vec<_>>(),
@@ -318,7 +318,7 @@ pub(crate) async fn persist(
             .bind(tenant).bind(id).bind(state).bind(&r.evidence).bind(&hardware).bind(actor).bind(now).execute(&mut *c).await?;
         for m in &members {
             sqlx::query("INSERT INTO mdm_devices.members (tenant_id, association_id, device, channel) VALUES (CAST($1 AS uuid), $2, $3, $4)")
-            .bind(tenant).bind(id).bind(&m.device).bind(m.channel.as_str()).execute(&mut *c).await?;
+            .bind(tenant).bind(id).bind(m.device.into_uuid()).bind(m.channel.as_str()).execute(&mut *c).await?;
         }
     }
     let result = read::load(c, tenant, id).await?;
@@ -339,9 +339,6 @@ fn validate_confirm(request: &Confirm) -> Result<()> {
         || request.agent.channel != Channel::Agent
         || request.mdm.device == request.agent.device
         || !model::text(&request.evidence)
-        || [&request.mdm, &request.agent]
-            .iter()
-            .any(|m| !model::text(&m.device))
     {
         return Err(Error::Malformed);
     }

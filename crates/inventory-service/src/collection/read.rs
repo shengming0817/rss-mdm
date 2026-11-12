@@ -12,10 +12,10 @@ pub async fn latest_quality(
 pub async fn pending_apple_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     ids: &[uuid::Uuid],
 ) -> Result<std::collections::BTreeSet<uuid::Uuid>, crate::Error> {
-    let rows=sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM mdm_access.collection_runs WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND source = 'mdm.apple' AND id = ANY($3) AND sealed_at IS NULL AND deadline > clock_timestamp()")
- .bind(tenant).bind(registration).bind(ids).fetch_all(c).await.map_err(crate::database::db)?;
+    let rows=sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM mdm_access.collection_runs WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.apple' AND id = ANY($3) AND sealed_at IS NULL AND deadline > clock_timestamp()")
+ .bind(tenant).bind(registration.into_uuid()).bind(ids).fetch_all(c).await.map_err(crate::database::db)?;
     Ok(rows.into_iter().collect())
 }

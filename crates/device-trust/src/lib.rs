@@ -737,12 +737,11 @@ pub fn endpoint_identity(
     let (tenant, encoded) = remainder.split_once(':').ok_or(Error::Unauthorized)?;
     let tenant = Uuid::parse_str(tenant).map_err(invalid)?;
     let device = URL_SAFE_NO_PAD.decode(encoded).map_err(invalid)?;
-    let device = std::str::from_utf8(&device).map_err(invalid)?;
+    let device =
+        rss_mdm_agent_wire::DeviceId::parse(std::str::from_utf8(&device).map_err(invalid)?)
+            .map_err(invalid)?;
     if tenant.is_nil()
-        || device.is_empty()
-        || device.len() > 256
-        || device.chars().any(char::is_control)
-        || rss_mdm_certificate::device_identity::identity(purpose, service, tenant, device)
+        || rss_mdm_certificate::device_identity::identity(purpose, service, tenant, &device)
             .map_err(invalid)?
             != identity
     {

@@ -101,7 +101,9 @@ async fn policy_owns_scope_cas_receipt_and_retirement() -> Result<()> {
         definition
             .scope
             .targets
-            .insert(rss_mdm_scope::Reference::Device("missing-device".into()));
+            .insert(rss_mdm_scope::Reference::Device(
+                rss_mdm_agent_wire::DeviceId::new_v4(),
+            ));
     }
     assert!(
         f.policies
@@ -266,7 +268,7 @@ async fn stage_identity_is_owned_and_reorder_does_not_republish() -> Result<()> 
             definition.limitations = Some(Default::default());
             if stage == last {
                 definition.targets.insert(rss_mdm_scope::Reference::Device(
-                    "absent-stage-device".into(),
+                    rss_mdm_agent_wire::DeviceId::new_v4(),
                 ));
             }
             Ok::<_, anyhow::Error>(definition)

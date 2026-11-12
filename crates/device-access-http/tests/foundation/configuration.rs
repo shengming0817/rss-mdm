@@ -96,7 +96,7 @@ pub async fn concurrent_export(
 pub async fn reject_account_change(
     c: &Context,
     m: &material::Material,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     publication: &policy::Publication,
 ) -> Result<()> {
     let token = material::device_administrator(c, device).await?;
@@ -177,7 +177,7 @@ pub async fn diagnostic(
     client: &reqwest::Client,
     base: &str,
     token: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<serde_json::Value> {
     material::success(
         client

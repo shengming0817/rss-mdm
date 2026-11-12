@@ -109,7 +109,7 @@ fn other_evidence() -> [(&'static str, Evidence); 5] {
     let run = json!({"state": state, "effect": "unknown", "result": null});
     let record = json!({
         "taskId": Uuid::from_u128(1), "policyId": Uuid::from_u128(2),
-        "versionId": Uuid::from_u128(3), "device": "device-a",
+        "versionId": Uuid::from_u128(3), "device": Uuid::from_u128(4),
         "occurrence": "once", "availableAt": 1, "deadline": 100,
         "state": state, "authorization": null, "attemptId": null, "result": null
     });
@@ -178,7 +178,8 @@ fn page(evidence: Option<Evidence>, kind: KindOfOperation) -> Page<Item> {
             metadata: Metadata {
                 id: Uuid::from_u128(1),
                 kind,
-                device: "device-a".into(),
+                device: rss_mdm_agent_wire::DeviceId::parse("e9b5bd79-4201-51f0-a6b4-d6713d03b511")
+                    .unwrap(),
 
                 origin: "direct".into(),
                 policy: None,
@@ -272,7 +273,7 @@ fn registration_response_preserves_the_certificate_grant_field() {
     let path = "/api/v1/devices/{device}/registration";
     let grant = Uuid::from_u128(7);
     let row: Registration = serde_json::from_value(json!({
-        "deviceId": "device-4", "source": "agent.builtin",
+        "deviceId": Uuid::from_u128(4), "source": "agent.builtin",
         "status": "active", "enrolledUser": false,
         "enrollmentId": null, "certificateGrantId": grant, "windowsDeclared": null
     }))

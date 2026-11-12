@@ -107,7 +107,7 @@ impl Business for AppleBusiness {
     fn prepare_wake<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        devices: Vec<String>,
+        devices: Vec<rss_mdm_agent_wire::DeviceId>,
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
@@ -134,34 +134,34 @@ impl Business for AppleBusiness {
     fn wake_commands<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
         after: Uuid,
     ) -> Pending<'a, WakePage> {
         Box::pin(async move {
             let left = self
                 .0
-                .apple_wake_commands_in(tx, registration.clone(), after)
+                .apple_wake_commands_in(tx, registration, after)
                 .await
                 .map_err(fault)?;
             let right = self
                 .1
-                .apple_wake_commands_in(tx, registration.clone(), after)
+                .apple_wake_commands_in(tx, registration, after)
                 .await
                 .map_err(policy_fault)?;
             let software = self
                 .3
-                .apple_wake_commands_in(tx, registration.clone(), after)
+                .apple_wake_commands_in(tx, registration, after)
                 .await
                 .map_err(software_fault)?;
             let bootstrap = self
                 .4
-                .apple_wake_commands_in(tx, registration.clone(), after)
+                .apple_wake_commands_in(tx, registration, after)
                 .await
                 .map_err(registration_fault)?;
             let recovery = match &self.5 {
                 Some(recovery) => Some(
                     recovery
-                        .apple_wake_commands_in(tx, registration.clone(), after)
+                        .apple_wake_commands_in(tx, registration, after)
                         .await
                         .map_err(recovery_fault)?,
                 ),
@@ -656,7 +656,7 @@ impl Departure for AppleBusiness {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             rss_mdm_device_service::control::unmanage::native_departure_in(

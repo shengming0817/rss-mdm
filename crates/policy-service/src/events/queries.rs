@@ -16,7 +16,7 @@ impl Events {
     pub async fn member_receipt(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
@@ -36,7 +36,7 @@ impl Events {
                         s.profile(),
                         tx,
                         id,
-                        device.into(),
+                        *device,
                     )
                     .await?;
                     p.check_live()?;
@@ -57,7 +57,7 @@ impl Events {
     pub async fn operation_receipt(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         id: Uuid,
     ) -> std::result::Result<Option<rss_mdm_audit_integration::operation::ReceiptSummary>, Error>
     {
@@ -79,7 +79,7 @@ impl Events {
                         tx,
                         caller.clone(),
                         id,
-                        device.to_string(),
+                        **device,
                     )
                     .await?;
                     p.check_live()?;
@@ -100,7 +100,7 @@ impl Events {
     pub async fn read_management(
         &self,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         batch: Option<Uuid>,
         members: bool,
         query: &rss_mdm_query::directory::Query,
@@ -140,7 +140,7 @@ impl Events {
     async fn read(
         &self,
         reader: Requester<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         batch: Option<Uuid>,
         members: bool,
         query: &rss_mdm_query::directory::Query,
@@ -153,7 +153,7 @@ impl Events {
             Requester::Agent(principal) => (None, Some(principal)),
         };
         let target = principal.map(|p| Target {
-            device: p.device().into(),
+            device: *p.device(),
         });
         let agent = target.as_ref();
         let schema = if members { &MEMBERS } else { &BATCHES };

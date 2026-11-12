@@ -18,7 +18,8 @@ pub async fn accept_on(
         .map_err(|_| Error::Malformed)?;
     definition.validate(batch).map_err(|_| Error::Malformed)?;
     let id = Uuid::parse_str(batch.id().as_str()).map_err(|_| Error::Malformed)?;
-    let device = scope.registration().as_str();
+    let device = rss_mdm_agent_wire::DeviceId::parse(scope.registration().as_str())
+        .map_err(|_| Error::Malformed)?;
     let digest = super::store::fingerprint(batch, scope)?;
     let old = sqlx::query("SELECT input_digest,scope FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2")
         .bind(scope.tenant().to_string()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
@@ -60,7 +61,7 @@ pub async fn accept_on(
         _ => "failed",
     };
     sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, reason, batch, digest, input_digest, sealed_at, delivery_pending) VALUES (CAST($1 AS uuid), $2, $3, $4, CAST($5 AS uuid), $6, $7, $8, $9, $10, 'complete', $11, $12, $13, $8, TRUE)")
-        .bind(scope.tenant().to_string()).bind(id).bind(device).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_|Error::Malformed)?)
+        .bind(scope.tenant().to_string()).bind(id).bind(device.into_uuid()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_|Error::Malformed)?)
         .bind(i64::try_from(batch.sequence()).map_err(|_|Error::Malformed)?).bind(received_at).bind(serde_json::to_string(&progress).map_err(|_|Error::Malformed)?)
         .bind(result).bind(stored.encode()).bind(stored_digest).bind(digest).execute(&mut *c).await.map_err(db)?;
     crate::wake::notify(c).await.map_err(db)?;

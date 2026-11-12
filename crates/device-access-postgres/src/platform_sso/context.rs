@@ -30,8 +30,8 @@ impl Context {
             id,
         )
         .await?;
-        if b.device != target.device()
-            || b.device != target.device()
+        if b.device != *target.device()
+            || b.device != *target.device()
             || b.generation != generation
             || b.state == rss_mdm_device_access::State::Revoked
             || !b.configuration.enabled

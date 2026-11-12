@@ -107,7 +107,7 @@ pub(crate) async fn queue_run_in(
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, source_kind, policy_version, device, occurrence, available_at, deadline, state, dispatch_fingerprint, created_at, source_objects, origin) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).execute(c).await?;Ok(())
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device.into_uuid()).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).execute(c).await?;Ok(())
     })).await?;
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
@@ -172,11 +172,10 @@ pub async fn policy_pending_in(
     now: i64,
 ) -> Result<(bool, Option<i64>)> {
     let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
-    let registration = target.device.to_string();
+    let device = target.device;
     let value=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT COALESCE(bool_or(state ->> 'execution' = 'unknown' OR ((state ->> 'execution' = 'running' OR (state ->> 'execution' = 'not_started' AND deadline > $4)) AND state ->> 'cancellation' <> 'confirmed')), FALSE), max(created_at) FILTER (WHERE policy_version = $6) FROM mdm_devices.unmanage_runs AS r INNER JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (r.tenant_id, r.policy_version) WHERE r.tenant_id = CAST($1 AS uuid) AND v.policy = CAST($2 AS uuid) AND device = $3 AND (device = CAST($5 AS text) OR state ->> 'execution' = 'unknown')")
-            .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(&registration).bind(version).fetch_one(c).await
+        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT COALESCE(bool_or(state ->> 'execution' = 'unknown' OR ((state ->> 'execution' = 'running' OR (state ->> 'execution' = 'not_started' AND deadline > $4)) AND state ->> 'cancellation' <> 'confirmed')), FALSE), max(created_at) FILTER (WHERE policy_version = $5) FROM mdm_devices.unmanage_runs AS r INNER JOIN mdm_policy.versions AS v ON (v.tenant_id, v.id) = (r.tenant_id, r.policy_version) WHERE r.tenant_id = CAST($1 AS uuid) AND v.policy = CAST($2 AS uuid) AND device = $3")
+            .bind(tenant).bind(owner.to_string()).bind(device.into_uuid()).bind(now).bind(version).fetch_one(c).await
     })).await?;
     Ok(value)
 }

@@ -49,7 +49,7 @@ async fn registration(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+    path: Result<Path<rss_mdm_agent_wire::DeviceId>, axum::extract::rejection::PathRejection>,
 ) -> Result<Json<rss_mdm_registration_service::enrollment::registration::Registration>, Error> {
     let Path(device) = path.map_err(|_| Error::Malformed)?;
     audit.target_device(&device);
@@ -108,7 +108,7 @@ async fn revoke_registration(
     headers: crate::api::WriteHeaders,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+    path: Result<Path<rss_mdm_agent_wire::DeviceId>, axum::extract::rejection::PathRejection>,
     input: Result<Json<EmptyRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::device::RevocationReceipt>, Error> {
     let Path(device) = path.map_err(|_| Error::Malformed)?;

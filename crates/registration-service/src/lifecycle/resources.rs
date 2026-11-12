@@ -12,8 +12,8 @@ pub enum Work {
     Exclusive,
 }
 
-fn keys(device: &str, work: Work) -> Vec<String> {
-    let endpoint = format!("{:x}", Sha256::digest(device.as_bytes()));
+fn keys(device: &rss_mdm_agent_wire::DeviceId, work: Work) -> Vec<String> {
+    let endpoint = format!("{:x}", Sha256::digest(device.to_string().as_bytes()));
     match work {
         Work::ScriptRecovery => vec![format!("endpoint.{endpoint}.script")],
         Work::AgentCollectionRecovery => vec![format!("endpoint.{endpoint}.collection")],
@@ -24,13 +24,16 @@ fn keys(device: &str, work: Work) -> Vec<String> {
     }
 }
 
-pub fn device(tenant: TenantId, device: &str, work: Work) -> ResourceSet {
+pub fn device(tenant: TenantId, device: &rss_mdm_agent_wire::DeviceId, work: Work) -> ResourceSet {
     ResourceSet::new(tenant, keys(device, work)).expect("two fixed bounded resource keys")
 }
 
 /// Current complete association/retirement membership, not just the initiating
 /// endpoint. Existing product bounds keep this within RSS's resource-set budget.
-pub fn devices(tenant: TenantId, devices: &[String]) -> Result<ResourceSet, crate::Error> {
+pub fn devices(
+    tenant: TenantId,
+    devices: &[rss_mdm_agent_wire::DeviceId],
+) -> Result<ResourceSet, crate::Error> {
     ResourceSet::new(
         tenant,
         devices.iter().flat_map(|d| keys(d, Work::Exclusive)),
@@ -45,9 +48,11 @@ mod tests {
     #[test]
     fn only_script_and_agent_collection_have_disjoint_endpoint_resources() {
         let tenant = TenantId::parse("00000000-0000-0000-0000-000000000001").unwrap();
-        let script = device(tenant, "device-a", Work::ScriptRecovery);
-        let collection = device(tenant, "device-a", Work::AgentCollectionRecovery);
-        let exclusive = device(tenant, "device-a", Work::Exclusive);
+        let a = rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap();
+        let b = rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(2)).unwrap();
+        let script = device(tenant, &a, Work::ScriptRecovery);
+        let collection = device(tenant, &a, Work::AgentCollectionRecovery);
+        let exclusive = device(tenant, &a, Work::Exclusive);
         assert!(script.keys().iter().all(|k| !collection.keys().contains(k)));
         assert!(
             script
@@ -56,13 +61,9 @@ mod tests {
                 .chain(collection.keys())
                 .all(|k| exclusive.keys().contains(k))
         );
-        let other = device(tenant, "device-b", Work::Exclusive);
+        let other = device(tenant, &b, Work::Exclusive);
         assert!(exclusive.keys().iter().all(|k| !other.keys().contains(k)));
-        let members = devices(
-            tenant,
-            &["device-b".into(), "device-a".into(), "device-a".into()],
-        )
-        .unwrap();
+        let members = devices(tenant, &[b, a, a]).unwrap();
         assert_eq!(members.keys().len(), 4);
         assert!(
             exclusive

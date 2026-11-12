@@ -85,7 +85,7 @@ SET LOCAL check_function_bodies=false;
 REVOKE ALL ON "###, $schema_decl, r###" FROM PUBLIC;
 GRANT USAGE ON "###, $schema_decl, " TO ", $scope_runtime, ",", $access, ",", $command_runtime, r###";
 
-"###, $scope_admission_header, r###"p_scope uuid, p_device text) RETURNS jsonb
+"###, $scope_admission_header, r###"p_scope uuid, p_device uuid) RETURNS jsonb
  LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid; expected bigint; actual bigint; refs uuid[]; after_refs uuid[];
 BEGIN
@@ -110,7 +110,7 @@ END $$;
 CREATE TABLE "###, $schema, r###"scope_results (
     tenant_id uuid NOT NULL,
     run uuid NOT NULL,
-    device text NOT NULL COLLATE pg_catalog."C",
+    object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     matched boolean NOT NULL,
     explanation jsonb NOT NULL,
     CONSTRAINT scope_results_explanation_check CHECK ((octet_length((explanation)::text) <= 1048576))
@@ -129,8 +129,10 @@ CREATE TABLE "###, $schema, r###"scope_runs (
     fingerprint bytea NOT NULL,
     phase text NOT NULL,
     source_index integer DEFAULT 0 NOT NULL,
-    source_cursor text,
-    evaluation_cursor text,
+    source_cursor_kind smallint CHECK(source_cursor_kind IN(0,1)), source_cursor uuid,
+    evaluation_cursor_kind smallint CHECK(evaluation_cursor_kind IN(0,1)), evaluation_cursor uuid,
+    CHECK((source_cursor_kind IS NULL)=(source_cursor IS NULL)),
+    CHECK((evaluation_cursor_kind IS NULL)=(evaluation_cursor IS NULL)),
     object_count bigint DEFAULT 0 NOT NULL,
     member_count bigint DEFAULT 0 NOT NULL,
     CONSTRAINT scope_runs_check CHECK (((member_count >= 0) AND (member_count <= object_count))),
@@ -149,8 +151,7 @@ CREATE TABLE "###, $schema, r###"scope_source_members (
     tenant_id uuid NOT NULL,
     run uuid NOT NULL,
     source integer NOT NULL,
-    device text NOT NULL COLLATE pg_catalog."C",
-    CONSTRAINT scope_source_members_device_check CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 300))),
+    object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     CONSTRAINT scope_source_members_source_check CHECK (((source >= 0) AND (source <= 999)))
 );
 
@@ -160,7 +161,7 @@ CREATE TABLE "###, $schema, r###"scope_sources (
     tenant_id uuid NOT NULL,
     scope uuid NOT NULL,
     kind text NOT NULL,
-    target text NOT NULL,
+    target uuid NOT NULL,
     CONSTRAINT scope_sources_kind_check CHECK ((kind = ANY (ARRAY['group'::text, 'device'::text])))
 );
 
@@ -198,13 +199,13 @@ CREATE TABLE "###, $schema, r###"scopes (
 ALTER TABLE ONLY "###, $schema, r###"scopes FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY "###, $schema, r###"scope_results
-    "###, $index_26, r###" PRIMARY KEY (tenant_id, run, device);
+    "###, $index_26, r###" PRIMARY KEY (tenant_id, run, object_kind, object_id);
 
 ALTER TABLE ONLY "###, $schema, r###"scope_runs
     "###, $index_27, r###" PRIMARY KEY (tenant_id, id);
 
 ALTER TABLE ONLY "###, $schema, r###"scope_source_members
-    "###, $index_28, r###" PRIMARY KEY (tenant_id, run, source, device);
+    "###, $index_28, r###" PRIMARY KEY (tenant_id, run, source, object_kind, object_id);
 
 ALTER TABLE ONLY "###, $schema, r###"scope_sources
     "###, $index_29, r###" PRIMARY KEY (tenant_id, scope, kind, target);
@@ -215,9 +216,9 @@ ALTER TABLE ONLY "###, $schema, r###"scope_versions
 ALTER TABLE ONLY "###, $schema, r###"scopes
     "###, $index_31, r###" PRIMARY KEY (tenant_id, id);
 
-"###, $index_32, " ON ", $schema, r###"scope_results USING btree (tenant_id, run, device) WHERE matched;
+"###, $index_32, " ON ", $schema, r###"scope_results USING btree (tenant_id, run, object_kind, object_id) WHERE matched;
 
-"###, $index_33, " ON ", $schema, r###"scope_source_members USING btree (tenant_id, run, device, source);
+"###, $index_33, " ON ", $schema, r###"scope_source_members USING btree (tenant_id, run, object_kind, object_id, source);
 
 "###, $index_34, " ON ", $schema, r###"scope_sources USING btree (tenant_id, kind, target, scope);
 
@@ -248,7 +249,7 @@ CREATE POLICY tenant ON "###, $schema, r###"scopes USING ((tenant_id = (NULLIF(c
 "###, $index_35, " ON ", $schema, r###"scope_source_members USING gin((input->'members') jsonb_path_ops);
 
 -- Lock-free owner kernels shared by query projections and locked admission.
-"###, $scope_state_header, r###"p_scope uuid, p_device text) RETURNS jsonb
+"###, $scope_state_header, r###"p_scope uuid, p_device uuid) RETURNS jsonb
     LANGUAGE plpgsql STABLE SECURITY DEFINER
     SET search_path TO 'pg_catalog'
     AS $$
@@ -268,9 +269,9 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION "###, $schema, r###"scope_state(uuid,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION "###, $schema, r###"scope_state(uuid,uuid) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION "###, $schema, "scope_state(uuid,text) TO ", $access, ",", $scope_runtime, ",", $policy_runtime, ",", $inventory_runtime, ",", $telemetry_runtime, ",", $command_runtime, r###";
+GRANT EXECUTE ON FUNCTION "###, $schema, "scope_state(uuid,uuid) TO ", $access, ",", $scope_runtime, ",", $policy_runtime, ",", $inventory_runtime, ",", $telemetry_runtime, ",", $command_runtime, r###";
 CREATE TABLE "###, $tasks, r###" (
  tenant_id uuid NOT NULL,id uuid NOT NULL,scope uuid NOT NULL,
  completed boolean NOT NULL DEFAULT false,failure text,failure_detail jsonb,replacement_task uuid,
@@ -340,11 +341,11 @@ ALTER TABLE ONLY "###, $schema, r###"scope_versions
 ALTER TABLE ONLY "###, $schema, r###"scopes
     "###, $index_42, " FOREIGN KEY (tenant_id, resolution) REFERENCES ", $schema, r###"scope_runs(tenant_id, id);
 
-REVOKE ALL ON FUNCTION "###, $schema, r###"scope_admission(p_scope uuid, p_device text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION "###, $schema, r###"scope_admission(p_scope uuid, p_device uuid) FROM PUBLIC;
 
-GRANT ALL ON FUNCTION "###, $schema, "scope_admission(p_scope uuid, p_device text) TO ", $command_runtime, r###";
+GRANT ALL ON FUNCTION "###, $schema, "scope_admission(p_scope uuid, p_device uuid) TO ", $command_runtime, r###";
 
-GRANT ALL ON FUNCTION "###, $schema, "scope_admission(p_scope uuid, p_device text) TO ", $scope_runtime, ",", $policy_runtime, ",", $inventory_runtime, ",", $telemetry_runtime, r###";
+GRANT ALL ON FUNCTION "###, $schema, "scope_admission(p_scope uuid, p_device uuid) TO ", $scope_runtime, ",", $policy_runtime, ",", $inventory_runtime, ",", $telemetry_runtime, r###";
 
 GRANT SELECT,INSERT ON TABLE "###, $schema, "scope_results TO ", $scope_runtime, r###";
 
@@ -390,7 +391,7 @@ GRANT UPDATE(resolution) ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r
 
 GRANT UPDATE(resolution_revision) ON TABLE "###, $schema, "scopes TO ", $scope_runtime, r###";
 
-GRANT EXECUTE ON FUNCTION "###, $schema, "scope_admission(uuid,text) TO ", $access, r###";
+GRANT EXECUTE ON FUNCTION "###, $schema, "scope_admission(uuid,uuid) TO ", $access, r###";
 
 
 
@@ -434,7 +435,8 @@ SET LOCAL check_function_bodies=false;
 CREATE TABLE "###, $schema, r###"scope_projection_runs (
  tenant_id uuid NOT NULL,id uuid NOT NULL,scope uuid NOT NULL,previous_resolution uuid,next_entry bigint NOT NULL CHECK(next_entry>0),
  phase text NOT NULL CHECK(phase IN('sources','project','ready','published')),
- source_cursor text COLLATE "C",projection_cursor text COLLATE "C",
+ source_cursor_source integer CHECK(source_cursor_source BETWEEN 0 AND 999),source_cursor_kind smallint CHECK(source_cursor_kind IN(0,1)), source_cursor uuid,projection_cursor_channel text CHECK(projection_cursor_channel IN('agent','mdm')), projection_cursor uuid,
+ CHECK((source_cursor_source IS NULL)=(source_cursor IS NULL)), CHECK((source_cursor_kind IS NULL)=(source_cursor IS NULL)), CHECK((projection_cursor_channel IS NULL)=(projection_cursor IS NULL)),
  channel_hashes jsonb NOT NULL DEFAULT jsonb_build_object('agent',repeat('0',64),'mdm',repeat('0',64)),
  agent_revision bigint NOT NULL DEFAULT 0 CHECK(agent_revision>=0),mdm_revision bigint NOT NULL DEFAULT 0 CHECK(mdm_revision>=0),
  PRIMARY KEY(tenant_id,id)
@@ -443,13 +445,13 @@ ALTER TABLE "###, $schema, r###"scope_projection_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "###, $schema, r###"scope_projection_runs FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON "###, $schema, r###"scope_projection_runs USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON "###, $schema, "scope_projection_runs TO ", $scope_runtime, r###";
-GRANT UPDATE(phase,source_cursor,projection_cursor,channel_hashes,agent_revision,mdm_revision) ON "###, $schema, "scope_projection_runs TO ", $scope_runtime, r###";
+GRANT UPDATE(phase,source_cursor_source,source_cursor_kind,source_cursor,projection_cursor_channel,projection_cursor,channel_hashes,agent_revision,mdm_revision) ON "###, $schema, "scope_projection_runs TO ", $scope_runtime, r###";
 GRANT SELECT ON "###, $schema, "scope_projection_runs TO ", $command_runtime, ",", $access, r###";
 CREATE TABLE "###, $schema, r###"scope_channel_results (
  tenant_id uuid NOT NULL,
  run uuid NOT NULL,
  channel text NOT NULL CHECK(channel IN('agent','mdm')),
- device text COLLATE "C" NOT NULL CHECK(octet_length(device)<=256),
+ device uuid NOT NULL,
  matched boolean NOT NULL,
  pending boolean NOT NULL,
  target jsonb NOT NULL CHECK(octet_length(target::text)<=1024),
@@ -463,7 +465,7 @@ ALTER TABLE "###, $schema, r###"scope_channel_results FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant ON "###, $schema, r###"scope_channel_results USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 
-"###, $index_44, " ON ", $schema, r###"scope_channel_results(tenant_id,run,((channel||':'||device) COLLATE "C"));
+"###, $index_44, " ON ", $schema, r###"scope_channel_results(tenant_id,run,channel,device);
 
 CREATE FUNCTION "###, $schema, r###"guard_scope_channel_result() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 DECLARE p text;
@@ -477,7 +479,7 @@ REVOKE ALL ON FUNCTION "###, $schema, r###"guard_scope_channel_result() FROM PUB
 
 CREATE TRIGGER scope_channel_result_guard BEFORE INSERT OR UPDATE ON "###, $schema, "scope_channel_results FOR EACH ROW EXECUTE FUNCTION ", $schema, r###"guard_scope_channel_result();
 
-"###, $channel_admission_header, r###"p_scope uuid,p_channel text,p_device text) RETURNS jsonb
+"###, $channel_admission_header, r###"p_scope uuid,p_channel text,p_device uuid) RETURNS jsonb
  LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid;
  status jsonb; current_run uuid; frozen jsonb; evaluation record; published record;
@@ -494,7 +496,7 @@ BEGIN
   SELECT m.source,m.unknown,m.input FROM "###, $schema, r###"scope_source_members m
   WHERE m.tenant_id=tenant AND m.run=current_run
    AND m.input->'members' @> jsonb_build_array(jsonb_build_object('device',p_device,'channel',p_channel))
-  ORDER BY m.source,m.device LIMIT 16001
+  ORDER BY m.source,m.object_kind,m.object_id LIMIT 16001
  ), evidence_state AS MATERIALIZED (
   SELECT e.source,CASE WHEN e.unknown OR e.input->>'verified' IS DISTINCT FROM 'true' THEN false
    ELSE "###, $object_qualification, r###" IS NOT NULL END AS valid FROM evidence e
@@ -545,9 +547,9 @@ BEGIN
  RETURN jsonb_build_object('state','excluded');
 END $$;
 
-REVOKE ALL ON FUNCTION "###, $schema, r###"channel_admission(uuid,text,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION "###, $schema, r###"channel_admission(uuid,text,uuid) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION "###, $schema, "channel_admission(uuid,text,text) TO ", $access, ",", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, ",", $command_runtime, r###";
+GRANT EXECUTE ON FUNCTION "###, $schema, "channel_admission(uuid,text,uuid) TO ", $access, ",", $inventory_runtime, ",", $scope_runtime, ",", $policy_runtime, ",", $telemetry_runtime, ",", $command_runtime, r###";
 COMMIT;
 "###),
                 projection_relations: concat!(r###"BEGIN;
@@ -646,16 +648,16 @@ AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT relrowsecurity OR NOT relforcerow
 AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
  WHERE has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <>
  ((t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision','input_revision','input_epoch','input_xid'))
- OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
+ OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor_kind','source_cursor','evaluation_cursor_kind','evaluation_cursor','object_count','member_count'))
  OR (t.relname="###, $tasks_name, r###" AND a.attname IN('completed','failure','failure_detail','replacement_task'))
  OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('input_failed','from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor'))))
-AND has_function_privilege(current_user,'"###, $schema, r###"scope_admission(uuid,text)','EXECUTE')
-AND has_function_privilege(current_user,'"###, $schema, r###"scope_state(uuid,text)','EXECUTE')
+AND has_function_privilege(current_user,'"###, $schema, r###"scope_admission(uuid,uuid)','EXECUTE')
+AND has_function_privilege(current_user,'"###, $schema, r###"scope_state(uuid,uuid)','EXECUTE')
 
 AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT EXISTS(
  SELECT 1 FROM pg_constraint k WHERE k.conrelid=t.oid AND k.contype='p' AND k.convalidated AND NOT k.condeferrable
  AND (SELECT array_agg(a.attname::text ORDER BY key.n) FROM unnest(k.conkey) WITH ORDINALITY key(attnum,n) JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=key.attnum)=
- CASE t.relname WHEN "###, $operations_name, " THEN ARRAY['tenant_id','actor','id'] WHEN 'scope_results' THEN ARRAY['tenant_id','run','device'] WHEN 'scope_source_members' THEN ARRAY['tenant_id','run','source','device'] WHEN 'scope_sources' THEN ARRAY['tenant_id','scope','kind','target'] WHEN 'scope_versions' THEN ARRAY['tenant_id','id','revision'] WHEN ", $asset_dispatch_name, r###" THEN ARRAY['tenant_id'] ELSE ARRAY['tenant_id','id'] END))
+ CASE t.relname WHEN "###, $operations_name, " THEN ARRAY['tenant_id','actor','id'] WHEN 'scope_results' THEN ARRAY['tenant_id','run','object_kind','object_id'] WHEN 'scope_source_members' THEN ARRAY['tenant_id','run','source','object_kind','object_id'] WHEN 'scope_sources' THEN ARRAY['tenant_id','scope','kind','target'] WHEN 'scope_versions' THEN ARRAY['tenant_id','id','revision'] WHEN ", $asset_dispatch_name, r###" THEN ARRAY['tenant_id'] ELSE ARRAY['tenant_id','id'] END))
 AND NOT EXISTS(SELECT 1 FROM owned t,LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
 AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM owned) AND NOT tgisinternal)
 -- Required rights are checked on current_user above. Every role reachable by the
@@ -668,7 +670,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t CROSS JOIN reachable r WHERE
   AND (has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES')
    OR (has_column_privilege(r.oid,t.oid,a.attnum,'UPDATE') AND NOT (
     (t.relname='scopes' AND a.attname IN('resolution','resolution_revision','calculation_revision','input_revision','input_epoch','input_xid'))
-    OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
+    OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor_kind','source_cursor','evaluation_cursor_kind','evaluation_cursor','object_count','member_count'))
     OR (t.relname="###, $tasks_name, r###" AND a.attname IN('completed','failure','failure_detail','replacement_task'))
     OR (t.relname="###, $asset_dispatch_name, r###" AND a.attname IN('input_failed','from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor')))))))
 AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute col ON col.attrelid=t.oid
@@ -744,9 +746,9 @@ SELECT (SELECT count(*) FROM relations)=(SELECT count(*) FROM expected)
 "###),
                 authority_admission: concat!(r###"-- Privileged kernels: exact bodies come from the corresponding owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
- ('"###, $schema, "scope_admission(uuid,text)', 'plpgsql', 'jsonb', true, false, 'v', ARRAY['p_scope','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['", $access, "','", $command_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $inventory_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[]),
- ('"###, $schema, "scope_state(uuid,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['", $access, "','", $command_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $inventory_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[]),
- ('"###, $schema, "channel_admission(uuid,text,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_channel','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['", $access, "','", $command_runtime, "','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[])
+ ('"###, $schema, "scope_admission(uuid,uuid)', 'plpgsql', 'jsonb', true, false, 'v', ARRAY['p_scope','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['", $access, "','", $command_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $inventory_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[]),
+ ('"###, $schema, "scope_state(uuid,uuid)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['", $access, "','", $command_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $inventory_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[]),
+ ('"###, $schema, "channel_admission(uuid,text,uuid)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_channel','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['", $access, "','", $command_runtime, "','", $inventory_runtime, "','", $scope_runtime, "','", $policy_runtime, "','", $telemetry_runtime, "','", $role_mdm_identity_runtime, "','", $owner, r###"']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)
@@ -769,7 +771,7 @@ ORDER BY e.signature LIMIT 1
                 lib_group_change_page_in_1: concat!("SELECT event_id,group_id,cursor FROM ", $group_changes, " WHERE tenant_id=$1::uuid AND NOT completed ORDER BY event_id LIMIT 1 FOR UPDATE SKIP LOCKED"),
                 lib_group_change_page_in_2: concat!("SELECT DISTINCT s.id FROM ", $schema, "scopes s JOIN ", $schema, "scope_sources e ON(e.tenant_id,e.scope)=(s.tenant_id,s.id) WHERE s.tenant_id=$1::uuid AND NOT s.deleted AND e.kind='group' AND e.target=$2 AND ($3::uuid IS NULL OR s.id>$3) ORDER BY s.id LIMIT 65"),
                 lib_complete_group_change_page_in_1: concat!("UPDATE ", $group_changes, " SET cursor=$3,completed=$4 WHERE tenant_id=$1::uuid AND event_id=$2 AND NOT completed"),
-                lib_target_members_in_1: concat!("SELECT DISTINCT m.input->'object' FROM ", $schema, "scopes s JOIN ", $schema, "scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) JOIN ", $schema, "scope_source_members m ON(m.tenant_id,m.run)=(r.tenant_id,r.id) JOIN LATERAL jsonb_array_elements(r.input->'sources') WITH ORDINALITY source(value,ordinal) ON source.ordinal=m.source+1 WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.input->'definition'->'targets' @> jsonb_build_array(source.value->'reference') AND EXISTS(SELECT 1 FROM jsonb_array_elements($3::jsonb) candidate WHERE candidate=m.input->'object')"),
+                lib_target_members_in_1: concat!("SELECT DISTINCT m.object_kind,m.object_id FROM ", $schema, "scopes s JOIN ", $schema, "scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) JOIN ", $schema, "scope_source_members m ON(m.tenant_id,m.run)=(r.tenant_id,r.id) JOIN LATERAL jsonb_array_elements(r.input->'sources') WITH ORDINALITY source(value,ordinal) ON source.ordinal=m.source+1 WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.input->'definition'->'targets' @> jsonb_build_array(source.value->'reference') AND EXISTS(SELECT 1 FROM unnest($3::smallint[],$4::uuid[]) candidate(kind,id) WHERE (candidate.kind,candidate.id)=(m.object_kind,m.object_id))"),
                 store_head_in_1: concat!("SELECT s.revision,s.resolution,s.resolution_revision,s.calculation_revision,v.definition FROM ", $schema, "scopes s JOIN ", $schema, "scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted FOR UPDATE OF s"),
                 store_head_in_2: concat!("SELECT s.revision,s.resolution,s.resolution_revision,s.calculation_revision,v.definition FROM ", $schema, "scopes s JOIN ", $schema, "scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted FOR SHARE OF s"),
                 store_put_in_1: concat!("INSERT INTO ", $schema, "scopes(tenant_id,id,revision,deleted,policy_id,stage_id) VALUES($1::uuid,$2,1,false,$3,$4) ON CONFLICT DO NOTHING"),
@@ -779,13 +781,13 @@ ORDER BY e.signature LIMIT 1
                 store_owned_in: concat!("SELECT s.id,s.deleted,s.revision,s.resolution,s.resolution_revision,s.calculation_revision,v.definition FROM ", $schema, "scopes s JOIN ", $schema, "scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid AND s.policy_id=$2 AND s.stage_id IS NOT DISTINCT FROM $3 FOR SHARE OF s"),
                 store_owner_in: concat!("SELECT policy_id,stage_id FROM ", $schema, "scopes WHERE tenant_id=$1::uuid AND id=$2"),
                 store_replace_sources_in_1: concat!("DELETE FROM ", $schema, "scope_sources WHERE tenant_id=$1::uuid AND scope=$2"),
-                store_replace_sources_in_2: concat!("INSERT INTO ", $schema, "scope_sources SELECT $1::uuid,$2,* FROM unnest($3::text[],$4::text[])"),
+                store_replace_sources_in_2: concat!("INSERT INTO ", $schema, "scope_sources SELECT $1::uuid,$2,* FROM unnest($3::text[],$4::uuid[])"),
                 store_create_run_in_1: concat!("INSERT INTO ", $schema, "scope_runs(tenant_id,id,scope,definition_revision,asset_cut,input,fingerprint,phase,covered_inputs) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sources',$8)"),
                 store_run_in_1: concat!("SELECT * FROM ", $schema, "scope_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE"),
-                store_stage_sources_in_1: concat!("INSERT INTO ", $schema, "scope_source_members(tenant_id,run,source,device,unknown,input) SELECT $1::uuid,$2,$3,d,u,i FROM unnest($4::text[],$5::boolean[],$6::jsonb[]) AS p(d,u,i)"),
-                store_stage_sources_in_2: concat!("UPDATE ", $schema, "scope_runs SET source_index=$3,source_cursor=$4 WHERE tenant_id=$1::uuid AND id=$2"),
+                store_stage_sources_in_1: concat!("INSERT INTO ", $schema, "scope_source_members(tenant_id,run,source,object_kind,object_id,unknown,input) SELECT $1::uuid,$2,$3,k,d,u,i FROM unnest($4::smallint[],$5::uuid[],$6::boolean[],$7::jsonb[]) AS p(k,d,u,i)"),
+                store_stage_sources_in_2: concat!("UPDATE ", $schema, "scope_runs SET source_index=$3,source_cursor_kind=$4,source_cursor=$5 WHERE tenant_id=$1::uuid AND id=$2"),
                 store_phase_in_1: concat!("UPDATE ", $schema, "scope_runs SET phase=$3 WHERE tenant_id=$1::uuid AND id=$2"),
-                store_publish_in_1: concat!("WITH old AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM ", $schema, "scope_results WHERE tenant_id=$1::uuid AND run=$2), new AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM ", $schema, "scope_results WHERE tenant_id=$1::uuid AND run=$3) SELECT EXISTS((SELECT * FROM old EXCEPT SELECT * FROM new) UNION ALL (SELECT * FROM new EXCEPT SELECT * FROM old))"),
+                store_publish_in_1: concat!("WITH old AS (SELECT object_kind,object_id,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM ", $schema, "scope_results WHERE tenant_id=$1::uuid AND run=$2), new AS (SELECT object_kind,object_id,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM ", $schema, "scope_results WHERE tenant_id=$1::uuid AND run=$3) SELECT EXISTS((SELECT * FROM old EXCEPT SELECT * FROM new) UNION ALL (SELECT * FROM new EXCEPT SELECT * FROM old))"),
                 store_publish_in_2: concat!("UPDATE ", $schema, "scope_runs SET phase='published' WHERE tenant_id=$1::uuid AND id=$2 AND phase='ready'"),
                 store_publish_in_3: concat!("UPDATE ", $schema, "scopes SET resolution=$3,resolution_revision=$4,calculation_revision=calculation_revision+1 WHERE tenant_id=$1::uuid AND id=$2"),
                 store_definition_at_1: concat!("SELECT definition FROM ", $schema, "scope_versions WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3"),
@@ -797,14 +799,14 @@ ORDER BY e.signature LIMIT 1
                 store_task_in_1: concat!("SELECT t.*,EXISTS(SELECT 1 FROM ", $schema, "scope_runs r WHERE r.tenant_id=t.tenant_id AND r.id=t.id) AS forwarded FROM ", $tasks, " t WHERE tenant_id=$1::uuid AND id=$2"),
                 store_finish_task_in_1: concat!("UPDATE ", $tasks, " SET completed=true,failure=$3 WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed"),
                 store_replace_task_in_1: concat!("UPDATE ", $tasks, " SET replacement_task=$3 WHERE tenant_id=$1::uuid AND id=$2"),
-                store_evaluate_page_in_1: concat!("SELECT DISTINCT device FROM ", $schema, r###"scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3) AND device>coalesce($4::text,'') COLLATE "C" ORDER BY device LIMIT $5"###),
-                store_evaluate_page_in_2: concat!("INSERT INTO ", $schema, "scope_results(tenant_id,run,device,matched,explanation) SELECT $1::uuid,$2,d,m,e FROM unnest($3::text[],$4::boolean[],$5::jsonb[]) AS p(d,m,e)"),
-                store_evaluate_page_in_3: concat!("UPDATE ", $schema, "scope_runs SET object_count=object_count+$3,member_count=member_count+$3,evaluation_cursor=$4,phase=$5 WHERE tenant_id=$1::uuid AND id=$2"),
+                store_evaluate_page_in_1: concat!("SELECT DISTINCT object_kind,object_id FROM ", $schema, r###"scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3) AND ($4::smallint IS NULL OR (object_kind,object_id)>($4,$5::uuid)) ORDER BY object_kind,object_id LIMIT $6"###),
+                store_evaluate_page_in_2: concat!("INSERT INTO ", $schema, "scope_results(tenant_id,run,object_kind,object_id,matched,explanation) SELECT $1::uuid,$2,k,d,m,e FROM unnest($3::smallint[],$4::uuid[],$5::boolean[],$6::jsonb[]) AS p(k,d,m,e)"),
+                store_evaluate_page_in_3: concat!("UPDATE ", $schema, "scope_runs SET object_count=object_count+$3,member_count=member_count+$3,evaluation_cursor_kind=$4,evaluation_cursor=$5,phase=$6 WHERE tenant_id=$1::uuid AND id=$2"),
                 store_asset_page_in_1: concat!("INSERT INTO ", $asset_dispatch, "(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING"),
                 store_asset_page_in_2: concat!("SELECT from_cut,to_cut,event_after,page_through,cursor FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid FOR UPDATE"),
                 store_asset_page_in_3: concat!("UPDATE ", $asset_dispatch, " SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid"),
                 store_asset_page_in_4: concat!("UPDATE ", $asset_dispatch, " SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid"),
-                store_asset_page_in_5: concat!("WITH from_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($2)),to_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($3)),changed AS (SELECT DISTINCT a.identity ->> 'device' AS device FROM mdm.asset_changes AS a WHERE a.tenant_id = CAST($1 AS uuid) AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM from_cut),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM to_cut),false) AND a.revision > $4 AND a.revision <= $5 AND (a.kind IN ('device', 'source', 'credential') OR 'channel.agent.installation' = ANY(a.fields))) SELECT DISTINCT s.scope FROM changed INNER JOIN ", $schema, "scope_sources AS s ON s.tenant_id = CAST($1 AS uuid) AND s.kind = 'device' AND s.target = changed.device INNER JOIN ", $schema, "scopes AS h ON (h.tenant_id, h.id) = (s.tenant_id, s.scope) WHERE NOT h.deleted AND (CAST($6 AS uuid) IS NULL OR s.scope > $6) ORDER BY s.scope LIMIT 33"),
+                store_asset_page_in_5: concat!("WITH from_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($2)),to_cut AS MATERIALIZED(SELECT * FROM mdm.asset_cut_context($3)),changed AS (SELECT DISTINCT a.identity ->> 'device' AS device FROM mdm.asset_changes AS a WHERE a.tenant_id = CAST($1 AS uuid) AND NOT coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM from_cut),false) AND coalesce((SELECT mdm.asset_context_contains(epoch,visibility,ancestors,a.source_epoch,a.writer_xid) FROM to_cut),false) AND a.revision > $4 AND a.revision <= $5 AND (a.kind IN ('device', 'source', 'credential') OR 'channel.agent.installation' = ANY(a.fields))) SELECT DISTINCT s.scope FROM changed INNER JOIN ", $schema, "scope_sources AS s ON s.tenant_id = CAST($1 AS uuid) AND s.kind = 'device' AND s.target = changed.device::uuid INNER JOIN ", $schema, "scopes AS h ON (h.tenant_id, h.id) = (s.tenant_id, s.scope) WHERE NOT h.deleted AND (CAST($6 AS uuid) IS NULL OR s.scope > $6) ORDER BY s.scope LIMIT 33"),
                 store_complete_asset_page_in_1: concat!("UPDATE ", $asset_dispatch, " SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid AND to_cut=$5"),
                 store_input_failed: concat!("SELECT coalesce((SELECT input_failed FROM ", $asset_dispatch, " WHERE tenant_id=$1::uuid),false)"),
                 store_set_input_failed: concat!("INSERT INTO ", $asset_dispatch, "(tenant_id,input_failed) VALUES($1::uuid,$2) ON CONFLICT(tenant_id) DO UPDATE SET input_failed=excluded.input_failed"),

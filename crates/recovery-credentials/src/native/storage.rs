@@ -38,7 +38,7 @@ pub async fn bind_command_in(
 
 pub struct Operation {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub request: Create,
     pub authority: Authority,
     pub revision: i64,
@@ -81,7 +81,9 @@ fn decode_operation(
 ) -> Result<Operation> {
     Ok(Operation {
         id,
-        device: row.try_get("device")?,
+        device: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+            rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+        })?,
         request: crate::native::input_storage::open_row(protection, tenant, id, row, "request")?,
         authority: stored(serde_json::from_str(
             &row.try_get::<String, _>("authority")?,
@@ -161,11 +163,14 @@ pub async fn execution_started(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<b
     })).await?)
 }
 
-pub async fn current_registration(tx: &mut PgTransaction<'_>, device: &str) -> Result<String> {
+pub async fn current_registration(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+) -> Result<rss_mdm_agent_wire::DeviceId> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let t = tenant.clone();
-    let d = device.clone();
+    let d = device;
     tx.with_connection(move |c| {
         Box::pin(async move {
             Ok(crate::native::device::store::lock_channel(
@@ -216,7 +221,7 @@ pub async fn read_on(
 
 pub async fn require_source(
     tx: &mut PgTransaction<'_>,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
@@ -240,7 +245,7 @@ pub async fn require_source(
 pub async fn authorized_native(
     tx: &mut PgTransaction<'_>,
     proof: &crate::native::authorization::context::AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     permissions: &[crate::native::authorization::Permission],
 ) -> Result<crate::native::authorization::Snapshot> {
     if permissions.is_empty() {
@@ -300,7 +305,7 @@ pub async fn authority_valid(
 }
 pub async fn receipt_valid(tx: &mut PgTransaction<'_>, op: &Operation) -> Result<bool> {
     Ok(match current_registration(tx, &op.device).await {
-        Ok(current) => current == op.device.clone(),
+        Ok(current) => current == op.device,
         Err(Fault::Request(Error::Conflict)) => false,
         Err(e) => return Err(e),
     })
@@ -310,8 +315,8 @@ pub async fn receipt_valid(tx: &mut PgTransaction<'_>, op: &Operation) -> Result
 pub async fn active_count_on(
     c: &mut PgConnection,
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> std::result::Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT count(*) FROM mdm_recovery_tasks.operations WHERE tenant_id=$1::uuid AND device=$2 AND mdm_recovery_tasks.native_status(id) NOT IN ('applied','rejected','cancelled','timed_out','superseded')")
-        .bind(tenant.to_string()).bind(device).fetch_one(c).await
+        .bind(tenant.to_string()).bind(device.into_uuid()).fetch_one(c).await
 }

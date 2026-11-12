@@ -1,4 +1,4 @@
-use crate::{Budget, Error, LimitKind, Result};
+use crate::{Budget, Error, Result};
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
 use std::{
@@ -15,13 +15,19 @@ pub struct ObjectKey {
 impl ObjectKey {
     /// Bind a nonzero object identity to its tenant without granting authority.
     pub fn new(tenant: TenantId, object: rss_mdm_agent_wire::ObjectRef) -> Result<Self> {
-        if object.uuid().is_nil() { return Err(Error::InvalidIdentity); }
+        if object.uuid().is_nil() {
+            return Err(Error::InvalidIdentity);
+        }
         Ok(Self { tenant, object })
     }
     /// Owning tenant.
-    pub fn tenant(&self) -> TenantId { self.tenant }
+    pub fn tenant(&self) -> TenantId {
+        self.tenant
+    }
     /// Exact object kind and UUID.
-    pub fn id(&self) -> rss_mdm_agent_wire::ObjectRef { self.object }
+    pub fn id(&self) -> rss_mdm_agent_wire::ObjectRef {
+        self.object
+    }
 }
 impl Ord for ObjectKey {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -29,7 +35,9 @@ impl Ord for ObjectKey {
     }
 }
 impl PartialOrd for ObjectKey {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Supported primitive field types; no non-finite numbers or implicit coercions.

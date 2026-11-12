@@ -247,7 +247,9 @@ pub(crate) fn envelope(r: &crate::snapshot_record::Record) -> Result<Envelope> {
         "inventory coverage mismatch"
     );
     ensure!(
-        scope.registration().as_str() == evidence.device_id.as_deref().unwrap_or_default()
+        evidence
+            .device_id
+            .is_some_and(|id| scope.registration().as_str() == id.to_string())
             && scope.source().as_str() == evidence.source.as_str()
             && scope.epoch().as_str() == evidence.epoch.as_deref().unwrap_or_default(),
         "inventory provenance mismatch"

@@ -67,7 +67,7 @@ CREATE TABLE mdm_group.member_runs (
  fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  input bytea NOT NULL CHECK(octet_length(input)<=16777216),
  phase text NOT NULL CHECK(phase IN ('reading','diff','ready','published','superseded')),
- cursor text, diff_cursor text,
+ cursor_kind smallint, cursor uuid, diff_cursor_kind smallint, diff_cursor uuid, CHECK((cursor_kind IS NULL)=(cursor IS NULL)), CHECK((diff_cursor_kind IS NULL)=(diff_cursor IS NULL)), CHECK(cursor_kind IN(0,1)), CHECK(diff_cursor_kind IN(0,1)),
  processed_count bigint NOT NULL DEFAULT 0 CHECK(processed_count >= 0),
  object_count bigint NOT NULL DEFAULT 0 CHECK(object_count >= 0),
  member_count bigint NOT NULL DEFAULT 0 CHECK(member_count >= 0),
@@ -84,26 +84,26 @@ ALTER TABLE mdm_group.groups ADD FOREIGN KEY(tenant_id,id,member_set)
  REFERENCES mdm_group.member_runs(tenant_id,group_id,id) DEFERRABLE INITIALLY DEFERRED;
 CREATE TABLE mdm_group.member_rows (
  tenant_id uuid NOT NULL, run_id uuid NOT NULL,
- object_id text COLLATE "C" NOT NULL CHECK(octet_length(object_id) BETWEEN 1 AND 256),
+ object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),
  matched boolean NOT NULL, evidence bytea NOT NULL CHECK(octet_length(evidence)<=1048576),
  evidence_digest bytea NOT NULL CHECK(octet_length(evidence_digest)=32),
- PRIMARY KEY(tenant_id,run_id,object_id),
+ PRIMARY KEY(tenant_id,run_id,object_kind,object_id),
  FOREIGN KEY(tenant_id,run_id) REFERENCES mdm_group.member_runs(tenant_id,id)
 );
-CREATE INDEX member_rows_matched ON mdm_group.member_rows(tenant_id,run_id,object_id) WHERE matched;
+CREATE INDEX member_rows_matched ON mdm_group.member_rows(tenant_id,run_id,object_kind,object_id) WHERE matched;
 CREATE TABLE mdm_group.member_pages (
- tenant_id uuid NOT NULL, run_id uuid NOT NULL, first_id text COLLATE "C" NOT NULL,
- last_id text COLLATE "C" NOT NULL, fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
- PRIMARY KEY(tenant_id,run_id,first_id),
+ tenant_id uuid NOT NULL, run_id uuid NOT NULL, first_kind smallint NOT NULL CHECK(first_kind IN(0,1)), first_id uuid NOT NULL,
+ last_kind smallint NOT NULL CHECK(last_kind IN(0,1)), last_id uuid NOT NULL, fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
+ PRIMARY KEY(tenant_id,run_id,first_kind,first_id),
  FOREIGN KEY(tenant_id,run_id) REFERENCES mdm_group.member_runs(tenant_id,id)
 );
 CREATE TABLE mdm_group.member_changes (
- tenant_id uuid NOT NULL, run_id uuid NOT NULL, object_id text COLLATE "C" NOT NULL,
+ tenant_id uuid NOT NULL, run_id uuid NOT NULL, object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),
  group_id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
- added boolean NOT NULL, PRIMARY KEY(tenant_id,run_id,object_id),
+ added boolean NOT NULL, PRIMARY KEY(tenant_id,run_id,object_kind,object_id),
  FOREIGN KEY(tenant_id,run_id) REFERENCES mdm_group.member_runs(tenant_id,id)
 );
-CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,group_id,object_id,revision DESC);
+CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,group_id,object_kind,object_id,revision DESC);
 DO $$ DECLARE t text; BEGIN
  FOREACH t IN ARRAY ARRAY['member_runs','member_rows','member_pages','member_changes'] LOOP
   EXECUTE format('ALTER TABLE mdm_group.%I ENABLE ROW LEVEL SECURITY',t);
@@ -113,11 +113,11 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('GRANT SELECT,INSERT ON mdm_group.%I TO mdm_group_runtime',t);
  END LOOP;
 END $$;
-GRANT UPDATE(phase,cursor,diff_cursor,object_count,processed_count,member_count,added,removed,receipt,authority_version) ON mdm_group.member_runs TO mdm_group_runtime;
+GRANT UPDATE(phase,cursor_kind,cursor,diff_cursor_kind,diff_cursor,object_count,processed_count,member_count,added,removed,receipt,authority_version) ON mdm_group.member_runs TO mdm_group_runtime;
 GRANT UPDATE(member_set) ON mdm_group.groups TO mdm_group_runtime;
 
 
-CREATE INDEX member_changes_object ON mdm_group.member_changes(tenant_id,object_id,group_id,revision DESC);
+CREATE INDEX member_changes_object ON mdm_group.member_changes(tenant_id,object_kind,object_id,group_id,revision DESC);
 CREATE INDEX groups_dynamic ON mdm_group.groups(tenant_id,id) WHERE kind IN ('dynamic','system') AND NOT deleted;
 
 CREATE FUNCTION mdm_group.group_current(p_group uuid) RETURNS boolean
@@ -135,7 +135,7 @@ GRANT EXECUTE ON FUNCTION mdm_group.group_current(uuid) TO mdm_group_runtime;
 
 -- A negative candidate requires a complete current NoMatch proof. Unknown, an
 -- absent dynamic decision, or an unfinished definition must remain eligible.
-CREATE FUNCTION mdm_group.input_candidate_groups(p_groups uuid[], p_devices text[]) RETURNS SETOF uuid
+CREATE FUNCTION mdm_group.input_candidate_groups(p_groups uuid[], p_devices uuid[]) RETURNS SETOF uuid
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
 BEGIN
  IF cardinality(p_groups)>16 OR cardinality(p_devices)>1000 THEN
@@ -150,17 +150,17 @@ BEGIN
   SELECT FROM unnest(p_devices) device WHERE CASE WHEN g.kind='static' THEN
    coalesce((SELECT m.added FROM mdm_group.member_changes m
     JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(m.tenant_id,m.run_id)
-    WHERE m.tenant_id=g.tenant_id AND m.group_id=g.id AND m.object_id=device
+    WHERE m.tenant_id=g.tenant_id AND m.group_id=g.id AND m.object_kind=0 AND m.object_id=device
      AND b.phase='published' AND m.revision<=g.calculation_revision
     ORDER BY m.revision DESC LIMIT 1),false)
   ELSE (SELECT convert_from(r.evidence,'UTF8')::jsonb->>'decision'
     FROM mdm_group.member_rows r JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(r.tenant_id,r.run_id)
-    WHERE r.tenant_id=g.tenant_id AND r.object_id=device AND b.group_id=g.id
+    WHERE r.tenant_id=g.tenant_id AND r.object_kind=0 AND r.object_id=device AND b.group_id=g.id
      AND (b.id=w.id OR (b.phase='published' AND b.base_calculation>=w.floor_revision AND b.base_calculation<w.base_calculation))
     ORDER BY b.base_calculation DESC LIMIT 1) IS DISTINCT FROM 'no_match' END));
 END $$;
-REVOKE ALL ON FUNCTION mdm_group.input_candidate_groups(uuid[],text[]) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_group.input_candidate_groups(uuid[],text[]) TO mdm_group_runtime;
+REVOKE ALL ON FUNCTION mdm_group.input_candidate_groups(uuid[],uuid[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_group.input_candidate_groups(uuid[],uuid[]) TO mdm_group_runtime;
 
 CREATE INDEX rules_references ON mdm_group.rules USING gin(group_ids);
 

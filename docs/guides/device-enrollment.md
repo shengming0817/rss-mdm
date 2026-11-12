@@ -2,6 +2,8 @@
 
 注册授权与设备身份是两个阶段。创建 pending Enrollment 不代表设备已绑定；bound 表示原子绑定事实，当前凭据是否有效仍由注册状态和管理准入决定。身份与通道边界见 [ADR](../architecture/adr/202609100445-2348-device-principal.md)。
 
+
+产品 deviceId 使用非零 UUID；接口中的设备 ID、对象引用 id 和 UUID 查询字面量采用小写、带连字符的规范字符串。其它拼写直接拒绝。资产对象通过 `{kind, id}` 区分 endpoint 与 association，同值 UUID 不会合并不同种类的对象。Windows DeviceID、Apple UDID 等原生标识仍按各协议处理。
 ## 创建、续接与撤销
 
 先取得 [产品授权](identity-and-authorization.md)。组织创建、resume、cancel 要求 enrollment，撤销要求独立 credentials，并配对目标设备范围。浏览器写操作使用当前会话、Origin、CSRF 和稳定 `Idempotency-Key`。
@@ -16,7 +18,7 @@ python3 hack/enrollment-password.py
 {"password":"调用端生成并保存的口令","source":"mdm.windows","windowsProfile":"Full"}
 ```
 
-原生 Enrollment 的 source 显式选择 mdm.windows 或 mdm.apple，不能由服务猜测。mdm.windows 必须显式提供 `windowsProfile: "Full" | "Device"`，其它来源不得提供此字段。此选择进入幂等输入并在授权后保持不变；设备 EnrollmentType 必须与授权一致。服务端在授权时分配并冻结随机 deviceId；同一请求精确重放返回同一身份，新注册始终产生新身份。Full 注册通过 `enrolledUser` 表示已注册用户上下文；Windows 配置使用 `target.kind="enrolled_user"`，不分配用户 UUID。查询 `/api/v1/enrollments/{id}` 获取当前状态；凭据管理使用 `GET /api/v1/devices/{device}/registration` 与 `POST /api/v1/devices/{device}/registration/revoke`。
+原生 Enrollment 的 source 显式选择 mdm.windows 或 mdm.apple，不能由服务猜测。mdm.windows 必须显式提供 `windowsProfile: "Full" | "Device"`，其它来源不得提供此字段。此选择进入幂等输入并在授权后保持不变；设备 EnrollmentType 必须与授权一致。服务端在授权时分配并冻结 UUID v4 deviceId；同一请求精确重放返回同一身份，新注册始终产生新身份。Full 注册通过 `enrolledUser` 表示已注册用户上下文；Windows 配置使用 `target.kind="enrolled_user"`，不分配用户 UUID。查询 `/api/v1/enrollments/{id}` 获取当前状态；凭据管理使用 `GET /api/v1/devices/{device}/registration` 与 `POST /api/v1/devices/{device}/registration/revoke`。
 
 原管理员重新登录后可向 `/enrollments/{id}/resume` 提交新口令与新操作键；同一请求重试保持原键和参数。恢复保留原注册意图和 deviceId，不复活撤销、取消或过期证书。未绑定授权可 cancel；已绑定设备走独立 revoke，撤销同时停用注册、凭据及来源。
 

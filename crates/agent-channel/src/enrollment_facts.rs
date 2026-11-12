@@ -31,8 +31,8 @@ impl Store for EnrollmentFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        registrations: Vec<String>,
-    ) -> Pending<'a, std::collections::BTreeMap<String, Binding>> {
+        registrations: Vec<rss_mdm_agent_wire::DeviceId>,
+    ) -> Pending<'a, std::collections::BTreeMap<rss_mdm_agent_wire::DeviceId, Binding>> {
         Box::pin(async move {
             Ok(crate::Bindings::new(self.profile)
                 .bindings(c, tenant, registrations)

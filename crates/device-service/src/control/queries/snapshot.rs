@@ -8,7 +8,7 @@ use sqlx::{Acquire, PgConnection};
 pub struct Basis {
     pub grant: authorization::Snapshot,
     pub now: i64,
-    pub registration: Option<(String, Option<PrimaryRegistration>)>,
+    pub registration: Option<(rss_mdm_agent_wire::DeviceId, Option<PrimaryRegistration>)>,
 }
 fn failure(e: crate::control::transaction::Fault) -> Error {
     match e {

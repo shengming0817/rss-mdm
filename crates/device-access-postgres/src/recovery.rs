@@ -131,7 +131,7 @@ impl AccessRecovery for AccessMaterials {
                     && expected.as_ref() == Some(&facts.recovery.subject)
                 {
                     let binding = Binding {
-                        device: b.device.clone(),
+                        device: b.device,
 
                         subject: subject(&facts.recovery.subject)?,
                     };
@@ -370,7 +370,7 @@ impl crate::Service {
             Box::pin(async move {
                 let endpoint = crate::delivery::resolve_on(c, ctx.0).await?;
                 let anchor = rss_mdm_registration_service::device::endpoints::DaRegistration {
-                    device: endpoint.device().into(),
+                    device: *endpoint.device(),
                 };
                 let tenant = Uuid::parse_str(&endpoint.tenant().to_string())
                     .map_err(|_| crate::Error::Malformed)?;

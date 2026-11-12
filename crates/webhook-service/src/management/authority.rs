@@ -74,7 +74,7 @@ impl webhooks::fanout::Eligibility for Host {
         &'a self,
         c: &'a mut PgConnection,
         source: &'a events::CompliancePublication,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> futures::future::BoxFuture<'a, Result<webhooks::fanout::ChangePage, Error>> {
         self.sources.compliance_page(c, source, after)
     }

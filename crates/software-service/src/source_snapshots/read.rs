@@ -197,10 +197,7 @@ pub static ENTRY_BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings>
         rss_mdm_query_postgres::Bindings::new(
             &ENTRIES,
             &[
-                rss_mdm_query_postgres::Source::required_column(
-                    "entryId",
-                    "e.id::text COLLATE \"C\"",
-                ),
+                rss_mdm_query_postgres::Source::required_column("entryId", "e.id"),
                 rss_mdm_query_postgres::Source::column("source", "e.source COLLATE \"C\""),
                 rss_mdm_query_postgres::Source::column("revision", "s.revision"),
                 rss_mdm_query_postgres::Source::column("packageId", "e.package_id COLLATE \"C\""),

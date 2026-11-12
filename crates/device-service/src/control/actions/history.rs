@@ -47,7 +47,11 @@ impl Queries {
     ) -> crate::control::Result<crate::control::queries::records::RunDetail> {
         use sqlx::Row;
         let row=sqlx::query("SELECT r.device,r.state,v.frozen FROM mdm_devices.unmanage_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.id=$3").bind(self.tenant.to_string()).bind(policy).bind(id).fetch_optional(&mut *c).await?.ok_or(Error::Execution(crate::control::missing::ExecutionError::MissingTask))?;
-        let device: String = row.try_get("device")?;
+        let device: rss_mdm_agent_wire::DeviceId =
+            row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })?;
         grant.require(proof, Permission::OperationRead, Some(&device))?;
         let _state: rss_mdm_task_state::RunState =
             crate::control::stored(serde_json::from_value(row.try_get("state")?))?;

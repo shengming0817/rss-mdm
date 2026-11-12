@@ -6,7 +6,7 @@ use uuid::Uuid;
 pub struct Observation {
     pub tenant: Uuid,
     pub installation: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub authority: Uuid,
     pub sequence: i64,
     pub issued_at: i64,
@@ -82,8 +82,6 @@ impl Observation {
             || self.authority.is_nil()
             || self.policy.is_nil()
             || self.policy_version.is_nil()
-            || self.device.is_empty()
-            || self.device.len() > 256
             || self.sequence < 1
             || self.issued_at < 0
             || self.issued_at > now
@@ -214,7 +212,8 @@ mod tests {
             configuration: None,
             tenant: Uuid::new_v4(),
             installation: Uuid::new_v4(),
-            device: "da".into(),
+            device: rss_mdm_agent_wire::DeviceId::parse("2393c3f3-4e8c-5c75-b7cf-f4978eb921df")
+                .unwrap(),
 
             authority: Uuid::new_v4(),
             sequence: 1,

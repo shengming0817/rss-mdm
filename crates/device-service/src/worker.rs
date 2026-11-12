@@ -108,14 +108,14 @@ impl DeviceWork {
         &self,
         tx: &mut PgTransaction<'_>,
         task: Task,
-    ) -> Result<Option<String>, PgError> {
+    ) -> Result<Option<rss_mdm_agent_wire::DeviceId>, PgError> {
         let Task::Work(id) = task else {
             return Ok(None);
         };
         let tenant = self.owner.tenant.to_string();
         tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT value FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND id=$2 AND kind='device'")
-                .bind(tenant).bind(id).fetch_optional(c).await
+            sqlx::query_scalar("SELECT device FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND id=$2 AND kind='device'")
+                .bind(tenant).bind(id).fetch_optional(c).await.and_then(|id| id.map(crate::device_id).transpose())
         })).await
     }
     async fn resources_in(

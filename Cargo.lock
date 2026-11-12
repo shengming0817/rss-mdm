@@ -3677,6 +3677,7 @@ dependencies = [
  "rss-audit-postgres",
  "rss-identity-core",
  "rss-identity-postgres",
+ "rss-mdm-agent-wire",
  "rss-mdm-apple-mdm",
  "rss-mdm-audit-integration",
  "rss-mdm-install-support",
@@ -3786,6 +3787,7 @@ dependencies = [
 name = "rss-mdm-compliance"
 version = "0.1.0"
 dependencies = [
+ "rss-mdm-agent-wire",
  "schemars",
  "serde",
  "serde_json",
@@ -3797,6 +3799,7 @@ dependencies = [
 name = "rss-mdm-compliance-postgres"
 version = "0.1.0"
 dependencies = [
+ "rss-mdm-agent-wire",
  "rss-mdm-compliance",
  "rss-mdm-query",
  "rss-mdm-query-postgres",
@@ -3816,6 +3819,7 @@ version = "0.1.0"
 dependencies = [
  "ring",
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-compliance",
@@ -4176,6 +4180,7 @@ version = "0.1.0"
 dependencies = [
  "ordered-float",
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-request-context",
  "schemars",
  "serde",
@@ -4189,6 +4194,7 @@ version = "0.1.0"
 dependencies = [
  "ordered-float",
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-mdm-group",
  "rss-mdm-query",
  "rss-mdm-query-postgres",
@@ -4287,6 +4293,7 @@ version = "0.1.0"
 dependencies = [
  "ordered-float",
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-observation",
  "rss-request-context",
  "rss-timeseries",
@@ -4302,6 +4309,7 @@ name = "rss-mdm-inventory-postgres"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "rss-mdm-agent-wire",
  "rss-mdm-inventory",
  "rss-observation",
  "rss-observation-postgres",
@@ -4643,6 +4651,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4832,6 +4841,7 @@ name = "rss-mdm-scope"
 version = "0.1.0"
 dependencies = [
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-request-context",
  "schemars",
  "serde",
@@ -4844,6 +4854,7 @@ dependencies = [
 name = "rss-mdm-scope-postgres"
 version = "0.1.0"
 dependencies = [
+ "rss-mdm-agent-wire",
  "rss-mdm-install-support",
  "rss-mdm-inventory",
  "rss-mdm-query",
@@ -4864,6 +4875,7 @@ dependencies = [
  "futures",
  "ring",
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-device-service",
@@ -5166,6 +5178,7 @@ dependencies = [
  "jsonschema",
  "ring",
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-install-support",

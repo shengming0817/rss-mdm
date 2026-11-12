@@ -25,7 +25,7 @@ struct Cursor {
     tenant: String,
     result: Uuid,
     binding: ResultBinding,
-    after: String,
+    after: rss_mdm_agent_wire::ObjectRef,
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -43,11 +43,11 @@ pub struct GroupPage {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GroupPageItems {
     Members {
-        items: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
+        items: Vec<rss_mdm_agent_wire::ObjectRef>,
     },
     Changes {
-        added: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
-        removed: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
+        added: Vec<rss_mdm_agent_wire::ObjectRef>,
+        removed: Vec<rss_mdm_agent_wire::ObjectRef>,
     },
     Decisions {
         items: Vec<DecisionView>,
@@ -73,7 +73,7 @@ fn decode(
     tenant: &str,
     result: Uuid,
     binding: &ResultBinding,
-) -> Result<String> {
+) -> Result<rss_mdm_agent_wire::ObjectRef> {
     let context = checked_input(fingerprint(&(SCHEMA.id, tenant, result, binding)))?;
     let token = checked_input(rss_contract::PageCursor::parse(token))?;
     CursorCodec::from_key(key.clone())
@@ -119,8 +119,8 @@ impl Groups {
         let context = group_checked(self.groups.get_in(tx, owner).await?)?
             .ok_or(Error::Group(GroupMissing::Group))?
             .asset_context;
-        let object = |key: &str| {
-            group_checked(rss_mdm_inventory_service::objects::ObjectRef::from_key(
+        let object = |key: &rss_mdm_agent_wire::ObjectRef| {
+            group_checked(rss_mdm_inventory_service::objects::checked_context(
                 context, key,
             ))
         };
@@ -139,7 +139,7 @@ impl Groups {
                 };
                 (
                     GroupPageItems::Members {
-                        items: items.iter().map(|id| object(id)).collect::<Result<_>>()?,
+                        items: items.iter().map(&object).collect::<Result<_>>()?,
                     },
                     next,
                 )
@@ -167,7 +167,7 @@ impl Groups {
                             .build_decisions_in(
                                 tx,
                                 id,
-                                Some(last.device.clone()),
+                                Some(last.object),
                                 1,
                                 rss_mdm_group::limits::BATCH_BYTES,
                             )
@@ -177,7 +177,7 @@ impl Groups {
                     .is_empty();
                 }
                 let next = if more {
-                    items.last().map(|item| item.device.clone())
+                    items.last().map(|item| item.object)
                 } else {
                     None
                 };
@@ -188,12 +188,12 @@ impl Groups {
                 )?;
                 let mut decisions = Vec::new();
                 for d in items {
-                    let reference = object(&d.device)?;
+                    let reference = object(&d.object)?;
                     let sources = if let Some(snapshot) = &snapshot {
                         let reader = self.objects.clone();
                         let tenant = self.tenant;
                         let snapshot = snapshot.id;
-                        let key = reference.clone();
+                        let key = reference;
                         let no_match = d.decision == pg::DecisionValue::NoMatch;
                         let input = tx
                             .with_connection(move |c| {
@@ -244,16 +244,8 @@ impl Groups {
                 )?;
                 (
                     GroupPageItems::Changes {
-                        added: delta
-                            .added
-                            .iter()
-                            .map(|id| object(id))
-                            .collect::<Result<_>>()?,
-                        removed: delta
-                            .removed
-                            .iter()
-                            .map(|id| object(id))
-                            .collect::<Result<_>>()?,
+                        added: delta.added.iter().map(&object).collect::<Result<_>>()?,
+                        removed: delta.removed.iter().map(object).collect::<Result<_>>()?,
                     },
                     delta.next,
                 )
@@ -308,7 +300,7 @@ mod tests;
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DecisionView {
-    object: rss_mdm_inventory_service::objects::ObjectRef,
+    object: rss_mdm_agent_wire::ObjectRef,
     origin: rss_mdm_group_postgres::DecisionOrigin,
     decision: rss_mdm_group_postgres::DecisionValue,
     explanations: Vec<rss_mdm_group_postgres::PredicateDecision>,

@@ -45,7 +45,7 @@ impl Exchange {
             publication
         } else {
             let row=sqlx::query("SELECT operation, snapshot FROM mdm_apple.declarations WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 ORDER BY published_at DESC, operation DESC LIMIT 1")
-                .bind(p.tenant().to_string()).bind(p.device()).bind(&self.user).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+                .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(&self.user).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
             let id = row.try_get("operation").map_err(db)?;
             let sealed: Vec<u8> = row.try_get("snapshot").map_err(db)?;
             let plain = self
@@ -95,7 +95,7 @@ impl Exchange {
             &serde_json::to_vec(&evidence).map_err(|_| Error::Malformed)?,
         )?;
         let inserted = sqlx::query("INSERT INTO mdm_apple.status_reports (tenant_id, id, device, user_key, digest, evidence) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6) ON CONFLICT (tenant_id, device, user_key, digest) DO NOTHING")
-            .bind(p.tenant().to_string()).bind(id).bind(p.device()).bind(&self.user).bind(digest.as_slice()).bind(sealed).execute(&mut *c).await.map_err(db)?.rows_affected() == 1;
+            .bind(p.tenant().to_string()).bind(id).bind(p.device().into_uuid()).bind(&self.user).bind(digest.as_slice()).bind(sealed).execute(&mut *c).await.map_err(db)?.rows_affected() == 1;
         let mut facts = Vec::new();
         if inserted {
             let mut projections = Vec::new();
@@ -165,7 +165,7 @@ impl Exchange {
             facts = rss_mdm_inventory_service::collection::declarative::receive(c,
                 rss_mdm_inventory_service::collection::declarative::Report {
                     target: rss_mdm_inventory_service::collection::native::Target {
-                        tenant:p.tenant(),device:p.device().into(),
+                        tenant:p.tenant(),device:*p.device(),
                     },
                     id,
                     scope: if self.user.is_empty() { rss_mdm_inventory::CollectionScope::Device }
@@ -192,7 +192,7 @@ impl Exchange {
                 if value.status.synchronized {
                     synchronized.push(channels::Synchronized {
                         operation: *id,
-                        device: p.device().to_string(),
+                        device: *p.device(),
 
                         user: self.user.clone(),
                         input_version: publication.input_version.clone(),
@@ -210,7 +210,7 @@ impl Exchange {
                     }) {
                         let root = profile.objects.first().ok_or(Error::Malformed)?;
                         sqlx::query("UPDATE mdm_apple.profiles SET retired_at = COALESCE(retired_at, CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint)) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND identifier = $4 AND profile = $5")
-                            .bind(p.tenant().to_string()).bind(p.device()).bind(&self.user).bind(&root.identifier).bind(root.uuid).execute(&mut *c).await.map_err(db)?;
+                            .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(&self.user).bind(&root.identifier).bind(root.uuid).execute(&mut *c).await.map_err(db)?;
                     }
                 }
             }
@@ -301,14 +301,19 @@ fn decode_observation(
     operation: Uuid,
     native_values: bool,
 ) -> Result<native::evidence::DeclarationEvidence, Error> {
-    let device = row.try_get("device").map_err(db)?;
+    let device = row
+        .try_get::<uuid::Uuid, _>("device")
+        .and_then(|id| {
+            rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+        })
+        .map_err(db)?;
 
     let user: String = row.try_get("user_key").map_err(db)?;
     let sealed: Vec<u8> = row.try_get("snapshot").map_err(db)?;
     let plain = key
         .open_bytes(
             &sealed,
-            &aad_parts(tenant, device, &user, operation, "apple.ddm.publication")?,
+            &aad_parts(tenant, &device, &user, operation, "apple.ddm.publication")?,
         )
         .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
     let publication: Publication = serde_json::from_slice(plain.expose())
@@ -329,7 +334,7 @@ fn decode_observation(
                 accumulated(
                     key,
                     &bytes,
-                    &aad_parts(tenant, device, &user, operation, "apple.ddm.projection")?,
+                    &aad_parts(tenant, &device, &user, operation, "apple.ddm.projection")?,
                 )
             })
             .transpose()?
@@ -384,7 +389,12 @@ pub(crate) async fn withdrawal_published(
             &bytes,
             &aad_parts(
                 tenant,
-                row.try_get("device").map_err(db)?,
+                &row.try_get::<uuid::Uuid, _>("device")
+                    .and_then(|id| {
+                        rss_mdm_agent_wire::DeviceId::try_from(id)
+                            .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                    })
+                    .map_err(db)?,
                 &row.try_get::<String, _>("user_key").map_err(db)?,
                 operation,
                 "apple.ddm.publication",

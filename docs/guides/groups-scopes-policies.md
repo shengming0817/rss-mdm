@@ -108,7 +108,7 @@ items 经过来源权限过滤；显式查询无权类别返回 403，根组不�
     }
   }],
   "totalObjects": 1, "totalMembers": 1,
-  "page": { "kind": "members", "items": [{ "kind": "endpoint", "id": "device-1" }] },
+  "page": { "kind": "members", "items": [{ "kind": "endpoint", "id": "7f8c2d91-4a63-4f20-9b8e-c1526d0a7349" }] },
   "nextCursor": null
 }
 ```

@@ -70,7 +70,7 @@ impl<'a> VerifiedSoftwareVersion<'a> {
         }
         let work = Work {
             version: self.version,
-            device: target.device.clone(),
+            device: target.device,
         };
         if let Some(device) = device_in(self.reader, tx, &work).await?
             && device != target.device
@@ -83,7 +83,7 @@ impl<'a> VerifiedSoftwareVersion<'a> {
             self,
             &Work {
                 version: self.version,
-                device: target.device.clone(),
+                device: target.device,
             },
         )
         .await
@@ -93,16 +93,16 @@ impl<'a> VerifiedSoftwareVersion<'a> {
 #[derive(Clone)]
 pub(crate) struct Work {
     pub version: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 impl Work {
     pub(crate) fn parse(entity: &str) -> Option<Self> {
         let mut fields = entity.strip_prefix("scheduled:")?.split(':');
         let value = Self {
             version: fields.next()?.parse().ok()?,
-            device: fields.next()?.to_owned(),
+            device: fields.next()?.parse().ok()?,
         };
-        (fields.next().is_none() && !value.device.is_empty()).then_some(value)
+        fields.next().is_none().then_some(value)
     }
     fn entity(&self) -> String {
         format!("scheduled:{}:{}", self.version, self.device)
@@ -142,22 +142,17 @@ pub(crate) async fn device_in(
     reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
     work: &Work,
-) -> Result<Option<String>> {
+) -> Result<Option<rss_mdm_agent_wire::DeviceId>> {
     let Some(proof) = VerifiedSoftwareVersion::verify_in(reader, tx, work.version).await? else {
         return Ok(None);
     };
     let channel = proof.channel.as_str();
-    if work.device.is_empty() {
-        return Err((crate::deployment::Error::Unavailable(
-            crate::deployment::Failure::CommandInvariant,
-        ))
-        .into());
-    }
+
     let tenant = tx.tenant_id().to_string();
-    let device = work.device.clone();
+    let device = work.device;
     Ok(tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_scalar("SELECT id AS device FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active' AND purpose = 'primary' AND channel = $3")
-            .bind(tenant).bind(device).bind(channel).fetch_optional(c).await
+            .bind(tenant).bind(device.into_uuid()).bind(channel).fetch_optional(c).await.and_then(|id| id.map(crate::deployment::database::device_id).transpose())
     })).await?)
 }
 
@@ -177,7 +172,7 @@ pub(crate) async fn dispatch_in(
         crate::deployment::Failure::CommandInvariant,
     ))?;
     let tenant = tx.tenant_id().to_string();
-    let (revision, consumed, mut window, mut after): (i64, i64, i64, Option<String>) = tx.with_connection(move |c| Box::pin(async move {
+    let (revision, consumed, mut window, mut after): (i64, i64, i64, Option<Uuid>) = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_as("SELECT dispatch_revision,dispatch_consumed,dispatch_window,dispatch_after FROM mdm_software_deployment.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 FOR UPDATE").bind(tenant).bind(policy).fetch_one(c).await
     })).await?;
     if consumed == window {
@@ -194,7 +189,7 @@ pub(crate) async fn dispatch_in(
     let rows = if verified.is_some() {
         let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT DISTINCT r.id COLLATE \"C\" AS device, r.id FROM mdm_policy.assignments AS a INNER JOIN mdm_access.devices AS r ON r.tenant_id = a.tenant_id AND r.id = a.target ->> 'device' AND r.channel = a.channel AND r.state = 'active' AND r.purpose = 'primary' WHERE a.tenant_id = CAST($1 AS uuid) AND a.policy = $2 AND a.version = $3 AND a.availability = 'ready' AND r.id > COALESCE($4, '') COLLATE \"C\" ORDER BY r.id COLLATE \"C\", r.id LIMIT 33").bind(tenant).bind(policy).bind(version).bind(after).fetch_all(c).await
+            sqlx::query("SELECT DISTINCT r.id AS device, r.id FROM mdm_policy.assignments AS a INNER JOIN mdm_access.devices AS r ON r.tenant_id = a.tenant_id AND r.id = (a.target ->> 'device')::uuid AND r.channel = a.channel AND r.state = 'active' AND r.purpose = 'primary' WHERE a.tenant_id = CAST($1 AS uuid) AND a.policy = $2 AND a.version = $3 AND a.availability = 'ready' AND ($4::uuid IS NULL OR r.id > $4) ORDER BY r.id LIMIT 33").bind(tenant).bind(policy).bind(version).bind(after).fetch_all(c).await
         })).await?
     } else {
         Vec::new()
@@ -207,14 +202,16 @@ pub(crate) async fn dispatch_in(
                 verified,
                 &Work {
                     version,
-                    device: row.try_get("id")?,
+                    device: row
+                        .try_get::<Uuid, _>("id")
+                        .and_then(crate::deployment::database::device_id)?,
                 },
             )
             .await?;
         }
     }
     let more = rows.len() > 32;
-    let after: Option<String> = if more {
+    let after: Option<Uuid> = if more {
         Some(rows[31].try_get("device")?)
     } else {
         None
@@ -274,7 +271,7 @@ pub(crate) async fn delay_in(
             }
             let tenant = tx.tenant_id().to_string();
             let work = work.clone();
-            let pending:bool=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_software_deployment.action_runs WHERE tenant_id = CAST($1 AS uuid) AND policy_version = $2 AND device = $3 AND state ->> 'execution' IN ('not_started', 'running', 'waiting_reboot', 'unknown') AND state ->> 'cancellation' <> 'confirmed')").bind(tenant).bind(work.version).bind(&work.device).fetch_one(c).await})).await?;
+            let pending:bool=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT EXISTS (SELECT FROM mdm_software_deployment.action_runs WHERE tenant_id = CAST($1 AS uuid) AND policy_version = $2 AND device = $3 AND state ->> 'execution' IN ('not_started', 'running', 'waiting_reboot', 'unknown') AND state ->> 'cancellation' <> 'confirmed')").bind(tenant).bind(work.version).bind(work.device.into_uuid()).fetch_one(c).await})).await?;
             if pending {
                 return Ok(None);
             }
@@ -309,7 +306,7 @@ pub(crate) async fn delay_in(
                     return Ok(Some(bounded_delay(delay)));
                 }
                 super::software::Preparation::NotEligible => {
-                    match schedule.next_after(now, target.device.as_bytes())? {
+                    match schedule.next_after(now, target.device.to_string().as_bytes())? {
                         Some(next) => next.available_at.saturating_sub(now).max(1),
                         None => return Ok(None),
                     }

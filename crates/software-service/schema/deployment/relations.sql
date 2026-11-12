@@ -67,13 +67,13 @@ GRANT EXECUTE ON FUNCTION mdm_software_deployment.installation_status(uuid) TO m
 
 GRANT SELECT ON mdm_software_deployment.action_runs TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_software_deployment.windows_pending_operations(text,uuid) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_software_deployment.windows_pending_operations(uuid,uuid) TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_software_deployment.windows_wake_candidates(text) TO mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_software_deployment.windows_wake_candidates(uuid) TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_software_deployment.retirement_commands(text,text),mdm_software_deployment.save_retired_command(text,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_software_deployment.retirement_commands(uuid,text),mdm_software_deployment.save_retired_command(uuid,uuid,bigint,bigint) TO mdm_access,mdm_command_runtime;
 
-GRANT EXECUTE ON FUNCTION mdm_software_deployment.save_retired_action(text,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_software_deployment.save_retired_action(uuid,uuid,jsonb,jsonb) TO mdm_access,mdm_command_runtime;
 
 GRANT UPDATE(software_effect) ON mdm_software_deployment.action_runs TO mdm_command_runtime;
 

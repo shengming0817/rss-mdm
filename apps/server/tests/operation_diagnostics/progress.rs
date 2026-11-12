@@ -39,11 +39,11 @@ pub(super) async fn seed(
     let scope = rss_mdm_inventory_service::assets::ReadScope::from_proof(p)?;
     sqlx::query("INSERT INTO mdm_assets.asset_query_runs(tenant_id,id,input,completed) VALUES($1::uuid,$2,$3,true)").bind(c.tenant.to_string()).bind(id)
         .bind(json!({"query":{},"scope":scope,"asset_cut":cut,"as_of":1700000000})).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,origin,policy,version,object,occurrence,target,authority,delivery_seconds,created_at) VALUES($1::uuid,$2,'\"policy\"',$3,$4,$5,'manual',$6,$7,300,1700000000)")
-        .bind(c.tenant.to_string()).bind(id).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(endpoint.object.key())
+    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,origin,policy,version,object_kind,object_id,occurrence,target,authority,delivery_seconds,created_at) VALUES($1::uuid,$2,'\"policy\"',$3,$4,$5,$6,'manual',$7,$8,300,1700000000)")
+        .bind(c.tenant.to_string()).bind(id).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(endpoint.object.kind()).bind(endpoint.object.uuid())
         .bind(serde_json::to_value(&endpoint)?).bind(serde_json::to_value(p.actor())?).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.retirement_channels (tenant_id, operation, device, channel, stage, effect, blocking_execution, reason) VALUES (CAST($1 AS uuid), $2, $3, 'mdm', 'cleanup', 'blocked', $4, 'cleanup_waiting')")
-        .bind(c.tenant.to_string()).bind(id).bind(device).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(id).bind(device.into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     let policy = Uuid::new_v4();
     sqlx::query("INSERT INTO mdm_policy.requests(tenant_id,id,fingerprint,receipt) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(id).bind(vec![17_u8;32])
         .bind(json!({"operationId":id,"policyId":policy,"versionId":Uuid::new_v4(),"deadline":1700000010})).execute(&mut *tx).await?;
@@ -51,7 +51,7 @@ pub(super) async fn seed(
     sqlx::query("INSERT INTO mdm_policy.work(tenant_id,id,kind,target,input,completed) VALUES($1::uuid,$2,$3,$4,$5,true)").bind(c.tenant.to_string()).bind(id).bind(work.kind()).bind(work.target()).bind(serde_json::to_value(work)?).execute(&mut *tx).await?;
     let caller = rss_mdm_policy_service::events::Caller::Management { actor: p.actor() };
     sqlx::query("INSERT INTO mdm_policy.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1::uuid,$2,$2,$3,$4,$5,$6,$7,1700000000,1700000010)")
-        .bind(c.tenant.to_string()).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?).bind(device).bind(json!({"operationId":id,"event":"diagnostic","source":"human","executionContext":null})).bind(vec![17_u8;32]).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(id).bind(serde_json::to_string(&caller)?).bind(serde_json::to_value(caller)?).bind(device.into_uuid()).bind(json!({"operationId":id,"event":"diagnostic","source":"human","executionContext":null})).bind(vec![17_u8;32]).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_policy.event_members(tenant_id,batch,id,policy,revision,version,target,authority,decision) VALUES($1::uuid,$2,$2,$3,1,$4,$5,$6,$7)")
         .bind(c.tenant.to_string()).bind(id).bind(policy).bind(Uuid::new_v4()).bind(json!({"device":device}))
         .bind(json!({"permissions":[],"retirement_target":null})).bind(json!({"state":"expired"})).execute(&mut *tx).await?;
@@ -78,10 +78,10 @@ pub(super) async fn seed(
         recipient_certificate: None,
         material_revision: 0,
     };
-    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts (tenant_id, device, operation, purpose, digest, receipt, devices) VALUES (CAST($1 AS uuid), $2, $3, 'configure', $4, $5, $6)").bind(c.tenant.to_string()).bind(device).bind(id).bind(vec![17_u8;32]).bind(serde_json::to_value(fv)?).bind(vec![device.clone()]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_recovery.filevault_receipts (tenant_id, device, operation, purpose, digest, receipt, devices) VALUES (CAST($1 AS uuid), $2, $3, 'configure', $4, $5, $6)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(id).bind(vec![17_u8;32]).bind(serde_json::to_value(fv)?).bind(vec![device.into_uuid()]).execute(&mut *tx).await?;
     let maintenance = rss_mdm_telemetry_service::maintenance::Request {
         id,
-        device: device.clone(),
+        device: *device,
         field: "device.cpu.percent".into(),
         resource: "original-metrics".into(),
         start_micros: 0,
@@ -96,10 +96,10 @@ pub(super) async fn seed(
         "SELECT epoch FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2",
     )
     .bind(c.tenant.to_string())
-    .bind(device)
+    .bind(device.into_uuid())
     .fetch_one(&mut *tx)
     .await?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, evidence) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.windows', $4, 'device', 0, 1700000000, '{\"fields\":{}}', 'pending', '{}')").bind(c.tenant.to_string()).bind(id).bind(device).bind(epoch).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, evidence) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.windows', $4, 'device', 0, 1700000000, '{\"fields\":{}}', 'pending', '{}')").bind(c.tenant.to_string()).bind(id).bind(device.into_uuid()).bind(epoch).execute(&mut *tx).await?;
     let enterprise = Uuid::new_v4();
     let enterprise_result = rss_mdm_device_access_postgres::enterprise::Record::RelyingParty(
         rss_mdm_device_access_postgres::enterprise::RelyingParty {

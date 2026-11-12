@@ -17,7 +17,7 @@ fn write_error(e: sqlx::Error) -> Error {
 pub async fn lock_registration(
     c: &mut PgConnection,
     tenant: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     let tenant = tenant.to_string();
     crate::delivery::lock_da_target(c, &tenant, device, None).await?;
@@ -33,7 +33,7 @@ pub async fn lock_registration(
         rss_mdm_registration_service::device::endpoints::current_da_in(c, &tenant, device)
             .await?
             .ok_or(Error::Conflict)?;
-    if current.device != device {
+    if current.device != *device {
         return Err(Error::Conflict);
     }
     Ok(())
@@ -106,7 +106,7 @@ pub async fn locked_observation_in(
 pub async fn first_in(
     c: &mut PgConnection,
     tenant: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     _person: &Person,
     _account: &AccessAccount,
 ) -> Result<bool, Error> {
@@ -114,7 +114,7 @@ pub async fn first_in(
         "SELECT EXISTS (SELECT 1 FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2)",
     )
     .bind(tenant)
-    .bind(device)
+    .bind(device.into_uuid())
     .fetch_one(c)
     .await
     .map_err(db)?;
@@ -129,7 +129,7 @@ pub async fn insert_in(c: &mut PgConnection, b: &Binding) -> Result<(), Error> {
         "SELECT count(*) FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2",
     )
     .bind(b.tenant)
-    .bind(&b.device)
+    .bind(b.device.into_uuid())
     .fetch_one(&mut *c)
     .await
     .map_err(db)?;
@@ -137,7 +137,7 @@ pub async fn insert_in(c: &mut PgConnection, b: &Binding) -> Result<(), Error> {
         return Err(Error::Capacity);
     }
     sqlx::query("INSERT INTO rss_da.bindings (tenant_id, id, device, instance, principal, generation, revision, state, account, document) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
-        .bind(b.tenant).bind(b.id).bind(&b.device)
+        .bind(b.tenant).bind(b.id).bind(b.device.into_uuid())
         .bind(b.person.instance).bind(b.person.principal).bind(b.generation).bind(b.revision).bind(state(b.state))
         .bind(b.account.as_ref().map(serde_json::to_value).transpose().map_err(|_| Error::Malformed)?)
         .bind(serde_json::to_value(b).map_err(|_| Error::Malformed)?).execute(c).await.map_err(write_error)?;
@@ -379,7 +379,7 @@ pub(crate) async fn deployment_result_in(
         .map_err(|_| Error::Malformed)?;
     let selected: serde_json::Value = sqlx::query_scalar(
         "SELECT rss_da.access_policy($1,$2,floor(extract(epoch FROM statement_timestamp()))::bigint)",
-    ).bind(b.policy).bind(&b.device).fetch_one(&mut *c).await.map_err(db)?;
+    ).bind(b.policy).bind(b.device.into_uuid()).fetch_one(&mut *c).await.map_err(db)?;
     if selected["state"] != "eligible"
         || selected["version"]
             != serde_json::to_value(b.policy_version).map_err(|_| Error::Corrupt)?
@@ -476,7 +476,7 @@ pub async fn prepared_in(
 pub async fn mac_configuration_in(
     c: &mut PgConnection,
     tenant: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<rss_mdm_agent_wire::platform_sso::LoginConfiguration, Error> {
     // Apply the budget to eligible Mac configurations, not unrelated tenant policies.
     let candidates: Vec<serde_json::Value> = sqlx::query_scalar(
@@ -492,7 +492,7 @@ pub async fn mac_configuration_in(
          ORDER BY p.id LIMIT 129",
     )
     .bind(tenant)
-    .bind(device)
+    .bind(device.into_uuid())
     .fetch_all(&mut *c)
     .await
     .map_err(db)?;
@@ -522,7 +522,7 @@ pub async fn require_retired_in(c: &mut PgConnection, b: &Binding) -> Result<(),
     let configuration =
         serde_json::to_value(&b.configuration.windows).map_err(|_| Error::Malformed)?;
     let pending: bool = sqlx::query_scalar("SELECT EXISTS (SELECT FROM rss_da.bindings WHERE tenant_id = $1 AND device = $2 AND account = $3 AND state = 'revoked' AND document -> 'appliedRevision' IS DISTINCT FROM document -> 'revision' AND (document #>> '{configuration,windows,kind}' = 'whfb' OR document #>> '{configuration,windows,kind}' IS DISTINCT FROM $4))")
-        .bind(b.tenant).bind(&b.device).bind(serde_json::to_value(account).map_err(|_| Error::Malformed)?).bind(configuration["kind"].as_str().ok_or(Error::Malformed)?)
+        .bind(b.tenant).bind(b.device.into_uuid()).bind(serde_json::to_value(account).map_err(|_| Error::Malformed)?).bind(configuration["kind"].as_str().ok_or(Error::Malformed)?)
         .fetch_one(c).await.map_err(db)?;
     if pending {
         Err(Error::Conflict)

@@ -22,15 +22,9 @@ fn admission(value: channels::ScopeAdmission) -> ScopeAdmission {
         channels::ScopeAdmission::Excluded => ScopeAdmission::Excluded,
     }
 }
-fn object(value: channels::ObjectRef) -> ObjectRef {
-    match value {
-        channels::ObjectRef::Endpoint(id) => ObjectRef::Endpoint(id),
-        channels::ObjectRef::Association(id) => ObjectRef::Association(id),
-    }
-}
 fn evidence(value: channels::DeviceObject) -> DeviceObject {
     DeviceObject {
-        object: object(value.object),
+        object: value.object,
         association_version: value.association_version,
         verified: value.verified,
         members: value.members,
@@ -66,7 +60,7 @@ impl Sources for Source {
         tenant: TenantId,
         runs: &'a [Uuid],
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Pending<'a, RolloutPage> {
         Box::pin(async move {
             let v = self
@@ -88,7 +82,7 @@ impl Sources for Source {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Pending<'a, ScopePreview> {
         Box::pin(async move {
             let v = self
@@ -108,7 +102,7 @@ impl Sources for Source {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
     ) -> Pending<'a, Vec<AssignmentObject>> {
         Box::pin(async move {
@@ -119,7 +113,7 @@ impl Sources for Source {
                 .map_err(error)?
                 .into_iter()
                 .map(|v| AssignmentObject {
-                    object: object(v.object),
+                    object: v.object,
                     channel: v.channel,
                     availability: match v.availability {
                         channels::Availability::Ready => Availability::Ready,
@@ -140,7 +134,7 @@ impl Sources for Source {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Vec<DeviceObject>> {
         Box::pin(async move {
             Ok(self
@@ -158,17 +152,14 @@ impl Sources for Source {
         c: &'a mut PgConnection,
         tenant: TenantId,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         evidence: &'a [DeviceObject],
     ) -> Pending<'a, bool> {
         Box::pin(async move {
             let evidence = evidence
                 .iter()
                 .map(|v| channels::DeviceObject {
-                    object: match &v.object {
-                        ObjectRef::Endpoint(id) => channels::ObjectRef::Endpoint(id.clone()),
-                        ObjectRef::Association(id) => channels::ObjectRef::Association(*id),
-                    },
+                    object: v.object,
                     association_version: v.association_version,
                     verified: v.verified,
                     members: v.members.clone(),
@@ -186,7 +177,7 @@ impl Sources for Source {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ScopeAdmission> {
         Box::pin(async move {
             self.0
@@ -214,7 +205,7 @@ impl Sources for Source {
         c: &'a mut PgConnection,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ScopeAdmission> {
         Box::pin(async move {
             channels::targets::channel_state_on(
@@ -233,8 +224,8 @@ impl Sources for Source {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
-    ) -> Pending<'a, Vec<String>> {
+        device: &'a rss_mdm_agent_wire::DeviceId,
+    ) -> Pending<'a, Vec<rss_mdm_agent_wire::DeviceId>> {
         Box::pin(async move {
             Ok(self
                 .0
@@ -293,7 +284,10 @@ impl rss_mdm_software_service::deployment::inventory::Inventory for Inventory {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        targets: &'a [(String, rss_mdm_inventory::ReportSource)],
+        targets: &'a [(
+            rss_mdm_agent_wire::DeviceId,
+            rss_mdm_inventory::ReportSource,
+        )],
         lock: bool,
     ) -> rss_mdm_software_service::deployment::inventory::Pending<
         'a,
@@ -354,7 +348,7 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         execution: Uuid,
     ) -> rss_mdm_software_service::deployment::retirement::Pending<'a, bool> {
         Box::pin(async move {
@@ -367,7 +361,7 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
         &'a self,
         c: &'a mut PgConnection,
         tenant: &'a str,
-        targets: &'a [(Uuid, String)],
+        targets: &'a [(Uuid, rss_mdm_agent_wire::DeviceId)],
     ) -> rss_mdm_software_service::deployment::retirement::Pending<
         'a,
         std::collections::BTreeMap<Uuid, bool>,
@@ -383,7 +377,7 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
         c: &'a mut PgConnection,
         tenant: &'a str,
         retirement: Uuid,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         execution: Option<Uuid>,
     ) -> rss_mdm_software_service::deployment::retirement::Pending<'a, bool> {
         Box::pin(async move {
@@ -422,7 +416,7 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
         c: &'a mut PgConnection,
         tenant: TenantId,
         retirement: Uuid,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
         execution: Uuid,
     ) -> rss_mdm_software_service::deployment::retirement::Pending<'a, ()> {
         Box::pin(async move {
@@ -446,7 +440,7 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
         c: &'a mut PgConnection,
         tenant: TenantId,
         retirement: Uuid,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
         reason: &'static str,
         execution: Option<Uuid>,
         unknown: bool,
@@ -471,7 +465,7 @@ impl rss_mdm_software_service::deployment::retirement::Lifecycle for Lifecycle {
         &'a self,
         messaging: &'a rss_reconcile_postgres::PgMessagingStore,
         tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> std::pin::Pin<
         Box<dyn Future<Output = rss_mdm_software_service::deployment::Result<()>> + Send + 'a>,
     > {

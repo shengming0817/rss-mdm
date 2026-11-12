@@ -23,7 +23,7 @@ pub async fn receive(
         None => return Ok(None),
         Some(Reception::Replay) => {
             return sqlx::query_as("SELECT collection, TRUE FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3")
-                .bind(&tenant).bind(id).bind(p.device()).fetch_optional(c).await.map_err(db);
+                .bind(&tenant).bind(id).bind(p.device().into_uuid()).fetch_optional(c).await.map_err(db);
         }
         Some(Reception::Ready(attempt)) => attempt,
     };
@@ -137,7 +137,7 @@ pub async fn receive(
             .map_err(db)?;
             let context = serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
             let rights: i32 = sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2")
-                .bind(&tenant).bind(p.device()).fetch_one(&mut *c).await.map_err(db)?;
+                .bind(&tenant).bind(p.device().into_uuid()).fetch_one(&mut *c).await.map_err(db)?;
             let rights = crate::native::rights(rights);
             let target = rss_mdm_apple_mdm::native::Target {
                 context: &context,
@@ -197,8 +197,8 @@ pub async fn send(
 ) -> Result<(Vec<u8>, Vec<rss_mdm_audit_integration::Fact>), Error> {
     let mut facts = Vec::new();
     let tenant = p.tenant().to_string();
-    let rows=sqlx::query("SELECT CAST(id AS text), collection, request FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND user_key = $3 AND phase IN ('collect', 'collect_device', 'collect_security') AND state IN ('pending', 'sent', 'not_now') AND next_attempt <= clock_timestamp() AND deadline > clock_timestamp() ORDER BY collection_sequence LIMIT 32 FOR UPDATE")
-        .bind(&tenant).bind(p.device().to_string()).bind(user_key).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT CAST(id AS text), collection, request FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND phase IN ('collect', 'collect_device', 'collect_security') AND state IN ('pending', 'sent', 'not_now') AND next_attempt <= clock_timestamp() AND deadline > clock_timestamp() ORDER BY collection_sequence LIMIT 32 FOR UPDATE")
+        .bind(&tenant).bind(p.device().into_uuid()).bind(user_key).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
         let id = uuid(&row, "id")?;
         let collection: Uuid = row.try_get("collection").map_err(db)?;
@@ -306,7 +306,12 @@ pub async fn prepare_native(
         protection,
         tenant,
         id,
-        row.try_get("device").map_err(db)?,
+        &row.try_get::<uuid::Uuid, _>("device")
+            .and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })
+            .map_err(db)?,
         row.try_get("sequence").map_err(db)?,
         &row.try_get::<String, _>("deadline").map_err(db)?,
         user_key,
@@ -449,13 +454,18 @@ pub async fn prepare_native(
     let request = crate::protection::seal(
         protection,
         tenant,
-        row.try_get("device").map_err(db)?,
+        &row.try_get::<uuid::Uuid, _>("device")
+            .and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })
+            .map_err(db)?,
         id,
         crate::protection::Part::Request,
         &request,
     )?;
     sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, collection, phase, request, state, collection_sequence, deadline, user_key, context) VALUES (CAST($1 AS uuid), $2, $3, $2, 'collect', $4, 'pending', $5, CAST(CAST($6 AS text) AS timestamptz), $7, $8)")
-        .bind(tenant).bind(id).bind(row.try_get::<String,_>("device").map_err(db)?).bind(request).bind(row.try_get::<i64,_>("sequence").map_err(db)?).bind(row.try_get::<String,_>("deadline").map_err(db)?).bind(user_key).bind(serde_json::to_value(context).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
+        .bind(tenant).bind(id).bind(row.try_get::<uuid::Uuid, _>("device").map_err(db)?).bind(request).bind(row.try_get::<i64,_>("sequence").map_err(db)?).bind(row.try_get::<String,_>("deadline").map_err(db)?).bind(user_key).bind(serde_json::to_value(context).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
     crate::notify(c, "apple").await.map_err(db)?;
     Ok(Vec::new())
 }

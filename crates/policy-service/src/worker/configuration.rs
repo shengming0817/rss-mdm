@@ -111,7 +111,7 @@ impl PolicyWork {
                             |ctx, tx| {
                                 Box::pin(async move {
                                     ctx.0
-                                        .advance_work_in(tx, ctx.1, ctx.2.as_deref(), ctx.3, ctx.4)
+                                        .advance_work_in(tx, ctx.1, ctx.2.as_ref(), ctx.3, ctx.4)
                                         .await
                                         .map(ProtectedStep::Ready)
                                         .map_err(|e| fault(e, ctx.5))

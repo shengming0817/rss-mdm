@@ -25,7 +25,7 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
             "boolean",
         ),
         (
-            "rss_da.deployment_valid_until(text,jsonb,uuid,bigint)",
+            "rss_da.deployment_valid_until(uuid,jsonb,uuid,bigint)",
             include_str!("../schema/platform-qualifications.sql"),
             &["da_access", "da_identity_runtime", "mdm_identity_runtime"],
             "sql",
@@ -52,7 +52,7 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
             "boolean",
         ),
         (
-            "rss_da.access_policy(uuid,text,bigint)",
+            "rss_da.access_policy(uuid,uuid,bigint)",
             include_str!("../schema/device-access-qualification.sql"),
             &[
                 "da_access",
@@ -88,7 +88,7 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
             "jsonb",
         ),
         (
-            "rss_da.save_retired_access_run(text,uuid,jsonb,jsonb)",
+            "rss_da.save_retired_access_run(uuid,uuid,jsonb,jsonb)",
             include_str!("../schema/device-access-tasks.sql"),
             &[
                 "da_access",

@@ -53,7 +53,7 @@ pub struct Request {
 pub struct Context {
     pub attempt: Uuid,
     pub kind: RequestKind,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub enrollment_id: Option<Uuid>,
     pub operation_id: Uuid,
     pub registration_state:
@@ -99,20 +99,28 @@ SELECT jsonb_build_object('attempt',attempt,'kind',kind,'device',device,'enrollm
  'enrollmentState',enrollment_state,'predecessor',predecessor,'linked',coalesce(linked,false),'activated',coalesce(activated,false)) AS context
 FROM candidates WHERE true
 "#;
-fn append_context(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, tenant: &str, device: &str) {
+fn append_context(
+    sql: &mut sqlx::QueryBuilder<sqlx::Postgres>,
+    tenant: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
+) {
     sql.push("WITH RECURSIVE params AS (SELECT ")
         .push_bind(tenant.to_owned())
         .push("::uuid AS tenant,")
-        .push_bind(device.to_owned())
+        .push_bind(device.into_uuid())
         .push("::text AS device")
         .push(HISTORY);
 }
-fn sql(tenant: &str, device: &str) -> sqlx::QueryBuilder<sqlx::Postgres> {
+fn sql(tenant: &str, device: &rss_mdm_agent_wire::DeviceId) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut sql = sqlx::QueryBuilder::new("");
     append_context(&mut sql, tenant, device);
     sql
 }
-fn directory_sql(tenant: &str, device: &str, now: i64) -> sqlx::QueryBuilder<sqlx::Postgres> {
+fn directory_sql(
+    tenant: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
+    now: i64,
+) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut sql = sqlx::QueryBuilder::new("WITH contexts AS (");
     append_context(&mut sql, tenant, device);
     sql.push("), clock AS (SELECT ").push_bind(now).push("::bigint AS now), signing AS (SELECT c.context,s.attempt,s.state,s.issuer,s.deadline,s.successor,floor(extract(epoch FROM s.created_at))::bigint created_at,convert_from(s.binding,'UTF8')::jsonb frozen FROM contexts c JOIN mdm_pki.signing s ON s.tenant_id=$1::uuid AND s.attempt=(c.context->>'attempt')::uuid AND s.purpose='windows'), corrected AS (SELECT context || jsonb_build_object('linked',state<>'superseded' AND (context->>'linked')::boolean,'activated',state<>'superseded' AND (context->>'activated')::boolean) context,attempt,state,issuer,deadline,successor,created_at,frozen FROM signing), rows AS (SELECT context || jsonb_build_object('signing',jsonb_build_object('attempt',attempt,'state',state,'issuer',frozen->>'issuer','createdAt',created_at,'deadline',deadline,'notBefore',(frozen->>'start')::bigint,'notAfter',(frozen->>'end')::bigint,'successor',successor),'requirements',to_jsonb(array_remove(ARRAY[CASE WHEN state='prepared' THEN CASE WHEN deadline<=clock.now THEN 'expired' ELSE 'awaiting_original_dispatch' END WHEN state IN('signing','unknown') THEN 'original_ca_response' WHEN state='issued' AND NOT(context->>'linked')::boolean THEN 'awaiting_native_continuation' WHEN state='issued' AND NOT(context->>'activated')::boolean THEN 'awaiting_device_possession' WHEN state='superseded' THEN 'superseded' END,CASE WHEN context->>'registrationState'='revoked' OR context->>'enrollmentState'='cancelled' THEN 'revoked' END,CASE WHEN context->>'enrollmentState'='expired' OR (frozen->>'end')::bigint<=clock.now THEN 'expired' END],NULL))) row FROM corrected CROSS JOIN clock) SELECT row FROM rows WHERE true");
@@ -137,7 +145,7 @@ fn pki_error(e: rss_mdm_pki_service::Error) -> Error {
 async fn authorize(
     c: &mut sqlx::PgConnection,
     p: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<String, Error> {
     p.credentials(device)?;
     let auth = rss_mdm_authorization_service::snapshot_on(
@@ -153,7 +161,7 @@ async fn authorize(
 async fn context(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     attempt: Uuid,
 ) -> Result<Context, Error> {
     let mut sql = sql(tenant, device);
@@ -209,7 +217,7 @@ impl Store {
     pub async fn certificate_requests(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         q: &Query,
         codec: &CursorCodec,
         now: i64,
@@ -265,7 +273,7 @@ impl Store {
     pub async fn certificate_request(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         attempt: Uuid,
         now: i64,
     ) -> Result<Request, Error> {
@@ -288,7 +296,7 @@ impl Store {
     pub async fn certificate_recovery_operations(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         attempt: Uuid,
         q: &Query,
         codec: &CursorCodec,
@@ -324,7 +332,7 @@ impl Store {
     pub async fn certificate_recovery_operation(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         attempt: Uuid,
         operation: Uuid,
         identity: &pki::ReceiptIdentity,

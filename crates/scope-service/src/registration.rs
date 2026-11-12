@@ -22,15 +22,9 @@ fn admission(value: channels::ScopeAdmission) -> ScopeAdmission {
         channels::ScopeAdmission::Excluded => ScopeAdmission::Excluded,
     }
 }
-fn object(value: channels::ObjectRef) -> ObjectRef {
-    match value {
-        channels::ObjectRef::Endpoint(id) => ObjectRef::Endpoint(id),
-        channels::ObjectRef::Association(id) => ObjectRef::Association(id),
-    }
-}
 fn evidence(value: channels::DeviceObject) -> DeviceObject {
     DeviceObject {
-        object: object(value.object),
+        object: value.object,
         association_version: value.association_version,
         verified: value.verified,
         members: value.members,
@@ -46,7 +40,7 @@ impl Sources for EnrollmentSources {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Pending<'a, ScopePreview> {
         Box::pin(async move {
             let v = self
@@ -66,7 +60,7 @@ impl Sources for EnrollmentSources {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        after: Option<&'a str>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
         limit: usize,
     ) -> Pending<'a, Vec<AssignmentObject>> {
         Box::pin(async move {
@@ -77,7 +71,7 @@ impl Sources for EnrollmentSources {
                 .map_err(error)?
                 .into_iter()
                 .map(|v| AssignmentObject {
-                    object: object(v.object),
+                    object: v.object,
                     channel: v.channel,
                     availability: match v.availability {
                         channels::Availability::Ready => Availability::Ready,
@@ -98,7 +92,7 @@ impl Sources for EnrollmentSources {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, Vec<DeviceObject>> {
         Box::pin(async move {
             Ok(self
@@ -116,17 +110,14 @@ impl Sources for EnrollmentSources {
         c: &'a mut PgConnection,
         tenant: TenantId,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         evidence: &'a [DeviceObject],
     ) -> Pending<'a, bool> {
         Box::pin(async move {
             let evidence = evidence
                 .iter()
                 .map(|v| channels::DeviceObject {
-                    object: match &v.object {
-                        ObjectRef::Endpoint(id) => channels::ObjectRef::Endpoint(id.clone()),
-                        ObjectRef::Association(id) => channels::ObjectRef::Association(*id),
-                    },
+                    object: v.object,
                     association_version: v.association_version,
                     verified: v.verified,
                     members: v.members.clone(),
@@ -144,7 +135,7 @@ impl Sources for EnrollmentSources {
         tenant: TenantId,
         scope: Uuid,
         channel: Channel,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, ScopeAdmission> {
         Box::pin(async move {
             self.0

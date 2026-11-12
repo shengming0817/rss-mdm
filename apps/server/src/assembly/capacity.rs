@@ -1,7 +1,11 @@
 //! The one device capacity boundary sums concrete business owners on the original connection.
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 pub(crate) struct Capacity;
-async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result<bool, PgError> {
+async fn available(
+    tx: &mut PgTransaction<'_>,
+    device: &rss_mdm_agent_wire::DeviceId,
+    now: i64,
+) -> Result<bool, PgError> {
     let tenant = tx.tenant_id();
     tx.with_connection_context(&mut (device,), |(device,), c| {
         Box::pin(async move { available_on(c, tenant, device, now).await })
@@ -11,7 +15,7 @@ async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result
 pub(crate) async fn available_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     now: i64,
 ) -> Result<bool, sqlx::Error> {
     let execution =
@@ -71,7 +75,7 @@ impl rss_mdm_device_service::control::capacity::DeviceCapacity for Capacity {
     fn available_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> std::pin::Pin<
         Box<dyn Future<Output = rss_mdm_device_service::control::Result<bool>> + Send + 'a>,
@@ -83,7 +87,7 @@ impl rss_mdm_script_service::DeviceCapacity for Capacity {
     fn available_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> std::pin::Pin<Box<dyn Future<Output = rss_mdm_script_service::Result<bool>> + Send + 'a>>
     {
@@ -94,7 +98,7 @@ impl rss_mdm_inventory_service::collection::execution::participants::DeviceCapac
     fn available_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> rss_mdm_inventory_service::collection::execution::participants::Pending<'a, bool> {
         Box::pin(async move { Ok(available(tx, device, now).await?) })
@@ -105,7 +109,7 @@ impl rss_mdm_software_service::deployment::capacity::DeviceCapacity for Capacity
     fn available_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> std::pin::Pin<
         Box<dyn Future<Output = rss_mdm_software_service::deployment::Result<bool>> + Send + 'a>,
@@ -118,7 +122,7 @@ impl rss_mdm_registration_service::participants::capacity::DeviceCapacity for Ca
     fn available_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> std::pin::Pin<
         Box<

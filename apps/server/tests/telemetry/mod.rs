@@ -21,7 +21,7 @@ use uuid::Uuid;
 async fn seed(
     c: &Context,
     f: &Fixture,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     epoch: Uuid,
     key: &str,
     values: [Number; 2],
@@ -84,7 +84,7 @@ async fn seed(
         field.time_series_definition(Scope::new(c.tenant, Id::new("mdm.telemetry")?))?;
     let series = Series::new(
         definition.clone(),
-        Id::new(device)?,
+        Id::new(device.to_string())?,
         Id::new("device")?,
         Default::default(),
     )?;
@@ -183,10 +183,16 @@ async fn seed(
     store.close(deadline()).await?;
     Ok(())
 }
-fn query(device: &str, field: &str) -> Value {
+fn query(device: &rss_mdm_agent_wire::DeviceId, field: &str) -> Value {
     json!({"device":device,"field":field,"resource":"device","startMicros":"0","endMicros":"4000000","maxPoints":16,"mode":"history"})
 }
-fn aggregate(device: &str, field: &str, epoch: Uuid, operation: &str, counter: bool) -> Value {
+fn aggregate(
+    device: &rss_mdm_agent_wire::DeviceId,
+    field: &str,
+    epoch: Uuid,
+    operation: &str,
+    counter: bool,
+) -> Value {
     json!({"query":query(device,field),"definitionVersion":"1","source":inv::Source::AgentNative,"epoch":epoch,"dimensions":{},"resolutionMicros":"4000000","operation":operation,"coverage":{"coverage":"observedOnly"},"maxGapMicros":if counter{Some("4000000")}else{None}})
 }
 fn validator(path: &str) -> jsonschema::Validator {
@@ -240,7 +246,7 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     .await?;
     let epoch = Uuid::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,device,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.native',$3,0,true)").bind(c.tenant.to_string()).bind(&device).bind(epoch).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,device,source,epoch,next_sequence,enabled) VALUES($1::uuid,$2,'agent.native',$3,0,true)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(epoch).execute(&mut *tx).await?;
     anyhow::ensure!(
         rss_mdm_inventory_postgres::publish_retention_policy_in(
             &mut tx,
@@ -403,7 +409,7 @@ async fn exercise(c: &Context, f: &Fixture) -> Result<()> {
     foreign.close().await;
     anyhow::ensure!(foreign_result?.0 == 403, "tenant binding");
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND device=$2 AND source='agent.native'").bind(c.tenant.to_string()).bind(&device).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND device=$2 AND source='agent.native'").bind(c.tenant.to_string()).bind(device.into_uuid()).execute(&mut *tx).await?;
     tx.commit().await?;
     let mut latest = query(&device, "custom.minimum");
     latest["mode"] = json!("latest");

@@ -113,7 +113,7 @@ impl Create {
         &self,
         protector: &rss_mdm_native_protection::Protector,
         tenant: rss_request_context::TenantId,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<StateDigest, Error> {
         let digest = super::protection::fingerprint(
             protector,
@@ -186,7 +186,7 @@ impl Create {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DispatchV1 {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub operation_id: Uuid,
     pub generation: i64,
     pub epoch: i64,

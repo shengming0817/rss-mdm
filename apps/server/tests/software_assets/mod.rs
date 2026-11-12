@@ -155,7 +155,7 @@ async fn missing_mapping_source_is_unknown_until_its_complete_empty_list() -> Re
         .as_array()
         .unwrap()
         .iter()
-        .find(|v| v["object"]["id"] == b.members[0].device)
+        .find(|v| v["object"]["id"] == b.members[0].device.to_string())
         .context("missing Store device")?;
     assert_eq!(missing["unknown"], true);
     put(&http, &path, 1, definition(1)).await?;
@@ -644,7 +644,7 @@ async fn aggregate_complete_results_and_revalidate_inputs() -> Result<()> {
         response(&page)["items"][0]["object"],
         response(&next)["items"][0]["object"]
     );
-    let object = format!("endpoint:{}", a.members[0].device);
+    let object = format!("endpoint/{}", a.members[0].device);
     let evidence = http
         .get(&format!("{base}/devices/{object}/evidence"))
         .await?;
@@ -721,7 +721,7 @@ async fn aggregate_complete_results_and_revalidate_inputs() -> Result<()> {
         .as_array()
         .unwrap()
         .iter()
-        .find(|v| v["object"]["id"] == a.members[0].device)
+        .find(|v| v["object"]["id"] == a.members[0].device.to_string())
         .unwrap();
     assert_eq!(covered["unknown"], true);
     assert!(
@@ -868,7 +868,7 @@ async fn group_assessment_and_associated_domain() -> Result<()> {
                     operation_id: Uuid::new_v4(),
                     expected_revision: 1,
                     input: rss_mdm_group_service::GroupChange::Members {
-                        add: vec![a.object.clone()],
+                        add: vec![a.object],
                         remove: vec![],
                     },
                 }),
@@ -909,7 +909,7 @@ async fn group_assessment_and_associated_domain() -> Result<()> {
     sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)").bind(c.tenant.to_string()).bind(snapshot).bind(cut.to_json()).execute(&mut *tx).await?;
     let association = Uuid::new_v4();
     let paired = rss_mdm_inventory_service::objects::DeviceObject {
-        object: rss_mdm_inventory_service::objects::ObjectRef::Association(association),
+        object: rss_mdm_agent_wire::ObjectRef::Association(association),
         association_version: Some(1),
         verified: true,
         members: vec![a.members[0].clone(), b.members[0].clone()],
@@ -917,10 +917,10 @@ async fn group_assessment_and_associated_domain() -> Result<()> {
     sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1::uuid,$2,1,'confirmed','verified software fixture','{}','fixture',1)").bind(c.tenant.to_string()).bind(association).execute(&mut *tx).await?;
     for member in &paired.members {
         sqlx::query("INSERT INTO mdm_devices.members (tenant_id, association_id, device, channel) VALUES (CAST($1 AS uuid), $2, $3, $4)")
-            .bind(c.tenant.to_string()).bind(association).bind(&member.device).bind(member.channel.as_str()).execute(&mut *tx).await?;
+            .bind(c.tenant.to_string()).bind(association).bind(member.device.into_uuid()).bind(member.channel.as_str()).execute(&mut *tx).await?;
     }
-    sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) VALUES($1::uuid,$2,1,$3,$4)")
-        .bind(c.tenant.to_string()).bind(paired.object.key()).bind(serde_json::to_value(&paired)?).bind(paired.members.iter().map(|m|m.device.clone()).collect::<Vec<_>>()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object_kind,object_id,revision,input,devices) VALUES($1::uuid,$2,$3,1,$4,$5)")
+        .bind(c.tenant.to_string()).bind(paired.object.kind()).bind(paired.object.uuid()).bind(serde_json::to_value(&paired)?).bind(paired.members.iter().map(|m|m.device.into_uuid()).collect::<Vec<_>>()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.checkpoints(tenant_id,from_cut,rebuilding,object_revision,current_cut) VALUES($1::uuid,$2,false,1,$3) ON CONFLICT(tenant_id) DO UPDATE SET from_cut=excluded.from_cut,rebuilding=false,object_revision=1,current_cut=excluded.current_cut").bind(c.tenant.to_string()).bind(cut.to_json()).bind(snapshot).execute(&mut *tx).await?;
     tx.commit().await?;
     let associated = query(&c, &fixture, &http, json!({})).await?;

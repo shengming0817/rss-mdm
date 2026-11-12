@@ -1,8 +1,8 @@
 //! Request-local previews exercise real authorization, frozen facts and Group storage.
 use super::*;
 use group::preview::{Editing, Request};
+use rss_mdm_agent_wire::ObjectRef;
 use rss_mdm_group::AssetContext;
-use rss_mdm_inventory_service::objects::ObjectRef;
 
 fn membership(id: Uuid, op: &str) -> Result<group::criteria::Condition> {
     Ok(serde_json::from_value(
@@ -248,7 +248,7 @@ pub(super) async fn publish(
     Ok(published)
 }
 
-async fn os_fact(c: &Context, registration: String) -> Result<()> {
+async fn os_fact(c: &Context, registration: rss_mdm_agent_wire::DeviceId) -> Result<()> {
     use rss_mdm_inventory::*;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     let field = builtin::fields()
@@ -267,7 +267,7 @@ async fn os_fact(c: &Context, registration: String) -> Result<()> {
         }],
     )?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, c.tenant, &definition).await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(c.tenant.to_string()).bind(&registration).fetch_one(&mut *tx).await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND source = 'mdm.windows'").bind(c.tenant.to_string()).bind(registration.into_uuid()).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_mdm_install_support::StorageProfile::Mdm,
         c.tenant,
@@ -280,7 +280,7 @@ async fn os_fact(c: &Context, registration: String) -> Result<()> {
         rss_mdm_install_support::StorageProfile::Mdm,
         &mut tx,
         &c.tenant.to_string(),
-        &registration.to_string(),
+        &registration,
         ReportSource::MdmWindows,
         &epoch.to_string(),
         1,
@@ -311,7 +311,7 @@ async fn positive_facts_and_associated_cut_share_formal_evaluation() -> Result<(
     let proof = c.authenticate(&account).await?;
     let owners = Owners::open(&c).await?;
     let object = planning::endpoint(&c).await?;
-    os_fact(&c, object.members[0].device.clone()).await?;
+    os_fact(&c, object.members[0].device).await?;
     let condition: group::criteria::Condition = serde_json::from_value(
         json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.os.name","op":"eq","value":{"kind":"string","value":"Windows"}}}),
     )?;
@@ -320,7 +320,7 @@ async fn positive_facts_and_associated_cut_share_formal_evaluation() -> Result<(
         .groups
         .preview(&proof, &input, &c.request(&proof)?)
         .await?;
-    assert_eq!(preview.items, vec![object.object.clone()]);
+    assert_eq!(preview.items, vec![object.object]);
     assert!(preview.scan_complete);
     let id = owners.create(&c, &proof, Some(condition)).await?;
     let run = publish(&owners, &c, &proof, id).await?;
@@ -343,7 +343,7 @@ async fn positive_facts_and_associated_cut_share_formal_evaluation() -> Result<(
     let snapshot = Uuid::new_v4();
     let mut tx = crate::command_runtime_t2_support::seed_transaction(&c).await?;
     sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) VALUES($1::uuid,$2,$3,1)").bind(c.tenant.to_string()).bind(snapshot).bind(preview.asset_cut.to_json()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) VALUES($1::uuid,$2,1,$3,$4)").bind(c.tenant.to_string()).bind(object.object.key()).bind(serde_json::to_value(&object)?).bind(vec![object.members[0].device.clone()]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.object_versions(tenant_id,object_kind,object_id,revision,input,devices) VALUES($1::uuid,$2,$3,1,$4,$5)").bind(c.tenant.to_string()).bind(object.object.kind()).bind(object.object.uuid()).bind(serde_json::to_value(&object)?).bind(vec![object.members[0].device.into_uuid()]).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_devices.checkpoints(tenant_id,from_cut,rebuilding,object_revision,current_cut) VALUES($1::uuid,$2,false,1,$3)").bind(c.tenant.to_string()).bind(preview.asset_cut.to_json()).bind(snapshot).execute(&mut *tx).await?;
     tx.commit().await?;
     input.asset_context = AssetContext::AssociatedDevice;

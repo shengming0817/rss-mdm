@@ -16,7 +16,12 @@ pub(crate) fn aad(row: &PgRow) -> Result<DerivedAad, Error> {
     let tenant: Uuid = row.try_get("tenant_id").map_err(db)?;
     let owner = serde_json::to_string(&(
         row.try_get::<Uuid, _>("operation").map_err(db)?,
-        row.try_get::<String, _>("device").map_err(db)?,
+        row.try_get::<uuid::Uuid, _>("device")
+            .and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })
+            .map_err(db)?,
         row.try_get::<String, _>("user_key").map_err(db)?,
         row.try_get::<String, _>("identifier").map_err(db)?,
         row.try_get::<Uuid, _>("profile").map_err(db)?,
@@ -69,7 +74,7 @@ async fn collides(
     let mut after = Uuid::nil();
     loop {
         let rows=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND device = $4 AND retired_at IS NULL AND identifier <> $5 AND manifest IS NOT NULL AND operation > $6 ORDER BY operation LIMIT 32")
-            .bind(&target.tenant).bind(&target.device).bind(user).bind(&target.device).bind(root).bind(after).fetch_all(&mut *c).await.map_err(db)?;
+            .bind(&target.tenant).bind(target.device.into_uuid()).bind(user).bind(target.device.into_uuid()).bind(root).bind(after).fetch_all(&mut *c).await.map_err(db)?;
         if rows.is_empty() {
             return Ok(false);
         }
@@ -107,7 +112,7 @@ pub(crate) async fn reserve(
         _ => return Err(Error::Malformed),
     };
     let user = command.target.user_key();
-    let enrollment:Uuid=sqlx::query_scalar("SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active'").bind(&target.tenant).bind(&target.device).fetch_one(&mut *c).await.map_err(db)?;
+    let enrollment:Uuid=sqlx::query_scalar("SELECT request_id FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND state = 'active'").bind(&target.tenant).bind(target.device.into_uuid()).fetch_one(&mut *c).await.map_err(db)?;
     let management_removal = identifier == format!("com.rss-mdm.enrollment.{enrollment}");
     if management_removal {
         if present
@@ -117,14 +122,14 @@ pub(crate) async fn reserve(
             return Err(Error::Forbidden);
         }
         let allowed:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_devices.retirement_channels AS t INNER JOIN mdm_access.devices AS d ON (d.tenant_id, d.id, d.retirement) = (t.tenant_id, t.device, t.operation) WHERE t.tenant_id = CAST($1 AS uuid) AND t.device = $2 AND t.execution = $3 AND t.stage = 'unenroll' AND 'retirement:' || CAST(t.operation AS text) = $4)")
-            .bind(&target.tenant).bind(&target.device).bind(command.operation).bind(&command.owner).fetch_one(&mut *c).await.map_err(db)?;
+            .bind(&target.tenant).bind(target.device.into_uuid()).bind(command.operation).bind(&command.owner).fetch_one(&mut *c).await.map_err(db)?;
         if !allowed {
             return Err(Error::Forbidden);
         }
     }
 
     let rows=sqlx::query("SELECT d.terminal_at IS NOT NULL AS terminal, p.dispatched_at IS NOT NULL AS dispatched, p.observed_at IS NOT NULL AS observed, p.present, p.profile FROM mdm_apple.profiles AS p INNER JOIN rss_device_command.commands AS d ON d.tenant_id = p.tenant_id AND d.command_id = CAST(p.operation AS text) WHERE p.tenant_id = CAST($1 AS uuid) AND p.device = $2 AND p.user_key = $3 AND p.device = $4 AND p.identifier = $5 AND p.retired_at IS NULL")
-        .bind(&target.tenant).bind(&target.device).bind(user).bind(&target.device).bind(identifier).fetch_all(&mut *c).await.map_err(db)?;
+        .bind(&target.tenant).bind(target.device.into_uuid()).bind(user).bind(target.device.into_uuid()).bind(identifier).fetch_all(&mut *c).await.map_err(db)?;
     let history = rows
         .iter()
         .map(|row| {
@@ -144,9 +149,9 @@ pub(crate) async fn reserve(
         return Err(Error::Conflict);
     }
     sqlx::query("UPDATE mdm_apple.profiles SET retired_at = CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND device = $4 AND identifier = $5 AND retired_at IS NULL AND dispatched_at IS NULL")
-        .bind(&target.tenant).bind(&target.device).bind(user).bind(&target.device).bind(identifier).execute(&mut *c).await.map_err(db)?;
+        .bind(&target.tenant).bind(target.device.into_uuid()).bind(user).bind(target.device.into_uuid()).bind(identifier).execute(&mut *c).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_apple.profiles (tenant_id, operation, device, user_key, identifier, profile, version, present) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8)")
-        .bind(&target.tenant).bind(command.operation).bind(&target.device).bind(user).bind(identifier).bind(uuid).bind(&command.input_version).bind(present).execute(c).await.map_err(db)?;
+        .bind(&target.tenant).bind(command.operation).bind(target.device.into_uuid()).bind(user).bind(identifier).bind(uuid).bind(&command.input_version).bind(present).execute(c).await.map_err(db)?;
     Ok(())
 }
 pub(crate) async fn dispatch(
@@ -157,10 +162,10 @@ pub(crate) async fn dispatch(
     objects: Option<&[ProfileObject]>,
 ) -> Result<bool, Error> {
     let row=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3 AND retired_at IS NULL FOR UPDATE")
-        .bind(p.tenant().to_string()).bind(operation).bind(p.device()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+        .bind(p.tenant().to_string()).bind(operation).bind(p.device().into_uuid()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
     let target = AppleRegistration {
         tenant: p.tenant().to_string(),
-        device: p.device().into(),
+        device: *p.device(),
     };
     let user: String = row.try_get("user_key").map_err(db)?;
     let root: String = row.try_get("identifier").map_err(db)?;
@@ -247,14 +252,19 @@ async fn evaluate_latest(
     use rss_mdm_apple_mdm::native::profiles::{Verification as V, verification};
     let Some(row) = sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2 AND dispatched_at IS NOT NULL")
         .bind(tenant).bind(operation).fetch_optional(&mut *c).await.map_err(db)? else { return Ok(V::Unknown); };
-    let device: String = row.try_get("device").map_err(db)?;
+    let device: rss_mdm_agent_wire::DeviceId = row
+        .try_get::<uuid::Uuid, _>("device")
+        .and_then(|id| {
+            rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+        })
+        .map_err(db)?;
 
     let user: String = row.try_get("user_key").map_err(db)?;
     let identifier: String = row.try_get("identifier").map_err(db)?;
     let uuid: Uuid = row.try_get("profile").map_err(db)?;
     let present: bool = row.try_get("present").map_err(db)?;
     let Some(observe) = sqlx::query("SELECT id, state, accepted, response FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3 AND user_key = $4 AND phase = 'observe' ORDER BY ordinal DESC LIMIT 1")
-        .bind(tenant).bind(operation).bind(&device).bind(&user).fetch_optional(&mut *c).await.map_err(db)? else { return Ok(V::Unknown); };
+        .bind(tenant).bind(operation).bind(device.into_uuid()).bind(&user).fetch_optional(&mut *c).await.map_err(db)? else { return Ok(V::Unknown); };
     if !observe.try_get::<bool, _>("accepted").map_err(db)?
         || observe.try_get::<String, _>("state").map_err(db)? != "acknowledged"
     {
@@ -271,10 +281,10 @@ async fn evaluate_latest(
     )?;
     let report = crate::protocol::decode(plain.expose())?;
     let failed = sqlx::query_scalar::<_,bool>("SELECT accepted AND state = 'error' FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3 AND user_key = $4 AND phase = 'execute' ORDER BY ordinal DESC LIMIT 1")
-        .bind(tenant).bind(operation).bind(&device).bind(&user).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false);
+        .bind(tenant).bind(operation).bind(device.into_uuid()).bind(&user).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false);
     let old = if failed && !present {
         sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND device = $4 AND identifier = $5 AND profile = $6 AND operation <> $7 AND retired_at IS NULL AND present AND observed_at IS NOT NULL AND dispatched_at IS NOT NULL ORDER BY operation LIMIT 2")
-            .bind(tenant).bind(row.try_get::<String,_>("device").map_err(db)?).bind(&user).bind(&device).bind(&identifier).bind(uuid).bind(operation).fetch_all(&mut *c).await.map_err(db)?
+            .bind(tenant).bind(row.try_get::<uuid::Uuid, _>("device").map_err(db)?).bind(&user).bind(device.into_uuid()).bind(&identifier).bind(uuid).bind(operation).fetch_all(&mut *c).await.map_err(db)?
     } else {
         Vec::new()
     };
@@ -306,12 +316,12 @@ pub(crate) async fn confirm(
 ) -> Result<rss_mdm_apple_mdm::native::profiles::Verification, Error> {
     use rss_mdm_apple_mdm::native::profiles::Verification as V;
     let row = sqlx::query("SELECT identifier, user_key FROM mdm_apple.profiles WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3 AND device = $4 AND retired_at IS NULL AND dispatched_at IS NOT NULL FOR UPDATE")
-        .bind(&target.tenant).bind(operation).bind(&target.device).bind(&target.device).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+        .bind(&target.tenant).bind(operation).bind(target.device.into_uuid()).bind(target.device.into_uuid()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
     let decision = assessment(c, &target.tenant, operation).await?;
     match decision {
         V::Matched => {
             sqlx::query("UPDATE mdm_apple.profiles SET retired_at = CAST(floor(EXTRACT(EPOCH FROM clock_timestamp())) AS bigint) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND device = $4 AND identifier = $5 AND operation <> $6 AND retired_at IS NULL")
-                .bind(&target.tenant).bind(&target.device).bind(row.try_get::<String,_>("user_key").map_err(db)?).bind(&target.device).bind(row.try_get::<String,_>("identifier").map_err(db)?).bind(operation).execute(&mut *c).await.map_err(db)?;
+                .bind(&target.tenant).bind(target.device.into_uuid()).bind(row.try_get::<String,_>("user_key").map_err(db)?).bind(target.device.into_uuid()).bind(row.try_get::<String,_>("identifier").map_err(db)?).bind(operation).execute(&mut *c).await.map_err(db)?;
         }
         V::Failed => {
             sqlx::query("UPDATE mdm_apple.profiles SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND operation=$2")
@@ -336,12 +346,12 @@ pub(crate) async fn ddm_admission(
 ) -> Result<bool, Error> {
     let target = AppleRegistration {
         tenant: p.tenant().to_string(),
-        device: p.device().into(),
+        device: *p.device(),
     };
     for profile in profiles {
         let root = profile.objects.first().ok_or(Error::Malformed)?;
         let rows=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND identifier = $4 AND retired_at IS NULL")
-            .bind(p.tenant().to_string()).bind(p.device()).bind(user).bind(&root.identifier).fetch_all(&mut *c).await.map_err(db)?;
+            .bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(user).bind(&root.identifier).fetch_all(&mut *c).await.map_err(db)?;
         for row in rows {
             if !row.try_get::<bool, _>("present").map_err(db)?
                 || row
@@ -361,7 +371,7 @@ pub(crate) async fn ddm_admission(
             }
             let old_operation: Uuid = row.try_get("operation").map_err(db)?;
             let evidence=sqlx::query("SELECT id, request, response FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND operation = $2 AND device = $3 AND user_key = $4 AND phase = 'observe' AND accepted AND state = 'acknowledged' AND ordinal = (SELECT max(a.ordinal) FROM mdm_apple.attempts AS a WHERE a.tenant_id = CAST($1 AS uuid) AND a.operation = $2 AND a.phase = 'observe')")
-                .bind(p.tenant().to_string()).bind(old_operation).bind(p.device()).bind(user).fetch_optional(&mut *c).await.map_err(db)?;
+                .bind(p.tenant().to_string()).bind(old_operation).bind(p.device().into_uuid()).bind(user).fetch_optional(&mut *c).await.map_err(db)?;
             let Some(evidence) = evidence else {
                 return Ok(false);
             };

@@ -22,7 +22,7 @@ pub(crate) async fn read(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     grant: &str,
     q: &Query,
     codec: &CursorCodec,
@@ -41,9 +41,9 @@ pub(crate) async fn read(
     let mut sql = sqlx::QueryBuilder::new(crate::storage_profile::sql(profile).directory_read_1);
     sql.push_bind(p.tenant_id().to_owned())
         .push("::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=")
-        .push_bind(device.to_owned())
+        .push_bind(device.into_uuid())
         .push(crate::storage_profile::sql(profile).directory_read_2)
-        .push_bind(device.to_owned())
+        .push_bind(device.into_uuid())
         .push("))");
     rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), &*BINDINGS).map_err(error)?;
     let rows: Vec<Value> = sql.build_query_scalar().fetch_all(&mut *c).await?;
@@ -59,7 +59,7 @@ pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
         rss_mdm_query_postgres::Bindings::new(
             &SCHEMA,
             &[
-                rss_mdm_query_postgres::Source::required_column("id", "e.id::text COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::required_column("id", "e.id"),
                 rss_mdm_query_postgres::Source::required_column("version", "v.version"),
                 rss_mdm_query_postgres::Source::column(
                     "current",
@@ -67,13 +67,10 @@ pub static BINDINGS: std::sync::LazyLock<rss_mdm_query_postgres::Bindings> =
                 ),
                 rss_mdm_query_postgres::Source::column("validity", "v.validity COLLATE \"C\""),
                 rss_mdm_query_postgres::Source::column("escrowed", "(v.sealed IS NOT NULL)"),
-                rss_mdm_query_postgres::Source::column(
-                    "operation",
-                    "v.operation::text COLLATE \"C\"",
-                ),
+                rss_mdm_query_postgres::Source::column("operation", "v.operation"),
                 rss_mdm_query_postgres::Source::column("createdAt", "v.created_at"),
                 rss_mdm_query_postgres::Source::column("invalidatedAt", "v.invalidated_at"),
-                rss_mdm_query_postgres::Source::column("binding.device", "e.device COLLATE \"C\""),
+                rss_mdm_query_postgres::Source::column("binding.device", "e.device"),
                 rss_mdm_query_postgres::Source::json("binding.subject", "e.subject"),
             ],
         )

@@ -3,7 +3,7 @@ CREATE TABLE mdm_windows.renewal_intents (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , signing_attempt uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , previous_credential uuid NOT NULL
   , proof_digest bytea NOT NULL CHECK (octet_length(proof_digest) = 32)
   , profile bytea NOT NULL CHECK (octet_length(profile) BETWEEN 1 AND 4096)
@@ -22,7 +22,7 @@ CREATE TABLE mdm_windows.trust_deliveries (
     protocol_epoch uuid NOT NULL,
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , credential uuid NOT NULL
   , revision bigint NOT NULL CHECK (revision > 0)
   , digest text NOT NULL CHECK (digest ~ '^[0-9a-f]{64}$')
@@ -46,7 +46,7 @@ GRANT UPDATE(results,confirmed) ON mdm_windows.trust_deliveries TO mdm_access;
 CREATE TABLE mdm_apple.trust_deliveries (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , revision bigint NOT NULL CHECK (revision > 0)
   , digest text NOT NULL CHECK (digest ~ '^[0-9a-f]{64}$')
   , body bytea NOT NULL CHECK (octet_length(body) BETWEEN 1 AND 67108864)

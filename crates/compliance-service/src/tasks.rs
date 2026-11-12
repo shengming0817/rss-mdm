@@ -53,12 +53,12 @@ impl Compliance {
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
-        cursor: Option<String>,
+        cursor: Option<rss_mdm_agent_wire::DeviceId>,
     ) -> Result<()> {
         self.check_task_transaction(tx)?;
         let t = self.tenant();
         tx.with_connection(move |c| {
-            Box::pin(async move { pg::tasks::cursor(c, t, id, cursor.as_deref()).await })
+            Box::pin(async move { pg::tasks::cursor(c, t, id, cursor).await })
         })
         .await?;
         Ok(())
@@ -147,7 +147,7 @@ impl Compliance {
     pub(crate) async fn history_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         bounds: HistoryBounds,
         after: Option<HistoryPosition>,
         limit: usize,

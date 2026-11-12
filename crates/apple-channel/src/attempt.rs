@@ -40,8 +40,8 @@ pub async fn lock(
     let scope = crate::protocol::user(&crate::protocol::decode(bytes)?)?
         .map(|id| id.to_string())
         .unwrap_or_default();
-    let row = sqlx::query("SELECT CAST(operation AS text), collection, phase, state, response_digest, request, context, declaration_guards, operation IS NULL OR ordinal = (SELECT max(b.ordinal) FROM mdm_apple.attempts AS b WHERE b.tenant_id = a.tenant_id AND b.operation = a.operation AND b.phase = a.phase) AS latest FROM mdm_apple.attempts AS a WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND device = CAST($3 AS text) AND user_key = $5 AND CASE $4 WHEN 0 THEN collection IS NOT NULL WHEN 1 THEN operation IS NOT NULL WHEN 2 THEN certificate IS NOT NULL ELSE trust IS NOT NULL END FOR UPDATE")
-        .bind(&tenant).bind(id.to_string()).bind(p.device().to_string()).bind(match owner { Owner::Collection=>0i32, Owner::Command=>1, Owner::Certificate=>2,Owner::Trust=>3 }).bind(scope).fetch_optional(&mut *c).await.map_err(db)?;
+    let row = sqlx::query("SELECT CAST(operation AS text), collection, phase, state, response_digest, request, context, declaration_guards, operation IS NULL OR ordinal = (SELECT max(b.ordinal) FROM mdm_apple.attempts AS b WHERE b.tenant_id = a.tenant_id AND b.operation = a.operation AND b.phase = a.phase) AS latest FROM mdm_apple.attempts AS a WHERE tenant_id = CAST($1 AS uuid) AND id = CAST($2 AS uuid) AND device = $3 AND user_key = $5 AND CASE $4 WHEN 0 THEN collection IS NOT NULL WHEN 1 THEN operation IS NOT NULL WHEN 2 THEN certificate IS NOT NULL ELSE trust IS NOT NULL END FOR UPDATE")
+        .bind(&tenant).bind(id.to_string()).bind(p.device().into_uuid()).bind(match owner { Owner::Collection=>0i32, Owner::Command=>1, Owner::Certificate=>2,Owner::Trust=>3 }).bind(scope).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     let state: String = row.try_get("state").map_err(db)?;
     let digest = protection
@@ -136,7 +136,7 @@ pub async fn lock(
             fields: rss_mdm_apple_mdm::native::input::Fields::from_plist(&fields)
                 .map_err(|_| Error::Malformed)?,
         };
-        let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state <> 'retired'").bind(&tenant).bind(p.device()).fetch_one(&mut *c).await.map_err(db)?;
+        let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state <> 'retired'").bind(&tenant).bind(p.device().into_uuid()).fetch_one(&mut *c).await.map_err(db)?;
         let rights = crate::native::rights(rights);
         let target = rss_mdm_apple_mdm::native::Target {
             context: &context,

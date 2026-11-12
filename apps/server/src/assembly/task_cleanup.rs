@@ -38,7 +38,7 @@ impl TaskCleanup for Cleanup {
     fn advance_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        registrations: &'a [String],
+        registrations: &'a [rss_mdm_agent_wire::DeviceId],
     ) -> Pin<Box<dyn Future<Output = Result<Progress>> + Send + 'a>> {
         Box::pin(async move {
             let tenant = tx.tenant_id().to_string();
@@ -47,15 +47,15 @@ impl TaskCleanup for Cleanup {
                 Ok(async {
                     let mut progress=Progress::default();
                     for registration in &registrations {
-                        rss_mdm_software_service::deployment::retirement::retire_in(c,&mut progress.facts,&tenant,registration.clone()).await.map_err(software_error)?;
-                        rss_mdm_registration_service::installation::retirement::retire_in(c,&mut progress.facts,&tenant,registration.clone()).await.map_err(installation_error)?;
-                        rss_mdm_registration_service::enrollment::tasks::retirement::retire_in(rss_mdm_install_support::StorageProfile::Mdm, c,&mut progress.facts,&tenant,registration.clone()).await.map_err(enrollment)?;
-                        rss_mdm_device_access_postgres::device_access::execution::retirement::retire_in(c,&mut progress.facts,&tenant,registration.clone()).await.map_err(access)?;
-                        rss_mdm_recovery_credentials::tasks::retirement::retire_in(rss_mdm_install_support::StorageProfile::Mdm, c,&mut progress.facts,&tenant,registration.clone()).await.map_err(credential)?;
-                        rss_mdm_recovery_credentials::tasks::retirement::retire_in(rss_mdm_install_support::StorageProfile::Da, c,&mut progress.facts,&tenant,registration.clone()).await.map_err(credential)?;
-                        rss_mdm_recovery_credentials::native::retirement::retire_in(c,&mut progress.facts,&tenant,registration.clone()).await.map_err(|e|recovery_native(e.into()))?;
-                        rss_mdm_script_service::retirement::retire_in(c,&mut progress.facts,&tenant,registration.clone()).await.map_err(script)?;
-                        rss_mdm_inventory_service::collection::execution::retirement::retire_in(c,&mut progress.facts,&tenant,registration.clone()).await.map_err(collection)?;
+                        rss_mdm_software_service::deployment::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(software_error)?;
+                        rss_mdm_registration_service::installation::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(installation_error)?;
+                        rss_mdm_registration_service::enrollment::tasks::retirement::retire_in(rss_mdm_install_support::StorageProfile::Mdm, c,&mut progress.facts,&tenant,*registration).await.map_err(enrollment)?;
+                        rss_mdm_device_access_postgres::device_access::execution::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(access)?;
+                        rss_mdm_recovery_credentials::tasks::retirement::retire_in(rss_mdm_install_support::StorageProfile::Mdm, c,&mut progress.facts,&tenant,*registration).await.map_err(credential)?;
+                        rss_mdm_recovery_credentials::tasks::retirement::retire_in(rss_mdm_install_support::StorageProfile::Da, c,&mut progress.facts,&tenant,*registration).await.map_err(credential)?;
+                        rss_mdm_recovery_credentials::native::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(|e|recovery_native(e.into()))?;
+                        rss_mdm_script_service::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(script)?;
+                        rss_mdm_inventory_service::collection::execution::retirement::retire_in(c,&mut progress.facts,&tenant,*registration).await.map_err(collection)?;
                     }
                     let script=rss_mdm_script_service::retirement::progress_on(c,&tenant,&registrations).await.map_err(script)?;
                     let collection=rss_mdm_inventory_service::collection::execution::retirement::progress_on(c,&tenant,&registrations).await.map_err(collection)?;
@@ -114,9 +114,7 @@ fn script(error: rss_mdm_script_service::transaction::Fault) -> Fault {
 fn channel(
     t: &rss_mdm_device_service::control::Target,
 ) -> rss_mdm_software_service::deployment::retirement::Channel {
-    rss_mdm_software_service::deployment::retirement::Channel {
-        device: t.device.clone(),
-    }
+    rss_mdm_software_service::deployment::retirement::Channel { device: t.device }
 }
 fn software_error(e: rss_mdm_software_service::deployment::Error) -> Fault {
     use rss_mdm_software_service::deployment::Error as E;

@@ -5,7 +5,7 @@ pub struct Task<I> {
     pub input: I,
     pub completed: bool,
     pub failure: Option<String>,
-    pub cursor: Option<String>,
+    pub cursor: Option<rss_mdm_agent_wire::DeviceId>,
     pub started: bool,
     pub detail: Option<Value>,
 }
@@ -22,7 +22,10 @@ pub async fn read<I: DeserializeOwned>(
             input: serde_json::from_value(r.try_get("input")?).map_err(|_| corrupt())?,
             completed: r.try_get("completed")?,
             failure: r.try_get("failure")?,
-            cursor: r.try_get("cursor")?,
+            cursor: r
+                .try_get::<Option<Uuid>, _>("cursor")?
+                .map(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|_| corrupt()))
+                .transpose()?,
             started: r.try_get("started")?,
             detail: r.try_get("detail")?,
         })
@@ -63,11 +66,11 @@ pub async fn cursor(
     c: &mut PgConnection,
     t: TenantId,
     id: Uuid,
-    cursor: Option<&str>,
+    cursor: Option<rss_mdm_agent_wire::DeviceId>,
 ) -> Result<()> {
     tenant(c, t).await?;
     if sqlx::query("UPDATE mdm_compliance.runs SET started=true,cursor=$3 WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed")
-        .bind(t.to_string()).bind(id).bind(cursor).execute(c).await?.rows_affected()!=1 { return Err(corrupt()); }
+        .bind(t.to_string()).bind(id).bind(cursor.map(|id| id.into_uuid())).execute(c).await?.rows_affected()!=1 { return Err(corrupt()); }
     Ok(())
 }
 pub async fn detail(c: &mut PgConnection, t: TenantId, id: Uuid, detail: Value) -> Result<()> {
@@ -85,7 +88,7 @@ pub struct HistoryRow {
 pub async fn history(
     c: &mut PgConnection,
     t: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     bounds: (Option<i64>, Option<i64>),
     after: Option<(i64, Uuid)>,
     limit: usize,
@@ -95,7 +98,7 @@ pub async fn history(
         return Err(corrupt());
     }
     sqlx::query("SELECT r.task,r.evaluated_at,r.document::text,j.failure FROM mdm_compliance.results r JOIN mdm_compliance.runs j ON (j.tenant_id,j.id)=(r.tenant_id,r.task) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND j.completed AND ($3::bigint IS NULL OR r.evaluated_at>=$3) AND ($4::bigint IS NULL OR r.evaluated_at<=$4) AND ($5::bigint IS NULL OR (r.evaluated_at,r.task)<($5,$6::uuid)) ORDER BY r.evaluated_at DESC,r.task DESC LIMIT $7")
-        .bind(t.to_string()).bind(device).bind(bounds.0).bind(bounds.1).bind(after.map(|a|a.0)).bind(after.map(|a|a.1)).bind((limit+1) as i64).fetch_all(c).await?
+        .bind(t.to_string()).bind(device.into_uuid()).bind(bounds.0).bind(bounds.1).bind(after.map(|a|a.0)).bind(after.map(|a|a.1)).bind((limit+1) as i64).fetch_all(c).await?
         .into_iter().map(|r|Ok(HistoryRow {task:r.try_get("task")?,evaluated_at:r.try_get("evaluated_at")?,document:r.try_get("document")?,failure:r.try_get("failure")?})).collect()
 }
 
@@ -105,7 +108,7 @@ pub struct Dispatch {
     pub to_cut: Value,
     pub event_after: i64,
     pub through: Option<i64>,
-    pub cursor: Option<String>,
+    pub cursor: Option<Uuid>,
 }
 pub async fn lock_dispatch(
     c: &mut PgConnection,
@@ -119,7 +122,7 @@ pub async fn lock_dispatch(
     .bind(t.to_string())
     .execute(&mut *c)
     .await?;
-    let (from_cut, to_cut, event_after, through, cursor): (Option<Value>, Option<Value>, i64, Option<i64>, Option<String>) =
+    let (from_cut, to_cut, event_after, through, cursor): (Option<Value>, Option<Value>, i64, Option<i64>, Option<Uuid>) =
         sqlx::query_as("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid FOR UPDATE")
         .bind(t.to_string()).fetch_one(&mut *c).await?;
     let to_cut = to_cut.unwrap_or(candidate);
@@ -154,7 +157,7 @@ pub async fn save_dispatch(
     c: &mut PgConnection,
     t: TenantId,
     page: &Dispatch,
-    cursor: Option<&str>,
+    cursor: Option<Uuid>,
 ) -> Result<()> {
     tenant(c, t).await?;
     let through = page.through.ok_or_else(corrupt)?;

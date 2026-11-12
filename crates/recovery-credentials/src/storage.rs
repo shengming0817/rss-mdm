@@ -114,7 +114,7 @@ pub async fn active_in(
         )
         .await?;
         let expected = rss_mdm_registration_service::device::endpoints::DaRegistration {
-            device: binding.device.clone(),
+            device: binding.device,
         };
         return if rss_mdm_registration_service::device::endpoints::current_da_in(
             c,
@@ -157,7 +157,7 @@ pub async fn active_in(
         profile,
         c,
         tenant,
-        vec![binding.device.clone()],
+        vec![binding.device],
         channel,
         rss_mdm_registration_service::Purpose::Primary,
     )
@@ -188,13 +188,13 @@ pub async fn reserve_in(
     sqlx::query(crate::storage_profile::sql(profile).storage_reserve_in_1)
         .bind(tenant)
         .bind(Uuid::new_v4())
-        .bind(&binding.device)
+        .bind(binding.device.into_uuid())
         .bind(&subject)
         .execute(&mut *c)
         .await?;
     let row = sqlx::query(crate::storage_profile::sql(profile).storage_reserve_in_2)
         .bind(tenant)
-        .bind(&binding.device)
+        .bind(binding.device.into_uuid())
         .bind(&subject)
         .fetch_one(&mut *c)
         .await?;
@@ -408,18 +408,18 @@ pub async fn retire_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: &str,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     let profile = custody.profile();
 
     sqlx::query(crate::storage_profile::sql(profile).storage_retire_in_1)
         .bind(tenant)
-        .bind(&registration)
+        .bind(registration.into_uuid())
         .execute(&mut *c)
         .await?;
     sqlx::query(crate::storage_profile::sql(profile).storage_retire_in_2)
         .bind(tenant)
-        .bind(&registration)
+        .bind(registration.into_uuid())
         .execute(&mut *c)
         .await?;
     crate::filevault::retire_source(c, tenant, registration).await?;
@@ -431,7 +431,10 @@ pub(crate) fn decode(row: &sqlx::postgres::PgRow) -> Result<Material, Error> {
     Ok(Material {
         id: row.try_get("id")?,
         binding: Binding {
-            device: row.try_get("device")?,
+            device: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })?,
 
             subject: serde_json::from_value(row.try_get("subject")?)
                 .map_err(|_| Error::Integrity)?,
@@ -460,7 +463,7 @@ pub async fn native_action_in(
     c: &mut PgConnection,
     tenant: Uuid,
     operation: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<NativeAction>, Error> {
     let profile = custody.profile();
     if profile != rss_mdm_install_support::StorageProfile::Mdm {
@@ -470,7 +473,7 @@ pub async fn native_action_in(
     sqlx::query(crate::storage_profile::sql(profile).storage_native_action_in_1)
         .bind(tenant)
         .bind(operation)
-        .bind(device)
+        .bind(device.into_uuid())
         .fetch_optional(c)
         .await?
         .map(|r| {
@@ -505,7 +508,7 @@ pub async fn link_native_in(
     sqlx::query(crate::storage_profile::sql(profile).storage_link_native_in_1)
         .bind(tenant)
         .bind(operation)
-        .bind(&binding.device)
+        .bind(binding.device.into_uuid())
         .bind(&action.action)
         .bind(
             action
@@ -547,7 +550,7 @@ pub async fn coordinates_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     id: Uuid,
     version: i64,
 ) -> Result<Coordinates, Error> {
@@ -555,7 +558,7 @@ pub async fn coordinates_in(
 
     let r = sqlx::query(crate::storage_profile::sql(profile).storage_coordinates_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(id)
         .bind(version)
         .fetch_optional(c)
@@ -783,7 +786,7 @@ pub async fn verify_existing_secret_in(
         crate::storage_profile::sql(profile).storage_verify_existing_secret_in_1,
     )
     .bind(tenant)
-    .bind(&binding.device)
+    .bind(binding.device.into_uuid())
     .bind(subject)
     .bind(revision)
     .fetch_optional(&mut *c)
@@ -868,7 +871,7 @@ pub async fn supersede_in(
     let subject = serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?;
     let row = sqlx::query(crate::storage_profile::sql(profile).storage_supersede_in_1)
         .bind(tenant)
-        .bind(&binding.device)
+        .bind(binding.device.into_uuid())
         .bind(subject)
         .fetch_optional(&mut *c)
         .await?;
@@ -901,7 +904,7 @@ pub async fn start_agent_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     task: Uuid,
     attempt: Uuid,
 ) -> Result<(), Error> {
@@ -909,7 +912,7 @@ pub async fn start_agent_in(
 
     sqlx::query(crate::storage_profile::sql(profile).storage_start_agent_in_1)
         .bind(tenant)
-        .bind(&registration)
+        .bind(registration.into_uuid())
         .bind(task)
         .bind(attempt)
         .execute(&mut *c)
@@ -917,7 +920,7 @@ pub async fn start_agent_in(
     let matches: bool =
         sqlx::query_scalar(crate::storage_profile::sql(profile).storage_start_agent_in_2)
             .bind(tenant)
-            .bind(&registration)
+            .bind(registration.into_uuid())
             .bind(task)
             .bind(attempt)
             .fetch_one(c)
@@ -1001,13 +1004,13 @@ pub async fn revisions_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Vec<(Subject, i64)>, Error> {
     let profile = custody.profile();
 
     let rows = sqlx::query(crate::storage_profile::sql(profile).storage_revisions_in_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .fetch_all(c)
         .await?;
     rows.into_iter()
@@ -1045,7 +1048,7 @@ pub async fn input_copies_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Vec<Uuid>, Error> {
     let profile = custody.profile();
     if profile != rss_mdm_install_support::StorageProfile::Mdm {
@@ -1055,7 +1058,7 @@ pub async fn input_copies_in(
     Ok(
         sqlx::query_scalar(crate::storage_profile::sql(profile).storage_input_copies_in_1)
             .bind(tenant)
-            .bind(&registration)
+            .bind(registration.into_uuid())
             .fetch_all(c)
             .await?,
     )
@@ -1082,7 +1085,7 @@ pub async fn inputs_remain_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
 ) -> Result<bool, Error> {
     let profile = custody.profile();
     if profile != rss_mdm_install_support::StorageProfile::Mdm {
@@ -1092,7 +1095,7 @@ pub async fn inputs_remain_in(
     Ok(
         sqlx::query_scalar(crate::storage_profile::sql(profile).storage_inputs_remain_in_1)
             .bind(tenant)
-            .bind(&registration)
+            .bind(registration.into_uuid())
             .fetch_one(c)
             .await?,
     )
@@ -1103,13 +1106,13 @@ pub async fn agent_guard_in(
     custody: crate::Custody<'_>,
     c: &mut PgConnection,
     tenant: Uuid,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<(Uuid, Uuid)>, Error> {
     let profile = custody.profile();
 
     sqlx::query(crate::storage_profile::sql(profile).storage_agent_guard_in_1)
         .bind(tenant)
-        .bind(&registration)
+        .bind(registration.into_uuid())
         .fetch_optional(c)
         .await?
         .map(|r| Ok((r.try_get("task")?, r.try_get("attempt")?)))
@@ -1194,7 +1197,7 @@ pub async fn recovery_secret_in(
     let subject = serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?;
     let rows = sqlx::query(crate::storage_profile::sql(profile).storage_recovery_secret_in_1)
         .bind(tenant)
-        .bind(&binding.device)
+        .bind(binding.device.into_uuid())
         .bind(subject)
         .fetch_all(&mut *c)
         .await?;
@@ -1254,7 +1257,7 @@ pub async fn current_in(
     active_in(custody, c, tenant, binding).await?;
     sqlx::query(crate::storage_profile::sql(profile).storage_current_in_1)
         .bind(tenant)
-        .bind(&binding.device)
+        .bind(binding.device.into_uuid())
         .bind(serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?)
         .fetch_optional(c)
         .await?
@@ -1285,7 +1288,7 @@ pub async fn access_unbound_in(
     let entries: Vec<Uuid> =
         sqlx::query_scalar(crate::storage_profile::sql(profile).storage_access_unbound_in_1)
             .bind(tenant)
-            .bind(device)
+            .bind(device.into_uuid())
             .bind(id.to_string())
             .bind(generation)
             .fetch_all(&mut *c)
@@ -1325,4 +1328,16 @@ pub async fn replace_native_coordinates_in(
         .execute(c)
         .await?;
     Ok(())
+}
+
+/// Validate product registration identities read from native PostgreSQL UUID columns.
+pub(crate) fn device_id(
+    id: uuid::Uuid,
+) -> std::result::Result<rss_mdm_agent_wire::DeviceId, sqlx::Error> {
+    rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+pub(crate) fn device_ids(
+    ids: Vec<uuid::Uuid>,
+) -> std::result::Result<Vec<rss_mdm_agent_wire::DeviceId>, sqlx::Error> {
+    ids.into_iter().map(device_id).collect()
 }

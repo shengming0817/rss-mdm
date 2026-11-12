@@ -39,7 +39,7 @@ impl AssetService {
             );
         }
         let evidence = InstallationEvidence {
-            endpoint: array.endpoint.clone(),
+            endpoint: array.endpoint,
             source: array.source,
             evidence: array.evidence.clone(),
             array_version: array.value.version.clone(),
@@ -69,12 +69,12 @@ impl AssetService {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
         let tenant = self.tenant.to_string();
-        let object = progress.object.object.key();
+        let object = progress.object.object;
         let admitted = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("INSERT INTO mdm_assets.software_buckets(tenant_id,run,id,standard,identity) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
                 .bind(&tenant).bind(task).bind(&matched.key).bind(matched.standard).bind(identity).execute(&mut *c).await?;
-            let added = sqlx::query("INSERT INTO mdm_assets.software_evidence(tenant_id,run,bucket,object,id,selected,confirmed,document,dimensions) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING")
-                .bind(&tenant).bind(task).bind(matched.key).bind(object).bind(id).bind(selected).bind(confirmed).bind(document).bind(dimensions).execute(&mut *c).await?.rows_affected();
+            let added = sqlx::query("INSERT INTO mdm_assets.software_evidence(tenant_id,run,bucket,object_kind,object_id,id,selected,confirmed,document,dimensions) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING")
+                .bind(&tenant).bind(task).bind(matched.key).bind(object.kind()).bind(object.uuid()).bind(id).bind(selected).bind(confirmed).bind(document).bind(dimensions).execute(&mut *c).await?.rows_affected();
             if added == 0 { return Ok(true); }
             Ok(sqlx::query("UPDATE mdm_assets.software_progress SET items=items+1,bytes=bytes+$3 WHERE tenant_id=$1::uuid AND run=$2 AND items<10000000 AND bytes+$3<=1073741824")
                 .bind(tenant).bind(task).bind(bytes as i64).execute(c).await?.rows_affected() == 1)
@@ -92,11 +92,11 @@ impl AssetService {
         job: &Job,
         progress: &mut ObjectProgress,
     ) -> Result<bool> {
-        let object = progress.object.object.key();
+        let object = progress.object.object;
         let result = ObjectResult {
             matched: progress.matched,
             unknown: progress.unknown,
-            object: progress.object.object.clone(),
+            object: progress.object.object,
             groups: progress.groups.clone(),
             quality: progress.quality.clone(),
         };
@@ -106,10 +106,10 @@ impl AssetService {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
         let tenant = self.tenant.to_string();
-        let key = object.clone();
+        let key = object;
         let admitted = tx.with_connection(move |c| Box::pin(async move {
-            let added = sqlx::query("INSERT INTO mdm_assets.software_objects(tenant_id,run,object,document) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
-                .bind(&tenant).bind(task).bind(key).bind(document).execute(&mut *c).await?.rows_affected();
+            let added = sqlx::query("INSERT INTO mdm_assets.software_objects(tenant_id,run,object_kind,object_id,document) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
+                .bind(&tenant).bind(task).bind(key.kind()).bind(key.uuid()).bind(document).execute(&mut *c).await?.rows_affected();
             if added == 0 { return Ok(true); }
             Ok(sqlx::query("UPDATE mdm_assets.software_progress SET bytes=bytes+$3 WHERE tenant_id=$1::uuid AND run=$2 AND bytes+$3<=1073741824")
                 .bind(tenant).bind(task).bind(bytes as i64).execute(c).await?.rows_affected() == 1)
@@ -118,11 +118,11 @@ impl AssetService {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
         let tenant = self.tenant.to_string();
-        let key = object.clone();
+        let key = object;
         let after = progress.published_after.clone();
         let rows = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT e.bucket,b.standard,bool_or(e.selected) AS selected FROM mdm_assets.software_evidence e JOIN mdm_assets.software_buckets b ON(b.tenant_id,b.run,b.id)=(e.tenant_id,e.run,e.bucket) WHERE e.tenant_id=$1::uuid AND e.run=$2 AND e.object=$3 AND e.confirmed AND e.bucket COLLATE \"C\">coalesce($4,'') COLLATE \"C\" GROUP BY e.bucket,b.standard ORDER BY e.bucket COLLATE \"C\" LIMIT 129")
-                .bind(tenant).bind(task).bind(key).bind(after).fetch_all(c).await
+            sqlx::query("SELECT e.bucket,b.standard,bool_or(e.selected) AS selected FROM mdm_assets.software_evidence e JOIN mdm_assets.software_buckets b ON(b.tenant_id,b.run,b.id)=(e.tenant_id,e.run,e.bucket) WHERE e.tenant_id=$1::uuid AND e.run=$2 AND (e.object_kind,e.object_id)=($3,$4) AND e.confirmed AND ($5::text IS NULL OR e.bucket COLLATE \"C\">$5 COLLATE \"C\") GROUP BY e.bucket,b.standard ORDER BY e.bucket COLLATE \"C\" LIMIT 129")
+                .bind(tenant).bind(task).bind(key.kind()).bind(key.uuid()).bind(after).fetch_all(c).await
         })).await?;
         let more = rows.len() > 128;
         let mut members = Vec::new();
@@ -140,8 +140,8 @@ impl AssetService {
         }
         let tenant = self.tenant.to_string();
         tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_assets.software_members(tenant_id,run,bucket,object,selected,compliance) SELECT $1::uuid,$2,x.bucket,$3,x.selected,x.compliance FROM jsonb_to_recordset($4) AS x(bucket text,selected boolean,compliance text) ON CONFLICT(tenant_id,run,bucket,object) DO NOTHING")
-                .bind(tenant).bind(task).bind(object).bind(serde_json::json!(members)).execute(c).await?; Ok(())
+            sqlx::query("INSERT INTO mdm_assets.software_members(tenant_id,run,bucket,object_kind,object_id,selected,compliance) SELECT $1::uuid,$2,x.bucket,$3,$4,x.selected,x.compliance FROM jsonb_to_recordset($5) AS x(bucket text,selected boolean,compliance text) ON CONFLICT(tenant_id,run,bucket,object_kind,object_id) DO NOTHING")
+                .bind(tenant).bind(task).bind(object.kind()).bind(object.uuid()).bind(serde_json::json!(members)).execute(c).await?; Ok(())
         })).await?;
         if more {
             return Ok(false);

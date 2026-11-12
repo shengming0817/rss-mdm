@@ -83,13 +83,9 @@ pub fn identity(
     purpose: Purpose,
     service: Uuid,
     tenant: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<String, Error> {
-    if tenant.is_nil()
-        || device.is_empty()
-        || device.len() > 256
-        || device.chars().any(char::is_control)
-    {
+    if tenant.is_nil() {
         return Err(Error::Unauthorized);
     }
     if purpose == Purpose::DaDevice {
@@ -99,13 +95,13 @@ pub fn identity(
         return Ok(format!(
             "{}{service}:{tenant}:{}",
             identity_prefix(purpose)?,
-            URL_SAFE_NO_PAD.encode(device)
+            URL_SAFE_NO_PAD.encode(device.to_string())
         ));
     }
     Ok(format!(
         "{}{tenant}:{}",
         identity_prefix(purpose)?,
-        URL_SAFE_NO_PAD.encode(device)
+        URL_SAFE_NO_PAD.encode(device.to_string())
     ))
 }
 pub struct VerifiedDeviceCsr {

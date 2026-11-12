@@ -1,4 +1,5 @@
 use rss_contract::Timepoint;
+use rss_mdm_agent_wire::{DeviceId, ObjectRef};
 use rss_mdm_scope::*;
 use rss_request_context::TenantId;
 fn tenant() -> TenantId {
@@ -7,13 +8,26 @@ fn tenant() -> TenantId {
 fn other() -> TenantId {
     TenantId::parse("22222222-2222-2222-2222-222222222222").unwrap()
 }
-fn device() -> DeviceId {
-    DeviceId::new(tenant(), "device").unwrap()
+fn device() -> ScopedObjectId {
+    ScopedObjectId::new(
+        tenant(),
+        ObjectRef::Endpoint(DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap()),
+    )
+    .unwrap()
 }
 fn source(name: &str, contains: bool) -> SourceMembership {
     SourceMembership {
         source: SourceRef::new(
-            SourceId::Group(GroupId::new(tenant(), name).unwrap()),
+            SourceId::Group(
+                GroupId::new(
+                    tenant(),
+                    uuid::Uuid::from_u128(
+                        name.bytes()
+                            .fold(1u128, |value, byte| value * 31 + u128::from(byte)),
+                    ),
+                )
+                .unwrap(),
+            ),
             1,
             Timepoint::try_from(1).unwrap(),
         )
@@ -21,9 +35,9 @@ fn source(name: &str, contains: bool) -> SourceMembership {
         contains: Membership::Known(contains),
     }
 }
-fn input() -> DeviceInput {
-    DeviceInput {
-        device: device(),
+fn input() -> ObjectInput {
+    ObjectInput {
+        object: device(),
         targets: vec![source("targets", true)],
         limitations: None,
         exclusions: vec![],
@@ -35,13 +49,13 @@ fn finite_membership_truth_table_and_key_boundaries() {
         for restricted in [false, true] {
             for limit in [false, true] {
                 for excluded in [false, true] {
-                    let i = DeviceInput {
-                        device: device(),
+                    let i = ObjectInput {
+                        object: device(),
                         targets: vec![source("target", target)],
                         limitations: restricted.then(|| vec![source("limit", limit)]),
                         exclusions: vec![source("exclude", excluded)],
                     };
-                    let decision = resolve_device(&i).unwrap();
+                    let decision = resolve_object(&i).unwrap();
                     assert_eq!(decision.is_some(), target);
                     assert_eq!(
                         decision.as_ref().is_some_and(|d| d.reasons.is_empty()),
@@ -61,9 +75,8 @@ fn finite_membership_truth_table_and_key_boundaries() {
             }
         }
     }
-    assert!(GroupId::new(tenant(), "").is_err());
-    assert!(DeviceId::new(tenant(), "x".repeat(257)).is_err());
-    assert!(DeviceId::new(tenant(), "x".repeat(256)).is_ok());
+    assert!(GroupId::new(tenant(), uuid::Uuid::nil()).is_err());
+    assert!(ScopedObjectId::new(tenant(), ObjectRef::Association(uuid::Uuid::nil())).is_err());
     assert!(
         SourceRef::new(
             SourceId::Direct(device()),
@@ -76,14 +89,14 @@ fn finite_membership_truth_table_and_key_boundaries() {
 #[test]
 fn unconfigured_and_configured_empty_are_different() {
     let mut i = input();
-    assert!(resolve_device(&i).unwrap().unwrap().reasons.is_empty());
+    assert!(resolve_object(&i).unwrap().unwrap().reasons.is_empty());
     i.limitations = Some(vec![]);
     assert_eq!(
-        resolve_device(&i).unwrap().unwrap().reasons,
+        resolve_object(&i).unwrap().unwrap().reasons,
         vec![ExclusionReason::MissingLimitationMatch]
     );
     i.targets.clear();
-    assert!(resolve_device(&i).unwrap().is_none());
+    assert!(resolve_object(&i).unwrap().is_none());
 }
 #[test]
 fn formula_explanations_and_permutations() {
@@ -96,13 +109,13 @@ fn formula_explanations_and_permutations() {
     ]);
     i.limitations = Some(vec![source("limit", true)]);
     i.exclusions = vec![source("exclude", true)];
-    let expected = resolve_device(&i).unwrap().unwrap();
+    let expected = resolve_object(&i).unwrap().unwrap();
     assert_eq!(expected.object, device());
     assert_eq!(expected.targets.len(), 3);
     assert_eq!(expected.limitations.len(), 1);
     assert_eq!(expected.exclusions.len(), 1);
     i.targets.reverse();
-    assert_eq!(resolve_device(&i).unwrap().unwrap(), expected);
+    assert_eq!(resolve_object(&i).unwrap().unwrap(), expected);
 }
 #[test]
 fn incomplete_and_failed_sources_are_not_empty_sets() {
@@ -116,7 +129,7 @@ fn incomplete_and_failed_sources_are_not_empty_sets() {
                 1 => i.limitations = Some(vec![invalid]),
                 _ => i.exclusions.push(invalid),
             }
-            let error = resolve_device(&i).unwrap_err();
+            let error = resolve_object(&i).unwrap_err();
             assert!(matches!(
                 (state, error),
                 (Membership::Incomplete, ScopeError::IncompleteSource(_))
@@ -129,7 +142,7 @@ fn incomplete_and_failed_sources_are_not_empty_sets() {
 fn foreign_sources_are_located_in_every_scope_role() {
     for role in 0..3 {
         let foreign = SourceRef::new(
-            SourceId::Group(GroupId::new(other(), "foreign").unwrap()),
+            SourceId::Group(GroupId::new(other(), uuid::Uuid::from_u128(2)).unwrap()),
             1,
             Timepoint::try_from(1).unwrap(),
         )
@@ -145,7 +158,7 @@ fn foreign_sources_are_located_in_every_scope_role() {
             _ => i.exclusions.push(invalid),
         }
         assert_eq!(
-            resolve_device(&i),
+            resolve_object(&i),
             Err(ScopeError::SourceTenantMismatch {
                 source_ref: foreign,
                 expected: tenant()
@@ -153,9 +166,9 @@ fn foreign_sources_are_located_in_every_scope_role() {
         );
     }
     let mut i = input();
-    i.device = DeviceId::new(other(), "device").unwrap();
+    i.object = ScopedObjectId::new(other(), device().object()).unwrap();
     assert!(
-        matches!(resolve_device(&i),Err(ScopeError::SourceTenantMismatch{expected,..}) if expected==other())
+        matches!(resolve_object(&i),Err(ScopeError::SourceTenantMismatch{expected,..}) if expected==other())
     );
 }
 #[test]
@@ -166,7 +179,7 @@ fn invalid_sources_rejected_even_when_no_target_can_match() {
     invalid.contains = Membership::Incomplete;
     i.exclusions.push(invalid);
     assert!(matches!(
-        resolve_device(&i),
+        resolve_object(&i),
         Err(ScopeError::IncompleteSource(_))
     ));
 }
@@ -175,7 +188,7 @@ fn direct_group_dedup_empty_targets_and_conflicting_snapshot() {
     let mut i = input();
     i.targets.push(source("targets", false));
     assert!(matches!(
-        resolve_device(&i),
+        resolve_object(&i),
         Err(ScopeError::ConflictingSource(_))
     ));
     i = input();
@@ -190,18 +203,22 @@ fn direct_group_dedup_empty_targets_and_conflicting_snapshot() {
         contains: Membership::Known(false),
     }];
     assert_eq!(
-        resolve_device(&i),
+        resolve_object(&i),
         Err(ScopeError::InvalidDirectSource(direct))
     );
     i.targets[0].contains = Membership::Known(true);
-    assert!(resolve_device(&i).unwrap().unwrap().reasons.is_empty());
-    i.device = DeviceId::new(tenant(), "another").unwrap();
+    assert!(resolve_object(&i).unwrap().unwrap().reasons.is_empty());
+    i.object = ScopedObjectId::new(
+        tenant(),
+        ObjectRef::Endpoint(DeviceId::try_from(uuid::Uuid::from_u128(2)).unwrap()),
+    )
+    .unwrap();
     assert!(matches!(
-        resolve_device(&i),
+        resolve_object(&i),
         Err(ScopeError::InvalidDirectSource(_))
     ));
     i.targets[0].contains = Membership::Known(false);
-    assert!(resolve_device(&i).unwrap().is_none());
+    assert!(resolve_object(&i).unwrap().is_none());
 }
 #[test]
 fn source_version_cannot_change_contents_with_a_different_resolution_time() {
@@ -215,21 +232,21 @@ fn source_version_cannot_change_contents_with_a_different_resolution_time() {
     .unwrap();
     i.targets.push(repeat);
     assert!(matches!(
-        resolve_device(&i),
+        resolve_object(&i),
         Err(ScopeError::ConflictingSource(_))
     ));
     i.targets[1].contains = Membership::Known(true);
-    assert_eq!(resolve_device(&i).unwrap().unwrap().targets.len(), 2);
+    assert_eq!(resolve_object(&i).unwrap().unwrap().targets.len(), 2);
 }
 #[test]
 fn source_and_role_budgets_are_bounded() {
     let mut i = input();
     i.targets = (0..1000).map(|n| source(&format!("g{n}"), true)).collect();
-    assert_eq!(resolve_device(&i).unwrap().unwrap().targets.len(), 1000);
+    assert_eq!(resolve_object(&i).unwrap().unwrap().targets.len(), 1000);
     i.targets.push(source("overflow", false));
-    assert_eq!(resolve_device(&i), Err(ScopeError::SourceLimit));
+    assert_eq!(resolve_object(&i), Err(ScopeError::SourceLimit));
     i.targets = vec![source("same", true); 3001];
-    assert_eq!(resolve_device(&i), Err(ScopeError::SourceLimit));
+    assert_eq!(resolve_object(&i), Err(ScopeError::SourceLimit));
 }
 
 #[test]
@@ -238,18 +255,18 @@ fn unknown_exclusion_blocks_only_the_affected_device() {
     let mut exclusion = source("exclude", false);
     exclusion.contains = Membership::Unknown;
     i.exclusions.push(exclusion);
-    let result = resolve_device(&i).unwrap().unwrap();
+    let result = resolve_object(&i).unwrap().unwrap();
     assert_eq!(result.reasons, vec![ExclusionReason::UnknownExclusion]);
     i.exclusions[0].contains = Membership::Known(false);
-    assert!(resolve_device(&i).unwrap().unwrap().reasons.is_empty());
+    assert!(resolve_object(&i).unwrap().unwrap().reasons.is_empty());
     i.exclusions[0].contains = Membership::Known(true);
     assert_eq!(
-        resolve_device(&i).unwrap().unwrap().reasons,
+        resolve_object(&i).unwrap().unwrap().reasons,
         vec![ExclusionReason::ExplicitExclusion]
     );
     i.targets[0].contains = Membership::Unknown;
     assert_eq!(
-        resolve_device(&i).unwrap().unwrap().reasons,
+        resolve_object(&i).unwrap().unwrap().reasons,
         vec![ExclusionReason::ExplicitExclusion]
     );
 }
@@ -261,16 +278,48 @@ fn known_or_match_satisfies_targets_and_limits() {
     unknown.contains = Membership::Unknown;
     i.targets.push(unknown.clone());
     i.limitations = Some(vec![unknown.clone(), source("limit", true)]);
-    assert!(resolve_device(&i).unwrap().unwrap().reasons.is_empty());
+    assert!(resolve_object(&i).unwrap().unwrap().reasons.is_empty());
     i.limitations = Some(vec![unknown.clone()]);
     assert_eq!(
-        resolve_device(&i).unwrap().unwrap().reasons,
+        resolve_object(&i).unwrap().unwrap().reasons,
         vec![ExclusionReason::UnknownLimitation]
     );
     i.targets = vec![unknown];
     i.limitations = None;
     assert_eq!(
-        resolve_device(&i).unwrap().unwrap().reasons,
+        resolve_object(&i).unwrap().unwrap().reasons,
         vec![ExclusionReason::UnknownTarget]
     );
+}
+
+#[test]
+fn object_kind_and_tenant_are_part_of_direct_membership() {
+    let endpoint = device();
+    let association =
+        ScopedObjectId::new(tenant(), ObjectRef::Association(endpoint.object().uuid())).unwrap();
+    let foreign = ScopedObjectId::new(other(), endpoint.object()).unwrap();
+    assert_ne!(endpoint, association);
+    assert_ne!(endpoint, foreign);
+    assert_eq!(
+        std::collections::BTreeSet::from([endpoint, association, foreign]).len(),
+        3
+    );
+    let mut i = input();
+    i.object = association;
+    let direct = SourceRef::new(
+        SourceId::Direct(endpoint),
+        1,
+        Timepoint::try_from(1).unwrap(),
+    )
+    .unwrap();
+    i.targets = vec![SourceMembership {
+        source: direct,
+        contains: Membership::Known(true),
+    }];
+    assert!(matches!(
+        resolve_object(&i),
+        Err(ScopeError::InvalidDirectSource(_))
+    ));
+    i.targets[0].contains = Membership::Known(false);
+    assert!(resolve_object(&i).unwrap().is_none());
 }

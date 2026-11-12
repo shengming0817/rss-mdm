@@ -1,8 +1,9 @@
 use crate::{
     assets,
-    objects::{DeviceObject, ObjectRef, ObjectSnapshot},
+    objects::{DeviceObject, ObjectSnapshot},
     operation::Operation,
 };
+use rss_mdm_agent_wire::ObjectRef;
 use rss_mdm_group::{AssetContext, GroupSource};
 use rss_mdm_inventory::{AssetCut, Evidence, Platform, Scalar};
 use serde::{Deserialize, Serialize};
@@ -273,7 +274,7 @@ pub enum Command {
     Evidence {
         id: Uuid,
         bucket: String,
-        object: String,
+        object: rss_mdm_agent_wire::ObjectRef,
         page: Page,
     },
 }
@@ -371,7 +372,7 @@ pub enum Decision {
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstallationEvidence {
-    pub endpoint: String,
+    pub endpoint: rss_mdm_agent_wire::DeviceId,
     pub source: SoftwareSource,
     pub evidence: Evidence,
     pub array_version: String,
@@ -383,7 +384,7 @@ pub struct InstallationEvidence {
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Quality {
-    pub endpoint: String,
+    pub endpoint: rss_mdm_agent_wire::DeviceId,
     pub source: SoftwareSource,
     pub scope: rss_mdm_inventory::CollectionScope,
     pub state: assets::lists::ListState,
@@ -572,7 +573,7 @@ pub(super) struct ObjectProgress {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct ArrayInput {
-    pub endpoint: String,
+    pub endpoint: rss_mdm_agent_wire::DeviceId,
     pub source: SoftwareSource,
     pub platform: Platform,
     pub evidence: Evidence,

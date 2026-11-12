@@ -7,7 +7,7 @@ use std::{future::Future, pin::Pin};
 use uuid::Uuid;
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
 pub struct Reservation {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub binding: rss_mdm_registration_service::command_authority::CommandBinding,
     pub target: NativeTarget,
     pub request: rss_mdm_apple_mdm::native::request::Request,
@@ -35,7 +35,7 @@ pub trait Channels: WindowsEvidence + Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         input: &'a Create,
         owner: String,
     ) -> Pending<'a, Vec<Permission>>;
@@ -73,14 +73,14 @@ pub trait WindowsEvidence: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
         id: Uuid,
-        registration: String,
+        registration: rss_mdm_agent_wire::DeviceId,
         request: rss_mdm_windows_mdm::native::Execution,
     ) -> Pending<'a, rss_mdm_windows_mdm::native::verification::EffectAssessment>;
 }
 
 pub struct ObservationRead {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub task: super::Task,
     pub profile: bool,
     pub status: rss_device_command::Status,

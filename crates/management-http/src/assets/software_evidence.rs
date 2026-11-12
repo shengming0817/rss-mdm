@@ -31,7 +31,7 @@ pub(super) enum EvidenceResponse {
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct InstallationEvidence {
-    endpoint: String,
+    endpoint: rss_mdm_agent_wire::DeviceId,
     source: model::SoftwareSource,
     evidence: rss_mdm_inventory::Evidence,
     array_version: String,

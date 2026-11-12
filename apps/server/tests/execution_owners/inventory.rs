@@ -47,10 +47,10 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
         .await?,
         "custom field seed"
     );
-    sqlx::query("INSERT INTO mdm_access.report_sources (tenant_id, device, source, epoch, enabled) VALUES (CAST($1 AS uuid), $2, 'agent.script', $3, TRUE)").bind(tenant.to_string()).bind(&registration).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.report_sources (tenant_id, device, source, epoch, enabled) VALUES (CAST($1 AS uuid), $2, 'agent.script', $3, TRUE)").bind(tenant.to_string()).bind(registration.into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     tx.commit().await?;
 
-    let start_device = registration.clone();
+    let start_device = registration;
     script::transaction::run(
         &h.audit,
         &h.a.resources.storage.runtime,
@@ -65,7 +65,7 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
                         enterprise::start_in(
                             c,
                             tenant,
-                            start_device.clone(),
+                            start_device,
                             task,
                             attempt,
                             definition.clone(),
@@ -75,7 +75,7 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
                         enterprise::start_in(
                             c,
                             tenant,
-                            start_device.clone(),
+                            start_device,
                             task,
                             sentinel,
                             definition,
@@ -100,7 +100,6 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
         at,
     )?;
     let accept = |task| {
-        let registration = registration.clone();
         let progress = progress.clone();
         let audit = request(&h.c);
         let h = &h;
@@ -120,7 +119,7 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
                                     c,
                                     tenant,
                                     enterprise::Report {
-                                        device: registration.to_string(),
+                                        device: registration,
                                         task,
                                         attempt,
                                         progress,
@@ -162,11 +161,7 @@ async fn native_cleanup_distinguishes_complete_failure_from_unconfirmed_report()
     let h = Harness::open().await?;
     for reason in ["complete", "timeout", "revoked"] {
         let (_, task, object) = super::retirement::native(&h, Some(reason)).await?;
-        let registrations = object
-            .members
-            .iter()
-            .map(|m| m.device.clone())
-            .collect::<Vec<_>>();
+        let registrations = object.members.iter().map(|m| m.device).collect::<Vec<_>>();
         let mut tx = command::seed_transaction(&h.c).await?;
         let progress = rss_mdm_inventory_service::collection::execution::retirement::progress_on(
             &mut tx,
@@ -243,7 +238,7 @@ async fn periodic_assignment_uses_actual_start_and_exact_current_version() -> an
             .with_environment(rss_mdm_agent_wire::CollectionEnvironment{edition:None,tools:Default::default(),native_engines:template.spec().plan.requirements()})?;
         assert!(h.delivery.claim(&h.p,&announcement,&request(&h.c)).await?.task().is_none());
         let mut tx=command::seed_transaction(&h.c).await?;
-        sqlx::query("INSERT INTO mdm_access.report_sources (tenant_id, device, source, epoch, enabled) VALUES (CAST($1 AS uuid), $2, 'agent.native', $3, TRUE) ON CONFLICT (tenant_id, device, source) DO UPDATE SET enabled = TRUE").bind(h.c.tenant.to_string()).bind(h.p.device()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_access.report_sources (tenant_id, device, source, epoch, enabled) VALUES (CAST($1 AS uuid), $2, 'agent.native', $3, TRUE) ON CONFLICT (tenant_id, device, source) DO UPDATE SET enabled = TRUE").bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
         tx.commit().await?;
         let policy=Uuid::new_v4();
         let version=super::mixed::publish(&h,policy,1,definition.clone(),frozen.clone()).await?;

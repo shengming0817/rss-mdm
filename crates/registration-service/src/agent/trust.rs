@@ -26,7 +26,7 @@ impl Service {
         input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
         a.identify_device(p.device());
-        a.target(p.device());
+        a.target_device(p.device());
         a.operation(
             input.operation,
             "agent_trust_acknowledge",
@@ -107,11 +107,11 @@ impl Service {
 
         input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
-        if input.device_id != p.device() {
+        if input.device_id != *p.device() {
             return Err(Error::Forbidden.into());
         }
         a.identify_device(p.device());
-        a.target(p.device());
+        a.target_device(p.device());
         a.operation(
             input.operation,
             "agent_trust_observe",

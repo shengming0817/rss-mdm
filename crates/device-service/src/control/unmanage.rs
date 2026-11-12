@@ -18,12 +18,12 @@ impl RetirementPlan {
         execution: Option<Uuid>,
     ) -> Result<bool> {
         let tenant = tx.tenant_id().to_string();
-        let device = target.device.clone();
+        let device = target.device;
         let version = self.version;
         Ok(tx.with_connection(move|c|Box::pin(async move {
             rss_mdm_registration_service::lifecycle::lock_device_in(rss_mdm_install_support::StorageProfile::Mdm, c,&tenant,&device).await.map_err(Error::from).map_err(|_|sqlx::Error::Protocol("retirement fence".into()))?;
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_devices.retirements AS o INNER JOIN mdm_devices.retirement_channels AS t ON (t.tenant_id, t.operation) = (o.tenant_id, o.id) INNER JOIN mdm_access.devices AS d ON (d.tenant_id, d.id, d.retirement) = (t.tenant_id, t.device, t.operation) INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (t.tenant_id, t.device) WHERE t.tenant_id = CAST($1 AS uuid) AND t.device = $2 AND o.version = $3 AND t.channel = 'agent' AND t.stage = 'unenroll' AND r.state = 'active' AND (CAST($4 AS uuid) IS NULL OR t.execution = $4))")
-                .bind(tenant).bind(device).bind(version).bind(execution).fetch_one(c).await
+                .bind(tenant).bind(device.into_uuid()).bind(version).bind(execution).fetch_one(c).await
         })).await?)
     }
     pub(crate) async fn task(
@@ -36,21 +36,21 @@ impl RetirementPlan {
         if !self.allowed_in(tx, target, Some(issue.run)).await? {
             return Err(Error::Forbidden.into());
         }
-        let (platform, architecture) = agent_profile_in(service, tx, target.device.clone())
+        let (platform, architecture) = agent_profile_in(service, tx, target.device)
             .await?
             .ok_or(Error::Forbidden)?;
         let tenant = tx.tenant_id().to_string();
         let run = issue.run;
-        let registration = target.device.clone();
+        let registration = target.device;
         let retirement:Uuid=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_scalar("SELECT operation FROM mdm_devices.retirement_channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND execution = $3 AND stage = 'unenroll'")
-                .bind(tenant).bind(&registration).bind(run).fetch_one(c).await
+                .bind(tenant).bind(registration.into_uuid()).bind(run).fetch_one(c).await
         })).await?;
         let run = crate::control::actions::storage::load_run(tx, issue.run).await?;
         let spec = wire::UnmanageTaskSpec {
             wire_version: wire::WIRE_VERSION,
             tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-            device_id: target.device.clone(),
+            device_id: target.device,
 
             retirement_id: retirement,
             task_id: issue.run,
@@ -77,11 +77,14 @@ impl RetirementPlan {
 }
 
 /// An Unmanage run participates in its accepted retirement's complete membership.
-pub(crate) async fn run_devices_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Vec<String>> {
+pub(crate) async fn run_devices_in(
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>> {
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_scalar("SELECT c.device FROM mdm_devices.retirement_channels c WHERE c.tenant_id=$1::uuid AND c.operation=(SELECT d.retirement FROM mdm_access.devices d JOIN mdm_devices.unmanage_runs r ON(r.tenant_id,r.device)=(d.tenant_id,d.id) WHERE r.tenant_id=$1::uuid AND r.id=$2) UNION SELECT device FROM mdm_devices.unmanage_runs WHERE tenant_id=$1::uuid AND id=$2 ORDER BY device")
-            .bind(tenant).bind(id).fetch_all(c).await
+            .bind(tenant).bind(id).fetch_all(c).await.and_then(crate::device_ids)
     })).await?)
 }
 
@@ -120,7 +123,7 @@ pub async fn active_in(tx: &mut PgTransaction<'_>, operation: Uuid) -> Result<bo
 pub async fn wake_device_in(
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
@@ -131,7 +134,7 @@ pub async fn wake_device_in(
                     "SELECT retirement FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
                 )
                 .bind(tenant)
-                .bind(device)
+                .bind(device.into_uuid())
                 .fetch_optional(c)
                 .await
                 .map(Option::flatten)
@@ -147,7 +150,7 @@ pub async fn wake_device_in(
 pub(crate) struct PreparedRetirement {
     id: Uuid,
     original: crate::lifecycle::Retirement,
-    executions: std::collections::BTreeMap<String, Uuid>,
+    executions: std::collections::BTreeMap<rss_mdm_agent_wire::DeviceId, Uuid>,
 }
 
 impl Service {
@@ -182,7 +185,7 @@ impl Service {
         let devices = original
             .channels
             .iter()
-            .map(|c| c.device.clone())
+            .map(|c| c.device)
             .collect::<std::collections::BTreeSet<_>>();
         let t = tenant.to_string();
         let devices = devices.into_iter().collect::<Vec<_>>();
@@ -217,7 +220,7 @@ impl Service {
             if channel.channel == rss_mdm_inventory::Channel::Agent {
                 let execution = Uuid::new_v4();
 
-                executions.insert(channel.device.clone(), execution);
+                executions.insert(channel.device, execution);
             }
         }
         Ok(Some(PreparedRetirement {
@@ -246,7 +249,7 @@ impl Service {
             let registrations = original
                 .channels
                 .iter()
-                .map(|c| c.device.clone())
+                .map(|c| c.device)
                 .collect::<Vec<_>>();
             let progress = self
                 .transactions
@@ -268,18 +271,18 @@ impl Service {
                 continue;
             }
             let tenant_name = tenant.to_string();
-            let registration = channel.device.clone();
-            let value = registration.clone();
+            let registration = channel.device;
+            let value = registration;
             let active:bool=tx.with_connection(move|c|Box::pin(async move{
                 sqlx::query_scalar("SELECT state = 'active' FROM mdm_access.devices WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
-                    .bind(tenant_name).bind(&value).fetch_one(c).await
+                    .bind(tenant_name).bind(value.into_uuid()).fetch_one(c).await
             })).await?;
             if !active {
                 continue;
             }
             if channel.stage == Stage::Cleanup {
                 let t = tenant.to_string();
-                let value = registration.clone();
+                let value = registration;
                 let facts = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
@@ -316,7 +319,7 @@ impl Service {
                             tx,
                             id,
                             &Target {
-                                device: channel.device.clone(),
+                                device: channel.device,
                             },
                         )
                         .await?
@@ -368,7 +371,7 @@ impl Service {
                             tx,
                             id,
                             &Target {
-                                device: channel.device.clone(),
+                                device: channel.device,
                             },
                         )
                         .await?
@@ -455,7 +458,7 @@ impl Service {
                 let binding = crate::control::agent_facts::agent_binding_in(
                     tx,
                     self.transactions.agent_store.clone(),
-                    registration.clone(),
+                    registration,
                 )
                 .await?;
                 if !binding
@@ -480,7 +483,7 @@ impl Service {
                     continue;
                 }
                 let execution = executions.remove(&registration).ok_or(Error::Conflict)?;
-                let value = registration.clone();
+                let value = registration;
                 tx.with_connection(move |c| {
                     Box::pin(async move {
                         Ok(
@@ -495,7 +498,7 @@ impl Service {
                 let t = tenant.to_string();
                 let lifetime:i32=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT delivery_seconds FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(id).fetch_one(c).await})).await?;
                 let target = Target {
-                    device: channel.device.clone(),
+                    device: channel.device,
                 };
                 crate::control::actions::production::queue_run_in(
                     &self.transactions,
@@ -519,7 +522,7 @@ impl Service {
                 let t = tenant.to_string();
                 let source:Option<(Uuid,String)>=tx.with_connection(move|c|Box::pin(async move{
                     sqlx::query_as("SELECT r.request_id, q.source FROM mdm_access.devices AS r INNER JOIN mdm_access.requests AS q ON (q.tenant_id, q.id) = (r.tenant_id, r.request_id) WHERE r.tenant_id = CAST($1 AS uuid) AND r.id = $2")
-                        .bind(t).bind(&registration).fetch_optional(c).await
+                        .bind(t).bind(registration.into_uuid()).fetch_optional(c).await
                 })).await?;
                 if let Some((enrollment, source)) = source
                     && source == "mdm.apple"
@@ -598,7 +601,7 @@ impl Service {
         use crate::lifecycle as owner;
         let tenant = tx.tenant_id();
         let id = operation.id;
-        let registration = channel.device.clone();
+        let registration = channel.device;
         let execution = Uuid::new_v4();
         tx.with_connection(move |c| {
             Box::pin(async move {
@@ -627,7 +630,7 @@ impl Service {
             tenant: tenant.to_string(),
             retirement: id,
             version: operation.version,
-            device: channel.device.clone(),
+            device: channel.device,
 
             execution,
             required: input.task.permissions()?,
@@ -651,10 +654,10 @@ impl Service {
         let tenant = tx.tenant_id();
         let t = tenant.to_string();
         let registration = p.device().to_owned();
-        let value = registration.clone();
+        let value = registration;
         let id:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move{
             sqlx::query_scalar("SELECT operation FROM mdm_devices.retirement_channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND stage = 'unenroll' AND execution IS NULL")
-                .bind(t).bind(&value).fetch_optional(c).await
+                .bind(t).bind(value.into_uuid()).fetch_optional(c).await
         })).await?;
         let Some(id) = id else {
             return Ok(());
@@ -689,7 +692,7 @@ impl Service {
 pub async fn native_departure_in(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     confirmed: bool,
 ) -> std::result::Result<(), Error> {
     crate::lifecycle::native_departure_in(c, tenant, registration, confirmed)
@@ -700,14 +703,14 @@ pub async fn native_departure_in(
 pub async fn cleanup_allowed_in(
     tx: &mut PgTransaction<'_>,
     retirement: Uuid,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     execution: Option<Uuid>,
 ) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     Ok(tx.with_connection(move|c|Box::pin(async move{
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_devices.retirement_channels AS t INNER JOIN mdm_access.devices AS d ON (d.tenant_id, d.id, d.retirement) = (t.tenant_id, t.device, t.operation) INNER JOIN mdm_access.devices AS r ON (r.tenant_id, r.id) = (t.tenant_id, t.device) WHERE t.tenant_id = CAST($1 AS uuid) AND t.operation = $2 AND t.device = $3 AND t.stage = 'cleanup' AND r.state = 'active' AND (CAST($4 AS uuid) IS NULL OR EXISTS (SELECT 1 FROM mdm_devices.retirement_work AS w WHERE (w.tenant_id, w.operation, w.device, w.execution) = (t.tenant_id, t.operation, t.device, $4))))")
-            .bind(tenant).bind(retirement).bind(device).bind(execution).fetch_one(c).await
+            .bind(tenant).bind(retirement).bind(device.into_uuid()).bind(execution).fetch_one(c).await
     })).await?)
 }
 

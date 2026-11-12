@@ -163,11 +163,7 @@ async fn authenticate_for(
     let principal = crate::authenticate(&app.enrollment, headers, peer).await?;
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
     let binding = crate::Bindings::new(principal.profile())
-        .binding(
-            &mut tx,
-            principal.tenant().to_string(),
-            principal.device().to_string(),
-        )
+        .binding(&mut tx, principal.tenant().to_string(), *principal.device())
         .await?;
     tx.commit().await.map_err(crate::database::db)?;
     if !binding.is_some_and(|b| b.inventory() && (!task_required || b.task())) {

@@ -58,7 +58,7 @@ pub async fn accept_for_device(
     }
     let tenant = tx.tenant_id().to_string();
     let version = policy.id;
-    let device = target.device.clone();
+    let device = target.device;
     let explicit_allowed = matches!(trigger, TriggerInput::Agent(_));
     let explicit = tx
         .with_connection(move |c| {
@@ -69,7 +69,7 @@ pub async fn accept_for_device(
                 )
                 .bind(tenant)
                 .bind(version)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .bind(now)
                 .bind(explicit_allowed)
                 .fetch_optional(c)
@@ -79,7 +79,7 @@ pub async fn accept_for_device(
         .await?;
     if explicit.is_none() {
         let tenant = tx.tenant_id().to_string();
-        let device = target.device.clone();
+        let device = target.device;
         let previous = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -88,7 +88,7 @@ pub async fn accept_for_device(
                             .enrollment_tasks_admission_accept_for_device_2,
                     )
                     .bind(tenant)
-                    .bind(&device)
+                    .bind(device.into_uuid())
                     .fetch_one(c)
                     .await
                 })
@@ -114,7 +114,7 @@ pub async fn accept_for_device(
             }
             (Trigger::Registration, _) => (now, format!("device:{}", target.device)),
             (Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. }, _) => {
-                let Some(due) = schedule.due(-1, now, target.device.as_bytes())? else {
+                let Some(due) = schedule.due(-1, now, target.device.to_string().as_bytes())? else {
                     return Ok(());
                 };
                 (due.coordinate, format!("timer:{}", due.coordinate))
@@ -133,7 +133,7 @@ pub async fn accept_for_device(
             &event,
         )
     };
-    let Some(slot) = schedule.occurrence(coordinate, target.device.as_bytes())? else {
+    let Some(slot) = schedule.occurrence(coordinate, target.device.to_string().as_bytes())? else {
         return Ok(());
     };
     let available = slot.available_at.max(now);
@@ -220,7 +220,7 @@ pub async fn queue_run_in(
     }
     let source = service.source.clone();
     let tenant = tx.tenant_id();
-    let device = input.target.device.clone();
+    let device = input.target.device;
     let scope = policy.policy.definition.scope;
     let evidence = tx
         .with_connection(move |c| {
@@ -270,7 +270,7 @@ pub async fn queue_run_in(
             .bind(tenant)
             .bind(id)
             .bind(version)
-            .bind(target.device)
+            .bind(target.device.into_uuid())
             .bind(input.occurrence)
             .bind(input.available)
             .bind(input.deadline)
@@ -369,7 +369,7 @@ pub async fn occurrence_available_in(
     now: i64,
 ) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
+    let device = target.device;
     let key = occurrence.to_owned();
     let exists: bool = tx
         .with_connection(move |c| {
@@ -380,7 +380,7 @@ pub async fn occurrence_available_in(
                 )
                 .bind(tenant)
                 .bind(version)
-                .bind(&device)
+                .bind(device.into_uuid())
                 .bind(key)
                 .fetch_one(c)
                 .await

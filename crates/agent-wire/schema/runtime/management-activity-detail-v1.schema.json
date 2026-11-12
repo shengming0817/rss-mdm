@@ -437,14 +437,24 @@
       "description": "Registration coordinates of the original producer fact.",
       "properties": {
         "device": {
-          "description": "Authorized endpoint identity, which can differ between paired channels.",
-          "type": "string"
+          "$ref": "#/$defs/DeviceId",
+          "description": "Authorized endpoint identity, which can differ between paired channels."
         }
       },
       "required": [
         "device"
       ],
       "type": "object"
+    },
+    "DeviceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "minLength": 36,
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
     },
     "ManagementActivity": {
       "additionalProperties": false,

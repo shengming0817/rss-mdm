@@ -92,7 +92,7 @@ Access token 只接受 Entra v2、RS256、appId audience、明确允许的客户
 
 流程令牌和 opaque 通过现有 native-protection 加密持久化，可跨实例和重启继续；最长五分钟且不超过 JWT 到期。条款文本变化必须使用新 termsVersion，CAS revision 的变化使旧流程失效。当前安装清单不提供旧库兼容升级：旧安装须按[安装契约](../deployment/installation.md)重新安装，并重新配置条款及组织策略。SQL 单元对既有策略的处理不构成独立升级入口；管理员须填入新条款后明确启用。同意记录绑定 tid、oid、策略 revision 与同一截止时间；原生 WSTEP 将 OpaqueBlob 放入 EnrollmentData。首次消费绑定一个注册请求及其 CSR／profile，精确重试复用该结果；其它用户、设备或输入不能重用。未携带同意时只有明确启用 allowBackground 的组织策略可以授权用户凭据注册。
 
-原生准入先验证 token 和 MDM 范围、设备及同意，再由 Identity 解析／JIT canonical 账户。它使用独立 windows_entra authority_kind，不持有密码或浏览器会话续接引用；设备身份为 `entra:{tid}:{deviceid}`，客户端 DeviceID 仅是协议描述输入。签发复用同一持久 PKI 意图、回执和设备绑定流程，最终绑定前在无 MDM 锁时重验 Identity，然后在 MDM 事务内重验组织策略。注册期间的撤销或策略版本变化会拒绝完成。
+原生准入先验证 token 和 MDM 范围、设备及同意，再由 Identity 解析／JIT canonical 账户。它使用独立 windows_entra authority_kind，不持有密码或浏览器会话续接引用；产品设备身份由服务端独立分配 UUID；Entra 的 tid/deviceid 用于原生准入验证，客户端 DeviceID 仅是协议描述输入。签发复用同一持久 PKI 意图、回执和设备绑定流程，最终绑定前在无 MDM 锁时重验 Identity，然后在 MDM 事务内重验组织策略。注册期间的撤销或策略版本变化会拒绝完成。
 
 Entra 用户凭据注册保留 canonical 注册用户及组织来源，按 WMD-E06 免个人 Windows MDM 额度，不伪装为 self_service；个人额度为零也不阻止已获组织策略及同意授权的注册。设备归属、组织策略、同意和世代校验仍由共享原生生命周期执行。
 

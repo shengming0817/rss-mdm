@@ -62,7 +62,7 @@ pub(super) async fn seed(
             attempt: n.attempt,
             csr_pem: &pem,
             csr_digest: &csr.digest(),
-            subject: &profile.device,
+            subject: &profile.device.to_string(),
             sans: &[],
             start: profile.start,
             end: profile.end,
@@ -93,7 +93,7 @@ pub(super) async fn seed(
     .fetch_one(&mut *tx)
     .await?;
     let recovery = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery,action,device,self_enrollment) VALUES($1::uuid,$2,$3,repeat('a',64),$4,$5,$6,'device_certificate_result',$7,false)").bind(c.tenant.to_string()).bind(p.principal_id()).bind(recovery).bind(serde_json::to_string(&issuance)?).bind(p.instance_id()).bind(issuance).bind(&device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery,action,device,self_enrollment) VALUES($1::uuid,$2,$3,repeat('a',64),$4,$5,$6,'device_certificate_result',$7,false)").bind(c.tenant.to_string()).bind(p.principal_id()).bind(recovery).bind(serde_json::to_string(&issuance)?).bind(p.instance_id()).bind(issuance).bind(device.into_uuid()).execute(&mut *tx).await?;
     cases.extend([
         (
             format!("/api/v1/devices/{}/windows-certificate-requests", n.device),

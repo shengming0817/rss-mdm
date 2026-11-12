@@ -44,7 +44,7 @@ pub struct AccessTaskSpec {
     /// Authenticated tenant.
     pub tenant_id: Uuid,
     /// Exact endpoint.
-    pub device_id: String,
+    pub device_id: crate::DeviceId,
 
     /// Required operating system.
     pub platform: TaskPlatform,
@@ -100,9 +100,6 @@ impl AccessTaskSpec {
             || self.factor_generation < 1
             || self.revision < 1
             || self.definition_digest == [0; 32]
-            || self.device_id.is_empty()
-            || self.device_id.len() > 256
-            || self.device_id.chars().any(char::is_control)
             || self.expires_at <= 0
             || self.deadline < self.expires_at
             || !matches!(self.authorization, super::TaskAuthorization::Policy { .. })

@@ -5,13 +5,12 @@ use rss_mdm_query::{
     directory::{Query, Schema},
 };
 pub static SCHEMA: std::sync::LazyLock<Schema> = std::sync::LazyLock::new(|| {
-    Schema::derived::<crate::view_response::DirectoryRow>("device_views", &["key"],64,100,&[
+    Schema::derived::<crate::view_response::DirectoryRow>("device_views", &["reference.kind", "reference.id"],64,100,&[
         rss_mdm_query::directory::Exclusion { path:"association.members", reason:"Membership object arrays use the same-endpoint selectors; arbitrary member expansion cannot preserve that quantifier" },
         rss_mdm_query::directory::Exclusion { path:"association.state", reason:"Effective association state requires current hardware and competitor qualification; raw stored state is not the public state" },
         rss_mdm_query::directory::Exclusion { path:"endpoints", reason:"Endpoint object arrays evaluate the entire predicate on one endpoint through the typed domain selectors" },
     ]).and_then(|s|s.with_selectors::<Selectors>("Entire predicate matches one authorized endpoint in the device view"))
-      .and_then(|s|s.no_sort("reference","Unified device views navigate by their canonical object key"))
-      .and_then(|s|s.no_sort("association","Association metadata sorting is owned by the association directory; unified views navigate by canonical object key"))
+      .and_then(|s|s.no_sort("association","Association metadata sorting is owned by the association directory; unified views navigate by typed object identity"))
       .expect("Public device-view model")
 });
 #[derive(schemars::JsonSchema)]
@@ -28,8 +27,7 @@ struct Selectors {
 fn source_field(name: &str) -> rss_mdm_query::Result<()> {
     if matches!(
         name,
-        "key"
-            | "reference.kind"
+        "reference.kind"
             | "reference.id"
             | "association.id"
             | "association.version"
@@ -69,6 +67,13 @@ pub static EXECUTION: std::sync::LazyLock<rss_mdm_query::directory::Execution> =
 pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
     let mut q = SCHEMA.parse(raw)?;
     q.default_filter("assetState", "active")?;
+    if q.sort().len() != 2
+        || q.sort()[0].field != "reference.kind"
+        || q.sort()[1].field != "reference.id"
+        || q.sort()[0].descending != q.sort()[1].descending
+    {
+        return Err(rss_mdm_query::Error::Invalid);
+    }
     Ok(q)
 }
 pub(super) fn predicate(q: &Query) -> crate::Result<String> {

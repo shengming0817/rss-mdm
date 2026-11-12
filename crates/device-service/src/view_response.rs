@@ -1,5 +1,5 @@
 //! Public projections assembled from Registration, Inventory and authorized Identity reads.
-use crate::{Association, Error, Result, ViewRef};
+use crate::{Association, Error, ObjectRef, Result};
 use rss_mdm_inventory::{Evidence, FieldKey, ResolvedDeviceField, ResolvedField, Scalar};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -84,14 +84,12 @@ pub enum ProfileStatus {
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 pub struct Summary {
-    pub reference: ViewRef,
+    pub reference: ObjectRef,
     pub association: Option<Association>,
     pub endpoints: Vec<Endpoint>,
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 pub struct DirectoryRow {
-    #[schemars(extend("x-rss-maxUtf8Bytes" = 1036))]
-    pub key: String,
     #[serde(flatten)]
     pub summary: Summary,
 }
@@ -134,7 +132,7 @@ pub struct Detail {
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 pub struct InventorySource {
-    pub endpoint: String,
+    pub endpoint: rss_mdm_agent_wire::DeviceId,
     pub quality: Vec<rss_mdm_inventory_service::assets::QualityRun>,
     pub revisions: BTreeMap<FieldKey, i64>,
 }
@@ -163,7 +161,7 @@ pub struct Unknown {
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListSource {
-    pub endpoint: String,
+    pub endpoint: rss_mdm_agent_wire::DeviceId,
     pub evidence: Evidence,
     pub state: ListState,
     pub last_known: Option<ListKnown>,
@@ -177,10 +175,10 @@ pub struct ListKnown {
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListItems {
-    pub reference: ViewRef,
+    pub reference: ObjectRef,
     pub field: FieldKey,
     pub source: Evidence,
-    pub endpoint: String,
+    pub endpoint: rss_mdm_agent_wire::DeviceId,
     pub total: usize,
     pub items: Vec<Scalar>,
     pub next_cursor: Option<String>,

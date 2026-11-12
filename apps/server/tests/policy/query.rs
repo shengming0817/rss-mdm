@@ -52,7 +52,7 @@ async fn historical(c: &Context, key: &Protector, original: Uuid) -> Result<Vec<
     #[derive(serde::Serialize)]
     struct Identity<'a> {
         operation: Uuid,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
     }
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -94,7 +94,7 @@ async fn historical(c: &Context, key: &Protector, original: Uuid) -> Result<Vec<
             .bind(c.tenant.to_string()).bind(original.to_string()).bind(id.to_string()).bind(&digest).bind(format!("dispatch.{id}")).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_planning.configuration_operations (tenant_id, id, device, request, input_context, fingerprint, generation, epoch, authority, dispatch_fingerprint, gateway_accepted, policy_version) SELECT tenant_id, $3, device, $4, $5, $6, generation, epoch, authority, $6, TRUE, policy_version FROM mdm_planning.configuration_operations WHERE tenant_id = CAST($1 AS uuid) AND id = $2")
             .bind(c.tenant.to_string()).bind(original).bind(id).bind(sealed).bind(serde_json::to_value(meta)?).bind(digest).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mdm_windows.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(operation.device.clone()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_windows.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(operation.device.into_uuid()).execute(&mut *tx).await?;
         ids.push(id);
     }
     tx.commit().await?;

@@ -7,7 +7,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
   SELECT FROM rss_da.deployment_evidence e
   CROSS JOIN LATERAL jsonb_array_elements(e.document->'applications') application
   WHERE e.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-   AND e.tenant_id::text=binding->>'tenant' AND e.device=binding->>'device'
+   AND e.tenant_id::text=binding->>'tenant' AND e.device=(binding->>'device')::uuid
    AND e.authority::text=binding#>>'{deploymentApplication,authority}'
    AND e.sequence::text=binding#>>'{deploymentApplication,sequence}'
    AND e.fingerprint=binding#>>'{deploymentApplication,fingerprint}'
@@ -23,21 +23,21 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
    AND application->>'bindingGeneration'=binding->>'generation'
    AND application->>'revision'=binding->>'revision'
    AND application->'effect'=binding->'effect'
-   AND rss_da.current_da_registration(binding->>'device')=jsonb_build_object('device',binding->>'device')
+   AND rss_da.current_da_registration((binding->>'device')::uuid)=jsonb_build_object('device',binding->>'device')
  ) END
 $$;
 REVOKE ALL ON FUNCTION rss_da.binding_application_current(jsonb,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rss_da.binding_application_current(jsonb,bigint) TO da_access,da_identity_runtime,da_inventory_runtime,da_scope_runtime,da_policy_runtime,da_telemetry_runtime,da_command_runtime;
 
-CREATE FUNCTION rss_da.deployment_valid_until(p_device text,config jsonb,p_profile uuid,as_of bigint) RETURNS bigint
+CREATE FUNCTION rss_da.deployment_valid_until(p_device uuid,config jsonb,p_profile uuid,as_of bigint) RETURNS bigint
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT CASE WHEN count(*)>0 AND bool_and(coalesce(
   e.fingerprint=config#>>ARRAY['authorities',e.authority::text]
   AND e.document->>'installation'=(SELECT instance_id::text FROM rss_da.installation_binding WHERE singleton)
-  AND e.document->>'tenant'=e.tenant_id::text AND e.document->>'device'=e.device
+  AND e.document->>'tenant'=e.tenant_id::text AND (e.document->>'device')::uuid=e.device
   AND (e.document->>'sequence')::bigint=e.sequence
   AND e.document->>'revoked'='false' AND e.document#>>'{deployment,platform}'='macos'
-  AND rss_da.access_policy((e.document->>'policy')::uuid,e.document->>'device',as_of)->>'version'=e.document->>'policyVersion' AND e.document#>>'{deployment,applicationInstalled}'='true' AND e.document#>>'{deployment,profileMatched}'='true'
+  AND rss_da.access_policy((e.document->>'policy')::uuid,(e.document->>'device')::uuid,as_of)->>'version'=e.document->>'policyVersion' AND e.document#>>'{deployment,applicationInstalled}'='true' AND e.document#>>'{deployment,profileMatched}'='true'
   AND e.document#>>'{deployment,configuration}'=config->>'configuration'
   AND e.document#>>'{deployment,applicationId}'=config->>'applicationId' AND e.document#>>'{deployment,applicationVersion}'=config->>'applicationVersion'
   AND e.document#>>'{deployment,profileIdentifier}'=config->>'profileIdentifier' AND e.document#>>'{deployment,profileUuid}'=p_profile::text
@@ -46,12 +46,12 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
   AND (e.document->>'issuedAt')::bigint<=e.received_at AND e.received_at<=as_of
   AND (e.document->>'expiresAt')::bigint>as_of
   AND (e.document->>'expiresAt')::bigint-(e.document->>'issuedAt')::bigint BETWEEN 1 AND 86400
-  AND rss_da.current_da_registration(e.document->>'device')=jsonb_build_object('device',e.document->>'device')
+  AND rss_da.current_da_registration((e.document->>'device')::uuid)=jsonb_build_object('device',e.document->>'device')
  ,false)) THEN min((e.document->>'expiresAt')::bigint) END
  FROM rss_da.deployment_evidence e WHERE e.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND e.device=p_device
 $$;
-REVOKE ALL ON FUNCTION rss_da.deployment_valid_until(text,jsonb,uuid,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rss_da.deployment_valid_until(text,jsonb,uuid,bigint) TO da_access,da_identity_runtime;
+REVOKE ALL ON FUNCTION rss_da.deployment_valid_until(uuid,jsonb,uuid,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rss_da.deployment_valid_until(uuid,jsonb,uuid,bigint) TO da_access,da_identity_runtime;
 
 CREATE FUNCTION rss_da.platform_session_qualifications(p_source uuid,config jsonb,as_of bigint)
 RETURNS TABLE(tenant_id uuid,instance_id uuid,principal_id uuid,binding_id uuid,binding_generation bigint,source_id uuid,source_version bigint,valid_until bigint)
@@ -72,8 +72,8 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
   AND d.kind='device' AND NOT d.revoked AND d.document->>'id'=d.id::text AND d.document->>'kind'='device'
   AND d.version=(u.document->>'parentVersion')::bigint AND d.device=u.device
   AND d.document->'object'=u.document->'object' AND d.document->>'configuration'=u.document->>'configuration'
-  AND o.member->>'device'=u.device
-  AND rss_da.current_da_registration(o.member->>'device') IS NOT NULL
+  AND (o.member->>'device')::uuid=u.device
+  AND rss_da.current_da_registration((o.member->>'device')::uuid) IS NOT NULL
   AND a.until IS NOT NULL AND b.value->>'state'='eligible'
   AND u.document->'loginConfiguration'=b.value#>'{binding,configuration,mac}'
   AND (u.document#>>'{loginConfiguration,authentication}'<>'password' OR EXISTS(
@@ -116,8 +116,8 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog 
    AND d.document->>'configuration'=u.document->>'configuration'
    AND d.document->'loginConfiguration'=u.document->'loginConfiguration'
    AND d.document->'profileUuid'=u.document->'profileUuid'
-   AND o.member->>'device'=u.device
-   AND rss_da.current_da_registration(o.member->>'device')=o.member
+   AND (o.member->>'device')::uuid=u.device
+   AND rss_da.current_da_registration((o.member->>'device')::uuid)=o.member
    AND o.member->>'device'=p_binding->>'device'
    AND u.document#>>'{subject,account,principal}'=p_binding#>>'{person,principal}'
    AND u.document#>>'{subject,instance}'=p_binding#>>'{person,instance}'

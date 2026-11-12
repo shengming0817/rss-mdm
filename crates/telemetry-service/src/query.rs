@@ -13,7 +13,7 @@ use std::{
 /// A bounded product query. No SQL, tenant override or client-authored definition is accepted.
 #[derive(Clone)]
 pub struct HistoryRequest {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub field: String,
     pub resource: String,
     pub start_micros: i64,
@@ -32,7 +32,7 @@ enum ReadKind {
 #[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HealthRequest {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub field: String,
     pub received_from: i64,
     pub received_until: i64,
@@ -42,7 +42,7 @@ pub struct HealthRequest {
 #[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceRequest {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub field: String,
     pub after: Option<String>,
     pub limit: NonZeroU32,
@@ -68,7 +68,7 @@ impl Service {
             Id::new(after)?;
         }
         let query = HistoryRequest {
-            device: input.device.clone(),
+            device: input.device,
             field: input.field.clone(),
             resource: "device".into(),
             start_micros: 0,
@@ -123,7 +123,7 @@ impl Service {
             Timestamp::new(input.received_until)?,
         )?;
         let query = HistoryRequest {
-            device: input.device.clone(),
+            device: input.device,
             field: input.field.clone(),
             resource: "device".into(),
             start_micros: input.received_from,
@@ -243,7 +243,7 @@ async fn read_on(
     }
     if let ReadKind::Resources = kind {
         let mut resources:Vec<String>=sqlx::query_scalar("SELECT resource FROM mdm_telemetry.resources WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 AND ($4::text IS NULL OR resource>$4) ORDER BY resource LIMIT $5")
-            .bind(service.tenant.to_string()).bind(&input.device).bind(&input.field).bind(&input.after).bind(i64::from(input.max_points.get())+1).fetch_all(c).await?;
+            .bind(service.tenant.to_string()).bind(input.device.into_uuid()).bind(&input.field).bind(&input.after).bind(i64::from(input.max_points.get())+1).fetch_all(c).await?;
         let more = resources.len() > input.max_points.get() as usize;
         resources.truncate(input.max_points.get() as usize);
         let next = if more {
@@ -260,7 +260,7 @@ async fn read_on(
     }
     if let ReadKind::Health = kind {
         let mut rows=sqlx::query("SELECT id,received_at,first_observed,last_observed,delivery,quality->$3 AS quality FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2 AND $3=ANY(fields) AND received_at>=$4 AND received_at<$5 ORDER BY received_at DESC,id DESC LIMIT $6")
-            .bind(service.tenant.to_string()).bind(&input.device).bind(&input.field).bind(input.start_micros).bind(input.end_micros).bind(i64::from(input.max_points.get())+1).fetch_all(&mut *c).await?;
+            .bind(service.tenant.to_string()).bind(input.device.into_uuid()).bind(&input.field).bind(input.start_micros).bind(input.end_micros).bind(i64::from(input.max_points.get())+1).fetch_all(&mut *c).await?;
         let batches_truncated = rows.len() > input.max_points.get() as usize;
         rows.truncate(input.max_points.get() as usize);
         use sqlx::Row;
@@ -279,7 +279,7 @@ async fn read_on(
             })
             .collect::<Result<Vec<_>, Error>>()?;
         let mut retention=sqlx::query("SELECT resource,version,due_at,phase,result FROM mdm_telemetry.retention_targets WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 ORDER BY due_at,id LIMIT $4")
-            .bind(service.tenant.to_string()).bind(&input.device).bind(&input.field).bind(i64::from(input.max_points.get())+1).fetch_all(c).await?;
+            .bind(service.tenant.to_string()).bind(input.device.into_uuid()).bind(&input.field).bind(i64::from(input.max_points.get())+1).fetch_all(c).await?;
         let retention_truncated = retention.len() > input.max_points.get() as usize;
         retention.truncate(input.max_points.get() as usize);
         let retention = retention
@@ -314,7 +314,7 @@ async fn read_on(
     let query = Query::new(
         Selection::Resource {
             scope: Scope::new(service.tenant, Id::new("mdm.telemetry")?),
-            subject: Id::new(&input.device)?,
+            subject: Id::new(input.device.to_string())?,
             resource: Id::new(&input.resource)?,
             keys: [Id::new(&input.field)?].into(),
         },
@@ -503,7 +503,7 @@ async fn aggregate_on(
         field
             .time_series_definition(scope)
             .map_err(|_| Error::Invalid)?,
-        Id::new(&input.device)?,
+        Id::new(input.device.to_string())?,
         Id::new(&input.resource)?,
         request
             .dimensions
@@ -570,7 +570,7 @@ async fn aggregate_on(
 
 fn source(
     row: &ObservedSample,
-    live: &[(String, String, uuid::Uuid)],
+    live: &[(rss_mdm_agent_wire::DeviceId, String, uuid::Uuid)],
 ) -> Option<rss_mdm_inventory::Source> {
     live.iter()
         .find(|(registration, source, epoch)| {
@@ -581,7 +581,7 @@ fn source(
 }
 fn latest(
     rows: Vec<ObservedSample>,
-    live: &[(String, String, uuid::Uuid)],
+    live: &[(rss_mdm_agent_wire::DeviceId, String, uuid::Uuid)],
     field: &rss_mdm_inventory::FieldDefinition,
     retired: bool,
     limit: usize,
@@ -649,7 +649,7 @@ fn latest(
 mod tests {
     use super::*;
     fn row(
-        registration: &str,
+        registration: &rss_mdm_agent_wire::DeviceId,
         epoch: uuid::Uuid,
         source: rss_mdm_inventory::Source,
         at: i64,
@@ -692,20 +692,27 @@ mod tests {
     #[test]
     fn latest_uses_live_incarnation_and_source_priority_instead_of_receipt_order() {
         use rss_mdm_inventory::Source::{AgentNative, AgentScript};
-        let registration = "device";
+        let registration =
+            &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap();
         let epoch = uuid::Uuid::new_v4();
         let mut field = crate::tests::fields().remove(0);
         field.sources.insert(AgentNative, 0);
         field.sources.insert(AgentScript, 1);
         let live = vec![
-            (registration.into(), AgentNative.as_str().into(), epoch),
-            (registration.into(), AgentScript.as_str().into(), epoch),
+            (*registration, AgentNative.as_str().into(), epoch),
+            (*registration, AgentScript.as_str().into(), epoch),
         ];
         let values = vec![
             row(registration, epoch, AgentNative, 100, 1),
             row(registration, epoch, AgentNative, 200, 2),
             row(registration, epoch, AgentScript, 300, 3),
-            row("other-device", epoch, AgentNative, 400, 4),
+            row(
+                &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(2)).unwrap(),
+                epoch,
+                AgentNative,
+                400,
+                4,
+            ),
         ];
         let result = latest(values.clone(), &live, &field, false, 16).unwrap();
         assert_eq!(result.len(), 1);

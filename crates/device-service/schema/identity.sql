@@ -1,13 +1,13 @@
--- Device owns current identity and immutable object evidence. No lease/retry state lives here.
+-- Device owns current identity and immutable object_kind,object_id evidence. No lease/retry state lives here.
 BEGIN;
 CREATE TABLE mdm_devices.endpoint_identities (
- tenant_id uuid NOT NULL,device text NOT NULL COLLATE "C",channel text NOT NULL CHECK(channel IN('mdm','agent')),
+ tenant_id uuid NOT NULL,device uuid NOT NULL,channel text NOT NULL CHECK(channel IN('mdm','agent')),
  input jsonb NOT NULL,hardware jsonb NOT NULL,
  PRIMARY KEY(tenant_id,device,channel)
 );
 CREATE TABLE mdm_devices.identity_keys (
  tenant_id uuid NOT NULL,kind text NOT NULL CHECK(kind IN('serial','uuid')),value text NOT NULL,
- device text NOT NULL COLLATE "C",channel text NOT NULL CHECK(channel IN('mdm','agent')),
+ device uuid NOT NULL,channel text NOT NULL CHECK(channel IN('mdm','agent')),
  PRIMARY KEY(tenant_id,kind,value,device,channel),
  FOREIGN KEY(tenant_id,device,channel) REFERENCES mdm_devices.endpoint_identities(tenant_id,device,channel) ON DELETE CASCADE
 );
@@ -18,30 +18,31 @@ CREATE TABLE mdm_devices.object_cuts (
 );
 CREATE INDEX object_cuts_order ON mdm_devices.object_cuts(tenant_id,through);
 CREATE TABLE mdm_devices.object_versions (
- tenant_id uuid NOT NULL,object text COLLATE "C" NOT NULL,revision bigint NOT NULL CHECK(revision>0),
- input jsonb,devices text[] NOT NULL,
- PRIMARY KEY(tenant_id,object,revision)
+ tenant_id uuid NOT NULL,object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),revision bigint NOT NULL CHECK(revision>0),
+ input jsonb,devices uuid[] NOT NULL,
+ PRIMARY KEY(tenant_id,object_kind,object_id,revision)
 );
 CREATE INDEX object_versions_devices ON mdm_devices.object_versions USING gin(devices);
 CREATE TABLE mdm_devices.object_heads (
- tenant_id uuid NOT NULL,object text COLLATE "C" NOT NULL,revision bigint NOT NULL,
- PRIMARY KEY(tenant_id,object),
- FOREIGN KEY(tenant_id,object,revision) REFERENCES mdm_devices.object_versions(tenant_id,object,revision)
+ tenant_id uuid NOT NULL,object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),revision bigint NOT NULL,
+ PRIMARY KEY(tenant_id,object_kind,object_id),
+ FOREIGN KEY(tenant_id,object_kind,object_id,revision) REFERENCES mdm_devices.object_versions(tenant_id,object_kind,object_id,revision)
 );
 CREATE TABLE mdm_devices.object_changes (
- tenant_id uuid NOT NULL,revision bigint NOT NULL,object text COLLATE "C" NOT NULL,
- old_devices text[] NOT NULL,new_devices text[] NOT NULL,
+ tenant_id uuid NOT NULL,revision bigint NOT NULL,object_kind smallint NOT NULL CHECK(object_kind IN(0,1)), object_id uuid NOT NULL CHECK(object_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+ old_devices uuid[] NOT NULL,new_devices uuid[] NOT NULL,
  PRIMARY KEY(tenant_id,revision),
- FOREIGN KEY(tenant_id,object,revision) REFERENCES mdm_devices.object_versions(tenant_id,object,revision)
+ FOREIGN KEY(tenant_id,object_kind,object_id,revision) REFERENCES mdm_devices.object_versions(tenant_id,object_kind,object_id,revision)
 );
 -- Desired/completed input versions and fan-out cursor are business progress only.
 -- RSS owns the task target, claims, attempts and retry schedule.
 CREATE TABLE mdm_devices.association_work (
  tenant_id uuid NOT NULL,id uuid NOT NULL,kind text NOT NULL CHECK(kind IN('device','serial','uuid')),
- value text NOT NULL CHECK(octet_length(value) BETWEEN 1 AND 4096),
+ value text CHECK(octet_length(value) BETWEEN 1 AND 4096), device uuid,
+ CHECK((kind='device' AND device IS NOT NULL AND value IS NULL) OR (kind<>'device' AND device IS NULL AND value IS NOT NULL)),
  requested bigint NOT NULL DEFAULT 1 CHECK(requested>0),completed bigint NOT NULL DEFAULT 0 CHECK(completed>=0),
- watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=completed),cursor text COLLATE "C",
- PRIMARY KEY(tenant_id,id),UNIQUE(tenant_id,kind,value)
+ watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=completed),cursor uuid,
+ PRIMARY KEY(tenant_id,id),UNIQUE NULLS NOT DISTINCT(tenant_id,kind,value,device)
 );
 DO $$ DECLARE t text; BEGIN
  FOREACH t IN ARRAY ARRAY['endpoint_identities','identity_keys','object_cuts','object_versions','object_heads','object_changes','association_work'] LOOP
@@ -63,7 +64,7 @@ GRANT UPDATE(revision) ON mdm_devices.object_heads TO mdm_access;
 GRANT UPDATE(requested,completed,watermark,cursor) ON mdm_devices.association_work TO mdm_access;
 
 CREATE FUNCTION mdm_devices.guard_object_evidence() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-BEGIN RAISE EXCEPTION 'object evidence is immutable'; END $$;
+BEGIN RAISE EXCEPTION 'object_kind,object_id evidence is immutable'; END $$;
 REVOKE ALL ON FUNCTION mdm_devices.guard_object_evidence() FROM PUBLIC;
 CREATE TRIGGER immutable_object_evidence BEFORE UPDATE OR DELETE ON mdm_devices.object_versions FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_object_evidence();
 CREATE TRIGGER immutable_object_cut BEFORE UPDATE OR DELETE ON mdm_devices.object_cuts FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_object_evidence();

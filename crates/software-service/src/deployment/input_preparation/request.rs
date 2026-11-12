@@ -78,5 +78,5 @@ impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
 pub struct PublicationAuthority<'a> {
     pub proof: &'a rss_mdm_authorization_service::context::AuthorizedPrincipal,
     pub snapshot: &'a rss_mdm_authorization_service::Snapshot,
-    pub devices: Option<&'a std::collections::BTreeSet<String>>,
+    pub devices: Option<&'a std::collections::BTreeSet<rss_mdm_agent_wire::DeviceId>>,
 }

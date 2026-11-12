@@ -272,7 +272,14 @@ mod tests {
                     observed_at: Timepoint::try_from(1).unwrap(),
                 };
                 let objects = [g::ObjectSnapshot::single(
-                    g::ObjectKey::new(tenant, "device").unwrap(),
+                    g::ObjectKey::new(
+                        tenant,
+                        rss_mdm_agent_wire::ObjectRef::Endpoint(
+                            rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1))
+                                .unwrap(),
+                        ),
+                    )
+                    .unwrap(),
                     [(key.as_str().into(), fact)].into(),
                 )];
                 rule.evaluate_page(
@@ -346,7 +353,8 @@ mod tests {
         let mut device = DeviceSummary {
             scalars: DeviceView {
                 collection_scope: CollectionScope::Device,
-                device: "device".into(),
+                device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+                    .unwrap(),
                 channels: BTreeSet::new(),
                 fields: BTreeMap::new(),
                 lists: BTreeMap::new(),

@@ -141,7 +141,7 @@ type Response = Result<Reply, Error>;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Test {
     operation_id: Uuid,
-    device_id: String,
+    device_id: rss_mdm_agent_wire::DeviceId,
 }
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

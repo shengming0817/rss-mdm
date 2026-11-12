@@ -9,7 +9,7 @@ pub(crate) struct PreparedLifecycle {
     objects: Vec<rss_mdm_scope_service::channels::DeviceAssignment>,
     triggers: Vec<(Uuid, i64)>,
     more: bool,
-    next: Option<String>,
+    next: Option<rss_mdm_agent_wire::ObjectRef>,
     now: i64,
 }
 
@@ -18,7 +18,7 @@ impl crate::application::Application {
         &self,
         tx: &mut PgTransaction<'_>,
         policy: &Policy,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
     ) -> Result<Option<PreparedLifecycle>> {
         let profile = self.profile();
 
@@ -55,7 +55,7 @@ impl crate::application::Application {
                             c,
                             tenant,
                             scope,
-                            after.as_deref(),
+                            after,
                             64,
                         )
                         .await,
@@ -66,7 +66,7 @@ impl crate::application::Application {
             .map_err(Error::from)?;
         let more = objects.len() > 64;
         objects.truncate(64);
-        let next = objects.last().map(|o| o.cursor.clone());
+        let next = objects.last().map(|o| o.cursor);
         Ok(Some(PreparedLifecycle {
             policy: policy.clone(),
             frozen: Frozen::UnmanageDevice {
@@ -108,7 +108,7 @@ impl crate::application::Application {
             if !matches!(item.admission, ScopeAdmission::Eligible { .. }) {
                 continue;
             }
-            let key = item.object.object.key();
+            let key = item.object.object;
             let mut occurrences = Vec::new();
             for (trigger, at) in &triggers {
                 if let Some(slot) = schedule.occurrence(*at, version.as_bytes())?
@@ -248,7 +248,7 @@ impl crate::application::Application {
         } = stored(serde_json::from_value(published.frozen))?;
         let object: rss_mdm_inventory_service::objects::DeviceObject =
             stored(serde_json::from_value(object.clone()))?;
-        let key = object.object.key();
+        let key = object.object;
         let version = *version;
         let occurrence = occurrence.clone();
         let reader = self.objects.clone();
@@ -285,7 +285,7 @@ impl crate::application::Application {
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
             audit.identify_service("device-lifecycle");
-            audit.target(&key);
+            audit.target(&stored(serde_json::to_string(&key))?);
             audit.owned_operation(
                 rss_mdm_audit_integration::operation::OperationOwner::Policy,
                 accepted.0,

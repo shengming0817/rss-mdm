@@ -7,21 +7,16 @@ pub async fn capable_in(
     target: &Target,
     frozen: &FrozenEnrollment,
 ) -> Result<bool> {
-    let Some(binding) = agent_facts::agent_binding_in(
-        profile,
-        tx,
-        service.agent_store.clone(),
-        target.device.clone(),
-    )
-    .await?
+    let Some(binding) =
+        agent_facts::agent_binding_in(profile, tx, service.agent_store.clone(), target.device)
+            .await?
     else {
         return Ok(false);
     };
     if !binding.inventory() || !binding.enrollment() {
         return Ok(false);
     }
-    let Some((platform, _)) =
-        agent_facts::profile_in(profile, service, tx, target.device.clone()).await?
+    let Some((platform, _)) = agent_facts::profile_in(profile, service, tx, target.device).await?
     else {
         return Ok(false);
     };
@@ -42,7 +37,7 @@ pub async fn require_in(
     }
     let inventory = service.inventory.clone();
     let tenant = tx.tenant_id();
-    let device = target.device.clone();
+    let device = target.device;
     Ok(
         matches!(tx.with_connection(move|c|Box::pin(async move {Ok(inventory.enrollment_on(c,tenant,device).await)})).await??,rss_mdm_inventory::channel::Observation::Ready(fact) if fact.state=="unenrolled"),
     )

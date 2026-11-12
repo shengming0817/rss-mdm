@@ -21,15 +21,15 @@ pub async fn profiles(
     )
     .await?;
     sqlx::query("INSERT INTO mdm_agent.bindings (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), $2, 1, $3, 'windows', 'x86_64', $4)")
-        .bind(c.tenant.to_string()).bind(p.device()).bind(serde_json::to_string(&[w::Capability::InventoryCollectionV1])?).bind(serde_json::to_value(context)?).execute(&mut *tx).await?;
+        .bind(c.tenant.to_string()).bind(p.device().into_uuid()).bind(serde_json::to_string(&[w::Capability::InventoryCollectionV1])?).bind(serde_json::to_value(context)?).execute(&mut *tx).await?;
     tx.commit().await?;
     let mut tx = c.seed().await?;
     let mdm = rss_mdm_agent_channel::Bindings::new(StorageProfile::Mdm)
-        .binding(&mut tx, c.tenant.to_string(), p.device().to_string())
+        .binding(&mut tx, c.tenant.to_string(), *p.device())
         .await?
         .unwrap();
     let da = rss_mdm_agent_channel::Bindings::new(DA)
-        .binding(&mut tx, c.tenant.to_string(), p.device().to_string())
+        .binding(&mut tx, c.tenant.to_string(), *p.device())
         .await?
         .unwrap();
     assert!(!mdm.enrollment());
@@ -45,7 +45,7 @@ pub async fn profiles(
         .execute(&mut *tx)
         .await?;
     let denied =
-        sqlx::query("INSERT INTO rss_da.devices(tenant_id,id) VALUES($1,'foreign-device')")
+        sqlx::query("INSERT INTO rss_da.devices(tenant_id,id) VALUES($1,'00000000-0000-0000-0000-000000000001')")
             .bind(foreign)
             .execute(&mut *tx)
             .await

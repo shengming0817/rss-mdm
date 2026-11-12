@@ -5,7 +5,7 @@ SET LOCAL check_function_bodies = false;
 
 -- The registration owner participates on its original audit connection. Narrow
 -- product functions preserve the shared command component's exclusive runtime ACL.
-CREATE FUNCTION mdm_devices.retirement_commands(p_device text, p_after text) RETURNS SETOF rss_device_command.commands
+CREATE FUNCTION mdm_devices.retirement_commands(p_device uuid, p_after text) RETURNS SETOF rss_device_command.commands
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT a.device_id FROM (
@@ -24,9 +24,9 @@ CREATE FUNCTION mdm_devices.retirement_commands(p_device text, p_after text) RET
   AND d.command_id COLLATE "C" > p_after ORDER BY d.command_id COLLATE "C" LIMIT 64;
 $$;
 
-REVOKE ALL ON FUNCTION mdm_devices.retirement_commands(text,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_devices.retirement_commands(uuid,text) FROM PUBLIC;
 
-CREATE FUNCTION mdm_devices.save_retired_command(p_device text, p_run uuid, p_previous bigint, p_terminal bigint) RETURNS boolean
+CREATE FUNCTION mdm_devices.save_retired_command(p_device uuid, p_run uuid, p_previous bigint, p_terminal bigint) RETURNS boolean
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT a.device_id FROM mdm_devices.control_operations o
@@ -44,11 +44,11 @@ CREATE FUNCTION mdm_devices.save_retired_command(p_device text, p_run uuid, p_pr
   AND d.version=p_previous AND d.terminal_at IS NULL),false);
 $$;
 
-REVOKE ALL ON FUNCTION mdm_devices.save_retired_command(text,uuid,bigint,bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_devices.save_retired_command(uuid,uuid,bigint,bigint) FROM PUBLIC;
 
 -- Retirement uses the action owner reducer and a narrow CAS projection on the
 -- original audit connection. The application role retains read-only table access.
-CREATE FUNCTION mdm_devices.save_retired_action(p_device text, p_run uuid, p_previous jsonb, p_state jsonb) RETURNS boolean
+CREATE FUNCTION mdm_devices.save_retired_action(p_device uuid, p_run uuid, p_previous jsonb, p_state jsonb) RETURNS boolean
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  WITH changed AS (
@@ -63,7 +63,7 @@ CREATE FUNCTION mdm_devices.save_retired_action(p_device text, p_run uuid, p_pre
  ) SELECT EXISTS(SELECT 1 FROM changed);
 $$;
 
-REVOKE ALL ON FUNCTION mdm_devices.save_retired_action(text,uuid,jsonb,jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_devices.save_retired_action(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
 
 CREATE TABLE mdm_devices.unmanage_receipts (
     tenant_id uuid NOT NULL,
@@ -85,7 +85,7 @@ CREATE TABLE mdm_devices.unmanage_runs (
   , id uuid NOT NULL
   , source_kind text DEFAULT CAST('policy' AS text) NOT NULL
   , policy_version uuid
-  , device text NOT NULL
+  , device uuid NOT NULL
   , occurrence text NOT NULL
   , created_at bigint NOT NULL
   , available_at bigint NOT NULL
@@ -112,7 +112,7 @@ CREATE TABLE mdm_devices.unmanage_runs (
 ALTER TABLE ONLY mdm_devices.unmanage_runs FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_devices.control_recovery (
- tenant_id uuid NOT NULL,device text NOT NULL,authority_epoch bigint NOT NULL CHECK(authority_epoch>0),recovery_after text,
+ tenant_id uuid NOT NULL,device uuid NOT NULL,authority_epoch bigint NOT NULL CHECK(authority_epoch>0),recovery_after text,
  PRIMARY KEY(tenant_id,device)
 );
 
@@ -129,7 +129,7 @@ GRANT UPDATE(authority_epoch,recovery_after) ON mdm_devices.control_recovery TO 
 CREATE TABLE mdm_devices.control_operations (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , request bytea NOT NULL
   , input_context jsonb NOT NULL CHECK (jsonb_typeof(input_context) = 'object'
                                     AND octet_length(CAST(input_context AS text)) <= 4096)
@@ -253,7 +253,7 @@ CREATE POLICY tenant ON mdm_devices.control_requests USING ((tenant_id = (NULLIF
 
 -- Wake eligibility reads published work without giving the Windows role access
 -- to shared command storage. Reauthorization and user scope remain checked in Rust.
-CREATE FUNCTION mdm_devices.windows_pending_operations(p_device text, p_after uuid) RETURNS SETOF mdm_devices.control_operations
+CREATE FUNCTION mdm_devices.windows_pending_operations(p_device uuid, p_after uuid) RETURNS SETOF mdm_devices.control_operations
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT o.* FROM mdm_devices.control_operations o
@@ -267,25 +267,25 @@ CREATE FUNCTION mdm_devices.windows_pending_operations(p_device text, p_after uu
  ORDER BY o.id LIMIT 64;
 $$;
 
-REVOKE ALL ON FUNCTION mdm_devices.windows_pending_operations(text,uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_devices.windows_pending_operations(uuid,uuid) FROM PUBLIC;
 
 -- Discovery starts with work, never with every installed push channel. Authority
 -- is still rechecked by the Device service in the eventual claimant's transaction.
-CREATE FUNCTION mdm_devices.windows_wake_candidates(p_after text) RETURNS TABLE(device text)
+CREATE FUNCTION mdm_devices.windows_wake_candidates(p_after uuid) RETURNS TABLE(device uuid)
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
  SELECT o.device FROM mdm_devices.control_operations o
  JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
  JOIN mdm_access.devices r ON(r.tenant_id,r.id)=(o.tenant_id,o.device)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.device>p_after AND r.state='active'
+  AND (p_after IS NULL OR o.device>p_after) AND r.state='active'
   AND o.gateway_accepted AND o.dispatch_failure IS NULL
   AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
   AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
  ORDER BY device LIMIT 32;
 $$;
 
-REVOKE ALL ON FUNCTION mdm_devices.windows_wake_candidates(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_devices.windows_wake_candidates(uuid) FROM PUBLIC;
 
 CREATE INDEX windows_wake_operations
   ON mdm_devices.control_operations (tenant_id
@@ -302,12 +302,12 @@ GRANT UPDATE(request) ON mdm_devices.control_operations TO mdm_command_runtime;
 -- A recovery identity hashes explicit UTF-8, independent of client_encoding.
 -- PostgreSQL marks textsend STABLE because its wire bytes depend on that setting;
 -- convert_to with this fixed destination is deterministic for the stored text.
-CREATE FUNCTION mdm_devices.recovery_key(p_device text) RETURNS text
+CREATE FUNCTION mdm_devices.recovery_key(p_device uuid) RETURNS text
  LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path TO 'pg_catalog'
- AS $$ SELECT encode(sha256(convert_to(p_device,'UTF8')),'hex'); $$;
+ AS $$ SELECT encode(sha256(convert_to(p_device::text,'UTF8')),'hex'); $$;
 
-REVOKE ALL ON FUNCTION mdm_devices.recovery_key(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION mdm_devices.recovery_key(uuid) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION mdm_devices.recovery_key(text) TO mdm_command_runtime,mdm_policy_runtime;
+GRANT EXECUTE ON FUNCTION mdm_devices.recovery_key(uuid) TO mdm_command_runtime,mdm_policy_runtime;
 
 CREATE INDEX command_device_recovery ON mdm_devices.control_recovery(tenant_id,mdm_devices.recovery_key(device));

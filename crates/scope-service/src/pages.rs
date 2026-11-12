@@ -32,7 +32,7 @@ struct Cursor {
     tenant: String,
     result: Uuid,
     binding: ResultBinding,
-    after: String,
+    after: rss_mdm_agent_wire::ObjectRef,
 }
 fn encode(key: &ring::hmac::Key, cursor: Cursor) -> Result<String> {
     let context = checked_input(fingerprint(&(
@@ -53,7 +53,7 @@ fn decode(
     tenant: &str,
     result: Uuid,
     binding: &ResultBinding,
-) -> Result<String> {
+) -> Result<rss_mdm_agent_wire::ObjectRef> {
     let context = checked_input(fingerprint(&(SCHEMA.id, tenant, result, binding)))?;
     let token = checked_input(rss_contract::PageCursor::parse(token))?;
     CursorCodec::from_key(key.clone())

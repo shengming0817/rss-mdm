@@ -270,7 +270,7 @@ impl Reconciler<PgClaim> for GroupWork {
                                                         tx,
                                                         id,
                                                         edit,
-                                                        state.cursor,
+                                                        state.definition_progress,
                                                         candidate,
                                                     )
                                                     .await

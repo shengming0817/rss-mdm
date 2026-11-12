@@ -49,7 +49,10 @@ pub(super) async fn read(
     let p = DevicePrincipal {
         profile,
         tenant: credential.tenant,
-        device: row.try_get("device").map_err(db)?,
+        device: row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)
+            .map_err(db)?,
         kind: RegistrationKind::from_channel(credential.channel),
         installation: installation_in(profile, c).await?,
         credential: row.try_get("credential").map_err(db)?,
@@ -129,7 +132,7 @@ pub(super) async fn validate(
         sql.device_management_validate_primary
     })
     .bind(tenant)
-    .bind(p.device())
+    .bind(p.device().into_uuid())
     .bind(p.purpose().as_str())
     .bind(p.epoch())
     .bind(p.credential());

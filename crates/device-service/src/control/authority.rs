@@ -12,7 +12,7 @@ pub enum Authority {
         tenant: String,
         retirement: uuid::Uuid,
         version: uuid::Uuid,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         execution: uuid::Uuid,
         required: Vec<Permission>,
     },
@@ -43,7 +43,7 @@ impl Authority {
     pub(crate) fn for_control(
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         action: crate::control::device_control::Kind,
         confirmation: bool,
     ) -> Result<Self, Error> {

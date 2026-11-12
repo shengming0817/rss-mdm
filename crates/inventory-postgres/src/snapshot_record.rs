@@ -51,7 +51,7 @@ impl Record {
     }
     pub fn manual(row: sqlx::postgres::PgRow) -> Result<Self> {
         Ok(Self(
-            json!({"device":row.try_get::<String,_>("device")?,"field":row.try_get::<String,_>("field")?,"revision":row.try_get::<i64,_>("revision")?,"fact":row.try_get::<Value,_>("fact")?,"value_version":row.try_get::<Option<String>,_>("value_version")?,"last_known_version":row.try_get::<Option<String>,_>("last_known_version")?}),
+            json!({"device":row.try_get::<uuid::Uuid, _>("device").and_then(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e))))?,"field":row.try_get::<String,_>("field")?,"revision":row.try_get::<i64,_>("revision")?,"fact":row.try_get::<Value,_>("fact")?,"value_version":row.try_get::<Option<String>,_>("value_version")?,"last_known_version":row.try_get::<Option<String>,_>("last_known_version")?}),
         ))
     }
 }

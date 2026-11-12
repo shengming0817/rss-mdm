@@ -10,7 +10,7 @@ async fn start_rechecks_current_profile_without_creating_another_attempt() -> Re
     h.event(&offer, w::TaskEvent::Received).await?;
     let input = w::TaskClaimRequest::new(Uuid::new_v4(), vec![], context())?;
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("UPDATE mdm_agent.bindings SET announcement = $3 WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(h.c.tenant.to_string()).bind(h.p.device()).bind(serde_json::to_value(input)?).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_agent.bindings SET announcement = $3 WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).bind(serde_json::to_value(input)?).execute(&mut *tx).await?;
     tx.commit().await?;
     assert!(h.event(&offer, w::TaskEvent::Start).await.is_err());
     assert_eq!(h.state(id).await?["execution"], "not_started");
@@ -20,7 +20,7 @@ async fn start_rechecks_current_profile_without_creating_another_attempt() -> Re
         context(),
     )?;
     let mut tx = command::seed_transaction(&h.c).await?;
-    sqlx::query("UPDATE mdm_agent.bindings SET announcement = $3 WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(h.c.tenant.to_string()).bind(h.p.device()).bind(serde_json::to_value(restored)?).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_agent.bindings SET announcement = $3 WHERE tenant_id = CAST($1 AS uuid) AND device = $2").bind(h.c.tenant.to_string()).bind(h.p.device().into_uuid()).bind(serde_json::to_value(restored)?).execute(&mut *tx).await?;
     tx.commit().await?;
     assert!(
         h.event(&offer, w::TaskEvent::Start)
@@ -64,7 +64,7 @@ async fn unknown_survives_restart_and_only_original_attempt_can_settle_it() -> R
     Fixture::close(std::mem::replace(&mut h.a, a)).await?;
     let (other_policy, other_version) = h.policy("script-unknown").await?;
     let target = script::Target {
-        device: h.p.device().into(),
+        device: *h.p.device(),
     };
     let pending = |resource: &str| {
         let resource = resource.to_owned();
@@ -218,7 +218,7 @@ async fn periodic_assignment_keeps_history_separate_from_current_admission() -> 
         sqlx::query("UPDATE mdm_script.runs SET state=jsonb_set(state,'{execution}','\"unknown\"') WHERE tenant_id=$1::uuid AND id=$2").bind(h.c.tenant.to_string()).bind(task).execute(&mut *tx).await?;
         tx.commit().await?;
         assert_eq!(read().await?["items"][0]["taskAdmission"]["state"],"effect_unknown");
-        let target=rss_mdm_registration_service::device::endpoints::PrimaryRegistration{device:Uuid::new_v4().to_string(),channel:rss_mdm_inventory::Channel::Agent,};
+        let target=rss_mdm_registration_service::device::endpoints::PrimaryRegistration{device:rss_mdm_agent_wire::DeviceId::try_from(Uuid::new_v4()).unwrap(),channel:rss_mdm_inventory::Channel::Agent,};
         let mut tx=command::seed_transaction(&h.c).await?;
         assert!(script::queries::latest_assignment_on(&mut tx,h.c.tenant,policy,&target).await?.is_none());
         tx.rollback().await?;

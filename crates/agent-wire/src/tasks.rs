@@ -674,8 +674,7 @@ pub struct TaskSpec {
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
     /// Server-selected device identity.
-    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]+$"))]
-    pub device_id: String,
+    pub device_id: crate::DeviceId,
     /// Selected artifact operating system.
     pub platform: TaskPlatform,
     /// Selected artifact architecture.
@@ -790,9 +789,6 @@ impl TaskSpec {
                         TaskPlatform::Windows
                     )
             )
-            || self.device_id.is_empty()
-            || self.device_id.len() > 1024
-            || self.device_id.chars().any(char::is_control)
             || self.expires_at < 0
             || self.content.length == 0
             || self.content.length > 16_777_216
@@ -878,8 +874,7 @@ pub struct CollectionTaskSpec {
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
     /// Server-selected device identity.
-    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]+$"))]
-    pub device_id: String,
+    pub device_id: crate::DeviceId,
     /// Selected artifact operating system.
     pub platform: TaskPlatform,
     /// Selected artifact architecture.
@@ -924,9 +919,6 @@ impl CollectionTaskSpec {
             || [self.tenant_id, self.task_id, self.attempt_id]
                 .iter()
                 .any(Uuid::is_nil)
-            || self.device_id.is_empty()
-            || self.device_id.len() > 1024
-            || self.device_id.chars().any(char::is_control)
             || self.expires_at < 0
             || self.deadline < self.expires_at
             || self.plan_digest != self.plan.digest()
@@ -1187,8 +1179,7 @@ pub struct SoftwareTaskSpec {
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
     /// Server-selected device.
-    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]+$"))]
-    pub device_id: String,
+    pub device_id: crate::DeviceId,
     /// Target platform.
     pub platform: TaskPlatform,
     /// Target architecture.
@@ -1235,9 +1226,6 @@ impl SoftwareTaskSpec {
             || self.task_id.is_nil()
             || self.attempt_id.is_nil()
             || self.expires_at < 0
-            || self.device_id.is_empty()
-            || self.device_id.len() > 1024
-            || self.device_id.chars().any(char::is_control)
             || self.steps.is_empty()
             || self.steps.len() > 32
         {

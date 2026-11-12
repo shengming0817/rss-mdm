@@ -55,7 +55,7 @@ impl crate::deployment::queries::Queries {
         c: &mut sqlx::PgConnection,
         proof: &AuthorizedPrincipal,
         current: &crate::deployment::authorization::Snapshot,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         _windows: bool,
         _apple: bool,
     ) -> crate::deployment::Result<Vec<crate::deployment::queries::records::Capability>> {
@@ -80,7 +80,7 @@ impl crate::deployment::queries::Queries {
         .is_some();
         let binding = if let Some(registration) = &agent {
             self.agent_store
-                .binding(c, tenant, registration.device.clone())
+                .binding(c, tenant, registration.device)
                 .await?
         } else {
             None
@@ -114,7 +114,7 @@ fn agent_prerequisite(
 fn capability(
     current: &crate::deployment::authorization::Snapshot,
     proof: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     spec: (&str, Permission, &str, bool),
     prerequisite: (&str, Option<&str>),
 ) -> Value {

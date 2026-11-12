@@ -153,7 +153,7 @@ pub struct ReadScope {
     pub collection_scope: rss_mdm_inventory::CollectionScope,
     pub subject: String,
 
-    pub devices: Option<BTreeSet<String>>,
+    pub devices: Option<BTreeSet<rss_mdm_agent_wire::DeviceId>>,
 }
 impl ReadScope {
     pub fn all() -> Self {
@@ -192,7 +192,7 @@ impl ReadScope {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeviceView {
     pub collection_scope: rss_mdm_inventory::CollectionScope,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub channels: BTreeSet<String>,
     pub fields: BTreeMap<FieldKey, rss_mdm_inventory::ResolvedField>,
     pub lists: BTreeMap<FieldKey, super::lists::ListSummary>,
@@ -230,7 +230,7 @@ pub enum Response {
         response: Box<software::Response>,
     },
     InventoryScopes {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         asset_cut: AssetCut,
         items: Vec<InventoryScope>,
         next_cursor: Option<String>,
@@ -253,7 +253,7 @@ pub enum Response {
         next_cursor: Option<String>,
     },
     ListItems {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         field: FieldKey,
         asset_cut: AssetCut,
         total: usize,
@@ -300,7 +300,7 @@ pub enum Response {
         summary: Summary,
     },
     Assignment {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         field: FieldKey,
         revision: i64,
     },
@@ -316,7 +316,7 @@ pub enum Command {
         access: software::Access,
     },
     InventoryScopes {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         scope: ReadScope,
         limit: usize,
         cursor: Option<String>,
@@ -335,7 +335,7 @@ pub enum Command {
         revision: u64,
     },
     CollectionItems {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         run: Uuid,
         field: FieldKey,
         scope: ReadScope,
@@ -343,14 +343,14 @@ pub enum Command {
         limit: usize,
     },
     ListItems {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         field: FieldKey,
         scope: ReadScope,
         limit: usize,
         cursor: Option<String>,
     },
     CollectionRun {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         run: Uuid,
         scope: ReadScope,
     },
@@ -376,7 +376,7 @@ pub enum Command {
         cursor: Option<String>,
     },
     Detail {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         scope: ReadScope,
     },
     Search {
@@ -384,7 +384,7 @@ pub enum Command {
         scope: ReadScope,
     },
     Manual {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         field: FieldKey,
         change: Operation<ManualChange>,
         owner: Owner,
@@ -433,7 +433,7 @@ pub struct QualityRun {
     pub complete: bool,
     pub source: rss_mdm_inventory::Source,
     pub channel: rss_mdm_inventory::Channel,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub epoch: Uuid,
     pub run_id: Uuid,
     pub sequence: i64,

@@ -310,13 +310,7 @@ async fn prepare_in(
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
     {
-        Some(
-            crate::storage::read_run(tx, id)
-                .await?
-                .target
-                .device
-                .clone(),
-        )
+        Some(crate::storage::read_run(tx, id).await?.target.device)
     } else {
         None
     };

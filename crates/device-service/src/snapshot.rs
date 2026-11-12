@@ -16,12 +16,12 @@ pub(crate) struct Read {
 struct Peer {
     kind: String,
     value: String,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
 }
 pub(crate) fn decode_world(
     value: &Value,
     tenant: TenantId,
-    ids: &[String],
+    ids: &[rss_mdm_agent_wire::DeviceId],
 ) -> Result<(identity::World, Catalog, Vec<DeviceSummary>, Vec<Value>)> {
     let catalog = raw_snapshot::catalog(&value["assets"]).map_err(|_| Error::Storage)?;
     let assets = raw_snapshot::decode(
@@ -61,7 +61,10 @@ pub(crate) fn decode(
     let ids = objects
         .iter()
         .flat_map(|o| o["devices"].as_array().into_iter().flatten())
-        .map(|id| id.as_str().map(str::to_owned).ok_or(Error::Storage))
+        .map(|id| {
+            serde_json::from_value::<rss_mdm_agent_wire::DeviceId>(id.clone())
+                .map_err(|_| Error::Storage)
+        })
         .collect::<Result<Vec<_>>>()?;
     let tenant = TenantId::parse(proof.tenant_id()).map_err(|_| Error::Storage)?;
     let (world, catalog, assets, mut rows) = decode_world(&value["world"], tenant, &ids)?;
@@ -115,30 +118,31 @@ pub(crate) fn decode(
         .collect::<Result<BTreeMap<_, _>>>()?;
     let mut groups = Vec::new();
     for object in objects {
-        let key = object["key"].as_str().ok_or(Error::Storage)?;
-        let (reference, association) = if let Some(id) = key.strip_prefix("association:") {
-            let id = uuid::Uuid::parse_str(id).map_err(|_| Error::Storage)?;
-            let a = world
-                .associations
-                .iter()
-                .find(|a| a.id == id)
-                .ok_or(Error::Storage)?;
-            (ViewRef::Association(id), Some(world.effective(a.clone())))
-        } else {
-            (
-                ViewRef::Endpoint(key.strip_prefix("endpoint:").ok_or(Error::Storage)?.into()),
-                None,
-            )
+        let reference: ObjectRef =
+            serde_json::from_value(object["reference"].clone()).map_err(|_| Error::Storage)?;
+        let association = match reference {
+            ObjectRef::Association(id) => Some(
+                world.effective(
+                    world
+                        .associations
+                        .iter()
+                        .find(|a| a.id == id)
+                        .ok_or(Error::Storage)?
+                        .clone(),
+                ),
+            ),
+            ObjectRef::Endpoint(_) => None,
         };
         let mut selected = Vec::new();
         for id in object["devices"].as_array().ok_or(Error::Storage)? {
-            let id = id.as_str().ok_or(Error::Storage)?;
+            let id = serde_json::from_value::<rss_mdm_agent_wire::DeviceId>(id.clone())
+                .map_err(|_| Error::Storage)?;
             grant.require(
                 proof,
                 rss_mdm_authorization_service::Permission::InventoryRead,
-                Some(id),
+                Some(&id),
             )?;
-            selected.push(endpoints.remove(id).ok_or(Error::Storage)?);
+            selected.push(endpoints.remove(&id.to_string()).ok_or(Error::Storage)?);
         }
         groups.push(Group {
             reference,

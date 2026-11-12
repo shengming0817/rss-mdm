@@ -16,6 +16,8 @@ Policy、Resource、Software Release 的 PG adapter 可依赖同 workspace 的 b
 
 Agent 只带目标平台所需公共核心/值类型，不带服务端 PG/broker/运行角色。共享 wire 归协议包唯一维护，两端的能力、schema 和升级窗口须按真实集成验证，不以模拟消费者代替。
 
+共享设备与对象坐标由 `rss-mdm-agent-wire` 唯一维护 `DeviceId(Uuid)` 和 `ObjectRef`；核心、服务与 PG adapter 只消费这些纯值，授权、资产上下文、事务与 SQLx 继续归各 owner。
+
 ## Identity 与安全
 
 MDM 直接装配公开认证组件并持有产品权限，不依赖 Identity 参考应用。OIDC JWT 通过固定 Identity 公共组件验证；已移除的 rsa/openidconnect 漏洞依赖闭包由 CI 禁止重新引入，[deny.toml](../../deny.toml) 不保留历史 advisory 豁免。生产装配不启用测试 loopback 能力。

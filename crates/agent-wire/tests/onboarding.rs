@@ -34,25 +34,39 @@ fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let tenant = Uuid::new_v4();
-    let base = json!({"wireVersion":1,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"authorization":{"kind":"policy","policyId":Uuid::new_v4(),"policyVersion":Uuid::new_v4()},"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
+    let base = json!({"wireVersion":1,"tenantId":tenant,"deviceId":"eade504c-4515-50ed-a3a7-ef0823e7a753","platform":"macos","architecture":"aarch64","taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"authorization":{"kind":"policy","policyId":Uuid::new_v4(),"policyVersion":Uuid::new_v4()},"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
     for (field, value, expected) in [
         ("expiresAt", json!(0), false),
         ("expiresAt", json!(1), true),
-        ("deviceId", json!("a".repeat(256)), true),
-        ("deviceId", json!("a".repeat(257)), false),
-        ("deviceId", json!("界".repeat(256)), true),
-        ("deviceId", json!("界".repeat(257)), false),
+        (
+            "deviceId",
+            json!("eade504c-4515-50ed-a3a7-ef0823e7a753"),
+            true,
+        ),
+        (
+            "deviceId",
+            json!("EADE504C-4515-50ED-A3A7-EF0823E7A753"),
+            false,
+        ),
+        ("deviceId", json!("eade504c451550eda3a7ef0823e7a753"), false),
+        (
+            "deviceId",
+            json!("00000000-0000-0000-0000-000000000000"),
+            false,
+        ),
+        ("deviceId", json!("device"), false),
     ] {
         let mut value_json = base.clone();
         value_json[field] = value;
-        let task: EnrollmentTaskSpec = serde_json::from_value(value_json.clone()).unwrap();
+        let task = serde_json::from_value::<EnrollmentTaskSpec>(value_json.clone());
         assert_eq!(
             validator.is_valid(&json!({"kind":"enrollment","task":value_json})),
             expected,
             "schema: {field}"
         );
         assert_eq!(
-            task.signing_bytes("key").is_ok(),
+            task.as_ref()
+                .is_ok_and(|task| task.signing_bytes("key").is_ok()),
             expected,
             "signing: {field}"
         );

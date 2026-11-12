@@ -68,7 +68,7 @@ pub async fn admission_in(
     tx: &mut PgTransaction<'_>,
     scope: Uuid,
     channel: rss_mdm_inventory::Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<crate::deployment::scope::ScopeAdmission> {
     let tenant = tx.tenant_id();
     let source = source.clone();
@@ -87,7 +87,7 @@ pub async fn eligible_in(
     source: &std::sync::Arc<dyn crate::deployment::scope::Sources>,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<i64>> {
     execution_eligible_in(
         source,
@@ -106,7 +106,7 @@ pub async fn execution_eligible_in(
     policy: &Policy,
     _version: Uuid,
     channel: rss_mdm_inventory::Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<i64>> {
     let tenant_name = tx.tenant_id().to_string();
     let device_name = device.to_owned();
@@ -140,7 +140,7 @@ pub async fn withdrawn_in(
     source: &std::sync::Arc<dyn crate::deployment::scope::Sources>,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<bool> {
     Ok(!policy.state.is_enabled()
         || admission_in(

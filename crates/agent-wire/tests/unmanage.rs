@@ -5,7 +5,8 @@ fn task() -> UnmanageTaskSpec {
     UnmanageTaskSpec {
         wire_version: WIRE_VERSION,
         tenant_id: Uuid::from_u128(1),
-        device_id: "managed-device".into(),
+        device_id: rss_mdm_agent_wire::DeviceId::parse("6bb2b2ae-5d45-5826-99ef-b5adbd340c67")
+            .unwrap(),
 
         retirement_id: Uuid::from_u128(4),
         task_id: Uuid::from_u128(5),
@@ -27,7 +28,7 @@ fn retirement_signature_binds_installation_authority_and_attempt() {
     let bytes = original.signing_bytes("key").unwrap();
     assert!(bytes.starts_with(b"rss-mdm-agent-unmanage-v1-ed25519\0"));
     let changes: [fn(&mut UnmanageTaskSpec); 6] = [
-        |s| s.device_id.push_str("-other"),
+        |s| s.device_id = rss_mdm_agent_wire::DeviceId::new_v4(),
         |s| s.tenant_id = Uuid::from_u128(9),
         |s| s.retirement_id = Uuid::from_u128(9),
         |s| s.attempt_id = Uuid::from_u128(9),
@@ -40,9 +41,9 @@ fn retirement_signature_binds_installation_authority_and_attempt() {
         assert_ne!(bytes, changed.signing_bytes("key").unwrap());
     }
     assert_ne!(bytes, original.signing_bytes("other-key").unwrap());
-    let mut invalid = original.clone();
-    invalid.device_id.clear();
-    assert!(invalid.signing_bytes("key").is_err());
+    let mut invalid = serde_json::to_value(&original).unwrap();
+    invalid["deviceId"] = serde_json::json!("");
+    assert!(serde_json::from_value::<UnmanageTaskSpec>(invalid).is_err());
     let mut invalid = original.clone();
     invalid.retirement_id = Uuid::nil();
     assert!(invalid.signing_bytes("key").is_err());

@@ -102,9 +102,7 @@ pub(super) async fn verify(
         id: Uuid::new_v4(),
         revision: 1,
         version: Uuid::new_v4(),
-        target: rss_mdm_policy_postgres::device_access::Target::Device {
-            device: da.device.clone(),
-        },
+        target: rss_mdm_policy_postgres::device_access::Target::Device { device: da.device },
         enabled: true,
         configuration: configuration.clone(),
     };
@@ -113,7 +111,7 @@ pub(super) async fn verify(
         account_disposition: w::AccessAccountDisposition::Keep,
         id: Uuid::new_v4(),
         tenant,
-        device: da.device.clone(),
+        device: da.device,
 
         person: rss_mdm_device_access::Person {
             instance: agent.installation(),
@@ -179,7 +177,7 @@ pub(super) async fn verify(
         .validate()
         .context("validate the persisted Agent runtime profile")?;
     sqlx::query("INSERT INTO mdm_agent.bindings (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES ($1, $2, 1, $3, 'windows', 'x86_64', $4)")
-        .bind(tenant).bind(agent.device()).bind(serde_json::to_string(&profile.capabilities)?)
+        .bind(tenant).bind(agent.device().into_uuid()).bind(serde_json::to_string(&profile.capabilities)?)
         .bind(serde_json::to_value(&profile.execution_context)?)
         .execute(&mut *tx).await?;
     tx.commit().await?;
@@ -193,7 +191,7 @@ pub(super) async fn verify(
     let task = w::AccessTaskSpec {
         wire_version: w::WIRE_VERSION,
         tenant_id: tenant,
-        device_id: agent.device().into(),
+        device_id: *agent.device(),
 
         platform: w::TaskPlatform::Windows,
         architecture: w::TaskArchitecture::X86_64,
@@ -228,7 +226,7 @@ pub(super) async fn verify(
     let escrow = envelope(&task, &subject, protection.active_recipient())?;
     let before = material_count(c, tenant).await?;
     let mut wrong_generation = task.clone();
-    wrong_generation.device_id = Uuid::new_v4().to_string();
+    wrong_generation.device_id = rss_mdm_agent_wire::DeviceId::new_v4();
     let wrong_envelope = envelope(&wrong_generation, &subject, protection.active_recipient())?;
     let mut tx = transaction(&pool, tenant).await?;
     let stale = materials
@@ -240,7 +238,7 @@ pub(super) async fn verify(
     );
     tx.rollback().await?;
     let mut da_wire = task.clone();
-    da_wire.device_id = da.device.clone();
+    da_wire.device_id = da.device;
     let mut tx = transaction(&pool, tenant).await?;
     assert!(
         materials.escrow(&mut tx, &da_wire, &escrow).await.is_err(),
@@ -293,7 +291,7 @@ pub(super) async fn verify(
     });
     access::storage::save_in(&mut tx, &binding, binding.revision).await?;
     let target = recovery::tasks::Target {
-        device: agent.device().into(),
+        device: *agent.device(),
     };
     let rotate = rss_mdm_policy::CredentialOperation::RotateRssLogin {
         binding: binding.id,
@@ -307,7 +305,7 @@ pub(super) async fn verify(
         coordinates.binding
     );
     let mut stale_target = target.clone();
-    stale_target.device = Uuid::new_v4().to_string();
+    stale_target.device = rss_mdm_agent_wire::DeviceId::new_v4();
     assert!(matches!(
         eligibility
             .resolve(&mut tx, tenant, &rotate, &stale_target)
@@ -335,7 +333,7 @@ pub(super) async fn verify(
         "UPDATE rss_da.agent_delivery SET enabled=false WHERE tenant_id=$1 AND da_device=$2",
     )
     .bind(tenant)
-    .bind(da.device.clone())
+    .bind(da.device.into_uuid())
     .execute(&mut *setup)
     .await?;
     setup.commit().await?;
@@ -359,7 +357,7 @@ pub(super) async fn verify(
         "UPDATE rss_da.agent_delivery SET enabled=true WHERE tenant_id=$1 AND da_device=$2",
     )
     .bind(tenant)
-    .bind(da.device.clone())
+    .bind(da.device.into_uuid())
     .execute(&mut *setup)
     .await?;
     setup.commit().await?;
@@ -455,7 +453,7 @@ async fn verify_access_recovery(
     let mut tx = seed(c).await?;
     sqlx::query("INSERT INTO rss_da.access_runs (tenant_id, id, policy_version, origin, access_binding, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint) VALUES ($1, $2, $3, '\"policy\"', $4, $5, $6, $7, $7, $8, $9, $10)")
         .bind(binding.tenant).bind(id).bind(binding.policy_version).bind(serde_json::to_value(binding)?)
-        .bind(agent.device()).bind(format!("binding:{}",binding.id))
+        .bind(agent.device().into_uuid()).bind(format!("binding:{}",binding.id))
         .bind(at).bind(at+600).bind(&original).bind(vec![7_u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     // Diagnostic lookup uses the actual DA authority and the original frozen registration.
@@ -478,7 +476,7 @@ async fn verify_access_recovery(
         actor: None,
         instance: None,
         target: None,
-        device: Some(agent.device().into()),
+        device: Some(*agent.device()),
     };
     let read_pool = c.inputs.pool("shared", "da_access").await?;
     let mut read = read_pool.begin().await?;
@@ -495,8 +493,8 @@ async fn verify_access_recovery(
     .await?
     .expect("retained DA credential task");
     assert_eq!(value.task_id, credential_id);
-    assert_eq!(value.device, agent.device());
-    locator.device = Some(Uuid::new_v4().to_string());
+    assert_eq!(value.device, *agent.device());
+    locator.device = Some(rss_mdm_agent_wire::DeviceId::new_v4());
     assert!(
         recovery::tasks::queries::diagnostic_on(
             &mut read,
@@ -570,7 +568,7 @@ async fn verify_access_recovery(
     let mut setup = seed(c).await?;
     sqlx::query("UPDATE mdm_access.devices SET state = 'revoked' WHERE tenant_id = $1 AND id = $2")
         .bind(binding.tenant)
-        .bind(agent.device())
+        .bind(agent.device().into_uuid())
         .execute(&mut *setup)
         .await?;
     setup
@@ -591,12 +589,12 @@ async fn verify_access_recovery(
     let mut setup = seed(c).await?;
     sqlx::query("UPDATE mdm_access.devices SET state = 'active' WHERE tenant_id = $1 AND id = $2")
         .bind(binding.tenant)
-        .bind(agent.device())
+        .bind(agent.device().into_uuid())
         .execute(&mut *setup)
         .await?;
     sqlx::query("UPDATE rss_da.devices SET state = 'revoked' WHERE tenant_id = $1 AND id = $2")
         .bind(binding.tenant)
-        .bind(binding.device.clone())
+        .bind(binding.device.into_uuid())
         .execute(&mut *setup)
         .await?;
     setup
@@ -621,7 +619,7 @@ async fn verify_access_recovery(
     let mut setup = seed(c).await?;
     sqlx::query("UPDATE rss_da.devices SET state = 'active' WHERE tenant_id = $1 AND id = $2")
         .bind(binding.tenant)
-        .bind(binding.device.clone())
+        .bind(binding.device.into_uuid())
         .execute(&mut *setup)
         .await?;
     setup.commit().await?;
@@ -664,16 +662,16 @@ async fn verify_access_recovery(
     let mut setup = seed(c).await?;
     sqlx::query("INSERT INTO rss_da.access_runs (tenant_id, id, policy_version, origin, access_binding, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint) VALUES ($1, $2, $3, '\"policy\"', $4, $5, $6, $7, $7, $8, $9, $10)")
         .bind(binding.tenant).bind(task.task_id).bind(binding.policy_version).bind(serde_json::to_value(binding)?)
-        .bind(agent.device()).bind("disabled-started-proof")
+        .bind(agent.device().into_uuid()).bind("disabled-started-proof")
         .bind(at).bind(task.deadline).bind(serde_json::to_value(started)?).bind(vec![17_u8;32]).execute(&mut *setup).await?;
     sqlx::query("INSERT INTO mdm_agent.task_attempts (tenant_id, id, run, device, claimed_at, offer, permit, deadline) VALUES ($1, $2, $3, $4, $5, $6, $6, $7)")
-        .bind(binding.tenant).bind(task.attempt_id).bind(task.task_id).bind(agent.device()).bind(at)
+        .bind(binding.tenant).bind(task.attempt_id).bind(task.task_id).bind(agent.device().into_uuid()).bind(at)
         .bind(serde_json::to_value(signed)?).bind(task.deadline).execute(&mut *setup).await?;
     let context: serde_json::Value = sqlx::query_scalar(
         "SELECT execution_context FROM mdm_agent.bindings WHERE tenant_id = $1 AND device = $2",
     )
     .bind(binding.tenant)
-    .bind(agent.device())
+    .bind(agent.device().into_uuid())
     .fetch_one(&mut *setup)
     .await?;
     setup.commit().await?;
@@ -849,7 +847,7 @@ async fn credential_runs<const N: usize>(
     let definition = serde_json::to_value(definition)?;
     let frozen = serde_json::to_value(frozen)?;
     let anchor = recovery::Binding {
-        device: binding.device.clone(),
+        device: binding.device,
 
         subject: recovery::Subject::RssLogin {
             binding: binding.id,
@@ -867,7 +865,7 @@ async fn credential_runs<const N: usize>(
         sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1,$2,$3,1,'credential',$4,$5)")
         .bind(binding.tenant).bind(version).bind(policy).bind(&frozen).bind(vec![11_u8;32]).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO rss_da.credential_runs(tenant_id,id,policy_version,device,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,origin,material_binding) VALUES($1,$2,$3,$4,'rss-recovery-proof',$5,$6,$7,$8,$5,'[]','\"policy\"',$9)")
-        .bind(binding.tenant).bind(id).bind(version).bind(agent.device())
+        .bind(binding.tenant).bind(id).bind(version).bind(agent.device().into_uuid())
         .bind(at).bind(at+600).bind(state).bind(vec![13_u8;32]).bind(serde_json::to_value(&anchor)?).execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -928,8 +926,8 @@ async fn verify_credential_retirement(
     id: Uuid,
     original: &serde_json::Value,
 ) -> Result<()> {
-    assert_ne!(agent.device(), binding.device);
-    assert_ne!(agent.device(), binding.device.clone());
+    assert_ne!(*agent.device(), binding.device);
+    assert_ne!(*agent.device(), binding.device.clone());
     let anchor: serde_json::Value = sqlx::query_scalar(
         "SELECT material_binding FROM rss_da.credential_runs WHERE tenant_id=$1 AND id=$2",
     )
@@ -953,19 +951,23 @@ async fn verify_credential_retirement(
         (true, Some(anchor.clone()), agent.device()),
         (false, None, agent.device()),
         (false, Some(missing_da), agent.device()),
-        (false, Some(anchor.clone()), "unknown-agent"),
+        (
+            false,
+            Some(anchor.clone()),
+            &rss_mdm_agent_wire::DeviceId::new_v4(),
+        ),
     ] {
         let mut setup = seed(c).await?;
         sqlx::query("UPDATE rss_da.agent_delivery SET enabled=$3,revision=revision+1 WHERE tenant_id=$1 AND da_device=$2")
-            .bind(binding.tenant).bind(binding.device.clone()).bind(enabled).execute(&mut *setup).await?;
+            .bind(binding.tenant).bind(binding.device.into_uuid()).bind(enabled).execute(&mut *setup).await?;
         sqlx::query("UPDATE rss_da.credential_runs SET material_binding=$3,device=$4,state=$5 WHERE tenant_id=$1 AND id=$2")
-            .bind(binding.tenant).bind(id).bind(material).bind(target).bind(original).execute(&mut *setup).await?;
+            .bind(binding.tenant).bind(id).bind(material).bind(target.into_uuid()).bind(original).execute(&mut *setup).await?;
         setup.commit().await?;
         // The privileged write gate must reject independently of the candidate selector.
         let mut tx = transaction(&pool, binding.tenant).await?;
         let changed: bool =
             sqlx::query_scalar("SELECT rss_da.credential_save_retired_run($1,$2,$3,$4)")
-                .bind(agent.device())
+                .bind(agent.device().into_uuid())
                 .bind(id)
                 .bind(original)
                 .bind(&cancelled)
@@ -985,7 +987,7 @@ async fn verify_credential_retirement(
     }
     let mut setup = seed(c).await?;
     sqlx::query("UPDATE rss_da.credential_runs SET material_binding=$3,device=$4 WHERE tenant_id=$1 AND id=$2")
-        .bind(binding.tenant).bind(id).bind(anchor).bind(agent.device()).execute(&mut *setup).await?;
+        .bind(binding.tenant).bind(id).bind(anchor).bind(agent.device().into_uuid()).execute(&mut *setup).await?;
     setup.commit().await?;
     // Abort after both the owner state mutation and the real Audit append have executed.
     assert!(matches!(
@@ -1027,7 +1029,7 @@ async fn verify_credential_retirement(
     );
     let mut setup = seed(c).await?;
     sqlx::query("UPDATE rss_da.agent_delivery SET enabled=true,revision=revision+1 WHERE tenant_id=$1 AND da_device=$2")
-        .bind(binding.tenant).bind(binding.device.clone()).execute(&mut *setup).await?;
+        .bind(binding.tenant).bind(binding.device.into_uuid()).execute(&mut *setup).await?;
     setup.commit().await?;
     pool.close().await;
     Ok(())
@@ -1037,7 +1039,7 @@ async fn retire_credential(
     c: &Context,
     runtime: &rss_transactional_messaging_postgres::PgRuntime,
     audit: &rss_mdm_audit_integration::AuditStore,
-    registration: &str,
+    registration: &rss_mdm_agent_wire::DeviceId,
     abort: bool,
 ) -> Result<Vec<String>, recovery::tasks::Error> {
     let request = rss_mdm_audit_integration::RequestAudit::new(
@@ -1056,7 +1058,7 @@ async fn retire_credential(
         |(audit, tenant, registration, abort), tx| {
             Box::pin(async move {
                 let tenant = tenant.clone();
-                let registration = registration.clone();
+                let registration = *registration;
                 let (outcome, facts) = tx
                     .with_connection(|c| {
                         Box::pin(async move {

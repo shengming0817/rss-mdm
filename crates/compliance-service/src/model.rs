@@ -61,10 +61,10 @@ pub enum Command {
         task: Uuid,
     },
     Current {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
     },
     History {
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         subject: String,
         page: HistoryQuery,
     },
@@ -204,7 +204,7 @@ pub struct CurrentRule {
 }
 #[derive(schemars::JsonSchema, Serialize)]
 pub struct CurrentView {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub status: rss_mdm_compliance::Current,
     pub reason: Option<EmptyReason>,
     pub rules: Vec<CurrentRule>,

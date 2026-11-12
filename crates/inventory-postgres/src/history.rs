@@ -76,7 +76,7 @@ pub(crate) async fn rows_at_in(
 pub async fn manual_scalars_at_in(
     c: &mut PgConnection,
     tenant: TenantId,
-    devices: &[String],
+    devices: &[rss_mdm_agent_wire::DeviceId],
     cut: &rss_mdm_inventory::AssetCut,
     fields: &[rss_mdm_inventory::FieldKey],
 ) -> Result<Vec<crate::Assignment>> {
@@ -99,7 +99,7 @@ pub async fn manual_scalars_at_in(
     "#,
     )
     .bind(tenant.to_string())
-    .bind(devices)
+    .bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
     .bind(cut.to_json())
     .bind(fields.iter().map(|f| f.as_str()).collect::<Vec<_>>())
     .fetch_all(&mut *c)

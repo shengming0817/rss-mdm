@@ -95,7 +95,9 @@ pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
             });
         match device {
             None | Some(Value::Null) => None,
-            Some(Value::String(device)) if crate::model::identifier(device) => Some(device.clone()),
+            Some(Value::String(device)) => {
+                Some(rss_mdm_agent_wire::DeviceId::parse(device).map_err(|_| Error::Integrity)?)
+            }
             _ => return Err(Error::Integrity),
         }
     } else {

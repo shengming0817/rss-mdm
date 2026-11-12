@@ -15,7 +15,7 @@ impl Configuration {
         &self,
         key: &rss_mdm_native_protection::Protector,
         tenant: rss_request_context::TenantId,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<String, Error> {
         let digest = super::protection::fingerprint(
             key,
@@ -370,7 +370,7 @@ impl Configuration {
         &self,
         key: &rss_mdm_native_protection::Protector,
         tenant: rss_request_context::TenantId,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<std::collections::BTreeMap<Object, Vec<u8>>, Error> {
         use rss_mdm_apple_mdm::native::request::Request as A;
         use rss_mdm_windows_mdm::native::{Execution as W, Request};
@@ -485,7 +485,13 @@ mod object_tests {
             config(json!({"platform":"windows","request":{"kind":"sync_ml","request":request}}))
         };
         let digest = |input: &Configuration| {
-            let content = input.object_digests(&key, tenant, "device").unwrap();
+            let content = input
+                .object_digests(
+                    &key,
+                    tenant,
+                    &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
+                )
+                .unwrap();
             assert_eq!(
                 content.keys().cloned().collect::<Vec<_>>(),
                 input.objects().unwrap()
@@ -505,7 +511,11 @@ mod object_tests {
         assert_ne!(
             one,
             single
-                .object_digests(&key, tenant, "another-device")
+                .object_digests(
+                    &key,
+                    tenant,
+                    &rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(2)).unwrap()
+                )
                 .unwrap()
         );
         let declaration = |id: &str| json!({"identifier":id,"declarationType":"com.apple.asset.data","payload":{"Reference":{"type":"dictionary","value":{"DataURL":{"type":"string","value":"https://example.test/profile.mobileconfig"},"ContentType":{"type":"string","value":"application/plist"}}}}});

@@ -8,7 +8,7 @@ CREATE SCHEMA mdm_apple;
 CREATE TABLE mdm_apple.declarations (
     tenant_id uuid NOT NULL
   , operation uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , user_key text NOT NULL CHECK (user_key = ''
                                OR user_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
   , owner text NOT NULL CHECK (octet_length(owner) BETWEEN 1 AND 256)
@@ -31,7 +31,7 @@ CREATE POLICY tenant ON mdm_apple.declarations USING(tenant_id=NULLIF(current_se
 CREATE TABLE mdm_apple.status_reports (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , user_key text NOT NULL CHECK (user_key = ''
                                OR user_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
   , digest bytea NOT NULL CHECK (octet_length(digest) = 32)
@@ -49,7 +49,7 @@ ALTER TABLE mdm_apple.status_reports FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_apple.status_reports USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
 -- One immutable dispatch history per native Profile operation. Desired state remains in Policy.
-CREATE TABLE mdm_apple.profiles (tenant_id uuid NOT NULL, operation uuid NOT NULL, device text NOT NULL, user_key text NOT NULL, identifier text NOT NULL CHECK (octet_length(identifier) BETWEEN 1 AND 1024), profile uuid NOT NULL, version text NOT NULL CHECK (octet_length(version) BETWEEN 1 AND 128), present boolean NOT NULL, manifest bytea CHECK (octet_length(manifest) BETWEEN 68 AND 1048644), dispatched_at bigint, observed_at bigint, retired_at bigint, manifest_digest bytea CHECK (manifest_digest IS NULL OR octet_length(manifest_digest) = 32), manifest_cipher_digest bytea CHECK (manifest_cipher_digest IS NULL OR octet_length(manifest_cipher_digest) = 32), verification text NOT NULL DEFAULT 'unknown' CHECK (verification IN ('unknown', 'matched', 'mismatched', 'failed')), verification_evidence jsonb CHECK (verification_evidence IS NULL OR jsonb_typeof(verification_evidence) = 'object'), CONSTRAINT profiles_qualification_bound CHECK (verification = 'unknown' OR verification_evidence IS NOT NULL), PRIMARY KEY (tenant_id, operation), CONSTRAINT profiles_manifest_presence_check CHECK (manifest IS NULL OR present), CONSTRAINT profiles_dispatch_check CHECK (dispatched_at IS NULL OR NOT present OR manifest IS NOT NULL), CONSTRAINT profiles_observation_check CHECK (observed_at IS NULL OR dispatched_at IS NOT NULL));
+CREATE TABLE mdm_apple.profiles (tenant_id uuid NOT NULL, operation uuid NOT NULL, device uuid NOT NULL, user_key text NOT NULL, identifier text NOT NULL CHECK (octet_length(identifier) BETWEEN 1 AND 1024), profile uuid NOT NULL, version text NOT NULL CHECK (octet_length(version) BETWEEN 1 AND 128), present boolean NOT NULL, manifest bytea CHECK (octet_length(manifest) BETWEEN 68 AND 1048644), dispatched_at bigint, observed_at bigint, retired_at bigint, manifest_digest bytea CHECK (manifest_digest IS NULL OR octet_length(manifest_digest) = 32), manifest_cipher_digest bytea CHECK (manifest_cipher_digest IS NULL OR octet_length(manifest_cipher_digest) = 32), verification text NOT NULL DEFAULT 'unknown' CHECK (verification IN ('unknown', 'matched', 'mismatched', 'failed')), verification_evidence jsonb CHECK (verification_evidence IS NULL OR jsonb_typeof(verification_evidence) = 'object'), CONSTRAINT profiles_qualification_bound CHECK (verification = 'unknown' OR verification_evidence IS NOT NULL), PRIMARY KEY (tenant_id, operation), CONSTRAINT profiles_manifest_presence_check CHECK (manifest IS NULL OR present), CONSTRAINT profiles_dispatch_check CHECK (dispatched_at IS NULL OR NOT present OR manifest IS NOT NULL), CONSTRAINT profiles_observation_check CHECK (observed_at IS NULL OR dispatched_at IS NOT NULL));
 CREATE INDEX profiles_scope
   ON mdm_apple.profiles (tenant_id
                        , device
@@ -60,7 +60,7 @@ ALTER TABLE mdm_apple.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_apple.profiles FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_apple.profiles USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
-CREATE TABLE mdm_apple.attempts (ordinal integer NOT NULL DEFAULT 0 CHECK (ordinal >= 0 AND ordinal <= 32), tenant_id uuid NOT NULL, id uuid NOT NULL, device text NOT NULL, operation uuid, collection uuid, certificate uuid, phase text NOT NULL, request bytea NOT NULL, state text NOT NULL, response bytea, response_digest bytea, received_at bigint, user_key text NOT NULL DEFAULT '', context jsonb, declaration_guards uuid[] NOT NULL DEFAULT CAST(ARRAY[] AS uuid[]), CONSTRAINT attempts_declaration_guards_check CHECK (cardinality(declaration_guards) <= 4096 AND (cardinality(declaration_guards) = 0 OR phase = 'observe')), native_outcome text CHECK (native_outcome IN ('query_result', 'acknowledged', 'deferred', 'pending_restart', 'in_progress', 'rejected', 'unknown')), accepted boolean NOT NULL DEFAULT FALSE CONSTRAINT attempts_acceptance_check CHECK (NOT accepted OR response IS NOT NULL), next_attempt timestamp with time zone DEFAULT clock_timestamp() NOT NULL, deadline timestamp with time zone NOT NULL, collection_sequence bigint, CONSTRAINT attempts_check1 CHECK ((response IS NULL) = (response_digest IS NULL)), CONSTRAINT attempts_collection_sequence_check CHECK (phase = ANY(ARRAY[CAST('collect' AS text), CAST('collect_device' AS text), CAST('collect_security' AS text), CAST('collect_agent_platform' AS text), CAST('collect_agent' AS text)]) = (collection_sequence IS NOT NULL) AND (collection_sequence IS NULL OR collection_sequence >= 0)), CONSTRAINT attempts_request_check CHECK (octet_length(request) >= 68 AND octet_length(request) <= 1048644), CONSTRAINT attempts_response_check CHECK (octet_length(response) BETWEEN 68 AND 1048644), CONSTRAINT attempts_response_digest_check CHECK (octet_length(response_digest) = 32), CONSTRAINT attempts_state_check CHECK (state = ANY(ARRAY[CAST('pending' AS text), CAST('sent' AS text), CAST('not_now' AS text), CAST('acknowledged' AS text), CAST('error' AS text), CAST('superseded' AS text)])), trust uuid, CONSTRAINT attempts_check CHECK ((trust IS NULL AND ((phase = ANY(ARRAY[CAST('collect' AS text), CAST('collect_device' AS text), CAST('collect_security' AS text), CAST('collect_agent_platform' AS text), CAST('collect_agent' AS text)]) AND collection IS NOT NULL AND operation IS NULL AND certificate IS NULL) OR (phase = ANY(ARRAY[CAST('execute' AS text), CAST('observe' AS text), CAST('resolve_device' AS text), CAST('resolve_security' AS text)]) AND operation IS NOT NULL AND collection IS NULL AND certificate IS NULL) OR (phase = CAST('renew' AS text) AND certificate IS NOT NULL AND collection IS NULL AND operation IS NULL))) OR (trust IS NOT NULL AND phase IN ('trust_install', 'trust_verify') AND operation IS NULL AND collection IS NULL AND certificate IS NULL)), CONSTRAINT attempts_phase_check CHECK (phase IN ('collect', 'collect_device', 'collect_security', 'collect_agent_platform', 'collect_agent', 'execute', 'observe', 'resolve_device', 'resolve_security', 'renew', 'trust_install', 'trust_verify')));
+CREATE TABLE mdm_apple.attempts (ordinal integer NOT NULL DEFAULT 0 CHECK (ordinal >= 0 AND ordinal <= 32), tenant_id uuid NOT NULL, id uuid NOT NULL, device uuid NOT NULL, operation uuid, collection uuid, certificate uuid, phase text NOT NULL, request bytea NOT NULL, state text NOT NULL, response bytea, response_digest bytea, received_at bigint, user_key text NOT NULL DEFAULT '', context jsonb, declaration_guards uuid[] NOT NULL DEFAULT CAST(ARRAY[] AS uuid[]), CONSTRAINT attempts_declaration_guards_check CHECK (cardinality(declaration_guards) <= 4096 AND (cardinality(declaration_guards) = 0 OR phase = 'observe')), native_outcome text CHECK (native_outcome IN ('query_result', 'acknowledged', 'deferred', 'pending_restart', 'in_progress', 'rejected', 'unknown')), accepted boolean NOT NULL DEFAULT FALSE CONSTRAINT attempts_acceptance_check CHECK (NOT accepted OR response IS NOT NULL), next_attempt timestamp with time zone DEFAULT clock_timestamp() NOT NULL, deadline timestamp with time zone NOT NULL, collection_sequence bigint, CONSTRAINT attempts_check1 CHECK ((response IS NULL) = (response_digest IS NULL)), CONSTRAINT attempts_collection_sequence_check CHECK (phase = ANY(ARRAY[CAST('collect' AS text), CAST('collect_device' AS text), CAST('collect_security' AS text), CAST('collect_agent_platform' AS text), CAST('collect_agent' AS text)]) = (collection_sequence IS NOT NULL) AND (collection_sequence IS NULL OR collection_sequence >= 0)), CONSTRAINT attempts_request_check CHECK (octet_length(request) >= 68 AND octet_length(request) <= 1048644), CONSTRAINT attempts_response_check CHECK (octet_length(response) BETWEEN 68 AND 1048644), CONSTRAINT attempts_response_digest_check CHECK (octet_length(response_digest) = 32), CONSTRAINT attempts_state_check CHECK (state = ANY(ARRAY[CAST('pending' AS text), CAST('sent' AS text), CAST('not_now' AS text), CAST('acknowledged' AS text), CAST('error' AS text), CAST('superseded' AS text)])), trust uuid, CONSTRAINT attempts_check CHECK ((trust IS NULL AND ((phase = ANY(ARRAY[CAST('collect' AS text), CAST('collect_device' AS text), CAST('collect_security' AS text), CAST('collect_agent_platform' AS text), CAST('collect_agent' AS text)]) AND collection IS NOT NULL AND operation IS NULL AND certificate IS NULL) OR (phase = ANY(ARRAY[CAST('execute' AS text), CAST('observe' AS text), CAST('resolve_device' AS text), CAST('resolve_security' AS text)]) AND operation IS NOT NULL AND collection IS NULL AND certificate IS NULL) OR (phase = CAST('renew' AS text) AND certificate IS NOT NULL AND collection IS NULL AND operation IS NULL))) OR (trust IS NOT NULL AND phase IN ('trust_install', 'trust_verify') AND operation IS NULL AND collection IS NULL AND certificate IS NULL)), CONSTRAINT attempts_phase_check CHECK (phase IN ('collect', 'collect_device', 'collect_security', 'collect_agent_platform', 'collect_agent', 'execute', 'observe', 'resolve_device', 'resolve_security', 'renew', 'trust_install', 'trust_verify')));
 
 ALTER TABLE ONLY mdm_apple.attempts FORCE ROW LEVEL SECURITY;
 
@@ -71,7 +71,7 @@ CREATE TABLE mdm_apple.devices (
                                       AND (access_rights & 128 = 0
                                         OR access_rights & 64 = 64))
   , tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , udid text NOT NULL
   , state text NOT NULL
   , identity_health smallint DEFAULT 0 NOT NULL CHECK (identity_health BETWEEN 0 AND 2)
@@ -87,7 +87,7 @@ ALTER TABLE ONLY mdm_apple.devices FORCE ROW LEVEL SECURITY;
 -- Native user GUIDs share the device certificate, but never its token or push lease.
 CREATE TABLE mdm_apple.channels (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , user_key text NOT NULL CHECK (user_key = ''
                                OR user_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
   , state text NOT NULL CHECK (state IN ('pending_token', 'active', 'retired'))
@@ -129,7 +129,7 @@ CREATE TABLE mdm_apple.scep_attempts (
   , serial bytea
   , fingerprint bytea
   , certificate bytea
-  , device text
+  , device uuid
   , expires_at timestamp with time zone NOT NULL
   , renewal_of uuid
   , challenge_hash bytea

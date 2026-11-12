@@ -3,7 +3,7 @@ BEGIN;
 CREATE TABLE rss_da.bindings (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , instance uuid NOT NULL
   , principal uuid NOT NULL
   , generation bigint NOT NULL CHECK (generation > 0)
@@ -35,7 +35,7 @@ CREATE INDEX device_access_history
 CREATE TABLE rss_da.ceremonies (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , instance uuid NOT NULL
   , principal uuid NOT NULL
   , nonce_digest bytea NOT NULL CHECK (octet_length(nonce_digest) = 32)
@@ -85,7 +85,7 @@ CREATE TABLE rss_da.subject_denials (
 );
 CREATE TABLE rss_da.lifecycles (
  tenant_id uuid NOT NULL, operation uuid NOT NULL, actor text NOT NULL, instance text NOT NULL,
- device text NOT NULL, document jsonb NOT NULL CHECK(octet_length(document::text)<=16777216),
+ device uuid NOT NULL, document jsonb NOT NULL CHECK(octet_length(document::text)<=16777216),
  PRIMARY KEY(tenant_id,operation), FOREIGN KEY(tenant_id,device) REFERENCES rss_da.devices(tenant_id,id)
 );
 ALTER TABLE rss_da.subject_denials ENABLE ROW LEVEL SECURITY;

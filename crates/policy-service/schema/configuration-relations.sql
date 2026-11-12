@@ -21,7 +21,7 @@ ALTER TABLE mdm_planning.configuration_claims ADD FOREIGN KEY(tenant_id,device) 
 ALTER TABLE mdm_planning.configuration_objects ADD FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id);
 COMMIT;
 
-GRANT EXECUTE ON FUNCTION mdm_planning.configuration_windows_pending_operations(text,uuid), mdm_planning.configuration_windows_wake_candidates(text) TO mdm_access,mdm_command_runtime,mdm_policy_runtime;
+GRANT EXECUTE ON FUNCTION mdm_planning.configuration_windows_pending_operations(uuid,uuid), mdm_planning.configuration_windows_wake_candidates(uuid) TO mdm_access,mdm_command_runtime,mdm_policy_runtime;
 
 -- Invoker permissions and underlying forced RLS remain authoritative in a caller's snapshot.
 CREATE VIEW mdm_planning.configuration_execution_facts WITH (security_invoker=true,security_barrier=true) AS

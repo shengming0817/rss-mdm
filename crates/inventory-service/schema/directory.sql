@@ -55,7 +55,7 @@ WITH catalog AS (
 )
 SELECT DISTINCT p.tenant_id,r.id AS device
 FROM mdm.inventory_presence p
-JOIN mdm_access.devices r ON r.tenant_id=p.tenant_id AND r.id=p.scope::jsonb->>'registration' AND r.state='active'
+JOIN mdm_access.devices r ON r.tenant_id=p.tenant_id AND r.id=(p.scope::jsonb->>'registration')::uuid AND r.state='active'
 JOIN mdm_access.report_sources s ON s.tenant_id=r.tenant_id AND s.device=r.id AND s.enabled
  AND s.source=p.scope::jsonb->>'source' AND s.epoch::text=p.scope::jsonb->>'epoch'
 JOIN datasets d ON d.source=s.source AND d.dataset=p.scope::jsonb->>'dataset'

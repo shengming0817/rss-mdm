@@ -37,7 +37,10 @@ pub async fn verify(c: &Context) -> Result<()> {
                             operation: Uuid::new_v4(),
                             actor: "directory-proof".into(),
                             caller: json!({"target":{"registration":registration}}),
-                            device: "directory-proof".into(),
+                            device: rss_mdm_agent_wire::DeviceId::parse(
+                                "3967e292-f46e-5275-9cfb-ec946da5ef40",
+                            )
+                            .unwrap(),
                             input: json!({"event":"foundation"}),
                             fingerprint: vec![1; 32],
                             at: now(),
@@ -69,7 +72,10 @@ pub async fn verify(c: &Context) -> Result<()> {
                             query,
                             None,
                             directory::EventTarget {
-                                device: "directory-proof",
+                                device: &rss_mdm_agent_wire::DeviceId::parse(
+                                    "3967e292-f46e-5275-9cfb-ec946da5ef40",
+                                )
+                                .expect("valid device"),
                                 batch: Some(batch),
                             },
                             members,

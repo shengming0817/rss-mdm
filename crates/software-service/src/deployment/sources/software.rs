@@ -162,7 +162,7 @@ impl SoftwareAssignment {
         &self,
         source: &std::sync::Arc<dyn crate::deployment::scope::Sources>,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<Option<(usize, i64)>> {
         let assignment = self.clone();
@@ -185,7 +185,7 @@ impl SoftwareAssignment {
         source: &dyn crate::deployment::scope::Sources,
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> std::result::Result<Option<(usize, i64)>, Error> {
         if !self.active
@@ -407,7 +407,7 @@ impl SoftwareAssignment {
         &self,
         service: &crate::deployment::queries::Admission,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         platform: Platform,
         architecture: Architecture,
         now: i64,
@@ -443,7 +443,7 @@ impl SoftwareAssignment {
         &self,
         service: &crate::deployment::queries::Admission,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         platform: Platform,
         architecture: Architecture,
         now: i64,
@@ -465,7 +465,7 @@ impl SoftwareAssignment {
         &self,
         source: &dyn crate::deployment::scope::Sources,
         c: &mut sqlx::PgConnection,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<Option<i64>> {
         if !self.active {
             return Ok(None);
@@ -546,7 +546,7 @@ impl SoftwareAssignment {
         service: &crate::deployment::queries::Admission,
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> Result<TaskAdmission> {
         if self.channel() == rss_mdm_inventory::Channel::Mdm

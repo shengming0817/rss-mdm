@@ -16,7 +16,7 @@ pub async fn reserve(
     now: i64,
 ) -> Result<()> {
     let tenant = tx.tenant_id();
-    let device = run.target.device.clone();
+    let device = run.target.device;
     let task = run.id;
     let attempt = run.state.attempt().ok_or(Error::Conflict)?;
     let definition = bind_definition(frozen, spec)?;
@@ -39,12 +39,12 @@ pub async fn finish(
 ) -> Result<()> {
     let attempt = run.state.attempt().ok_or(Error::Conflict)?;
     let tenant = tx.tenant_id().to_string();
-    let device = run.target.device.clone();
+    let device = run.target.device;
     let run_id = run.id;
     let (definition, execution) = tx.with_connection(move |c| Box::pin(async move {
         Ok(async {
             let progress: String = sqlx::query_scalar("SELECT attempts FROM mdm_access.collection_runs WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND device = $3")
-                .bind(&tenant).bind(attempt).bind(&device).fetch_one(&mut *c).await?;
+                .bind(&tenant).bind(attempt).bind(device.into_uuid()).fetch_one(&mut *c).await?;
             let progress: CollectionProgress = stored(serde_json::from_str(&progress))?;
             let payload = store.payload(c,tenant,run_id,attempt).await?;
             let wire::TaskPayload::Collection(spec) = payload else {return Err(Error::Conflict.into());};
@@ -163,7 +163,7 @@ pub async fn finish(
     let tenant = tx.tenant_id();
     let attempt = run.state.attempt().ok_or(Error::Conflict)?;
     let report = crate::collection::enterprise::Report {
-        device: run.target.device.to_string(),
+        device: run.target.device,
         task: run.id,
         attempt,
         progress,

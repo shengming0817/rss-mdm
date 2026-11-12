@@ -5,10 +5,10 @@ use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging::{message::*, outbox::PendingMessage};
 use sha2::{Digest, Sha256};
 
-pub fn target(tenant: TenantId, device: &str) -> rss_reconcile::Target {
+pub fn target(tenant: TenantId, device: &rss_mdm_agent_wire::DeviceId) -> rss_reconcile::Target {
     rss_reconcile::Target::new(
         recovery_scope(tenant),
-        format!("{:x}", Sha256::digest(device.as_bytes())),
+        format!("{:x}", Sha256::digest(device.to_string().as_bytes())),
     )
     .expect("bounded digest")
 }
@@ -44,13 +44,13 @@ async fn receipt<T: serde::Serialize + ?Sized>(
 }
 fn dispatch(
     tenant: TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     input: &Create,
     coordinate: dc::Coordinate,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
     let payload = checked_input(serde_json::to_vec(&DispatchV1 {
-        device: device.into(),
+        device: *device,
         operation_id: input.operation_id,
         generation: coordinate.generation(),
         epoch: coordinate.epoch(),
@@ -141,7 +141,7 @@ impl Transactions {
     pub async fn queue_authorized_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         input: &Create,
         authority: Authority,
         fingerprint: Vec<u8>,
@@ -165,7 +165,7 @@ impl Transactions {
         self.validate_in(tx)?;
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
-        if device != authority.device || input.target != NativeTarget::Device {
+        if *device != authority.device || input.target != NativeTarget::Device {
             return Err(Error::Forbidden.into());
         }
         let registration = storage::current_registration(tx, device).await?;
@@ -199,7 +199,7 @@ impl Transactions {
         self.store.queue(tx, spec, message).await?;
         let binding = rss_mdm_registration_service::command_authority::CommandBinding {
             operation: input.operation_id,
-            device: registration.to_string(),
+            device: registration,
         };
         let tenant = self.tenant;
         let channel = self.apple_profiles.clone();
@@ -234,7 +234,7 @@ impl Transactions {
         }
         let authority = checked_input(serde_json::to_string(&authority))?;
         let digest = fingerprint.clone();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_recovery_tasks.operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, input_context) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, $7, CAST($8 AS jsonb), $9, $10)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(input_context).execute(c).await?;Ok(())})).await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_recovery_tasks.operations (tenant_id, id, device, request, fingerprint, generation, epoch, authority, dispatch_fingerprint, input_context) VALUES (CAST($1 AS uuid), CAST($2 AS uuid), $3, $4, $5, $6, $7, CAST($8 AS jsonb), $9, $10)").bind(tenant).bind(id).bind(name.into_uuid()).bind(request).bind(digest).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(input_context).execute(c).await?;Ok(())})).await?;
         apple::own(tx, self.apple_profiles.clone(), device, input).await?;
         let response = created(tx, self, audit, input.operation_id, fingerprint).await?;
         crate::native::worker_wake::notify_in(tx, crate::native::worker_wake::Work::CommandRelay)

@@ -82,7 +82,10 @@ async fn run_in(
             .transpose()
             .map_err(|_| Error::Invariant)?,
         target: Target {
-            device: row.try_get("device")?,
+            device: row.try_get::<uuid::Uuid, _>("device").and_then(|id| {
+                rss_mdm_agent_wire::DeviceId::try_from(id)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+            })?,
         },
         origin: stored(serde_json::from_value(row.try_get("origin")?))?,
         available_at: row.try_get("available_at")?,
@@ -167,11 +170,11 @@ pub async fn save_run(
                 version: 1,
                 occurred_at: now(tx).await?,
                 tenant_id: stored(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                device_id: run.target.device.clone(),
+                device_id: run.target.device,
                 data: EventData::Policy {
                     run_id: run.id,
                     policy_version: version,
-                    device_id: run.target.device.to_string(),
+                    device_id: run.target.device,
 
                     status: status.into(),
                 },
@@ -186,7 +189,7 @@ pub async fn save_run(
 pub async fn agent_profile_in(
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
     Ok(
         agent_facts::agent_binding_in(tx, service.agent_store.clone(), registration)
@@ -222,12 +225,12 @@ pub async fn active_count_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     now: i64,
 ) -> std::result::Result<i64, sqlx::Error> {
     sqlx::query_scalar(crate::storage_profile::sql(profile).tasks_actions_storage_active_count_on_1)
         .bind(tenant.to_string())
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(now)
         .fetch_one(c)
         .await
@@ -244,7 +247,7 @@ pub async fn load_policy_version(
 pub async fn lock_device(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<()> {
     crate::tasks::actions::agent::lock_device(profile, tx, device).await
 }
@@ -254,10 +257,20 @@ pub async fn association_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
-) -> std::result::Result<Option<(String, Option<Uuid>)>, sqlx::Error> {
+) -> std::result::Result<Option<(rss_mdm_agent_wire::DeviceId, Option<Uuid>)>, sqlx::Error> {
     sqlx::query_as(crate::storage_profile::sql(profile).tasks_actions_storage_association_on_1)
         .bind(tenant)
         .bind(id)
         .fetch_optional(c)
         .await
+        .and_then(|row: Option<(uuid::Uuid, Option<uuid::Uuid>)>| {
+            row.map(|(id, operation)| {
+                Ok((
+                    rss_mdm_agent_wire::DeviceId::try_from(id)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+                    operation,
+                ))
+            })
+            .transpose()
+        })
 }

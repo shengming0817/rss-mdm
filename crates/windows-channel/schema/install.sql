@@ -6,7 +6,7 @@ CREATE SCHEMA mdm_windows;
 CREATE TABLE mdm_windows.linked_enrollments (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , parent_credential uuid NOT NULL
   , request_id uuid NOT NULL
   , digest bytea NOT NULL CHECK (octet_length(digest) = 32)
@@ -20,7 +20,7 @@ CREATE POLICY tenant ON mdm_windows.linked_enrollments USING(tenant_id=NULLIF(cu
 CREATE TABLE mdm_windows.unenrollment_receipts (
     protocol_epoch uuid NOT NULL,
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , credential uuid NOT NULL
   , session bigint NOT NULL CHECK (session BETWEEN 1 AND 65535)
   , digest bytea NOT NULL CHECK (octet_length(digest) = 32)
@@ -33,7 +33,7 @@ CREATE POLICY tenant ON mdm_windows.unenrollment_receipts USING (tenant_id=NULLI
 
 CREATE TABLE mdm_windows.push_channels (
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , revision bigint NOT NULL CHECK (revision > 0)
   , configuration bytea NOT NULL CHECK (octet_length(configuration) = 32)
   , uri bytea NOT NULL CHECK (octet_length(uri) BETWEEN 68 AND 4164)
@@ -55,7 +55,7 @@ CREATE POLICY tenant ON mdm_windows.push_channels USING (tenant_id=NULLIF(curren
 CREATE TABLE mdm_windows.push_queries (
     protocol_epoch uuid NOT NULL,
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , credential uuid NOT NULL
   , session bigint NOT NULL
   , message bigint NOT NULL
@@ -74,7 +74,7 @@ CREATE POLICY tenant ON mdm_windows.push_queries USING (tenant_id=NULLIF(current
 CREATE TABLE mdm_windows.renewals (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , previous_credential uuid NOT NULL
   , proof_digest bytea NOT NULL CHECK (octet_length(proof_digest) = 32)
   , certificate bytea NOT NULL CHECK (octet_length(certificate) BETWEEN 1 AND 32768)
@@ -109,7 +109,7 @@ CREATE TABLE mdm_access.enrollment_intents (
   , profile bytea NOT NULL
   , issuer bytea NOT NULL
   , configuration text NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , credential uuid NOT NULL
   , epoch uuid NOT NULL
   , secrets bytea NOT NULL
@@ -128,7 +128,7 @@ ALTER TABLE ONLY mdm_access.enrollment_intents FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_access.management_messages (
     protocol_epoch uuid NOT NULL,
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , session_id text NOT NULL
   , message_id bigint NOT NULL
   , digest text NOT NULL
@@ -146,7 +146,7 @@ ALTER TABLE ONLY mdm_access.management_messages FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_access.management_sessions (
     protocol_epoch uuid NOT NULL,
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , session_id text NOT NULL
   , credential uuid NOT NULL
   , state text NOT NULL
@@ -217,7 +217,7 @@ CREATE TABLE mdm_windows.collections (
     protocol_epoch uuid NOT NULL,
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , session_id text NOT NULL
   , request_message bigint NOT NULL CHECK (request_message BETWEEN 1 AND 127)
   , first_command bigint NOT NULL CHECK (first_command BETWEEN 1024 AND 4294967294)
@@ -248,7 +248,7 @@ CREATE TABLE mdm_windows.attempts (
     tenant_id uuid NOT NULL
   , id uuid NOT NULL
   , operation uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , ordinal bigint NOT NULL
   , credential uuid NOT NULL
   , session bigint NOT NULL
@@ -283,7 +283,7 @@ ALTER TABLE ONLY mdm_windows.attempts FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_windows.capabilities (
     protocol_epoch uuid NOT NULL,
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , os_version text NOT NULL
   , edition integer NOT NULL
   , session bigint NOT NULL
@@ -295,7 +295,7 @@ ALTER TABLE ONLY mdm_windows.capabilities FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_windows.capability_queries (
     protocol_epoch uuid NOT NULL,
     tenant_id uuid NOT NULL
-  , device text NOT NULL
+  , device uuid NOT NULL
   , session bigint NOT NULL
   , request bytea NOT NULL
   , version_command bigint NOT NULL

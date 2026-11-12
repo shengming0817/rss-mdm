@@ -50,13 +50,16 @@ pub async fn create_in(
             .await
             .map_err(db)?
     {
-        let device: String = row.try_get("device").map_err(db)?;
+        let device: rss_mdm_agent_wire::DeviceId = row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)
+            .map_err(db)?;
         let hash = digest(&(
             input.operation,
             input.attempt,
             p.device(),
             input.source,
-            input.password.digest(&tenant, &device)?,
+            input.password.digest(&tenant, device.into_uuid())?,
         ));
         if row.try_get::<String, _>("request_digest").map_err(db)? != hash {
             return Err(Error::Conflict);
@@ -80,11 +83,11 @@ pub async fn create_in(
         crate::quotas::Channel::source(input.source),
     )
     .await?;
-    let device = Uuid::new_v4().to_string();
+    let device = rss_mdm_agent_wire::DeviceId::new_v4();
     let id = Uuid::new_v4();
     let grant = Uuid::new_v4();
     let deadline = input.deadline.min(now + 300);
-    let password = input.password.digest(&tenant, &device)?;
+    let password = input.password.digest(&tenant, device.into_uuid())?;
     let hash = digest(&(
         input.operation,
         input.attempt,
@@ -98,7 +101,7 @@ pub async fn create_in(
         .bind(grant)
         .bind(actor.subject())
         .bind(actor.instance_id())
-        .bind(&device)
+        .bind(device.into_uuid())
         .bind(deadline as f64)
         .execute(&mut *c)
         .await
@@ -111,7 +114,7 @@ pub async fn create_in(
         .bind(password)
         .bind(deadline as f64)
         .bind(Uuid::new_v4())
-        .bind(&device)
+        .bind(device.into_uuid())
         .bind(if input.source == ReportSource::MdmWindows {
             Some("Full")
         } else {
@@ -125,7 +128,7 @@ pub async fn create_in(
         .bind(input.task)
         .bind(input.attempt)
         .bind(input.operation)
-        .bind(p.device())
+        .bind(p.device().into_uuid())
         .bind(id)
         .bind(hash)
         .bind(serde_json::to_value(input.actor).map_err(|_| Error::Malformed)?)

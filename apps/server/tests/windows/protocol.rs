@@ -299,7 +299,7 @@ fn next(n: &identity::Native, id: u32, code: u16, final_message: bool) -> s::Mes
             session_id: 17,
             message_id: id,
             target: "https://localhost/ManagementServer/MDM.svc".into(),
-            source: n.device.clone(),
+            source: n.device.to_string(),
             credential: None,
             meta: None,
         },
@@ -356,7 +356,7 @@ pub(crate) async fn windows(
     .derive();
     let secrets=protection.seal_bytes(&serde_json::to_vec(&serde_json::json!({"client_password":"client-secret","server_password":"server-secret","server_nonce":vec![7u8;32]}))?,&aad)?;
     let mut tx = command::seed_transaction(c).await?;
-    sqlx::query("INSERT INTO mdm_access.enrollment_intents (tenant_id, request_id, csr, profile, issuer, configuration, device, credential, epoch, secrets, signing_attempt, protocol_device) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)").bind(c.tenant.to_string()).bind(n.request).bind(&n.csr).bind(profile).bind(&n.root).bind(configuration).bind(n.device.clone()).bind(n.credential).bind(n.epoch).bind(secrets).bind(n.attempt).bind(&n.device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.enrollment_intents (tenant_id, request_id, csr, profile, issuer, configuration, device, credential, epoch, secrets, signing_attempt, protocol_device) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)").bind(c.tenant.to_string()).bind(n.request).bind(&n.csr).bind(profile).bind(&n.root).bind(configuration).bind(n.device.into_uuid()).bind(n.credential).bind(n.epoch).bind(secrets).bind(n.attempt).bind(n.device.into_uuid()).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.enrollment_certificates(tenant_id,request_id,certificate,server_nonce) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(n.request).bind(&n.certificate).bind(vec![7u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     let w = Arc::new(rss_mdm_windows_channel::Windows::new(
@@ -385,12 +385,12 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     )?;
     first.header.session_id = 17;
     first.header.target = "https://localhost/ManagementServer/MDM.svc".into();
-    first.header.source = n.device.clone();
+    first.header.source = n.device.to_string();
     for command in &mut first.commands {
         if let s::Command::DevInfo { items, .. } = command {
             for item in items {
                 if item.source.as_deref() == Some("./DevInfo/DevId") {
-                    item.data = Some(Secret(n.device.clone()));
+                    item.data = Some(Secret(n.device.to_string()));
                 }
             }
         }
@@ -412,7 +412,7 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
     );
     let second = s::encode(&next(&n, 2, 212, false), &CodecLimits::default())?;
     send(&http, &h, &second).await?;
-    let before:(String,i64)=sqlx::query_as("SELECT state, last_message FROM mdm_access.management_sessions WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = '17'").bind(c.tenant.to_string()).bind(n.device.clone()).fetch_one(&c.operator).await?;
+    let before:(String,i64)=sqlx::query_as("SELECT state, last_message FROM mdm_access.management_sessions WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = '17'").bind(c.tenant.to_string()).bind(n.device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(before, ("collecting".into(), 2));
     drop(http);
     h.close().await?;
@@ -431,7 +431,7 @@ async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> R
         "continuation must dispatch a real prerequisite query"
     );
     let count = || {
-        sqlx::query_as::<_,(i64,i64)>("SELECT (SELECT count(*) FROM mdm_access.management_messages WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = '17'), (SELECT count(*) FROM mdm_windows.capability_queries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = '17')").bind(c.tenant.to_string()).bind(n.device.clone()).fetch_one(&c.operator)
+        sqlx::query_as::<_,(i64,i64)>("SELECT (SELECT count(*) FROM mdm_access.management_messages WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = '17'), (SELECT count(*) FROM mdm_windows.capability_queries WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND session_id = '17')").bind(c.tenant.to_string()).bind(n.device.into_uuid()).fetch_one(&c.operator)
     };
     let committed = count().await?;
     assert_eq!(committed, (3, 1));
@@ -490,7 +490,7 @@ async fn windows_revocation_preserves_device_access_role_isolation() -> Result<(
          WHERE r.tenant_id=$1::uuid AND r.id=$2 AND k.id=$3 AND s.source='mdm.windows'",
     )
     .bind(c.tenant.to_string())
-    .bind(&n.device)
+    .bind(n.device.into_uuid())
     .bind(n.credential)
     .fetch_one(&c.operator)
     .await?;
@@ -514,11 +514,11 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
     let mut tx = command::seed_transaction(&c).await?;
     let command_device = Uuid::new_v4();
     let sentinel = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES (CAST($1 AS uuid), $2, $3, 1, 1)").bind(c.tenant.to_string()).bind(&n.device).bind(command_device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.command_authorities (tenant_id, device, command_device, generation, epoch) VALUES (CAST($1 AS uuid), $2, $3, 1, 1)").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(command_device).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1)").bind(c.tenant.to_string()).bind(command_device).execute(&mut *tx).await?;
     for id in [operation, sentinel] {
         sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,100000000000000000,1,'mdm.commands.v1',$2,$4,'published',1,2)").bind(c.tenant.to_string()).bind(id.to_string()).bind(command_device).bind(vec![0u8;32]).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mdm_windows.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(n.device.clone()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_windows.native_commands (tenant_id, id, device) VALUES (CAST($1 AS uuid), $2, $3)").bind(c.tenant.to_string()).bind(id).bind(n.device.into_uuid()).execute(&mut *tx).await?;
     }
     for (ordinal, phase, status, accepted, id) in [
         (1i64, "prepare", 500i32, true, operation),
@@ -528,23 +528,28 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
         (5, "execute", 500, true, sentinel),
     ] {
         let attempt = Uuid::new_v4();
-        sqlx::query("INSERT INTO mdm_windows.attempts (tenant_id, id, operation, device, ordinal, credential, session, message, phase, request, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 17, 1, $7, $8, $9)").bind(c.tenant.to_string()).bind(attempt).bind(id).bind(n.device.clone()).bind(ordinal).bind(n.credential).bind(phase).bind(vec![0u8;68]).bind(n.epoch).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_windows.attempts (tenant_id, id, operation, device, ordinal, credential, session, message, phase, request, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 17, 1, $7, $8, $9)").bind(c.tenant.to_string()).bind(attempt).bind(id).bind(n.device.into_uuid()).bind(ordinal).bind(n.credential).bind(phase).bind(vec![0u8;68]).bind(n.epoch).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_windows.attempt_items(tenant_id,attempt,command,item_ordinal,kind,uri,status,receipt_accepted) VALUES($1::uuid,$2,2048,0,'exec','./Vendor/MSFT/EnterpriseDesktopAppManagement',$3,$4)").bind(c.tenant.to_string()).bind(attempt).bind(status).bind(accepted).execute(&mut *tx).await?;
     }
     let state = serde_json::json!({"probes":[],"statuses":[200],"values":["1"]});
     for (snapshot, first_command) in [(before, 2048i64), (after, 2049)] {
         sqlx::query("INSERT INTO mdm_access.collection_runs (tenant_id, id, device, source, epoch, scope, sequence, started_at, attempts, result, evidence) VALUES (CAST($1 AS uuid), $2, $3, 'mdm.windows', $4, 'device', $5, 1, '{\"fields\":{}}', 'pending', '{}')")
-            .bind(c.tenant.to_string()).bind(snapshot).bind(n.device.clone()).bind(n.epoch).bind(first_command).execute(&mut *tx).await?;
+            .bind(c.tenant.to_string()).bind(snapshot).bind(n.device.into_uuid()).bind(n.epoch).bind(first_command).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_windows.collections (tenant_id, id, device, session_id, request_message, first_command, kind, template_state, channel_state, protocol_epoch) VALUES (CAST($1 AS uuid), $2, $3, '17', 1, $4, 'agent', $5, $6, $7)")
-            .bind(c.tenant.to_string()).bind(snapshot).bind(n.device.clone()).bind(first_command).bind(vec![0u8;68]).bind(&state).bind(n.epoch).execute(&mut *tx).await?;
+            .bind(c.tenant.to_string()).bind(snapshot).bind(n.device.into_uuid()).bind(first_command).bind(vec![0u8;68]).bind(&state).bind(n.epoch).execute(&mut *tx).await?;
     }
     sqlx::query("SET LOCAL ROLE mdm_command_runtime")
         .execute(&mut *tx)
         .await?;
     for (device, snapshot, expected_delivery, correlated) in [
-        (n.device.clone(), before, Delivery::Acknowledged, false),
-        (n.device.clone(), after, Delivery::Acknowledged, true),
-        (Uuid::new_v4().to_string(), after, Delivery::Unknown, false),
+        (n.device, before, Delivery::Acknowledged, false),
+        (n.device, after, Delivery::Acknowledged, true),
+        (
+            rss_mdm_agent_wire::DeviceId::new_v4(),
+            after,
+            Delivery::Unknown,
+            false,
+        ),
     ] {
         let facts = rss_mdm_windows_channel::results::Results {
             protection: a.resources.protection.clone(),
@@ -574,7 +579,7 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
         c.tenant,
         &[InstallationRead {
             id: sentinel,
-            device: n.device.clone().to_string(),
+            device: n.device,
 
             snapshot: Some(after),
         }],
@@ -592,7 +597,7 @@ async fn installation_facts_correlate_receipts_and_post_dispatch_collection() ->
         c.tenant,
         &[InstallationRead {
             id: operation,
-            device: n.device.clone().to_string(),
+            device: n.device,
 
             snapshot: None,
         }],
@@ -630,7 +635,7 @@ async fn protocol_peer(c: &Context, n: &identity::Native, label: &str) -> Result
         .arg(&c.inputs.directory)
         .args([
             "windows",
-            &n.device,
+            &n.device.to_string(),
             &request.to_string(),
             &attempt.to_string(),
             label,
@@ -651,7 +656,7 @@ async fn protocol_peer(c: &Context, n: &identity::Native, label: &str) -> Result
         attempt,
         credential: Uuid::new_v4(),
         epoch: Uuid::new_v4(),
-        device: n.device.clone(),
+        device: n.device,
         root: n.root.clone(),
         trust: n.trust.clone(),
     })
@@ -669,12 +674,12 @@ fn first_package(
     )?;
     first.header.session_id = session;
     first.header.target = format!("https://localhost{path}");
-    first.header.source = n.device.clone();
+    first.header.source = n.device.to_string();
     for command in &mut first.commands {
         if let s::Command::DevInfo { items, .. } = command {
             for item in items {
                 if item.source.as_deref() == Some("./DevInfo/DevId") {
-                    item.data = Some(Secret(n.device.clone()));
+                    item.data = Some(Secret(n.device.to_string()));
                 }
             }
         }
@@ -871,7 +876,7 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
          WHERE tenant_id=$1::uuid AND device=$2 AND session_id='17' ORDER BY protocol_epoch",
     )
     .bind(c.tenant.to_string())
-    .bind(&n.device)
+    .bind(n.device.into_uuid())
     .fetch_all(&c.operator)
     .await?;
     assert_eq!(rows.len(), 2);
@@ -893,7 +898,7 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     );
     let messages: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND device=$2 AND session_id='17'")
-        .bind(c.tenant.to_string()).bind(&n.device).fetch_one(&c.operator).await?;
+        .bind(c.tenant.to_string()).bind(n.device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(messages, 4);
     assert_eq!(
         send(&parent_http, &h, &parent_work).await?,
@@ -937,7 +942,7 @@ async fn declared_context_isolates_sessions_and_survives_exact_credential_replac
     let renewed_evidence =
         declared_mount.credential(Sha256::digest(&renewed.certificate).into())?;
     let active = store::management_in(Mdm, &mut tx, &renewed_evidence).await?;
-    assert_eq!(active.device(), n.device);
+    assert_eq!(*active.device(), n.device);
     assert_eq!(active.protocol_request(), Some(child.request));
     assert_eq!(active.epoch(), child.epoch);
     assert_ne!(active.credential(), child.credential);

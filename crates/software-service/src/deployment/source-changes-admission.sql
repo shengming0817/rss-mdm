@@ -1,5 +1,5 @@
 WITH expected_columns(name,type,required) AS (VALUES
- ('tenant_id','uuid',true),('from_cut','jsonb',false),('to_cut','jsonb',false),('event_after','bigint',true),('page_through','bigint',false),('cursor','text',false),
+ ('tenant_id','uuid',true),('from_cut','jsonb',false),('to_cut','jsonb',false),('event_after','bigint',true),('page_through','bigint',false),('cursor','uuid',false),
  ('relation_consumed','bigint',true),('relation_watermark','bigint',true),('relation_cursor','bigint',false),
  ('failure','text',false),('failure_generation','bigint',true)
 ), execution_roles AS (

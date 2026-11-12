@@ -15,14 +15,14 @@ pub async fn authority_at_on(
     profile: rss_mdm_install_support::StorageProfile,
     connection: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     cut: &rss_mdm_inventory::AssetCut,
 ) -> Result<u64, sqlx::Error> {
     let revision = sqlx::query_scalar::<_, i64>(
         crate::storage_profile::sql(profile).device_coordinates_authority_at_on_1,
     )
     .bind(tenant.to_string())
-    .bind(device)
+    .bind(device.into_uuid())
     .bind(cut.to_json())
     .fetch_one(connection)
     .await?;

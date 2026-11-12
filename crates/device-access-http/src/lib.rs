@@ -234,14 +234,10 @@ async fn recover(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
-    Path(id): Path<String>,
+    Path(id): Path<rss_mdm_agent_wire::DeviceId>,
     v: Body<da::GrantRequest>,
 ) -> Result<Json<da::Grant>, Error> {
-    Ok(Json(
-        s.registrations
-            .recover(&p, id.to_string(), &body(v)?, &a)
-            .await?,
-    ))
+    Ok(Json(s.registrations.recover(&p, id, &body(v)?, &a).await?))
 }
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -252,7 +248,7 @@ async fn revoke(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
     Administrator(p): Administrator,
-    Path(id): Path<String>,
+    Path(id): Path<rss_mdm_agent_wire::DeviceId>,
     v: Body<OperationRequest>,
 ) -> Result<Json<rss_mdm_registration_service::device::RevocationReceipt>, Error> {
     Ok(Json(

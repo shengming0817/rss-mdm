@@ -502,13 +502,11 @@ struct Action {
 }
 async fn action(
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<String>,
+    Path(id): Path<rss_mdm_agent_wire::DeviceId>,
     Extension(audit): Extension<RequestAudit>,
     input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
 ) -> Result<std::convert::Infallible, Error> {
-    if rss_observation::Id::new(&id).is_ok() {
-        audit.target_device(&id);
-    }
+    audit.target_device(&id);
     audit.set_action(
         "device_action",
         rss_mdm_audit_integration::AuditIntent::Management,

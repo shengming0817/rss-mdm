@@ -93,7 +93,7 @@ impl Authorities {
         if current.device != o.device {
             return Err(Error::Forbidden);
         }
-        let old:Option<(i64,String,serde_json::Value)>=sqlx::query_as("SELECT sequence, payload, mandatory FROM rss_da.deployment_evidence WHERE tenant_id = $1 AND device = $2 AND authority = $3 FOR UPDATE").bind(o.tenant).bind(&o.device).bind(o.authority).fetch_optional(&mut *c).await.map_err(db)?;
+        let old:Option<(i64,String,serde_json::Value)>=sqlx::query_as("SELECT sequence, payload, mandatory FROM rss_da.deployment_evidence WHERE tenant_id = $1 AND device = $2 AND authority = $3 FOR UPDATE").bind(o.tenant).bind(o.device.into_uuid()).bind(o.authority).fetch_optional(&mut *c).await.map_err(db)?;
         let mut mandatory = Mandatory::new();
         if let Some((sequence, payload, previous)) = old {
             mandatory = serde_json::from_value(previous).map_err(|_| Error::Corrupt)?;
@@ -116,7 +116,7 @@ impl Authorities {
             let identity = da::ReportIdentity {
                 service_id: installation,
                 tenant: o.tenant,
-                device_id: current.device.to_string(),
+                device_id: current.device,
             };
             if artifact.digest != proof.digest
                 || config.native.digest != proof.native_digest
@@ -137,7 +137,7 @@ impl Authorities {
         // locks survive until the current issuer explicitly releases those fields.
         let mandatory = serde_json::to_value(mandatory).map_err(|_| Error::Corrupt)?;
         sqlx::query("INSERT INTO rss_da.deployment_evidence (tenant_id, device, authority, sequence, fingerprint, payload, signature, document, received_at, mandatory) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (tenant_id, device, authority) DO UPDATE SET sequence = excluded.sequence, fingerprint = excluded.fingerprint, payload = excluded.payload, signature = excluded.signature, document = excluded.document, received_at = excluded.received_at, mandatory = excluded.mandatory")
-            .bind(o.tenant).bind(&o.device).bind(o.authority).bind(o.sequence).bind(&fingerprint).bind(&signed.payload).bind(&signed.signature).bind(serde_json::to_value(&o).map_err(|_|Error::Malformed)?).bind(now).bind(mandatory).execute(&mut *c).await.map_err(db)?;
+            .bind(o.tenant).bind(o.device.into_uuid()).bind(o.authority).bind(o.sequence).bind(&fingerprint).bind(&signed.payload).bind(&signed.signature).bind(serde_json::to_value(&o).map_err(|_|Error::Malformed)?).bind(now).bind(mandatory).execute(&mut *c).await.map_err(db)?;
         if !o.revoked {
             for report in &o.applications {
                 crate::device_access::storage::deployment_result_in(c, &o, report, &fingerprint)
@@ -154,7 +154,7 @@ impl Authorities {
         anchor: &DaRegistration,
     ) -> Result<Vec<Observation>, Error> {
         let rows=sqlx::query("SELECT payload, signature FROM rss_da.deployment_evidence WHERE tenant_id = CAST($1 AS uuid) AND device = $2 ORDER BY authority LIMIT 17")
-            .bind(tenant.to_string()).bind(&anchor.device).fetch_all(&mut *c).await.map_err(db)?;
+            .bind(tenant.to_string()).bind(anchor.device.into_uuid()).fetch_all(&mut *c).await.map_err(db)?;
         if rows.len() > 16 {
             return Err(Error::Capacity);
         }

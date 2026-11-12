@@ -6,7 +6,7 @@ use rss_mdm_task_state::{Cancellation, Delivery, Execution};
 pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
     let mut fact = Activity::new(ActivityKind::Execution, phase);
     fact.target = Some(ActivityTarget {
-        device: run.target.device.clone(),
+        device: run.target.device,
     });
     fact.links.task = Some(run.id);
     fact.links.version = Some(run.policy_version);
@@ -62,7 +62,7 @@ pub fn accepted(
 ) -> Activity {
     let mut fact = Activity::new(ActivityKind::Execution, ActivityPhase::Accepted);
     fact.target = Some(ActivityTarget {
-        device: target.device.clone(),
+        device: target.device,
     });
     fact.links.task = Some(id);
     fact.links.version = Some(version);

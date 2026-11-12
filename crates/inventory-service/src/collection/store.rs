@@ -24,7 +24,15 @@ fn restored_scope(row: &PgRow) -> Result<Scope, Error> {
     let scope = serde_json::from_str::<Scope>(&row.try_get::<String, _>("scope").map_err(db)?)
         .map_err(|_| corrupt())?;
     if scope.tenant().to_string() != row.try_get::<String, _>("tenant_id").map_err(db)?
-        || scope.registration().as_str() != row.try_get::<String, _>("device").map_err(db)?
+        || rss_mdm_agent_wire::DeviceId::parse(scope.registration().as_str())
+            .map_err(|_| corrupt())?
+            != row
+                .try_get::<uuid::Uuid, _>("device")
+                .and_then(|id| {
+                    rss_mdm_agent_wire::DeviceId::try_from(id)
+                        .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                })
+                .map_err(db)?
         || scope.source().as_str() != row.try_get::<String, _>("source").map_err(db)?
         || scope.epoch().as_str() != row.try_get::<String, _>("epoch").map_err(db)?
         || rss_mdm_inventory::Source::parse(scope.source().as_str()).is_err()
@@ -244,7 +252,10 @@ pub async fn seal(
         "collection_finish",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    audit.target_device(run.scope.registration().as_str());
+    audit.target_device(
+        &rss_mdm_agent_wire::DeviceId::parse(run.scope.registration().as_str())
+            .map_err(|_| corrupt())?,
+    );
     audit.identify_service("service:collection-finalizer");
     let details = serde_json::json!({"collectionResult":result,"reason":reason,"batchDigest":digest,"sealedAt":now});
 
@@ -271,12 +282,12 @@ pub async fn terminate(
     tx: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
-    registration: &str,
+    registration: &rss_mdm_agent_wire::DeviceId,
     reason: &str,
 ) -> Result<(), Error> {
     let rows = sqlx::query(crate::storage_profile::sql(profile).collection_store_terminate_1)
         .bind(tenant)
-        .bind(registration)
+        .bind(registration.into_uuid())
         .fetch_all(&mut *tx)
         .await
         .map_err(db)?;

@@ -25,7 +25,7 @@ pub async fn published(c: &Context, policy: Uuid, object: &DeviceObject) -> Resu
     let input = rss_mdm_scope_service::sources::ScopeInput {
         definition,
         sources: vec![rss_mdm_scope_service::sources::SourceSet {
-            reference: rss_mdm_scope::Reference::Device(device.clone()),
+            reference: rss_mdm_scope::Reference::Device(*device),
             coordinates: rss_mdm_group::SourceCoordinates {
                 member_set: None,
                 member_version: 0,
@@ -39,7 +39,7 @@ pub async fn published(c: &Context, policy: Uuid, object: &DeviceObject) -> Resu
     };
     sqlx::query("INSERT INTO rss_da.scopes(tenant_id,id,policy_id,revision,calculation_revision,resolution_revision) VALUES($1::uuid,$2,$3,1,1,1)").bind(c.tenant.to_string()).bind(scope).bind(policy).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_da.scope_versions(tenant_id,id,revision,definition) VALUES($1::uuid,$2,1,$3)").bind(c.tenant.to_string()).bind(scope).bind(serde_json::to_value(&input.definition)?).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_da.scope_sources(tenant_id,scope,kind,target) VALUES($1::uuid,$2,'device',$3)").bind(c.tenant.to_string()).bind(scope).bind(device).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.scope_sources(tenant_id,scope,kind,target) VALUES($1::uuid,$2,'device',$3)").bind(c.tenant.to_string()).bind(scope).bind(device.into_uuid()).execute(&mut *tx).await?;
     seed_run(
         &mut tx,
         c,
@@ -90,8 +90,8 @@ async fn seed_run(tx: &mut sqlx::PgConnection, c: &Context, seed: RunSeed<'_>) -
     ))?)
     .to_vec();
     sqlx::query("INSERT INTO rss_da.scope_runs(tenant_id,id,scope,definition_revision,asset_cut,input,fingerprint,phase,object_count,member_count) VALUES($1::uuid,$2,$3,1,$4,$5,$6,$7,1,1)").bind(c.tenant.to_string()).bind(run).bind(scope).bind(cut.to_json()).bind(serde_json::to_value(input)?).bind(fingerprint).bind(phase).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_da.scope_source_members(tenant_id,run,source,device,input,unknown) VALUES($1::uuid,$2,0,$3,$4,false)").bind(c.tenant.to_string()).bind(run).bind(object.object.key()).bind(serde_json::to_value(object)?).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_da.scope_results(tenant_id,run,device,matched,explanation) VALUES($1::uuid,$2,$3,true,$4)").bind(c.tenant.to_string()).bind(run).bind(object.object.key()).bind(json!({"device":device,"targets":input.definition.targets,"limitations":[],"exclusions":[],"reasons":[]})).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.scope_source_members(tenant_id,run,source,object_kind,object_id,input,unknown) VALUES($1::uuid,$2,0,$3,$4,$5,false)").bind(c.tenant.to_string()).bind(run).bind(object.object.kind()).bind(object.object.uuid()).bind(serde_json::to_value(object)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.scope_results(tenant_id,run,object_kind,object_id,matched,explanation) VALUES($1::uuid,$2,$3,$4,true,$5)").bind(c.tenant.to_string()).bind(run).bind(object.object.kind()).bind(object.object.uuid()).bind(json!({"object":object.object,"targets":[{"kind":"direct","object":object.object}],"limitations":[],"exclusions":[],"reasons":[]})).execute(&mut *tx).await?;
     let channel = match object.members[0].channel {
         rss_mdm_inventory::Channel::Agent => "agent",
         rss_mdm_inventory::Channel::Mdm => "mdm",
@@ -99,7 +99,7 @@ async fn seed_run(tx: &mut sqlx::PgConnection, c: &Context, seed: RunSeed<'_>) -
     let mut hashes = json!({"agent":"0".repeat(64),"mdm":"0".repeat(64)});
     hashes[channel] = json!(format!("{:x}", Sha256::digest(serde_json::to_vec(object)?)));
     sqlx::query("INSERT INTO rss_da.scope_projection_runs(tenant_id,id,scope,previous_resolution,next_entry,phase,agent_revision,mdm_revision,channel_hashes) VALUES($1::uuid,$2,$3,$4,1,'project',1,1,$5)").bind(c.tenant.to_string()).bind(run).bind(scope).bind(previous).bind(hashes).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_da.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) VALUES($1::uuid,$2,$5,$3,true,false,$4,1)").bind(c.tenant.to_string()).bind(run).bind(device).bind(serde_json::to_value(&object.members[0])?).bind(channel).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_da.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) VALUES($1::uuid,$2,$5,$3,true,false,$4,1)").bind(c.tenant.to_string()).bind(run).bind(device.into_uuid()).bind(serde_json::to_value(&object.members[0])?).bind(channel).execute(&mut *tx).await?;
     sqlx::query(
         "UPDATE rss_da.scope_projection_runs SET phase=$3 WHERE tenant_id=$1::uuid AND id=$2",
     )

@@ -98,16 +98,11 @@ impl Compliance {
         let global = changes.iter().any(|c| c.identity.device.is_none());
         let devices = changes
             .iter()
-            .filter_map(|c| c.identity.device.clone())
+            .filter_map(|c| c.identity.device)
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let after = page
-            .cursor
-            .as_deref()
-            .map(Uuid::parse_str)
-            .transpose()
-            .map_err(|_| Error::Unavailable(Failure::ComplianceStorage))?;
+        let after = page.cursor;
         let rules = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -132,9 +127,9 @@ impl Compliance {
                 self.refresh_rule(tx, rule, &cut).await?;
             }
         }
-        let next = (rules.len() > 1).then(|| rules[0].id.to_string());
+        let next = (rules.len() > 1).then(|| rules[0].id);
         tx.with_connection(move |c| {
-            Box::pin(async move { pg::tasks::save_dispatch(c, t, &page, next.as_deref()).await })
+            Box::pin(async move { pg::tasks::save_dispatch(c, t, &page, next).await })
         })
         .await?;
         Ok(true)

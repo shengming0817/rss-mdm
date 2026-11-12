@@ -38,7 +38,11 @@ impl DeviceId {
 impl TryFrom<Uuid> for DeviceId {
     type Error = IdentityError;
     fn try_from(value: Uuid) -> Result<Self, Self::Error> {
-        if value.is_nil() { Err(IdentityError) } else { Ok(Self(value)) }
+        if value.is_nil() {
+            Err(IdentityError)
+        } else {
+            Ok(Self(value))
+        }
     }
 }
 impl FromStr for DeviceId {
@@ -49,7 +53,7 @@ impl FromStr for DeviceId {
 }
 impl fmt::Display for DeviceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.hyphenated().fmt(f)
+        fmt::Display::fmt(&self.0.hyphenated(), f)
     }
 }
 impl Serialize for DeviceId {
@@ -64,13 +68,22 @@ impl<'de> Deserialize<'de> for DeviceId {
     }
 }
 impl JsonSchema for DeviceId {
-    fn schema_name() -> std::borrow::Cow<'static, str> { "DeviceId".into() }
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema { uuid_schema(generator) }
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "DeviceId".into()
+    }
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        uuid_schema(generator)
+    }
 }
 
 /// A directory/calculation object; associations must be resolved before device execution.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    content = "id",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum ObjectRef {
     /// One independently registered endpoint.
     Endpoint(DeviceId),
@@ -84,15 +97,32 @@ pub enum ObjectRef {
 impl ObjectRef {
     /// Stable relational discriminator: endpoint = 0, association = 1.
     pub const fn kind(self) -> i16 {
-        match self { Self::Endpoint(_) => 0, Self::Association(_) => 1 }
+        match self {
+            Self::Endpoint(_) => 0,
+            Self::Association(_) => 1,
+        }
     }
     /// UUID component of the relational identity; always pair it with its kind.
     pub fn uuid(self) -> Uuid {
-        match self { Self::Endpoint(id) => id.into_uuid(), Self::Association(id) => id }
+        match self {
+            Self::Endpoint(id) => id.into_uuid(),
+            Self::Association(id) => id,
+        }
+    }
+    /// Decode separate textual URI components using the same canonical JSON identity rules.
+    pub fn from_path(kind: &str, id: &str) -> Result<Self, IdentityError> {
+        let kind = match kind {
+            "endpoint" => 0,
+            "association" => 1,
+            _ => return Err(IdentityError),
+        };
+        Self::from_parts(kind, canonical_uuid(id)?)
     }
     /// Reconstruct a typed relational identity, rejecting unknown kinds and zero UUIDs.
     pub fn from_parts(kind: i16, id: Uuid) -> Result<Self, IdentityError> {
-        if id.is_nil() { return Err(IdentityError); }
+        if id.is_nil() {
+            return Err(IdentityError);
+        }
         match kind {
             0 => Ok(Self::Endpoint(DeviceId::try_from(id)?)),
             1 => Ok(Self::Association(id)),
@@ -106,15 +136,19 @@ impl Ord for ObjectRef {
     }
 }
 impl PartialOrd for ObjectRef {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
-fn canonical_uuid(value: &str) -> Result<Uuid, IdentityError> {
+pub(crate) fn canonical_uuid(value: &str) -> Result<Uuid, IdentityError> {
     let id = Uuid::parse_str(value).map_err(|_| IdentityError)?;
-    if id.is_nil() || id.hyphenated().to_string() != value { return Err(IdentityError); }
+    if id.is_nil() || id.hyphenated().to_string() != value {
+        return Err(IdentityError);
+    }
     Ok(id)
 }
-fn uuid_schema(_: &mut SchemaGenerator) -> Schema {
+pub(crate) fn uuid_schema(_: &mut SchemaGenerator) -> Schema {
     schemars::json_schema!({"type":"string","format":"uuid","minLength":36,"maxLength":36,
         "pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
         "not":{"const":"00000000-0000-0000-0000-000000000000"}})
@@ -122,7 +156,9 @@ fn uuid_schema(_: &mut SchemaGenerator) -> Schema {
 mod association_uuid {
     use super::*;
     pub fn serialize<S: Serializer>(id: &Uuid, s: S) -> Result<S::Ok, S::Error> {
-        if id.is_nil() { return Err(serde::ser::Error::custom(IdentityError)); }
+        if id.is_nil() {
+            return Err(serde::ser::Error::custom(IdentityError));
+        }
         s.collect_str(&id.hyphenated())
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Uuid, D::Error> {
@@ -138,16 +174,29 @@ mod tests {
     fn public_identity_contract_rejects_alternate_spellings() {
         let schema = schemars::schema_for!(DeviceId);
         let validator = jsonschema::validator_for(&serde_json::to_value(schema).unwrap()).unwrap();
-        for text in [ID.to_owned(), ID.to_uppercase(), ID.replace('-', ""), format!("urn:uuid:{ID}"),
-            format!("{{{ID}}}"), "00000000-0000-0000-0000-000000000000".into(), "device".into()] {
+        for text in [
+            ID.to_owned(),
+            ID.to_uppercase(),
+            ID.replace('-', ""),
+            format!("urn:uuid:{ID}"),
+            format!("{{{ID}}}"),
+            "00000000-0000-0000-0000-000000000000".into(),
+            "device".into(),
+        ] {
             let value = serde_json::Value::String(text.clone());
             assert_eq!(validator.is_valid(&value), text == ID);
-            assert_eq!(serde_json::from_value::<DeviceId>(value).is_ok(), text == ID);
+            assert_eq!(
+                serde_json::from_value::<DeviceId>(value).is_ok(),
+                text == ID
+            );
         }
         let id = DeviceId::parse(ID).unwrap();
         let map = std::collections::BTreeMap::from([(id, 1)]);
         let bytes = serde_json::to_vec(&map).unwrap();
-        assert_eq!(serde_json::from_slice::<std::collections::BTreeMap<DeviceId, i32>>(&bytes).unwrap(), map);
+        assert_eq!(
+            serde_json::from_slice::<std::collections::BTreeMap<DeviceId, i32>>(&bytes).unwrap(),
+            map
+        );
     }
     #[test]
     fn object_kind_survives_wire_and_relational_round_trips() {
@@ -157,12 +206,20 @@ mod tests {
         assert_ne!(endpoint, association);
         assert!(endpoint < association);
         for object in [endpoint, association] {
-            assert_eq!(ObjectRef::from_parts(object.kind(), object.uuid()).unwrap(), object);
+            assert_eq!(
+                ObjectRef::from_parts(object.kind(), object.uuid()).unwrap(),
+                object
+            );
             let bytes = serde_json::to_vec(&object).unwrap();
             assert_eq!(serde_json::from_slice::<ObjectRef>(&bytes).unwrap(), object);
         }
         assert!(ObjectRef::from_parts(2, id.into_uuid()).is_err());
         assert!(ObjectRef::from_parts(1, Uuid::nil()).is_err());
-        assert!(serde_json::from_str::<ObjectRef>(r#"{"kind":"association","id":"00000000-0000-0000-0000-000000000000"}"#).is_err());
+        assert!(
+            serde_json::from_str::<ObjectRef>(
+                r#"{"kind":"association","id":"00000000-0000-0000-0000-000000000000"}"#
+            )
+            .is_err()
+        );
     }
 }

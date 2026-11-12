@@ -113,7 +113,7 @@ impl super::inputs::Inputs {
             ));
         }
         let next = schedule
-            .next_after(now, target.device.as_bytes())?
+            .next_after(now, target.device.to_string().as_bytes())?
             .map(|o| o.available_at);
         Ok((
             TaskAdmission::new(S::Scheduled, None).not_before(next),

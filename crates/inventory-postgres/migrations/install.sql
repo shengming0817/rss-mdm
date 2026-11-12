@@ -15,7 +15,7 @@ CREATE TABLE mdm.inventory (
  last_known_batch text,
  last_known_observed bigint,
  last_known_received bigint,
- registration text NOT NULL,
+ registration uuid NOT NULL,
  source text NOT NULL,
  epoch text NOT NULL,
  collection_sequence bigint NOT NULL CHECK(collection_sequence>=0),
@@ -52,7 +52,7 @@ GRANT EXECUTE ON FUNCTION
 
 CREATE INDEX inventory_source ON mdm.inventory(tenant_id,registration,source,epoch);
 CREATE TABLE mdm.manual_assignments (
- tenant_id uuid NOT NULL, device text NOT NULL, field text NOT NULL CHECK(length(field)<=128 AND field ~ '^(device|custom|channel)\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$'),
+ tenant_id uuid NOT NULL, device uuid NOT NULL, field text NOT NULL CHECK(length(field)<=128 AND field ~ '^(device|custom|channel)\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$'),
  revision bigint NOT NULL CHECK(revision>0), fact jsonb NOT NULL CHECK(octet_length(fact::text)<=16777216),
  PRIMARY KEY(tenant_id,device,field)
 );
@@ -95,7 +95,7 @@ CREATE TABLE mdm.inventory_history (
  CHECK(document IS NULL OR octet_length(document::text)<=33554432)
 );
 CREATE TABLE mdm.manual_history (
- tenant_id uuid NOT NULL, device text NOT NULL, field text NOT NULL, revision bigint NOT NULL,
+ tenant_id uuid NOT NULL, device uuid NOT NULL, field text NOT NULL, revision bigint NOT NULL,
  document jsonb, PRIMARY KEY(tenant_id,device,field,revision),
  FOREIGN KEY(tenant_id,revision) REFERENCES mdm.asset_changes(tenant_id,revision),
  CHECK(document IS NULL OR octet_length(document::text)<=33554432)
@@ -200,7 +200,7 @@ BEGIN
  IF TG_OP='DELETE' THEN r=to_jsonb(OLD); d=NULL; ELSE r=to_jsonb(NEW); d=r; END IF;
  t=(r->>'tenant_id')::uuid;
  v=mdm.record_asset_change(t,'manual',jsonb_build_object('fact',jsonb_build_array(r->>'device',r->>'field')::text,'device',r->>'device','source','manual','operation',CASE WHEN TG_OP='DELETE' OR r->'fact'->'state'->>'kind'='deleted' THEN 'deleted' WHEN TG_OP='INSERT' THEN 'created' ELSE 'updated' END),ARRAY[r->>'field']);
- INSERT INTO mdm.manual_history VALUES(t,r->>'device',r->>'field',v,d);
+ INSERT INTO mdm.manual_history VALUES(t,(r->>'device')::uuid,r->>'field',v,d);
  RETURN NULL;
 END $$;
 REVOKE ALL ON FUNCTION mdm.capture_manual_history() FROM PUBLIC;
@@ -238,7 +238,7 @@ CREATE TABLE mdm.collection_results (
 -- It deliberately has no cascading dependency on the raw collection result.
 CREATE TABLE mdm.device_hardware_evidence (
  tenant_id uuid NOT NULL, scope text NOT NULL, run text NOT NULL,
- device text NOT NULL, source text NOT NULL, epoch text NOT NULL, coverage text NOT NULL,
+ device uuid NOT NULL, source text NOT NULL, epoch text NOT NULL, coverage text NOT NULL,
  sequence bigint NOT NULL CHECK(sequence>=0),
  result_digest text NOT NULL CHECK(result_digest ~ '^[0-9a-f]{64}$'), observed_at bigint NOT NULL,
  serial_number text, hardware_uuid text,

@@ -57,7 +57,7 @@ impl Events {
     pub async fn invoke_management(
         &self,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         input: &wire::PolicyEventRequest,
         audit: &RequestAudit,
     ) -> std::result::Result<wire::PolicyEventAccepted, Error> {
@@ -90,7 +90,7 @@ impl Events {
     async fn invoke(
         &self,
         requester: Requester<'_>,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         input: &wire::PolicyEventRequest,
         audit: &RequestAudit,
     ) -> std::result::Result<wire::PolicyEventAccepted, Error> {
@@ -110,7 +110,7 @@ impl Events {
             Requester::Agent(principal) => (
                 Caller::Agent {
                     target: Target {
-                        device: principal.device().into(),
+                        device: *principal.device(),
                     },
                 },
                 None,
@@ -275,7 +275,7 @@ impl Events {
                             }
                             let devices = retirement_target.as_ref().map_or_else(
                                 || vec![device.to_owned()],
-                                |object| object.members.iter().map(|m| m.device.clone()).collect(),
+                                |object| object.members.iter().map(|m| m.device).collect(),
                             );
                             for device in devices {
                                 for p in &required {
@@ -537,7 +537,7 @@ impl Application {
             rss_mdm_audit_integration::activity::ActivityPhase::Decided,
         );
         activity.target = Some(rss_mdm_audit_integration::activity::ActivityTarget {
-            device: target.device.clone(),
+            device: target.device,
         });
         activity.links.batch = Some(batch);
         activity.links.member = Some(member);
@@ -628,7 +628,7 @@ impl Application {
                     .await
             }
             Action::TelemetryProfile { .. } => {
-                let device = target.device.clone();
+                let device = target.device;
                 let id = policy.id;
                 let version = policy.version;
                 {
@@ -678,7 +678,7 @@ impl Application {
         let (member, origin) = cause;
         let tenant = tx.tenant_id();
         let reader = self.objects.clone();
-        let device = target.device.clone();
+        let device = target.device;
         let scope = policy.definition.scope;
         let object = tx
             .with_connection(move |c| {
@@ -738,7 +738,7 @@ impl Application {
         } = frozen;
         let now = crate::action_admission::now(tx).await?;
         if !schedule
-            .occurrence(now, target.device.as_bytes())?
+            .occurrence(now, target.device.to_string().as_bytes())?
             .is_some_and(|s| s.available_at <= now && s.window_end.is_none_or(|end| now < end))
         {
             return Ok(rejected("outside_window"));
@@ -806,7 +806,7 @@ impl Application {
                 rss_mdm_audit_integration::activity::ActivityPhase::Decided,
             );
             activity.target = Some(rss_mdm_audit_integration::activity::ActivityTarget {
-                device: target.device.clone(),
+                device: target.device,
             });
             activity.links.batch = Some(batch);
             activity.links.member = Some(member);
@@ -849,7 +849,7 @@ impl Application {
 pub async fn target_in(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     channel: &str,
 ) -> Result<Option<Target>> {
     let tenant = tx.tenant_id().to_string();
@@ -885,7 +885,7 @@ pub async fn event_device_current_in(
                     crate::storage_profile::sql(profile).events_event_device_current_in_1,
                 )
                 .bind(tenant)
-                .bind(target.device)
+                .bind(target.device.into_uuid())
                 .fetch_one(c)
                 .await
             })
@@ -913,12 +913,12 @@ impl Application {
             Some(self.objects.clone()),
         );
         let scope = policy.definition.scope;
-        let device = target.device.clone();
+        let device = target.device;
         let channel = match policy.definition.action.target_channel() {
             Some(rss_mdm_policy::SoftwareChannel::Agent) => rss_mdm_inventory::Channel::Agent,
             Some(rss_mdm_policy::SoftwareChannel::Mdm) => rss_mdm_inventory::Channel::Mdm,
             None => {
-                let registration = target.device.clone();
+                let registration = target.device;
                 let name: String = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
@@ -926,7 +926,7 @@ impl Application {
                                 crate::storage_profile::sql(profile).events_event_scope_in_1,
                             )
                             .bind(tenant.to_string())
-                            .bind(registration)
+                            .bind(registration.into_uuid())
                             .fetch_one(c)
                             .await
                         })

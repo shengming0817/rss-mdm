@@ -364,7 +364,7 @@ struct FactDoc {
 #[serde(deny_unknown_fields)]
 struct ObjectDoc {
     memberships: BTreeMap<String, crate::DecisionValue>,
-    id: String,
+    id: rss_mdm_agent_wire::ObjectRef,
     quantifier: String,
     complete: bool,
     contexts: BTreeMap<String, BTreeMap<String, FactDoc>>,
@@ -385,7 +385,7 @@ pub(crate) fn encode_page(s: &PageInput<'_>) -> Result<Vec<u8>> {
     let mut unique = BTreeMap::new();
     for o in s.objects {
         check(o.key.tenant() == s.tenant)?;
-        check(unique.insert(o.key.clone(), o).is_none())?;
+        check(unique.insert(o.key, o).is_none())?;
     }
     let objects = unique
         .values()
@@ -395,7 +395,7 @@ pub(crate) fn encode_page(s: &PageInput<'_>) -> Result<Vec<u8>> {
                 .iter()
                 .map(|(k, v)| (k.clone(), (*v).into()))
                 .collect(),
-            id: o.key.id().into(),
+            id: o.key.id(),
             quantifier: match o.quantifier {
                 rss_mdm_group::Quantifier::One => "one",
                 rss_mdm_group::Quantifier::Any => "any",

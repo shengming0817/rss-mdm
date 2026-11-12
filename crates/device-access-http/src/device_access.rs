@@ -228,7 +228,7 @@ use access::directory::view;
 async fn list(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     query: rss_mdm_http_contract::query::OwnedQuery<
         rss_mdm_http_contract::query::Directory<ListQuery>,
     >,
@@ -256,7 +256,7 @@ async fn list(
 async fn binding(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> Result<Json<access::directory::BindingView>, Error> {
     s.registration
         .device_access_binding(&auth, &device, id)
@@ -279,7 +279,7 @@ async fn change(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
     OperationProofHeaders(headers): OperationProofHeaders,
     body: Result<Json<ChangeInput>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<access::directory::BindingView>, Error> {
@@ -305,7 +305,7 @@ async fn change(
 async fn operation(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> Result<Json<access::directory::BindingView>, Error> {
     Ok(Json(view(
         s.registration
@@ -390,7 +390,7 @@ pub(crate) fn operation_proof(
 async fn step_up(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
     crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
     body: Result<Json<ChangeInput>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<crate::identity_contract::TimedChallenge>, Error> {
@@ -415,7 +415,7 @@ async fn step_up(
 async fn offboarding(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
 ) -> Result<Json<access::lifecycle::Progress>, Error> {
     s.registration
         .offboarding_progress(&auth.proof, &device, id)
@@ -451,7 +451,7 @@ async fn offboarding_identity(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
     IdentityOffboardingHeaders(headers): IdentityOffboardingHeaders,
     body: Result<Json<IdentityDisposition>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<OffboardingIdentity>, Error> {
@@ -697,7 +697,7 @@ async fn offboarding_idp(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id)): Path<(String, Uuid)>,
+    Path((device, id)): Path<(rss_mdm_agent_wire::DeviceId, Uuid)>,
     body: Result<Json<IdpDisposition>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<access::lifecycle::Progress>, Error> {
     use access::lifecycle::{ExternalComponent as C, ExternalPhase as P, IdpAction as A};
@@ -817,7 +817,7 @@ struct MaterialRequest {
 async fn material_step_up(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Path((device, id, version)): Path<(String, Uuid, i64)>,
+    Path((device, id, version)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, i64)>,
     crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
     Json(input): Json<MaterialRequest>,
 ) -> Result<Json<crate::identity_contract::Challenge>, Error> {
@@ -849,7 +849,7 @@ async fn material_disclose(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((device, id, version)): Path<(String, Uuid, i64)>,
+    Path((device, id, version)): Path<(rss_mdm_agent_wire::DeviceId, Uuid, i64)>,
     OperationProofHeaders(headers): OperationProofHeaders,
     Json(input): Json<MaterialRequest>,
 ) -> Result<Json<rss_mdm_recovery_credentials::Disclosure>, Error> {

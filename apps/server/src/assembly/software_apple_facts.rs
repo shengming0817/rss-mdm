@@ -68,7 +68,7 @@ impl AppleProfiles for AppleFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user: String,
         owner: String,
     ) -> Pending<'a, Vec<Uuid>> {
@@ -101,7 +101,7 @@ impl AppleProfiles for AppleFacts {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         identifier: String,
     ) -> Pending<'a, Vec<Uuid>> {

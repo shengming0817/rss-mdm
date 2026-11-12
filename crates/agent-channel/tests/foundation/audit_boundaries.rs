@@ -66,7 +66,7 @@ pub async fn task_trust(
     let ack = Acknowledgement {
         operation: Uuid::new_v4(),
         version: 1,
-        device_id: p.device().to_string(),
+        device_id: *p.device(),
 
         revision: trust.revision,
         digest: trust.installation_digest()?,
@@ -74,7 +74,7 @@ pub async fn task_trust(
     let observation = Observation {
         operation: Uuid::new_v4(),
         version: 1,
-        device_id: p.device().to_string(),
+        device_id: *p.device(),
 
         sequence: 1,
         target_revision: Some(trust.revision),

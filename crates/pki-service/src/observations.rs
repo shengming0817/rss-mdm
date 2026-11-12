@@ -20,7 +20,7 @@ pub async fn record_in(
     let body = serde_json::to_value(input).map_err(|_| Error::Conflict)?;
     let inserted = sqlx::query(crate::storage_profile::sql(profile).observations_record_in_1)
         .bind(tenant)
-        .bind(&input.device_id)
+        .bind(input.device_id.into_uuid())
         .bind(input.sequence as i64)
         .bind(input.operation)
         .bind(&body)
@@ -48,12 +48,12 @@ pub async fn latest_in(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Option<ObservedInstallation>, Error> {
     let row: Option<(serde_json::Value, i64)> =
         sqlx::query_as(crate::storage_profile::sql(profile).observations_latest_in_1)
             .bind(tenant)
-            .bind(device)
+            .bind(device.into_uuid())
             .fetch_optional(c)
             .await
             .map_err(db)?;
@@ -70,7 +70,7 @@ impl crate::registry::Registry {
     pub async fn agent_trust_observation(
         &self,
         p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<Option<ObservedInstallation>, Error> {
         let profile = self.profile();
 

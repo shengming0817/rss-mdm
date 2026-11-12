@@ -3,7 +3,7 @@
 use super::*;
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
-struct Cursor {
+pub struct Cursor {
     graph_revision: u64,
     ready: bool,
 }
@@ -13,7 +13,7 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         edit: &DefinitionEdit,
-        cursor: Option<String>,
+        previous: Option<Cursor>,
         candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         group_checked(self.groups.lock_graph_in(tx).await?)?;
@@ -29,11 +29,6 @@ impl Groups {
             Err(error) => return Err(error),
         };
         let revision = group_checked(self.groups.graph_revision_in(tx).await?)?;
-        let previous: Option<Cursor> = cursor
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|_| Error::Unavailable(Failure::GroupStorage))?;
         let restart = previous
             .as_ref()
             .is_none_or(|c| c.graph_revision != revision);
@@ -82,13 +77,13 @@ impl Groups {
                 .await?,
         )?
         .is_empty();
-        let cursor = checked_input(serde_json::to_string(&Cursor {
+        let cursor = checked_input(serde_json::to_value(&Cursor {
             graph_revision: revision,
             ready: !pending,
         }))?;
         let tenant = self.tenant.to_string();
         tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("UPDATE mdm_assets.group_tasks SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2")
+            sqlx::query("UPDATE mdm_assets.group_tasks SET definition_progress=$3 WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant).bind(task).bind(cursor).execute(c).await?; Ok(())
         })).await?;
         Ok(())

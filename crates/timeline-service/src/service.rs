@@ -23,7 +23,7 @@ pub(crate) type Prepared = Vec<Projected>;
 pub(crate) struct Projected {
     view: FactView,
     locator: Option<rss_mdm_audit_integration::operation::OperationLocator>,
-    devices: Vec<String>,
+    devices: Vec<rss_mdm_agent_wire::DeviceId>,
     activity: Option<rss_mdm_audit_integration::activity::Activity>,
 }
 impl Timeline {
@@ -205,7 +205,7 @@ impl Timeline {
             if let Some(target) = activity.as_ref().and_then(|a| a.target.as_ref())
                 && !devices.contains(&target.device)
             {
-                devices.push(target.device.clone());
+                devices.push(target.device);
             }
             batch.push(Projected {
                 view,
@@ -287,7 +287,7 @@ impl Timeline {
             let milliseconds=operation.remaining(RuntimeTimer.now()).unwrap_or_default().as_millis().saturating_add(1).to_string();
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(milliseconds).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
             let mut batch=batch.iter().collect::<Vec<_>>();
-            batch.sort_by_key(|r|r.activity.as_ref().and_then(|a|a.target.as_ref()).map(|t|t.device.as_str()));
+            batch.sort_by_key(|r|r.activity.as_ref().and_then(|a|a.target.as_ref()).map(|t|&t.device));
             for row in batch {
                 let operation_confirmed=row.locator.is_some() && (row.view.source.ends_with(".business") || row.view.request_replayed || row.view.request_write_outcome.as_deref()==Some("committed"));
                 let doc=serde_json::to_value(DiagnosticFact { fact: row.view.clone(), operation: row.locator.clone(),operation_confirmed }).map_err(|_|Error::Integrity)?;
@@ -295,7 +295,7 @@ impl Timeline {
                 sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest,activity,activity_digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (tenant_id,source,event_id) DO NOTHING")
                     .bind(self.tenant.to_string()).bind(row.view.position as i64).bind(&row.view.source).bind(&row.view.event_id)
                     .bind(row.view.recorded_at).bind(row.view.instance_id).bind(row.view.operation_id).bind(&row.view.actor).bind(&row.view.action)
-                    .bind(&row.view.audit_outcome).bind(&row.devices).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).bind(row.activity.as_ref().map(serde_json::to_value).transpose().map_err(|_|Error::Integrity)?).bind(row.activity.as_ref().map(|a|serde_json::to_value(a).and_then(|v|serde_json::to_vec(&v)).map(|b|Sha256::digest(b).to_vec())).transpose().map_err(|_|Error::Integrity)?).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+                    .bind(&row.view.audit_outcome).bind(row.devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).bind(row.activity.as_ref().map(serde_json::to_value).transpose().map_err(|_|Error::Integrity)?).bind(row.activity.as_ref().map(|a|serde_json::to_value(a).and_then(|v|serde_json::to_vec(&v)).map(|b|Sha256::digest(b).to_vec())).transpose().map_err(|_|Error::Integrity)?).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
                 if let Some(target)=row.activity.as_ref().and_then(|a|a.target.as_ref()) {
                     crate::activities::publish_in(&mut tx,self.tenant,&target.device,row.view.position as i64).await?;
                 }
@@ -395,8 +395,8 @@ impl Timeline {
             return Err(Error::Conflict);
         }
         // Coverage and result rows share one statement snapshot, not a durable consumption offset.
-        let rows=sqlx::query("WITH coverage AS (SELECT NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND starts_with(r.source_id,$17::text) AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS complete) SELECT coverage.complete,f.document,f.digest,f.position,f.recorded_at FROM coverage LEFT JOIN LATERAL (SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND starts_with(source,$17::text) AND (instance_id=$2::uuid OR (instance_id IS NULL AND source IN ('mdm.business','mdm.request','da.business','da.request') AND document->'fact'->>'actorKind' IN ('service','device','unidentified'))) AND ($3::text IS NULL OR devices @> ARRAY[$3]) AND ($4::uuid IS NULL OR operation_id=$4 OR ($16::text IS NULL AND operations @> ARRAY[$4])) AND ($5::text IS NULL OR CASE WHEN $16::text IS NULL THEN actor ELSE document->'operation'->>'actor' END=$5) AND ($6::text IS NULL OR action=$6) AND ($7::text IS NULL OR outcome=$7) AND ($8::bigint IS NULL OR recorded_at>=$8) AND ($9::bigint IS NULL OR recorded_at<$9) AND ($13::text IS NULL OR document->'fact'->'target'->>'id'=$13) AND ($14::text IS NULL OR document->'fact'->'target'->>'type'=$14) AND ($15::text IS NULL OR document->'fact'->>'requestId'=$15) AND ($16::text IS NULL OR document->'operation'->>'owner'=$16) AND ($10::bigint IS NULL OR (recorded_at,position)<($10,$11)) ORDER BY recorded_at DESC,position DESC LIMIT $12) f ON true ORDER BY f.recorded_at DESC,f.position DESC")
-            .bind(self.tenant.to_string()).bind(proof.instance_id()).bind(&query.device).bind(query.operation_id)
+        let rows=sqlx::query("WITH coverage AS (SELECT NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND starts_with(r.source_id,$17::text) AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS complete) SELECT coverage.complete,f.document,f.digest,f.position,f.recorded_at FROM coverage LEFT JOIN LATERAL (SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND starts_with(source,$17::text) AND (instance_id=$2::uuid OR (instance_id IS NULL AND source IN ('mdm.business','mdm.request','da.business','da.request') AND document->'fact'->>'actorKind' IN ('service','device','unidentified'))) AND ($3::uuid IS NULL OR devices @> ARRAY[$3]) AND ($4::uuid IS NULL OR operation_id=$4 OR ($16::text IS NULL AND operations @> ARRAY[$4])) AND ($5::text IS NULL OR CASE WHEN $16::text IS NULL THEN actor ELSE document->'operation'->>'actor' END=$5) AND ($6::text IS NULL OR action=$6) AND ($7::text IS NULL OR outcome=$7) AND ($8::bigint IS NULL OR recorded_at>=$8) AND ($9::bigint IS NULL OR recorded_at<$9) AND ($13::text IS NULL OR document->'fact'->'target'->>'id'=$13) AND ($14::text IS NULL OR document->'fact'->'target'->>'type'=$14) AND ($15::text IS NULL OR document->'fact'->>'requestId'=$15) AND ($16::text IS NULL OR document->'operation'->>'owner'=$16) AND ($10::bigint IS NULL OR (recorded_at,position)<($10,$11)) ORDER BY recorded_at DESC,position DESC LIMIT $12) f ON true ORDER BY f.recorded_at DESC,f.position DESC")
+            .bind(self.tenant.to_string()).bind(proof.instance_id()).bind(query.device.map(|id|id.into_uuid())).bind(query.operation_id)
             .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((query.limit.unwrap_or(50)+1) as i64).bind(&query.target_id).bind(&query.target_type).bind(query.request_id.map(|id|id.to_string())).bind(query.owner.map(|owner|serde_json::to_value(owner).expect("closed owner").as_str().expect("owner string").to_owned())).bind(format!("{}.",self.profile.name())).fetch_all(c).await?;
         let complete = rows.first().ok_or(Error::Storage)?.try_get("complete")?;
         Ok((complete, rows))
@@ -477,24 +477,19 @@ async fn correlate(
     tenant: &str,
     view: &FactView,
     locator: Option<&rss_mdm_audit_integration::operation::OperationLocator>,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, Error> {
     if !view.supported {
         return Ok(Vec::new());
     }
     let mut devices = std::collections::BTreeSet::new();
     if let Some(device) = locator.and_then(|value| value.device.as_ref()) {
-        devices.insert(device.clone());
+        devices.insert(*device);
     }
     if let Some(device) = &view.device_id
-        && rss_mdm_registration_service::device::read::exists(
-            profile,
-            c,
-            tenant.into(),
-            device.clone(),
-        )
-        .await?
+        && rss_mdm_registration_service::device::read::exists(profile, c, tenant.into(), *device)
+            .await?
     {
-        devices.insert(device.clone());
+        devices.insert(*device);
     }
     if let Some(request) = view.registration_request_id
         && let Some(device) = rss_mdm_registration_service::device::read::timeline_enrollment_in(
@@ -530,19 +525,11 @@ async fn correlate(
             "command_accept" | "command_reauthorize" | "command_cancel" | "command_read"
         ));
     if device_target
-        && let target = &view.target.id
-        && rss_mdm_registration_service::device::read::exists(
-            profile,
-            c,
-            tenant.into(),
-            target.clone(),
-        )
-        .await?
+        && let Ok(target) = rss_mdm_agent_wire::DeviceId::parse(&view.target.id)
+        && rss_mdm_registration_service::device::read::exists(profile, c, tenant.into(), target)
+            .await?
     {
-        devices.insert(target.clone());
-    }
-    if devices.iter().any(|v| !crate::model::identifier(v)) {
-        return Err(Error::Integrity);
+        devices.insert(target);
     }
     Ok(devices.into_iter().collect())
 }

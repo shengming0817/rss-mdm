@@ -8,7 +8,7 @@ use uuid::Uuid;
 pub async fn offer_candidates(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     now: i64,
     after: Option<(i64, Uuid)>,
 ) -> Result<Vec<(i64, Uuid)>> {
@@ -22,7 +22,7 @@ pub async fn offer_candidates(
                     crate::storage_profile::sql(profile).tasks_actions_poll_offer_candidates_1,
                 )
                 .bind(&tenant)
-                .bind(registration)
+                .bind(registration.into_uuid())
                 .bind(now)
                 .bind(after_at)
                 .bind(after_id)
@@ -39,7 +39,7 @@ pub async fn offer_candidates(
 pub async fn cancellations(
     profile: rss_mdm_install_support::StorageProfile,
     tx: &mut PgTransaction<'_>,
-    registration: String,
+    registration: rss_mdm_agent_wire::DeviceId,
     after: Option<Uuid>,
 ) -> Result<Vec<wire::TaskCancellation>> {
     let tenant = tx.tenant_id().to_string();
@@ -48,7 +48,7 @@ pub async fn cancellations(
             Box::pin(async move {
                 sqlx::query(crate::storage_profile::sql(profile).tasks_actions_poll_cancellations_1)
                     .bind(tenant)
-                    .bind(registration)
+                    .bind(registration.into_uuid())
                     .bind(after)
                     .bind(wire::MAX_TASK_CANCELLATIONS as i64)
                     .fetch_all(c)

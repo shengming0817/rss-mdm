@@ -25,7 +25,7 @@ impl DeviceService {
     pub async fn registration_user(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
     ) -> Result<RegistrationUser, Error> {
         let profile = self.profile();
 
@@ -40,7 +40,7 @@ impl DeviceService {
     pub async fn assign_registration_user(
         &self,
         p: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         change: &RegistrationUserChange,
         key: Uuid,
         audit: &RequestAudit,
@@ -51,7 +51,7 @@ impl DeviceService {
             return Err(Error::Forbidden);
         }
         p.enrollment(device)?;
-        rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
+
         if key.is_nil() || change.expected_revision >= i64::MAX as u64 {
             return Err(Error::Malformed);
         }
@@ -95,7 +95,7 @@ impl DeviceService {
                 if current.revision != change.expected_revision { return Err(Error::Conflict); }
                 let revision = current.revision+1;
                 sqlx::query(crate::storage_profile::sql(profile).device_registration_user_assign_registration_user_1)
-                    .bind(p.tenant_id()).bind(device).bind(revision as i64).bind(change.user.as_ref().map(|u| &u.instance_id)).bind(change.user.as_ref().map(|u| &u.principal_id)).execute(&mut *c).await.map_err(db)?;
+                    .bind(p.tenant_id()).bind(device.into_uuid()).bind(revision as i64).bind(change.user.as_ref().map(|u| &u.instance_id)).bind(change.user.as_ref().map(|u| &u.principal_id)).execute(&mut *c).await.map_err(db)?;
                 p.enrollment(device)?;
                 let value = RegistrationUser { revision, user: change.user.clone() };
                 crate::operations::save(profile, c,op,&serde_json::to_string(&value).map_err(|_| Error::Corrupt)?,audit,
@@ -116,7 +116,7 @@ async fn target_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     if profile != p.profile() {
         return Err(crate::Error::Forbidden);
@@ -127,7 +127,7 @@ async fn target_on(
         crate::storage_profile::sql(profile).device_registration_user_target_on_1,
     )
     .bind(p.tenant_id())
-    .bind(device)
+    .bind(device.into_uuid())
     .fetch_one(c)
     .await
     .map_err(db)?;
@@ -137,11 +137,11 @@ pub async fn read_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<RegistrationUser, Error> {
     let row = sqlx::query(crate::storage_profile::sql(profile).device_registration_user_read_on_1)
         .bind(tenant)
-        .bind(device)
+        .bind(device.into_uuid())
         .fetch_optional(c)
         .await
         .map_err(db)?;
@@ -173,7 +173,7 @@ pub(crate) async fn lock_on(
     _profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<(), Error> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2671))")
         .bind(format!("{tenant}:{device}"))
@@ -187,7 +187,7 @@ pub(crate) async fn lock_on(
 pub async fn initialize_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
     user: &User,
 ) -> Result<(), Error> {
     user.validate(&user.tenant_id, &user.instance_id)
@@ -195,7 +195,7 @@ pub async fn initialize_on(
     lock_on(profile, c, &user.tenant_id, device).await?;
     sqlx::query(crate::storage_profile::sql(profile).device_registration_user_initialize_on_1)
         .bind(&user.tenant_id)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(&user.instance_id)
         .bind(&user.principal_id)
         .execute(c)
@@ -209,14 +209,14 @@ pub async fn page_on(
     profile: rss_mdm_install_support::StorageProfile,
     c: &mut PgConnection,
     tenant: &str,
-    devices: &[String],
-) -> Result<std::collections::BTreeMap<String, RegistrationUser>, Error> {
+    devices: &[rss_mdm_agent_wire::DeviceId],
+) -> Result<std::collections::BTreeMap<rss_mdm_agent_wire::DeviceId, RegistrationUser>, Error> {
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
     let rows = sqlx::query(crate::storage_profile::sql(profile).device_registration_user_page_on_1)
         .bind(tenant)
-        .bind(devices)
+        .bind(devices.iter().map(|id| id.into_uuid()).collect::<Vec<_>>())
         .fetch_all(c)
         .await
         .map_err(db)?;
@@ -224,7 +224,7 @@ pub async fn page_on(
         .iter()
         .map(|id| {
             (
-                id.clone(),
+                *id,
                 RegistrationUser {
                     revision: 0,
                     user: None,
@@ -236,7 +236,9 @@ pub async fn page_on(
         let instance: Option<String> = row.try_get("instance").map_err(db)?;
         let principal: Option<String> = row.try_get("principal").map_err(db)?;
         result.insert(
-            row.try_get("device").map_err(db)?,
+            row.try_get::<uuid::Uuid, _>("device")
+                .and_then(crate::database::device_id)
+                .map_err(db)?,
             RegistrationUser {
                 revision: row
                     .try_get::<i64, _>("revision")

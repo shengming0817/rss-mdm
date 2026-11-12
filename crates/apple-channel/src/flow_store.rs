@@ -21,13 +21,13 @@ impl channels::AppleProfiles for Store {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user: String,
         owner: String,
     ) -> Pending<'a, Vec<Uuid>> {
         Box::pin(async move {
             sqlx::query_scalar("SELECT d.operation FROM mdm_apple.declarations AS d INNER JOIN mdm_access.devices AS o ON (o.tenant_id, o.id) = (d.tenant_id, d.device) WHERE d.tenant_id = CAST($1 AS uuid) AND o.id = $2 AND d.user_key = $3 AND d.owner = $4 AND d.retired_at IS NULL ORDER BY d.operation")
-            .bind(tenant).bind(&device).bind(user).bind(owner).fetch_all(c).await.map_err(storage)
+            .bind(tenant).bind(device.into_uuid()).bind(user).bind(owner).fetch_all(c).await.map_err(storage)
         })
     }
 
@@ -45,12 +45,12 @@ impl channels::AppleProfiles for Store {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         identifier: String,
     ) -> Pending<'a, Vec<Uuid>> {
         Box::pin(async move {
-            sqlx::query_scalar("SELECT operation FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND identifier=$4 AND retired_at IS NULL ORDER BY operation").bind(tenant).bind(&device).bind(user_key).bind(identifier).fetch_all(c).await.map_err(storage)
+            sqlx::query_scalar("SELECT operation FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND identifier=$4 AND retired_at IS NULL ORDER BY operation").bind(tenant).bind(device.into_uuid()).bind(user_key).bind(identifier).fetch_all(c).await.map_err(storage)
         })
     }
 }
@@ -85,12 +85,18 @@ impl channels::ApplePush for Store {
             let rows=sqlx::query("SELECT device, user_key, material, token_revision FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND state = 'active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $2) AND next_push <= clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until < clock_timestamp()) ORDER BY next_push, device, user_key LIMIT 32 FOR UPDATE SKIP LOCKED").bind(&tenant).bind(configuration.as_slice()).fetch_all(&mut *c).await.map_err(storage)?;
             let mut result = Vec::new();
             for row in rows {
-                let device = row.try_get("device").map_err(storage)?;
+                let device = row
+                    .try_get::<uuid::Uuid, _>("device")
+                    .and_then(|id| {
+                        rss_mdm_agent_wire::DeviceId::try_from(id)
+                            .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                    })
+                    .map_err(storage)?;
                 let active = rss_mdm_registration_service::device::store::active_source_in(
                     rss_mdm_install_support::StorageProfile::Mdm,
                     c,
                     &tenant,
-                    device,
+                    &device,
                     rss_mdm_inventory::ReportSource::MdmApple,
                 )
                 .await
@@ -100,7 +106,7 @@ impl channels::ApplePush for Store {
                 let sealed: Vec<u8> = row.try_get("material").map_err(storage)?;
                 let aad = crate::material::aad(
                     &tenant,
-                    device,
+                    &device,
                     &user_key,
                     revision,
                     "apple.push.material",
@@ -138,7 +144,13 @@ impl channels::ApplePush for Store {
                 result.push(channels::PushCandidate {
                     revision,
                     user_key,
-                    device: row.try_get("device").map_err(storage)?,
+                    device: row
+                        .try_get::<uuid::Uuid, _>("device")
+                        .and_then(|id| {
+                            rss_mdm_agent_wire::DeviceId::try_from(id)
+                                .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                        })
+                        .map_err(storage)?,
                     disposition,
                 });
             }
@@ -149,18 +161,18 @@ impl channels::ApplePush for Store {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         revision: i64,
         scope: String,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             sqlx::query("UPDATE mdm_apple.channels SET state = 'pending_token', push_id = NULL, push_lease_until = NULL, push_status = NULL, push_outcome = 'rejected' WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3 AND token_revision = $4")
-                        .bind(&tenant).bind(&device).bind(&user_key).bind(revision)
+                        .bind(&tenant).bind(device.into_uuid()).bind(&user_key).bind(revision)
                         .execute(&mut *c).await.map_err(storage)?;
             if user_key.is_empty() {
                 sqlx::query("UPDATE mdm_apple.devices SET state = 'pending_token' WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'")
-                            .bind(&tenant).bind(&device).execute(&mut *c).await.map_err(storage)?;
+                            .bind(&tenant).bind(device.into_uuid()).execute(&mut *c).await.map_err(storage)?;
             }
             eprintln!(
                 "{}",
@@ -173,11 +185,11 @@ impl channels::ApplePush for Store {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            sqlx::query("UPDATE mdm_apple.channels SET next_push = clock_timestamp() + CAST('30 seconds' AS interval) WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND user_key = $3").bind(tenant).bind(&device).bind(user_key).execute(c).await.map_err(storage)?;
+            sqlx::query("UPDATE mdm_apple.channels SET next_push = clock_timestamp() + CAST('30 seconds' AS interval) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3").bind(tenant).bind(device.into_uuid()).bind(user_key).execute(c).await.map_err(storage)?;
             Ok(())
         })
     }
@@ -186,12 +198,12 @@ impl channels::ApplePush for Store {
         c: &'a mut PgConnection,
         tenant: String,
         wake: Uuid,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         configuration: [u8; 32],
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            sqlx::query("UPDATE mdm_apple.channels SET push_failures = CASE WHEN push_configuration IS DISTINCT FROM $4 THEN 0 ELSE push_failures END, push_configuration = $4, push_id = CAST($3 AS uuid), push_lease_until = clock_timestamp() + CAST('15 seconds' AS interval), next_push = clock_timestamp() + CAST('30 seconds' AS interval) WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND user_key = $5").bind(tenant).bind(&device).bind(wake).bind(configuration.as_slice()).bind(user_key).execute(c).await.map_err(storage)?;
+            sqlx::query("UPDATE mdm_apple.channels SET push_failures = CASE WHEN push_configuration IS DISTINCT FROM $4 THEN 0 ELSE push_failures END, push_configuration = $4, push_id = CAST($3 AS uuid), push_lease_until = clock_timestamp() + CAST('15 seconds' AS interval), next_push = clock_timestamp() + CAST('30 seconds' AS interval) WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $5").bind(tenant).bind(device.into_uuid()).bind(wake).bind(configuration.as_slice()).bind(user_key).execute(c).await.map_err(storage)?;
             Ok(())
         })
     }
@@ -206,7 +218,7 @@ impl channels::ApplePush for Store {
         Box::pin(async move {
             let unregistered = outcome == channels::PushOutcome::Unregistered;
             let outcome = outcome.as_str();
-            let old=sqlx::query("SELECT push_lease_until IS NULL AS settled, push_status, push_outcome FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND push_id = CAST($3 AS uuid) AND token_revision = $4 AND user_key = $5 FOR UPDATE").bind(&tenant).bind(&wake.device).bind(wake.id).bind(wake.revision).bind(&wake.user_key).fetch_optional(&mut *c).await.map_err(storage)?;
+            let old=sqlx::query("SELECT push_lease_until IS NULL AS settled, push_status, push_outcome FROM mdm_apple.channels WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND push_id = CAST($3 AS uuid) AND token_revision = $4 AND user_key = $5 FOR UPDATE").bind(&tenant).bind(wake.device.into_uuid()).bind(wake.id).bind(wake.revision).bind(&wake.user_key).fetch_optional(&mut *c).await.map_err(storage)?;
             let Some(old) = old else { return Ok(None) };
             if old.try_get::<bool, _>("settled").map_err(storage)? {
                 return Ok(Some(
@@ -226,9 +238,9 @@ impl channels::ApplePush for Store {
                     },
                 ));
             }
-            let changed=sqlx::query("UPDATE mdm_apple.channels SET push_lease_until = NULL, push_status = $5, push_outcome = $6, next_push = clock_timestamp() + make_interval(secs => CASE WHEN $6 = 'retryable' THEN GREATEST(CASE WHEN $5 >= 500 THEN 900 ELSE 30 END, 30 * (1 << LEAST(push_failures, 5))) ELSE 30 END), push_failures = CASE WHEN $6 = 'retryable' THEN LEAST(push_failures + 1, 6) ELSE 0 END, material = CASE WHEN $7 THEN NULL ELSE material END, material_digest = CASE WHEN $7 THEN NULL ELSE material_digest END, state = CASE WHEN $7 THEN 'pending_token' ELSE state END WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND push_id = CAST($3 AS uuid) AND token_revision = $4 AND user_key = $8 AND state = 'active' AND push_lease_until IS NOT NULL").bind(&tenant).bind(&wake.device).bind(wake.id).bind(wake.revision).bind(status.map(i32::from)).bind(outcome).bind(unregistered).bind(&wake.user_key).execute(&mut *c).await.map_err(storage)?.rows_affected();
+            let changed=sqlx::query("UPDATE mdm_apple.channels SET push_lease_until = NULL, push_status = $5, push_outcome = $6, next_push = clock_timestamp() + make_interval(secs => CASE WHEN $6 = 'retryable' THEN GREATEST(CASE WHEN $5 >= 500 THEN 900 ELSE 30 END, 30 * (1 << LEAST(push_failures, 5))) ELSE 30 END), push_failures = CASE WHEN $6 = 'retryable' THEN LEAST(push_failures + 1, 6) ELSE 0 END, material = CASE WHEN $7 THEN NULL ELSE material END, material_digest = CASE WHEN $7 THEN NULL ELSE material_digest END, state = CASE WHEN $7 THEN 'pending_token' ELSE state END WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND push_id = CAST($3 AS uuid) AND token_revision = $4 AND user_key = $8 AND state = 'active' AND push_lease_until IS NOT NULL").bind(&tenant).bind(wake.device.into_uuid()).bind(wake.id).bind(wake.revision).bind(status.map(i32::from)).bind(outcome).bind(unregistered).bind(&wake.user_key).execute(&mut *c).await.map_err(storage)?.rows_affected();
             if changed == 1 && unregistered && wake.user_key.is_empty() {
-                sqlx::query("UPDATE mdm_apple.devices SET state = 'pending_token' WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant).bind(&wake.device).execute(c).await.map_err(storage)?;
+                sqlx::query("UPDATE mdm_apple.devices SET state = 'pending_token' WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state = 'active'").bind(tenant).bind(wake.device.into_uuid()).execute(c).await.map_err(storage)?;
             }
             Ok(Some(changed))
         })
@@ -238,10 +250,10 @@ impl channels::ApplePush for Store {
         source: &'a dyn crate::participants::Business,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
-            let existing: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND phase = 'renew' AND state IN ('pending', 'sent', 'not_now') AND next_attempt <= clock_timestamp() AND deadline > clock_timestamp()) OR EXISTS (SELECT 1 FROM mdm_pki.trust AS t WHERE t.tenant_id = CAST($1 AS uuid) AND t.purpose = 'apple' AND NOT EXISTS (SELECT 1 FROM mdm_pki.installations AS i WHERE i.tenant_id = t.tenant_id AND i.purpose = t.purpose AND i.device = CAST($2 AS text) AND i.revision = t.revision) AND NOT EXISTS (SELECT 1 FROM mdm_apple.attempts AS a INNER JOIN mdm_apple.trust_deliveries AS d ON (d.tenant_id, d.id) = (a.tenant_id, a.trust) WHERE d.tenant_id = t.tenant_id AND d.device = CAST($2 AS text) AND d.revision = t.revision AND (a.ordinal = 32 OR a.next_attempt > clock_timestamp()) AND a.ordinal = (SELECT max(b.ordinal) FROM mdm_apple.attempts AS b WHERE b.tenant_id = a.tenant_id AND b.trust = a.trust)))").bind(&tenant).bind(&device).fetch_one(&mut *c).await.map_err(storage)?;
+            let existing: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND phase = 'renew' AND state IN ('pending', 'sent', 'not_now') AND next_attempt <= clock_timestamp() AND deadline > clock_timestamp()) OR EXISTS (SELECT 1 FROM mdm_pki.trust AS t WHERE t.tenant_id = CAST($1 AS uuid) AND t.purpose = 'apple' AND NOT EXISTS (SELECT 1 FROM mdm_pki.installations AS i WHERE i.tenant_id = t.tenant_id AND i.purpose = t.purpose AND i.device = $2 AND i.revision = t.revision) AND NOT EXISTS (SELECT 1 FROM mdm_apple.attempts AS a INNER JOIN mdm_apple.trust_deliveries AS d ON (d.tenant_id, d.id) = (a.tenant_id, a.trust) WHERE d.tenant_id = t.tenant_id AND d.device = $2 AND d.revision = t.revision AND (a.ordinal = 32 OR a.next_attempt > clock_timestamp()) AND a.ordinal = (SELECT max(b.ordinal) FROM mdm_apple.attempts AS b WHERE b.tenant_id = a.tenant_id AND b.trust = a.trust)))").bind(&tenant).bind(device.into_uuid()).fetch_one(&mut *c).await.map_err(storage)?;
             if existing {
                 return Ok(true);
             }
@@ -265,7 +277,7 @@ impl channels::AppleCollections for Store {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         limit: usize,
     ) -> Pending<'a, Vec<channels::PendingCollection>> {
@@ -273,12 +285,9 @@ impl channels::AppleCollections for Store {
             let mut result = Vec::new();
             let mut offset = 0i64;
             while result.len() < limit {
-                let ids=sqlx::query_scalar::<_,Uuid>("SELECT collection FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = CAST($2 AS text) AND user_key = $4 AND collection IS NOT NULL AND state IN ('pending', 'sent', 'not_now') AND deadline > clock_timestamp() AND next_attempt <= clock_timestamp() GROUP BY collection ORDER BY min(next_attempt), collection LIMIT 64 OFFSET $3").bind(&tenant).bind(&device).bind(offset).bind(&user_key).fetch_all(&mut *c).await.map_err(storage)?;
+                let ids=sqlx::query_scalar::<_,Uuid>("SELECT collection FROM mdm_apple.attempts WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $4 AND collection IS NOT NULL AND state IN ('pending', 'sent', 'not_now') AND deadline > clock_timestamp() AND next_attempt <= clock_timestamp() GROUP BY collection ORDER BY min(next_attempt), collection LIMIT 64 OFFSET $3").bind(&tenant).bind(device.into_uuid()).bind(offset).bind(&user_key).fetch_all(&mut *c).await.map_err(storage)?;
                 let mut pending = rss_mdm_inventory_service::collection::read::pending_apple_in(
-                    c,
-                    &tenant,
-                    device.clone(),
-                    &ids,
+                    c, &tenant, device, &ids,
                 )
                 .await
                 .map_err(Error::from)?;
@@ -350,7 +359,7 @@ impl channels::AppleResults for Store {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
 
         after: Option<Uuid>,
         limit: usize,
@@ -360,7 +369,7 @@ impl channels::AppleResults for Store {
                 return Err(Error::Malformed);
             }
             sqlx::query_as("SELECT operation, user_key FROM mdm_apple.declarations WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND (CAST($3 AS uuid) IS NULL OR operation > $3) ORDER BY operation LIMIT $4")
-                .bind(tenant).bind(&device).bind(after).bind(limit as i64).fetch_all(c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))
+                .bind(tenant).bind(device.into_uuid()).bind(after).bind(limit as i64).fetch_all(c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))
         })
     }
 
@@ -515,7 +524,7 @@ pub(crate) async fn current(
         rss_mdm_inventory::ReportSource::MdmApple,
     )
     .await?;
-    let valid=sqlx::query_scalar::<_,bool>("SELECT TRUE FROM mdm_apple.devices AS d INNER JOIN mdm_apple.channels AS ch USING (tenant_id, device) WHERE d.tenant_id = CAST($1 AS uuid) AND d.device = CAST($2 AS text) AND d.state <> 'retired' AND d.udid = $3 AND ch.user_key = $4 AND ch.state = 'active' FOR UPDATE OF d, ch").bind(p.tenant().to_string()).bind(p.device()).bind(udid).bind(user_key).fetch_optional(c).await.map_err(db)?.unwrap_or(false);
+    let valid=sqlx::query_scalar::<_,bool>("SELECT TRUE FROM mdm_apple.devices AS d INNER JOIN mdm_apple.channels AS ch USING (tenant_id, device) WHERE d.tenant_id = CAST($1 AS uuid) AND d.device = $2 AND d.state <> 'retired' AND d.udid = $3 AND ch.user_key = $4 AND ch.state = 'active' FOR UPDATE OF d, ch").bind(p.tenant().to_string()).bind(p.device().into_uuid()).bind(udid).bind(user_key).fetch_optional(c).await.map_err(db)?.unwrap_or(false);
     if !valid {
         return Err(Error::Unauthorized);
     }
@@ -535,7 +544,7 @@ async fn send_command(
         }
         return super::native::resolve(c, &apple.protection, p, command).await;
     };
-    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state <> 'retired'").bind(p.tenant().to_string()).bind(p.device()).fetch_one(&mut *c).await.map_err(db)?;
+    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND state <> 'retired'").bind(p.tenant().to_string()).bind(p.device().into_uuid()).fetch_one(&mut *c).await.map_err(db)?;
     let rights = super::native::rights(rights);
     if command.input_version == "device-control-v1" {
         let A::Command { command } = &command.request else {
@@ -707,7 +716,7 @@ async fn send_command(
         crate::protection::Part::Request,
         &bytes,
     )?;
-    sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, operation, phase, request, state, deadline, next_attempt, ordinal, context, user_key, declaration_guards) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'sent', to_timestamp($7), clock_timestamp() + CAST('30 seconds' AS interval), $8, $9, $10, $11)").bind(&tenant).bind(id).bind(p.device()).bind(command.operation).bind(phase).bind(sealed).bind(command.deadline as f64).bind(ordinal).bind(serde_json::to_value(&context).map_err(|_| Error::Malformed)?).bind(command.target.user_key()).bind(if phase == "observe" { declaration_guards } else { Vec::new() }).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.attempts (tenant_id, id, device, operation, phase, request, state, deadline, next_attempt, ordinal, context, user_key, declaration_guards) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, 'sent', to_timestamp($7), clock_timestamp() + CAST('30 seconds' AS interval), $8, $9, $10, $11)").bind(&tenant).bind(id).bind(p.device().into_uuid()).bind(command.operation).bind(phase).bind(sealed).bind(command.deadline as f64).bind(ordinal).bind(serde_json::to_value(&context).map_err(|_| Error::Malformed)?).bind(command.target.user_key()).bind(if phase == "observe" { declaration_guards } else { Vec::new() }).execute(&mut *c).await.map_err(db)?;
     crate::notify(c, "apple").await.map_err(db)?;
     Ok(AppleDispatch::Ready(bytes))
 }

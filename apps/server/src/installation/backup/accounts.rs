@@ -149,7 +149,7 @@ mod tests {
             &grant(
                 Permission::Credentials,
                 Scope::Device {
-                    id: uuid::Uuid::new_v4().to_string()
+                    id: rss_mdm_agent_wire::DeviceId::new_v4()
                 }
             ),
             Permission::Credentials

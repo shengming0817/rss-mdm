@@ -125,7 +125,7 @@ impl Associations {
                 let associations:Vec<Association>=serde_json::from_value(raw["associations"].clone()).map_err(|_|Error::Storage)?;
                 let association=associations.first().ok_or(Error::NotFound)?;
                 authorize(&grant,proof,&association.members,false).map_err(|e|if matches!(e,Error::Forbidden){Error::NotFound}else{e})?;
-                let ids=association.members.iter().map(|m|m.device.clone()).collect::<Vec<_>>();
+                let ids=association.members.iter().map(|m|m.device).collect::<Vec<_>>();
                 let (world,_,_,_)=crate::snapshot::decode_world(&raw,service.tenant,&ids)?;
                 proof.check_live()?;
                 Ok((world.effective(association.clone()),grant.query_binding(proof)?))
@@ -139,12 +139,12 @@ impl Associations {
     pub async fn candidates(
         &self,
         proof: &AuthorizedPrincipal,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         selected: Channel,
         token: Option<&str>,
         limit: usize,
     ) -> Result<CandidatePage> {
-        if !(1..=1000).contains(&limit) || !model::text(device) {
+        if !(1..=1000).contains(&limit) {
             return Err(Error::Malformed);
         }
         if proof.tenant_id() != self.tenant.to_string() {
@@ -159,14 +159,14 @@ impl Associations {
                 let registration=endpoints::current_in(rss_mdm_install_support::StorageProfile::Mdm, c,proof.tenant_id(),device,*selected).await?.ok_or(Error::Conflict)?;
                 let binding=rss_mdm_query::cursor::fingerprint(&("association-candidates",proof.tenant_id(),proof.instance_id(),proof.principal_id(),*device,*selected,snapshot.query_binding(proof)?,registration)).map_err(|_|Error::Malformed)?;
                 let codec=rss_mdm_query::cursor::CursorCodec::from_key(service.key.clone());
-                let after:Option<String>=token.map(|token|codec.decode(&rss_contract::PageCursor::parse(token).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::CursorInvalidated)).transpose()?;
+                let after:Option<rss_mdm_agent_wire::DeviceId>=token.map(|token|codec.decode(&rss_contract::PageCursor::parse(token).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::CursorInvalidated)).transpose()?;
                 let channel=if *selected==Channel::Mdm{Channel::Agent}else{Channel::Mdm};
-                let allowed=snapshot.inventory_devices(proof)?.map(|s|s.into_iter().collect::<Vec<_>>());
-                let writable=snapshot.devices_for(proof,Permission::DeviceAssociationWrite)?.map(|s|s.into_iter().collect::<Vec<_>>());
-                let rows=sqlx::query("SELECT r.id AS device, r.id FROM mdm_access.devices AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.channel = $2 AND r.purpose = 'primary' AND r.state = 'active' AND r.id <> $3 AND (CAST($4 AS text) IS NULL OR r.id COLLATE \"C\" > $4 COLLATE \"C\") AND (CAST($5 AS text[]) IS NULL OR r.id = ANY($5)) AND (CAST($6 AS text[]) IS NULL OR r.id = ANY($6)) AND EXISTS (SELECT FROM mdm_access.credentials AS k WHERE (k.tenant_id, k.device) = (r.tenant_id, r.id) AND k.state = 'active') AND NOT EXISTS (SELECT FROM mdm_devices.members AS m WHERE (m.tenant_id, m.device) = (r.tenant_id, r.id) AND NOT m.released) ORDER BY r.id COLLATE \"C\" LIMIT $7")
-                    .bind(proof.tenant_id()).bind(channel.as_str()).bind(*device).bind(after).bind(allowed).bind(writable).bind((limit+1) as i64).fetch_all(c).await?;
+                let allowed=snapshot.inventory_devices(proof)?.map(|s|s.into_iter().map(|id|id.into_uuid()).collect::<Vec<_>>());
+                let writable=snapshot.devices_for(proof,Permission::DeviceAssociationWrite)?.map(|s|s.into_iter().map(|id|id.into_uuid()).collect::<Vec<_>>());
+                let rows=sqlx::query("SELECT r.id AS device, r.id FROM mdm_access.devices AS r WHERE r.tenant_id = CAST($1 AS uuid) AND r.channel = $2 AND r.purpose = 'primary' AND r.state = 'active' AND r.id <> $3 AND (CAST($4 AS uuid) IS NULL OR r.id > $4) AND (CAST($5 AS uuid[]) IS NULL OR r.id = ANY($5)) AND (CAST($6 AS uuid[]) IS NULL OR r.id = ANY($6)) AND EXISTS (SELECT FROM mdm_access.credentials AS k WHERE (k.tenant_id, k.device) = (r.tenant_id, r.id) AND k.state = 'active') AND NOT EXISTS (SELECT FROM mdm_devices.members AS m WHERE (m.tenant_id, m.device) = (r.tenant_id, r.id) AND NOT m.released) ORDER BY r.id LIMIT $7")
+                    .bind(proof.tenant_id()).bind(channel.as_str()).bind(device.into_uuid()).bind(after.map(|id|id.into_uuid())).bind(allowed).bind(writable).bind((limit+1) as i64).fetch_all(c).await?;
                 let mut items=rows.into_iter().map(|row|Ok(Member {
-                    device:row.try_get("device")?,channel,
+                    device:row.try_get::<uuid::Uuid, _>("device").and_then(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|e| sqlx::Error::Decode(Box::new(e))))?,channel,
                 })).collect::<Result<Vec<_>>>()?;
                 let more=items.len()>limit;items.truncate(limit);
                 let next_cursor=if more{Some(codec.encode(&binding,&items.last().ok_or(Error::Storage)?.device).map_err(|_|Error::Malformed)?.as_str().to_owned())}else{None};

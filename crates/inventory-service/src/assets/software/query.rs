@@ -255,7 +255,7 @@ impl AssetService {
         task: Uuid,
         input: &assets::tasks::QueryInput,
         job: &Job,
-        after: Option<String>,
+        after: Option<rss_mdm_agent_wire::ObjectRef>,
     ) -> Result<()> {
         self.software_current(tx, job).await?;
         let tenant = self.tenant.to_string();
@@ -282,10 +282,21 @@ impl AssetService {
             } else {
                 let page =
                     SnapshotReader::bind(StorageProfile::Mdm, self.runtime.clone(), self.tenant)
-                        .asset_page_in(tx, &input.asset_cut, after, 1, &input.scope)
+                        .asset_page_in(
+                            tx,
+                            &input.asset_cut,
+                            after
+                                .map(|o| match o {
+                                    rss_mdm_agent_wire::ObjectRef::Endpoint(id) => Ok(id),
+                                    _ => Err(Error::Unavailable(Failure::AssetsStorage)),
+                                })
+                                .transpose()?,
+                            1,
+                            &input.scope,
+                        )
                         .await?;
                 if let Some(device) = page.devices.first() {
-                    let device = device.scalars.device.clone();
+                    let device = device.scalars.device;
                     let cut = &input.asset_cut;
                     Some(
                         tx.with_connection_context(&mut (reader, cut), move |(reader, cut), c| {
@@ -399,7 +410,7 @@ impl AssetService {
         let ids: Vec<_> = object
             .members
             .iter()
-            .map(|m| m.device.clone())
+            .map(|m| m.device)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -570,7 +581,7 @@ impl AssetService {
             for scope in scopes {
                 let tenant = self.tenant;
                 let cut = &input.asset_cut;
-                let selected = vec![endpoint.clone()];
+                let selected = vec![*endpoint];
                 let reader = &reader;
                 let catalog = &catalog;
                 let current_scope = &scope;
@@ -615,7 +626,7 @@ impl AssetService {
                             })
                             .collect();
                         quality.push(Quality {
-                            endpoint: endpoint.clone(),
+                            endpoint: *endpoint,
                             source,
                             scope: scope.clone(),
                             state: assets::lists::metadata_state(&resolved.state),
@@ -655,7 +666,7 @@ impl AssetService {
                                 (fact_platform, value)
                             {
                                 arrays.push(ArrayInput {
-                                    endpoint: endpoint.clone(),
+                                    endpoint: *endpoint,
                                     source,
                                     platform,
                                     evidence: evidence.clone(),
@@ -709,12 +720,13 @@ impl AssetService {
         Ok(())
     }
 }
-pub(super) fn object_key(context: AssetContext, object: &crate::objects::ObjectRef) -> String {
-    match (context, object) {
-        (AssetContext::Endpoint, crate::objects::ObjectRef::Endpoint(id)) => id.clone(),
-        _ => object.key(),
-    }
+pub(super) fn object_key(
+    _context: AssetContext,
+    object: &rss_mdm_agent_wire::ObjectRef,
+) -> rss_mdm_agent_wire::ObjectRef {
+    *object
 }
+
 fn platform(device: &assets::DeviceSummary) -> Option<Platform> {
     let key = rss_mdm_inventory::FieldKey::parse("device.os.name").ok()?;
     match &device.scalars.fields.get(&key)?.state {

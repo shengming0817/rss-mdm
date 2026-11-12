@@ -13,7 +13,7 @@ pub enum Authority {
         target: rss_mdm_policy::SoftwareTarget,
         tenant: String,
         version: uuid::Uuid,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         operation: uuid::Uuid,
         required: Vec<Permission>,
     },
@@ -27,7 +27,7 @@ pub enum Authority {
         tenant: String,
         policy: uuid::Uuid,
         version: uuid::Uuid,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         operation: uuid::Uuid,
     },
 }

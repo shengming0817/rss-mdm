@@ -26,6 +26,6 @@ pub trait TaskCleanup: Send + Sync {
     fn advance_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        devices: &'a [String],
+        devices: &'a [rss_mdm_agent_wire::DeviceId],
     ) -> Pin<Box<dyn Future<Output = Result<Progress>> + Send + 'a>>;
 }

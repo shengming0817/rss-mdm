@@ -66,29 +66,30 @@ impl Http {
         anyhow::ensure!(items.len() == 1, "{path} must match a real object: {body}");
         let row = items[0].clone();
         // Even a singleton owner must prove that a valid unmatched predicate reaches SQL.
-        let key = [
-            "id",
-            "key",
-            "configurationId",
-            "entryId",
-            "account",
-            "serial",
-            "fieldId",
-            "principalId",
-            "attempt",
-            "operationId",
-            "releaseId",
-            "source",
-            "version",
-        ]
-        .into_iter()
-        .find(|key| row[*key].is_string())
-        .context("public directory identity")?;
+        let key = if path == "/api/v1/device-views" {
+            "reference.id"
+        } else {
+            [
+                "id",
+                "key",
+                "configurationId",
+                "entryId",
+                "account",
+                "serial",
+                "fieldId",
+                "principalId",
+                "attempt",
+                "operationId",
+                "releaseId",
+                "source",
+                "version",
+            ]
+            .into_iter()
+            .find(|key| row[*key].is_string())
+            .context("public directory identity")?
+        };
         let absent = match key {
             "account" => format!("{}@example.test", Uuid::new_v4()),
-            "key" if row[key].as_str().unwrap().starts_with("endpoint:") => {
-                format!("endpoint:{}", Uuid::new_v4())
-            }
             "key" => format!("custom.directory_{}", Uuid::new_v4().simple()),
             _ => Uuid::new_v4().to_string(),
         };
@@ -240,7 +241,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         let mut failures = Vec::new();
         for (path, filter, expected) in &fixtures.cases {
             match http.selected(path, filter).await {
-                Ok(item) if ["id","key","configurationId","source","entryId","account","serial","fieldId","version","principalId", "attempt", "operationId", "releaseId"].iter().any(|key|item[*key]==*expected) => (),
+                Ok(item) if ["id","key","configurationId","source","entryId","account","serial","fieldId","version","principalId", "attempt", "operationId", "releaseId"].iter().any(|key|item[*key]==*expected) || item["reference"]["id"]==*expected => (),
                 Ok(item) => failures.push(format!("{path}: wrong result {item}")),
                 Err(error) => failures.push(error.to_string()),
             }
@@ -258,7 +259,7 @@ async fn public_business_fields_reach_objects_beyond_the_first_page() -> Result<
         assert_eq!(body["items"],json!([]));
         for (path, filter, expected) in &fixtures.cases {
             if path == "/api/v1/device-views" && !filter.contains("éclair") {
-                assert_eq!(ordinary_http.selected(path,filter).await?["key"],*expected);
+                assert_eq!(ordinary_http.selected(path,filter).await?["reference"]["id"],*expected);
             }
         }
         let (status,cross_target)=http.get("/api/v1/agent-configurations",&[("filter","createdBy==DirectoryTarget;platform==windows;architecture==aarch64")]).await?;

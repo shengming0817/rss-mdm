@@ -1,4 +1,7 @@
 use super::*;
+fn device(n: u128) -> rss_mdm_agent_wire::DeviceId {
+    rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(n)).unwrap()
+}
 
 #[test]
 fn runtime_diagnostics_permission_is_tenant_only_and_exact() {
@@ -10,13 +13,8 @@ fn runtime_diagnostics_permission_is_tenant_only_and_exact() {
     assert!(grant.validate().is_ok());
     assert!(grant.covers(permission, None));
     assert!(!grant.covers(Permission::AuthorizationRead, None));
-    assert!(!grant.covers(permission, Some("device")));
-    for scope in [
-        Scope::AllDevices,
-        Scope::Device {
-            id: "device".into(),
-        },
-    ] {
+    assert!(!grant.covers(permission, Some(&device(1))));
+    for scope in [Scope::AllDevices, Scope::Device { id: device(1) }] {
         assert!(
             Grant {
                 operation: permission,
@@ -53,11 +51,11 @@ fn grants_keep_each_operation_with_its_scope() {
     ] {
         let grant = Grant {
             operation,
-            scope: Scope::Device { id: "a".into() },
+            scope: Scope::Device { id: device(1) },
         };
         assert!(grant.validate().is_ok());
-        assert!(grant.covers(operation, Some("a")));
-        assert!(!grant.covers(operation, Some("b")));
+        assert!(grant.covers(operation, Some(&device(1))));
+        assert!(!grant.covers(operation, Some(&device(2))));
         assert!(
             Grant {
                 operation,
@@ -70,16 +68,16 @@ fn grants_keep_each_operation_with_its_scope() {
 
     let read = Grant {
         operation: Permission::InventoryRead,
-        scope: Scope::Device { id: "a".into() },
+        scope: Scope::Device { id: device(1) },
     };
     let wipe = Grant {
         operation: Permission::DeviceWipe,
-        scope: Scope::Device { id: "b".into() },
+        scope: Scope::Device { id: device(2) },
     };
-    assert!(read.covers(Permission::InventoryRead, Some("a")));
-    assert!(!read.covers(Permission::DeviceWipe, Some("a")));
-    assert!(!wipe.covers(Permission::DeviceWipe, Some("a")));
-    assert!(!read.covers(Permission::InventoryRead, Some("b")));
+    assert!(read.covers(Permission::InventoryRead, Some(&device(1))));
+    assert!(!read.covers(Permission::DeviceWipe, Some(&device(1))));
+    assert!(!wipe.covers(Permission::DeviceWipe, Some(&device(1))));
+    assert!(!read.covers(Permission::InventoryRead, Some(&device(2))));
     assert!(
         Grant {
             operation: Permission::AuthorizationWrite,
@@ -148,7 +146,7 @@ fn model_capacity_limits_and_scope_categories_are_closed() {
             .map(|i| Grant {
                 operation: Permission::InventoryRead,
                 scope: Scope::Device {
-                    id: format!("device-{i}"),
+                    id: device(i as u128 + 1),
                 },
             })
             .collect(),

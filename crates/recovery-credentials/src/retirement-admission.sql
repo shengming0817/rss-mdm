@@ -1,8 +1,8 @@
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
 ('mdm_recovery_tasks.native_status(uuid)','sql','text',true,false,'v',ARRAY['p_operation']::text[],ARRAY['search_path=pg_catalog']::text[],$1::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner','mdm_policy_runtime']::text[]),
-('mdm_recovery_tasks.retirement_commands(text,text)','sql','rss_device_command.commands',true,true,'v',ARRAY['p_device','p_after']::text[],ARRAY['search_path=pg_catalog']::text[],$2::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner','mdm_policy_runtime']::text[]),
-('mdm_recovery_tasks.save_retired_command(text,uuid,bigint,bigint)','sql','boolean',true,false,'v',ARRAY['p_device','p_run','p_previous','p_terminal']::text[],ARRAY['search_path=pg_catalog']::text[],$3::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner','mdm_policy_runtime']::text[]),
-('mdm_recovery_tasks.save_retired_run(text,uuid,jsonb,jsonb)','sql','boolean',true,false,'v',ARRAY['p_device','p_run','p_previous','p_state']::text[],ARRAY['search_path=pg_catalog']::text[],$4::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner']::text[])
+('mdm_recovery_tasks.retirement_commands(uuid,text)','sql','rss_device_command.commands',true,true,'v',ARRAY['p_device','p_after']::text[],ARRAY['search_path=pg_catalog']::text[],$2::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner','mdm_policy_runtime']::text[]),
+('mdm_recovery_tasks.save_retired_command(uuid,uuid,bigint,bigint)','sql','boolean',true,false,'v',ARRAY['p_device','p_run','p_previous','p_terminal']::text[],ARRAY['search_path=pg_catalog']::text[],$3::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner','mdm_policy_runtime']::text[]),
+('mdm_recovery_tasks.save_retired_run(uuid,uuid,jsonb,jsonb)','sql','boolean',true,false,'v',ARRAY['p_device','p_run','p_previous','p_state']::text[],ARRAY['search_path=pg_catalog']::text[],$4::text,ARRAY['mdm_access','mdm_command_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

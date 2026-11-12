@@ -52,7 +52,7 @@ impl ConfigurationService {
         .await?;
         let scope = match &config.audience {
             Audience::Tenant => None,
-            Audience::Device { device, .. } => Some(device.as_str()),
+            Audience::Device { device, .. } => Some(device),
         };
         rss_mdm_authorization_service::snapshot_on(
             p.authority_profile(),
@@ -248,7 +248,7 @@ impl ConfigurationService {
         let identity = rss_mdm_agent_wire::da::ReportIdentity {
             service_id: p.installation(),
             tenant: Uuid::parse_str(&p.tenant().to_string()).map_err(|_| Error::Malformed)?,
-            device_id: p.device().to_string(),
+            device_id: *p.device(),
         };
         if !config.permits(&identity, p.device())
             || config.issued_at > now

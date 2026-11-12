@@ -90,7 +90,7 @@ async fn configurations(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> Result<Json<rss_mdm_telemetry_service::configurations::Configurations>, Error> {
     audit.set_action(
         "telemetry_configurations_read",

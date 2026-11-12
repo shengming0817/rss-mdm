@@ -1,62 +1,40 @@
 use crate::ScopeError;
 use rss_request_context::TenantId;
-use std::{cmp::Ordering, fmt};
+use std::cmp::Ordering;
 
-#[derive(Clone, Eq, PartialEq)]
-struct Key {
+/// Tenant-scoped group source identity. Construction is not authentication evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GroupId {
     tenant: TenantId,
-    value: String,
+    value: uuid::Uuid,
 }
-impl Key {
-    fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, ScopeError> {
-        let value = value.into();
-        if value.is_empty()
-            || value.len() > 128
-            || !value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        {
+impl GroupId {
+    /// Bind a nonzero group UUID to its tenant.
+    pub fn new(tenant: TenantId, value: uuid::Uuid) -> Result<Self, ScopeError> {
+        if value.is_nil() {
             return Err(ScopeError::InvalidKey);
         }
         Ok(Self { tenant, value })
     }
-}
-impl Ord for Key {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.tenant.octets(), &self.value).cmp(&(other.tenant.octets(), &other.value))
+    /// Owning tenant.
+    pub fn tenant(&self) -> TenantId {
+        self.tenant
+    }
+    /// Exact group UUID.
+    pub fn value(&self) -> uuid::Uuid {
+        self.value
     }
 }
-impl PartialOrd for Key {
+impl Ord for GroupId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.tenant.octets(), self.value).cmp(&(other.tenant.octets(), other.value))
+    }
+}
+impl PartialOrd for GroupId {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
-impl fmt::Debug for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Key")
-            .field("tenant", &self.tenant.to_string())
-            .field("value", &self.value)
-            .finish()
-    }
-}
-
-macro_rules! identities {
-    ($($name:ident),+ $(,)?) => { $(
-        /// Tenant-scoped identity. Construction is not authentication evidence.
-        #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-        pub struct $name(Key);
-        impl $name {
-            /// Validate 1–128 ASCII letters, digits, dots, underscores or hyphens.
-            /// Invalid text returns [`ScopeError::InvalidKey`]; no authority is verified.
-            pub fn new(tenant: TenantId, value: impl Into<String>) -> Result<Self, ScopeError> { Key::new(tenant, value).map(Self) }
-            /// Return the tenant bound to this identity.
-            pub fn tenant(&self) -> TenantId { self.0.tenant }
-            /// Borrow the exact validated identifier, without normalization.
-            pub fn value(&self) -> &str { &self.0.value }
-        }
-    )+ };
-}
-identities!(GroupId);
 
 /// A tenant-scoped calculation object. Kind and UUID are both part of its identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,14 +44,23 @@ pub struct ScopedObjectId {
 }
 impl ScopedObjectId {
     /// Bind a valid object to its tenant; this does not establish authorization.
-    pub fn new(tenant: TenantId, object: rss_mdm_agent_wire::ObjectRef) -> Result<Self, ScopeError> {
-        if object.uuid().is_nil() { return Err(ScopeError::InvalidKey); }
+    pub fn new(
+        tenant: TenantId,
+        object: rss_mdm_agent_wire::ObjectRef,
+    ) -> Result<Self, ScopeError> {
+        if object.uuid().is_nil() {
+            return Err(ScopeError::InvalidKey);
+        }
         Ok(Self { tenant, object })
     }
     /// Owning tenant.
-    pub fn tenant(&self) -> TenantId { self.tenant }
+    pub fn tenant(&self) -> TenantId {
+        self.tenant
+    }
     /// Exact object kind and UUID.
-    pub fn object(&self) -> rss_mdm_agent_wire::ObjectRef { self.object }
+    pub fn object(&self) -> rss_mdm_agent_wire::ObjectRef {
+        self.object
+    }
 }
 impl Ord for ScopedObjectId {
     fn cmp(&self, other: &Self) -> Ordering {
@@ -81,5 +68,7 @@ impl Ord for ScopedObjectId {
     }
 }
 impl PartialOrd for ScopedObjectId {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }

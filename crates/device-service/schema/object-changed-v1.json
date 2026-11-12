@@ -20,22 +20,58 @@
       "format": "uuid"
     },
     "object": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 1024
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "endpoint",
+            "association"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "minLength": 36,
+          "maxLength": 36,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
     },
     "oldDevices": {
       "type": "array",
       "maxItems": 1000,
       "items": {
-        "type": "string"
+        "type": "string",
+        "format": "uuid",
+        "minLength": 36,
+        "maxLength": 36,
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        "not": {
+          "const": "00000000-0000-0000-0000-000000000000"
+        }
       }
     },
     "newDevices": {
       "type": "array",
       "maxItems": 1000,
       "items": {
-        "type": "string"
+        "type": "string",
+        "format": "uuid",
+        "minLength": 36,
+        "maxLength": 36,
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        "not": {
+          "const": "00000000-0000-0000-0000-000000000000"
+        }
       }
     }
   },

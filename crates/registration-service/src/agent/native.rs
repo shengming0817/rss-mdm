@@ -48,14 +48,14 @@ SELECT pg_advisory_xact_lock(hashtextextended($1,2630))
     crate::admission::require_new_in(profile, c, &tenant, crate::quotas::Channel::Agent).await?;
     let policy = settings::admit_on(profile, c, &tenant, input.runtime.platform).await?;
     let id = Uuid::new_v4();
-    let device = Uuid::new_v4().to_string();
+    let device = rss_mdm_agent_wire::DeviceId::new_v4();
     sqlx::query(crate::storage_profile::sql(profile).agent_native_create_in_2)
         .bind(&tenant)
         .bind(id)
         .bind(input.operation_id)
         .bind(authority.actor().subject())
         .bind(authority.actor().instance_id())
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(platform(input.runtime.platform))
         .bind(secret_digest(&tenant, id, &input.secret))
         .bind(digest)
@@ -100,7 +100,7 @@ impl Source {
 #[serde(deny_unknown_fields)]
 struct Stored {
     installation: Uuid,
-    device: String,
+    device: rss_mdm_agent_wire::DeviceId,
     credential: Uuid,
     source: rss_mdm_inventory::ReportSource,
     runtime: Option<wire::RuntimeProfile>,
@@ -121,7 +121,7 @@ pub(crate) async fn source(
             .bind(tenant.to_string())
             .bind(s.bootstrap)
             .bind(s.installation)
-            .bind(&s.device)
+            .bind(s.device.into_uuid())
             .bind(s.credential.to_string())
             .fetch_one(&mut *c)
             .await
@@ -133,7 +133,7 @@ pub(crate) async fn source(
         sqlx::query_scalar(crate::storage_profile::sql(profile).agent_native_source_2)
             .bind(tenant.to_string())
             .bind(s.credential)
-            .bind(&s.device)
+            .bind(s.device.into_uuid())
             .fetch_optional(&mut *c)
             .await
             .map_err(db)?
@@ -164,7 +164,7 @@ pub(crate) async fn source(
     );
     let principal =
         crate::device::store::management_in(profile, c, &mount.credential(bytes)?).await?;
-    if principal.device() != s.device || principal.credential() != s.credential {
+    if *principal.device() != s.device || principal.credential() != s.credential {
         return Err(Error::Forbidden);
     }
     Ok(Source {

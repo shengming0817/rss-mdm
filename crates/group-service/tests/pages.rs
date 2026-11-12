@@ -4,6 +4,7 @@ fn cursors_bind_tenant_owner_result_and_projection() {
     let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"test-only");
     let group = Uuid::new_v4();
     let result = Uuid::new_v4();
+    let device = rss_mdm_agent_wire::ObjectRef::Endpoint(rss_mdm_agent_wire::DeviceId::new_v4());
     let binding = ResultBinding::Group {
         subject: "principal".into(),
         group,
@@ -15,13 +16,13 @@ fn cursors_bind_tenant_owner_result_and_projection() {
             tenant: "tenant-a".into(),
             result,
             binding: binding.clone(),
-            after: "device-1".into(),
+            after: device,
         },
     )
     .unwrap();
     assert_eq!(
         decode(&key, &token, "tenant-a", result, &binding).unwrap(),
-        "device-1"
+        device
     );
     assert!(decode(&key, &token, "tenant-b", result, &binding).is_err());
     assert!(decode(&key, &token, "tenant-a", Uuid::new_v4(), &binding).is_err());
@@ -52,7 +53,7 @@ fn signed_foreign_family_is_rejected() {
     let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"test-only");
     let owner = Uuid::new_v4();
     let result = Uuid::new_v4();
-    let value = serde_json::json!({"tenant":"tenant-a","result":result,"binding":{"family":"scope","scope":owner,"kind":"members"},"after":"device-1"});
+    let value = serde_json::json!({"tenant":"tenant-a","result":result,"binding":{"family":"scope","scope":owner,"kind":"members"},"after":rss_mdm_agent_wire::ObjectRef::Endpoint(rss_mdm_agent_wire::DeviceId::new_v4())});
     let token = CursorCodec::from_key(key.clone())
         .encode("foreign-results", &value)
         .unwrap();

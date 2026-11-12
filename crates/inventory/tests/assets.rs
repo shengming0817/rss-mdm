@@ -20,7 +20,9 @@ fn fact(value: &str, source: &str) -> SourceFact {
             scope: rss_mdm_inventory::CollectionScope::Device,
             source: rss_mdm_inventory::Source::parse(source).unwrap(),
             dataset: Some("collector".into()),
-            device_id: Some("device".into()),
+            device_id: Some(
+                rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
+            ),
             epoch: Some("epoch".into()),
             snapshot_id: "batch".into(),
             observed_at: 1,
@@ -203,19 +205,25 @@ fn keyed_list_consensus_ignores_provider_row_order() {
 #[test]
 fn two_endpoint_manual_values_keep_identity_and_conflict_at_equal_priority() {
     use rss_mdm_inventory::{EndpointSourceFact, resolve_device};
-    let manual = |endpoint: &str, value: &str| {
+    let manual = |endpoint: rss_mdm_agent_wire::DeviceId, value: &str| {
         let mut source = fact(value, "manual");
         source.evidence.dataset = None;
         source.evidence.device_id = None;
         source.evidence.epoch = None;
         source.evidence.actor = Some("operator".into());
         EndpointSourceFact {
-            endpoint: endpoint.into(),
+            endpoint,
             fact: source,
         }
     };
-    let a = manual("mdm-endpoint", "asset-1");
-    let b = manual("agent-endpoint", "asset-2");
+    let a = manual(
+        rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
+        "asset-1",
+    );
+    let b = manual(
+        rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(2)).unwrap(),
+        "asset-2",
+    );
     let result =
         resolve_device(&definition(builtin::ASSET_TAG), vec![a.clone(), b.clone()]).unwrap();
     assert_eq!(result.state, State::Conflict);
@@ -223,7 +231,13 @@ fn two_endpoint_manual_values_keep_identity_and_conflict_at_equal_priority() {
     assert_eq!(
         resolve_device(
             &definition(builtin::ASSET_TAG),
-            vec![a.clone(), manual("agent-endpoint", "asset-1")]
+            vec![
+                a.clone(),
+                manual(
+                    rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(2)).unwrap(),
+                    "asset-1"
+                )
+            ]
         )
         .unwrap()
         .state,
@@ -237,7 +251,13 @@ fn two_endpoint_manual_values_keep_identity_and_conflict_at_equal_priority() {
     deleted.fact.state = State::Deleted;
     let result = resolve_device(
         &definition(builtin::ASSET_TAG),
-        vec![manual("mdm-endpoint", "asset-1"), deleted],
+        vec![
+            manual(
+                rss_mdm_agent_wire::DeviceId::try_from(uuid::Uuid::from_u128(1)).unwrap(),
+                "asset-1",
+            ),
+            deleted,
+        ],
     )
     .unwrap();
     assert_eq!(result.state, State::Known(Scalar::String("asset-1".into())));

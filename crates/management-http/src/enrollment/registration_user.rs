@@ -40,7 +40,7 @@ pub fn routes() -> Router<App, impl rss_mdm_http_contract::module::Declaration +
 async fn responsibility(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
 ) -> Result<Json<RegistrationUser>, Error> {
     app.devices
         .registration_user(&auth.proof, &device)
@@ -53,7 +53,7 @@ async fn assign(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     headers: crate::api::WriteHeaders,
-    Path(device): Path<String>,
+    Path(device): Path<rss_mdm_agent_wire::DeviceId>,
     input: Result<Json<RegistrationUserChange>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<RegistrationUser>, Error> {
     let key = write_key(&headers, &audit, "registration_user_change")?;

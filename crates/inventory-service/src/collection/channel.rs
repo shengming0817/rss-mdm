@@ -56,7 +56,7 @@ pub async fn start_in(
     sqlx::query(crate::storage_profile::sql(profile).collection_channel_start_in_1)
         .bind(p.tenant().to_string())
         .bind(id)
-        .bind(p.device())
+        .bind(p.device().into_uuid())
         .bind(source.as_str())
         .bind(scope.epoch().as_str())
         .bind(scope.encode().map_err(|_| Error::Malformed)?)
@@ -82,7 +82,7 @@ pub async fn finish_in(
     let row = sqlx::query(crate::storage_profile::sql(profile).collection_channel_finish_in_1)
         .bind(p.tenant().to_string())
         .bind(id)
-        .bind(p.device())
+        .bind(p.device().into_uuid())
         .bind(source.as_str())
         .bind(live.epoch().as_str())
         .fetch_optional(&mut *c)
@@ -199,7 +199,7 @@ pub async fn abandon_in(
             .map_err(db)?;
     let mut attempt: Attempts = serde_json::from_str(&body).map_err(|_| Error::Malformed)?;
     attempt.finish();
-    let device = sqlx::query_scalar::<_, String>(
+    let device = sqlx::query_scalar::<_, Uuid>(
         crate::storage_profile::sql(profile).collection_channel_abandon_in_2,
     )
     .bind(tenant)
@@ -210,6 +210,10 @@ pub async fn abandon_in(
     .fetch_optional(&mut *c)
     .await
     .map_err(db)?;
+    let device = device
+        .map(crate::database::device_id)
+        .transpose()
+        .map_err(db)?;
     let Some(device) = device else {
         return Ok(None);
     };

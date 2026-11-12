@@ -252,22 +252,32 @@ impl ScopeBinding {
         &self,
         tx: &mut PgTransaction<'_>,
         scope: Uuid,
-        objects: Vec<serde_json::Value>,
-    ) -> Result<Vec<serde_json::Value>, BindingError> {
+        objects: Vec<rss_mdm_agent_wire::ObjectRef>,
+    ) -> Result<Vec<rss_mdm_agent_wire::ObjectRef>, BindingError> {
         let profile = self.profile();
 
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
-        let objects = serde_json::Value::Array(objects);
         Ok(tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query_scalar(crate::storage_profile::sql(profile).lib_target_members_in_1)
-                        .bind(tenant)
-                        .bind(scope)
-                        .bind(objects)
-                        .fetch_all(c)
-                        .await
+                    sqlx::query_as::<_, (i16, Uuid)>(
+                        crate::storage_profile::sql(profile).lib_target_members_in_1,
+                    )
+                    .bind(tenant)
+                    .bind(scope)
+                    .bind(objects.iter().map(|o| o.kind()).collect::<Vec<_>>())
+                    .bind(objects.iter().map(|o| o.uuid()).collect::<Vec<_>>())
+                    .fetch_all(c)
+                    .await
+                    .and_then(|rows| {
+                        rows.into_iter()
+                            .map(|(kind, id)| {
+                                rss_mdm_agent_wire::ObjectRef::from_parts(kind, id)
+                                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))
+                            })
+                            .collect()
+                    })
                 })
             })
             .await?)

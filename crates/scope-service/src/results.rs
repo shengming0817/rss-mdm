@@ -69,12 +69,12 @@ pub async fn source_rows_on(
     tenant: TenantId,
     run: Uuid,
     channel: Channel,
-    device: &str,
+    device: &rss_mdm_agent_wire::DeviceId,
 ) -> Result<Vec<SourceRow>, sqlx::Error> {
     let rows = sqlx::query(crate::storage_profile::sql(profile).results_source_rows_on_1)
         .bind(tenant.to_string())
         .bind(run)
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(channel.as_str())
         .fetch_all(c)
         .await?;
@@ -122,21 +122,24 @@ pub async fn source_devices_on(
     run: Uuid,
     sources: &[i32],
     channel: Channel,
-    after: Option<&str>,
+    after: Option<&rss_mdm_agent_wire::DeviceId>,
     limit: usize,
-) -> Result<Vec<String>, sqlx::Error> {
+) -> Result<Vec<rss_mdm_agent_wire::DeviceId>, sqlx::Error> {
     if !(1..=1001).contains(&limit) || sources.len() > 1000 {
         return Err(invariant());
     }
-    sqlx::query_scalar(crate::storage_profile::sql(profile).results_source_devices_on_1)
+    sqlx::query_scalar::<_, Uuid>(crate::storage_profile::sql(profile).results_source_devices_on_1)
         .bind(tenant.to_string())
         .bind(run)
         .bind(sources)
         .bind(channel.as_str())
-        .bind(after)
+        .bind(after.map(|id| id.into_uuid()))
         .bind(limit as i64)
         .fetch_all(c)
-        .await
+        .await?
+        .into_iter()
+        .map(|id| rss_mdm_agent_wire::DeviceId::try_from(id).map_err(|_| invariant()))
+        .collect()
 }
 /// Read frozen object facts without interpreting registration or channel authority.
 pub async fn source_objects_on(
@@ -145,7 +148,7 @@ pub async fn source_objects_on(
     tenant: TenantId,
     run: Uuid,
     sources: &[i32],
-    after: Option<&str>,
+    after: Option<rss_mdm_agent_wire::ObjectRef>,
     limit: usize,
 ) -> Result<Vec<rss_mdm_scope_postgres::SourceMember>, sqlx::Error> {
     if !(1..=1001).contains(&limit) || sources.len() > 1000 {
@@ -155,14 +158,19 @@ pub async fn source_objects_on(
         .bind(tenant.to_string())
         .bind(run)
         .bind(sources)
-        .bind(after)
+        .bind(after.map(|o| o.kind()))
+        .bind(after.map(|o| o.uuid()))
         .bind(limit as i64)
         .fetch_all(c)
         .await?;
     rows.into_iter()
         .map(|r| {
             Ok(rss_mdm_scope_postgres::SourceMember {
-                object: r.try_get("object_key")?,
+                object: rss_mdm_agent_wire::ObjectRef::from_parts(
+                    r.try_get("object_kind")?,
+                    r.try_get("object_id")?,
+                )
+                .map_err(|_| invariant())?,
                 unknown: r.try_get("unknown")?,
                 input: r.try_get("input")?,
             })

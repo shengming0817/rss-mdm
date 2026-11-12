@@ -53,7 +53,7 @@ impl Operations {
         q: &LocatorQuery,
     ) -> Result<Diagnostic, Error> {
         let p = request.proof.as_ref();
-        let device = q.device.as_deref().ok_or(Error::Malformed)?;
+        let device = q.device.as_ref().ok_or(Error::Malformed)?;
         if owner == O::DeviceControlRequest {
             return self
                 .tasks
@@ -103,7 +103,7 @@ impl Operations {
                             )
                             .await;
                         let mut receipt = ReceiptSummary::new(id);
-                        receipt.object = Some(device.into());
+                        receipt.object = Some(device.to_string());
                         receipt.revision = Some(changed.revision);
                         receipt.executions.push(changed.operation_id);
                         Ok(Diagnostic {
@@ -146,7 +146,7 @@ impl Operations {
                 _=>return Err(Error::Malformed),
             };
             let mut query=sqlx::QueryBuilder::new("WITH tenant_context AS (SELECT ");
-            query.push_bind(p.tenant_id()).push("::uuid),owned AS (").push(relation).push(") SELECT policy FROM owned WHERE id=").push_bind(id).push(" AND device=").push_bind(device).push(" AND kind=").push_bind(kind);
+            query.push_bind(p.tenant_id()).push("::uuid),owned AS (").push(relation).push(") SELECT policy FROM owned WHERE id=").push_bind(id).push(" AND device=").push_bind(device.into_uuid()).push(" AND kind=").push_bind(kind);
             let row:Option<(Option<Uuid>,)>=query.build_query_as().fetch_optional(&mut *c).await.map_err(sql)?;
             let Some((policy,))=row else {return Ok(Diagnostic { original: None, execution: Ok(None) });};
             let tenant=s.tasks.tenant.to_string();
@@ -158,10 +158,10 @@ impl Operations {
                 _=>None,
             };
             let original=Some(original.map_or_else(||{
-                let mut r=ReceiptSummary::new(id);r.object=Some(device.into());r.accepted=Some(true);r.executions.push(id);r
+                let mut r=ReceiptSummary::new(id);r.object=Some(device.to_string());r.accepted=Some(true);r.executions.push(id);r
             },|(_,v)|{
                 let mut r=ReceiptSummary::new(id);
-                r.object=Some(device.into());r.revision=v["revision"].as_i64();r.accepted=v["accepted"].as_bool();r.executions.push(id);r
+                r.object=Some(device.to_string());r.revision=v["revision"].as_i64();r.accepted=v["accepted"].as_bool();r.executions.push(id);r
             }));
             let evidence=async { Ok::<_,Error>(if let Some(native)=native {
                 Evidence::Native{detail:Box::new(s.detail_owned_on(c,p,grant,now,device,id,true,native).await?)}

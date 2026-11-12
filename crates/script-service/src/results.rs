@@ -36,7 +36,7 @@ pub async fn finish_in(
         )?;
         let tenant = tx.tenant_id();
         let report = rss_mdm_inventory_service::collection::enterprise::Report {
-            device: run.target.device.to_string(),
+            device: run.target.device,
             task: run.id,
             attempt: run.state.attempt().ok_or(crate::Error::Conflict)?,
             progress,

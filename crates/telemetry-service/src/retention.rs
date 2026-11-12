@@ -22,7 +22,7 @@ pub(crate) async fn register(
             continue;
         }
         sqlx::query("INSERT INTO mdm_telemetry.retention_targets(tenant_id,id,device,field,version,resource,stream,dimensions,due_at,next_check,phase) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$9,0) ON CONFLICT DO NOTHING")
-            .bind(tenant.to_string()).bind(key).bind(series.subject().as_str()).bind(series.definition().spec().key.as_str())
+            .bind(tenant.to_string()).bind(key).bind(rss_mdm_agent_wire::DeviceId::parse(series.subject().as_str()).map_err(|_| Error::Invalid)?.into_uuid()).bind(series.definition().spec().key.as_str())
             .bind(series.definition().spec().version as i64).bind(series.resource().as_str()).bind(serde_json::to_value(&input.stream)?)
             .bind(serde_json::to_value(series.dimensions())?).bind(now.saturating_add(3_600_000_000)).execute(&mut *c).await?;
     }
@@ -71,11 +71,12 @@ async fn step(service: &Service, c: &mut PgConnection) -> Result<(), Error> {
             .fetch_one(&mut *c)
             .await?;
     // Select before locking: intake takes the device fence before touching the target row.
-    let candidate:Option<(Vec<u8>,String)>=sqlx::query_as("SELECT id,device FROM mdm_telemetry.retention_targets WHERE tenant_id=$1::uuid AND phase<2 AND next_check<=$2 ORDER BY next_check,id LIMIT 1")
+    let candidate:Option<(Vec<u8>,uuid::Uuid)>=sqlx::query_as("SELECT id,device FROM mdm_telemetry.retention_targets WHERE tenant_id=$1::uuid AND phase<2 AND next_check<=$2 ORDER BY next_check,id LIMIT 1")
         .bind(tenant.to_string()).bind(now).fetch_optional(&mut *c).await?;
     let Some((id, device)) = candidate else {
         return Ok(());
     };
+    let device = rss_mdm_agent_wire::DeviceId::try_from(device).map_err(|_| Error::Storage)?;
     rss_mdm_registration_service::device::store::lock_channel(
         rss_mdm_install_support::StorageProfile::Mdm,
         c,
@@ -92,7 +93,7 @@ async fn step(service: &Service, c: &mut PgConnection) -> Result<(), Error> {
     };
     let field: String = row.try_get("field")?;
     let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2 AND $3=ANY(fields) AND delivery<>'published')")
-        .bind(tenant.to_string()).bind(&device).bind(&field).fetch_one(&mut *c).await?;
+        .bind(tenant.to_string()).bind(device.into_uuid()).bind(&field).fetch_one(&mut *c).await?;
     let due: i64 = row.try_get("due_at")?;
     let phase: i16 = row.try_get("phase")?;
     let mut next_due = due;
@@ -134,7 +135,7 @@ async fn step(service: &Service, c: &mut PgConnection) -> Result<(), Error> {
             .map_err(|_| Error::Storage)?;
         let series = Series::new(
             definition,
-            Id::new(device)?,
+            Id::new(device.to_string())?,
             Id::new(row.try_get::<String, _>("resource")?)?,
             serde_json::from_value(row.try_get("dimensions")?)?,
         )?;

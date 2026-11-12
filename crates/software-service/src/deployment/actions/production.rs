@@ -109,7 +109,7 @@ pub(crate) async fn queue_run_in(
     let reader = service.source.clone();
     let tenant = tx.tenant_id();
     let scope = policy.definition.scope;
-    let device = target.device.clone();
+    let device = target.device;
     // Device Access carries its own exact binding and rechecks its current scope at Start.
     // Unlink cleanup must also be dispatchable after that scope has excluded the device.
     let evidence = if let Some(retirement) = retirement {
@@ -144,7 +144,7 @@ pub(crate) async fn queue_run_in(
         return Err(Error::Conflict.into());
     }
     let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
+    let device = target.device;
     let target = target.clone();
     let digest = fingerprint.clone();
     let origin = checked_input(serde_json::to_value(origin))?;
@@ -156,7 +156,7 @@ pub(crate) async fn queue_run_in(
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_software_deployment.action_runs (tenant_id, id, source_kind, policy_version, device, occurrence, available_at, deadline, state, dispatch_fingerprint, created_at, source_objects, origin, invocation, retirement) VALUES (CAST($1 AS uuid), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).bind(invocation).bind(retirement).execute(c).await?;Ok(())
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device.into_uuid()).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(origin).bind(invocation).bind(retirement).execute(c).await?;Ok(())
     })).await?;
     super::run_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
 
@@ -229,10 +229,10 @@ pub(crate) async fn occurrence_available_in(
     now: i64,
 ) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
+    let device = target.device;
     let key = occurrence.to_owned();
     let exists: bool = tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4)").bind(tenant).bind(version).bind(&device).bind(key).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4)").bind(tenant).bind(version).bind(device.into_uuid()).bind(key).fetch_one(c).await
     })).await?;
     Ok(!exists
         && service

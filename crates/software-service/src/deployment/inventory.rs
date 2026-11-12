@@ -5,13 +5,13 @@ use rss_request_context::TenantId;
 use sqlx::PgConnection;
 use std::{collections::BTreeMap, future::Future, pin::Pin};
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
-pub type Page = BTreeMap<(String, String), Observation>;
+pub type Page = BTreeMap<(rss_mdm_agent_wire::DeviceId, String), Observation>;
 pub trait Inventory: Send + Sync {
     fn details_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        targets: &'a [(String, ReportSource)],
+        targets: &'a [(rss_mdm_agent_wire::DeviceId, ReportSource)],
         lock: bool,
     ) -> Pending<'a, Page>;
     fn capture<'a>(
@@ -24,12 +24,12 @@ pub trait Inventory: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         source: ReportSource,
     ) -> Pending<'a, Observation> {
         Box::pin(async move {
             Ok(self
-                .details_on(c, tenant, &[(device.clone(), source)], true)
+                .details_on(c, tenant, &[(device, source)], true)
                 .await?
                 .remove(&(device, source.as_str().to_owned()))
                 .unwrap_or(Observation::Unavailable))

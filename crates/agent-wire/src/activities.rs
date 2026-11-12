@@ -209,7 +209,7 @@ pub struct ActivityLinks {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivityTarget {
     /// Authorized endpoint identity, which can differ between paired channels.
-    pub device: String,
+    pub device: crate::DeviceId,
 }
 /// Allowlisted device activity. Contains no principal, OS identity, names or raw output.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]

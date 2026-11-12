@@ -40,7 +40,7 @@ WHERE x.tenant_id=$1 AND x.id=$5 AND x.phase='consumed' AND x.document->>'phase'
     HAVING count(*)>0 AND bool_and(coalesce(
       e.fingerprint=$6#>>ARRAY['authorities',e.authority::text]
       AND e.document->>'installation'=(SELECT instance_id::text FROM rss_da.installation_binding WHERE singleton)
-      AND e.document->>'tenant'=e.tenant_id::text AND e.document->>'device'=e.device
+      AND e.document->>'tenant'=e.tenant_id::text AND (e.document->>'device')::uuid=e.device
       AND e.document->>'device'=x.document#>>'{binding,device}'
       AND e.document->>'revoked'='false' AND e.document#>>'{deployment,platform}'='windows'
       AND e.document#>>'{deployment,interactiveBroker}'='true'

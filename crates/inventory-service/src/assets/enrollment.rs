@@ -17,7 +17,7 @@ impl rss_mdm_registration_service::enrollment::tasks::Inventory for EnrollmentOb
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
     ) -> std::pin::Pin<
         Box<
             dyn Future<

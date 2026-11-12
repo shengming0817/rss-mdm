@@ -95,7 +95,7 @@ pub(super) async fn run(h: &Harness, version: Uuid, at: i64) -> Result<Uuid> {
         .bind(id)
         .bind(version)
         .bind(json!([h.object]))
-        .bind(h.p.device())
+        .bind(h.p.device().into_uuid())
         .bind(id.to_string())
         .bind(at)
         .bind(at + 300)
@@ -163,7 +163,7 @@ async fn agent_collection_preview_requires_host_signing() -> Result<()> {
                 &preview,
                 Arc::new(super::super::agent_facts::AgentFacts),
                 &collection::model::Target {
-                    device: h.p.device().into(),
+                    device: *h.p.device(),
                 }
             )
             .await?

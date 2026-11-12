@@ -4,22 +4,18 @@ use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPri
 use rss_mdm_inventory::{
     ArrayState, EndpointArrayFact, EndpointSourceFact, FieldKey, Sensitivity, ValueType,
 };
-pub use rss_mdm_inventory_service::objects::ObjectRef as ViewRef;
 use serde_json::{Value, json};
 use sqlx::{Arguments, Row, postgres::PgArguments};
 use std::{collections::BTreeMap, time::Duration};
 
 pub(super) struct Group {
-    pub(super) reference: ViewRef,
+    pub(super) reference: ObjectRef,
     pub(super) association: Option<Association>,
     pub(super) endpoints: Vec<Value>,
 }
 impl Group {
-    pub(super) fn key(&self) -> String {
-        match &self.reference {
-            ViewRef::Endpoint(id) => format!("endpoint:{id}"),
-            ViewRef::Association(id) => format!("association:{id}"),
-        }
+    pub(super) fn key(&self) -> ObjectRef {
+        self.reference
     }
     pub(super) fn summary(&self) -> Value {
         json!({"reference":self.reference,"association":self.association,"endpoints":self.endpoints})
@@ -60,7 +56,7 @@ impl Associations {
     pub async fn view(
         &self,
         proof: &AuthorizedPrincipal,
-        reference: &ViewRef,
+        reference: &ObjectRef,
         personnel: &personnel::Reader<'_>,
     ) -> Result<crate::view_response::Detail> {
         if proof.tenant_id() != self.tenant.to_string() {
@@ -71,12 +67,27 @@ impl Associations {
         let mut args = PgArguments::default();
         args.add(proof.tenant_id().to_owned())
             .map_err(|_| Error::Storage)?;
-        args.add(access.allowed.clone())
-            .map_err(|_| Error::Storage)?;
-        args.add(access.sensitive.clone())
-            .map_err(|_| Error::Storage)?;
-        args.add(access.owners.clone())
-            .map_err(|_| Error::Storage)?;
+        args.add(
+            access
+                .allowed
+                .as_ref()
+                .map(|ids| ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()),
+        )
+        .map_err(|_| Error::Storage)?;
+        args.add(
+            access
+                .sensitive
+                .as_ref()
+                .map(|ids| ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()),
+        )
+        .map_err(|_| Error::Storage)?;
+        args.add(
+            access
+                .owners
+                .as_ref()
+                .map(|ids| ids.iter().map(|id| id.into_uuid()).collect::<Vec<_>>()),
+        )
+        .map_err(|_| Error::Storage)?;
         args.add(serde_json::to_value(reference).map_err(|_| Error::Storage)?)
             .map_err(|_| Error::Storage)?;
         args.add(proof.instance_id().to_owned())
@@ -116,7 +127,7 @@ impl Associations {
                     .flat_map(|e| {
                         e.arrays.get(&definition.key).into_iter().flat_map(|f| {
                             f.sources.iter().cloned().map(|fact| EndpointArrayFact {
-                                endpoint: e.scalars.device.clone(),
+                                endpoint: e.scalars.device,
                                 fact,
                             })
                         })
@@ -140,7 +151,7 @@ impl Associations {
                             .into_iter()
                             .flat_map(|f| {
                                 f.sources.iter().cloned().map(|fact| EndpointSourceFact {
-                                    endpoint: e.scalars.device.clone(),
+                                    endpoint: e.scalars.device,
                                     fact,
                                 })
                             })

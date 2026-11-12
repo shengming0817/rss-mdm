@@ -121,7 +121,8 @@ fn response_and_error_schemas_match_strict_consumers() {
     let receipt = BindingProfile {
         wire_version: 1,
         operation_id: operation,
-        device_id: "device-1".into(),
+        device_id: rss_mdm_agent_wire::DeviceId::parse("e5da84ba-650b-5f84-9bf3-b6e05b890499")
+            .unwrap(),
 
         source: ReportSource::AgentBuiltin,
         epoch,

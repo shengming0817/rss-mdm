@@ -84,14 +84,14 @@ pub struct Status {
     enrollment_id: Uuid,
     status: State,
     expires_at: i64,
-    device_id: String,
+    device_id: rss_mdm_agent_wire::DeviceId,
     source: ReportSource,
     instructions: Instructions,
     progress: Progress,
 }
 /// Trusted, tenant-limited coordinates read by the lifecycle owner; never a wire input.
 pub struct Context {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub tenant: String,
     pub enrollment: Uuid,
     pub source: ReportSource,
@@ -103,7 +103,7 @@ pub struct Context {
     pub now: i64,
 }
 pub struct RegistrationContext {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub state: RegistrationState,
     pub first_authenticated_at: Option<i64>,
     pub source_enabled: bool,
@@ -156,7 +156,7 @@ pub async fn enrollment_status(
     let row = sqlx::query(crate::storage_profile::sql(profile).enrollment_read_enrollment_status_1)
         .bind(permission.proof().tenant_id())
         .bind(id)
-        .bind(permission.device())
+        .bind(permission.device().into_uuid())
         .bind(permission.self_service())
         .bind(permission.proof().instance_id())
         .bind(permission.proof().principal_id())
@@ -188,7 +188,7 @@ pub async fn enrollment_status(
         enrollment_id: id,
         status,
         expires_at,
-        device_id: context.device.clone(),
+        device_id: context.device,
         source: context.source,
         instructions: details.instructions,
         progress,
@@ -196,7 +196,7 @@ pub async fn enrollment_status(
 }
 fn context(row: &sqlx::postgres::PgRow, tenant: &str, enrollment: Uuid) -> Result<Context, Error> {
     let registration = row
-        .try_get::<Option<String>, _>("active_device")
+        .try_get::<Option<Uuid>, _>("active_device")
         .map_err(db)?
         .map(|device| {
             let state = match row
@@ -209,7 +209,7 @@ fn context(row: &sqlx::postgres::PgRow, tenant: &str, enrollment: Uuid) -> Resul
                 _ => return Err(Error::Corrupt),
             };
             Ok(RegistrationContext {
-                device,
+                device: crate::database::device_id(device).map_err(db)?,
                 state,
                 first_authenticated_at: row.try_get("first_authenticated_at").map_err(db)?,
                 source_enabled: row.try_get("source_enabled").map_err(db)?,
@@ -223,7 +223,10 @@ fn context(row: &sqlx::postgres::PgRow, tenant: &str, enrollment: Uuid) -> Resul
     };
     Ok(Context {
         tenant: tenant.into(),
-        device: row.try_get("device").map_err(db)?,
+        device: row
+            .try_get::<uuid::Uuid, _>("device")
+            .and_then(crate::database::device_id)
+            .map_err(db)?,
         enrollment,
         source,
         registration,
@@ -317,7 +320,7 @@ pub async fn record_authenticated_in(
     crate::device::store::revalidate_management(profile, c, principal).await?;
     sqlx::query(crate::storage_profile::sql(profile).enrollment_read_record_authenticated_in_1)
         .bind(principal.tenant().to_string())
-        .bind(principal.device())
+        .bind(principal.device().into_uuid())
         .execute(c)
         .await
         .map_err(db)?;

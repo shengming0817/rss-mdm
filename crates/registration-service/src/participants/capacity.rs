@@ -4,7 +4,7 @@ pub trait DeviceCapacity: Send + Sync {
     fn available_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
-        device: &'a str,
+        device: &'a rss_mdm_agent_wire::DeviceId,
         now: i64,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<bool, super::Error>> + Send + 'a>>;
 }

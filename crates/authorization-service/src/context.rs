@@ -175,7 +175,11 @@ impl AuthorizedPrincipal {
     pub fn require_all_devices(&self, permission: crate::Permission) -> Result<(), Error> {
         self.authorization()?.require_all_devices(self, permission)
     }
-    pub fn require(&self, operation: crate::Permission, device: Option<&str>) -> Result<(), Error> {
+    pub fn require(
+        &self,
+        operation: crate::Permission,
+        device: Option<&rss_mdm_agent_wire::DeviceId>,
+    ) -> Result<(), Error> {
         self.authorization()?
             .require(self, operation, device)
             .map_err(Into::into)
@@ -185,31 +189,40 @@ pub struct DangerousAction<'a> {
     _proof: &'a AuthorizedPrincipal,
 }
 impl AuthorizedPrincipal {
-    pub fn enrollment(&self, device: &str) -> Result<EnrollmentPermission<'_>, Error> {
+    pub fn enrollment(
+        &self,
+        device: &rss_mdm_agent_wire::DeviceId,
+    ) -> Result<EnrollmentPermission<'_>, Error> {
         self.require(Permission::Enrollment, Some(device))?;
         Ok(EnrollmentPermission {
             proof: self,
-            device: device.into(),
+            device: *device,
             self_service: false,
         })
     }
     /// Live identity for a self-service request. Registration validates its server-owned target.
-    pub fn self_enrollment(&self, device: &str) -> Result<EnrollmentPermission<'_>, Error> {
+    pub fn self_enrollment(
+        &self,
+        device: &rss_mdm_agent_wire::DeviceId,
+    ) -> Result<EnrollmentPermission<'_>, Error> {
         self.session()?;
         self.check_live()?;
         Ok(EnrollmentPermission {
             proof: self,
-            device: device.into(),
+            device: *device,
             self_service: true,
         })
     }
-    pub fn credentials(&self, device: &str) -> Result<(), Error> {
+    pub fn credentials(&self, device: &rss_mdm_agent_wire::DeviceId) -> Result<(), Error> {
         self.require(Permission::Credentials, Some(device))
     }
     pub fn manage(&self, permission: Permission) -> Result<(), Error> {
         self.require(permission, None)
     }
-    pub fn dangerous(&self, device: &str) -> Result<DangerousAction<'_>, Error> {
+    pub fn dangerous(
+        &self,
+        device: &rss_mdm_agent_wire::DeviceId,
+    ) -> Result<DangerousAction<'_>, Error> {
         self.require(Permission::DeviceWipe, Some(device))?;
         Ok(DangerousAction { _proof: self })
     }
@@ -238,7 +251,7 @@ impl<'a> EnrollmentCreation<'a> {
 pub struct EnrollmentPermission<'a> {
     self_service: bool,
     pub proof: &'a AuthorizedPrincipal,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 impl EnrollmentPermission<'_> {
     pub fn self_service(&self) -> bool {
@@ -255,7 +268,7 @@ impl EnrollmentPermission<'_> {
     pub fn proof(&self) -> &AuthorizedPrincipal {
         self.proof
     }
-    pub fn device(&self) -> &str {
+    pub fn device(&self) -> &rss_mdm_agent_wire::DeviceId {
         &self.device
     }
 }

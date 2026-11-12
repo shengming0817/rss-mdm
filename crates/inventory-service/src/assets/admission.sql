@@ -19,7 +19,7 @@ SELECT
  AND EXISTS(SELECT 1 FROM pg_class c WHERE c.oid='mdm.manual_assignments'::regclass AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner NOT IN(SELECT oid FROM reachable)
 
  AND (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
- FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped) @> '[["tenant_id","uuid",true],["device","text",true],["field","text",true],["revision","bigint",true],["fact","jsonb",true],["value_version","text",false],["last_known_version","text",false]]'::jsonb
+ FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped) @> '[["tenant_id","uuid",true],["device","uuid",true],["field","text",true],["revision","bigint",true],["fact","jsonb",true],["value_version","text",false],["last_known_version","text",false]]'::jsonb
  AND (SELECT count(*)=4 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
  WHEN 'manual_assignments_field_check' THEN 'CHECK (((length(field) <= 128) AND (field ~ ''^(device|custom|channel)\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$''::text)))'
  WHEN 'manual_assignments_revision_check' THEN 'CHECK ((revision > 0))'

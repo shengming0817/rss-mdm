@@ -17,7 +17,7 @@ pub struct EventEffects {
     pub fact: Fact,
 }
 pub(crate) fn belongs(run: &Run, p: &DevicePrincipal) -> Result<()> {
-    if run.target.device != p.device() {
+    if run.target.device != *p.device() {
         return Err(Error::Unauthorized.into());
     }
     Ok(())
@@ -82,7 +82,7 @@ impl Service {
                             .enrollment_tasks_agent_agent_admit_in_1,
                     )
                     .bind(&tenant)
-                    .bind(&device)
+                    .bind(device.into_uuid())
                     .execute(&mut *c)
                     .await?;
                     let after: Option<Uuid> = sqlx::query_scalar(
@@ -90,7 +90,7 @@ impl Service {
                             .enrollment_tasks_agent_agent_admit_in_2,
                     )
                     .bind(&tenant)
-                    .bind(&device)
+                    .bind(device.into_uuid())
                     .fetch_one(&mut *c)
                     .await?;
                     let rows = sqlx::query(
@@ -113,7 +113,7 @@ impl Service {
                             .enrollment_tasks_agent_agent_admit_in_4,
                     )
                     .bind(tenant)
-                    .bind(&device)
+                    .bind(device.into_uuid())
                     .bind(next)
                     .execute(c)
                     .await?;
@@ -125,7 +125,7 @@ impl Service {
             .await?;
         let now = storage::now(tx).await?;
         let target = Target {
-            device: p.device().into(),
+            device: *p.device(),
         };
         for version in versions {
             let plan = policy::read_in(&self.transactions, tx, version).await?;

@@ -254,7 +254,7 @@ impl Service {
                             service.tenant,
                             input.definition.scope,
                             rss_mdm_inventory::Channel::Agent,
-                            after.as_deref(),
+                            after,
                             limit,
                         )
                         .await
@@ -276,7 +276,7 @@ impl Service {
                         let more = targets.len() > limit;
                         targets.truncate(limit);
                         let next = if more {
-                            targets.last().map(|v| v.object.key())
+                            targets.last().map(|v| v.object)
                         } else {
                             None
                         };
@@ -287,7 +287,7 @@ impl Service {
                                     service.agent_facts.as_ref(),
                                     c,
                                     service.tenant,
-                                    device.device.clone(),
+                                    device.device,
                                     frozen,
                                 )
                                 .await
@@ -342,7 +342,7 @@ pub struct PreviewResponse {
 #[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewTarget {
-    pub object: rss_mdm_scope_service::channels::ObjectRef,
+    pub object: rss_mdm_agent_wire::ObjectRef,
     pub channel: rss_mdm_inventory::Channel,
     pub availability: rss_mdm_scope_service::channels::Availability,
     pub reason: Option<String>,

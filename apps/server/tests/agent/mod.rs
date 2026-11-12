@@ -11,7 +11,7 @@ use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
-async fn accepted(c: &Context, device: &str) -> Result<Uuid> {
+async fn accepted(c: &Context, device: &rss_mdm_agent_wire::DeviceId) -> Result<Uuid> {
     use sha2::{Digest, Sha256};
     let policy = Uuid::new_v4();
     let version = Uuid::new_v4();
@@ -37,20 +37,20 @@ async fn accepted(c: &Context, device: &str) -> Result<Uuid> {
     )?;
     let fingerprint = Sha256::digest(serde_json::to_vec(&frozen)?).to_vec();
     let target = json!({"object":{"kind":"endpoint","id":device},"associationVersion":null,"verified":true,"members":[{"device":device,"channel":"agent"}]});
-    let object = rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device.into()).key();
+    let object = rss_mdm_agent_wire::ObjectRef::Endpoint(*device);
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
     sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at) VALUES($1::uuid,$2,1,$3,1,'enabled',$4,$5,$6)").bind(c.tenant.to_string()).bind(policy).bind(version).bind(serde_json::to_value(definition)?).bind(serde_json::to_value(&actor)?).bind(now).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'unmanage_device',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(frozen).bind(fingerprint).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES($1::uuid,$2,$3,$4,$5,'once',$6,$7,300,$8,'\"policy\"')").bind(c.tenant.to_string()).bind(retirement).bind(policy).bind(version).bind(object).bind(target).bind(serde_json::to_value(actor)?).bind(now).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirement_channels (tenant_id, operation, device, channel, stage, effect, execution) VALUES (CAST($1 AS uuid), $2, $3, 'agent', 'unenroll', 'pending', $4)").bind(c.tenant.to_string()).bind(retirement).bind(device).bind(run).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_devices.retirement_work (tenant_id, operation, device, execution) VALUES (CAST($1 AS uuid), $2, $3, $4)").bind(c.tenant.to_string()).bind(retirement).bind(device).bind(run).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object_kind,object_id,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES($1::uuid,$2,$3,$4,$5,$6,'once',$7,$8,300,$9,'\"policy\"')").bind(c.tenant.to_string()).bind(retirement).bind(policy).bind(version).bind(object.kind()).bind(object.uuid()).bind(target).bind(serde_json::to_value(actor)?).bind(now).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.retirement_channels (tenant_id, operation, device, channel, stage, effect, execution) VALUES (CAST($1 AS uuid), $2, $3, 'agent', 'unenroll', 'pending', $4)").bind(c.tenant.to_string()).bind(retirement).bind(device.into_uuid()).bind(run).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.retirement_work (tenant_id, operation, device, execution) VALUES (CAST($1 AS uuid), $2, $3, $4)").bind(c.tenant.to_string()).bind(retirement).bind(device.into_uuid()).bind(run).execute(&mut *tx).await?;
     sqlx::query("UPDATE mdm_access.devices SET retirement=$3 WHERE tenant_id=$1::uuid AND id=$2")
         .bind(c.tenant.to_string())
-        .bind(device)
+        .bind(device.into_uuid())
         .bind(retirement)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, origin, source_objects, policy_version, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint, gateway_accepted) VALUES (CAST($1 AS uuid), $2, '\"policy\"', '[]', $3, $4, 'once', $5, $5, $6, $7, $8, TRUE)").bind(c.tenant.to_string()).bind(run).bind(version).bind(device).bind(now).bind(now+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(now+300,now)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_devices.unmanage_runs (tenant_id, id, origin, source_objects, policy_version, device, occurrence, created_at, available_at, deadline, state, dispatch_fingerprint, gateway_accepted) VALUES (CAST($1 AS uuid), $2, '\"policy\"', '[]', $3, $4, 'once', $5, $5, $6, $7, $8, TRUE)").bind(c.tenant.to_string()).bind(run).bind(version).bind(device.into_uuid()).bind(now).bind(now+300).bind(serde_json::to_value(rss_mdm_task_state::RunState::new(now+300,now)?)?).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(run)
 }
@@ -83,7 +83,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         source_credentials: vec![],
     };
     let mut tx = command::seed_transaction(&c).await?;
-    sqlx::query("INSERT INTO mdm_agent.bindings (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), $2, 1, $3, 'windows', 'x86_64', $4)").bind(c.tenant.to_string()).bind(&device).bind(serde_json::to_string(&capabilities)?).bind(serde_json::to_value(&context)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_agent.bindings (tenant_id, device, wire_version, capabilities, platform, architecture, execution_context) VALUES (CAST($1 AS uuid), $2, 1, $3, 'windows', 'x86_64', $4)").bind(c.tenant.to_string()).bind(device.into_uuid()).bind(serde_json::to_string(&capabilities)?).bind(serde_json::to_value(&context)?).execute(&mut *tx).await?;
     tx.commit().await?;
     let target = accepted(&c, &device).await?;
     let (other_device, _) = material::seed_registration(&c).await?;
@@ -141,7 +141,7 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
     let response = delivery.claim(&p, &input, &request()).await?;
     let signed = response.task().expect("accepted target must be offered");
     assert_eq!(signed.payload.task_id(), target);
-    let stored:serde_json::Value=sqlx::query_scalar("SELECT offer FROM mdm_agent.task_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND run = $3 AND device = $4").bind(c.tenant.to_string()).bind(signed.payload.attempt_id()).bind(target).bind(&device).fetch_one(&c.operator).await?;
+    let stored:serde_json::Value=sqlx::query_scalar("SELECT offer FROM mdm_agent.task_attempts WHERE tenant_id = CAST($1 AS uuid) AND id = $2 AND run = $3 AND device = $4").bind(c.tenant.to_string()).bind(signed.payload.attempt_id()).bind(target).bind(device.into_uuid()).fetch_one(&c.operator).await?;
     assert_eq!(stored, serde_json::to_value(signed)?);
     let deadline: i64 = sqlx::query_scalar(
         "SELECT deadline FROM mdm_agent.task_attempts WHERE tenant_id=$1::uuid AND id=$2",

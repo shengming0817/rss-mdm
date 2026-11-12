@@ -32,7 +32,7 @@ pub struct Reply {
 use uuid::Uuid;
 pub struct AppleRegistration {
     pub tenant: String,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
 }
 pub trait AppleProfiles: Send + Sync {
     fn declaration_candidates<'a>(
@@ -46,7 +46,7 @@ pub trait AppleProfiles: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user: String,
         owner: String,
     ) -> Pending<'a, Vec<Uuid>>;
@@ -61,7 +61,7 @@ pub trait AppleProfiles: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         identifier: String,
     ) -> Pending<'a, Vec<Uuid>>;
@@ -77,7 +77,7 @@ pub trait AppleCollections: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         limit: usize,
     ) -> Pending<'a, Vec<PendingCollection>>;
@@ -105,7 +105,7 @@ pub trait ApplePush: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         revision: i64,
         scope: String,
@@ -114,7 +114,7 @@ pub trait ApplePush: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
     ) -> Pending<'a, ()>;
     fn lease_push<'a>(
@@ -122,7 +122,7 @@ pub trait ApplePush: Send + Sync {
         c: &'a mut PgConnection,
         tenant: String,
         wake: Uuid,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
         user_key: String,
         configuration: [u8; 32],
     ) -> Pending<'a, ()>;
@@ -139,7 +139,7 @@ pub trait ApplePush: Send + Sync {
         source: &'a dyn crate::participants::Business,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
     ) -> Pending<'a, bool>;
 }
 pub enum AppleEvidence {
@@ -159,7 +159,7 @@ pub trait AppleResults: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
-        device: String,
+        device: rss_mdm_agent_wire::DeviceId,
 
         after: Option<Uuid>,
         limit: usize,
@@ -288,14 +288,14 @@ pub trait Apple: Send + Sync {
 #[derive(Clone)]
 pub struct Wake {
     pub id: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub revision: i64,
     pub user_key: String,
     pub token: Vec<u8>,
     pub magic: String,
 }
 pub struct PushCandidate {
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub revision: i64,
     pub user_key: String,
     pub disposition: PushDisposition,
@@ -362,7 +362,7 @@ pub trait AppleAssetRead: Send + Sync {
 #[derive(Clone)]
 pub struct AppleControlCheck {
     pub id: usize,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub action: ControlKind,
     pub command: rss_mdm_apple_mdm::native::input::CommandInput,
 }
@@ -370,7 +370,7 @@ pub struct AppleControlCheck {
 /// Committed publication identity carried by a validated native status report.
 pub struct Synchronized {
     pub operation: Uuid,
-    pub device: String,
+    pub device: rss_mdm_agent_wire::DeviceId,
     pub user: String,
     pub input_version: String,
     pub publication_version: String,

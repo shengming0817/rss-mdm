@@ -11,14 +11,19 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
     let device = rss_mdm_inventory_service::assets::DeviceView {
         collection_scope: rss_mdm_inventory::CollectionScope::Device,
         lists: Default::default(),
-        device: "device".into(),
+        device: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+            .unwrap(),
         channels: Default::default(),
         fields: Default::default(),
         quality: vec![],
         revisions: Default::default(),
     };
     let mut result = rss_mdm_group::ObjectEvaluation {
-        key: rss_mdm_group::ObjectKey::new(tenant, "device").unwrap(),
+        key: rss_mdm_group::ObjectKey::new(
+            tenant,
+            rss_mdm_agent_wire::ObjectRef::Endpoint(device.device),
+        )
+        .unwrap(),
         decision: rss_mdm_group::Decision::Unknown,
         contexts: [(
             "scope".into(),
@@ -53,7 +58,8 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
     input.definition.platform = Platform::Windows;
     let source = |s: &str| SourceReference {
         source: s.into(),
-        device_id: "device".into(),
+        device_id: rss_mdm_agent_wire::DeviceId::parse("921af465-7e0a-5bc3-80bf-96ae31b07ccd")
+            .unwrap(),
         epoch: "epoch".into(),
     };
     let value = assessment(

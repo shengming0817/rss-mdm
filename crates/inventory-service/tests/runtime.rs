@@ -26,7 +26,7 @@ fn ensure_authority(authority: &JournalAuthority<'_>, tenant: TenantId, token: &
     let scope = crate::device::scope(
         rss_mdm_install_support::StorageProfile::Mdm,
         tenant,
-        &Uuid::new_v4().to_string(),
+        &rss_mdm_agent_wire::DeviceId::new_v4(),
         "mdm.windows",
         Uuid::new_v4(),
     )

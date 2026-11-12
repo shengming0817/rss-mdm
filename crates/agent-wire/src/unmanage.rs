@@ -18,7 +18,7 @@ pub struct UnmanageTaskSpec {
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
     /// Original Agent endpoint.
-    pub device_id: String,
+    pub device_id: crate::DeviceId,
 
     /// Product retirement operation.
     #[serde(with = "strict_uuid")]
@@ -56,9 +56,6 @@ impl UnmanageTaskSpec {
             || self.attempt_id.is_nil()
             || self.expires_at <= 0
             || self.deadline < self.expires_at
-            || self.device_id.is_empty()
-            || self.device_id.len() > 256
-            || self.device_id.chars().any(char::is_control)
             || key_id.is_empty()
             || key_id.len() > 128
             || !matches!(self.authorization, TaskAuthorization::Policy { .. })

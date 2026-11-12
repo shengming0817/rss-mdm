@@ -573,7 +573,7 @@ impl Registry {
         profile: rss_mdm_install_support::StorageProfile,
         c: &mut sqlx::PgConnection,
         tenant: &str,
-        device: &str,
+        device: &rss_mdm_agent_wire::DeviceId,
         trust: &Trust,
         input: &Acknowledgement,
     ) -> Result<(), Error> {
@@ -588,7 +588,7 @@ impl Registry {
             sqlx::query_as(crate::storage_profile::sql(profile).registry_acknowledge_in_1)
                 .bind(tenant)
                 .bind(purpose(trust.purpose))
-                .bind(device)
+                .bind(device.into_uuid())
                 .fetch_optional(&mut *c)
                 .await
                 .map_err(|_| Error::Storage)?;
@@ -600,7 +600,7 @@ impl Registry {
         sqlx::query(crate::storage_profile::sql(profile).registry_acknowledge_in_2)
             .bind(tenant)
             .bind(purpose(trust.purpose))
-            .bind(device)
+            .bind(device.into_uuid())
             .bind(input.revision as i64)
             .bind(&input.digest)
             .bind(serde_json::to_vec(trust).map_err(|_| Error::Storage)?)
@@ -609,7 +609,7 @@ impl Registry {
             .map_err(|_| Error::Storage)?;
         sqlx::query(crate::storage_profile::sql(profile).registry_acknowledge_in_3)
             .bind(tenant)
-            .bind(device)
+            .bind(device.into_uuid())
             .bind(input.revision as i64)
             .bind(input.digest.as_bytes())
             .bind(purpose(trust.purpose))

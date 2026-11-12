@@ -46,7 +46,7 @@ async fn original_receipt_is_bound_to_candidate_and_version() -> Result<()> {
             &mut tx,
             first.tenant,
             verification,
-            &Uuid::new_v4().to_string(),
+            &rss_mdm_agent_wire::DeviceId::new_v4(),
             &report,
             recovery::native_receipts::ReceiptStatus::Acknowledged,
         )
@@ -427,7 +427,7 @@ async fn input_secrets(
             .await?;
     let aad = rss_mdm_native_protection::ProtectionContext::new(
         c.tenant,
-        &serde_json::to_string(&(coordinate.binding.device.clone(), attempt))?,
+        &serde_json::to_string(&(coordinate.binding.device, attempt))?,
         "apple.attempt.request",
         1,
     )?
@@ -620,10 +620,10 @@ async fn filevault_binding(
     )
     .bind(tenant)
     .bind(custody)
-    .bind(&binding.device)
+    .bind(binding.device.into_uuid())
     .execute(&mut *c)
     .await?;
     sqlx::query("INSERT INTO mdm_recovery.filevault_sources (tenant_id, device, custody, epoch) VALUES ($1, $2, $3, 1)")
-        .bind(tenant).bind(binding.device.clone()).bind(custody).execute(&mut *c).await?;
+        .bind(tenant).bind(binding.device.into_uuid()).bind(custody).execute(&mut *c).await?;
     Ok(binding)
 }

@@ -120,7 +120,7 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
             &apple,
             &p,
             &c,
-            receipt(&n.device, attempt, Some(&user))?
+            receipt(&n.device.to_string(), attempt, Some(&user))?
         )
         .await
         .is_err()
@@ -132,13 +132,13 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
             &apple,
             &p,
             &c,
-            receipt(&n.device, Uuid::new_v4(), None)?
+            receipt(&n.device.to_string(), Uuid::new_v4(), None)?
         )
         .await
         .is_err()
     );
     assert_eq!(state().await?, before);
-    let ack = receipt(&n.device, attempt, None)?;
+    let ack = receipt(&n.device.to_string(), attempt, None)?;
     manage(&d, &apple, &p, &c, ack.clone()).await?;
     let settled = state().await?;
     assert_eq!(settled.0, "acknowledged");
@@ -196,7 +196,7 @@ async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Resul
     let d = delivery(&c, &a).await?;
     let stale = rss_mdm_apple_channel::ddm::prepare(
         apple.clone(),
-        &ddm(&n.device, &user, &old_token)?,
+        &ddm(&n.device.to_string(), &user, &old_token)?,
         None,
     )?;
     let reply = d
@@ -204,8 +204,11 @@ async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Resul
         .await
         .map_err(|e| anyhow::anyhow!("Apple stale DDM: {e:?}"))?;
     assert!(reply.synchronized.is_empty());
-    let exchange =
-        rss_mdm_apple_channel::ddm::prepare(apple.clone(), &ddm(&n.device, &user, &token)?, None)?;
+    let exchange = rss_mdm_apple_channel::ddm::prepare(
+        apple.clone(),
+        &ddm(&n.device.to_string(), &user, &token)?,
+        None,
+    )?;
     let reply = d
         .ddm(&p, exchange, &audit(&c))
         .await
@@ -232,10 +235,13 @@ async fn ddm_sync_returns_only_committed_current_user_and_publication() -> Resul
     .fetch_one(&c.operator)
     .await?;
     assert!(untouched.is_none());
-    let reports:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.status_reports WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3").bind(c.tenant.to_string()).bind(n.device.clone()).bind(&user).fetch_one(&c.operator).await?;
+    let reports:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.status_reports WHERE tenant_id = CAST($1 AS uuid) AND device = $2 AND user_key = $3").bind(c.tenant.to_string()).bind(n.device.into_uuid()).bind(&user).fetch_one(&c.operator).await?;
     assert_eq!(reports, 2);
-    let replay =
-        rss_mdm_apple_channel::ddm::prepare(apple.clone(), &ddm(&n.device, &user, &token)?, None)?;
+    let replay = rss_mdm_apple_channel::ddm::prepare(
+        apple.clone(),
+        &ddm(&n.device.to_string(), &user, &token)?,
+        None,
+    )?;
     let replay = d.ddm(&p, replay, &audit(&c)).await?;
     assert_eq!(replay.bytes, reply.bytes);
     drop(d);

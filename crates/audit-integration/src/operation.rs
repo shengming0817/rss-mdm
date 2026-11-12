@@ -120,7 +120,7 @@ pub struct OperationLocator {
     pub actor: Option<String>,
     pub instance: Option<Uuid>,
     pub target: Option<String>,
-    pub device: Option<String>,
+    pub device: Option<rss_mdm_agent_wire::DeviceId>,
 }
 impl OperationLocator {
     pub(crate) fn from_snapshot(
@@ -160,7 +160,7 @@ impl OperationLocator {
                 .transpose()
                 .map_err(|_| crate::InvalidFact::Coordinates)?,
             target: snapshot.target.clone(),
-            device: snapshot.device_target.clone(),
+            device: snapshot.device_target,
         }))
     }
 }

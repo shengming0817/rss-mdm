@@ -159,12 +159,12 @@ impl Groups {
                 if add.len() + remove.len() > 1000 {
                     return Err(Error::Malformed.into());
                 }
-                let endpoints = |objects: &[rss_mdm_inventory_service::objects::ObjectRef]| -> Result<Vec<String>> {
+                let endpoints = |objects: &[rss_mdm_agent_wire::ObjectRef]| -> Result<Vec<rss_mdm_agent_wire::DeviceId>> {
                     objects
                         .iter()
                         .map(|object| match object {
-                            rss_mdm_inventory_service::objects::ObjectRef::Endpoint(id) if !id.is_empty() => {
-                                Ok(id.clone())
+                            rss_mdm_agent_wire::ObjectRef::Endpoint(id) => {
+                                Ok(*id)
                             }
                             _ => Err(Error::Malformed.into()),
                         })

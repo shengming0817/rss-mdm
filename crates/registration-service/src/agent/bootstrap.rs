@@ -386,12 +386,13 @@ async fn row(
     id: Uuid,
 ) -> Result<PgRow, Error> {
     // Match coordinator order: endpoint before bootstrap row. The frozen endpoint cannot change.
-    let device: String =
+    let device: rss_mdm_agent_wire::DeviceId =
         sqlx::query_scalar(crate::storage_profile::sql(profile).agent_bootstrap_row_1)
             .bind(tenant.to_string())
             .bind(id)
             .fetch_optional(&mut *c)
             .await
+            .and_then(|id| id.map(crate::database::device_id).transpose())
             .map_err(db)?
             .ok_or(Error::Unauthorized)?;
     crate::device::store::lock_channel(
