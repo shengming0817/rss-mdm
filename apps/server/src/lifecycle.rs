@@ -634,18 +634,18 @@ clock: Arc::new(crate::lifecycle::RuntimeTimer),
                             Arc::new(crate::clock::SystemClock),
                         );
                         // Resource declarations are corrected before any execution runner is exposed.
-                        automation.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        control.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        script_work.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        collection_work.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        software_owner.service.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        registration_owner.native.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        registration_owner.worker.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
-                        access_execution.worker.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                        futures::FutureExt::boxed(automation.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                        futures::FutureExt::boxed(control.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                        futures::FutureExt::boxed(script_work.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                        futures::FutureExt::boxed(collection_work.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                        futures::FutureExt::boxed(software_owner.service.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                        futures::FutureExt::boxed(registration_owner.native.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                        futures::FutureExt::boxed(registration_owner.worker.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                        futures::FutureExt::boxed(access_execution.worker.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
                         if let Some(credentials) = &credential_execution {
-                            credentials.native.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                            futures::FutureExt::boxed(credentials.native.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
                             for worker in &credentials.worker {
-                                worker.initialize_resource_bindings().await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
+                                futures::FutureExt::boxed(worker.initialize_resource_bindings()).await.map_err(|_| ProcessError::at("startup.resource_bindings", Error::Unavailable(Failure::Database)))?;
                             }
                         }
                         let task_registrations = {

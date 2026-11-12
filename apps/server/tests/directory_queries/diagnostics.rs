@@ -20,6 +20,16 @@ pub(super) async fn exercise(
     http: &Http,
     authorized: &Http,
 ) -> Result<()> {
+    revocation(c, manager, reader, http).await?;
+    deadline(c, authorized).await
+}
+
+async fn revocation(
+    c: &Context,
+    manager: &access::context::AuthorizedPrincipal,
+    reader: &Account,
+    http: &Http,
+) -> Result<()> {
     // A table lock is a controlled PostgreSQL read barrier, not a mocked source.
     // It is held only by this bounded test and always rolled back before asserting.
     let mut blocker = c.operator.begin().await?;
@@ -60,6 +70,10 @@ pub(super) async fn exercise(
     assert!(body.get("components").is_none());
     assert_eq!(http.get("/api/v1/runtime/diagnostics", &[]).await?.0, 403);
 
+    Ok(())
+}
+
+async fn deadline(c: &Context, authorized: &Http) -> Result<()> {
     // The baseline probe has its own two-second SQL budget. First-use reads have
     // a six-second budget; together they must not renew the route's eight seconds.
     let mut blocker = c.operator.begin().await?;

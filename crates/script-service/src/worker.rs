@@ -197,23 +197,84 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         );
         audit.identify_service("script-recovery");
         let error = Mutex::new(None);
-        let attempt=service.transactions.runtime.local_tx_with_context(service.transactions.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(service,claim,&audit,&error),|ctx,tx|Box::pin(async move {
-            let (service,claim,audit,error)=ctx;
-            if let Err(e)=service.transactions.audit_store.bind_in(tx).await {return Err(crate::transaction::rejection(e.into(),error));}
-            let ready=match prepare_in(service,tx,claim.target().entity()).await {Ok(v)=>v,Err(e)=>return Err(crate::transaction::rejection(e,error))};
-            if !matches!(ready, Prepared::Deferred) {
-                let resources = match crate::wake::resources_in(tx, claim.target().entity()).await {Ok(v)=>v, Err(e)=>return Err(crate::transaction::rejection(e,error))};
-                service.transactions.reconcile_messaging.bind_in(tx, claim.target(), &resources).await?;
-            }
-            service.transactions.reconcile_messaging.protect_in(tx,claim,(service,claim.target().entity(),audit,error,ready),|ctx,tx|Box::pin(async move {
-                let (service,entity,audit,error,ready)=ctx;
-                if matches!(ready, Prepared::Deferred) {audit.mark_commit_started();return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));}
-                match advance_in(service,tx,entity,ready).await {
-                    Ok(delay)=>{audit.mark_commit_started();Ok(match delay {Some(after)=>rss_reconcile_postgres::ProtectedStep::Deferred(after),None=>rss_reconcile_postgres::ProtectedStep::Ready(())})},
-                    Err(e)=>Err(crate::transaction::rejection(e,error)),
-                }
-            })).await
-        })).await;
+        let attempt = service
+            .transactions
+            .runtime
+            .local_tx_with_context(
+                service.transactions.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+                (service, claim, &audit, &error),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let (service, claim, audit, error) = ctx;
+                        if let Err(e) = service.transactions.audit_store.bind_in(tx).await {
+                            return Err(crate::transaction::rejection(e.into(), error));
+                        }
+                        let ready = match prepare_in(service, tx, claim.target().entity()).await {
+                            Ok(v) => v,
+                            Err(e) => return Err(crate::transaction::rejection(e, error)),
+                        };
+                        if !matches!(ready, Prepared::Deferred) {
+                            let resources = match crate::wake::resources_in(
+                                tx,
+                                claim.target().entity(),
+                            )
+                            .await
+                            {
+                                Ok(v) => v,
+                                Err(e) => return Err(crate::transaction::rejection(e, error)),
+                            };
+                            service
+                                .transactions
+                                .reconcile_messaging
+                                .bind_in(tx, claim.target(), &resources)
+                                .await?;
+                        }
+                        let settlement_audit = *audit;
+                        let outcome = service
+                            .transactions
+                            .reconcile_messaging
+                            .protect_in(
+                                tx,
+                                claim,
+                                (service, claim.target().entity(), audit, error, ready),
+                                |ctx, tx| {
+                                    Box::pin(async move {
+                                        let (service, entity, _audit, error, ready) = ctx;
+                                        if matches!(ready, Prepared::Deferred) {
+                                            return Ok(
+                                                rss_reconcile_postgres::ProtectedStep::Deferred(
+                                                    Duration::from_millis(50),
+                                                ),
+                                            );
+                                        }
+                                        match advance_in(service, tx, entity, ready).await {
+                                            Ok(delay) => Ok(match delay {
+                                                Some(after) => {
+                                                    rss_reconcile_postgres::ProtectedStep::Deferred(
+                                                        after,
+                                                    )
+                                                }
+                                                None => {
+                                                    rss_reconcile_postgres::ProtectedStep::Ready(())
+                                                }
+                                            }),
+                                            Err(e) => Err(crate::transaction::rejection(e, error)),
+                                        }
+                                    })
+                                },
+                            )
+                            .await;
+                        if outcome.is_ok() {
+                            settlement_audit.mark_commit_started();
+                        }
+                        outcome
+                    })
+                },
+            )
+            .await;
         let result = crate::transaction::settle(attempt, &audit, error);
         audit.finalize(
             result

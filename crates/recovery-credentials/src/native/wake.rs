@@ -10,7 +10,7 @@ pub async fn wake_native_in(
             &target(tx.tenant_id(), device),
             &rss_mdm_registration_service::lifecycle::resources::device(
                 tx.tenant_id(),
-                &device,
+                device,
                 rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
             ),
             (),

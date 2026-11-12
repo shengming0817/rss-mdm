@@ -774,10 +774,17 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for SoftwareService {
                                     };
 
                                 if prepared.is_some() {
-                                    let resources = resources_in(tx, claim.target().entity()).await.map_err(|e| rejection(e, context.3))?;
-                                    service.transactions.reconcile_messaging.bind_in(tx, claim.target(), &resources).await?;
+                                    let resources = resources_in(tx, claim.target().entity())
+                                        .await
+                                        .map_err(|e| rejection(e, context.3))?;
+                                    service
+                                        .transactions
+                                        .reconcile_messaging
+                                        .bind_in(tx, claim.target(), &resources)
+                                        .await?;
                                 }
-                                service
+                                let settlement_audit = context.2;
+                                let outcome = service
                                     .transactions
                                     .reconcile_messaging
                                     .protect_in(tx, claim, (context, prepared), |ctx, tx| {
@@ -785,26 +792,28 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for SoftwareService {
                                             let ((service, _, audit, failure), prepared) = ctx;
                                             let Some(prepared) = prepared.take() else {
                                                 // Normal endpoint contention yields without counting a failed attempt.
-                                                audit.mark_commit_started();
-                                                return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));
+                                                return Ok(
+                                                    rss_reconcile_postgres::ProtectedStep::Deferred(
+                                                        Duration::from_millis(50),
+                                                    ),
+                                                );
                                             };
-                                            match apply_prepared(
-                                                service,
-                                                tx,
-                                                prepared,
-                                                audit,
-                                            )
-                                            .await
+                                            match apply_prepared(service, tx, prepared, audit).await
                                             {
-                                                Ok(more) => {
-                                                    audit.mark_commit_started();
-                                                    Ok(rss_reconcile_postgres::ProtectedStep::Ready(more))
-                                                }
+                                                Ok(more) => Ok(
+                                                    rss_reconcile_postgres::ProtectedStep::Ready(
+                                                        more,
+                                                    ),
+                                                ),
                                                 Err(e) => Err(rejection(e, failure)),
                                             }
                                         })
                                     })
-                                    .await
+                                    .await;
+                                if outcome.is_ok() {
+                                    settlement_audit.mark_commit_started();
+                                }
+                                outcome
                             })
                         },
                     )

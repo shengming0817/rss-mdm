@@ -336,7 +336,9 @@ async fn partial_endpoint_fence_acquisition_is_rolled_back() -> Result<()> {
     let tenant = c.tenant.to_string();
     let mut blocker = command::seed_transaction(&c).await?;
     let mut attempt = command::seed_transaction(&c).await?;
-    let mut observer = command::seed_transaction(&c).await?;
+    use sqlx::Connection;
+    let mut connection = sqlx::PgConnection::connect_with(&c.operator.connect_options()).await?;
+    let mut observer = connection.begin().await?;
     lock_device_in(profile, &mut blocker, &tenant, "z-endpoint").await?;
     assert!(
         !try_lock_devices_in(
@@ -354,6 +356,7 @@ async fn partial_endpoint_fence_acquisition_is_rolled_back() -> Result<()> {
     observer.rollback().await?;
     attempt.rollback().await?;
     blocker.rollback().await?;
+    connection.close().await?;
     c.close().await;
     Ok(())
 }

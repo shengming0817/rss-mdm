@@ -216,7 +216,7 @@ impl Transactions {
                 &target,
                 &rss_mdm_registration_service::lifecycle::resources::device(
                     tenant,
-                    &device,
+                    device,
                     rss_mdm_registration_service::lifecycle::resources::Work::Exclusive,
                 ),
                 (),

@@ -228,14 +228,17 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
                 let resources = match crate::device_access::execution::wake::resources_in(tx, claim.target().entity()).await {Ok(v)=>v, Err(e)=>return Err(crate::device_access::execution::transaction::rejection(e,error))};
                 service.transactions.reconcile_messaging.bind_in(tx, claim.target(), &resources).await?;
             }
-            service.transactions.reconcile_messaging.protect_in(tx,claim,(service,claim.target().entity(),audit,error,ready),|ctx,tx|Box::pin(async move {
-                let (service,entity,audit,error,ready)=ctx;
-                if matches!(ready, Prepared::Deferred) {audit.mark_commit_started();return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));}
+            let settlement_audit = *audit;
+            let outcome = service.transactions.reconcile_messaging.protect_in(tx,claim,(service,claim.target().entity(),audit,error,ready),|ctx,tx|Box::pin(async move {
+                let (service,entity,_audit,error,ready)=ctx;
+                if matches!(ready, Prepared::Deferred) {return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));}
                 match advance_in(service,tx,entity,ready).await {
-                    Ok(delay)=>{audit.mark_commit_started();Ok(match delay {Some(after)=>rss_reconcile_postgres::ProtectedStep::Deferred(after),None=>rss_reconcile_postgres::ProtectedStep::Ready(())})},
+                    Ok(delay)=>{Ok(match delay {Some(after)=>rss_reconcile_postgres::ProtectedStep::Deferred(after),None=>rss_reconcile_postgres::ProtectedStep::Ready(())})},
                     Err(e)=>Err(crate::device_access::execution::transaction::rejection(e,error)),
                 }
-            })).await
+            })).await;
+            if outcome.is_ok() { settlement_audit.mark_commit_started(); }
+            outcome
         })).await;
         let result = crate::device_access::execution::transaction::settle(attempt, &audit, error);
         audit.finalize(

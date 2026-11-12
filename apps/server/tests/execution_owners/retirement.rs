@@ -59,21 +59,36 @@ async fn step(h: &Harness, id: Uuid) -> Result<()> {
     store
         .wake(&target, &resources(h, id).await?, &control)
         .await?;
-    let batch = store
-        .claim_due(&scope, 64, Duration::from_secs(30), &control)
-        .await?;
-    let mut seen = false;
-    for claim in batch.claims {
-        if claim.target() == &target {
+    loop {
+        control.check()?;
+        let batch = store
+            .claim_due(&scope, 64, Duration::from_secs(30), &control)
+            .await?;
+        let mut seen = false;
+        for claim in batch.claims {
             let ReconcileStep::Ready(diff) = h.a.service.observe(&claim, &control).await? else {
-                anyhow::bail!("retirement observation deferred")
+                store.release(&claim, &control).await?;
+                continue;
             };
-            h.a.service.apply(&claim, diff, &control).await?;
-            seen = true;
+            let completion = if diff.drift() == rss_reconcile::DriftKind::Converged {
+                rss_reconcile::Completion::Converged
+            } else {
+                match h.a.service.apply(&claim, diff, &control).await? {
+                    ReconcileStep::Ready(()) => {
+                        rss_reconcile::Completion::Reobserve(Duration::from_millis(50))
+                    }
+                    ReconcileStep::Deferred(delay) => rss_reconcile::Completion::Deferred(delay),
+                }
+            };
+            seen |= claim.target() == &target;
+            store.finish(&claim, completion, &control).await?;
         }
-        store.release(&claim, &control).await?;
+        if seen {
+            break;
+        }
+        // Older work on the same endpoint must settle before retirement is admitted.
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    anyhow::ensure!(seen, "retirement not claimed");
     Ok(())
 }
 async fn state(h: &Harness, id: Uuid) -> Result<(String, String, Option<Uuid>)> {

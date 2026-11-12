@@ -10,7 +10,7 @@ pub async fn wake_native_in(
             &target(tx.tenant_id(), device),
             &crate::lifecycle::resources::device(
                 tx.tenant_id(),
-                &device,
+                device,
                 crate::lifecycle::resources::Work::Exclusive,
             ),
             (),

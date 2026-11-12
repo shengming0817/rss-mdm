@@ -112,295 +112,304 @@ impl Source for RuntimeDiagnostics {
     }
 }
 impl RuntimeDiagnostics {
-    pub(crate) async fn collect(&self, cutoff: Instant, detailed: bool) -> Snapshot {
-        let mut inventory = self.inventory_health();
-        if detailed {
-            self.enrich_inventory(cutoff, &mut inventory).await;
-        }
-        let mut policy = worker_component(
-            ComponentName::Policy,
-            self.planning.automation_state(),
-            true,
-            false,
-        );
-        let health = self.planning.automation_health();
-        apply_runner(
-            &mut policy,
-            Runner {
-                scan: health.scan.map(run_result),
-                unresolved_attempts: health.unresolved_attempts,
-                truncated: health.truncated,
-                latest_failure: health.latest_failure.map(|f| AttemptFailure {
-                    stage: attempt_stage(f.stage),
-                    reason: automation_failure(f.failure),
-                    observed_at: f.observed_at,
-                }),
-            },
-        );
-        let health = self.groups.runner_health();
-        let mut group = worker_component(
-            ComponentName::Group,
-            self.groups.task_state(),
-            health.scan.is_some(),
-            false,
-        );
-        apply_runner(
-            &mut group,
-            Runner {
-                scan: health.scan.map(|v| RunResult {
-                    successful: v.failure.is_none(),
-                    reason: v.failure.map(execution_failure),
-                    observed_at: v.observed_at,
-                }),
-                unresolved_attempts: health.unresolved_attempts,
-                truncated: health.truncated,
-                latest_failure: health.latest_failure.map(|f| AttemptFailure {
-                    stage: attempt_stage(f.stage),
-                    reason: execution_failure(f.failure),
-                    observed_at: f.observed_at,
-                }),
-            },
-        );
-        let health = self.scopes.runner_health();
-        let mut scope = worker_component(
-            ComponentName::Scope,
-            self.scopes.task_state(),
-            health.scan.is_some(),
-            false,
-        );
-        apply_runner(
-            &mut scope,
-            Runner {
-                scan: health.scan.map(|v| RunResult {
-                    successful: v.failure.is_none(),
-                    reason: v.failure.map(execution_failure),
-                    observed_at: v.observed_at,
-                }),
-                unresolved_attempts: health.unresolved_attempts,
-                truncated: health.truncated,
-                latest_failure: health.latest_failure.map(|f| AttemptFailure {
-                    stage: attempt_stage(f.stage),
-                    reason: execution_failure(f.failure),
-                    observed_at: f.observed_at,
-                }),
-            },
-        );
-        let health = self.assets.worker_status();
-        let mut assets = worker_component(
-            ComponentName::AssetQuery,
-            health.task,
-            health.scan.is_some(),
-            false,
-        );
-        apply_runner(
-            &mut assets,
-            Runner {
-                scan: health.scan.map(|v| RunResult {
-                    successful: v.failure.is_none(),
-                    reason: v.failure.map(execution_failure),
-                    observed_at: v.observed_at,
-                }),
-                unresolved_attempts: health.unresolved_attempts,
-                truncated: health.truncated,
-                latest_failure: health.latest_failure.map(|f| AttemptFailure {
-                    stage: attempt_stage(f.stage),
-                    reason: execution_failure(f.failure),
-                    observed_at: f.observed_at,
-                }),
-            },
-        );
-        let health = self.compliance.worker_status();
-        let mut compliance = worker_component(
-            ComponentName::Compliance,
-            health.task,
-            health.scan.is_some(),
-            false,
-        );
-        apply_runner(
-            &mut compliance,
-            Runner {
-                scan: health.scan.map(|v| RunResult {
-                    successful: v.failure.is_none(),
-                    reason: v.failure.map(execution_failure),
-                    observed_at: v.observed_at,
-                }),
-                unresolved_attempts: health.unresolved_attempts,
-                truncated: health.truncated,
-                latest_failure: health.latest_failure.map(|f| AttemptFailure {
-                    stage: attempt_stage(f.stage),
-                    reason: execution_failure(f.failure),
-                    observed_at: f.observed_at,
-                }),
-            },
-        );
-        let health = self.devices.worker_health();
-        let mut associations = worker_component(
-            ComponentName::DeviceAssociations,
-            health.task,
-            health.observed,
-            health.failure.is_some(),
-        );
-        if let Some(failure) = health.failure {
-            associations.reasons.push(execution_failure(failure));
-        }
-        associations.runner = Some(Runner {
-            scan: None,
-            unresolved_attempts: health.unresolved_attempts,
-            truncated: health.truncated,
-            latest_failure: None,
-        });
-        let mut control =
-            recovery_component(ComponentName::DeviceControl, &self.execution.health());
-        let mut software =
-            recovery_component(ComponentName::SoftwareDeployment, &self.software.health());
-        let remaining = || {
-            cutoff.saturating_duration_since(rss_request_context::Clock::now(
-                &crate::lifecycle::RuntimeTimer,
-            ))
-        };
-        let (
-            group_input,
-            scope_input,
-            compliance_input,
-            policy_input,
-            control_input,
-            software_input,
-        ) = tokio::join!(
-            self.groups.input_failed(remaining()),
-            self.scopes.input_failed(remaining()),
-            self.compliance.input_failed(remaining()),
-            self.planning.configuration_input_suspended(cutoff),
-            self.execution.ingress_health(cutoff),
-            self.software.ingress_health(cutoff)
-        );
-        apply_configuration_input(&mut group, group_input.map_err(|e| queue_failure(e.into())));
-        apply_configuration_input(&mut scope, scope_input.map_err(|e| queue_failure(e.into())));
-        apply_configuration_input(
-            &mut compliance,
-            compliance_input.map_err(|e| queue_failure(e.into())),
-        );
-        apply_configuration_input(&mut policy, policy_input);
-        match control_input.map_err(input_health_error) {
-            Ok(state) => {
-                apply_configuration_input(&mut control, Ok(state.suspended));
-                control.dispatch = Some(Dispatch {
-                    event_after: state.event_after,
-                    window_open: state.window_open,
-                });
-                control
-                    .dependencies
-                    .push(dependency(DependencyName::CommandStorage, None));
+    pub(crate) fn collect(
+        &self,
+        cutoff: Instant,
+        detailed: bool,
+    ) -> futures::future::BoxFuture<'_, Snapshot> {
+        Box::pin(async move {
+            let mut inventory = self.inventory_health();
+            if detailed {
+                self.enrich_inventory(cutoff, &mut inventory).await;
             }
-            Err(error) => {
-                apply_configuration_input(&mut control, Err(error));
-                control.dependencies.push(dependency(
-                    DependencyName::CommandStorage,
-                    Some(health_failure(error)),
-                ));
-            }
-        }
-        match software_input.map_err(software_health_error) {
-            Ok(state) => {
-                apply_configuration_input(&mut software, Ok(state.suspended));
-                software.dispatch = Some(Dispatch {
-                    event_after: state.event_after,
-                    window_open: state.window_open,
-                });
-                software
-                    .dependencies
-                    .push(dependency(DependencyName::CommandStorage, None));
-            }
-            Err(error) => {
-                apply_configuration_input(&mut software, Err(error));
-                software.dependencies.push(dependency(
-                    DependencyName::CommandStorage,
-                    Some(health_failure(error)),
-                ));
-            }
-        }
-        if detailed {
-            let (p, g, s, a, c, control_inputs, software_inputs) = tokio::join!(
-                self.planning.queue_health(cutoff),
-                self.groups.queue_health(remaining()),
-                self.scopes.queue_health(remaining()),
-                self.assets.queue_health(remaining()),
-                self.compliance.queue_health(remaining()),
-                self.execution.input_pending_count(cutoff),
-                self.software.input_pending_count(cutoff)
+            let mut policy = worker_component(
+                ComponentName::Policy,
+                self.planning.automation_state(),
+                true,
+                false,
             );
-            apply_queues(&mut policy, p);
-            apply_queues(&mut group, g.map_err(|e| queue_failure(e.into())));
-            apply_queues(&mut scope, s.map_err(|e| queue_failure(e.into())));
-            apply_queues(&mut assets, a.map_err(|e| queue_failure(e.into())));
-            apply_queues(&mut compliance, c.map_err(|e| queue_failure(e.into())));
-            apply_input_queue(&mut control, control_inputs.map_err(input_health_error));
-            apply_input_queue(
-                &mut software,
-                software_inputs.map_err(software_health_error),
+            let health = self.planning.automation_health();
+            apply_runner(
+                &mut policy,
+                Runner {
+                    scan: health.scan.map(run_result),
+                    unresolved_attempts: health.unresolved_attempts,
+                    truncated: health.truncated,
+                    latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                        stage: attempt_stage(f.stage),
+                        reason: automation_failure(f.failure),
+                        observed_at: f.observed_at,
+                    }),
+                },
             );
-        }
-        let mut components = vec![
-            self.baseline_component(cutoff).await.unwrap_or_else(|| {
-                let mut value = unmounted(ComponentName::Baseline);
-                value.mounted = true;
-                value
-            }),
-            self.telemetry_component(cutoff, detailed)
-                .await
-                .unwrap_or_else(|| unmounted(ComponentName::Telemetry)),
-            inventory,
-            policy,
-            group,
-            scope,
-            assets,
-            compliance,
-            associations,
-            delivery_component(ComponentName::ScopeGroupDelivery, &self.scope_group_health),
-            delivery_component(ComponentName::AssetInputDelivery, &self.asset_input_health),
-            control,
-            software,
-            recovery_component(
-                ComponentName::NativeInstallation,
-                &self.installation.health(),
-            ),
-            recovery_component(ComponentName::ScriptExecution, &self.scripts.health()),
-            recovery_component(
-                ComponentName::CollectionExecution,
-                &self.collections.health(),
-            ),
-            recovery_component(ComponentName::EnrollmentTasks, &self.enrollment.health()),
-            recovery_component(
-                ComponentName::DeviceAccessExecution,
-                &self.access_tasks.health(),
-            ),
-            self.recovery
-                .as_ref()
-                .map(|owner| {
-                    recovery_component(ComponentName::NativeRecoveryCredentials, &owner.health())
-                })
-                .unwrap_or_else(|| unmounted(ComponentName::NativeRecoveryCredentials)),
-        ];
-        for name in [
-            ComponentName::MdmCredentialTasks,
-            ComponentName::DaCredentialTasks,
-        ] {
-            components.push(
-                self.credential_tasks
+            let health = self.groups.runner_health();
+            let mut group = worker_component(
+                ComponentName::Group,
+                self.groups.task_state(),
+                health.scan.is_some(),
+                false,
+            );
+            apply_runner(
+                &mut group,
+                Runner {
+                    scan: health.scan.map(|v| RunResult {
+                        successful: v.failure.is_none(),
+                        reason: v.failure.map(execution_failure),
+                        observed_at: v.observed_at,
+                    }),
+                    unresolved_attempts: health.unresolved_attempts,
+                    truncated: health.truncated,
+                    latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                        stage: attempt_stage(f.stage),
+                        reason: execution_failure(f.failure),
+                        observed_at: f.observed_at,
+                    }),
+                },
+            );
+            let health = self.scopes.runner_health();
+            let mut scope = worker_component(
+                ComponentName::Scope,
+                self.scopes.task_state(),
+                health.scan.is_some(),
+                false,
+            );
+            apply_runner(
+                &mut scope,
+                Runner {
+                    scan: health.scan.map(|v| RunResult {
+                        successful: v.failure.is_none(),
+                        reason: v.failure.map(execution_failure),
+                        observed_at: v.observed_at,
+                    }),
+                    unresolved_attempts: health.unresolved_attempts,
+                    truncated: health.truncated,
+                    latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                        stage: attempt_stage(f.stage),
+                        reason: execution_failure(f.failure),
+                        observed_at: f.observed_at,
+                    }),
+                },
+            );
+            let health = self.assets.worker_status();
+            let mut assets = worker_component(
+                ComponentName::AssetQuery,
+                health.task,
+                health.scan.is_some(),
+                false,
+            );
+            apply_runner(
+                &mut assets,
+                Runner {
+                    scan: health.scan.map(|v| RunResult {
+                        successful: v.failure.is_none(),
+                        reason: v.failure.map(execution_failure),
+                        observed_at: v.observed_at,
+                    }),
+                    unresolved_attempts: health.unresolved_attempts,
+                    truncated: health.truncated,
+                    latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                        stage: attempt_stage(f.stage),
+                        reason: execution_failure(f.failure),
+                        observed_at: f.observed_at,
+                    }),
+                },
+            );
+            let health = self.compliance.worker_status();
+            let mut compliance = worker_component(
+                ComponentName::Compliance,
+                health.task,
+                health.scan.is_some(),
+                false,
+            );
+            apply_runner(
+                &mut compliance,
+                Runner {
+                    scan: health.scan.map(|v| RunResult {
+                        successful: v.failure.is_none(),
+                        reason: v.failure.map(execution_failure),
+                        observed_at: v.observed_at,
+                    }),
+                    unresolved_attempts: health.unresolved_attempts,
+                    truncated: health.truncated,
+                    latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                        stage: attempt_stage(f.stage),
+                        reason: execution_failure(f.failure),
+                        observed_at: f.observed_at,
+                    }),
+                },
+            );
+            let health = self.devices.worker_health();
+            let mut associations = worker_component(
+                ComponentName::DeviceAssociations,
+                health.task,
+                health.observed,
+                health.failure.is_some(),
+            );
+            if let Some(failure) = health.failure {
+                associations.reasons.push(execution_failure(failure));
+            }
+            associations.runner = Some(Runner {
+                scan: None,
+                unresolved_attempts: health.unresolved_attempts,
+                truncated: health.truncated,
+                latest_failure: None,
+            });
+            let mut control =
+                recovery_component(ComponentName::DeviceControl, &self.execution.health());
+            let mut software =
+                recovery_component(ComponentName::SoftwareDeployment, &self.software.health());
+            let remaining = || {
+                cutoff.saturating_duration_since(rss_request_context::Clock::now(
+                    &crate::lifecycle::RuntimeTimer,
+                ))
+            };
+            let (
+                group_input,
+                scope_input,
+                compliance_input,
+                policy_input,
+                control_input,
+                software_input,
+            ) = tokio::join!(
+                self.groups.input_failed(remaining()),
+                self.scopes.input_failed(remaining()),
+                self.compliance.input_failed(remaining()),
+                self.planning.configuration_input_suspended(cutoff),
+                self.execution.ingress_health(cutoff),
+                self.software.ingress_health(cutoff)
+            );
+            apply_configuration_input(&mut group, group_input.map_err(|e| queue_failure(e.into())));
+            apply_configuration_input(&mut scope, scope_input.map_err(|e| queue_failure(e.into())));
+            apply_configuration_input(
+                &mut compliance,
+                compliance_input.map_err(|e| queue_failure(e.into())),
+            );
+            apply_configuration_input(&mut policy, policy_input);
+            match control_input.map_err(input_health_error) {
+                Ok(state) => {
+                    apply_configuration_input(&mut control, Ok(state.suspended));
+                    control.dispatch = Some(Dispatch {
+                        event_after: state.event_after,
+                        window_open: state.window_open,
+                    });
+                    control
+                        .dependencies
+                        .push(dependency(DependencyName::CommandStorage, None));
+                }
+                Err(error) => {
+                    apply_configuration_input(&mut control, Err(error));
+                    control.dependencies.push(dependency(
+                        DependencyName::CommandStorage,
+                        Some(health_failure(error)),
+                    ));
+                }
+            }
+            match software_input.map_err(software_health_error) {
+                Ok(state) => {
+                    apply_configuration_input(&mut software, Ok(state.suspended));
+                    software.dispatch = Some(Dispatch {
+                        event_after: state.event_after,
+                        window_open: state.window_open,
+                    });
+                    software
+                        .dependencies
+                        .push(dependency(DependencyName::CommandStorage, None));
+                }
+                Err(error) => {
+                    apply_configuration_input(&mut software, Err(error));
+                    software.dependencies.push(dependency(
+                        DependencyName::CommandStorage,
+                        Some(health_failure(error)),
+                    ));
+                }
+            }
+            if detailed {
+                let (p, g, s, a, c, control_inputs, software_inputs) = tokio::join!(
+                    self.planning.queue_health(cutoff),
+                    self.groups.queue_health(remaining()),
+                    self.scopes.queue_health(remaining()),
+                    self.assets.queue_health(remaining()),
+                    self.compliance.queue_health(remaining()),
+                    self.execution.input_pending_count(cutoff),
+                    self.software.input_pending_count(cutoff)
+                );
+                apply_queues(&mut policy, p);
+                apply_queues(&mut group, g.map_err(|e| queue_failure(e.into())));
+                apply_queues(&mut scope, s.map_err(|e| queue_failure(e.into())));
+                apply_queues(&mut assets, a.map_err(|e| queue_failure(e.into())));
+                apply_queues(&mut compliance, c.map_err(|e| queue_failure(e.into())));
+                apply_input_queue(&mut control, control_inputs.map_err(input_health_error));
+                apply_input_queue(
+                    &mut software,
+                    software_inputs.map_err(software_health_error),
+                );
+            }
+            let mut components = vec![
+                self.baseline_component(cutoff).await.unwrap_or_else(|| {
+                    let mut value = unmounted(ComponentName::Baseline);
+                    value.mounted = true;
+                    value
+                }),
+                self.telemetry_component(cutoff, detailed)
+                    .await
+                    .unwrap_or_else(|| unmounted(ComponentName::Telemetry)),
+                inventory,
+                policy,
+                group,
+                scope,
+                assets,
+                compliance,
+                associations,
+                delivery_component(ComponentName::ScopeGroupDelivery, &self.scope_group_health),
+                delivery_component(ComponentName::AssetInputDelivery, &self.asset_input_health),
+                control,
+                software,
+                recovery_component(
+                    ComponentName::NativeInstallation,
+                    &self.installation.health(),
+                ),
+                recovery_component(ComponentName::ScriptExecution, &self.scripts.health()),
+                recovery_component(
+                    ComponentName::CollectionExecution,
+                    &self.collections.health(),
+                ),
+                recovery_component(ComponentName::EnrollmentTasks, &self.enrollment.health()),
+                recovery_component(
+                    ComponentName::DeviceAccessExecution,
+                    &self.access_tasks.health(),
+                ),
+                self.recovery
+                    .as_ref()
+                    .map(|owner| {
+                        recovery_component(
+                            ComponentName::NativeRecoveryCredentials,
+                            &owner.health(),
+                        )
+                    })
+                    .unwrap_or_else(|| unmounted(ComponentName::NativeRecoveryCredentials)),
+            ];
+            for name in [
+                ComponentName::MdmCredentialTasks,
+                ComponentName::DaCredentialTasks,
+            ] {
+                components.push(
+                    self.credential_tasks
+                        .iter()
+                        .find(|(owner, _)| *owner == name)
+                        .map(|(_, owner)| recovery_component(name, &owner.health()))
+                        .unwrap_or_else(|| unmounted(name)),
+                );
+            }
+            Snapshot {
+                channels: self.channel_health(cutoff).await,
+                alive: true,
+                ready: components
                     .iter()
-                    .find(|(owner, _)| *owner == name)
-                    .map(|(_, owner)| recovery_component(name, &owner.health()))
-                    .unwrap_or_else(|| unmounted(name)),
-            );
-        }
-        Snapshot {
-            channels: self.channel_health(cutoff).await,
-            alive: true,
-            ready: components
-                .iter()
-                .all(|c| c.readiness != Readiness::NotReady),
-            components,
-            first_use: None,
-        }
+                    .all(|c| c.readiness != Readiness::NotReady),
+                components,
+                first_use: None,
+            }
+        })
     }
     async fn telemetry_component(&self, cutoff: Instant, detailed: bool) -> Option<Component> {
         let service = self.telemetry.as_ref()?;
