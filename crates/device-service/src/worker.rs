@@ -67,11 +67,18 @@ impl DeviceWork {
                 |(owner, after), tx| Box::pin(async move {
                     let tenant = owner.owner.tenant.to_string();
                     let after = after.clone();
-                    let page: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
-                        sqlx::query_scalar("SELECT entity FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.devices' AND entity>$2 ORDER BY entity LIMIT 64")
+                    let page: Vec<(String, bool)> = tx.with_connection(move |c| Box::pin(async move {
+                        sqlx::query_as("SELECT entity,result='suspended' FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.devices' AND entity>$2 ORDER BY entity LIMIT 64")
                             .bind(tenant).bind(after).fetch_all(c).await
                     })).await?;
-                    for entity in &page {
+                    for (entity, suspended) in &page {
+                        if *suspended && let Ok(mut failures) = owner.owner.worker_failures.lock() {
+                            if failures.len() < 1000 {
+                                failures.insert(entity.clone(), ErrorKind::Transient);
+                            } else {
+                                failures.insert("!truncated".into(), ErrorKind::Invariant);
+                            }
+                        }
                         let task = if entity == "inputs" { Task::Inputs } else {
                             Task::Work(entity.strip_prefix("work:").and_then(|id| Uuid::parse_str(id).ok()).ok_or_else(|| sqlx::Error::Protocol("association target".into()))?)
                         };
@@ -85,7 +92,7 @@ impl DeviceWork {
             if page.len() < 64 {
                 return Ok(());
             }
-            after = page.last().expect("nonempty page").clone();
+            after = page.last().expect("nonempty page").0.clone();
         }
     }
     fn scope(&self) -> Scope {
@@ -245,8 +252,7 @@ impl DeviceWork {
             let timer=DeviceTimer(tokio::time::Instant::now());
             let force=tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
-            let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(8),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(2),initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
-            for entity in ["inputs"] {self.schedule.wake(&Target::new(self.scope(),entity).expect("owner input"), &rss_reconcile::ResourceSet::empty(self.scope().tenant()),&control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;}
+            let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(8),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(60),initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
             rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&self.scope(),policy,&control,&stop,&notify,|event|{
                 if let Ok(mut failures)=self.owner.worker_failures.lock() {
                     let (key,kind)=match &event {
@@ -442,6 +448,9 @@ impl DurableStore for DeviceWork {
             return Err(Error::new(ErrorKind::Invariant));
         }
         let result = self.schedule.claim_due(scope, limit, lease, c).await;
+        if result.is_ok() {
+            self.owner.worker_observed.store(true, std::sync::atomic::Ordering::Release);
+        }
         if result.is_ok()
             && let Ok(mut failures) = self.owner.worker_failures.lock()
         {
@@ -468,18 +477,8 @@ impl DurableStore for DeviceWork {
         completion: Completion,
         c: &Control<'_, T>,
     ) -> Result<(), Error> {
-        let task = self.task(claim)?;
-        let scheduled = if matches!(task, Task::Inputs) && completion == Completion::Converged {
-            Completion::Reobserve(Duration::from_secs(2))
-        } else {
-            completion
-        };
-        let result = self.schedule.finish(claim, scheduled, c).await;
-        if matches!(task, Task::Inputs) && result.is_ok() && completion == Completion::Converged {
-            self.owner
-                .worker_observed
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
+        self.task(claim)?;
+        let result = self.schedule.finish(claim, completion, c).await;
         if let Ok(mut failures) = self.owner.worker_failures.lock() {
             if result.is_ok()
                 && matches!(completion, Completion::Converged | Completion::Reobserve(_))
